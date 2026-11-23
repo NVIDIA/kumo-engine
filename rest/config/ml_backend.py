@@ -47,8 +47,8 @@ class TimeColInfo:
 
 @kumo_dataclass
 class MaterializedTableInfo:
-    """Metadata about an individual table that was materialized.
-    """
+    """Metadata about an individual table that was materialized."""
+
     # Size of the source table pre-ingestion
     size_bytes_source: Optional[int]
 
@@ -85,9 +85,8 @@ class MaterializedTableInfo:
     temporal_workflow_id: str
 
     def clear_private_fields(self) -> None:
-        """Obfuscate the fields that should not be returned to the UI.
-        """
-        self.temporal_workflow_id = ""
+        """Obfuscate the fields that should not be returned to the UI."""
+        self.temporal_workflow_id = ''
 
 
 @kumo_dataclass
@@ -100,6 +99,7 @@ class MaterializationTaskInfo:
     This also contains a bunch of additional debug information that can be
     exposed in the UI for Kumo engineers.
     """
+
     table_stats: List[MaterializedTableInfo]
 
     # Version of the temporal worker that performed materialization
@@ -128,7 +128,7 @@ class MaterializationTaskInfo:
             return self.training_job_id
         if self.batch_prediction_job_id is not None:
             return self.batch_prediction_job_id
-        raise RuntimeError("Job ID is missing in MaterializationTaskInfo")
+        raise RuntimeError('Job ID is missing in MaterializationTaskInfo')
 
     # v1 @root_validator(skip_on_failure=True) -> @model_validator(mode='after').
     @model_validator(mode='after')
@@ -141,21 +141,22 @@ class MaterializationTaskInfo:
         job_id_present = job_id is not None
         if sum([training_present, batch_pred_present, job_id_present]) != 1:
             raise ValueError(
-                "Exactly one of training_job_id, batch_prediction_job_id and "
-                f"job_id fields must be present, but got: {training_job_id}, "
-                f"{batch_prediction_job_id}, {job_id}")
+                'Exactly one of training_job_id, batch_prediction_job_id and '
+                f'job_id fields must be present, but got: {training_job_id}, '
+                f'{batch_prediction_job_id}, {job_id}'
+            )
         return self
 
     def clear_private_fields(self) -> None:
-        """Obfuscate the fields that should not be returned to the UI.
-        """
-        self.temporal_workflow_id = ""
+        """Obfuscate the fields that should not be returned to the UI."""
+        self.temporal_workflow_id = ''
         for table in self.table_stats:
             table.clear_private_fields()
 
 
 class JobState(str, Enum):
     """The terminal state of a pooled ML activity."""
+
     SUCCEEDED = 'SUCCEEDED'
     FAILED = 'FAILED'
 
@@ -169,6 +170,7 @@ class TrainingJobInput:
     parameters related to business logic/problem formulation for the training
     job.
     """
+
     id: TrainingJobID
     spec: TrainingSpec
 
@@ -217,10 +219,10 @@ class TrainingJobInput:
             if self.spec.custom_train_table is not None:
                 return self.spec.custom_train_table.weight_col_name
         if hasattr(self.spec, 'advanced_options'):
-            train_table_opts = (
-                self.spec.advanced_options.training_table_generation)
+            train_table_opts = self.spec.advanced_options.training_table_generation
             if train_table_opts.weight_col is not None:
                 from kumo.pquery.weight_spec import DEFAULT_WEIGHT_COL_NAME
+
                 return DEFAULT_WEIGHT_COL_NAME
         return None
 

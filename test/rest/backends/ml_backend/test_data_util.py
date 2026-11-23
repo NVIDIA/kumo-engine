@@ -17,8 +17,11 @@ def test_get_max_partition_size_with_top_k():
         name='temporal-link-prediction',
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         target_to_entity_paths=[[], [('lhs', 'key', 'rhs')]],
-        graph=SimpleNamespace(table=lambda _name: SimpleNamespace(
-            pkey=SimpleNamespace(dtype=Dtype.string))),
+        graph=SimpleNamespace(
+            table=lambda _name: SimpleNamespace(
+                pkey=SimpleNamespace(dtype=Dtype.string)
+            )
+        ),
     )
     max_rows = get_max_partition_size_with_top_k(
         max_partition_size=100_000_000,

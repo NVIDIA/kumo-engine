@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def graph_key(graph_name: str, data_version: str) -> str:
-    return "__".join([graph_name, data_version])
+    return '__'.join([graph_name, data_version])
 
 
 # The data structure for storing edge stats in S3 JSON files.
@@ -31,8 +31,8 @@ GraphEdgeStatsDict = Dict[str, StatsConfig]
 
 @kumo_dataclass
 class SingleEdgeStats:
-    """Contains all stats that were computed for a single edge.
-    """
+    """Contains all stats that were computed for a single edge."""
+
     stats: Dict[EdgeStatType, StatsConfig]
 
 
@@ -50,15 +50,17 @@ def edge_stat_key(
 ) -> str:
     # fkey_config.dst_key may be none so cast to str and index by it
     # anyway to avoid having dst key inference logic here
-    return "__".join([
-        src.source_table_name,
-        src.connector_name,
-        dst.source_table_name,
-        dst.connector_name,
-        str(src.col_name),
-        str(dst.col_name),
-        stat_type.value,
-    ])
+    return '__'.join(
+        [
+            src.source_table_name,
+            src.connector_name,
+            dst.source_table_name,
+            dst.connector_name,
+            str(src.col_name),
+            str(dst.col_name),
+            stat_type.value,
+        ]
+    )
 
 
 @kumo_dataclass
@@ -66,10 +68,12 @@ class GraphEdgeStats:
     """Wrapper around GraphEdgeStatsDict, providing helper functions for
     convenient lookup.
     """
+
     stats: GraphEdgeStatsDict
 
-    def get_stats(self, src: SourceTableColumn,
-                  dst: SourceTableColumn) -> Optional[SingleEdgeStats]:
+    def get_stats(
+        self, src: SourceTableColumn, dst: SourceTableColumn
+    ) -> Optional[SingleEdgeStats]:
         """Return all stats for the given edge. Note, the direction of the edge
         matters. Returns None if stats are not found for a particular edge.
         """
@@ -94,16 +98,17 @@ GraphVersion: TypeAlias = str
 
 @kumo_dataclass
 class VersionedGraphKey:
-    """Unique identifier for graph stats for a single version of a graph.
-    """
+    """Unique identifier for graph stats for a single version of a graph."""
+
     key: GraphKey
     version: GraphVersion
 
 
-class GraphCache():
+class GraphCache:
     """The backend cache for everything related to a graph: version_info,
     edge_stats, ...
     """
+
     def __init__(self, cache_dir: str):
         self._cache_dir = cache_dir
         # 2 hours TTL cache.
@@ -134,9 +139,11 @@ class GraphCache():
                 return_list.append(stat_type)
         return return_list
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True),
-                     fut_dedupe_option=FutureDedupeOption.DISABLED)
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL,
+        tracing_options=TraceOptions(trace_params=True),
+        fut_dedupe_option=FutureDedupeOption.DISABLED,
+    )
     @synchronized
     def add_edge_stats(
         self,
@@ -159,7 +166,7 @@ class GraphCache():
                 stat_key = edge_stat_key(src, dst, stat_type)
                 self._edge_stats_cache[key][stat_key] = stat.config()
         self._save_edge_stats(graph_name, data_version)
-        logger.info(f"GraphCache size: {self.size()}")
+        logger.info(f'GraphCache size: {self.size()}')
 
     @synchronized
     def get_edge_stats(
@@ -189,24 +196,24 @@ class GraphCache():
         if key not in self._edge_stats_cache:
             logger.warning(
                 'graph %s with version %s does not have cached edge stats.',
-                graph_name, graph_version)
+                graph_name,
+                graph_version,
+            )
             return
 
         # Save the edge stats to a new file on S3
         stats_dict = self._edge_stats_cache[key]
-        file_path = self.edge_stats_path(
-            VersionedGraphKey(graph_name, graph_version))
+        file_path = self.edge_stats_path(VersionedGraphKey(graph_name, graph_version))
         logger.info(f'Saving edge stats for {key} to {file_path}')
         json.save_json(stats_dict, file_path)
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def _load_edge_stats(self, graph_name: str, graph_version: str) -> bool:
-        file_path = self.edge_stats_path(
-            VersionedGraphKey(graph_name, graph_version))
+        file_path = self.edge_stats_path(VersionedGraphKey(graph_name, graph_version))
 
-        value = json.load_json(file_path, Dict, default=None,
-                               raise_on_missing=False)
+        value = json.load_json(file_path, Dict, default=None, raise_on_missing=False)
         if value is None:
             logger.warning(f'No edge stats found at {file_path}')
             return False
@@ -214,22 +221,24 @@ class GraphCache():
         key = graph_key(graph_name, graph_version)
         logger.info(f'Loading edge stats for {key} from {file_path}')
         self._edge_stats_cache[key] = value
-        logger.info(f"GraphCache size: {self.size()}")
+        logger.info(f'GraphCache size: {self.size()}')
         return True
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def save_latest_graph_version(self, graph_name: str, graph_version: str):
         """Mark the given graph version as the "latest" graph version in the
         cache.
         """
         json.save_json(graph_version, self.latest_version_path(graph_name))
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def get_many_latest_graph_versions(
-            self,
-            graph_names: List[GraphKey]) -> List[Optional[VersionedGraphKey]]:
+        self, graph_names: List[GraphKey]
+    ) -> List[Optional[VersionedGraphKey]]:
         # Read the most recent graph versions from S3
         paths = [self.latest_version_path(name) for name in graph_names]
         files = fsutil.get_many_if_present(paths)
@@ -245,13 +254,14 @@ class GraphCache():
 
         return results
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def get_graph_edge_stats(
-            self, graph: VersionedGraphKey) -> Optional[GraphEdgeStats]:
+        self, graph: VersionedGraphKey
+    ) -> Optional[GraphEdgeStats]:
         file_path = self.edge_stats_path(graph)
-        r = json.load_json(file_path, GraphEdgeStatsDict,
-                           raise_on_missing=False)
+        r = json.load_json(file_path, GraphEdgeStatsDict, raise_on_missing=False)
         if r is None:
             return r
         else:

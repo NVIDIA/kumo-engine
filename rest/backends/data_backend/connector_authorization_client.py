@@ -91,7 +91,8 @@ def _discard_inherited_authorization_state_locked() -> None:
 
 
 async def _open_authorization_state(
-    config: DeployEnvConfig, ) -> tuple[StateDB, StateServices]:
+    config: DeployEnvConfig,
+) -> tuple[StateDB, StateServices]:
     cache_key = _sqlite_authorization_state_key(config)
     if cache_key is None:
         state_db = await open_state_db_from_deploy_config(
@@ -152,9 +153,11 @@ def _is_cached_authorization_state(state_db: StateDB | None) -> bool:
         return False
     with _AUTHORIZATION_STATE_LOCK:
         _discard_inherited_authorization_state_locked()
-        return any(cached.state_db is state_db
-                   for loop_cache in _AUTHORIZATION_STATE_CACHE.values()
-                   for cached in loop_cache.values())
+        return any(
+            cached.state_db is state_db
+            for loop_cache in _AUTHORIZATION_STATE_CACHE.values()
+            for cached in loop_cache.values()
+        )
 
 
 async def close_cached_authorization_state_for_current_loop() -> None:
@@ -172,9 +175,11 @@ async def close_cached_authorization_states() -> None:
     """Close all loop-local SQLite state from a quiescent process owner."""
     with _AUTHORIZATION_STATE_LOCK:
         _discard_inherited_authorization_state_locked()
-        cached = tuple(entry
-                       for loop_cache in _AUTHORIZATION_STATE_CACHE.values()
-                       for entry in loop_cache.values())
+        cached = tuple(
+            entry
+            for loop_cache in _AUTHORIZATION_STATE_CACHE.values()
+            for entry in loop_cache.values()
+        )
         _AUTHORIZATION_STATE_CACHE.clear()
         _AUTHORIZATION_STATE_OPENING.clear()
     for entry in cached:
@@ -193,8 +198,7 @@ def _authorization_tokens(value: Any, seen: set[int]) -> set[str]:
     if dataclasses.is_dataclass(value):
         tokens: set[str] = set()
         for field in dataclasses.fields(value):
-            tokens.update(
-                _authorization_tokens(getattr(value, field.name), seen))
+            tokens.update(_authorization_tokens(getattr(value, field.name), seen))
         return tokens
     if isinstance(value, Mapping):
         tokens = set()
@@ -246,8 +250,11 @@ def replace_connector_authorization_tokens(
     """Pure deterministic replacement used before a child workflow start."""
     if isinstance(value, ConnectorExecutionRef):
         token = replacements.get(value.authorization_token)
-        return (dataclasses.replace(value, authorization_token=token)
-                if token is not None else value)
+        return (
+            dataclasses.replace(value, authorization_token=token)
+            if token is not None
+            else value
+        )
     if value is None or isinstance(value, (str, bytes, int, float, bool)):
         return value
     if dataclasses.is_dataclass(value):
@@ -256,7 +263,8 @@ def replace_connector_authorization_tokens(
         for field in dataclasses.fields(value):
             old_field_value = getattr(value, field.name)
             new_field_value = replace_connector_authorization_tokens(
-                old_field_value, replacements)
+                old_field_value, replacements
+            )
             changes[field.name] = new_field_value
             changed = changed or new_field_value is not old_field_value
 
@@ -266,13 +274,12 @@ def replace_connector_authorization_tokens(
         if extra:
             new_extra = {}
             for key, item in extra.items():
-                new_key = replace_connector_authorization_tokens(
-                    key, replacements)
-                new_item = replace_connector_authorization_tokens(
-                    item, replacements)
+                new_key = replace_connector_authorization_tokens(key, replacements)
+                new_item = replace_connector_authorization_tokens(item, replacements)
                 new_extra[new_key] = new_item
-                extra_changed = (extra_changed or new_key is not key
-                                 or new_item is not item)
+                extra_changed = (
+                    extra_changed or new_key is not key or new_item is not item
+                )
 
         if not changed and not extra_changed:
             return value
@@ -286,30 +293,29 @@ def replace_connector_authorization_tokens(
         result = {}
         for key, item in value.items():
             new_key = replace_connector_authorization_tokens(key, replacements)
-            new_item = replace_connector_authorization_tokens(
-                item, replacements)
+            new_item = replace_connector_authorization_tokens(item, replacements)
             result[new_key] = new_item
             changed = changed or new_key is not key or new_item is not item
         return result if changed else value
     if isinstance(value, list):
         result = [
-            replace_connector_authorization_tokens(item, replacements)
-            for item in value
+            replace_connector_authorization_tokens(item, replacements) for item in value
         ]
-        return result if any(new is not old
-                             for new, old in zip(result, value)) else value
+        return (
+            result if any(new is not old for new, old in zip(result, value)) else value
+        )
     if isinstance(value, tuple):
         result = tuple(
-            replace_connector_authorization_tokens(item, replacements)
-            for item in value)
-        return result if any(new is not old
-                             for new, old in zip(result, value)) else value
+            replace_connector_authorization_tokens(item, replacements) for item in value
+        )
+        return (
+            result if any(new is not old for new, old in zip(result, value)) else value
+        )
     if isinstance(value, set):
         changed = False
         result = set()
         for item in value:
-            new_item = replace_connector_authorization_tokens(
-                item, replacements)
+            new_item = replace_connector_authorization_tokens(item, replacements)
             result.add(new_item)
             changed = changed or new_item is not item
         return result if changed else value
@@ -317,8 +323,7 @@ def replace_connector_authorization_tokens(
         changed = False
         result = set()
         for item in value:
-            new_item = replace_connector_authorization_tokens(
-                item, replacements)
+            new_item = replace_connector_authorization_tokens(item, replacements)
             result.add(new_item)
             changed = changed or new_item is not item
         return frozenset(result) if changed else value
@@ -330,16 +335,15 @@ async def bind_connector_authorizations_for_start(
     config: DeployEnvConfig,
 ) -> tuple[StateDB | None, StateServices | None, tuple[str, ...]]:
     """Bind every opaque input capability to the exact accepted start ID."""
-    tokens = tuple(
-        sorted(filter(None, _authorization_tokens(input.args, set()))))
+    tokens = tuple(sorted(filter(None, _authorization_tokens(input.args, set()))))
     if not tokens:
         return None, None, ()
     state_db, services = await _open_authorization_state(config)
-    lifetime = (input.execution_timeout or input.run_timeout
-                or _DEFAULT_BOUND_CAPABILITY_TTL)
+    lifetime = (
+        input.execution_timeout or input.run_timeout or _DEFAULT_BOUND_CAPABILITY_TTL
+    )
     expires_at = now_utc() + lifetime + _CAPABILITY_EXPIRY_GRACE
-    deployment_id = (f'{config.instance_id}:'
-                     f'{config.client_id}')
+    deployment_id = f'{config.instance_id}:{config.client_id}'
     newly_bound: list[str] = []
     try:
         for token in tokens:
@@ -371,13 +375,12 @@ async def revoke_bound_connector_authorizations(
             for token in tokens:
                 await services.connector_authorizations.revoke(token)
     finally:
-        if (state_db is not None
-                and not _is_cached_authorization_state(state_db)):
+        if state_db is not None and not _is_cached_authorization_state(state_db):
             await state_db.close()
 
 
 async def close_connector_authorization_state(state_db: StateDB | None) -> None:
-    if (state_db is not None and not _is_cached_authorization_state(state_db)):
+    if state_db is not None and not _is_cached_authorization_state(state_db):
         await state_db.close()
 
 
@@ -390,8 +393,7 @@ async def revoke_connector_authorizations_for_workflow(
     try:
         return await services.connector_authorizations.revoke_workflow(
             workflow_id=workflow_id,
-            deployment_id=(f'{config.instance_id}:'
-                           f'{config.client_id}'),
+            deployment_id=(f'{config.instance_id}:{config.client_id}'),
             temporal_namespace=config.temporal_namespace,
         )
     finally:

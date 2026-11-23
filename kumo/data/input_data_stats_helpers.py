@@ -36,20 +36,25 @@ def compute_time_ranges(
             time_stats = backend_cache.get_col_stats(
                 table.fingerprint(),
                 {time_col_base: [ColStatType.MIN, ColStatType.MAX]},
-                data_version=table.data_version, approx=False)
+                data_version=table.data_version,
+                approx=False,
+            )
             if time_col_base in time_stats:
                 min_stat = time_stats[time_col_base].get(ColStatType.MIN)
                 max_stat = time_stats[time_col_base].get(ColStatType.MAX)
-                min_value = (min_stat.value if min_stat
-                             and not is_missing_stat_value(min_stat.value) else
-                             None)
-                max_value = (max_stat.value if max_stat
-                             and not is_missing_stat_value(max_stat.value) else
-                             None)
+                min_value = (
+                    min_stat.value
+                    if min_stat and not is_missing_stat_value(min_stat.value)
+                    else None
+                )
+                max_value = (
+                    max_stat.value
+                    if max_stat and not is_missing_stat_value(max_stat.value)
+                    else None
+                )
                 result.table_time_ranges[table.name] = (min_value, max_value)
             else:
-                logger.warning('Time column range missing for table %s',
-                               table.name)
+                logger.warning('Time column range missing for table %s', table.name)
 
 
 def compute_edge_counts(
@@ -70,22 +75,30 @@ def compute_edge_counts(
             for fkey in table.fkeys:
                 if not fkey.dst_data_source or not fkey.dst_table:
                     logger.warning(
-                        "Skipping edge stats for fkey %s on %s: "
-                        "dst_data_source=%s, dst_table=%s", fkey.name,
-                        table.table_name, fkey.dst_data_source, fkey.dst_table)
+                        'Skipping edge stats for fkey %s on %s: '
+                        'dst_data_source=%s, dst_table=%s',
+                        fkey.name,
+                        table.table_name,
+                        fkey.dst_data_source,
+                        fkey.dst_table,
+                    )
                     continue
-                src_key = SourceTableColumn(table.data_source,
-                                            table.source_name, fkey.name)
+                src_key = SourceTableColumn(
+                    table.data_source, table.source_name, fkey.name
+                )
                 dst_key = SourceTableColumn(
                     fkey.dst_data_source,
-                    graph.table(fkey.dst_table).source_name, fkey.dst_key)
+                    graph.table(fkey.dst_table).source_name,
+                    fkey.dst_key,
+                )
                 stats = graph_edge_stats.get_stats(src_key, dst_key)
                 if not stats:
                     stats = graph_edge_stats.get_stats(dst_key, src_key)
                 if stats:
                     edge_count = stats.stats[EdgeStatType.EDGE_COUNT].value
                     graph_num_edges += int(edge_count) * 2
-                    graph_num_downsampled_edges += min(MAX_EDGES_PER_EDGE_TYPE,
-                                                       int(edge_count)) * 2
+                    graph_num_downsampled_edges += (
+                        min(MAX_EDGES_PER_EDGE_TYPE, int(edge_count)) * 2
+                    )
     result.graph_num_edges = graph_num_edges
     result.graph_num_downsampled_edges = graph_num_downsampled_edges

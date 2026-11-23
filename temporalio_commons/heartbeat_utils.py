@@ -29,6 +29,7 @@ class _ThreadExceptionRaiser:
     used in heartbeater background thread to inject exception upon detecting
     cancellation into the main thread that runs synchrnous activity func.
     """
+
     def __init__(self, thread_id: int) -> None:
         self._lock = threading.Lock()
         self.thread_id: int = thread_id
@@ -36,8 +37,7 @@ class _ThreadExceptionRaiser:
     def raise_in_thread(self, exc_type: Type[BaseException]) -> None:
         with self._lock:
             log.error(f'Raising {exc_type} in thread id={self.thread_id}')
-            temporalio.bridge.runtime.Runtime._raise_in_thread(
-                self.thread_id, exc_type)
+            temporalio.bridge.runtime.Runtime._raise_in_thread(self.thread_id, exc_type)
 
 
 def _report_heartbeat(
@@ -58,25 +58,30 @@ def _report_heartbeat(
             log.exception('Heartbeat failed: %s', err)
 
         if activity.is_cancelled():
-            log.warning('Activity is canceled, stop heartbeat: %s',
-                        activity.info())
+            log.warning('Activity is canceled, stop heartbeat: %s', activity.info())
             if thread_ex_raiser is not None:
-                log.warning('Attempt to raise exeception in main thread: '
-                            f'{thread_ex_raiser.thread_id}')
+                log.warning(
+                    'Attempt to raise exeception in main thread: '
+                    f'{thread_ex_raiser.thread_id}'
+                )
                 thread_ex_raiser.raise_in_thread(CancelledError)
             break
 
-        log.debug('Heartbeat from activity %s__%s, workflow_id=%s, after %s',
-                  activity.info().activity_type,
-                  activity.info().activity_id,
-                  activity.info().workflow_id,
-                  now_utc() - heartbeat_start_time)
+        log.debug(
+            'Heartbeat from activity %s__%s, workflow_id=%s, after %s',
+            activity.info().activity_type,
+            activity.info().activity_id,
+            activity.info().workflow_id,
+            now_utc() - heartbeat_start_time,
+        )
         elapsed_since_last_heartbeat = now_utc() - last_heartbeat_time
         last_heartbeat_time = now_utc()
         if elapsed_since_last_heartbeat > 2.0 * desired_interval:
             log.warning(
                 'Delayed heatbeat, desired interval %s, actual delay: %s',
-                desired_interval, elapsed_since_last_heartbeat)
+                desired_interval,
+                elapsed_since_last_heartbeat,
+            )
 
         if stop_event.wait(desired_interval.total_seconds()):
             log.debug('Activity execution has completed, stop heartbeat.')
@@ -108,7 +113,8 @@ def _start_heartbeat_thread(
     if heartbeat_timeout and interval >= heartbeat_timeout:
         raise RuntimeError(
             f'Heartbeat interval {interval} should be smaller than heartbeat '
-            f'timeout: {heartbeat_timeout}')
+            f'timeout: {heartbeat_timeout}'
+        )
 
     heartbeat_thread_name = threading.currentThread().getName() + '-heartbeat'
     heartbeat_thread = threading.Thread(
@@ -145,8 +151,7 @@ def _heartbeat_in_background(
         thread_ex_raiser = _ThreadExceptionRaiser(thread_id)
 
     stop_event = threading.Event()
-    thread = _start_heartbeat_thread(interval, stop_event, thread_ex_raiser,
-                                     message)
+    thread = _start_heartbeat_thread(interval, stop_event, thread_ex_raiser, message)
     try:
         yield thread
     finally:
@@ -179,24 +184,23 @@ _AUTO_HEARTBEATER_ATTR = '__auto_heartbeater_enabled'
 
 
 def _default_heartbeat_interval():
-    heartbeat_timeout = (activity.info().heartbeat_timeout
-                         or DEFAULT_HEARTBEAT_INTERVAL * 3)
+    heartbeat_timeout = (
+        activity.info().heartbeat_timeout or DEFAULT_HEARTBEAT_INTERVAL * 3
+    )
     return min(heartbeat_timeout / 3, DEFAULT_HEARTBEAT_INTERVAL)
 
 
-ActivityFn = TypeVar("ActivityFn", bound=Callable[..., Any])
+ActivityFn = TypeVar('ActivityFn', bound=Callable[..., Any])
 
 
 @overload
-def auto_heartbeater(fn: ActivityFn) -> ActivityFn:
-    ...
+def auto_heartbeater(fn: ActivityFn) -> ActivityFn: ...
 
 
 @overload
 def auto_heartbeater(
     *, heartbeat_interval: Optional[timedelta] = None
-) -> Callable[[ActivityFn], ActivityFn]:
-    ...
+) -> Callable[[ActivityFn], ActivityFn]: ...
 
 
 def auto_heartbeater(
@@ -217,6 +221,7 @@ def auto_heartbeater(
     It's OK but not required for developers to explicitly apply
     @auto_heartbeater to activity functions expected to be long-running.
     """
+
     def _auto_heartbeat_decorator(fn: ActivityFn) -> ActivityFn:
         @wraps(fn)
         def _sync_heartbeat_wrapper(*args, **kwargs):
@@ -234,10 +239,12 @@ def auto_heartbeater(
             from temporalio_commons.process_pool_utils import (  # avoid cycle
                 _get_async_caller_loop,
             )
+
             if _get_async_caller_loop() is not None:
                 return fn(*args, **kwargs)
-            with _heartbeat_in_background(interval=heartbeat_interval
-                                          or _default_heartbeat_interval()):
+            with _heartbeat_in_background(
+                interval=heartbeat_interval or _default_heartbeat_interval()
+            ):
                 return fn(*args, **kwargs)
 
         # We want to ensure that the type hints from the original callable are
@@ -252,8 +259,11 @@ def auto_heartbeater(
             heartbeat_task = asyncio.create_task(
                 heartbeat_every(
                     main_task,
-                    (heartbeat_interval
-                     or _default_heartbeat_interval()).total_seconds()))
+                    (
+                        heartbeat_interval or _default_heartbeat_interval()
+                    ).total_seconds(),
+                )
+            )
             try:
                 return await main_task
             finally:
@@ -265,8 +275,7 @@ def auto_heartbeater(
 
         if getattr(fn, _AUTO_HEARTBEATER_ATTR, False):
             # avoid multiple wraps of auto heartbeater
-            log.debug('Auto heartbeater is already enabled for %s',
-                      fn.__qualname__)
+            log.debug('Auto heartbeater is already enabled for %s', fn.__qualname__)
             return fn
 
         if inspect.iscoroutinefunction(fn):
@@ -289,24 +298,29 @@ async def heartbeat_every(main_task: Task, interval_sec: float) -> None:
     info = activity.info()
     activity_name = f'{info.workflow_type}.{info.activity_type}'
     activity_name += f'__{info.activity_id}'
-    log.debug(f'Start auto-heartbeater asyncio task for {activity_name} '
-              f'every {interval_sec:.2f} seconds.')
+    log.debug(
+        f'Start auto-heartbeater asyncio task for {activity_name} '
+        f'every {interval_sec:.2f} seconds.'
+    )
     while True:
         try:
             await asyncio.sleep(interval_sec)
         except CancelledError:
             main_task.cancel()
             status = 'canceled' if main_task.cancelled() else 'completed'
-            log.debug('Auto heartbeater is stopping after %s is %s',
-                      activity_name, status)
+            log.debug(
+                'Auto heartbeater is stopping after %s is %s', activity_name, status
+            )
             raise
 
-        log.debug("Heartbeating from async activity %s at %s", activity_name,
-                  datetime.now())
+        log.debug(
+            'Heartbeating from async activity %s at %s', activity_name, datetime.now()
+        )
         activity.heartbeat()
         if activity.is_cancelled():
             log.warning(
                 'Auto heartbeater saw cancellation, aborting activity %s!',
-                activity_name)
+                activity_name,
+            )
             main_task.cancel(msg='Received Activity Cancellation')
             raise CancelledError()

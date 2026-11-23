@@ -31,6 +31,7 @@ behavior: they construct ONLY the durable sidecar (no gen manifest) and
 assert CATEGORY_COUNTS seeds. On master there is no sidecar-reading entry
 point, so they fail.
 """
+
 import json
 import os
 
@@ -47,26 +48,29 @@ from kumo.task.task import Task
 
 def _make_bc_task():
     """Minimal BC node-prediction Task with a categorical ``TARGET``."""
-    graph_df = pd.DataFrame({
-        'USER_ID': np.arange(20),
-        'COUNTRY': ['US', 'CA'] * 10,
-    })
+    graph_df = pd.DataFrame(
+        {
+            'USER_ID': np.arange(20),
+            'COUNTRY': ['US', 'CA'] * 10,
+        }
+    )
     connector = PandasConnector({'USERS': graph_df})
     graph = Graph(name='sidecar_bc_graph')
     graph.connect(connector)
     graph.add('USERS', pkey=PrimaryKey(name='USER_ID', dtype=Dtype.int))
     graph.infer_metadata()
 
-    train_df = pd.DataFrame({
-        'USER_ID': np.arange(20),
-        'TARGET': ([1, 0] * 10),
-    })
+    train_df = pd.DataFrame(
+        {
+            'USER_ID': np.arange(20),
+            'TARGET': ([1, 0] * 10),
+        }
+    )
     return Task(
         graph,
         task_type='binary_classification',
         train_table_name='TRAINING_TARGET',
-        target_col=Column(name='TARGET', stype=Stype.categorical,
-                          dtype=Dtype.int),
+        target_col=Column(name='TARGET', stype=Stype.categorical, dtype=Dtype.int),
         fkeys=[ForeignKey(name='USER_ID', dst_table='USERS')],
         data_source=train_df,
         train_table_data_version='sidecar-bc-v1',
@@ -92,16 +96,18 @@ def _seed_basic_target_stats(task):
     data_version = task.train_table.data_version
     cache = get_active_cache()
     basic = {
-        ColStatType.COUNT: (Stats(value=20, approx=False,
-                                  data_version=data_version, num_entries=20)),
-        ColStatType.NUM_NA: (Stats(value=0, approx=False,
-                                   data_version=data_version, num_entries=20)),
-        ColStatType.NUM_UNIQUE:
-        (Stats(value=2, approx=False, data_version=data_version,
-               num_entries=20)),
-        ColStatType.NA_FRACTION: (Stats(value=0.0, approx=True,
-                                        data_version=data_version,
-                                        num_entries=20)),
+        ColStatType.COUNT: (
+            Stats(value=20, approx=False, data_version=data_version, num_entries=20)
+        ),
+        ColStatType.NUM_NA: (
+            Stats(value=0, approx=False, data_version=data_version, num_entries=20)
+        ),
+        ColStatType.NUM_UNIQUE: (
+            Stats(value=2, approx=False, data_version=data_version, num_entries=20)
+        ),
+        ColStatType.NA_FRACTION: (
+            Stats(value=0.0, approx=True, data_version=data_version, num_entries=20)
+        ),
     }
     cache.add_col_stats(task.train_table.fingerprint(), {col_cfg: basic})
     cache.save_col_stats_cache(task.train_table.fingerprint(), data_version)
@@ -138,8 +144,7 @@ def test_seed_from_durable_sidecar_populates_category_counts(tmp_path):
     task = _make_bc_task()
     assert task.train_table.target_col is not None
 
-    sidecar = str(tmp_path / 'train_tables' / 'tt-id' /
-                  'train_table_col_stats.json')
+    sidecar = str(tmp_path / 'train_tables' / 'tt-id' / 'train_table_col_stats.json')
     _write_durable_sidecar(sidecar)
 
     seeded = task.seed_train_table_col_stats_from_sidecar(sidecar)
@@ -152,7 +157,8 @@ def test_seed_from_durable_sidecar_populates_category_counts(tmp_path):
     _seed_basic_target_stats(task)
 
     target_stats = task._get_encoder_stats_from_cache_or_fail(
-        task.train_table.target_col)
+        task.train_table.target_col
+    )
     assert ColStatType.CATEGORY_COUNTS in target_stats
 
 
@@ -170,6 +176,7 @@ def test_seed_from_durable_sidecar_drives_encoder_build(tmp_path):
     from kumoapi.encoder import Index
 
     from kumo.graph.utils import materialize_encoders
+
     target_col = task.train_table.target_col
     assert target_col is not None
     target_col.encoder = Index()

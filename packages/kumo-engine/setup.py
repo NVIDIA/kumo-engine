@@ -35,12 +35,15 @@ def _bundle_skills():
     # a build from an sdist has no agent-skills/ and keeps the copy the sdist
     # carries. Only wheel and sdist builds run this: an editable install
     # reads the skill from the checkout.
-    package_skill_py = (Path(__file__).resolve().parents[2] / 'agent-skills' /
-                        'scripts' / 'package_skill.py')
+    package_skill_py = (
+        Path(__file__).resolve().parents[2]
+        / 'agent-skills'
+        / 'scripts'
+        / 'package_skill.py'
+    )
     if not package_skill_py.exists():
         return
-    spec = importlib.util.spec_from_file_location('package_skill',
-                                                  package_skill_py)
+    spec = importlib.util.spec_from_file_location('package_skill', package_skill_py)
     assert spec and spec.loader
     package_skill = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(package_skill)
@@ -51,11 +54,21 @@ def _build_commit():
     commit = os.environ.get('KUMO_ENGINE_BUILD_COMMIT')
     if commit:
         return commit
-    command = ['git', '-C', str(Path(__file__).parent), 'rev-parse',
-               '--short=12', 'HEAD']
+    command = [
+        'git',
+        '-C',
+        str(Path(__file__).parent),
+        'rev-parse',
+        '--short=12',
+        'HEAD',
+    ]
     try:
-        return subprocess.run(command, capture_output=True, text=True,
-                              check=True, timeout=10).stdout.strip() or None
+        return (
+            subprocess.run(
+                command, capture_output=True, text=True, check=True, timeout=10
+            ).stdout.strip()
+            or None
+        )
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -70,8 +83,8 @@ class _StampBuildCommit(build_py):
             text = target.read_text(encoding='utf-8')
             target.unlink()
             target.write_text(
-                f'{text}BUILD_COMMIT = {_build_commit()!r}\n',
-                encoding='utf-8')
+                f'{text}BUILD_COMMIT = {_build_commit()!r}\n', encoding='utf-8'
+            )
 
 
 class _BundleSkillsSdist(sdist):
@@ -81,16 +94,13 @@ class _BundleSkillsSdist(sdist):
 
 
 setup(
-    cmdclass={
-        'build_py': _StampBuildCommit,
-        'sdist': _BundleSkillsSdist
-    },
+    cmdclass={'build_py': _StampBuildCommit, 'sdist': _BundleSkillsSdist},
     install_requires=[
-        "pandas",
-        "pyarrow>=8.0.0",
-        "typing_extensions>=4.5.0",  # for override
+        'pandas',
+        'pyarrow>=8.0.0',
+        'typing_extensions>=4.5.0',  # for override
         kumo_api,
-        "pydantic>=1.10.21",
+        'pydantic>=1.10.21',
         # Guards Graph.snapshot()'s check-then-build DiskGraph ingest
         # against concurrent builders (see kumo/engine/graph.py). filelock.
         # FileLock is a real OS-level advisory lock (flock/LockFileEx), so
@@ -99,17 +109,17 @@ setup(
         # here. 3.20.4 through 3.29.4 unlink the lock file on release, so
         # two processes can each hold a lock on a different inode at one
         # path; 3.29.5 keeps the file.
-        "filelock>=3.29.5",
+        'filelock>=3.29.5',
         # Unlike kumo-sdk (where this is an optional extra behind
         # CloudBackend), this package has no non-training use case, so
         # kumo-core -- and the Torch/PyG/DiskGraph stack it pulls in -- is a
         # plain, required dependency here.
-        "kumo-core>=0.1.0.dev1",
-        "kumo-settings>=0.1.0.dev1",
+        'kumo-core>=0.1.0.dev1',
+        'kumo-settings>=0.1.0.dev1',
         # Select one Faiss distribution: both provide the `faiss` module.
         # Keep platform markers on these external dependencies so wheel
         # merging preserves them when the bundled core reference is removed.
-        'faiss-gpu==1.14.3; sys_platform == "linux" '
-        'and platform_machine == "x86_64"',
+        'faiss-gpu==1.14.3; sys_platform == "linux" and platform_machine == "x86_64"',
         'faiss-cpu==1.14.3; sys_platform == "darwin"',
-    ], )
+    ],
+)

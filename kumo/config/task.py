@@ -83,8 +83,10 @@ class TrainingTableConfig(TableConfig):
             # part of a TaskConfig loaded from json
             connector_name: str = self.connector['name']
         else:
-            raise ValueError(f"TrainingTableConfig.fingerprint()"
-                             f"requires a connector, got {self.connector}")
+            raise ValueError(
+                f'TrainingTableConfig.fingerprint()'
+                f'requires a connector, got {self.connector}'
+            )
 
         return TrainingTableFingerprint(
             connector_name=connector_name,
@@ -98,8 +100,9 @@ class TaskConfig:
     task_type: TaskType
     train_table: TrainingTableConfig
     metrics: List[str]
-    target_to_entity_paths: List[List[Tuple[str, str,
-                                            str]]] = field(default_factory=list)
+    target_to_entity_paths: List[List[Tuple[str, str, str]]] = field(
+        default_factory=list
+    )
     target_table_name: Optional[str] = None
     name: Optional[str] = None
     exclude_cols: Dict[str, List[str]] = field(default_factory=dict)
@@ -180,6 +183,7 @@ class TimePeriod:
     `DateOffsetSplit`, the end is exclusive. Start is guaranteed to be equal or
     earlier in time compared to end.
     """
+
     start: Union[int, datetime]
     end: Union[int, datetime]
     is_pseudo: bool = False  # indicate whether time is pseudo time or not.
@@ -206,7 +210,8 @@ class TimePeriod:
                 raise ValueError(
                     'TimePeriod (is_pseudo=True) requires integer type for '
                     f'both start and end but {type(self.start)} and '
-                    f'{type(self.end)} types given')
+                    f'{type(self.end)} types given'
+                )
         else:
             # Serialization would change saved datetime into str.
             # So we re-cast it back to datetime here.
@@ -215,16 +220,17 @@ class TimePeriod:
             if isinstance(self.end, str):
                 self.end = _parse_datetime_str(self.end)
 
-            if not (isinstance(self.start, datetime)
-                    and isinstance(self.end, datetime)):
+            if not (
+                isinstance(self.start, datetime) and isinstance(self.end, datetime)
+            ):
                 raise ValueError(
                     'TimePeriod (is_pseudo=False) requires datetime type for '
                     f'both start and end but {type(self.start)} and '
-                    f'{type(self.end)} types given')
+                    f'{type(self.end)} types given'
+                )
 
     @classmethod
-    def cast(cls, start: Any, end: Any,
-             is_pseudo: bool = False) -> 'TimePeriod':
+    def cast(cls, start: Any, end: Any, is_pseudo: bool = False) -> 'TimePeriod':
         if is_pseudo:
             start = int(start)
             end = int(end)
@@ -236,10 +242,16 @@ class TimePeriod:
             # int epoch values from split callers, or already-``datetime``
             # values) keep the original ``pd.to_datetime`` coercion so a
             # ``datetime``-typed value reaches ``__post_init__``.
-            start = (_parse_datetime_str(start)
-                     if isinstance(start, str) else pd.to_datetime(start))
-            end = (_parse_datetime_str(end)
-                   if isinstance(end, str) else pd.to_datetime(end))
+            start = (
+                _parse_datetime_str(start)
+                if isinstance(start, str)
+                else pd.to_datetime(start)
+            )
+            end = (
+                _parse_datetime_str(end)
+                if isinstance(end, str)
+                else pd.to_datetime(end)
+            )
         return TimePeriod(start=start, end=end, is_pseudo=is_pseudo)
 
 
@@ -255,6 +267,7 @@ class Mask:
 
     Additional metadata about the mask (such as time period) is also provided.
     """
+
     tensor: Tensor
     index_tensor: Tensor
 

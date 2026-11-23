@@ -5,6 +5,7 @@
 
 Boots a single-replica :class:`PoolController` over AutoRPC.
 """
+
 import asyncio
 import faulthandler
 import os
@@ -62,8 +63,9 @@ async def main() -> None:
     READY_PATH.unlink(missing_ok=True)
 
     start_http_server(METRICS_PORT, addr=METRICS_HOST)
-    log.info('pool metrics server listening on [%s]:%d/metrics', METRICS_HOST,
-             METRICS_PORT)
+    log.info(
+        'pool metrics server listening on [%s]:%d/metrics', METRICS_HOST, METRICS_PORT
+    )
 
     deploy_config = deploy_env()
 

@@ -40,50 +40,58 @@ def test_resolve_lp_bp_layout_defaults_to_legacy_branch():
 
 def test_resolve_lp_bp_layout_passthrough():
     # Non-array (scalar) targets keep the requested layout unchanged.
-    assert _resolve_lp_bp_layout(
-        False, LP_BP_LAYOUT_SEPARATE_LHS_RHS) == LP_BP_LAYOUT_SEPARATE_LHS_RHS
-    assert _resolve_lp_bp_layout(False,
-                                 LP_BP_LAYOUT_HSTACK) == LP_BP_LAYOUT_HSTACK
+    assert (
+        _resolve_lp_bp_layout(False, LP_BP_LAYOUT_SEPARATE_LHS_RHS)
+        == LP_BP_LAYOUT_SEPARATE_LHS_RHS
+    )
+    assert _resolve_lp_bp_layout(False, LP_BP_LAYOUT_HSTACK) == LP_BP_LAYOUT_HSTACK
 
 
 def test_resolve_lp_bp_layout_array_target_normalizes_to_separate():
     # Array-target LP has exactly one valid layout: a requested hstack is
     # normalized to separate_lhs_rhs, never passed through. (Under TT-NG-only
     # LP is always array-target, so hstack is never actually produced.)
-    assert _resolve_lp_bp_layout(
-        True, LP_BP_LAYOUT_HSTACK) == LP_BP_LAYOUT_SEPARATE_LHS_RHS
-    assert _resolve_lp_bp_layout(
-        True, LP_BP_LAYOUT_SEPARATE_LHS_RHS) == LP_BP_LAYOUT_SEPARATE_LHS_RHS
+    assert (
+        _resolve_lp_bp_layout(True, LP_BP_LAYOUT_HSTACK)
+        == LP_BP_LAYOUT_SEPARATE_LHS_RHS
+    )
+    assert (
+        _resolve_lp_bp_layout(True, LP_BP_LAYOUT_SEPARATE_LHS_RHS)
+        == LP_BP_LAYOUT_SEPARATE_LHS_RHS
+    )
 
 
 def test_resolve_lp_bp_layout_rejects_unknown():
-    with pytest.raises(ValueError, match="lp_bp_layout must be one of"):
-        _resolve_lp_bp_layout(False, "nonsense")
+    with pytest.raises(ValueError, match='lp_bp_layout must be one of'):
+        _resolve_lp_bp_layout(False, 'nonsense')
 
 
-@pytest.mark.parametrize('lp_bp_layout',
-                         [LP_BP_LAYOUT_SEPARATE_LHS_RHS, LP_BP_LAYOUT_HSTACK])
+@pytest.mark.parametrize(
+    'lp_bp_layout', [LP_BP_LAYOUT_SEPARATE_LHS_RHS, LP_BP_LAYOUT_HSTACK]
+)
 def test_current_pred_passes_runtime_options_to_generator(
-        monkeypatch, tmp_path, lp_bp_layout):
+    monkeypatch, tmp_path, lp_bp_layout
+):
     # On DiskGraph the executor honors lp_bp_layout internally; the pred-table
     # entrypoint only forwards the runtime options to generate_table.
     config = MagicMock()
     config.graph.tables = []
     config.year_over_year = False
 
-    generator = _StaticPredictionTableGenerator.__new__(
-        _StaticPredictionTableGenerator)
+    generator = _StaticPredictionTableGenerator.__new__(_StaticPredictionTableGenerator)
     generator.generate_table = MagicMock(return_value=pd.DataFrame())
     generator.get_validate_train_table_response = MagicMock(
-        return_value=ValidationResponse())
+        return_value=ValidationResponse()
+    )
 
     pquery = PredictiveQueryV2.__new__(PredictiveQueryV2)
     pquery.lag_timesteps = None
     pquery.list_distinct_target_is_array = False
     pquery.lp_bp_layout = lp_bp_layout
     pquery.get_batch_pred_table_generator = MagicMock(return_value=generator)
-    monkeypatch.setattr(PredictiveQueryV2, 'from_config',
-                        classmethod(lambda cls, cfg: pquery))
+    monkeypatch.setattr(
+        PredictiveQueryV2, 'from_config', classmethod(lambda cls, cfg: pquery)
+    )
 
     current_pred.generate_current_pred_table_generic(
         predictive_query_config=config,
@@ -107,11 +115,14 @@ def _write_raw_bundle_parquet(path: str) -> None:
     """Write a raw DG gen-bundle ``tt.parquet`` (slot-0 ENTITY1/TARGET1, no
     arange) -- the internal schema the predict gen persists."""
     import pyarrow as pa
-    table = pa.table({
-        'ENTITY1': pa.array([10, 11, 12], type=pa.int64()),
-        'TIMESTAMP': pa.array([100, 200, 300], type=pa.int64()),
-        'TARGET1': pa.array([1, 0, 1], type=pa.int64()),
-    })
+
+    table = pa.table(
+        {
+            'ENTITY1': pa.array([10, 11, 12], type=pa.int64()),
+            'TIMESTAMP': pa.array([100, 200, 300], type=pa.int64()),
+            'TARGET1': pa.array([1, 0, 1], type=pa.int64()),
+        }
+    )
     os.makedirs(path)
     pq.write_table(table, os.path.join(path, 'part-00000.parquet'))
 
@@ -119,6 +130,7 @@ def _write_raw_bundle_parquet(path: str) -> None:
 def test_write_serving_pred_parquet_node_pred_drops_target(tmp_path):
     """Node-pred serving table: ENTITY1->ENTITY, TARGET dropped, arange added."""
     from kumo.data.generic import diskgraph_batch_pred
+
     bundle = str(tmp_path / 'tt.parquet')
     _write_raw_bundle_parquet(bundle)
     out_root = str(tmp_path / 'pred_table')
@@ -141,6 +153,7 @@ def test_write_serving_pred_parquet_node_pred_drops_target(tmp_path):
 def test_write_serving_pred_parquet_lp_keeps_target(tmp_path):
     """LP serving table: TARGET1->TARGET kept, arange added."""
     from kumo.data.generic import diskgraph_batch_pred
+
     bundle = str(tmp_path / 'tt.parquet')
     _write_raw_bundle_parquet(bundle)
     out_root = str(tmp_path / 'pred_table')

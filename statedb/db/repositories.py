@@ -23,23 +23,23 @@ from statedb.db.row_parsing import row_datetime, row_str
 from statedb.db.runtime import StateTx
 from statedb.db.schema import validate_identifier
 
-PayloadT = TypeVar("PayloadT")
+PayloadT = TypeVar('PayloadT')
 
 
 def _placeholder(tx: StateTx, position: int) -> str:
-    return f"${position}" if tx.backend == "postgres" else "?"
+    return f'${position}' if tx.backend == 'postgres' else '?'
 
 
 def _json_value(tx: StateTx, field_name: str | tuple[str, ...]) -> str:
     fields = (field_name,) if isinstance(field_name, str) else field_name
     if not fields:
-        raise ValueError("JSON field path cannot be empty")
+        raise ValueError('JSON field path cannot be empty')
     for field in fields:
         validate_identifier(field)
-    if tx.backend == "postgres":
+    if tx.backend == 'postgres':
         if len(fields) == 1:
             return f"payload->>'{fields[0]}'"
-        path = ",".join(fields)
+        path = ','.join(fields)
         return f"payload#>>'{{{path}}}'"
     return f"json_extract(payload, '$.{'.'.join(fields)}')"
 
@@ -47,8 +47,8 @@ def _json_value(tx: StateTx, field_name: str | tuple[str, ...]) -> str:
 def _encode_json_value(tx: StateTx, value: object) -> object:
     if isinstance(value, Enum):
         value = value.value
-    if tx.backend == "postgres" and isinstance(value, bool):
-        return "true" if value else "false"
+    if tx.backend == 'postgres' and isinstance(value, bool):
+        return 'true' if value else 'false'
     return value
 
 
@@ -63,8 +63,8 @@ def _in_predicate(
         args.append(value)
         placeholders.append(_placeholder(tx, len(args)))
     if not placeholders:
-        return "1 = 0"
-    return f"{expression} IN ({', '.join(placeholders)})"
+        return '1 = 0'
+    return f'{expression} IN ({", ".join(placeholders)})'
 
 
 def _field_predicates(
@@ -76,10 +76,10 @@ def _field_predicates(
     for field_name, value in fields.items():
         value_sql = _json_value(tx, field_name)
         if value is None:
-            clauses.append(f"{value_sql} IS NULL")
+            clauses.append(f'{value_sql} IS NULL')
         else:
             args.append(_encode_json_value(tx, value))
-            clauses.append(f"{value_sql} = {_placeholder(tx, len(args))}")
+            clauses.append(f'{value_sql} = {_placeholder(tx, len(args))}')
     return clauses
 
 
@@ -91,8 +91,9 @@ class StateRow(Generic[PayloadT]):
     updated_at: datetime
 
 
-_PAYLOAD_ONLY_PHYSICAL_FIELDS = frozenset(("id", "timestamps", "created_at",
-                                           "updated_at"))
+_PAYLOAD_ONLY_PHYSICAL_FIELDS = frozenset(
+    ('id', 'timestamps', 'created_at', 'updated_at')
+)
 
 
 class JsonRepository(Generic[PayloadT]):
@@ -119,8 +120,7 @@ class JsonRepository(Generic[PayloadT]):
         for_update: bool = False,
     ) -> StateRow[PayloadT] | None:
         id_placeholder = _placeholder(tx, 1)
-        lock_clause = ("FOR UPDATE"
-                       if for_update and tx.backend == "postgres" else "")
+        lock_clause = 'FOR UPDATE' if for_update and tx.backend == 'postgres' else ''
         row = await tx.fetchrow(
             f"""
             SELECT payload, created_at, updated_at
@@ -142,9 +142,7 @@ class JsonRepository(Generic[PayloadT]):
         ids: Iterable[object],
     ) -> list[StateRow[PayloadT]]:
         rows_by_id = {row.id: row for row in rows}
-        return [
-            rows_by_id[id] for value in ids if (id := str(value)) in rows_by_id
-        ]
+        return [rows_by_id[id] for value in ids if (id := str(value)) in rows_by_id]
 
     async def list_all(self, tx: StateTx) -> list[StateRow[PayloadT]]:
         rows = await tx.fetch(
@@ -152,7 +150,8 @@ class JsonRepository(Generic[PayloadT]):
             SELECT id, payload, created_at, updated_at
             FROM {self._table_name}
             ORDER BY id
-            """)
+            """
+        )
         return [self._row_from_list_row(row) for row in rows]
 
     async def list_by_field(
@@ -179,15 +178,15 @@ class JsonRepository(Generic[PayloadT]):
         fields: Mapping[str | tuple[str, ...], object],
         *,
         not_null_fields: Sequence[str | tuple[str, ...]] = (),
-        order_by: str = "id",
+        order_by: str = 'id',
     ) -> list[StateRow[PayloadT]]:
         args: list[object] = []
         clauses = _field_predicates(tx, fields, args)
         for field_name in not_null_fields:
-            clauses.append(f"{_json_value(tx, field_name)} IS NOT NULL")
+            clauses.append(f'{_json_value(tx, field_name)} IS NOT NULL')
         return await self.list_where_sql(
             tx,
-            " AND ".join(clauses) if clauses else "1 = 1",
+            ' AND '.join(clauses) if clauses else '1 = 1',
             args,
             order_by=order_by,
         )
@@ -198,16 +197,16 @@ class JsonRepository(Generic[PayloadT]):
         ids: Sequence[str],
         *,
         fields: Mapping[str | tuple[str, ...], object] | None = None,
-        order_by: str = "id",
+        order_by: str = 'id',
     ) -> list[StateRow[PayloadT]]:
         if not ids:
             return []
         args: list[object] = []
-        clauses = [_in_predicate(tx, "id", ids, args)]
+        clauses = [_in_predicate(tx, 'id', ids, args)]
         clauses.extend(_field_predicates(tx, fields or {}, args))
         return await self.list_where_sql(
             tx,
-            " AND ".join(clauses),
+            ' AND '.join(clauses),
             args,
             order_by=order_by,
         )
@@ -218,16 +217,16 @@ class JsonRepository(Generic[PayloadT]):
         where_sql: str,
         args: Sequence[object] = (),
         *,
-        order_by: str = "id",
+        order_by: str = 'id',
         limit: int | None = None,
     ) -> list[StateRow[PayloadT]]:
-        if order_by != "id":
+        if order_by != 'id':
             validate_identifier(order_by)
-        limit_sql = ""
+        limit_sql = ''
         if limit is not None:
             if limit < 1:
-                raise ValueError("limit must be positive")
-            limit_sql = f" LIMIT {limit}"
+                raise ValueError('limit must be positive')
+            limit_sql = f' LIMIT {limit}'
         rows = await tx.fetch(
             f"""
             SELECT id, payload, created_at, updated_at
@@ -251,12 +250,12 @@ class JsonRepository(Generic[PayloadT]):
         clauses = _field_predicates(tx, fields, args)
         if exclude_id is not None:
             args.append(exclude_id)
-            clauses.append(f"id <> {_placeholder(tx, len(args))}")
+            clauses.append(f'id <> {_placeholder(tx, len(args))}')
         row = await tx.fetchrow(
             f"""
             SELECT id
             FROM {self._table_name}
-            WHERE {" AND ".join(clauses)}
+            WHERE {' AND '.join(clauses)}
             LIMIT 1
             """,
             *args,
@@ -272,8 +271,9 @@ class JsonRepository(Generic[PayloadT]):
         rows = await self.list_by_field(tx, field_name, value)
         if len(rows) > 1:
             raise ValueError(
-                f"Expected at most one {self._table_name} row for "
-                f"{field_name}={value!r}; found {len(rows)}")
+                f'Expected at most one {self._table_name} row for '
+                f'{field_name}={value!r}; found {len(rows)}'
+            )
         return rows[0] if rows else None
 
     async def find_one_by_fields(
@@ -284,8 +284,9 @@ class JsonRepository(Generic[PayloadT]):
         rows = await self.list_by_fields(tx, fields)
         if len(rows) > 1:
             raise ValueError(
-                f"Expected at most one {self._table_name} row for "
-                f"{dict(fields)!r}; found {len(rows)}")
+                f'Expected at most one {self._table_name} row for '
+                f'{dict(fields)!r}; found {len(rows)}'
+            )
         return rows[0] if rows else None
 
     async def upsert(
@@ -297,12 +298,12 @@ class JsonRepository(Generic[PayloadT]):
         extra_fields: Mapping[str, object] | None = None,
     ) -> None:
         payload_json = payload_json_for_storage(
-            self._payload_dict_for_storage(payload, extra_fields))
-        created_at_value, updated_at_value = self._timestamps_for_storage(
-            payload)
+            self._payload_dict_for_storage(payload, extra_fields)
+        )
+        created_at_value, updated_at_value = self._timestamps_for_storage(payload)
         created_at = encode_timestamp(tx, created_at_value)
         updated_at = encode_timestamp(tx, updated_at_value)
-        if tx.backend == "postgres":
+        if tx.backend == 'postgres':
             await tx.execute(
                 f"""
                 INSERT INTO {self._table_name}
@@ -341,12 +342,12 @@ class JsonRepository(Generic[PayloadT]):
     ) -> bool:
         """Atomically insert without mutating an existing immutable row."""
         payload_json = payload_json_for_storage(
-            self._payload_dict_for_storage(payload, None))
-        created_at_value, updated_at_value = self._timestamps_for_storage(
-            payload)
+            self._payload_dict_for_storage(payload, None)
+        )
+        created_at_value, updated_at_value = self._timestamps_for_storage(payload)
         created_at = encode_timestamp(tx, created_at_value)
         updated_at = encode_timestamp(tx, updated_at_value)
-        if tx.backend == "postgres":
+        if tx.backend == 'postgres':
             row = await tx.fetchrow(
                 f"""
                 INSERT INTO {self._table_name}
@@ -379,19 +380,18 @@ class JsonRepository(Generic[PayloadT]):
     async def delete(self, tx: StateTx, id: str) -> None:
         id_placeholder = _placeholder(tx, 1)
         await tx.execute(
-            f"DELETE FROM {self._table_name} WHERE id = {id_placeholder}",
+            f'DELETE FROM {self._table_name} WHERE id = {id_placeholder}',
             id,
         )
 
-    def _row_from_db_row(self, id: str,
-                         row: object) -> StateRow[PayloadT]:
-        created_at = row_datetime(row, "created_at", 1)
-        updated_at = row_datetime(row, "updated_at", 2)
+    def _row_from_db_row(self, id: str, row: object) -> StateRow[PayloadT]:
+        created_at = row_datetime(row, 'created_at', 1)
+        updated_at = row_datetime(row, 'updated_at', 2)
         return StateRow(
             id=id,
             payload=self._payload_from_json(
                 id,
-                row_str(row, "payload", 0),
+                row_str(row, 'payload', 0),
                 created_at,
                 updated_at,
             ),
@@ -400,10 +400,10 @@ class JsonRepository(Generic[PayloadT]):
         )
 
     def _row_from_list_row(self, row: object) -> StateRow[PayloadT]:
-        row_id = row_str(row, "id", 0)
-        payload = row_str(row, "payload", 1)
-        created_at = row_datetime(row, "created_at", 2)
-        updated_at = row_datetime(row, "updated_at", 3)
+        row_id = row_str(row, 'id', 0)
+        payload = row_str(row, 'payload', 1)
+        created_at = row_datetime(row, 'created_at', 2)
+        updated_at = row_datetime(row, 'updated_at', 3)
         return StateRow(
             id=row_id,
             payload=self._payload_from_json(
@@ -425,8 +425,7 @@ class JsonRepository(Generic[PayloadT]):
             payload,
             extra_fields=extra_fields,
             omit_fields=(
-                _PAYLOAD_ONLY_PHYSICAL_FIELDS
-                if self._store_payload_only else ()
+                _PAYLOAD_ONLY_PHYSICAL_FIELDS if self._store_payload_only else ()
             ),
         )
 
@@ -435,10 +434,10 @@ class JsonRepository(Generic[PayloadT]):
         payload: PayloadT,
     ) -> tuple[datetime, datetime]:
         timestamps = (
-            getattr(payload, "timestamps", None) if self._store_payload_only else None
+            getattr(payload, 'timestamps', None) if self._store_payload_only else None
         )
-        created_at = getattr(timestamps, "created_at", None)
-        updated_at = getattr(timestamps, "updated_at", None)
+        created_at = getattr(timestamps, 'created_at', None)
+        updated_at = getattr(timestamps, 'updated_at', None)
         if isinstance(created_at, datetime) and isinstance(updated_at, datetime):
             return created_at, updated_at
         now = utcnow()
@@ -453,12 +452,12 @@ class JsonRepository(Generic[PayloadT]):
     ) -> PayloadT:
         payload_dict = json.loads(payload)
         if self._store_payload_only:
-            payload_dict.setdefault("id", row_id)
+            payload_dict.setdefault('id', row_id)
             payload_dict.setdefault(
-                "timestamps",
+                'timestamps',
                 {
-                    "created_at": created_at,
-                    "updated_at": updated_at,
+                    'created_at': created_at,
+                    'updated_at': updated_at,
                 },
             )
         return self._payload_adapter.validate_python(payload_dict)

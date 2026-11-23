@@ -47,17 +47,20 @@ ConnectorDBEntry = Union[ExternalConnectorDBEntry, InternalConnectorDBEntry]
 
 
 def is_project_upload_connector(
-        connector: ConnectorDBEntry) -> TypeGuard[InternalConnectorDBEntry]:
+    connector: ConnectorDBEntry,
+) -> TypeGuard[InternalConnectorDBEntry]:
     """Return whether this is the exact canonical internal upload connector."""
-    return (isinstance(connector, InternalConnectorDBEntry)
-            and connector.name == PROJECT_UPLOAD_CONNECTOR_NAME
-            and connector.normalized_name == PROJECT_UPLOAD_CONNECTOR_NAME
-            and isinstance(connector.config, FileConnectorResourceConfig)
-            and connector.config.name == PROJECT_UPLOAD_CONNECTOR_NAME)
+    return (
+        isinstance(connector, InternalConnectorDBEntry)
+        and connector.name == PROJECT_UPLOAD_CONNECTOR_NAME
+        and connector.normalized_name == PROJECT_UPLOAD_CONNECTOR_NAME
+        and isinstance(connector.config, FileConnectorResourceConfig)
+        and connector.config.name == PROJECT_UPLOAD_CONNECTOR_NAME
+    )
 
 
 def is_active_project_upload_connector(
-        connector: ConnectorDBEntry) -> TypeGuard[InternalConnectorDBEntry]:
+    connector: ConnectorDBEntry,
+) -> TypeGuard[InternalConnectorDBEntry]:
     """Return whether this is the exact live internal upload connector."""
-    return (connector.tombstoned_at is None
-            and is_project_upload_connector(connector))
+    return connector.tombstoned_at is None and is_project_upload_connector(connector)

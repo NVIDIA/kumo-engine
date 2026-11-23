@@ -32,12 +32,11 @@ from service_framework.env_var import EnvVar
 
 log = logging.getLogger(__name__)
 
-P = ParamSpec("P")
-R = TypeVar("R")
+P = ParamSpec('P')
+R = TypeVar('R')
 
 
-class EventLoopBlockedError(RuntimeError):
-    ...
+class EventLoopBlockedError(RuntimeError): ...
 
 
 AsyncFunc = Callable[P, Awaitable[R]]
@@ -72,23 +71,24 @@ def _hashable_value(fn: str, value: Any) -> Hashable:
             try:
                 return hash(value)
             except:  # noqa: E722
-                log.warning('Dataclass type %s is unhashable, fn=%s',
-                            type(value), fn)
+                log.warning('Dataclass type %s is unhashable, fn=%s', type(value), fn)
                 # fallback to dumping the dataclass as json
         else:
             return value
 
     try:
         return json.dumps(
-            value, default=functools.partial(to_jsonable_python,
-                                             serialize_unknown=True),
-            allow_nan=True)
+            value,
+            default=functools.partial(to_jsonable_python, serialize_unknown=True),
+            allow_nan=True,
+        )
     except:  # noqa: E722
         pass
 
     # json dumps cannot handle non-plain key object even if key is hashable
     try:
         from temporalio_commons.dataclass_converter import KumoPayloadConverter
+
         return KumoPayloadConverter().to_payloads([value])[0].data
     except:  # noqa: E722
         log.warning('Unable to serialize %s, fn=%s', type(value), fn)
@@ -152,31 +152,33 @@ def reuse_inflight_future(
 
             # Check if serialization is too expensive:
             total_size = 0
-            for arg in itertools.chain(cache_key_args,
-                                       cache_key_kwargs.values()):
+            for arg in itertools.chain(cache_key_args, cache_key_kwargs.values()):
                 if isinstance(arg, (str, bytes)):
                     total_size += len(arg)
             if total_size > 10 << 20:  # 10MB threshold
                 msg = 'Serialized args are too large in {}: {} bytes'.format(
-                    fn.__qualname__, total_size)
+                    fn.__qualname__, total_size
+                )
                 if _DEPLOY_STAGE.parse_value() != DeployStage.PROD:
                     raise RuntimeError(msg)
                 else:
                     log.critical(msg)
 
-            key = functools._make_key(tuple(cache_key_args), cache_key_kwargs,
-                                      True)
+            key = functools._make_key(tuple(cache_key_args), cache_key_kwargs, True)
             inflight_task = inflight_tasks.get(key)
             if inflight_task is None:
                 inflight_task = asyncio.ensure_future(fn(*args, **kwargs))
                 inflight_tasks[key] = inflight_task
                 inflight_task.add_done_callback(
-                    functools.partial(_inflight_task_done_cb, key))
+                    functools.partial(_inflight_task_done_cb, key)
+                )
                 return await inflight_task  # type: ignore
             else:
                 # TODO(siyang): Downgrade to DEBUG if too spammy.
-                log.info('Async task for %s is already inflight, awaiting...',
-                         fn.__qualname__)
+                log.info(
+                    'Async task for %s is already inflight, awaiting...',
+                    fn.__qualname__,
+                )
                 fut = asyncio.Future()
                 inflight_futures[key].append(fut)
                 return await fut  # type: ignore
@@ -189,8 +191,12 @@ def reuse_inflight_future(
 _api_cache_store = Cache(Cache.MEMORY, namespace='api')
 
 API_CACHE_TTL = EnvVar(
-    'API_CACHE_DEFAULT_TTL', type=int, required=False, default_value=5,
-    description='Default cache TTL seconds for REST read-only APIs.')
+    'API_CACHE_DEFAULT_TTL',
+    type=int,
+    required=False,
+    default_value=5,
+    description='Default cache TTL seconds for REST read-only APIs.',
+)
 
 API_CACHE_ENABLED_ATTR = '__API_CACHE_ENABLED'
 
@@ -228,16 +234,18 @@ def fastapi_cached(
 
     Returns a function decorator for FastAPI route/handler coroutine function.
     """
+
     def _build_cache_key(fn: AsyncFunc, *args, **kwargs):
         bound_arguments = inspect.signature(fn).bind(*args, **kwargs)
         bound_arguments.apply_defaults()
         cache_key_kwargs = {
             k: _hashable_value(fn.__qualname__, v)
             for k, v in bound_arguments.arguments.items()
-            if k != 'self' and (k != 'ctx' or not exclude_ctx) and (
-                param_keys is None or k in param_keys)
+            if k != 'self'
+            and (k != 'ctx' or not exclude_ctx)
+            and (param_keys is None or k in param_keys)
         }
-        key = functools._make_key((fn.__qualname__, ), cache_key_kwargs, True)
+        key = functools._make_key((fn.__qualname__,), cache_key_kwargs, True)
         return f'{fn.__qualname__}:{key.__hash__()}'
 
     def _decorator(fn: AsyncFunc) -> AsyncFunc:
@@ -270,8 +278,7 @@ def fastapi_cached(
 
         # Make sure we only apply this decorator once.
         if getattr(fn, API_CACHE_ENABLED_ATTR, False):
-            log.warning('API handler %s is alreadyed cache-enabled',
-                        fn.__qualname__)
+            log.warning('API handler %s is alreadyed cache-enabled', fn.__qualname__)
             return fn  # prevent applying caching wrapper multiple times
         setattr(_wrapper, API_CACHE_ENABLED_ATTR, True)
 
@@ -282,13 +289,21 @@ def fastapi_cached(
         fn_sig = inspect.signature(fn)
         params = list(fn_sig.parameters.values())
         params.append(
-            inspect.Parameter('skip_cache',
-                              inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                              default=False, annotation=bool))
+            inspect.Parameter(
+                'skip_cache',
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=False,
+                annotation=bool,
+            )
+        )
         params.append(
-            inspect.Parameter('cache_ttl',
-                              inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                              default=None, annotation=Optional[int]))
+            inspect.Parameter(
+                'cache_ttl',
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+                annotation=Optional[int],
+            )
+        )
         setattr(_wrapper, '__signature__', fn_sig.replace(parameters=params))
 
         return _wrapper

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``DiskgraphLightningDataModule``."""
+
 from __future__ import annotations
 
 import json
@@ -60,8 +61,9 @@ def test_nonlinux_pidfd_skips_libc(
     assert dldm._pidfd_open(os.getpid()) is None
 
 
-@pytest.mark.skipif(not sys.platform.startswith('linux'),
-                    reason='pidfd syscalls require Linux')
+@pytest.mark.skipif(
+    not sys.platform.startswith('linux'), reason='pidfd syscalls require Linux'
+)
 def test_pidfd_syscall_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(dldm.os, 'pidfd_open', raising=False)
     monkeypatch.delattr(dldm.signal, 'pidfd_send_signal', raising=False)
@@ -74,62 +76,60 @@ def test_pidfd_syscall_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _mapper_bank() -> dict[str, dict[str, TensorMapper]]:
-    return {"users_v1": {"age": NumericalTensorMapper()}}
+    return {'users_v1': {'age': NumericalTensorMapper()}}
 
 
 def test_stage_batch_allocation_is_proportional_and_covers_stages() -> None:
     assert dldm._allocate_stage_batches(
         {
-            "train": 100,
-            "val": 10,
+            'train': 100,
+            'val': 10,
         },
         10,
         require_each_stage=True,
     ) == {
-        "train": 9,
-        "val": 1,
+        'train': 9,
+        'val': 1,
     }
-    with pytest.raises(ValueError, match="1 batches cannot cover 2 stages"):
+    with pytest.raises(ValueError, match='1 batches cannot cover 2 stages'):
         dldm._allocate_stage_batches(
             {
-                "train": 100,
-                "val": 10,
+                'train': 100,
+                'val': 10,
             },
             1,
             require_each_stage=True,
         )
 
 
-@pytest.mark.parametrize("weight", [float("nan"), float("inf")])
+@pytest.mark.parametrize('weight', [float('nan'), float('inf')])
 def test_stage_batch_allocation_rejects_nonfinite_weight(weight: float) -> None:
-    with pytest.raises(ValueError, match="non-finite stages.*val"):
+    with pytest.raises(ValueError, match='non-finite stages.*val'):
         dldm._allocate_stage_batches(
-            {
-                "train": 100,
-                "val": weight
-            },
+            {'train': 100, 'val': weight},
             10,
             require_each_stage=True,
         )
 
 
 def test_stage_batch_target_limits_runtime_worker_shards(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(
         monkeypatch,
         batch_input_ids_by_stage={
-            "train": [[0], [1]],
-            "val": [[100], [101]],
+            'train': [[0], [1]],
+            'val': [[100], [101]],
         },
     )
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=4, id=0),
     )
     iterable = DiskgraphTaskBatchIterable(
-        manifest_path="/tmp/runtime_manifest.json",
-        stage=("train", "val"),
-        sampling_plan={"layers": []},
+        manifest_path='/tmp/runtime_manifest.json',
+        stage=('train', 'val'),
+        sampling_plan={'layers': []},
         batch_size=4,
         shuffle=True,
         drop_last=False,
@@ -137,70 +137,72 @@ def test_stage_batch_target_limits_runtime_worker_shards(
         shuffle_state=_ShuffleStreamState(),
         dataloader_num_workers=4,
         stage_batch_targets={
-            "train": 3,
-            "val": 1,
+            'train': 3,
+            'val': 1,
         },
         stage_num_seeds={
-            "train": 12,
-            "val": 4,
+            'train': 12,
+            'val': 4,
         },
     )
 
     assert len(list(iterable)) == 2
     workers_by_stage = {
-        call["kwargs"]["stage"]: call["kwargs"]["num_workers"]
-        for call in calls["history"]
+        call['kwargs']['stage']: call['kwargs']['num_workers']
+        for call in calls['history']
     }
     assert workers_by_stage == {
-        "train": 3,
-        "val": 1,
+        'train': 3,
+        'val': 1,
     }
 
 
 def test_stage_batch_target_limits_workers_to_full_drop_last_shards(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=4, id=0),
     )
     iterable = DiskgraphTaskBatchIterable(
-        manifest_path="/tmp/runtime_manifest.json",
-        stage=("train", ),
-        sampling_plan={"layers": []},
+        manifest_path='/tmp/runtime_manifest.json',
+        stage=('train',),
+        sampling_plan={'layers': []},
         batch_size=8,
         shuffle=True,
         drop_last=True,
         base_seed=0,
         shuffle_state=_ShuffleStreamState(),
         dataloader_num_workers=4,
-        stage_batch_targets={"train": 4},
-        stage_num_seeds={"train": 10},
+        stage_batch_targets={'train': 4},
+        stage_num_seeds={'train': 10},
     )
 
     list(iterable)
 
-    assert {call["kwargs"]["num_workers"] for call in calls["history"]} == {1}
+    assert {call['kwargs']['num_workers'] for call in calls['history']} == {1}
 
 
 def test_runtime_sharding_rejects_capped_iteration() -> None:
     with pytest.raises(ValueError, match='requires uncapped iteration'):
         DiskgraphTaskBatchIterable(
-            manifest_path="/tmp/runtime_manifest.json",
-            stage=("train", "val"),
-            sampling_plan={"layers": []},
+            manifest_path='/tmp/runtime_manifest.json',
+            stage=('train', 'val'),
+            sampling_plan={'layers': []},
             batch_size=4,
             shuffle=True,
             drop_last=False,
             base_seed=0,
             shuffle_state=_ShuffleStreamState(),
             runtime_num_workers=2,
-            stage_batch_targets={"train": 3, "val": 1},
+            stage_batch_targets={'train': 3, 'val': 1},
         )
 
 
 class _WorkerProbeIterable(IterableDataset):
     """Infinite worker-local stream with a finite advertised phase length."""
+
     def __init__(self, advertised_batches: int) -> None:
         self.advertised_batches = advertised_batches
 
@@ -217,24 +219,24 @@ class _FailingWorkerIterable(IterableDataset):
         return 10
 
     def __iter__(self):
-        raise RuntimeError("worker fetch failed")
+        raise RuntimeError('worker fetch failed')
         yield  # pragma: no cover
 
 
 def _feature_schema() -> dict[str, Any]:
     return {
-        "node_types": {
-            "User": {
-                "feature_columns": ["age"],
-                "time_column": None,
-                "pkey_column": None,
-                "mapper_key": "users_v1",
+        'node_types': {
+            'User': {
+                'feature_columns': ['age'],
+                'time_column': None,
+                'pkey_column': None,
+                'mapper_key': 'users_v1',
             }
         },
-        "edge_types": {},
-        "raw_feature_format": "arrow_columnar_v1",
-        "provenance_mode": "node_id_time_keyed_v1",
-        "metadata": {},
+        'edge_types': {},
+        'raw_feature_format': 'arrow_columnar_v1',
+        'provenance_mode': 'node_id_time_keyed_v1',
+        'metadata': {},
     }
 
 
@@ -250,81 +252,80 @@ def _write_grouped_manifests(
     ``bucket_index`` entry per stage table) to derive the grouped batch count
     WITHOUT opening the wheel iterator. The stage table is named ``<stage>_seeds``
     (mirrors DG's stage_table_name)."""
-    ext_root = tmp_path / "tt_ext"
+    ext_root = tmp_path / 'tt_ext'
     ext_root.mkdir(exist_ok=True)
     runtime_stages: dict[str, Any] = {}
     dg_stages: dict[str, Any] = {}
     for stage, counts in buckets_by_stage.items():
-        table_name = f"{stage}_seeds"
+        table_name = f'{stage}_seeds'
         runtime_stages[stage] = {
-            "table_name": table_name,
-            "index_path": str(ext_root),
-            "row_count": sum(counts),
+            'table_name': table_name,
+            'index_path': str(ext_root),
+            'row_count': sum(counts),
         }
         offset = 0
         bucket_list = []
         for i, c in enumerate(counts):
-            bucket_list.append({"ts": i, "offset": offset, "count": c})
+            bucket_list.append({'ts': i, 'offset': offset, 'count': c})
             offset += c
         dg_stages[stage] = {
-            "table_name": table_name,
-            "bucket_index": {
-                "path": f"{table_name}/bucket_index.bin",
-                "buckets": bucket_list,
+            'table_name': table_name,
+            'bucket_index': {
+                'path': f'{table_name}/bucket_index.bin',
+                'buckets': bucket_list,
             },
         }
-    runtime_path = ext_root / "runtime_manifest.json"
-    runtime_path.write_text(json.dumps({"stages": runtime_stages}))
-    (ext_root / "diskgraph_manifest.json").write_text(
-        json.dumps({"task_dataset": {
-            "stages": dg_stages
-        }}))
+    runtime_path = ext_root / 'runtime_manifest.json'
+    runtime_path.write_text(json.dumps({'stages': runtime_stages}))
+    (ext_root / 'diskgraph_manifest.json').write_text(
+        json.dumps({'task_dataset': {'stages': dg_stages}})
+    )
     return str(runtime_path)
 
 
 def _manifest(
-    train_table_name: str = "train_table",
+    train_table_name: str = 'train_table',
     *,
     tmp_path: Any | None = None,
     stage_counts: dict[str, int] | None = None,
     stage_seed_times: dict[str, tuple[int, int]] | None = None,
-    runtime_manifest_path: str = "/tmp/runtime_manifest.json",
+    runtime_manifest_path: str = '/tmp/runtime_manifest.json',
 ) -> DiskgraphTaskManifest:
-    manifest_path = "/tmp/manifest.json"
+    manifest_path = '/tmp/manifest.json'
     manifest: dict[str, Any] = {}
     if stage_counts is not None or stage_seed_times is not None:
         assert tmp_path is not None
-        split_info_path = tmp_path / "split_info.json"
+        split_info_path = tmp_path / 'split_info.json'
         split_info_path.write_text(
-            json.dumps({
-                "stage_counts": stage_counts or {},
-                "stage_seed_times": stage_seed_times or {},
-            }))
-        manifest_path = str(tmp_path / "manifest.json")
+            json.dumps(
+                {
+                    'stage_counts': stage_counts or {},
+                    'stage_seed_times': stage_seed_times or {},
+                }
+            )
+        )
+        manifest_path = str(tmp_path / 'manifest.json')
         manifest = {
-            "artifact_root": str(tmp_path),
-            "split_info_path": "split_info.json",
+            'artifact_root': str(tmp_path),
+            'split_info_path': 'split_info.json',
         }
     return DiskgraphTaskManifest(
         manifest_path=manifest_path,
         runtime_manifest_path=runtime_manifest_path,
         manifest=manifest,
         metadata={
-            "train_table_name": train_table_name,
-            "seed_node_type": "User",
-            "task_type": "binary_classification",
-            "train_table_columns": {
-                "seed_id_column": "ENTITY",
-                "target_column": "TARGET",
-                "time_column": "TIMESTAMP",
-                "weight_column": "WEIGHT",
+            'train_table_name': train_table_name,
+            'seed_node_type': 'User',
+            'task_type': 'binary_classification',
+            'train_table_columns': {
+                'seed_id_column': 'ENTITY',
+                'target_column': 'TARGET',
+                'time_column': 'TIMESTAMP',
+                'weight_column': 'WEIGHT',
             },
         },
         feature_schema=_feature_schema(),
-        graph_runtime_metadata={
-            "node_types": ["User"],
-            "edge_types": []
-        },
+        graph_runtime_metadata={'node_types': ['User'], 'edge_types': []},
     )
 
 
@@ -332,36 +333,33 @@ def _runtime_batch(input_ids: list[int] | None = None) -> dict[str, Any]:
     input_ids = input_ids or [0, 1, 2]
     num_rows = len(input_ids)
     return {
-        "task": {
-            "input_ids":
-            pa.array(input_ids, type=pa.uint64()),
-            "tt_stage_node_ids":
-            pa.array([10 + i for i in input_ids], type=pa.uint64()),
-            "seed_node_ids":
-            pa.array([100 + i for i in input_ids], type=pa.uint64()),
-            "target":
-            pa.array([float((i + 1) % 2) for i in input_ids],
-                     type=pa.float64()),
-            "weight":
-            pa.array([1.0] * num_rows, type=pa.float64()),
+        'task': {
+            'input_ids': pa.array(input_ids, type=pa.uint64()),
+            'tt_stage_node_ids': pa.array(
+                [10 + i for i in input_ids], type=pa.uint64()
+            ),
+            'seed_node_ids': pa.array([100 + i for i in input_ids], type=pa.uint64()),
+            'target': pa.array(
+                [float((i + 1) % 2) for i in input_ids], type=pa.float64()
+            ),
+            'weight': pa.array([1.0] * num_rows, type=pa.float64()),
         },
-        "graphs": {
-            "main": {
-                "node_ids": {
-                    "User": pa.array([100 + i for i in input_ids],
-                                     type=pa.uint64())
+        'graphs': {
+            'main': {
+                'node_ids': {
+                    'User': pa.array([100 + i for i in input_ids], type=pa.uint64())
                 },
-                "batch_dict": {
-                    "User": pa.array(list(range(num_rows)), type=pa.uint32())
+                'batch_dict': {
+                    'User': pa.array(list(range(num_rows)), type=pa.uint32())
                 },
-                "edge_index_dict": [],
-                "num_sampled_nodes_dict": {
-                    "User": pa.array([num_rows], type=pa.uint64())
+                'edge_index_dict': [],
+                'num_sampled_nodes_dict': {
+                    'User': pa.array([num_rows], type=pa.uint64())
                 },
-                "num_sampled_edges_dict": [],
+                'num_sampled_edges_dict': [],
             }
         },
-        "raw_features": {},
+        'raw_features': {},
     }
 
 
@@ -385,21 +383,22 @@ class _FakeTaskIterator:
 
 def _backpressure_runtime_iter(*, worker_id: int, **_kwargs: Any):
     """Yield large prediction batches until the parent stops requesting them."""
-    payload = "x" * (1024 * 1024)
+    payload = 'x' * (1024 * 1024)
 
     def _batches():
         while True:
             batch = _runtime_batch([worker_id])
-            batch["raw_features"] = {
-                "User": {
-                    "record_batches": [
-                        pa.RecordBatch.from_pydict({
-                            "pk": [payload],
-                            "age": [18.0],
-                        })
+            batch['raw_features'] = {
+                'User': {
+                    'record_batches': [
+                        pa.RecordBatch.from_pydict(
+                            {
+                                'pk': [payload],
+                                'age': [18.0],
+                            }
+                        )
                     ],
-                    "node_ids":
-                    pa.array([100 + worker_id], type=pa.uint64()),
+                    'node_ids': pa.array([100 + worker_id], type=pa.uint64()),
                 }
             }
             yield batch
@@ -409,6 +408,7 @@ def _backpressure_runtime_iter(*, worker_id: int, **_kwargs: Any):
 
 class _BackpressureTaskBatchIterable(DiskgraphTaskBatchIterable):
     """Feed enough non-tensor data to block the worker result pipe."""
+
     def _runtime_index(self) -> Any:
         """Return a process-local backpressure runtime stub."""
         return types.SimpleNamespace(iter=_backpressure_runtime_iter)
@@ -421,31 +421,31 @@ def _run_shutdown_probe_consumer(ready_fd: int, release_fd: int) -> None:
         dm = DiskgraphLightningDataModule(
             _manifest(),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan={'layers': []},
             train_batch_size=1,
             eval_batch_size=1,
             num_workers=2,
             prefetch_factor=2,
         )
-        dm._pk_col_dict = {"User": "pk"}
+        dm._pk_col_dict = {'User': 'pk'}
         dm._time_col_dict = {}
         probe_batch = next(_backpressure_runtime_iter(worker_id=0)[0])
         probe_result = dm._to_hetero(probe_batch)
         assert len(pickle.dumps(probe_result)) > 1024 * 1024
         iterator = iter(dm.predict_dataloader())
-        torch_iterator = getattr(iterator, "_iterator", iterator)
+        torch_iterator = getattr(iterator, '_iterator', iterator)
         assert dm.prefetch_factor is not None
         expected_results = dm.num_workers * dm.prefetch_factor
         deadline = time.monotonic() + 10
         while torch_iterator._worker_result_queue.qsize() < expected_results:
             if time.monotonic() >= deadline:
-                raise TimeoutError("workers did not fill the result queue")
+                raise TimeoutError('workers did not fill the result queue')
             time.sleep(0.01)
         pids = [worker.pid for worker in torch_iterator._workers]
-        os.write(ready_fd, json.dumps({"pids": pids}).encode())
+        os.write(ready_fd, json.dumps({'pids': pids}).encode())
         os.read(release_fd, 1)
     except BaseException as exc:
-        os.write(ready_fd, json.dumps({"error": repr(exc)}).encode())
+        os.write(ready_fd, json.dumps({'error': repr(exc)}).encode())
         os._exit(2)
     os._exit(0)
 
@@ -487,20 +487,20 @@ def _install_fake_diskgraph(
     batch_input_ids_by_epoch: dict[int, list[list[int]]] | None = None,
     batch_input_ids_by_stage: dict[str, list[list[int]]] | None = None,
 ) -> dict[str, Any]:
-    calls: dict[str, Any] = {"history": []}
+    calls: dict[str, Any] = {'history': []}
 
     def make_runtime_batch_iterator(*args: Any, **kwargs: Any):
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        calls["history"].append({"args": args, "kwargs": kwargs})
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        calls['history'].append({'args': args, 'kwargs': kwargs})
         batch_input_ids = None
         if batch_input_ids_by_stage is not None:
-            batch_input_ids = batch_input_ids_by_stage[kwargs["stage"]]
+            batch_input_ids = batch_input_ids_by_stage[kwargs['stage']]
         elif batch_input_ids_by_epoch is not None:
-            batch_input_ids = batch_input_ids_by_epoch[kwargs["epoch"]]
+            batch_input_ids = batch_input_ids_by_epoch[kwargs['epoch']]
         return _FakeTaskIterator(batches_per_iterator, batch_input_ids), 3
 
-    stub = types.ModuleType("diskgraph")
+    stub = types.ModuleType('diskgraph')
     stub.make_runtime_batch_iterator = make_runtime_batch_iterator  # type: ignore[attr-defined]
 
     class _StubRuntimeIndex:
@@ -509,19 +509,20 @@ def _install_fake_diskgraph(
         Delegates to the fake factory above so each test's expectations about
         Remembers what moved to open-time and puts it back.
         """
+
         def __init__(self, dataset_ref, rnd_seed=None, num_threads=None):
             self._ref = dataset_ref
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
         def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+            kwargs.setdefault('rnd_seed', self._rnd_seed)
             if self._num_threads is not None:
-                kwargs.setdefault("num_threads", self._num_threads)
+                kwargs.setdefault('num_threads', self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, 'diskgraph', stub)
     return calls
 
 
@@ -536,7 +537,7 @@ class _SmokeModel(pl.LightningModule):
     def training_step(self, batch: HeteroData, batch_idx: int) -> torch.Tensor:
         self.step_epochs.append(int(self.current_epoch))
         self.step_batch_indices.append(batch_idx)
-        self.seen_input_ids.extend(batch["train_table"].input_id.tolist())
+        self.seen_input_ids.extend(batch['train_table'].input_id.tolist())
         return self.weight * 0.0
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
@@ -550,7 +551,7 @@ def _fit_smoke_model(
 ) -> _SmokeModel:
     model = _SmokeModel()
     trainer = pl.Trainer(
-        accelerator="cpu",
+        accelerator='cpu',
         devices=1,
         max_epochs=max_epochs,
         callbacks=[DiskgraphLightningDataModule.shuffle_stream_callback()],
@@ -575,7 +576,7 @@ def test_shuffle_stream_callback_is_picklable() -> None:
     # A ``<locals>`` class raises PicklingError here pre-fix.
     restored = pickle.loads(pickle.dumps(cb))
     assert type(restored).__qualname__ == type(cb).__qualname__
-    assert "<locals>" not in type(cb).__qualname__
+    assert '<locals>' not in type(cb).__qualname__
 
     # The unpickled callback must still update the datamodule each epoch.
     seen: list[int] = []
@@ -588,8 +589,9 @@ def test_shuffle_stream_callback_is_picklable() -> None:
         def set_shuffle_stream_id(self, shuffle_stream_id: int) -> None:
             seen.append(int(shuffle_stream_id))
 
-    trainer = types.SimpleNamespace(datamodule=_FakeDm.__new__(_FakeDm),
-                                    current_epoch=5)
+    trainer = types.SimpleNamespace(
+        datamodule=_FakeDm.__new__(_FakeDm), current_epoch=5
+    )
     restored.on_train_epoch_start(trainer, None)
     assert seen == [5]
 
@@ -609,28 +611,30 @@ def test_shuffle_stream_callback_sets_epoch_on_datamodule() -> None:
 
     for epoch in (0, 1, 2):
         cb.on_train_epoch_start(
-            types.SimpleNamespace(datamodule=_FakeDm.__new__(_FakeDm),
-                                  current_epoch=epoch),
+            types.SimpleNamespace(
+                datamodule=_FakeDm.__new__(_FakeDm), current_epoch=epoch
+            ),
             None,
         )
     assert seen == [0, 1, 2]
 
     # Non-DG datamodules are ignored (no AttributeError, no-op).
     cb.on_train_epoch_start(
-        types.SimpleNamespace(datamodule=object(), current_epoch=9), None)
+        types.SimpleNamespace(datamodule=object(), current_epoch=9), None
+    )
     assert seen == [0, 1, 2]
 
 
 def test_constructor_reads_train_table_name_and_schema() -> None:
     dm = DiskgraphLightningDataModule(
-        _manifest(train_table_name="my_train"),
+        _manifest(train_table_name='my_train'),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
-    assert dm._train_table_name == "my_train"
-    assert dm._feature_schema["node_types"]["User"]["mapper_key"] == "users_v1"
+    assert dm._train_table_name == 'my_train'
+    assert dm._feature_schema['node_types']['User']['mapper_key'] == 'users_v1'
 
 
 def test_split_info_bounds_drive_native_stage_times(tmp_path) -> None:
@@ -644,8 +648,7 @@ def test_split_info_bounds_drive_native_stage_times(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(
             tmp_path=tmp_path,
-            stage_counts={stage: 5
-                          for stage in bounds},
+            stage_counts={stage: 5 for stage in bounds},
             stage_seed_times=bounds,
         ),
         _mapper_bank(),
@@ -661,8 +664,7 @@ def test_split_info_bounds_drive_native_stage_times(tmp_path) -> None:
     }
 
 
-def test_to_hetero_threads_target_encoder(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+def test_to_hetero_threads_target_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     target_encoder = object()
     captured: dict[str, Any] = {}
 
@@ -670,12 +672,11 @@ def test_to_hetero_threads_target_encoder(
         captured.update(kwargs)
         return HeteroData(), {}, {}
 
-    monkeypatch.setattr(dldm, "runtime_batch_to_hetero",
-                        _fake_runtime_batch_to_hetero)
+    monkeypatch.setattr(dldm, 'runtime_batch_to_hetero', _fake_runtime_batch_to_hetero)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
         target_encoder=target_encoder,
@@ -683,22 +684,23 @@ def test_to_hetero_threads_target_encoder(
 
     dm._to_hetero(_runtime_batch())
 
-    assert captured["target_encoder"] is target_encoder
+    assert captured['target_encoder'] is target_encoder
 
 
 def test_constructor_rejects_missing_train_table_name() -> None:
-    with pytest.raises(ValueError, match="train_table_name"):
+    with pytest.raises(ValueError, match='train_table_name'):
         DiskgraphLightningDataModule(
-            _manifest(train_table_name=""),
+            _manifest(train_table_name=''),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan={'layers': []},
             train_batch_size=2,
             eval_batch_size=1,
         )
 
 
 def test_set_shuffle_stream_id_propagates_to_task_iterator(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Per diskgraph PR #266, ``epoch`` is a first-class kwarg to
     ``make_runtime_batch_iterator``. The wheel mixes
     ``(rnd_seed, epoch, stage_table_name)`` into the shuffle RNG
@@ -707,30 +709,31 @@ def test_set_shuffle_stream_id_propagates_to_task_iterator(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
         base_seed=10,
     )
     dm.set_shuffle_stream_id(7)
     list(dm.train_dataloader())
-    assert calls["kwargs"]["stage"] == "train"
+    assert calls['kwargs']['stage'] == 'train'
     # rnd_seed is the unmodified base_seed; epoch is passed separately.
-    assert calls["kwargs"]["rnd_seed"] == 10
-    assert calls["kwargs"]["epoch"] == 7
+    assert calls['kwargs']['rnd_seed'] == 10
+    assert calls['kwargs']['epoch'] == 7
 
 
 def test_runtime_worker_shard_composes_with_torch_worker(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=2, id=1),
     )
     iterable = DiskgraphTaskBatchIterable(
-        manifest_path="/tmp/runtime_manifest.json",
-        stage="predict",
-        sampling_plan={"layers": []},
+        manifest_path='/tmp/runtime_manifest.json',
+        stage='predict',
+        sampling_plan={'layers': []},
         batch_size=4,
         shuffle=False,
         drop_last=False,
@@ -744,16 +747,18 @@ def test_runtime_worker_shard_composes_with_torch_worker(
 
     list(iterable)
 
-    assert calls["kwargs"]["num_workers"] == 6
-    assert calls["kwargs"]["worker_id"] == 4
+    assert calls['kwargs']['num_workers'] == 6
+    assert calls['kwargs']['worker_id'] == 4
     assert len(iterable) == 2
 
 
-def test_train_dataloader_len_honors_max_steps_per_epoch(tmp_path, ) -> None:
+def test_train_dataloader_len_honors_max_steps_per_epoch(
+    tmp_path,
+) -> None:
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -767,15 +772,15 @@ def test_train_dataloader_iteration_stops_at_max_steps_per_epoch(
 ) -> None:
     calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=10)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
     )
     assert len(list(dm.train_dataloader())) == 3
-    assert len(calls["history"]) == 1
+    assert len(calls['history']) == 1
 
 
 def test_lightning_fit_reopens_train_iterator_with_new_shuffle_stream(
@@ -790,9 +795,9 @@ def test_lightning_fit_reopens_train_iterator_with_new_shuffle_stream(
         },
     )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 2}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 2}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
         max_steps_per_epoch=1,
@@ -800,7 +805,7 @@ def test_lightning_fit_reopens_train_iterator_with_new_shuffle_stream(
 
     model = _fit_smoke_model(dm)
 
-    assert [call["kwargs"]["epoch"] for call in calls["history"]] == [0, 1]
+    assert [call['kwargs']['epoch'] for call in calls['history']] == [0, 1]
     assert model.seen_input_ids == [0, 1, 10, 11]
 
 
@@ -810,9 +815,9 @@ def test_lightning_epoch_ends_after_configured_train_batches(
 ) -> None:
     calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=10)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -820,7 +825,7 @@ def test_lightning_epoch_ends_after_configured_train_batches(
 
     model = _fit_smoke_model(dm)
 
-    assert [call["kwargs"]["epoch"] for call in calls["history"]] == [0, 1]
+    assert [call['kwargs']['epoch'] for call in calls['history']] == [0, 1]
     assert model.step_epochs == [0, 0, 0, 1, 1, 1]
     assert model.step_batch_indices == [0, 1, 2, 0, 1, 2]
 
@@ -831,9 +836,9 @@ def test_epoch_cap_does_not_change_wheel_training_population(
 ) -> None:
     calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=10)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -842,18 +847,20 @@ def test_epoch_cap_does_not_change_wheel_training_population(
     model = _fit_smoke_model(dm, max_epochs=1)
 
     assert len(model.step_epochs) == 3
-    assert calls["history"][0]["kwargs"]["stage"] == "train"
-    assert calls["history"][0]["kwargs"]["batch_size"] == 10
-    assert "max_batches" not in calls["history"][0]["kwargs"]
-    assert "num_samples" not in calls["history"][0]["kwargs"]
-    assert "max_num_samples" not in calls["history"][0]["kwargs"]
+    assert calls['history'][0]['kwargs']['stage'] == 'train'
+    assert calls['history'][0]['kwargs']['batch_size'] == 10
+    assert 'max_batches' not in calls['history'][0]['kwargs']
+    assert 'num_samples' not in calls['history'][0]['kwargs']
+    assert 'max_num_samples' not in calls['history'][0]['kwargs']
 
 
-def test_train_dataloader_len_honors_min_steps_per_epoch(tmp_path, ) -> None:
+def test_train_dataloader_len_honors_min_steps_per_epoch(
+    tmp_path,
+) -> None:
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 2}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 2}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         min_steps_per_epoch=3,
@@ -887,9 +894,9 @@ def test_train_iter_replays_wheel_when_natural_lt_max_batches(
     # → DataLoader main-process path → per-worker target = __len__ = 5.
     calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=2)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         min_steps_per_epoch=5,
@@ -900,15 +907,16 @@ def test_train_iter_replays_wheel_when_natural_lt_max_batches(
     batches = list(dm.train_dataloader())
     assert len(batches) == 5
     # Reopens used to satisfy the contract: ceil(5 / batches_per_open=2) = 3.
-    assert len(calls["history"]) == 3
+    assert len(calls['history']) == 3
     # Each reopen uses a distinct shuffle ``epoch`` so the iteration
     # order changes rather than repeating verbatim.
-    epochs = [call["kwargs"]["epoch"] for call in calls["history"]]
+    epochs = [call['kwargs']['epoch'] for call in calls['history']]
     assert epochs == [0, 1, 2]
 
 
 def test_val_dataloader_does_not_replay_wheel_iterator(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Replay is train-only.
 
     ``val``/``test``/``predict`` pass ``max_batches=None`` (the
@@ -921,20 +929,23 @@ def test_val_dataloader_does_not_replay_wheel_iterator(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
     batches = list(dm.val_dataloader())
     assert len(batches) == 2
-    assert len(calls["history"]) == 1
+    assert len(calls['history']) == 1
 
 
-@pytest.mark.parametrize("stage", ["val", "test"])
-@pytest.mark.parametrize("max_steps, num_batches, num_rows", [
-    (3, 3, 6),
-    (None, 10, 20),
-])
+@pytest.mark.parametrize('stage', ['val', 'test'])
+@pytest.mark.parametrize(
+    'max_steps, num_batches, num_rows',
+    [
+        (3, 3, 6),
+        (None, 10, 20),
+    ],
+)
 def test_eval_dataloader_honors_max_steps_without_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -944,32 +955,32 @@ def test_eval_dataloader_honors_max_steps_without_replay(
     num_rows: int,
 ) -> None:
     input_ids = [[2 * i, 2 * i + 1] for i in range(10)]
-    calls = _install_fake_diskgraph(monkeypatch,
-                                    batch_input_ids_by_stage={stage: input_ids})
+    calls = _install_fake_diskgraph(
+        monkeypatch, batch_input_ids_by_stage={stage: input_ids}
+    )
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={stage: 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
-        **{f"max_{stage}_steps": max_steps},
+        **{f'max_{stage}_steps': max_steps},
     )
-    loader = getattr(dm, f"{stage}_dataloader")
+    loader = getattr(dm, f'{stage}_dataloader')
 
     assert len(loader()) == num_batches
     batches = list(loader())
 
     assert len(batches) == num_batches
-    assert sum(batch["train_table"].input_id.numel()
-               for batch in batches) == num_rows
-    assert len(calls["history"]) == 1
+    assert sum(batch['train_table'].input_id.numel() for batch in batches) == num_rows
+    assert len(calls['history']) == 1
 
 
 def test_predict_dataloader_len_counts_local_worker_shards(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"predict": 199444}),
+        _manifest(tmp_path=tmp_path, stage_counts={'predict': 199444}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=1024,
         eval_batch_size=1024,
         num_workers=16,
@@ -985,29 +996,26 @@ def test_train_dataloader_chains_refit_stages(
     calls = _install_fake_diskgraph(
         monkeypatch,
         batch_input_ids_by_stage={
-            "train": [[0]],
-            "val": [[10]],
+            'train': [[0]],
+            'val': [[10]],
         },
     )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={
-            "train": 1,
-            "val": 1
-        }),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 1, 'val': 1}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=1,
         eval_batch_size=1,
-        train_stages=("train", "val"),
+        train_stages=('train', 'val'),
     )
 
     batches = list(dm.train_dataloader())
 
-    assert [call["kwargs"]["stage"] for call in calls["history"]] == [
-        "train",
-        "val",
+    assert [call['kwargs']['stage'] for call in calls['history']] == [
+        'train',
+        'val',
     ]
-    assert [b["train_table"].input_id.item() for b in batches] == [0, 10]
+    assert [b['train_table'].input_id.item() for b in batches] == [0, 10]
 
 
 def test_capped_refit_interleaves_all_training_stages(
@@ -1017,58 +1025,57 @@ def test_capped_refit_interleaves_all_training_stages(
     calls = _install_fake_diskgraph(
         monkeypatch,
         batch_input_ids_by_stage={
-            "train": [[i] for i in range(20)],
-            "val": [[100 + i] for i in range(20)],
+            'train': [[i] for i in range(20)],
+            'val': [[100 + i] for i in range(20)],
         },
     )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={
-            "train": 100,
-            "val": 10,
-        }),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={
+                'train': 100,
+                'val': 10,
+            },
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=1,
         eval_batch_size=1,
         max_steps_per_epoch=10,
-        train_stages=("train", "val"),
+        train_stages=('train', 'val'),
     )
 
     batches = list(dm.train_dataloader().dataset)
-    seen = [batch["task"]["input_ids"][0].as_py() for batch in batches]
+    seen = [batch['task']['input_ids'][0].as_py() for batch in batches]
 
     assert len(batches) == 10
     assert sum(value < 100 for value in seen) == 9
     assert sum(value >= 100 for value in seen) == 1
     assert seen.index(100) < len(seen) - 1
-    assert {call["kwargs"]["stage"]
-            for call in calls["history"]} == {
-                "train",
-                "val",
-            }
+    assert {call['kwargs']['stage'] for call in calls['history']} == {
+        'train',
+        'val',
+    }
 
 
 def test_runtime_options_are_passed_to_wheel_iterator(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
-        runtime_options={
-            "replace": True,
-            "disjoint": False,
-            "adaptive": True
-        },
+        runtime_options={'replace': True, 'disjoint': False, 'adaptive': True},
     )
 
     list(dm.train_dataloader())
 
-    assert calls["kwargs"]["replace"] is True
-    assert calls["kwargs"]["disjoint"] is False
-    assert calls["kwargs"]["adaptive"] is True
+    assert calls['kwargs']['replace'] is True
+    assert calls['kwargs']['disjoint'] is False
+    assert calls['kwargs']['adaptive'] is True
 
 
 def test_binary_weighted_seed_sampling_sets_train_epoch_length_and_runtime_option(
@@ -1076,39 +1083,43 @@ def test_binary_weighted_seed_sampling_sets_train_epoch_length_and_runtime_optio
     tmp_path,
 ) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
-    runtime_path = tmp_path / "runtime_manifest.json"
+    runtime_path = tmp_path / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "kind": "diskgraph_task_dataset",
-            "graph": {
-                "index_path": "/idx"
-            },
-            "stages": {
-                "train": {
-                    "table_name": "train_seeds",
-                    "index_path": "/idx/train_tables/tt1",
-                    "row_count": 100,
-                    "binary_label_index": {
-                        "false_node_ids": "train_seeds/false_node_ids.bin",
-                        "false_count": 90,
-                        "true_node_ids": "train_seeds/true_node_ids.bin",
-                        "true_count": 10,
+        json.dumps(
+            {
+                'kind': 'diskgraph_task_dataset',
+                'graph': {'index_path': '/idx'},
+                'stages': {
+                    'train': {
+                        'table_name': 'train_seeds',
+                        'index_path': '/idx/train_tables/tt1',
+                        'row_count': 100,
+                        'binary_label_index': {
+                            'false_node_ids': 'train_seeds/false_node_ids.bin',
+                            'false_count': 90,
+                            'true_node_ids': 'train_seeds/true_node_ids.bin',
+                            'true_count': 10,
+                        },
                     },
                 },
-            },
-        }))
+            }
+        )
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100},
-                  runtime_manifest_path=str(runtime_path)),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 100},
+            runtime_manifest_path=str(runtime_path),
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=16,
         eval_batch_size=16,
         max_steps_per_epoch=4,
         min_steps_per_epoch=1,
         weighted_seed_sampling={
-            "false_weight": 1.0,
-            "true_weight": 9.0,
+            'false_weight': 1.0,
+            'true_weight': 9.0,
         },
     )
 
@@ -1117,10 +1128,10 @@ def test_binary_weighted_seed_sampling_sets_train_epoch_length_and_runtime_optio
 
     list(loader)
 
-    assert calls["kwargs"]["weighted_seed_sampling"] == {
-        "false_weight": 1.0,
-        "true_weight": 9.0,
-        "num_samples": 64,
+    assert calls['kwargs']['weighted_seed_sampling'] == {
+        'false_weight': 1.0,
+        'true_weight': 9.0,
+        'num_samples': 64,
     }
 
 
@@ -1131,97 +1142,113 @@ def test_weighted_seed_sampling_allocates_across_refit_stages(
     calls = _install_fake_diskgraph(
         monkeypatch,
         batch_input_ids_by_stage={
-            "train": [[i] for i in range(3)],
-            "val": [[100]],
+            'train': [[i] for i in range(3)],
+            'val': [[100]],
         },
     )
-    runtime_path = tmp_path / "runtime_manifest.json"
+    runtime_path = tmp_path / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "stages": {
-                "train": {
-                    "table_name": "train_seeds",
-                    "index_path": "/idx/train_tables/tt1",
-                    "row_count": 100,
-                    "binary_label_index": {
-                        "false_node_ids": "train_seeds/false.bin",
-                        "false_count": 90,
-                        "true_node_ids": "train_seeds/true.bin",
-                        "true_count": 10,
+        json.dumps(
+            {
+                'stages': {
+                    'train': {
+                        'table_name': 'train_seeds',
+                        'index_path': '/idx/train_tables/tt1',
+                        'row_count': 100,
+                        'binary_label_index': {
+                            'false_node_ids': 'train_seeds/false.bin',
+                            'false_count': 90,
+                            'true_node_ids': 'train_seeds/true.bin',
+                            'true_count': 10,
+                        },
+                    },
+                    'val': {
+                        'table_name': 'val_seeds',
+                        'index_path': '/idx/train_tables/tt1',
+                        'row_count': 10,
+                        'binary_label_index': {
+                            'false_node_ids': 'val_seeds/false.bin',
+                            'false_count': 9,
+                            'true_node_ids': 'val_seeds/true.bin',
+                            'true_count': 1,
+                        },
                     },
                 },
-                "val": {
-                    "table_name": "val_seeds",
-                    "index_path": "/idx/train_tables/tt1",
-                    "row_count": 10,
-                    "binary_label_index": {
-                        "false_node_ids": "val_seeds/false.bin",
-                        "false_count": 9,
-                        "true_node_ids": "val_seeds/true.bin",
-                        "true_count": 1,
-                    },
-                },
-            },
-        }))
+            }
+        )
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={
-            "train": 100,
-            "val": 10,
-        }, runtime_manifest_path=str(runtime_path)),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={
+                'train': 100,
+                'val': 10,
+            },
+            runtime_manifest_path=str(runtime_path),
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=16,
         eval_batch_size=16,
         max_steps_per_epoch=4,
-        train_stages=("train", "val"),
+        train_stages=('train', 'val'),
         weighted_seed_sampling={
-            "false_weight": 1.0,
-            "true_weight": 9.0,
+            'false_weight': 1.0,
+            'true_weight': 9.0,
         },
     )
 
     batches = list(dm.train_dataloader().dataset)
     options_by_stage = {
-        call["kwargs"]["stage"]: call["kwargs"]["weighted_seed_sampling"]
-        for call in calls["history"]
+        call['kwargs']['stage']: call['kwargs']['weighted_seed_sampling']
+        for call in calls['history']
     }
 
     assert len(batches) == 4
-    assert options_by_stage["train"]["num_samples"] == 48
-    assert options_by_stage["val"]["num_samples"] == 16
-    assert options_by_stage["train"]["false_weight"] == 1.0
-    assert options_by_stage["val"]["true_weight"] == 9.0
+    assert options_by_stage['train']['num_samples'] == 48
+    assert options_by_stage['val']['num_samples'] == 16
+    assert options_by_stage['train']['false_weight'] == 1.0
+    assert options_by_stage['val']['true_weight'] == 9.0
 
 
-def test_weighted_seed_sampling_validates_every_refit_stage(tmp_path, ) -> None:
-    runtime_path = tmp_path / "runtime_manifest.json"
+def test_weighted_seed_sampling_validates_every_refit_stage(
+    tmp_path,
+) -> None:
+    runtime_path = tmp_path / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "stages": {
-                "train": {
-                    "binary_label_index": {
-                        "false_count": 90,
-                        "true_count": 10,
+        json.dumps(
+            {
+                'stages': {
+                    'train': {
+                        'binary_label_index': {
+                            'false_count': 90,
+                            'true_count': 10,
+                        },
                     },
+                    'val': {},
                 },
-                "val": {},
-            },
-        }))
+            }
+        )
+    )
 
     with pytest.raises(ValueError, match="binary_label_index for stage 'val'"):
         DiskgraphLightningDataModule(
-            _manifest(tmp_path=tmp_path, stage_counts={
-                "train": 100,
-                "val": 10,
-            }, runtime_manifest_path=str(runtime_path)),
+            _manifest(
+                tmp_path=tmp_path,
+                stage_counts={
+                    'train': 100,
+                    'val': 10,
+                },
+                runtime_manifest_path=str(runtime_path),
+            ),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan={'layers': []},
             train_batch_size=16,
             eval_batch_size=16,
-            train_stages=("train", "val"),
+            train_stages=('train', 'val'),
             weighted_seed_sampling={
-                "false_weight": 1.0,
-                "true_weight": 9.0,
+                'false_weight': 1.0,
+                'true_weight': 9.0,
             },
         )
 
@@ -1231,88 +1258,92 @@ def test_binary_weighted_seed_sampling_rejects_drop_last_train(
     tmp_path,
 ) -> None:
     _install_fake_diskgraph(monkeypatch)
-    runtime_path = tmp_path / "runtime_manifest.json"
+    runtime_path = tmp_path / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "kind": "diskgraph_task_dataset",
-            "graph": {
-                "index_path": "/idx"
-            },
-            "stages": {
-                "train": {
-                    "table_name": "train_seeds",
-                    "index_path": "/idx/train_tables/tt1",
-                    "row_count": 100,
-                    "binary_label_index": {
-                        "false_node_ids": "train_seeds/false_node_ids.bin",
-                        "false_count": 90,
-                        "true_node_ids": "train_seeds/true_node_ids.bin",
-                        "true_count": 10,
+        json.dumps(
+            {
+                'kind': 'diskgraph_task_dataset',
+                'graph': {'index_path': '/idx'},
+                'stages': {
+                    'train': {
+                        'table_name': 'train_seeds',
+                        'index_path': '/idx/train_tables/tt1',
+                        'row_count': 100,
+                        'binary_label_index': {
+                            'false_node_ids': 'train_seeds/false_node_ids.bin',
+                            'false_count': 90,
+                            'true_node_ids': 'train_seeds/true_node_ids.bin',
+                            'true_count': 10,
+                        },
                     },
                 },
-            },
-        }))
+            }
+        )
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100},
-                  runtime_manifest_path=str(runtime_path)),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 100},
+            runtime_manifest_path=str(runtime_path),
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=16,
         eval_batch_size=16,
         drop_last_train=True,
         weighted_seed_sampling={
-            "false_weight": 1.0,
-            "true_weight": 9.0,
+            'false_weight': 1.0,
+            'true_weight': 9.0,
         },
     )
 
-    with pytest.raises(ValueError, match="drop_last_train=True"):
+    with pytest.raises(ValueError, match='drop_last_train=True'):
         dm.train_dataloader()
 
 
 def test_positive_row_weight_mass_covers_every_refit_stage(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
-    monkeypatch.setattr(dldm, "_sample_weight_index_for_stage",
-                        lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(dldm, "_bucket_total_weight",
-                        lambda *_args, **_kwargs: 0.1)
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dldm, '_sample_weight_index_for_stage', lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(dldm, '_bucket_total_weight', lambda *_args, **_kwargs: 0.1)
     dm = object.__new__(DiskgraphLightningDataModule)
-    dm.task_manifest = types.SimpleNamespace(runtime_manifest_path="unused")
+    dm.task_manifest = types.SimpleNamespace(runtime_manifest_path='unused')
 
-    assert dm._weighted_seed_mass(stage="val",
-                                  config={"use_sample_weights": True}) == 1.0
+    assert (
+        dm._weighted_seed_mass(stage='val', config={'use_sample_weights': True}) == 1.0
+    )
 
 
-@pytest.mark.parametrize("weight", [float("nan"), float("inf")])
-def test_nonfinite_row_weight_mass_is_rejected(monkeypatch: pytest.MonkeyPatch,
-                                               weight: float) -> None:
-    monkeypatch.setattr(dldm, "_sample_weight_index_for_stage",
-                        lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(dldm, "_bucket_total_weight",
-                        lambda *_args, **_kwargs: weight)
+@pytest.mark.parametrize('weight', [float('nan'), float('inf')])
+def test_nonfinite_row_weight_mass_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, weight: float
+) -> None:
+    monkeypatch.setattr(
+        dldm, '_sample_weight_index_for_stage', lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(dldm, '_bucket_total_weight', lambda *_args, **_kwargs: weight)
     dm = object.__new__(DiskgraphLightningDataModule)
-    dm.task_manifest = types.SimpleNamespace(runtime_manifest_path="unused")
+    dm.task_manifest = types.SimpleNamespace(runtime_manifest_path='unused')
 
-    with pytest.raises(ValueError, match="non-finite weighted seed mass"):
-        dm._weighted_seed_mass(stage="val", config={"use_sample_weights": True})
+    with pytest.raises(ValueError, match='non-finite weighted seed mass'):
+        dm._weighted_seed_mass(stage='val', config={'use_sample_weights': True})
 
 
 def test_nonfinite_class_weight_mass_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         dldm,
-        "_binary_label_index_for_stage",
-        lambda *_args, **_kwargs: {
-            "false_count": 90,
-            "true_count": 10
-        },
+        '_binary_label_index_for_stage',
+        lambda *_args, **_kwargs: {'false_count': 90, 'true_count': 10},
     )
     dm = object.__new__(DiskgraphLightningDataModule)
-    dm.task_manifest = types.SimpleNamespace(runtime_manifest_path="unused")
+    dm.task_manifest = types.SimpleNamespace(runtime_manifest_path='unused')
 
-    with pytest.raises(ValueError, match="non-finite weighted seed mass"):
-        dm._weighted_seed_mass(stage="val",
-                               config={"true_weight": float("nan")})
+    with pytest.raises(ValueError, match='non-finite weighted seed mass'):
+        dm._weighted_seed_mass(stage='val', config={'true_weight': float('nan')})
 
 
 def test_weighted_seed_sampling_uses_row_weight_mass_for_epoch_length(
@@ -1320,47 +1351,50 @@ def test_weighted_seed_sampling_uses_row_weight_mass_for_epoch_length(
     tmp_path,
 ) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
-    runtime_path = tmp_path / "runtime_manifest.json"
+    runtime_path = tmp_path / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "kind": "diskgraph_task_dataset",
-            "graph": {
-                "index_path": "/idx"
-            },
-            "stages": {
-                "train": {
-                    "table_name": "train_seeds",
-                    "index_path": "/idx/train_tables/tt1",
-                    "row_count": 3,
-                    "sample_weight_index": {
-                        "all": {
-                            "node_ids":
-                            "train_seeds/sample_weight_node_ids.bin",
-                            "cdf": "train_seeds/sample_weight_cdf_f64.bin",
-                            "count": 3,
-                            "total_weight": 6.5,
+        json.dumps(
+            {
+                'kind': 'diskgraph_task_dataset',
+                'graph': {'index_path': '/idx'},
+                'stages': {
+                    'train': {
+                        'table_name': 'train_seeds',
+                        'index_path': '/idx/train_tables/tt1',
+                        'row_count': 3,
+                        'sample_weight_index': {
+                            'all': {
+                                'node_ids': 'train_seeds/sample_weight_node_ids.bin',
+                                'cdf': 'train_seeds/sample_weight_cdf_f64.bin',
+                                'count': 3,
+                                'total_weight': 6.5,
+                            },
                         },
                     },
                 },
-            },
-        }))
+            }
+        )
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 3},
-                  runtime_manifest_path=str(runtime_path)),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 3},
+            runtime_manifest_path=str(runtime_path),
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=4,
         eval_batch_size=4,
         max_steps_per_epoch=4,
         min_steps_per_epoch=1,
-        weighted_seed_sampling={"use_sample_weights": True},
+        weighted_seed_sampling={'use_sample_weights': True},
     )
 
     list(dm.train_dataloader())
 
-    assert calls["kwargs"]["weighted_seed_sampling"] == {
-        "use_sample_weights": True,
-        "num_samples": 8,
+    assert calls['kwargs']['weighted_seed_sampling'] == {
+        'use_sample_weights': True,
+        'num_samples': 8,
     }
 
 
@@ -1369,73 +1403,80 @@ def test_weighted_seed_sampling_combines_row_and_class_weight_mass(
     tmp_path,
 ) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
-    runtime_path = tmp_path / "runtime_manifest.json"
+    runtime_path = tmp_path / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "kind": "diskgraph_task_dataset",
-            "graph": {
-                "index_path": "/idx"
-            },
-            "stages": {
-                "train": {
-                    "table_name": "train_seeds",
-                    "index_path": "/idx/train_tables/tt1",
-                    "row_count": 3,
-                    "sample_weight_index": {
-                        "all": {
-                            "node_ids": "train_seeds/all.bin",
-                            "cdf": "train_seeds/all.cdf",
-                            "count": 3,
-                            "total_weight": 7.0,
-                        },
-                        "false_bucket": {
-                            "node_ids": "train_seeds/false.bin",
-                            "cdf": "train_seeds/false.cdf",
-                            "count": 2,
-                            "total_weight": 3.0,
-                        },
-                        "true_bucket": {
-                            "node_ids": "train_seeds/true.bin",
-                            "cdf": "train_seeds/true.cdf",
-                            "count": 1,
-                            "total_weight": 4.0,
+        json.dumps(
+            {
+                'kind': 'diskgraph_task_dataset',
+                'graph': {'index_path': '/idx'},
+                'stages': {
+                    'train': {
+                        'table_name': 'train_seeds',
+                        'index_path': '/idx/train_tables/tt1',
+                        'row_count': 3,
+                        'sample_weight_index': {
+                            'all': {
+                                'node_ids': 'train_seeds/all.bin',
+                                'cdf': 'train_seeds/all.cdf',
+                                'count': 3,
+                                'total_weight': 7.0,
+                            },
+                            'false_bucket': {
+                                'node_ids': 'train_seeds/false.bin',
+                                'cdf': 'train_seeds/false.cdf',
+                                'count': 2,
+                                'total_weight': 3.0,
+                            },
+                            'true_bucket': {
+                                'node_ids': 'train_seeds/true.bin',
+                                'cdf': 'train_seeds/true.cdf',
+                                'count': 1,
+                                'total_weight': 4.0,
+                            },
                         },
                     },
                 },
-            },
-        }))
+            }
+        )
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 3},
-                  runtime_manifest_path=str(runtime_path)),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 3},
+            runtime_manifest_path=str(runtime_path),
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=4,
         eval_batch_size=4,
         max_steps_per_epoch=10,
         min_steps_per_epoch=1,
         weighted_seed_sampling={
-            "use_sample_weights": True,
-            "false_weight": 1.0,
-            "true_weight": 2.0,
+            'use_sample_weights': True,
+            'false_weight': 1.0,
+            'true_weight': 2.0,
         },
     )
 
     list(dm.train_dataloader())
 
-    assert calls["kwargs"]["weighted_seed_sampling"] == {
-        "use_sample_weights": True,
-        "false_weight": 1.0,
-        "true_weight": 2.0,
-        "num_samples": 12,
+    assert calls['kwargs']['weighted_seed_sampling'] == {
+        'use_sample_weights': True,
+        'false_weight': 1.0,
+        'true_weight': 2.0,
+        'num_samples': 12,
     }
 
 
-@pytest.mark.parametrize("stage,method_name", [
-    ("train", "train_dataloader"),
-    ("val", "val_dataloader"),
-    ("test", "test_dataloader"),
-    ("predict", "predict_dataloader"),
-])
+@pytest.mark.parametrize(
+    'stage,method_name',
+    [
+        ('train', 'train_dataloader'),
+        ('val', 'val_dataloader'),
+        ('test', 'test_dataloader'),
+        ('predict', 'predict_dataloader'),
+    ],
+)
 def test_each_stage_method_passes_correct_stage(
     monkeypatch: pytest.MonkeyPatch,
     stage: str,
@@ -1445,21 +1486,22 @@ def test_each_stage_method_passes_correct_stage(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
     _ = list(getattr(dm, method_name)())
-    assert calls["kwargs"]["stage"] == stage
+    assert calls['kwargs']['stage'] == stage
 
 
 def test_dataloader_yields_hetero_from_task_batch_iterator(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -1467,29 +1509,29 @@ def test_dataloader_yields_hetero_from_task_batch_iterator(
     assert len(batches) == 1
     hetero = batches[0]
     assert isinstance(hetero, HeteroData)
-    assert torch.equal(hetero["User"].n_id, torch.tensor([100, 101, 102]))
-    seed = hetero["train_table"]
+    assert torch.equal(hetero['User'].n_id, torch.tensor([100, 101, 102]))
+    seed = hetero['train_table']
     assert torch.equal(seed.input_id, torch.tensor([0, 1, 2]))
     assert torch.equal(seed.y, torch.tensor([[1], [0], [1]]))
-    assert hasattr(hetero["User"], "tf")
+    assert hasattr(hetero['User'], 'tf')
 
 
 def test_explain_selection_capture_returns_stage_node_ids() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
     )
 
-    dm.begin_explain_selection_capture("test")
+    dm.begin_explain_selection_capture('test')
     dm._to_hetero(_runtime_batch([0, 1]))
     dm._to_hetero(_runtime_batch([2]))
 
-    input_type, input_nodes, input_time, input_id = dm.stage_inputs("test")
+    input_type, input_nodes, input_time, input_id = dm.stage_inputs('test')
 
-    assert input_type == "User"
+    assert input_type == 'User'
     assert input_time is None
     assert torch.equal(input_nodes, torch.tensor([100, 101, 102]))
     assert torch.equal(input_id, torch.tensor([10, 11, 12]))
@@ -1499,76 +1541,79 @@ def test_stage_inputs_requires_explain_selection_capture() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
     )
 
-    with pytest.raises(RuntimeError, match="explain selection capture"):
-        dm.stage_inputs("test")
+    with pytest.raises(RuntimeError, match='explain selection capture'):
+        dm.stage_inputs('test')
 
 
 def test_explain_dataloader_uses_selected_stage_node_ids(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
         num_workers=3,
         persistent_workers=True,
     )
 
-    loader = dm.explain_dataloader("test", torch.tensor([10, 12]))
+    loader = dm.explain_dataloader('test', torch.tensor([10, 12]))
     batches = list(loader)
 
     assert loader.num_workers == 0
     assert batches and all(batch is not None for batch in batches)
-    assert calls["kwargs"]["selected_stage_node_ids"] == [10, 12]
-    assert calls["kwargs"]["shuffle"] is False
-    assert calls["kwargs"]["drop_last"] is False
-    assert calls["kwargs"]["num_workers"] == 1
-    assert calls["kwargs"]["worker_id"] == 0
+    assert calls['kwargs']['selected_stage_node_ids'] == [10, 12]
+    assert calls['kwargs']['shuffle'] is False
+    assert calls['kwargs']['drop_last'] is False
+    assert calls['kwargs']['num_workers'] == 1
+    assert calls['kwargs']['worker_id'] == 0
 
 
 def test_explain_dataloader_maps_pred_stage_to_predict_runtime_stage(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
     )
 
-    list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
+    list(dm.explain_dataloader('pred', torch.tensor([10, 12])))
 
-    assert calls["kwargs"]["stage"] == "predict"
+    assert calls['kwargs']['stage'] == 'predict'
 
 
 def test_explain_dataloader_pred_resolves_only_entity(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
-        resolve_entity_node_type="User",
-        resolve_target_node_type="Article",
+        resolve_entity_node_type='User',
+        resolve_target_node_type='Article',
     )
 
-    list(dm.explain_dataloader("test", torch.tensor([10, 12])))
-    assert calls["kwargs"]["entity_node_type"] == "User"
-    assert calls["kwargs"]["target_node_type"] == "Article"
+    list(dm.explain_dataloader('test', torch.tensor([10, 12])))
+    assert calls['kwargs']['entity_node_type'] == 'User'
+    assert calls['kwargs']['target_node_type'] == 'Article'
 
-    list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
-    assert calls["kwargs"]["entity_node_type"] == "User"
-    assert "target_node_type" not in calls["kwargs"]
+    list(dm.explain_dataloader('pred', torch.tensor([10, 12])))
+    assert calls['kwargs']['entity_node_type'] == 'User'
+    assert 'target_node_type' not in calls['kwargs']
 
 
 def test_explain_dataloader_lp_pred_keeps_selected_rows(
@@ -1581,24 +1626,24 @@ def test_explain_dataloader_lp_pred_keeps_selected_rows(
         eval_batch_size=2,
     )
 
-    list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
+    list(dm.explain_dataloader('pred', torch.tensor([10, 12])))
 
-    assert calls["kwargs"]["stage"] == "predict"
-    assert calls["kwargs"]["selected_stage_node_ids"] == [10, 12]
+    assert calls['kwargs']['stage'] == 'predict'
+    assert calls['kwargs']['selected_stage_node_ids'] == [10, 12]
 
 
 def test_explain_selection_capture_forces_single_worker_eval_loader() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
         num_workers=4,
         persistent_workers=True,
     )
 
-    dm.begin_explain_selection_capture("test")
+    dm.begin_explain_selection_capture('test')
     loader = dm.test_dataloader()
 
     assert loader.num_workers == 0
@@ -1606,19 +1651,18 @@ def test_explain_selection_capture_forces_single_worker_eval_loader() -> None:
     assert loader.dataset.dataloader_num_workers == 1
 
 
-def test_pred_explain_selection_capture_forces_single_worker_predict_loader(
-) -> None:
+def test_pred_explain_selection_capture_forces_single_worker_predict_loader() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=2,
         num_workers=4,
         persistent_workers=True,
     )
 
-    dm.begin_explain_selection_capture("pred")
+    dm.begin_explain_selection_capture('pred')
     loader = dm.predict_dataloader()
 
     assert loader.num_workers == 0
@@ -1627,12 +1671,13 @@ def test_pred_explain_selection_capture_forces_single_worker_predict_loader(
 
 
 def test_dataloader_passes_through_loader_kwargs(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
         num_workers=2,
@@ -1646,12 +1691,13 @@ def test_dataloader_passes_through_loader_kwargs(
 
 
 def test_dataloader_passes_through_prefetch_factor(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
         num_workers=2,
@@ -1692,7 +1738,7 @@ class _LifecycleProbeLoader:
 
 class _LifecycleProbeIterator:
     def __init__(self, shutdown: Any = None) -> None:
-        self._workers = (types.SimpleNamespace(pid=101), )
+        self._workers = (types.SimpleNamespace(pid=101),)
         self._batches = iter(['final-batch'])
         self._shutdown = shutdown or (lambda: None)
 
@@ -1749,12 +1795,12 @@ def _lifecycle_probe_worker_pool(
     monkeypatch: pytest.MonkeyPatch,
     *,
     shutdown: Any = None,
-) -> tuple[dldm._WorkerPoolRegistry, dldm._WorkerPoolIterator,
-           _LifecycleProbeHandle]:
+) -> tuple[dldm._WorkerPoolRegistry, dldm._WorkerPoolIterator, _LifecycleProbeHandle]:
     registry = dldm._WorkerPoolRegistry()
     handle = _LifecycleProbeHandle()
     private_iterator = _LifecycleProbeIterator(
-        shutdown or (lambda: setattr(handle, 'alive', False)))
+        shutdown or (lambda: setattr(handle, 'alive', False))
+    )
     loader = _LifecycleProbeLoader(private_iterator)
     monkeypatch.setattr(dldm._WorkerHandle, 'open', lambda _process: handle)
     iterator = dldm._WorkerPoolIterator(
@@ -1767,7 +1813,8 @@ def _lifecycle_probe_worker_pool(
 
 
 def test_worker_handle_open_closes_duplicated_sentinel_when_pidfd_fails(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sentinel_read, sentinel_write = os.pipe()
     duplicates = []
     original_dup = os.dup
@@ -1779,8 +1826,10 @@ def test_worker_handle_open_closes_duplicated_sentinel_when_pidfd_fails(
 
     monkeypatch.setattr(os, 'dup', _record_dup)
     monkeypatch.setattr(
-        dldm, '_pidfd_open', lambda _pid:
-        (_ for _ in ()).throw(OSError('synthetic pidfd failure')))
+        dldm,
+        '_pidfd_open',
+        lambda _pid: (_ for _ in ()).throw(OSError('synthetic pidfd failure')),
+    )
     process = types.SimpleNamespace(pid=os.getpid(), sentinel=sentinel_read)
     try:
         with pytest.raises(OSError, match='synthetic pidfd failure'):
@@ -1832,16 +1881,17 @@ def test_worker_handle_capture_failure_keeps_registered_poison(
             phase='predict',
         )
 
-    owner, = registry._matching(None)
+    (owner,) = registry._matching(None)
     assert owner.state is dldm._WorkerPoolState.FAILED
-    assert registry.active_phases == ('predict', )
+    assert registry.active_phases == ('predict',)
     assert emergency_calls == [True]
     assert handles[0].close_calls == (1 if fail_at == 1 else 0)
     registry.discard(owner)
 
 
 def test_worker_handle_capture_failure_runs_bounded_emergency_cleanup(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
     workers = (_EmergencyWorker(101), _EmergencyWorker(102))
     workers_by_sentinel = {worker.sentinel: worker for worker in workers}
@@ -1857,14 +1907,15 @@ def test_worker_handle_capture_failure_runs_bounded_emergency_cleanup(
 
     monkeypatch.setattr(dldm._WorkerHandle, 'open', _open)
     monkeypatch.setattr(
-        dldm._WorkerHandle, '_fd_ready',
-        lambda sentinel: not workers_by_sentinel[sentinel].alive)
+        dldm._WorkerHandle,
+        '_fd_ready',
+        lambda sentinel: not workers_by_sentinel[sentinel].alive,
+    )
     monkeypatch.setattr(dldm, '_WORKER_COOPERATIVE_GRACE_SECONDS', 0.0)
     monkeypatch.setattr(dldm, '_WORKER_TERM_GRACE_SECONDS', 0.001)
     monkeypatch.setattr(dldm, '_WORKER_SHUTDOWN_DEADLINE_SECONDS', 1.0)
 
-    with pytest.raises(OSError,
-                       match='synthetic second-handle capture failure'):
+    with pytest.raises(OSError, match='synthetic second-handle capture failure'):
         dldm._WorkerPoolIterator(
             private_iterator,
             loader=loader,
@@ -1872,9 +1923,9 @@ def test_worker_handle_capture_failure_runs_bounded_emergency_cleanup(
             phase='predict',
         )
 
-    owner, = registry._matching(None)
+    (owner,) = registry._matching(None)
     assert owner.state is dldm._WorkerPoolState.FAILED
-    assert registry.active_phases == ('predict', )
+    assert registry.active_phases == ('predict',)
     assert [worker.signals for worker in workers] == [
         [signal.SIGTERM, signal.SIGKILL],
         [signal.SIGTERM, signal.SIGKILL],
@@ -1885,12 +1936,14 @@ def test_worker_handle_capture_failure_runs_bounded_emergency_cleanup(
 
 
 def test_concurrent_close_during_handle_capture_publishes_atomically(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
     handles = [_LifecycleProbeHandle(), _LifecycleProbeHandle()]
     handles[1].pid = 102
     private_iterator = _LifecycleProbeIterator(
-        lambda: [setattr(handle, 'alive', False) for handle in handles])
+        lambda: [setattr(handle, 'alive', False) for handle in handles]
+    )
     private_iterator._workers = (
         types.SimpleNamespace(pid=101),
         types.SimpleNamespace(pid=102),
@@ -1933,7 +1986,7 @@ def test_concurrent_close_during_handle_capture_publishes_atomically(
     constructor = threading.Thread(target=_construct)
     constructor.start()
     assert second_capture_started.wait(timeout=2)
-    owner, = registry._matching(None)
+    (owner,) = registry._matching(None)
     assert owner.state is dldm._WorkerPoolState.INITIALIZING
     closer = threading.Thread(target=_close)
     closer.start()
@@ -1956,12 +2009,13 @@ def test_concurrent_close_during_handle_capture_publishes_atomically(
 
 
 def test_initialization_cannot_reactivate_after_close_deadline(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
     handle = _LifecycleProbeHandle()
     worker = _EmergencyWorker(101)
     private_iterator = _LifecycleProbeIterator()
-    private_iterator._workers = (worker, )
+    private_iterator._workers = (worker,)
     loader = _LifecycleProbeLoader(private_iterator)
     capture_started = threading.Event()
     release_capture = threading.Event()
@@ -1972,8 +2026,9 @@ def test_initialization_cannot_reactivate_after_close_deadline(
         return handle
 
     monkeypatch.setattr(dldm._WorkerHandle, 'open', _open)
-    monkeypatch.setattr(dldm._WorkerHandle, '_fd_ready',
-                        lambda _sentinel: not worker.alive)
+    monkeypatch.setattr(
+        dldm._WorkerHandle, '_fd_ready', lambda _sentinel: not worker.alive
+    )
     monkeypatch.setattr(dldm, '_WORKER_COOPERATIVE_GRACE_SECONDS', 0.0)
     monkeypatch.setattr(dldm, '_WORKER_TERM_GRACE_SECONDS', 0.001)
     monkeypatch.setattr(dldm, '_WORKER_SHUTDOWN_DEADLINE_SECONDS', 0.05)
@@ -1993,16 +2048,17 @@ def test_initialization_cannot_reactivate_after_close_deadline(
     constructor = threading.Thread(target=_construct)
     constructor.start()
     assert capture_started.wait(timeout=2)
-    owner, = registry._matching(None)
-    with pytest.raises(dldm.DataLoaderWorkerShutdownError,
-                       match='initialization did not finish'):
+    (owner,) = registry._matching(None)
+    with pytest.raises(
+        dldm.DataLoaderWorkerShutdownError, match='initialization did not finish'
+    ):
         registry.shutdown('predict')
     release_capture.set()
     constructor.join(timeout=2)
 
     assert not constructor.is_alive()
     assert owner.state is dldm._WorkerPoolState.FAILED
-    assert registry.active_phases == ('predict', )
+    assert registry.active_phases == ('predict',)
     assert handle.close_calls == 1
     assert worker.signals == [signal.SIGTERM, signal.SIGKILL]
     assert worker.join_calls == [0]
@@ -2012,13 +2068,12 @@ def test_initialization_cannot_reactivate_after_close_deadline(
 
 
 def test_super_iter_partial_failure_preserves_primary_and_reaps_owner(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
-    loader = _worker_pool_loader(registry, phase='predict',
-                                 advertised_batches=1)
+    loader = _worker_pool_loader(registry, phase='predict', advertised_batches=1)
     handle = _LifecycleProbeHandle()
-    private_iterator = _LifecycleProbeIterator(
-        lambda: setattr(handle, 'alive', False))
+    private_iterator = _LifecycleProbeIterator(lambda: setattr(handle, 'alive', False))
     monkeypatch.setattr(dldm._WorkerHandle, 'open', lambda _process: handle)
 
     def _fail_super(data_loader: DataLoader) -> Any:
@@ -2036,7 +2091,8 @@ def test_super_iter_partial_failure_preserves_primary_and_reaps_owner(
 
 
 def test_final_batch_survives_private_shutdown_thread_construction_failure(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, iterator, handle = _lifecycle_probe_worker_pool(monkeypatch)
     original_thread = threading.Thread
 
@@ -2051,19 +2107,22 @@ def test_final_batch_survives_private_shutdown_thread_construction_failure(
 
     assert next(iterator) == 'final-batch'
     assert iterator.state is dldm._WorkerPoolState.ACTIVE
-    with pytest.raises(dldm.DataLoaderWorkerShutdownError,
-                       match='synthetic private construction failure'):
+    with pytest.raises(
+        dldm.DataLoaderWorkerShutdownError,
+        match='synthetic private construction failure',
+    ):
         iterator.close()
 
     assert iterator.state is dldm._WorkerPoolState.FAILED
-    assert registry.active_phases == ('predict', )
+    assert registry.active_phases == ('predict',)
     registry.discard(iterator)
     assert handle.closed
     assert handle.close_calls == 1
 
 
 def test_final_batch_survives_private_shutdown_thread_start_failure(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, iterator, handle = _lifecycle_probe_worker_pool(monkeypatch)
     original_start = threading.Thread.start
 
@@ -2078,18 +2137,20 @@ def test_final_batch_survives_private_shutdown_thread_start_failure(
 
     assert next(iterator) == 'final-batch'
     assert iterator.state is dldm._WorkerPoolState.ACTIVE
-    with pytest.raises(dldm.DataLoaderWorkerShutdownError,
-                       match='synthetic private start failure'):
+    with pytest.raises(
+        dldm.DataLoaderWorkerShutdownError, match='synthetic private start failure'
+    ):
         iterator.close()
 
     assert iterator.state is dldm._WorkerPoolState.FAILED
-    assert registry.active_phases == ('predict', )
+    assert registry.active_phases == ('predict',)
     assert handle.closed
     assert handle.close_calls == 1
 
 
 def test_final_batch_survives_cleanup_polling_exception(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, iterator, handle = _lifecycle_probe_worker_pool(monkeypatch)
 
     def _fail_poll() -> bool:
@@ -2098,22 +2159,25 @@ def test_final_batch_survives_cleanup_polling_exception(
     monkeypatch.setattr(handle, 'exited', _fail_poll)
 
     assert next(iterator) == 'final-batch'
-    with pytest.raises(dldm.DataLoaderWorkerShutdownError,
-                       match='synthetic pidfd polling failure'):
+    with pytest.raises(
+        dldm.DataLoaderWorkerShutdownError, match='synthetic pidfd polling failure'
+    ):
         iterator.close()
 
     assert iterator.state is dldm._WorkerPoolState.FAILED
-    assert iterator.worker_pids == (handle.pid, )
-    assert registry.active_phases == ('predict', )
+    assert iterator.worker_pids == (handle.pid,)
+    assert registry.active_phases == ('predict',)
     assert handle.closed
     assert handle.close_calls == 1
 
 
 def test_final_batch_survives_cleanup_signaling_exception(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     release = threading.Event()
     registry, iterator, handle = _lifecycle_probe_worker_pool(
-        monkeypatch, shutdown=release.wait)
+        monkeypatch, shutdown=release.wait
+    )
 
     def _fail_signal(_sig: int) -> None:
         raise RuntimeError('synthetic pidfd signaling failure')
@@ -2125,20 +2189,23 @@ def test_final_batch_survives_cleanup_signaling_exception(
 
     try:
         assert next(iterator) == 'final-batch'
-        with pytest.raises(dldm.DataLoaderWorkerShutdownError,
-                           match='synthetic pidfd signaling failure'):
+        with pytest.raises(
+            dldm.DataLoaderWorkerShutdownError,
+            match='synthetic pidfd signaling failure',
+        ):
             iterator.close()
     finally:
         release.set()
 
     assert iterator.state is dldm._WorkerPoolState.FAILED
-    assert registry.active_phases == ('predict', )
+    assert registry.active_phases == ('predict',)
     assert handle.closed
     assert handle.close_calls == 1
 
 
 def test_worker_escalation_signals_all_live_handles_in_one_pass(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
     handles = [_LifecycleProbeHandle(), _LifecycleProbeHandle()]
     handles[1].pid = 102
@@ -2155,13 +2222,11 @@ def test_worker_escalation_signals_all_live_handles_in_one_pass(
     )
     loader = _LifecycleProbeLoader(private_iterator)
     opened = iter(handles)
-    monkeypatch.setattr(dldm._WorkerHandle, 'open',
-                        lambda _process: next(opened))
+    monkeypatch.setattr(dldm._WorkerHandle, 'open', lambda _process: next(opened))
 
     for handle in handles:
 
-        def _signal(sig: int, *,
-                    target: _LifecycleProbeHandle = handle) -> None:
+        def _signal(sig: int, *, target: _LifecycleProbeHandle = handle) -> None:
             signal_calls.append((target.pid, sig))
             target.alive = False
             if len(signal_calls) == len(handles):
@@ -2190,7 +2255,8 @@ def test_worker_escalation_kills_term_survivor_and_waits_for_exit(
     post_kill_polls: int,
 ) -> None:
     registry, iterator, handle = _lifecycle_probe_worker_pool(
-        monkeypatch, shutdown=lambda: None)
+        monkeypatch, shutdown=lambda: None
+    )
     remaining_polls = post_kill_polls
     kill_sent = False
 
@@ -2225,7 +2291,8 @@ def test_worker_escalation_kills_term_survivor_and_waits_for_exit(
 
 
 def test_successful_final_batch_does_not_start_cleanup(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, iterator, handle = _lifecycle_probe_worker_pool(monkeypatch)
     thread_names = []
     original_start = threading.Thread.start
@@ -2269,7 +2336,8 @@ def test_worker_pool_shutdown_waits_for_phase_barrier() -> None:
 
 
 def test_worker_pool_escalates_when_private_shutdown_blocks(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
     loader = _worker_pool_loader(registry, phase='train', advertised_batches=2)
     iterator = iter(loader)
@@ -2279,8 +2347,9 @@ def test_worker_pool_escalates_when_private_shutdown_blocks(
     release = threading.Event()
     private_iterator = iterator._iterator
     assert private_iterator is not None
-    monkeypatch.setattr(private_iterator, '_shutdown_workers',
-                        lambda: release.wait(timeout=5))
+    monkeypatch.setattr(
+        private_iterator, '_shutdown_workers', lambda: release.wait(timeout=5)
+    )
     monkeypatch.setattr(dldm, '_WORKER_COOPERATIVE_GRACE_SECONDS', 0.01)
     monkeypatch.setattr(dldm, '_WORKER_TERM_GRACE_SECONDS', 0.01)
     monkeypatch.setattr(dldm, '_WORKER_SHUTDOWN_DEADLINE_SECONDS', 2.0)
@@ -2301,10 +2370,10 @@ def test_worker_pool_escalates_when_private_shutdown_blocks(
 
 
 def test_worker_pool_uses_one_absolute_deadline_when_private_hook_never_returns(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = dldm._WorkerPoolRegistry()
-    loader = _worker_pool_loader(registry, phase='predict',
-                                 advertised_batches=1)
+    loader = _worker_pool_loader(registry, phase='predict', advertised_batches=1)
     iterator = iter(loader)
     assert isinstance(iterator, dldm._WorkerPoolIterator)
     private_iterator = iterator._iterator
@@ -2312,14 +2381,15 @@ def test_worker_pool_uses_one_absolute_deadline_when_private_hook_never_returns(
     worker_pids = registry.worker_pids
     assert len(worker_pids) == 2
     expected_signal_error = RuntimeError(
-        f'DataLoader worker (pid {worker_pids[0]}) is killed by signal: '
-        'Terminated. ')
+        f'DataLoader worker (pid {worker_pids[0]}) is killed by signal: Terminated. '
+    )
     assert iterator._is_expected_worker_signal_error(expected_signal_error)
     assert not iterator._is_expected_worker_signal_error(
-        RuntimeError('unexpected shutdown error'))
+        RuntimeError('unexpected shutdown error')
+    )
     assert not iterator._is_expected_worker_signal_error(
-        RuntimeError(
-            'DataLoader worker (pid 999999) is killed by signal: Terminated. '))
+        RuntimeError('DataLoader worker (pid 999999) is killed by signal: Terminated. ')
+    )
     release = threading.Event()
     monkeypatch.setattr(private_iterator, '_shutdown_workers', release.wait)
     monkeypatch.setattr(dldm, '_WORKER_COOPERATIVE_GRACE_SECONDS', 0.01)
@@ -2335,15 +2405,17 @@ def test_worker_pool_uses_one_absolute_deadline_when_private_hook_never_returns(
             signal_error_injected = True
             raise expected_signal_error
 
-    monkeypatch.setattr(iterator, '_signal_live_workers',
-                        _signal_and_report_worker_exit)
+    monkeypatch.setattr(
+        iterator, '_signal_live_workers', _signal_and_report_worker_exit
+    )
 
     started = time.monotonic()
     try:
         final_batch = next(iterator)
         assert final_batch is not None
-        with pytest.raises(dldm.DataLoaderWorkerShutdownError,
-                           match='absolute deadline'):
+        with pytest.raises(
+            dldm.DataLoaderWorkerShutdownError, match='absolute deadline'
+        ):
             iterator.close()
     finally:
         release.set()
@@ -2376,13 +2448,13 @@ def test_train_pool_is_gone_before_validation_pool_starts() -> None:
 
 def test_new_phase_is_rejected_before_spawning_overlapping_workers() -> None:
     registry = dldm._WorkerPoolRegistry()
-    train = _worker_pool_loader(registry, phase="train", advertised_batches=2)
-    val = _worker_pool_loader(registry, phase="val", advertised_batches=1)
+    train = _worker_pool_loader(registry, phase='train', advertised_batches=2)
+    val = _worker_pool_loader(registry, phase='val', advertised_batches=1)
     train_iterator = iter(train)
     next(train_iterator)
     train_pids = registry.worker_pids
 
-    with pytest.raises(RuntimeError, match="epoch-boundary validation"):
+    with pytest.raises(RuntimeError, match='epoch-boundary validation'):
         iter(val)
 
     assert registry.worker_pids == train_pids
@@ -2420,11 +2492,12 @@ def test_persistent_worker_loader_can_restart_after_explicit_close() -> None:
 
 
 def test_worker_pool_callback_closes_truncated_and_failed_phases(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2443,19 +2516,21 @@ def test_worker_pool_callback_closes_truncated_and_failed_phases(
 
 
 def test_predict_callback_deferral_does_not_skip_writer_owned_barrier(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
     events = []
     monkeypatch.setattr(
-        dm._worker_pool_registry, 'shutdown',
-        lambda phase, reason='phase-barrier': events.append(
-            ('shutdown', phase)))
+        dm._worker_pool_registry,
+        'shutdown',
+        lambda phase, reason='phase-barrier': events.append(('shutdown', phase)),
+    )
     callback = dm.worker_pool_lifecycle_callback()
     trainer = types.SimpleNamespace(datamodule=dm)
 
@@ -2467,12 +2542,11 @@ def test_predict_callback_deferral_does_not_skip_writer_owned_barrier(
     assert events == [('shutdown', 'predict')]
 
 
-def test_predict_worker_shutdown_deferral_is_nested_and_base_exception_safe(
-) -> None:
+def test_predict_worker_shutdown_deferral_is_nested_and_base_exception_safe() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2490,7 +2564,7 @@ def test_worker_pool_callback_reaps_processes_on_exception() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2505,8 +2579,9 @@ def test_worker_pool_callback_reaps_processes_on_exception() -> None:
     assert len(worker_pids) == 2
 
     trainer = types.SimpleNamespace(datamodule=dm)
-    dm.worker_pool_lifecycle_callback().on_exception(trainer, None,
-                                                     RuntimeError('failed'))
+    dm.worker_pool_lifecycle_callback().on_exception(
+        trainer, None, RuntimeError('failed')
+    )
 
     assert dm.active_dataloader_worker_pids == ()
     _assert_processes_gone(worker_pids)
@@ -2516,32 +2591,31 @@ def test_worker_fetch_failure_reaps_processes() -> None:
     registry = dldm._WorkerPoolRegistry()
     loader = dldm._WorkerPoolDataLoader(
         _FailingWorkerIterable(),
-        phase="train",
+        phase='train',
         registry=registry,
         batch_size=None,
         num_workers=2,
-        multiprocessing_context="fork",
+        multiprocessing_context='fork',
         prefetch_factor=1,
     )
     iterator = iter(loader)
     worker_pids = iterator.worker_pids
     assert len(worker_pids) == 2
 
-    with pytest.raises(RuntimeError, match="worker fetch failed"):
+    with pytest.raises(RuntimeError, match='worker fetch failed'):
         next(iterator)
 
     assert registry.worker_pids == ()
     _assert_processes_gone(worker_pids)
 
 
-def test_direct_lightning_fit_installs_callback_and_never_overlaps_pools(
-) -> None:
+def test_direct_lightning_fit_installs_callback_and_never_overlaps_pools() -> None:
     class ProbeDataModule(DiskgraphLightningDataModule):
         def __init__(self) -> None:
             super().__init__(
                 _manifest(),
                 _mapper_bank(),
-                sampling_plan={"layers": []},
+                sampling_plan={'layers': []},
                 train_batch_size=2,
                 eval_batch_size=1,
             )
@@ -2605,16 +2679,20 @@ def test_direct_lightning_fit_installs_callback_and_never_overlaps_pools(
     assert model.first_batch_worker_counts == [2, 2]
     assert model.val_start_worker_counts == [2, 2, 2]
     assert dm.active_dataloader_worker_pids == ()
-    assert sum(
-        isinstance(callback, dldm._ShutdownWorkerPoolsCallback)
-        for callback in trainer.callbacks) == 1
+    assert (
+        sum(
+            isinstance(callback, dldm._ShutdownWorkerPoolsCallback)
+            for callback in trainer.callbacks
+        )
+        == 1
+    )
 
 
 def test_setup_does_not_duplicate_explicit_worker_lifecycle_callback() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2627,14 +2705,15 @@ def test_setup_does_not_duplicate_explicit_worker_lifecycle_callback() -> None:
 
 
 def test_prefetch_factor_is_not_set_without_workers(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # PyTorch rejects prefetch_factor at num_workers == 0, so it must be
     # dropped rather than forwarded.
     _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
         num_workers=0,
@@ -2643,15 +2722,15 @@ def test_prefetch_factor_is_not_set_without_workers(
     assert dm.train_dataloader().prefetch_factor is None
 
 
-@pytest.mark.parametrize("bad", [0, -1])
+@pytest.mark.parametrize('bad', [0, -1])
 def test_prefetch_factor_below_one_is_rejected_early(bad: int) -> None:
     # Caught at construction rather than when the DataLoader is built, so
     # the error names the config that is wrong.
-    with pytest.raises(ValueError, match="prefetch_factor must be >= 1"):
+    with pytest.raises(ValueError, match='prefetch_factor must be >= 1'):
         DiskgraphLightningDataModule(
             _manifest(),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan={'layers': []},
             train_batch_size=2,
             eval_batch_size=1,
             num_workers=2,
@@ -2674,67 +2753,61 @@ def test_task_manifest_loads_sidecar_bundle_from_writer(tmp_path) -> None:
     )
 
     spec = TaskDatasetMaterializeSpec(
-        tt_manifest_path="/tmp/tt/manifest.json",
-        job_id="job-test",
-        artifact_root=str(tmp_path / "bundle"),
-        task_family="node_prediction",
-        task_type="binary_classification",
+        tt_manifest_path='/tmp/tt/manifest.json',
+        job_id='job-test',
+        artifact_root=str(tmp_path / 'bundle'),
+        task_family='node_prediction',
+        task_type='binary_classification',
         is_temporal=False,
-        seed_node_type="User",
-        train_table_name="train_table",
-        entity_table_name="User",
+        seed_node_type='User',
+        train_table_name='train_table',
+        entity_table_name='User',
         feature_schema={
-            "node_types": {
-                "User": {
-                    "feature_columns": ["AGE"],
-                    "mapper_key":
-                    "User",
-                    "time_column":
-                    None,
-                    "column_specs": [{
-                        "column_name": "AGE",
-                        "dtype": "int64",
-                        "stype": "numerical",
-                        "encoder": {
-                            "name": "Numerical"
-                        },
-                        "stats": {
-                            "MEAN": 0.0
-                        },
-                    }],
+            'node_types': {
+                'User': {
+                    'feature_columns': ['AGE'],
+                    'mapper_key': 'User',
+                    'time_column': None,
+                    'column_specs': [
+                        {
+                            'column_name': 'AGE',
+                            'dtype': 'int64',
+                            'stype': 'numerical',
+                            'encoder': {'name': 'Numerical'},
+                            'stats': {'MEAN': 0.0},
+                        }
+                    ],
                 },
             },
-            "target_encoder_input": None,
+            'target_encoder_input': None,
         },
-        graph_node_types=("User", ),
+        graph_node_types=('User',),
         graph_edge_types=(),
     )
     manifest_path = write_thin_manifest(
         spec,
-        graph_index_id="g/v1",
-        graph_index_path="/idx",
+        graph_index_id='g/v1',
+        graph_index_path='/idx',
         stats={},
-        stage_counts={"train": 3},
-        stage_table_refs={"train": {
-            "table_name": "train_seeds"
-        }},
+        stage_counts={'train': 3},
+        stage_table_refs={'train': {'table_name': 'train_seeds'}},
         has_time=False,
         has_weight=False,
     )
     runtime_manifest_path = write_flat_manifest(
         spec,
-        bundle_dir=str(tmp_path / "bundle"),
-        graph_index_path="/idx",
-        stage_index_path="/idx/train_tables/tt-test",
-        stage_counts={"train": 3},
+        bundle_dir=str(tmp_path / 'bundle'),
+        graph_index_path='/idx',
+        stage_index_path='/idx/train_tables/tt-test',
+        stage_counts={'train': 3},
         stage_table_refs={
-            "train": {
-                "table_name": "train_seeds",
-                "binary_label_index": {
-                    "false_node_ids": "train_seeds/false_node_ids.bin",
-                    "false_count": 2,
-                    "true_node_ids": "train_seeds/true_node_ids.bin",
-                    "true_count": 1,
+            'train': {
+                'table_name': 'train_seeds',
+                'binary_label_index': {
+                    'false_node_ids': 'train_seeds/false_node_ids.bin',
+                    'false_count': 2,
+                    'true_node_ids': 'train_seeds/true_node_ids.bin',
+                    'true_count': 1,
                 },
             }
         },
@@ -2746,20 +2819,20 @@ def test_task_manifest_loads_sidecar_bundle_from_writer(tmp_path) -> None:
 
     assert manifest.manifest_path == manifest_path
     assert manifest.runtime_manifest_path == runtime_manifest_path
-    assert manifest.train_table_name == "train_table"
-    assert manifest.seed_node_type == "User"
-    assert manifest.task_type == "binary_classification"
+    assert manifest.train_table_name == 'train_table'
+    assert manifest.seed_node_type == 'User'
+    assert manifest.task_type == 'binary_classification'
     runtime_manifest = json.loads(open(runtime_manifest_path).read())
-    assert runtime_manifest["stages"]["train"]["binary_label_index"] == {
-        "false_node_ids": "train_seeds/false_node_ids.bin",
-        "false_count": 2,
-        "true_node_ids": "train_seeds/true_node_ids.bin",
-        "true_count": 1,
+    assert runtime_manifest['stages']['train']['binary_label_index'] == {
+        'false_node_ids': 'train_seeds/false_node_ids.bin',
+        'false_count': 2,
+        'true_node_ids': 'train_seeds/true_node_ids.bin',
+        'true_count': 1,
     }
     # Sidecar carries post-bridge ENTITY / TARGET (legacy graphstore shape).
-    assert manifest.train_table_columns["seed_id_column"] == "ENTITY"
-    assert manifest.train_table_columns["target_column"] == "TARGET"
-    assert manifest.graph_runtime_metadata["graph_index_path"] == "/idx"
+    assert manifest.train_table_columns['seed_id_column'] == 'ENTITY'
+    assert manifest.train_table_columns['target_column'] == 'TARGET'
+    assert manifest.graph_runtime_metadata['graph_index_path'] == '/idx'
 
 
 # RHS MIPS dataloaders (two-tower deep LP eval) ###########################
@@ -2779,57 +2852,62 @@ def _rhs_lp_manifest(
     ``split_info.json``). ``target_node_type`` defaults to ``seed_node_type``
     (== ``"User"``); pass it explicitly to model the LHS != RHS topology where
     the RHS seed block is a distinct node type."""
-    rhs_type = target_node_type or "User"
-    index_dir = tmp_path / "graph_index"
+    rhs_type = target_node_type or 'User'
+    index_dir = tmp_path / 'graph_index'
     index_dir.mkdir(parents=True, exist_ok=True)
-    (index_dir / "index_metadata.json").write_text(
-        json.dumps({
-            "node_types": [{
-                "name": rhs_type,
-                "max_id": num_rhs - 1,
-            }],
-        }))
+    (index_dir / 'index_metadata.json').write_text(
+        json.dumps(
+            {
+                'node_types': [
+                    {
+                        'name': rhs_type,
+                        'max_id': num_rhs - 1,
+                    }
+                ],
+            }
+        )
+    )
 
     manifest_obj: dict[str, Any] = {
-        "artifact_root": str(tmp_path),
-        "split_info_path": "split_info.json",
+        'artifact_root': str(tmp_path),
+        'split_info_path': 'split_info.json',
     }
     stage_seed_times: dict[str, list[int]] = {}
     if val_time_ns is not None:
-        stage_seed_times["val"] = [val_time_ns, val_time_ns]
+        stage_seed_times['val'] = [val_time_ns, val_time_ns]
     if test_time_ns is not None:
-        stage_seed_times["test"] = [test_time_ns, test_time_ns]
+        stage_seed_times['test'] = [test_time_ns, test_time_ns]
     if predict_time_ns is not None:
-        stage_seed_times["predict"] = [predict_time_ns, predict_time_ns]
-    (tmp_path / "split_info.json").write_text(
-        json.dumps({
-            "stage_counts": {
-                "val": 5,
-                "test": 5
-            },
-            "stage_seed_times": stage_seed_times,
-        }))
+        stage_seed_times['predict'] = [predict_time_ns, predict_time_ns]
+    (tmp_path / 'split_info.json').write_text(
+        json.dumps(
+            {
+                'stage_counts': {'val': 5, 'test': 5},
+                'stage_seed_times': stage_seed_times,
+            }
+        )
+    )
 
     return DiskgraphTaskManifest(
-        manifest_path=str(tmp_path / "manifest.json"),
-        runtime_manifest_path="/tmp/runtime_manifest.json",
+        manifest_path=str(tmp_path / 'manifest.json'),
+        runtime_manifest_path='/tmp/runtime_manifest.json',
         manifest=manifest_obj,
         metadata={
-            "train_table_name": "train_table",
-            "seed_node_type": "User",
-            "target_node_type": rhs_type,
-            "task_type": "temporal_link_prediction",
-            "train_table_columns": {
-                "seed_id_column": "ENTITY",
-                "target_column": "TARGET",
-                "time_column": "TIMESTAMP",
+            'train_table_name': 'train_table',
+            'seed_node_type': 'User',
+            'target_node_type': rhs_type,
+            'task_type': 'temporal_link_prediction',
+            'train_table_columns': {
+                'seed_id_column': 'ENTITY',
+                'target_column': 'TARGET',
+                'time_column': 'TIMESTAMP',
             },
         },
         feature_schema=_feature_schema(),
         graph_runtime_metadata={
-            "node_types": list({"User", rhs_type}),
-            "edge_types": [],
-            "graph_index_path": str(index_dir),
+            'node_types': list({'User', rhs_type}),
+            'edge_types': [],
+            'graph_index_path': str(index_dir),
         },
     )
 
@@ -2842,10 +2920,10 @@ def _rhs_dm(
     return DiskgraphLightningDataModule(
         manifest,
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=eval_batch_size,
-        task_type="temporal_link_prediction",
+        task_type='temporal_link_prediction',
     )
 
 
@@ -2858,8 +2936,7 @@ def test_rhs_val_dataloader_noderange_kwargs_and_ordering(
     single-worker, in-order, no drop_last / no replay."""
     calls = _install_fake_diskgraph(monkeypatch)
     # 2_000_000_000 ns == 2 s.
-    dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=5, val_time_ns=2_000_000_000))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path, num_rhs=5, val_time_ns=2_000_000_000))
 
     loader = dm.rhs_val_dataloader()
 
@@ -2874,14 +2951,14 @@ def test_rhs_val_dataloader_noderange_kwargs_and_ordering(
 
     # Drive one batch to capture the NodeRange kwargs threaded to the wheel.
     list(loader)
-    kwargs = calls["kwargs"]
-    assert kwargs["shuffle"] is False
-    assert kwargs["drop_last"] is False
-    assert kwargs["rhs_seed_node_type"] == "User"
-    assert kwargs["rhs_seed_time"] == 2  # 2_000_000_000 ns -> 2 s
+    kwargs = calls['kwargs']
+    assert kwargs['shuffle'] is False
+    assert kwargs['drop_last'] is False
+    assert kwargs['rhs_seed_node_type'] == 'User'
+    assert kwargs['rhs_seed_time'] == 2  # 2_000_000_000 ns -> 2 s
     # Single shard (num_workers=0 -> the iterable runs as 1 worker).
-    assert kwargs["num_workers"] == 1
-    assert kwargs["worker_id"] == 0
+    assert kwargs['num_workers'] == 1
+    assert kwargs['worker_id'] == 0
 
 
 def test_rhs_val_dataloader_static_seed_time_fallback(
@@ -2894,7 +2971,7 @@ def test_rhs_val_dataloader_static_seed_time_fallback(
 
     calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_val_dataloader())
-    assert calls["kwargs"]["rhs_seed_time"] == 0
+    assert calls['kwargs']['rhs_seed_time'] == 0
 
 
 def test_rhs_test_and_predict_dataloader_seed_times(
@@ -2904,17 +2981,19 @@ def test_rhs_test_and_predict_dataloader_seed_times(
     """rhs_test uses test_time; rhs_predict falls back to test_time (no
     dedicated predict seed time is emitted)."""
     dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=4, val_time_ns=1_000_000_000,
-                         test_time_ns=7_000_000_000))
+        _rhs_lp_manifest(
+            tmp_path, num_rhs=4, val_time_ns=1_000_000_000, test_time_ns=7_000_000_000
+        )
+    )
 
     calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_test_dataloader())
-    assert calls["kwargs"]["rhs_seed_time"] == 7
+    assert calls['kwargs']['rhs_seed_time'] == 7
 
     calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_predict_dataloader())
     # predict falls back to test_time when no dedicated predict range exists.
-    assert calls["kwargs"]["rhs_seed_time"] == 7
+    assert calls['kwargs']['rhs_seed_time'] == 7
 
 
 def test_predict_time_uses_predict_stage_seed_time(
@@ -2925,9 +3004,14 @@ def test_predict_time_uses_predict_stage_seed_time(
     ``predict_time`` (and the RHS predict loader) use it over ``test_time``.
     This is the temporal-LP prediction-anchor path."""
     dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=4, val_time_ns=1_000_000_000,
-                         test_time_ns=7_000_000_000,
-                         predict_time_ns=9_000_000_000))
+        _rhs_lp_manifest(
+            tmp_path,
+            num_rhs=4,
+            val_time_ns=1_000_000_000,
+            test_time_ns=7_000_000_000,
+            predict_time_ns=9_000_000_000,
+        )
+    )
 
     # predict_time resolves to the predict-stage anchor (ns), not test_time.
     assert int(dm.predict_time.reshape(-1)[0].item()) == 9_000_000_000
@@ -2935,7 +3019,7 @@ def test_predict_time_uses_predict_stage_seed_time(
     calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_predict_dataloader())
     # 9_000_000_000 ns -> 9 s; the RHS NodeRange loader seeds at the anchor.
-    assert calls["kwargs"]["rhs_seed_time"] == 9
+    assert calls['kwargs']['rhs_seed_time'] == 9
 
 
 def test_predict_only_bundle_predict_time_non_none(
@@ -2946,8 +3030,7 @@ def test_predict_only_bundle_predict_time_non_none(
     train/val/test). ``predict_time`` must still resolve to the anchor so the
     RHS NodeRange loader gets a non-None ``rhs_seed_time`` (the bug: it used to
     fall back to ``test_time`` == None and the engine raised)."""
-    dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=4, predict_time_ns=5_000_000_000))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path, num_rhs=4, predict_time_ns=5_000_000_000))
 
     # No test_time in a predict-only bundle; predict_time still non-None.
     assert dm.test_time is None
@@ -2956,7 +3039,7 @@ def test_predict_only_bundle_predict_time_non_none(
 
     calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_predict_dataloader())
-    assert calls["kwargs"]["rhs_seed_time"] == 5
+    assert calls['kwargs']['rhs_seed_time'] == 5
 
 
 def test_predict_only_static_bundle_zero_sentinel_seed_time(
@@ -2973,7 +3056,7 @@ def test_predict_only_static_bundle_zero_sentinel_seed_time(
 
     calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_predict_dataloader())
-    assert calls["kwargs"]["rhs_seed_time"] == 0
+    assert calls['kwargs']['rhs_seed_time'] == 0
 
 
 def test_rhs_dataloader_covers_node_ids_in_order_with_seed_time_and_bs(
@@ -2986,19 +3069,17 @@ def test_rhs_dataloader_covers_node_ids_in_order_with_seed_time_and_bs(
     # Emit the full [0,5) range as three in-order batches on the "test" stage.
     _install_fake_diskgraph(
         monkeypatch,
-        batch_input_ids_by_stage={"test": [[0, 1], [2, 3], [4]]},
+        batch_input_ids_by_stage={'test': [[0, 1], [2, 3], [4]]},
     )
-    dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=5, test_time_ns=3_000_000_000))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path, num_rhs=5, test_time_ns=3_000_000_000))
 
     # Patch the collator to inject the seed_ref/seed_time the engine would
     # emit in NodeRange mode (the fake iterator yields the base batch shape).
     orig_to_hetero = dm._to_hetero
 
     def _collate(batch: Any) -> Any:
-        ids = batch["task"]["input_ids"].to_pylist()
-        batch["task"]["seed_timestamps"] = pa.array([3] * len(ids),
-                                                    type=pa.int64())
+        ids = batch['task']['input_ids'].to_pylist()
+        batch['task']['seed_timestamps'] = pa.array([3] * len(ids), type=pa.int64())
         return orig_to_hetero(batch)
 
     dm._to_hetero = _collate  # type: ignore[method-assign]
@@ -3006,12 +3087,12 @@ def test_rhs_dataloader_covers_node_ids_in_order_with_seed_time_and_bs(
     seen_stage_ids: list[int] = []
     for hetero in dm.rhs_test_dataloader():
         # batch_size == #RHS seeds in this batch.
-        assert int(hetero["User"].batch_size) == hetero["User"].input_id.numel()
+        assert int(hetero['User'].batch_size) == hetero['User'].input_id.numel()
         # seed_time present (temporal) on the target type, fixed value.
         # Engine seconds normalized to ns canonical (default unit 's' -> *1e9).
-        assert hetero["User"].seed_time is not None
-        assert torch.all(hetero["User"].seed_time == 3 * 1_000_000_000)
-        seen_stage_ids.extend(hetero["User"].input_id.tolist())
+        assert hetero['User'].seed_time is not None
+        assert torch.all(hetero['User'].seed_time == 3 * 1_000_000_000)
+        seen_stage_ids.extend(hetero['User'].input_id.tolist())
 
     assert seen_stage_ids == [10, 11, 12, 13, 14]
 
@@ -3029,11 +3110,13 @@ def test_rhs_dataloader_seed_time_on_distinct_target_type(
     seed==target."""
     _install_fake_diskgraph(
         monkeypatch,
-        batch_input_ids_by_stage={"test": [[0, 1], [2]]},
+        batch_input_ids_by_stage={'test': [[0, 1], [2]]},
     )
     dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=3, test_time_ns=3_000_000_000,
-                         target_node_type="Item"))
+        _rhs_lp_manifest(
+            tmp_path, num_rhs=3, test_time_ns=3_000_000_000, target_node_type='Item'
+        )
+    )
 
     # Mimic the engine's NodeRange RHS batch: the seed block is the TARGET type
     # ("Item"), at a fixed seed time. The fake iterator yields a "User" block,
@@ -3041,38 +3124,35 @@ def test_rhs_dataloader_seed_time_on_distinct_target_type(
     orig_to_hetero = dm._to_hetero
 
     def _collate(batch: Any) -> Any:
-        ids = batch["task"]["input_ids"].to_pylist()
-        batch["task"]["seed_timestamps"] = pa.array([3] * len(ids),
-                                                    type=pa.int64())
-        main = batch["graphs"]["main"]
-        main["node_ids"] = {"Item": main["node_ids"].pop("User")}
-        main["batch_dict"] = {"Item": main["batch_dict"].pop("User")}
-        main["num_sampled_nodes_dict"] = {
-            "Item": main["num_sampled_nodes_dict"].pop("User")
+        ids = batch['task']['input_ids'].to_pylist()
+        batch['task']['seed_timestamps'] = pa.array([3] * len(ids), type=pa.int64())
+        main = batch['graphs']['main']
+        main['node_ids'] = {'Item': main['node_ids'].pop('User')}
+        main['batch_dict'] = {'Item': main['batch_dict'].pop('User')}
+        main['num_sampled_nodes_dict'] = {
+            'Item': main['num_sampled_nodes_dict'].pop('User')
         }
         return orig_to_hetero(batch)
 
     dm._to_hetero = _collate  # type: ignore[method-assign]
 
     for hetero in dm.rhs_test_dataloader():
-        assert "Item" in hetero.node_types
+        assert 'Item' in hetero.node_types
         # seed_time lands on the TARGET block, not only the LHS seed type.
         # Engine seconds normalized to ns canonical (default unit 's' -> *1e9).
-        assert hetero["Item"].seed_time is not None
-        assert torch.all(hetero["Item"].seed_time == 3 * 1_000_000_000)
-        assert int(
-            hetero["Item"].seed_time.numel()) == hetero["Item"].batch_size
+        assert hetero['Item'].seed_time is not None
+        assert torch.all(hetero['Item'].seed_time == 3 * 1_000_000_000)
+        assert int(hetero['Item'].seed_time.numel()) == hetero['Item'].batch_size
 
 
 def test_rhs_loader_ordering_guard_fires_on_shuffle(tmp_path) -> None:
     """The MIPS-ordering guard rejects a misconfigured RHS loader (shuffle)."""
-    dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=4, test_time_ns=1_000_000_000))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path, num_rhs=4, test_time_ns=1_000_000_000))
     bad = DataLoader(
         DiskgraphTaskBatchIterable(
-            manifest_path="/tmp/runtime_manifest.json",
-            stage="test",
-            sampling_plan={"layers": []},
+            manifest_path='/tmp/runtime_manifest.json',
+            stage='test',
+            sampling_plan={'layers': []},
             batch_size=2,
             shuffle=True,  # violates the contract
             drop_last=False,
@@ -3084,19 +3164,18 @@ def test_rhs_loader_ordering_guard_fires_on_shuffle(tmp_path) -> None:
         batch_size=None,
         num_workers=0,
     )
-    with pytest.raises(AssertionError, match="must not shuffle"):
+    with pytest.raises(AssertionError, match='must not shuffle'):
         dm._assert_rhs_loader_ordering(bad)
 
 
 def test_rhs_loader_ordering_guard_fires_on_num_workers(tmp_path) -> None:
     """The guard rejects a multi-worker RHS loader (breaks in-order cat)."""
-    dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=4, test_time_ns=1_000_000_000))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path, num_rhs=4, test_time_ns=1_000_000_000))
     bad = DataLoader(
         DiskgraphTaskBatchIterable(
-            manifest_path="/tmp/runtime_manifest.json",
-            stage="test",
-            sampling_plan={"layers": []},
+            manifest_path='/tmp/runtime_manifest.json',
+            stage='test',
+            sampling_plan={'layers': []},
             batch_size=2,
             shuffle=False,
             drop_last=False,
@@ -3108,7 +3187,7 @@ def test_rhs_loader_ordering_guard_fires_on_num_workers(tmp_path) -> None:
         batch_size=None,
         num_workers=2,
     )
-    with pytest.raises(AssertionError, match="num_workers=0"):
+    with pytest.raises(AssertionError, match='num_workers=0'):
         dm._assert_rhs_loader_ordering(bad)
 
 
@@ -3119,9 +3198,8 @@ def test_rhs_dataloader_raises_when_num_rhs_zero(
     """A missing / empty RHS node count is a hard error (an empty MIPS index
     would silently break retrieval)."""
     _install_fake_diskgraph(monkeypatch)
-    dm = _rhs_dm(
-        _rhs_lp_manifest(tmp_path, num_rhs=0, test_time_ns=1_000_000_000))
-    with pytest.raises(RuntimeError, match="positive RHS node count"):
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path, num_rhs=0, test_time_ns=1_000_000_000))
+    with pytest.raises(RuntimeError, match='positive RHS node count'):
         dm.rhs_test_dataloader()
 
 
@@ -3147,8 +3225,7 @@ def test_max_eval_batches_returns_none_when_cap_does_not_bite():
     # Genuine cap that bites: natural=ceil(100000/16)=6250 > 5 -> honor 5.
     assert inst._max_eval_batches(100000, 16, 5) == 5
     # Boundary: cap exactly == natural -> no real cap -> None.
-    assert inst._max_eval_batches(214, 16, inst._natural_batches(214,
-                                                                 16)) is None
+    assert inst._max_eval_batches(214, 16, inst._natural_batches(214, 16)) is None
 
 
 # Single-timestamp grouped batches (temporal-LP train loader) ################
@@ -3165,17 +3242,17 @@ def _install_grouped_fake_diskgraph(
     mode, reports ``grouped_num_samples`` as the (BATCH-count) ``num_samples``
     and yields exactly that many batches; otherwise behaves like the flat fake.
     """
-    calls: dict[str, Any] = {"history": []}
+    calls: dict[str, Any] = {'history': []}
 
     def make_runtime_batch_iterator(*args: Any, **kwargs: Any):
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        calls["history"].append({"args": args, "kwargs": kwargs})
-        if kwargs.get("group_by_timestamp"):
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        calls['history'].append({'args': args, 'kwargs': kwargs})
+        if kwargs.get('group_by_timestamp'):
             return _FakeTaskIterator(grouped_num_samples), grouped_num_samples
         return _FakeTaskIterator(flat_batches_per_iterator), flat_num_samples
 
-    stub = types.ModuleType("diskgraph")
+    stub = types.ModuleType('diskgraph')
     stub.make_runtime_batch_iterator = make_runtime_batch_iterator  # type: ignore[attr-defined]
 
     class _StubRuntimeIndex:
@@ -3184,24 +3261,26 @@ def _install_grouped_fake_diskgraph(
         Delegates to the fake factory above so each test's expectations about
         Remembers what moved to open-time and puts it back.
         """
+
         def __init__(self, dataset_ref, rnd_seed=None, num_threads=None):
             self._ref = dataset_ref
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
         def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+            kwargs.setdefault('rnd_seed', self._rnd_seed)
             if self._num_threads is not None:
-                kwargs.setdefault("num_threads", self._num_threads)
+                kwargs.setdefault('num_threads', self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, 'diskgraph', stub)
     # Grouping is gated on a TEMPORAL RHS (see ``_rhs_is_temporal``). These
     # grouping tests use a fake manifest with no index metadata, so force the
     # RHS-temporal signal True to isolate the grouping behaviour under test.
-    monkeypatch.setattr(DiskgraphLightningDataModule, "_rhs_is_temporal",
-                        property(lambda self: True))
+    monkeypatch.setattr(
+        DiskgraphLightningDataModule, '_rhs_is_temporal', property(lambda self: True)
+    )
     return calls
 
 
@@ -3223,15 +3302,15 @@ def _install_grouped_fake_diskgraph_per_stage(
     this fake), which is what lets the global-count path reuse the flat replay
     machinery.
     """
-    calls: dict[str, Any] = {"history": []}
-    _STAGE_ID_BASE = {"train": 0, "val": 1000, "test": 2000}
+    calls: dict[str, Any] = {'history': []}
+    _STAGE_ID_BASE = {'train': 0, 'val': 1000, 'test': 2000}
 
     def make_runtime_batch_iterator(*args: Any, **kwargs: Any):
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        calls["history"].append({"args": args, "kwargs": kwargs})
-        stage = kwargs["stage"]
-        if kwargs.get("group_by_timestamp"):
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        calls['history'].append({'args': args, 'kwargs': kwargs})
+        stage = kwargs['stage']
+        if kwargs.get('group_by_timestamp'):
             count = grouped_num_samples_by_stage[stage]
             # Tag each batch with a stage-specific input_id range so iteration
             # coverage across stages is checkable (train->0.., val->1000..).
@@ -3240,7 +3319,7 @@ def _install_grouped_fake_diskgraph_per_stage(
             return _FakeTaskIterator(count, batch_input_ids), count
         return _FakeTaskIterator(1), flat_num_samples
 
-    stub = types.ModuleType("diskgraph")
+    stub = types.ModuleType('diskgraph')
     stub.make_runtime_batch_iterator = make_runtime_batch_iterator  # type: ignore[attr-defined]
 
     class _StubRuntimeIndex:
@@ -3249,26 +3328,28 @@ def _install_grouped_fake_diskgraph_per_stage(
         Delegates to the fake factory above so each test's expectations about
         Remembers what moved to open-time and puts it back.
         """
+
         def __init__(self, dataset_ref, rnd_seed=None, num_threads=None):
             self._ref = dataset_ref
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
         def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+            kwargs.setdefault('rnd_seed', self._rnd_seed)
             if self._num_threads is not None:
-                kwargs.setdefault("num_threads", self._num_threads)
+                kwargs.setdefault('num_threads', self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, 'diskgraph', stub)
     # See _install_grouped_fake_diskgraph: force the RHS-temporal gate True.
-    monkeypatch.setattr(DiskgraphLightningDataModule, "_rhs_is_temporal",
-                        property(lambda self: True))
+    monkeypatch.setattr(
+        DiskgraphLightningDataModule, '_rhs_is_temporal', property(lambda self: True)
+    )
     return calls
 
 
-_TEMPORAL_LP = "temporal_link_prediction"
+_TEMPORAL_LP = 'temporal_link_prediction'
 
 
 def test_temporal_lp_train_loader_enables_grouping(
@@ -3279,17 +3360,16 @@ def test_temporal_lp_train_loader_enables_grouping(
     loader and ONLY that loader (val/test/predict stay flat)."""
     calls = _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=2)
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [10, 10]})
+        tmp_path, buckets_by_stage={'train': [10, 10]}
+    )
     dm = DiskgraphLightningDataModule(
         _manifest(
-            tmp_path=tmp_path, stage_counts={
-                "train": 20,
-                "val": 10,
-                "test": 10,
-                "predict": 10
-            }, runtime_manifest_path=runtime_path),
+            tmp_path=tmp_path,
+            stage_counts={'train': 20, 'val': 10, 'test': 10, 'predict': 10},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3297,16 +3377,16 @@ def test_temporal_lp_train_loader_enables_grouping(
     )
 
     list(dm.train_dataloader())
-    assert calls["history"], "train loader never opened the iterator"
-    assert all(c["kwargs"].get("group_by_timestamp") is True
-               for c in calls["history"])
+    assert calls['history'], 'train loader never opened the iterator'
+    assert all(c['kwargs'].get('group_by_timestamp') is True for c in calls['history'])
 
-    for method in ("val_dataloader", "test_dataloader", "predict_dataloader"):
-        calls["history"].clear()
+    for method in ('val_dataloader', 'test_dataloader', 'predict_dataloader'):
+        calls['history'].clear()
         list(getattr(dm, method)())
-        assert calls["history"], f"{method} never opened the iterator"
-        assert all(c["kwargs"].get("group_by_timestamp") is False
-                   for c in calls["history"]), f"{method} must not group"
+        assert calls['history'], f'{method} never opened the iterator'
+        assert all(
+            c['kwargs'].get('group_by_timestamp') is False for c in calls['history']
+        ), f'{method} must not group'
 
 
 def test_static_lp_with_lhs_loader_and_temporal_rhs_groups(
@@ -3318,21 +3398,24 @@ def test_static_lp_with_lhs_loader_and_temporal_rhs_groups(
     (static OR temporal), NOT just ``temporal_link_prediction``."""
     calls = _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=2)
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [10, 10]})
+        tmp_path, buckets_by_stage={'train': [10, 10]}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 20},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
-        task_type="static_link_prediction",
+        task_type='static_link_prediction',
         use_lhs_node_loader=True,
     )
     list(dm.train_dataloader())
-    assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is True
-               for c in calls["history"])
+    assert calls['history']
+    assert all(c['kwargs'].get('group_by_timestamp') is True for c in calls['history'])
 
 
 def test_non_lp_task_never_groups(
@@ -3343,18 +3426,17 @@ def test_non_lp_task_never_groups(
     groups even with a temporal RHS, because ``is_link_pred`` is False."""
     calls = _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=2)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
-        task_type="regression",
+        task_type='regression',
         use_lhs_node_loader=True,
     )
     list(dm.train_dataloader())
-    assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is False
-               for c in calls["history"])
+    assert calls['history']
+    assert all(c['kwargs'].get('group_by_timestamp') is False for c in calls['history'])
 
 
 def test_two_tower_no_lhs_loader_does_not_group(
@@ -3366,19 +3448,18 @@ def test_two_tower_no_lhs_loader_does_not_group(
     ``TimestampSampler`` under ``module.use_lhs_node_loader``."""
     calls = _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=2)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
-        rhs_node_type="products",
+        rhs_node_type='products',
         use_lhs_node_loader=False,
     )
     list(dm.train_dataloader())
-    assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is False
-               for c in calls["history"])
+    assert calls['history']
+    assert all(c['kwargs'].get('group_by_timestamp') is False for c in calls['history'])
 
 
 def _install_plain_fake_diskgraph(
@@ -3390,17 +3471,17 @@ def _install_plain_fake_diskgraph(
 ) -> dict[str, Any]:
     """Like ``_install_grouped_fake_diskgraph`` but WITHOUT forcing the
     ``_rhs_is_temporal`` gate, so the real RHS-temporality gate is exercised."""
-    calls: dict[str, Any] = {"history": []}
+    calls: dict[str, Any] = {'history': []}
 
     def make_runtime_batch_iterator(*args: Any, **kwargs: Any):
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        calls["history"].append({"args": args, "kwargs": kwargs})
-        if kwargs.get("group_by_timestamp"):
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        calls['history'].append({'args': args, 'kwargs': kwargs})
+        if kwargs.get('group_by_timestamp'):
             return _FakeTaskIterator(grouped_num_samples), grouped_num_samples
         return _FakeTaskIterator(flat_batches_per_iterator), flat_num_samples
 
-    stub = types.ModuleType("diskgraph")
+    stub = types.ModuleType('diskgraph')
     stub.make_runtime_batch_iterator = make_runtime_batch_iterator  # type: ignore[attr-defined]
 
     class _StubRuntimeIndex:
@@ -3409,19 +3490,20 @@ def _install_plain_fake_diskgraph(
         Delegates to the fake factory above so each test's expectations about
         Remembers what moved to open-time and puts it back.
         """
+
         def __init__(self, dataset_ref, rnd_seed=None, num_threads=None):
             self._ref = dataset_ref
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
         def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+            kwargs.setdefault('rnd_seed', self._rnd_seed)
             if self._num_threads is not None:
-                kwargs.setdefault("num_threads", self._num_threads)
+                kwargs.setdefault('num_threads', self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, 'diskgraph', stub)
     return calls
 
 
@@ -3436,21 +3518,20 @@ def test_atemporal_rhs_temporal_lp_train_loader_does_not_group(
     force single-timestamp grouping on an atemporal RHS."""
     calls = _install_plain_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
-        rhs_node_type="products",
+        rhs_node_type='products',
     )
     # Fake manifest has no index metadata -> time_col_dict empty ->
     # _rhs_is_temporal is False.
     assert dm._rhs_is_temporal is False
     list(dm.train_dataloader())
-    assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is False
-               for c in calls["history"])
+    assert calls['history']
+    assert all(c['kwargs'].get('group_by_timestamp') is False for c in calls['history'])
 
 
 def test_temporal_rhs_temporal_lp_train_loader_groups(
@@ -3462,26 +3543,30 @@ def test_temporal_rhs_temporal_lp_train_loader_groups(
     for (per-batch RHS temporal-validity correctness)."""
     calls = _install_plain_fake_diskgraph(monkeypatch)
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [10, 10]})
+        tmp_path, buckets_by_stage={'train': [10, 10]}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 20},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
-        rhs_node_type="products",
+        rhs_node_type='products',
         use_lhs_node_loader=True,
     )
     # Simulate a temporal RHS: products has a create-time column.
-    monkeypatch.setattr(type(dm), "time_col_dict",
-                        property(lambda self: {"products": "create_ts"}))
+    monkeypatch.setattr(
+        type(dm), 'time_col_dict', property(lambda self: {'products': 'create_ts'})
+    )
     assert dm._rhs_is_temporal is True
     list(dm.train_dataloader())
-    assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is True
-               for c in calls["history"])
+    assert calls['history']
+    assert all(c['kwargs'].get('group_by_timestamp') is True for c in calls['history'])
 
 
 def test_rhs_is_temporal_end_time_only(
@@ -3491,27 +3576,28 @@ def test_rhs_is_temporal_end_time_only(
     """Gate signal: an RHS with only an END-time column (no create-time) still
     counts as temporal (matches legacy ``rhs_end_time is not None``)."""
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
-        rhs_node_type="products",
+        rhs_node_type='products',
     )
     # No create-time column, but an end-time column is present.
-    monkeypatch.setattr(type(dm), "time_col_dict", property(lambda self: {}))
-    monkeypatch.setattr(type(dm), "_end_time_col_for",
-                        lambda self, nt: "expire_ts")
+    monkeypatch.setattr(type(dm), 'time_col_dict', property(lambda self: {}))
+    monkeypatch.setattr(type(dm), '_end_time_col_for', lambda self, nt: 'expire_ts')
     assert dm._rhs_is_temporal is True
 
 
-def test_rhs_is_temporal_false_without_rhs_node_type(tmp_path, ) -> None:
+def test_rhs_is_temporal_false_without_rhs_node_type(
+    tmp_path,
+) -> None:
     """Gate signal: no RHS node type -> not temporal (flat path)."""
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3530,12 +3616,16 @@ def test_grouped_train_len_uses_true_batch_count_not_ceil(
     # its own partial tail, count=3) give Σ ceil(3/10) = 5 grouped batches.
     _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=5)
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [3, 3, 3, 3, 3]})
+        tmp_path, buckets_by_stage={'train': [3, 3, 3, 3, 3]}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 20},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3549,12 +3639,12 @@ def test_grouped_train_len_uses_true_batch_count_not_ceil(
 
     # Control: same shape, flat (non-temporal) -> ceil(20/10) = 2.
     flat_dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
-        task_type="static_link_prediction",
+        task_type='static_link_prediction',
     )
     assert len(flat_dm.train_dataloader()) == 2
 
@@ -3568,12 +3658,16 @@ def test_grouped_train_iter_does_not_truncate(
     """
     _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=5)
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [3, 3, 3, 3, 3]})
+        tmp_path, buckets_by_stage={'train': [3, 3, 3, 3, 3]}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 20},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3590,18 +3684,21 @@ def test_grouped_train_len_honors_step_caps(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    """W2: per-epoch min/max-step caps still apply on top of the grouped count.
-    """
+    """W2: per-epoch min/max-step caps still apply on top of the grouped count."""
     # Grouped natural = 4 (four single-ts buckets); max cap 3 bites; min cap
     # floor 2 (does not bite).
     _install_grouped_fake_diskgraph(monkeypatch, grouped_num_samples=4)
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [3, 3, 3, 3]})
+        tmp_path, buckets_by_stage={'train': [3, 3, 3, 3]}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 20},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         max_steps_per_epoch=3,
@@ -3624,12 +3721,16 @@ def test_grouped_num_samples_not_divided_by_batch_size(
     # 7 single-ts buckets, each count=5 (< batch_size): Σ ceil(5/128) = 7. If the
     # bucket counts were summed (35) then //128 it would collapse to 0/1.
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [5, 5, 5, 5, 5, 5, 5]})
+        tmp_path, buckets_by_stage={'train': [5, 5, 5, 5, 5, 5, 5]}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 1000},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 1000},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=128,
         eval_batch_size=128,
         task_type=_TEMPORAL_LP,
@@ -3650,24 +3751,21 @@ def test_grouped_global_batches_from_manifest_buckets(
     # Make make_runtime_batch_iterator explode so the test proves the count is
     # manifest-derived (never opens the sampler).
     def _explode(*_a: Any, **_k: Any):
-        raise AssertionError(
-            "_grouped_global_batches must not open the iterator")
+        raise AssertionError('_grouped_global_batches must not open the iterator')
 
-    stub = types.ModuleType("diskgraph")
+    stub = types.ModuleType('diskgraph')
     stub.make_runtime_batch_iterator = _explode  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, 'diskgraph', stub)
 
     # train: buckets [3, 25] @bs10 -> ceil(3/10)+ceil(25/10) = 1+3 = 4
     # val:   buckets [10, 10]      -> 1+1 = 2  => global = 6.
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={
-            "train": [3, 25],
-            "val": [10, 10]
-        })
+        tmp_path, buckets_by_stage={'train': [3, 25], 'val': [10, 10]}
+    )
     iterable = DiskgraphTaskBatchIterable(
         manifest_path=runtime_path,
-        stage=("train", "val"),
-        sampling_plan={"layers": []},
+        stage=('train', 'val'),
+        sampling_plan={'layers': []},
         batch_size=10,
         shuffle=True,
         drop_last=False,
@@ -3681,36 +3779,41 @@ def test_grouped_global_batches_from_manifest_buckets(
 
 
 def test_grouped_global_batches_fails_loud_without_bucket_index(
-    tmp_path, ) -> None:
+    tmp_path,
+) -> None:
     """FIX 1: a grouped stage with no ``bucket_index`` in the DG manifest fails
     loud (ingest must have emitted grouping), never a silent flat fallback."""
-    ext_root = tmp_path / "tt_ext"
+    ext_root = tmp_path / 'tt_ext'
     ext_root.mkdir()
-    runtime_path = ext_root / "runtime_manifest.json"
+    runtime_path = ext_root / 'runtime_manifest.json'
     runtime_path.write_text(
-        json.dumps({
-            "stages": {
-                "train": {
-                    "table_name": "train_seeds",
-                    "index_path": str(ext_root),
-                    "row_count": 20,
+        json.dumps(
+            {
+                'stages': {
+                    'train': {
+                        'table_name': 'train_seeds',
+                        'index_path': str(ext_root),
+                        'row_count': 20,
+                    }
                 }
             }
-        }))
-    (ext_root / "diskgraph_manifest.json").write_text(
-        json.dumps({
-            "task_dataset": {
-                "stages": {
-                    "train": {
-                        "table_name": "train_seeds"
-                    }  # no bucket_index
+        )
+    )
+    (ext_root / 'diskgraph_manifest.json').write_text(
+        json.dumps(
+            {
+                'task_dataset': {
+                    'stages': {
+                        'train': {'table_name': 'train_seeds'}  # no bucket_index
+                    }
                 }
             }
-        }))
+        )
+    )
     iterable = DiskgraphTaskBatchIterable(
         manifest_path=str(runtime_path),
-        stage="train",
-        sampling_plan={"layers": []},
+        stage='train',
+        sampling_plan={'layers': []},
         batch_size=10,
         shuffle=False,
         drop_last=False,
@@ -3718,7 +3821,7 @@ def test_grouped_global_batches_fails_loud_without_bucket_index(
         shuffle_state=_ShuffleStreamState(),
         group_by_timestamp=True,
     )
-    with pytest.raises(ValueError, match="no bucket_index"):
+    with pytest.raises(ValueError, match='no bucket_index'):
         iterable._grouped_global_batches()
 
 
@@ -3737,28 +3840,23 @@ def test_grouped_multistage_refit_spans_all_stages(
     """
     calls = _install_grouped_fake_diskgraph_per_stage(
         monkeypatch,
-        grouped_num_samples_by_stage={
-            "train": 3,
-            "val": 5
-        },
+        grouped_num_samples_by_stage={'train': 3, 'val': 5},
     )
     runtime_path = _write_grouped_manifests(
         tmp_path,
-        buckets_by_stage={
-            "train": [10, 10, 10],
-            "val": [10] * 5
-        },
+        buckets_by_stage={'train': [10, 10, 10], 'val': [10] * 5},
     )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={
-            "train": 30,
-            "val": 50
-        }, runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 30, 'val': 50},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
-        train_stages=("train", "val"),
+        train_stages=('train', 'val'),
         task_type=_TEMPORAL_LP,
         use_lhs_node_loader=True,
     )
@@ -3769,19 +3867,20 @@ def test_grouped_multistage_refit_spans_all_stages(
     batches = list(loader)
     # delivered == advertised (single worker -> no ceil rounding).
     assert len(batches) == 8
-    seen_ids = [b["train_table"].input_id.item() for b in batches]
+    seen_ids = [b['train_table'].input_id.item() for b in batches]
     # Both stages contributed (train ids < 1000, val ids >= 1000); val NOT
     # dropped. Pre-fix this list would be the 3 train ids only.
-    assert any(i < 1000 for i in seen_ids), "train stage missing"
-    assert any(i >= 1000 for i in seen_ids), "val stage dropped (BUG 1)"
+    assert any(i < 1000 for i in seen_ids), 'train stage missing'
+    assert any(i >= 1000 for i in seen_ids), 'val stage dropped (BUG 1)'
     assert sum(1 for i in seen_ids if i < 1000) == 3
     assert sum(1 for i in seen_ids if i >= 1000) == 5
     # The two stages were actually opened (group mode) for iteration.
     grouped_stages = {
-        c["kwargs"]["stage"]
-        for c in calls["history"] if c["kwargs"].get("group_by_timestamp")
+        c['kwargs']['stage']
+        for c in calls['history']
+        if c['kwargs'].get('group_by_timestamp')
     }
-    assert grouped_stages == {"train", "val"}
+    assert grouped_stages == {'train', 'val'}
 
 
 def test_grouped_global_cap_distributed_across_workers(
@@ -3802,15 +3901,19 @@ def test_grouped_global_cap_distributed_across_workers(
     """
     _install_grouped_fake_diskgraph_per_stage(
         monkeypatch,
-        grouped_num_samples_by_stage={"train": 10},
+        grouped_num_samples_by_stage={'train': 10},
     )
     runtime_path = _write_grouped_manifests(
-        tmp_path, buckets_by_stage={"train": [10] * 10})
+        tmp_path, buckets_by_stage={'train': [10] * 10}
+    )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100},
-                  runtime_manifest_path=runtime_path),
+        _manifest(
+            tmp_path=tmp_path,
+            stage_counts={'train': 100},
+            runtime_manifest_path=runtime_path,
+        ),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         num_workers=2,
@@ -3827,13 +3930,13 @@ def test_grouped_global_cap_distributed_across_workers(
     # ceil(6 / 2) = 3. Mirror what flat does (per_worker_target).
     iterable = loader.dataset
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=2, id=0),
     )
     worker0 = list(iterable)
     assert len(worker0) == 3
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=2, id=1),
     )
     worker1 = list(iterable)
@@ -3851,12 +3954,12 @@ def test_grouped_global_cap_min_steps_distributed(
     the GLOBAL grouped count then distributed across workers, same as flat."""
     _install_grouped_fake_diskgraph_per_stage(
         monkeypatch,
-        grouped_num_samples_by_stage={"train": 4},
+        grouped_num_samples_by_stage={'train': 4},
     )
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 40}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 40}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=10,
         num_workers=2,
@@ -3867,12 +3970,12 @@ def test_grouped_global_cap_min_steps_distributed(
     assert len(loader) == 8  # global floored to min, then advertised
     iterable = loader.dataset
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=2, id=0),
     )
     w0 = list(iterable)
     monkeypatch.setattr(
-        "kumo_core.diskgraph.lightning_data.get_worker_info",
+        'kumo_core.diskgraph.lightning_data.get_worker_info',
         lambda: types.SimpleNamespace(num_workers=2, id=1),
     )
     w1 = list(iterable)
@@ -3894,18 +3997,17 @@ class _FakeSamplerEngine:
         self._index_path = index_path
 
     def fetch_features(self, request):
-        col = request[0]["feature_names"][0]
-        n = len(request[0]["node_ids"])
-        secs = [
-            self._UNIX_SECONDS[i % len(self._UNIX_SECONDS)] for i in range(n)
-        ]
-        arr = pa.array(secs, type=pa.timestamp("s"))
+        col = request[0]['feature_names'][0]
+        n = len(request[0]['node_ids'])
+        secs = [self._UNIX_SECONDS[i % len(self._UNIX_SECONDS)] for i in range(n)]
+        arr = pa.array(secs, type=pa.timestamp('s'))
         batch = pa.RecordBatch.from_arrays([arr], names=[col])
-        return [{"type": "feature", "batch": batch}]
+        return [{'type': 'feature', 'batch': batch}]
 
 
 def test_fetch_rhs_time_col_returns_nanoseconds_not_seconds(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Regression (ns-canonical): ``_fetch_rhs_time_col`` must return create-time
     in int64 NANOSECONDS regardless of the arrow source resolution. Kumo Python
     is ns-canonical, so this column is compared against an ns ``seed_time`` and ns
@@ -3915,20 +4017,24 @@ def test_fetch_rhs_time_col_returns_nanoseconds_not_seconds(
     seed/offsets empties the valid-RHS set => zero training signal (the
     temporal-RHS LP metric floored to ~0)."""
     import diskgraph
-    monkeypatch.setattr(diskgraph, "SamplerEngine", _FakeSamplerEngine)
+
+    monkeypatch.setattr(diskgraph, 'SamplerEngine', _FakeSamplerEngine)
 
     out = dldm.DiskgraphLightningDataModule._fetch_rhs_time_col(
-        index_path="/unused",
-        node_type="products",
+        index_path='/unused',
+        node_type='products',
         num_nodes=3,
-        col_name="product_time",
+        col_name='product_time',
     )
     assert out is not None
-    expected = torch.tensor([1313539200, 1373846400, 944265600],
-                            dtype=torch.long) * 1_000_000_000
+    expected = (
+        torch.tensor([1313539200, 1373846400, 944265600], dtype=torch.long)
+        * 1_000_000_000
+    )
     assert torch.equal(out.long(), expected), (
-        f"expected nanoseconds {expected.tolist()}, got {out.tolist()} "
-        "(seconds => mixed-unit empty-valid-RHS floor bug)")
+        f'expected nanoseconds {expected.tolist()}, got {out.tolist()} '
+        '(seconds => mixed-unit empty-valid-RHS floor bug)'
+    )
 
 
 def test_valid_rhs_filter_nonempty_with_ns_create_time() -> None:
@@ -3937,8 +4043,9 @@ def test_valid_rhs_filter_nonempty_with_ns_create_time() -> None:
     passed offsets=0, which masked the mixed-unit bug; here a real ns offset must
     not blow up the comparison (seconds offsets would be ~1e9x too small)."""
     NS = 1_000_000_000
-    create_time = torch.tensor([1313539200, 1373846400, 944265600],
-                               dtype=torch.long) * NS
+    create_time = (
+        torch.tensor([1313539200, 1373846400, 944265600], dtype=torch.long) * NS
+    )
     # 1-day offsets in NANOSECONDS (compute_unix_step convention).
     one_day_ns = 24 * 60 * 60 * NS
     provider = DiskgraphValidRHS(
@@ -3968,16 +4075,15 @@ def test_seed_time_to_index_unit_uses_manifest_unit(tmp_path) -> None:
     NS = 1_000_000_000
     seed_ns = torch.tensor([5 * NS], dtype=torch.long)
 
-    dm_s = _rhs_dm(_rhs_lp_manifest(tmp_path / "s", num_rhs=3, test_time_ns=NS))
+    dm_s = _rhs_dm(_rhs_lp_manifest(tmp_path / 's', num_rhs=3, test_time_ns=NS))
     # Default index unit is seconds.
-    assert dm_s.index_np_time_unit == "s"
+    assert dm_s.index_np_time_unit == 's'
     assert dm_s._seed_time_to_index_unit(seed_ns) == 5  # 5e9 ns -> 5 s
     assert dm_s._seed_time_to_index_unit(None) is None
 
     # Force a millisecond index unit; ns -> ms divides by 1e6.
-    dm_ms = _rhs_dm(
-        _rhs_lp_manifest(tmp_path / "ms", num_rhs=3, test_time_ns=NS))
-    dm_ms._index_np_time_unit = "ms"
+    dm_ms = _rhs_dm(_rhs_lp_manifest(tmp_path / 'ms', num_rhs=3, test_time_ns=NS))
+    dm_ms._index_np_time_unit = 'ms'
     assert dm_ms._seed_time_to_index_unit(seed_ns) == 5_000  # 5e9 ns -> 5e3 ms
 
 
@@ -3985,23 +4091,23 @@ def test_seed_time_to_index_unit_uses_manifest_unit(tmp_path) -> None:
 _SEED_NS = 90_061_000_000_001
 
 
-@pytest.mark.parametrize("clock,anchor", [
-    ("nanoseconds", 90_061_000_000_001),
-    ("microseconds", 90_061_000_000),
-    ("milliseconds", 90_061_000),
-    ("seconds", 90_061),
-    ("hours", 25),
-    ("days", 1),
-])
-def test_node_range_anchor_floors_into_the_index_clock(tmp_path, clock,
-                                                       anchor) -> None:
-    index = tmp_path / "index"
+@pytest.mark.parametrize(
+    'clock,anchor',
+    [
+        ('nanoseconds', 90_061_000_000_001),
+        ('microseconds', 90_061_000_000),
+        ('milliseconds', 90_061_000),
+        ('seconds', 90_061),
+        ('hours', 25),
+        ('days', 1),
+    ],
+)
+def test_node_range_anchor_floors_into_the_index_clock(tmp_path, clock, anchor) -> None:
+    index = tmp_path / 'index'
     index.mkdir()
-    (index / "index_metadata.json").write_text(
-        json.dumps({"timestamp_unit": clock}))
-    dm = _rhs_dm(_rhs_lp_manifest(tmp_path / "m", num_rhs=3, test_time_ns=1))
-    dm._index_np_time_unit = dldm._index_np_time_unit(
-        {"graph_index_path": str(index)})
+    (index / 'index_metadata.json').write_text(json.dumps({'timestamp_unit': clock}))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path / 'm', num_rhs=3, test_time_ns=1))
+    dm._index_np_time_unit = dldm._index_np_time_unit({'graph_index_path': str(index)})
 
     assert dm._seed_time_to_index_unit(torch.tensor([_SEED_NS])) == anchor
     assert dm._seed_time_to_index_unit(torch.tensor([-1])) == -1
@@ -4010,18 +4116,19 @@ def test_node_range_anchor_floors_into_the_index_clock(tmp_path, clock,
 def test_train_dataloader_sets_fork_context_when_workers(tmp_path) -> None:
     """Python 3.14 workers retain fork to avoid pickling CUDA state."""
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         num_workers=4,
     )
     loader = dm.train_dataloader()
     context = loader.multiprocessing_context
-    context_name = (context if isinstance(context, str) else getattr(
-        context, "_name", None))
-    assert context_name == "fork"
+    context_name = (
+        context if isinstance(context, str) else getattr(context, '_name', None)
+    )
+    assert context_name == 'fork'
     assert loader.worker_init_fn is dldm._init_diskgraph_worker
 
 
@@ -4029,9 +4136,9 @@ def test_train_dataloader_no_context_when_single_process(tmp_path) -> None:
     """num_workers=0 (single-process) must NOT pin a start-method context: there
     are no worker subprocesses, so the hazard does not arise."""
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
+        _manifest(tmp_path=tmp_path, stage_counts={'train': 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=10,
         eval_batch_size=1,
         num_workers=0,
@@ -4040,8 +4147,10 @@ def test_train_dataloader_no_context_when_single_process(tmp_path) -> None:
     assert loader.multiprocessing_context is None
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"),
-                    reason="fork and queue introspection require Linux")
+@pytest.mark.skipif(
+    not sys.platform.startswith('linux'),
+    reason='fork and queue introspection require Linux',
+)
 def test_dataloader_workers_exit_when_parent_stops_draining() -> None:
     """Regression for workers joining a full result queue after parent exit."""
     ready_read, ready_write = os.pipe()
@@ -4050,7 +4159,7 @@ def test_dataloader_workers_exit_when_parent_stops_draining() -> None:
         [
             sys.executable,
             __file__,
-            "--shutdown-probe-consumer",
+            '--shutdown-probe-consumer',
             str(ready_write),
             str(release_read),
         ],
@@ -4064,15 +4173,15 @@ def test_dataloader_workers_exit_when_parent_stops_draining() -> None:
     try:
         poller = select.poll()
         poller.register(ready_read, select.POLLIN)
-        assert poller.poll(60_000), "loader did not fill its result queue"
+        assert poller.poll(60_000), 'loader did not fill its result queue'
         raw_payload = os.read(ready_read, 4096)
-        assert raw_payload, "loader exited before reporting worker PIDs"
+        assert raw_payload, 'loader exited before reporting worker PIDs'
         payload = json.loads(raw_payload)
-        assert "error" not in payload, payload.get("error")
-        os.write(release_write, b"x")
+        assert 'error' not in payload, payload.get('error')
+        os.write(release_write, b'x')
         consumer.wait(timeout=5)
-        stuck = _wait_for_processes(payload["pids"], timeout_seconds=10)
-        assert not stuck, f"DataLoader workers did not exit: {stuck}"
+        stuck = _wait_for_processes(payload['pids'], timeout_seconds=10)
+        assert not stuck, f'DataLoader workers did not exit: {stuck}'
     finally:
         for process in stuck:
             try:
@@ -4088,11 +4197,10 @@ def test_dataloader_workers_exit_when_parent_stops_draining() -> None:
 
 def test_suppress_iterable_len_warning_only_scopes_to_the_context() -> None:
     def _warn() -> None:
-        warnings.warn("Your `IterableDataset` has `__len__` defined.",
-                      UserWarning)
+        warnings.warn('Your `IterableDataset` has `__len__` defined.', UserWarning)
 
     with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+        warnings.simplefilter('always')
 
         with dldm.suppress_iterable_len_warning():
             _warn()
@@ -4127,87 +4235,87 @@ def _feature_config(
     read from index_metadata.json, never from the feature schema.
     """
     return {
-        "feature_columns": columns,
-        "column_specs": [{"column_name": column} for column in columns],
-        "time_column": time_column,
-        "mapper_key": mapper_key,
+        'feature_columns': columns,
+        'column_specs': [{'column_name': column} for column in columns],
+        'time_column': time_column,
+        'mapper_key': mapper_key,
     }
 
 
 def _projection_feature_schema() -> dict[str, Any]:
     """A schema with a temporal node type, a PK and a non-feature column."""
     return {
-        "node_types": {
-            "User": _feature_config(["age", "country"], None, "users_v1"),
+        'node_types': {
+            'User': _feature_config(['age', 'country'], None, 'users_v1'),
             # NOTE: ``created_at`` is deliberately NOT in feature_columns --
             # pquery excludes the time column from the encoder set. It must
             # still be requested, or ``.time`` disappears.
-            "Transaction": _feature_config(["amount"], "created_at", "txns_v1"),
+            'Transaction': _feature_config(['amount'], 'created_at', 'txns_v1'),
             # A PURE LINK TABLE: all keys, no encoder columns, no time column.
             # `_feature_schema` produces exactly this shape for a join table
             # (pquery excludes the pkey and every fkey), and it is the most
             # common table in a real graph after the entity tables -- 30 of
             # them across the 27 production replay cases.
-            "Ownership": _feature_config([], None, "links_v1"),
+            'Ownership': _feature_config([], None, 'links_v1'),
         },
-        "edge_types": {},
-        "raw_feature_format": "arrow_columnar_v1",
-        "provenance_mode": "node_id_time_keyed_v1",
-        "metadata": {},
+        'edge_types': {},
+        'raw_feature_format': 'arrow_columnar_v1',
+        'provenance_mode': 'node_id_time_keyed_v1',
+        'metadata': {},
     }
 
 
 def _projection_manifest(tmp_path: Any) -> DiskgraphTaskManifest:
     """A manifest whose ``index_metadata.json`` supplies pk / time columns."""
-    index_dir = tmp_path / "index"
+    index_dir = tmp_path / 'index'
     index_dir.mkdir(exist_ok=True)
-    (index_dir / "index_metadata.json").write_text(
+    (index_dir / 'index_metadata.json').write_text(
         json.dumps(
             {
-                "node_types": [
+                'node_types': [
                     {
-                        "name": "User",
-                        "primary_key_map": {"column": "user_id"},
+                        'name': 'User',
+                        'primary_key_map': {'column': 'user_id'},
                     },
                     {
-                        "name": "Transaction",
-                        "primary_key_map": {"column": "txn_id"},
-                        "create_time_col": "created_at",
+                        'name': 'Transaction',
+                        'primary_key_map': {'column': 'txn_id'},
+                        'create_time_col': 'created_at',
                     },
                     {
-                        "name": "Ownership",
-                        "primary_key_map": {"column": "ownership_id"},
+                        'name': 'Ownership',
+                        'primary_key_map': {'column': 'ownership_id'},
                     },
                 ],
-                "edge_relations": [],
+                'edge_relations': [],
             }
         )
     )
     return DiskgraphTaskManifest(
-        manifest_path=str(tmp_path / "manifest.json"),
-        runtime_manifest_path=str(tmp_path / "runtime_manifest.json"),
+        manifest_path=str(tmp_path / 'manifest.json'),
+        runtime_manifest_path=str(tmp_path / 'runtime_manifest.json'),
         manifest={},
         metadata={
-            "train_table_name": "train_table",
-            "seed_node_type": "User",
-            "task_type": "binary_classification",
-            "train_table_columns": {
-                "seed_id_column": "ENTITY",
-                "target_column": "TARGET",
-                "time_column": "TIMESTAMP",
-                "weight_column": "WEIGHT",
+            'train_table_name': 'train_table',
+            'seed_node_type': 'User',
+            'task_type': 'binary_classification',
+            'train_table_columns': {
+                'seed_id_column': 'ENTITY',
+                'target_column': 'TARGET',
+                'time_column': 'TIMESTAMP',
+                'weight_column': 'WEIGHT',
             },
-            "stage_counts": {
-                "train": 6,
-                "val": 3,
-                "test": 3,
+            'stage_counts': {
+                'train': 6,
+                'val': 3,
+                'test': 3,
             },
         },
         feature_schema=_projection_feature_schema(),
         graph_runtime_metadata={
-            "graph_index_path": str(index_dir),
-            "node_types": ["User", "Transaction", "Ownership"],
-            "edge_types": [],
+            'graph_index_path': str(index_dir),
+            'node_types': ['User', 'Transaction', 'Ownership'],
+            'edge_types': [],
         },
     )
 
@@ -4222,15 +4330,15 @@ def _projection_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
     missing" case, which has its own tests.
     """
     return {
-        "users_v1": {
-            "age": NumericalTensorMapper(),
-            "country": CategoricalTensorMapper(category_counts=[("DE", 1), ("US", 1)]),
+        'users_v1': {
+            'age': NumericalTensorMapper(),
+            'country': CategoricalTensorMapper(category_counts=[('DE', 1), ('US', 1)]),
         },
-        "txns_v1": {
-            "amount": NumericalTensorMapper(),
+        'txns_v1': {
+            'amount': NumericalTensorMapper(),
         },
         # Pure link table: no encoder columns at all.
-        "links_v1": {},
+        'links_v1': {},
     }
 
 
@@ -4241,7 +4349,7 @@ def _projection_datamodule(
     return DiskgraphLightningDataModule(
         _projection_manifest(tmp_path),
         _projection_mapper_bank() if mapper_bank is None else mapper_bank,
-        sampling_plan={"layers": [{"fanouts": {}}]},
+        sampling_plan={'layers': [{'fanouts': {}}]},
         train_batch_size=2,
         eval_batch_size=2,
     )
@@ -4261,14 +4369,14 @@ def test_feature_projection_keeps_node_time_column(tmp_path) -> None:
 
     for attach_pkeys in (True, False):
         projection = dm._feature_projection(attach_pkeys=attach_pkeys)
-        naive = set(dm._feature_schema["node_types"]["Transaction"]["feature_columns"])
-        assert "created_at" not in naive, (
-            "fixture must model the real shape: the time column is NOT an "
-            "encoder feature column"
+        naive = set(dm._feature_schema['node_types']['Transaction']['feature_columns'])
+        assert 'created_at' not in naive, (
+            'fixture must model the real shape: the time column is NOT an '
+            'encoder feature column'
         )
-        assert "created_at" in projection["Transaction"], (
-            f"attach_pkeys={attach_pkeys}: the node time column must be "
-            "requested or `.time` silently disappears"
+        assert 'created_at' in projection['Transaction'], (
+            f'attach_pkeys={attach_pkeys}: the node time column must be '
+            'requested or `.time` silently disappears'
         )
 
 
@@ -4278,11 +4386,11 @@ def test_feature_projection_includes_pkey_only_when_attached(tmp_path) -> None:
     with_pk = dm._feature_projection(attach_pkeys=True)
     without_pk = dm._feature_projection(attach_pkeys=False)
 
-    assert set(with_pk["User"]) == {"age", "country", "user_id"}
-    assert set(with_pk["Transaction"]) == {"amount", "created_at", "txn_id"}
+    assert set(with_pk['User']) == {'age', 'country', 'user_id'}
+    assert set(with_pk['Transaction']) == {'amount', 'created_at', 'txn_id'}
     # The train loader runs attach_pkeys=False, so the PK is dead weight there.
-    assert set(without_pk["User"]) == {"age", "country"}
-    assert set(without_pk["Transaction"]) == {"amount", "created_at"}
+    assert set(without_pk['User']) == {'age', 'country'}
+    assert set(without_pk['Transaction']) == {'amount', 'created_at'}
 
 
 def test_pure_link_table_projects_to_empty_not_absent(tmp_path) -> None:
@@ -4297,12 +4405,12 @@ def test_pure_link_table_projects_to_empty_not_absent(tmp_path) -> None:
     dm = _projection_datamodule(tmp_path)
     train = dm._feature_projection(attach_pkeys=False)
 
-    assert "Ownership" in train, (
-        "a pure link table must be PRESENT in the projection; omitting it is "
-        "read by the wheel as select-all, the exact opposite of the intent"
+    assert 'Ownership' in train, (
+        'a pure link table must be PRESENT in the projection; omitting it is '
+        'read by the wheel as select-all, the exact opposite of the intent'
     )
-    assert train["Ownership"] == [], (
-        f"expected an empty request, got {train['Ownership']!r}"
+    assert train['Ownership'] == [], (
+        f'expected an empty request, got {train["Ownership"]!r}'
     )
 
 
@@ -4315,8 +4423,8 @@ def test_pure_link_table_still_projects_its_pkey_when_attached(tmp_path) -> None
     """
     dm = _projection_datamodule(tmp_path)
 
-    assert dm._feature_projection(attach_pkeys=True)["Ownership"] == ["ownership_id"]
-    assert dm._feature_projection(attach_pkeys=False)["Ownership"] == []
+    assert dm._feature_projection(attach_pkeys=True)['Ownership'] == ['ownership_id']
+    assert dm._feature_projection(attach_pkeys=False)['Ownership'] == []
 
 
 def test_schema_entries_without_an_index_node_type_are_dropped(tmp_path) -> None:
@@ -4330,20 +4438,20 @@ def test_schema_entries_without_an_index_node_type_are_dropped(tmp_path) -> None
     """
     dm = _projection_datamodule(tmp_path)
     schema = dict(dm._feature_schema)
-    schema["node_types"] = {
-        **schema["node_types"],
-        "train_table": _feature_config(["FUTURE_LABELS"], None, "train_table"),
+    schema['node_types'] = {
+        **schema['node_types'],
+        'train_table': _feature_config(['FUTURE_LABELS'], None, 'train_table'),
     }
     dm._feature_schema = schema
 
     for attach_pkeys in (True, False):
         projection = dm._feature_projection(attach_pkeys=attach_pkeys)
-        assert "train_table" not in projection, (
-            f"attach_pkeys={attach_pkeys}: a namespace absent from "
-            f"index_metadata.json must be dropped; got {sorted(projection)}"
+        assert 'train_table' not in projection, (
+            f'attach_pkeys={attach_pkeys}: a namespace absent from '
+            f'index_metadata.json must be dropped; got {sorted(projection)}'
         )
         # ...and the real node types are untouched.
-        assert set(projection) == {"User", "Transaction", "Ownership"}
+        assert set(projection) == {'User', 'Transaction', 'Ownership'}
 
 
 def test_projection_is_unfiltered_when_index_node_types_are_unknown(tmp_path) -> None:
@@ -4355,10 +4463,10 @@ def test_projection_is_unfiltered_when_index_node_types_are_unknown(tmp_path) ->
     costing the whole optimization is not.
     """
     dm = _projection_datamodule(tmp_path)
-    dm.task_manifest.graph_runtime_metadata.pop("graph_index_path")
+    dm.task_manifest.graph_runtime_metadata.pop('graph_index_path')
 
     projection = dm._feature_projection(attach_pkeys=False)
-    assert set(projection) == {"User", "Transaction", "Ownership"}
+    assert set(projection) == {'User', 'Transaction', 'Ownership'}
 
 
 def test_pkey_comes_from_index_metadata_not_the_feature_schema(tmp_path) -> None:
@@ -4370,13 +4478,13 @@ def test_pkey_comes_from_index_metadata_not_the_feature_schema(tmp_path) -> None
     requesting it. index_metadata.json is the only source.
     """
     dm = _projection_datamodule(tmp_path)
-    for meta in dm._feature_schema["node_types"].values():
-        assert "pkey_column" not in meta, (
-            "fixture must model the validated schema shape"
+    for meta in dm._feature_schema['node_types'].values():
+        assert 'pkey_column' not in meta, (
+            'fixture must model the validated schema shape'
         )
 
-    assert "user_id" in dm._feature_projection(attach_pkeys=True)["User"]
-    assert dm.pk_col_dict["User"] == "user_id"
+    assert 'user_id' in dm._feature_projection(attach_pkeys=True)['User']
+    assert dm.pk_col_dict['User'] == 'user_id'
 
 
 def test_no_type_with_a_time_column_is_ever_skipped(tmp_path) -> None:
@@ -4395,14 +4503,14 @@ def test_no_type_with_a_time_column_is_ever_skipped(tmp_path) -> None:
             if columns:
                 continue
             assert not dm.time_col_dict.get(namespace), (
-                f"attach_pkeys={attach_pkeys}: {namespace!r} is skipped but "
-                f"has time column {dm.time_col_dict[namespace]!r}"
+                f'attach_pkeys={attach_pkeys}: {namespace!r} is skipped but '
+                f'has time column {dm.time_col_dict[namespace]!r}'
             )
             assert not (
-                dm._feature_schema["node_types"][namespace].get("time_column")
+                dm._feature_schema['node_types'][namespace].get('time_column')
             ), (
-                f"attach_pkeys={attach_pkeys}: {namespace!r} is skipped "
-                "but the feature schema gives it a time column"
+                f'attach_pkeys={attach_pkeys}: {namespace!r} is skipped '
+                'but the feature schema gives it a time column'
             )
 
 
@@ -4419,19 +4527,19 @@ def test_null_encoded_column_is_not_projected(tmp_path) -> None:
     bank = _projection_mapper_bank()
     # `country` had a Null encoder -> absent from the bank, still in
     # `feature_columns`.
-    del bank["users_v1"]["country"]
+    del bank['users_v1']['country']
     dm = _projection_datamodule(tmp_path, bank)
 
     projection = dm._feature_projection(attach_pkeys=False)
-    assert "country" in dm._feature_schema["node_types"]["User"]["feature_columns"], (
-        "fixture must model the real shape: a Null column is still a feature column"
+    assert 'country' in dm._feature_schema['node_types']['User']['feature_columns'], (
+        'fixture must model the real shape: a Null column is still a feature column'
     )
-    assert projection["User"] == ["age"], (
-        f"a Null-encoded column must not be requested; got {projection['User']}"
+    assert projection['User'] == ['age'], (
+        f'a Null-encoded column must not be requested; got {projection["User"]}'
     )
     # ...and the request is still a subset of the bank + time/pkey, which is
     # the invariant that makes `_record_batch_to_tf` unable to fire.
-    assert set(projection["User"]) <= set(bank["users_v1"])
+    assert set(projection['User']) <= set(bank['users_v1'])
 
 
 def test_all_null_table_collapses_to_the_skip_state(tmp_path) -> None:
@@ -4442,14 +4550,14 @@ def test_all_null_table_collapses_to_the_skip_state(tmp_path) -> None:
     projection is ``[]`` -- SKIP, not "select all".
     """
     bank = _projection_mapper_bank()
-    bank["users_v1"] = {}  # both encoders were Null
+    bank['users_v1'] = {}  # both encoders were Null
     dm = _projection_datamodule(tmp_path, bank)
 
-    assert dm._feature_projection(attach_pkeys=False)["User"] == []
+    assert dm._feature_projection(attach_pkeys=False)['User'] == []
     # `[]` must still be PRESENT: absent means select-all to the wheel.
-    assert "User" in dm._feature_projection(attach_pkeys=False)
+    assert 'User' in dm._feature_projection(attach_pkeys=False)
     # attach_pkeys still widens it, exactly as for any other feature-less type.
-    assert dm._feature_projection(attach_pkeys=True)["User"] == ["user_id"]
+    assert dm._feature_projection(attach_pkeys=True)['User'] == ['user_id']
 
 
 def test_null_encoded_column_never_costs_the_time_column(tmp_path) -> None:
@@ -4459,14 +4567,14 @@ def test_null_encoded_column_never_costs_the_time_column(tmp_path) -> None:
     would lose it and `_attach_pkeys_and_times` would skip `.time` silently.
     """
     bank = _projection_mapper_bank()
-    bank["txns_v1"] = {}
+    bank['txns_v1'] = {}
     dm = _projection_datamodule(tmp_path, bank)
 
     for attach_pkeys in (True, False):
         projection = dm._feature_projection(attach_pkeys=attach_pkeys)
-        assert "created_at" in projection["Transaction"], (
-            f"attach_pkeys={attach_pkeys}: the node time column must survive "
-            "an empty mapper"
+        assert 'created_at' in projection['Transaction'], (
+            f'attach_pkeys={attach_pkeys}: the node time column must survive '
+            'an empty mapper'
         )
 
 
@@ -4480,13 +4588,13 @@ def test_missing_encoders_project_empty(tmp_path) -> None:
     (empty) bank entry, not from whatever gets fetched.
     """
     bank = _projection_mapper_bank()
-    bank["users_v1"] = {}
+    bank['users_v1'] = {}
     dm = _projection_datamodule(tmp_path, bank)
 
     projection = dm._feature_projection(attach_pkeys=False)
-    assert projection["User"] == [], (
-        "widening to feature_columns cannot recover features that have no "
-        f"fitted encoder; got {projection['User']!r}"
+    assert projection['User'] == [], (
+        'widening to feature_columns cannot recover features that have no '
+        f'fitted encoder; got {projection["User"]!r}'
     )
 
 
@@ -4498,11 +4606,11 @@ def test_mapper_key_absent_from_the_bank_projects_empty(tmp_path) -> None:
     would not help -- it would only waste a fetch before the same crash.
     """
     bank = _projection_mapper_bank()
-    del bank["users_v1"]
+    del bank['users_v1']
     dm = _projection_datamodule(tmp_path, bank)
 
     projection = dm._feature_projection(attach_pkeys=False)
-    assert projection["User"] == []
+    assert projection['User'] == []
 
 
 def test_sampling_plan_is_passed_through_untouched(tmp_path) -> None:
@@ -4510,9 +4618,9 @@ def test_sampling_plan_is_passed_through_untouched(tmp_path) -> None:
     must be the caller's object, unmodified -- no copy, no injected key."""
     dm = _projection_datamodule(tmp_path)
 
-    assert "projections" not in dm.sampling_plan
-    assert "feature_columns" not in dm.sampling_plan
-    assert dm.sampling_plan["layers"] == [{"fanouts": {}}]
+    assert 'projections' not in dm.sampling_plan
+    assert 'feature_columns' not in dm.sampling_plan
+    assert dm.sampling_plan['layers'] == [{'fanouts': {}}]
 
 
 def test_feature_projection_is_empty_without_a_schema(tmp_path) -> None:
@@ -4523,11 +4631,11 @@ def test_feature_projection_is_empty_without_a_schema(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan={'layers': []},
         train_batch_size=2,
         eval_batch_size=1,
     )
-    dm._feature_schema = {"node_types": {}}
+    dm._feature_schema = {'node_types': {}}
 
     assert dm._feature_projection(attach_pkeys=True) == {}
 
@@ -4544,34 +4652,34 @@ def test_train_and_eval_loaders_send_different_projections(
     dm = _projection_datamodule(tmp_path)
 
     list(dm.train_dataloader())
-    train_kwargs = dict(calls["kwargs"])
+    train_kwargs = dict(calls['kwargs'])
     list(dm.val_dataloader())
-    val_kwargs = dict(calls["kwargs"])
+    val_kwargs = dict(calls['kwargs'])
 
-    train_proj = train_kwargs["projections"]
-    val_proj = val_kwargs["projections"]
+    train_proj = train_kwargs['projections']
+    val_proj = val_kwargs['projections']
 
-    assert "user_id" not in train_proj["User"]
-    assert "user_id" in val_proj["User"]
+    assert 'user_id' not in train_proj['User']
+    assert 'user_id' in val_proj['User']
     # ...and both keep the time column.
     for proj in (train_proj, val_proj):
-        assert "created_at" in proj["Transaction"]
+        assert 'created_at' in proj['Transaction']
 
     # The link table reaches the wheel as a SKIP on train and a pkey-only
     # request on eval -- the split has to survive the whole plumbing, not just
     # `_feature_projection`.
-    assert train_proj["Ownership"] == []
-    assert val_proj["Ownership"] == ["ownership_id"]
+    assert train_proj['Ownership'] == []
+    assert val_proj['Ownership'] == ['ownership_id']
 
     # The plan itself must arrive clean, with no projection smuggled into it.
     for kwargs in (train_kwargs, val_kwargs):
-        assert "projections" not in kwargs["sampling_plan"]
-        assert "feature_columns" not in kwargs["sampling_plan"]
+        assert 'projections' not in kwargs['sampling_plan']
+        assert 'feature_columns' not in kwargs['sampling_plan']
 
 
-@pytest.mark.parametrize("runtime_fused", [True, False, None])
+@pytest.mark.parametrize('runtime_fused', [True, False, None])
 @pytest.mark.parametrize(
-    "stage_options", [{}, {"fused": True}, {"fused": False}, {"fused": None}]
+    'stage_options', [{}, {'fused': True}, {'fused': False}, {'fused': None}]
 )
 def test_fused_loaders_omit_projections(
     tmp_path: Path,
@@ -4582,8 +4690,8 @@ def test_fused_loaders_omit_projections(
     """Only effective fused mode suppresses train and evaluation projections."""
     calls = _install_fake_diskgraph(monkeypatch)
     dm = _projection_datamodule(tmp_path)
-    dm.runtime_options = {"fused": runtime_fused}
-    effective_fused = stage_options.get("fused", runtime_fused)
+    dm.runtime_options = {'fused': runtime_fused}
+    effective_fused = stage_options.get('fused', runtime_fused)
 
     for loader in (dm.train_dataloader(), dm.val_dataloader()):
         dataset = loader.dataset
@@ -4594,25 +4702,25 @@ def test_fused_loaders_omit_projections(
 
         list(loader)
 
-        options = calls["kwargs"]
-        assert options["fused"] is effective_fused
+        options = calls['kwargs']
+        assert options['fused'] is effective_fused
         if effective_fused is True:
-            assert options["projections"] == {}
+            assert options['projections'] == {}
         else:
-            assert options["projections"]
+            assert options['projections']
     assert dm._feature_projection(attach_pkeys=False)
 
 
 def test_schema_time_column_widens_index_time_projection(tmp_path: Any) -> None:
     """Keep both time columns when schema and index metadata disagree."""
     dm = _projection_datamodule(tmp_path)
-    dm._feature_schema["node_types"]["Transaction"]["time_column"] = "event_time"
+    dm._feature_schema['node_types']['Transaction']['time_column'] = 'event_time'
 
     projection = dm._feature_projection(attach_pkeys=False)
 
-    assert set(projection["Transaction"]) == {"amount", "created_at", "event_time"}
+    assert set(projection['Transaction']) == {'amount', 'created_at', 'event_time'}
 
 
-if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == "--shutdown-probe-consumer":
+if __name__ == '__main__':
+    if len(sys.argv) == 4 and sys.argv[1] == '--shutdown-probe-consumer':
         _run_shutdown_probe_consumer(int(sys.argv[2]), int(sys.argv[3]))

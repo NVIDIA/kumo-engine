@@ -52,6 +52,7 @@ def logging_policy(
     def func5() -> bytes: ...
     ```
     """
+
     def _logging_policy(
         *,
         skip_args: list[int] = [],
@@ -59,27 +60,25 @@ def logging_policy(
         log_return: bool | Callable = False,
         allowed_exceptions: ExceptionSet = None,
     ):
-        skipped_value = "<not shown>"
+        skipped_value = '<not shown>'
 
         def _transform_args(args: tuple, transforms: dict[int, Callable]):
-            return tuple([
-                transforms[i](x) if i in transforms else x
-                for i, x in enumerate(args)
-            ])
+            return tuple(
+                [transforms[i](x) if i in transforms else x for i, x in enumerate(args)]
+            )
 
         def _filter_args(args: tuple, to_skip: set[int]):
-            return tuple([
-                x if i not in to_skip else skipped_value
-                for i, x in enumerate(args)
-            ])
+            return tuple(
+                [x if i not in to_skip else skipped_value for i, x in enumerate(args)]
+            )
 
         def _result_log(result) -> str:
             if callable(log_return):
-                return f" -> {log_return(result)}"
+                return f' -> {log_return(result)}'
             elif log_return:
-                return f" -> {result}"
+                return f' -> {result}'
             else:
-                return ""
+                return ''
 
         def _wrapper(func):
             # N.B. _wrapper is called from impl_*.py, so stack has context
@@ -87,8 +86,7 @@ def logging_policy(
             # record context here, inject it when recording logs
             frame = _frame_up(currentframe(), 1)
             caller = getframeinfo(frame) if frame else None
-            filename = osp.basename(
-                caller.filename) if caller else "(unknown file)"
+            filename = osp.basename(caller.filename) if caller else '(unknown file)'
             lineno = caller.lineno if caller else 0
 
             def _record_log(level: int, msg: str, *args, exc_info=None):
@@ -98,8 +96,16 @@ def logging_policy(
                 # (e.g. in pytest) has no effect.
                 if not logger.isEnabledFor(level):
                     return
-                record = logger.makeRecord(logger.name, level, filename, lineno,
-                                           msg, args, exc_info, func.__name__)
+                record = logger.makeRecord(
+                    logger.name,
+                    level,
+                    filename,
+                    lineno,
+                    msg,
+                    args,
+                    exc_info,
+                    func.__name__,
+                )
                 logger.handle(record)
 
             def _get_log_level(duration_ms: float) -> int:
@@ -110,8 +116,9 @@ def logging_policy(
             def _mark_restricted_failure(error: Exception) -> None:
                 marked_error = mark_exception_restricted(
                     error,
-                    safe_message=(f'Remote filesystem operation '
-                                  f'{func.__name__} failed'),
+                    safe_message=(
+                        f'Remote filesystem operation {func.__name__} failed'
+                    ),
                 )
                 if marked_error is not error:
                     raise marked_error from None
@@ -120,19 +127,29 @@ def logging_policy(
             def _wrap(*raw_args, **kwargs):
                 args_t = _transform_args(raw_args, transform_args)
                 args = _filter_args(args_t, set(skip_args))
-                log_line = f"{func.__name__} {args=} {kwargs=}"
+                log_line = f'{func.__name__} {args=} {kwargs=}'
                 start_time = time.perf_counter()
                 if allowed_exceptions is not None:
                     try:
                         result = func(*raw_args, **kwargs)
                         duration_ms = (time.perf_counter() - start_time) * 1000
-                        _record_log(_get_log_level(duration_ms), "success: %s%s (%.1fms)",
-                                    log_line, _result_log(result), duration_ms)
+                        _record_log(
+                            _get_log_level(duration_ms),
+                            'success: %s%s (%.1fms)',
+                            log_line,
+                            _result_log(result),
+                            duration_ms,
+                        )
                         return result
                     except allowed_exceptions as e:
                         duration_ms = (time.perf_counter() - start_time) * 1000
-                        _record_log(_get_log_level(duration_ms), "success[%s]: %s (%.1fms)",
-                                    type(e).__name__, log_line, duration_ms)
+                        _record_log(
+                            _get_log_level(duration_ms),
+                            'success[%s]: %s (%.1fms)',
+                            type(e).__name__,
+                            log_line,
+                            duration_ms,
+                        )
                         if restricted_failures:
                             # Allowed exceptions are expected to preserve their
                             # type so callers can continue matching them.
@@ -145,9 +162,13 @@ def logging_policy(
                         # identifiers. Record only the exception class; the
                         # activity boundary converts it to a stable public
                         # error without serializing provider text.
-                        _record_log(level_failure,
-                                    "failure[%s]: %s (%.1fms)",
-                                    type(e).__name__, log_line, duration_ms)
+                        _record_log(
+                            level_failure,
+                            'failure[%s]: %s (%.1fms)',
+                            type(e).__name__,
+                            log_line,
+                            duration_ms,
+                        )
                         if restricted_failures:
                             _mark_restricted_failure(e)
                         raise
@@ -160,8 +181,13 @@ def logging_policy(
                         _mark_restricted_failure(e)
                         raise
                     duration_ms = (time.perf_counter() - start_time) * 1000
-                    _record_log(_get_log_level(duration_ms), "success: %s%s (%.1fms)",
-                                log_line, _result_log(result), duration_ms)
+                    _record_log(
+                        _get_log_level(duration_ms),
+                        'success: %s%s (%.1fms)',
+                        log_line,
+                        _result_log(result),
+                        duration_ms,
+                    )
                     return result
 
             return _wrap

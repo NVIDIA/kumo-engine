@@ -66,7 +66,8 @@ from ..connector_activity_registry import connector_authorized_activity
 log = logging.getLogger(__name__)
 
 SAFE_TABLE_INGESTION_ERROR_MESSAGE = (
-    'Kumo encountered an error while ingesting the source table.')
+    'Kumo encountered an error while ingesting the source table.'
+)
 
 # These errors are constructed without a provider exception or provider
 # payload: the first three by the identity/connector broker, the OOM error by
@@ -85,26 +86,32 @@ _SAFE_INGESTION_PUBLIC_ERRORS = (
 # text must not be republished. Keyed on the exact type, so a subclass added
 # later inherits no message that was not written for it.
 _SAFE_SOURCE_ERROR_MESSAGES: dict[type[SourceError], str] = {
-    RowCountMismatchError:
-    ("Table '{table}' was read incompletely: the source returned {actual} "
-     'rows but reported {expected}. Re-run the ingest; if it happens again, '
-     'contact Kumo support.'),
-    SourceNotFoundError:
-    ("Table '{table}' does not exist in the source. Check the table name, "
-     'and that the connector points at the database and schema that holds '
-     'it.'),
-    SchemaChangedError:
-    ("The columns of table '{table}' changed while Kumo was reading it. "
-     'Re-run the ingest once the schema change has finished.'),
-    SourceAccessDeniedError:
-    ("Kumo is not permitted to read table '{table}'. Grant the credentials "
-     'this connector uses read access to the table, then re-run the ingest.'),
-    ReconnectRequiredError:
-    ("The connector Kumo used to read table '{table}' is no longer "
-     'authorized. Reconnect it, then re-run the ingest.'),
-    UnsupportedReadModeError:
-    ("Kumo cannot read table '{table}' by any method this connector "
-     'supports. Contact Kumo support with the table name.'),
+    RowCountMismatchError: (
+        "Table '{table}' was read incompletely: the source returned {actual} "
+        'rows but reported {expected}. Re-run the ingest; if it happens again, '
+        'contact Kumo support.'
+    ),
+    SourceNotFoundError: (
+        "Table '{table}' does not exist in the source. Check the table name, "
+        'and that the connector points at the database and schema that holds '
+        'it.'
+    ),
+    SchemaChangedError: (
+        "The columns of table '{table}' changed while Kumo was reading it. "
+        'Re-run the ingest once the schema change has finished.'
+    ),
+    SourceAccessDeniedError: (
+        "Kumo is not permitted to read table '{table}'. Grant the credentials "
+        'this connector uses read access to the table, then re-run the ingest.'
+    ),
+    ReconnectRequiredError: (
+        "The connector Kumo used to read table '{table}' is no longer "
+        'authorized. Reconnect it, then re-run the ingest.'
+    ),
+    UnsupportedReadModeError: (
+        "Kumo cannot read table '{table}' by any method this connector "
+        'supports. Contact Kumo support with the table name.'
+    ),
 }
 
 # Deliberately opaque: these are the buckets an untranslatable vendor
@@ -202,8 +209,8 @@ def _ingest_table_data_activity_v2(
     fingerprint = table.fingerprint()
 
     with kumo_timing(
-            "table_ingest_activity.pre_validation",
-            source_table_name=source_table_name,
+        'table_ingest_activity.pre_validation',
+        source_table_name=source_table_name,
     ):
         validator = IngestionValidator(deploy_config)
         validation_response = ValidationResponse()
@@ -214,11 +221,12 @@ def _ingest_table_data_activity_v2(
 
     workflow_info = activity.info()
     with kumo_timing(
-            "table_ingest_activity.setup_backend",
-            source_table_name=source_table_name,
+        'table_ingest_activity.setup_backend',
+        source_table_name=source_table_name,
     ):
         data_backend_cache().table_version_cache.save_in_memory(
-            connector_spec.connector_id, source_table_name, data_version)
+            connector_spec.connector_id, source_table_name, data_version
+        )
         connector = get_connector_from_spec(connector_spec)
 
     primary_error: BaseException | None = None
@@ -226,19 +234,21 @@ def _ingest_table_data_activity_v2(
         direct_file_source = None
         if isinstance(connector, FileConnector):
             source_decision_cache = (
-                data_backend_cache().direct_diskgraph_source_decision)
+                data_backend_cache().direct_diskgraph_source_decision
+            )
             source_decision = source_decision_cache.get(
                 fingerprint,
                 str(data_version),
                 cls=DirectDiskgraphSourceDecision,
             )
             if source_decision is None:
-                if connector.uses_direct_diskgraph_source_for(
-                        source_table_name):
+                if connector.uses_direct_diskgraph_source_for(source_table_name):
                     direct_file_source = connector.diskgraph_source(
-                        source_name=source_table_name)
+                        source_name=source_table_name
+                    )
                 source_decision = DirectDiskgraphSourceDecision(
-                    source=direct_file_source, )
+                    source=direct_file_source,
+                )
                 source_decision_cache.put(
                     fingerprint.connector_name,
                     source_table_name,
@@ -260,29 +270,34 @@ def _ingest_table_data_activity_v2(
         # ``export_table`` against an empty new persist dir.
         if not direct_diskgraph_source:
             with kumo_timing(
-                    "table_ingest_activity.materialization_stage_check",
-                    source_table_name=source_table_name,
-                    connector_type=connector.__class__.__name__,
+                'table_ingest_activity.materialization_stage_check',
+                source_table_name=source_table_name,
+                connector_type=connector.__class__.__name__,
             ):
                 stage = data_backend_cache().materialization_stage.get_stage(
-                    fingerprint, data_version, check_local=True)
+                    fingerprint, data_version, check_local=True
+                )
             if stage:
                 data_backend_cache().add_table_stats(
-                    fingerprint, {
-                        TableStatType.SOURCE_SIZE:
-                        Stats(
+                    fingerprint,
+                    {
+                        TableStatType.SOURCE_SIZE: Stats(
                             value=_stored_materialization_size(
-                                fingerprint, str(data_version), stage),
-                            approx=False, data_version=str(data_version)),
-                    })
+                                fingerprint, str(data_version), stage
+                            ),
+                            approx=False,
+                            data_version=str(data_version),
+                        ),
+                    },
+                )
                 return get_data_operation_description(), validation_response
 
         start_time = datetime.now(timezone.utc)
 
         with kumo_timing(
-                "table_ingest_activity.connector_prepare_table",
-                source_table_name=source_table_name,
-                connector_type=connector.__class__.__name__,
+            'table_ingest_activity.connector_prepare_table',
+            source_table_name=source_table_name,
+            connector_type=connector.__class__.__name__,
         ):
             if table.is_sql:
                 # Custom SQL Table: push the read-only SELECT down to the
@@ -297,8 +312,9 @@ def _ingest_table_data_activity_v2(
                 # cannot break materialization. download() is unchanged.
                 connector_type = _connector_type_from_spec(connector_spec)
                 advisory_read_only_check(table.source_table.sql, connector_type)
-                validate_connector_sql_scope(table.source_table.sql,
-                                             connector_type, connector)
+                validate_connector_sql_scope(
+                    table.source_table.sql, connector_type, connector
+                )
                 sql = subquery_safe_sql(table.source_table.sql, connector_type)
                 metrics = connector.export_query(
                     sql,
@@ -310,8 +326,8 @@ def _ingest_table_data_activity_v2(
                 metrics = ExportMetrics(
                     num_rows=None,
                     source_size=sum(
-                        int(item['size'])
-                        for item in direct_file_source['objects']),
+                        int(item['size']) for item in direct_file_source['objects']
+                    ),
                 )
             else:
                 metrics = connector.export_table(
@@ -333,7 +349,9 @@ def _ingest_table_data_activity_v2(
                     f'Table {source_table_name} has 0 rows. '
                     'This can happen when the source data was removed/changed. '
                     'Please re-ingest the table after confirming the source '
-                    'data is available.'))
+                    'data is available.',
+                )
+            )
             return (get_data_operation_description(), validation_response)
 
         # Persist SOURCE_SIZE (always) and NUM_ROWS (only when the connector
@@ -342,19 +360,23 @@ def _ingest_table_data_activity_v2(
         # its consumers tolerate the absence (row-based scale limits removed;
         # sizing/UI default or recompute lazily).
         stats_to_save = {
-            TableStatType.SOURCE_SIZE:
-            Stats(value=metrics.source_size, approx=metrics.approx,
-                  data_version=str(data_version)),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=metrics.source_size,
+                approx=metrics.approx,
+                data_version=str(data_version),
+            ),
         }
         if metrics.num_rows is not None:
             stats_to_save[TableStatType.NUM_ROWS] = Stats(
-                value=metrics.num_rows, approx=metrics.approx,
-                data_version=str(data_version))
+                value=metrics.num_rows,
+                approx=metrics.approx,
+                data_version=str(data_version),
+            )
         with kumo_timing(
-                "table_ingest_activity.save_table_stats",
-                source_table_name=source_table_name,
-                num_rows=metrics.num_rows,
-                source_size=metrics.source_size,
+            'table_ingest_activity.save_table_stats',
+            source_table_name=source_table_name,
+            num_rows=metrics.num_rows,
+            source_size=metrics.source_size,
         ):
             # A reused source version must not replace exact DiskGraph stats
             # with connector estimates.
@@ -367,8 +389,8 @@ def _ingest_table_data_activity_v2(
             code_version=get_kumo_version(),
         )
         with kumo_timing(
-                "table_ingest_activity.save_ingestion_info",
-                source_table_name=source_table_name,
+            'table_ingest_activity.save_ingestion_info',
+            source_table_name=source_table_name,
         ):
             data_backend_cache().ingestion_info.save(
                 fingerprint.connector_name,
@@ -378,12 +400,12 @@ def _ingest_table_data_activity_v2(
             )
         if not direct_diskgraph_source:
             with kumo_timing(
-                    "table_ingest_activity.save_materialization_stage",
-                    source_table_name=source_table_name,
+                'table_ingest_activity.save_materialization_stage',
+                source_table_name=source_table_name,
             ):
                 data_backend_cache().materialization_stage.put(
-                    fingerprint, data_version, MaterializationStage.INGEST,
-                    save=True)
+                    fingerprint, data_version, MaterializationStage.INGEST, save=True
+                )
         return get_data_operation_description(), validation_response
     except BaseException as error:
         primary_error = error
@@ -402,11 +424,13 @@ def _ingest_table_data_activity_v2(
             )
 
 
-def _stored_materialization_size(table_fingerprint, data_version: str,
-                                 stage: MaterializationStage) -> int:
+def _stored_materialization_size(
+    table_fingerprint, data_version: str, stage: MaterializationStage
+) -> int:
     """Return the bytes in one Kumo-owned staged materialization."""
     path = get_materialize_path(table_fingerprint, data_version, stage)
     if not fsutil.isdir(path):
         raise FileNotFoundError(
-            f'Staged materialization directory does not exist: {path}')
+            f'Staged materialization directory does not exist: {path}'
+        )
     return fsutil.dirsize(path)

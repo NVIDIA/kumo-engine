@@ -23,18 +23,21 @@ from kumo.home import get_home_dir
 
 
 def teardown_function():
-    for f in ["test_fsutil", "test_fsutil_copy"]:
+    for f in ['test_fsutil', 'test_fsutil_copy']:
         folder = osp.join(get_home_dir(), f)
         shutil.rmtree(folder, ignore_errors=True)
 
 
-@pytest.mark.parametrize(('storage_root', 'supported'), [
-    ('/tmp/local-root', True),
-    ('s3://bucket/root', True),
-    ('gs://bucket/root', True),
-    ('abfss://filesystem@account.dfs.core.windows.net/root', True),
-    ('dbfs:/Volumes/catalog/schema/volume/root', False),
-])
+@pytest.mark.parametrize(
+    ('storage_root', 'supported'),
+    [
+        ('/tmp/local-root', True),
+        ('s3://bucket/root', True),
+        ('gs://bucket/root', True),
+        ('abfss://filesystem@account.dfs.core.windows.net/root', True),
+        ('dbfs:/Volumes/catalog/schema/volume/root', False),
+    ],
+)
 def test_storage_upload_capability_is_explicit(storage_root, supported):
     helper = fsutil.get_presigned_helper(storage_root)
     assert bool(helper and helper.supports_multipart_upload) is supported
@@ -42,7 +45,8 @@ def test_storage_upload_capability_is_explicit(storage_root, supported):
 
 
 def test_local_object_identity_binds_regular_file_and_rejects_symlink(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     target = tmp_path / 'part.parquet'
     target.write_bytes(b'prediction-part')
 
@@ -79,8 +83,7 @@ def test_copy_exclude():
     fsutil.exists(osp.join(src_dir, 'b'))
     fsutil.exists(osp.join(src_dir, '__SUCCESS__'))
 
-    fsutil.copy(src_dir, osp.join(dst_dir, 'source_folder'),
-                exclude=['__SUCCESS__'])
+    fsutil.copy(src_dir, osp.join(dst_dir, 'source_folder'), exclude=['__SUCCESS__'])
     assert fsutil.exists(osp.join(dst_dir, 'source_folder'))
     assert fsutil.isdir(osp.join(dst_dir, 'source_folder'))
     assert fsutil.exists(osp.join(dst_dir, 'source_folder', 'a'))
@@ -88,8 +91,7 @@ def test_copy_exclude():
     assert not fsutil.exists(osp.join(dst_dir, 'source_folder', '__SUCCESS__'))
 
 
-def test_copy_nested_tree_creates_local_destination_parents(
-        tmp_path: pathlib.Path):
+def test_copy_nested_tree_creates_local_destination_parents(tmp_path: pathlib.Path):
     """A multi-level local->local tree copies completely, and every
     intermediate destination directory -- none of which exist ahead of
     time -- gets created so shutil.copyfile has somewhere to write."""
@@ -127,8 +129,7 @@ def test_copy_include_and_exclude_filters(tmp_path: pathlib.Path):
     assert not (dst / '__marker__').exists()
 
 
-def test_copy_directory_copy_file_failure_propagates(
-        monkeypatch: pytest.MonkeyPatch):
+def test_copy_directory_copy_file_failure_propagates(monkeypatch: pytest.MonkeyPatch):
     """A single copy_file failure among many concurrent transfers fails the
     whole copy call."""
     from io_utils.fsutil import generic
@@ -187,18 +188,19 @@ def test_abspath():
 def test_load_not_exist(caplog):
     with caplog.at_level(logging.WARNING):
         with pytest.raises(FileNotFoundError):
-            fsutil.torch_load("does_not_exist")
+            fsutil.torch_load('does_not_exist')
 
-        assert "does_not_exist" in caplog.records[0].message
+        assert 'does_not_exist' in caplog.records[0].message
 
 
 def test_copy_retry_basic(caplog):
     with caplog.at_level(logging.WARNING):
         with pytest.raises(FileNotFoundError):
-            fsutil.copy_file("/random/src", "random/dest")
+            fsutil.copy_file('/random/src', 'random/dest')
 
         assert caplog.records[0].message == (
-            'Source file copy failed (error_type=FileNotFoundError)')
+            'Source file copy failed (error_type=FileNotFoundError)'
+        )
         assert '/random/src' not in caplog.text
 
 
@@ -207,31 +209,35 @@ def test_copy_provider_exception_is_sanitized(caplog, tmp_path):
     cleanup_poison = 'cleanup-provider-secret-must-not-escape'
     destination = str(tmp_path / 'downloaded')
 
-    with patch(
+    with (
+        patch(
             'io_utils.fsutil.s3_filesystem.download_file',
             side_effect=RuntimeError(copy_poison),
-    ), patch(
+        ),
+        patch(
             'io_utils.fsutil.generic.api.rm',
             side_effect=RuntimeError(cleanup_poison),
-    ), caplog.at_level(logging.WARNING):
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
         with pytest.raises(RuntimeError, match='^File copy failed$') as error:
             fsutil.copy_file('s3://customer-bucket/events.parquet', destination)
 
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
     rendered = ''.join(
-        traceback.format_exception(type(error.value), error.value,
-                                   error.value.__traceback__))
+        traceback.format_exception(
+            type(error.value), error.value, error.value.__traceback__
+        )
+    )
     for poison in (copy_poison, cleanup_poison):
         assert poison not in rendered
         assert poison not in repr(error.value)
         assert poison not in caplog.text
 
 
-@pytest.mark.parametrize('failure_stage',
-                         ['initialize', 'subdirectory', 'worker'])
-def test_two_level_directory_copy_provider_error_is_sanitized(
-        caplog, failure_stage):
+@pytest.mark.parametrize('failure_stage', ['initialize', 'subdirectory', 'worker'])
+def test_two_level_directory_copy_provider_error_is_sanitized(caplog, failure_stage):
     poison = f'{failure_stage}-directory-provider-secret-must-not-escape'
     source = '/customer/source'
     destination = '/kumo/destination'
@@ -271,20 +277,23 @@ def test_two_level_directory_copy_provider_error_is_sanitized(
             raise RuntimeError(poison)
         return []
 
-    with patch('io_utils.fsutil.generic.Pool', FakePool), patch(
-            'io_utils.fsutil.generic.api.makedirs'), patch(
-                'io_utils.fsutil.generic.api.isdir', side_effect=isdir), patch(
-                    'io_utils.fsutil.generic.api.listdir', side_effect=listdir), \
-            caplog.at_level(logging.WARNING):
-        with pytest.raises(RuntimeError,
-                           match='^Directory copy failed$') as error:
+    with (
+        patch('io_utils.fsutil.generic.Pool', FakePool),
+        patch('io_utils.fsutil.generic.api.makedirs'),
+        patch('io_utils.fsutil.generic.api.isdir', side_effect=isdir),
+        patch('io_utils.fsutil.generic.api.listdir', side_effect=listdir),
+        caplog.at_level(logging.WARNING),
+    ):
+        with pytest.raises(RuntimeError, match='^Directory copy failed$') as error:
             fsutil.copy_two_level_directory(source, destination)
 
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
     rendered = ''.join(
-        traceback.format_exception(type(error.value), error.value,
-                                   error.value.__traceback__))
+        traceback.format_exception(
+            type(error.value), error.value, error.value.__traceback__
+        )
+    )
     assert poison not in rendered
     assert poison not in repr(error.value)
     assert poison not in caplog.text
@@ -300,6 +309,7 @@ def test_write_binary_retry_rewinds_source(tmp_path: pathlib.Path):
     class FlakyReader(io.BytesIO):
         """BytesIO that raises BlockingIOError once partway through, then
         succeeds. Mimics a transient EAGAIN from the destination FS."""
+
         def __init__(self, data: bytes, fail_after: int):
             super().__init__(data)
             self._fail_after = fail_after
@@ -325,27 +335,26 @@ def test_write_binary_retry_rewinds_source(tmp_path: pathlib.Path):
 
 def test_get_many_if_present(tmp_path):
     # Create temporary files
-    file1 = tmp_path / "file1"
-    file2 = tmp_path / "file2"
-    file1.write_text("content1")
-    file2.write_text("content2")
+    file1 = tmp_path / 'file1'
+    file2 = tmp_path / 'file2'
+    file1.write_text('content1')
+    file2.write_text('content2')
     file_1_path = str(file1)
     file_2_path = str(file2)
 
     # Test with existing files
     result1 = fsutil.get_many_if_present([file_1_path, file_2_path])
-    assert result1 == [b"content1", b"content2"]
+    assert result1 == [b'content1', b'content2']
 
     # Test with a mix of existing and non-existing files
-    non_existent = tmp_path / "non_existent"
+    non_existent = tmp_path / 'non_existent'
     non_existent_path = str(non_existent)
-    result2 = fsutil.get_many_if_present(
-        [file_1_path, non_existent_path, file_2_path])
-    assert result2 == [b"content1", None, b"content2"]
+    result2 = fsutil.get_many_if_present([file_1_path, non_existent_path, file_2_path])
+    assert result2 == [b'content1', None, b'content2']
 
     # Test with None values
     result3 = fsutil.get_many_if_present([None, file_1_path, None, file_2_path])
-    assert result3 == [None, b"content1", None, b"content2"]
+    assert result3 == [None, b'content1', None, b'content2']
 
 
 def test_copy_one_level_directory(tmp_path):
@@ -367,8 +376,7 @@ def test_copy_one_level_directory(tmp_path):
 
     # Running again with raise_on_exists=True should error because dst exists
     with pytest.raises(FileExistsError):
-        fsutil.copy_one_level_directory(src_dir, dst_dir,
-                                        exclude=['__SUCCESS__'])
+        fsutil.copy_one_level_directory(src_dir, dst_dir, exclude=['__SUCCESS__'])
 
     # include filter should allow copying only specific pattern to a new dst
     dst_dir_2 = osp.join(temp_dir, 'one_level_dst_2')
@@ -442,8 +450,7 @@ def test_scoped_directory_copy_uses_exact_credentials_in_threads(
     source = '/local/source'
     destination = f'{provider}://customer/destination'
     nested = f'{source}/model'
-    files = ([f'{source}/config.pbtxt']
-             if levels == 1 else [f'{nested}/weights.bin'])
+    files = [f'{source}/config.pbtxt'] if levels == 1 else [f'{nested}/weights.bin']
     credentials = {
         'provider': provider,
         'marker': f'{provider}-customer-credentials',
@@ -474,7 +481,8 @@ def test_scoped_directory_copy_uses_exact_credentials_in_threads(
         generic,
         'Pool',
         lambda *_a, **_k: pytest.fail(
-            'credential-scoped copy must not create a process pool'),
+            'credential-scoped copy must not create a process pool'
+        ),
     )
 
     with credential_scope(credentials, require_explicit=True):
@@ -526,8 +534,10 @@ def test_copy_files_threaded_is_concurrent_and_bounded(monkeypatch) -> None:
     credentials = {'provider': 's3', 'marker': 'customer'}
     with credential_scope(credentials, require_explicit=True):
         fsutil.copy_files_threaded(
-            [(f's3://internal/part-{index}',
-              f's3://customer/part-{index}') for index in range(5)],
+            [
+                (f's3://internal/part-{index}', f's3://customer/part-{index}')
+                for index in range(5)
+            ],
             overwrite=True,
             max_workers=2,
         )
@@ -536,8 +546,10 @@ def test_copy_files_threaded_is_concurrent_and_bounded(monkeypatch) -> None:
     assert not controller.is_alive()
     assert peak == 2
     assert len(copied) == 5
-    assert all(overwrite and raise_on_exists
-               for _src, _dst, overwrite, raise_on_exists in copied)
+    assert all(
+        overwrite and raise_on_exists
+        for _src, _dst, overwrite, raise_on_exists in copied
+    )
 
 
 def test_copy_tree_threaded_exclude_predicate(tmp_path: pathlib.Path):
@@ -608,8 +620,9 @@ def test_copy_tree_threaded_same_src_dst_is_noop(tmp_path: pathlib.Path):
     assert (src / 'a.txt').read_bytes() == b'a'
 
 
-def test_copy_tree_threaded_surfaces_failure(tmp_path: pathlib.Path,
-                                             monkeypatch: pytest.MonkeyPatch):
+def test_copy_tree_threaded_surfaces_failure(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     src = tmp_path / 'src'
     src.mkdir()
     (src / 'a.txt').write_bytes(b'a')
@@ -633,7 +646,8 @@ def test_copy_tree_threaded_surfaces_failure(tmp_path: pathlib.Path,
 
 
 def test_copy_tree_threaded_remote_src_delegates_to_copy(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     """Every remote source -- regardless of destination locality -- now
     delegates the whole tree to copy(), which does its own parallel
     listing and transfer; copy_tree_threaded keeps no enumeration
@@ -662,12 +676,14 @@ def test_copy_tree_threaded_remote_src_delegates_to_copy(
     assert src_path == 's3://bucket/staging'
     assert dst_path == 'gcs://other-bucket/dst'
     # Mirror copy_tree_threaded's overwrite semantics; no callable exclude.
-    assert kwargs == dict(exclude=None, include=None, overwrite=True,
-                          raise_on_exists=False)
+    assert kwargs == dict(
+        exclude=None, include=None, overwrite=True, raise_on_exists=False
+    )
 
 
 def test_copy_tree_threaded_remote_src_to_local_dst_also_delegates(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     """A remote source with a *local* destination used to take a second,
     bespoke enumerate-then-transfer code path inside copy_tree_threaded
     itself; that path is gone, so this now delegates too, the same as a
@@ -677,25 +693,28 @@ def test_copy_tree_threaded_remote_src_to_local_dst_also_delegates(
     source = 's3://bucket/staging'
     destination = str(tmp_path / 'dst')
 
-    monkeypatch.setattr(fsutil_generic, 'is_local',
-                        lambda path: path == destination)
+    monkeypatch.setattr(fsutil_generic, 'is_local', lambda path: path == destination)
 
     copy_calls = []
     monkeypatch.setattr(
-        fsutil_generic, 'copy', lambda *args, **kwargs: copy_calls.append(
-            (args, kwargs)))
+        fsutil_generic,
+        'copy',
+        lambda *args, **kwargs: copy_calls.append((args, kwargs)),
+    )
 
     fsutil.copy_tree_threaded(source, destination, max_workers=2)
 
     assert copy_calls == [
-        ((source, destination),
-         dict(exclude=None, include=None, overwrite=True,
-              raise_on_exists=False)),
+        (
+            (source, destination),
+            dict(exclude=None, include=None, overwrite=True, raise_on_exists=False),
+        ),
     ]
 
 
 def test_copy_enumerates_full_remote_tree_concurrently(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     """The multi-level, multi-branch concurrent enumeration this used to
     unit-test on copy_tree_threaded now lives entirely in copy() (via
     walk_directory_tree), since copy_tree_threaded just delegates for a
@@ -715,21 +734,19 @@ def test_copy_enumerates_full_remote_tree_concurrently(
         source: [
             fsutil_generic.api.PathDetail(path=dir_a, is_directory=True),
             fsutil_generic.api.PathDetail(path=dir_b, is_directory=True),
-            fsutil_generic.api.PathDetail(path=f'{source}/root.txt',
-                                          is_directory=False),
+            fsutil_generic.api.PathDetail(
+                path=f'{source}/root.txt', is_directory=False
+            ),
         ],
         dir_a: [
             fsutil_generic.api.PathDetail(path=dir_a_1, is_directory=True),
-            fsutil_generic.api.PathDetail(path=f'{dir_a}/a.txt',
-                                          is_directory=False),
+            fsutil_generic.api.PathDetail(path=f'{dir_a}/a.txt', is_directory=False),
         ],
         dir_b: [
-            fsutil_generic.api.PathDetail(path=f'{dir_b}/b.txt',
-                                          is_directory=False),
+            fsutil_generic.api.PathDetail(path=f'{dir_b}/b.txt', is_directory=False),
         ],
         dir_a_1: [
-            fsutil_generic.api.PathDetail(path=f'{dir_a_1}/a1.txt',
-                                          is_directory=False),
+            fsutil_generic.api.PathDetail(path=f'{dir_a_1}/a1.txt', is_directory=False),
         ],
     }
     list_calls = []
@@ -751,8 +768,9 @@ def test_copy_enumerates_full_remote_tree_concurrently(
     monkeypatch.setattr(fsutil_generic.api, 'isdir', isdir)
     monkeypatch.setattr(fsutil_generic.api, 'listdir', listdir)
     monkeypatch.setattr(fsutil_generic.api, 'makedirs', makedirs)
-    monkeypatch.setattr(fsutil_generic, 'copy_file',
-                        lambda *args: copy_calls.append(args))
+    monkeypatch.setattr(
+        fsutil_generic, 'copy_file', lambda *args: copy_calls.append(args)
+    )
 
     fsutil.copy(source, destination, overwrite=True, raise_on_exists=False)
 
@@ -764,17 +782,16 @@ def test_copy_enumerates_full_remote_tree_concurrently(
         osp.join(destination, 'a', 'a1'),
     }
     assert set(copy_calls) == {
-        (f'{source}/root.txt', osp.join(destination, 'root.txt'), True,
-         False),
+        (f'{source}/root.txt', osp.join(destination, 'root.txt'), True, False),
         (f'{dir_a}/a.txt', osp.join(destination, 'a', 'a.txt'), True, False),
         (f'{dir_b}/b.txt', osp.join(destination, 'b', 'b.txt'), True, False),
-        (f'{dir_a_1}/a1.txt', osp.join(destination, 'a', 'a1', 'a1.txt'),
-         True, False),
+        (f'{dir_a_1}/a1.txt', osp.join(destination, 'a', 'a1', 'a1.txt'), True, False),
     }
 
 
 def test_copy_remote_listing_failure_propagates(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     """A failure enumerating one subdirectory fails the whole copy rather
     than silently yielding a truncated transfer list. Was previously
     exercised through copy_tree_threaded's own (now-removed) remote
@@ -793,8 +810,7 @@ def test_copy_remote_listing_failure_propagates(
             fsutil_generic.api.PathDetail(path=dir_b, is_directory=True),
         ],
         dir_a: [
-            fsutil_generic.api.PathDetail(path=f'{dir_a}/a.txt',
-                                          is_directory=False),
+            fsutil_generic.api.PathDetail(path=f'{dir_a}/a.txt', is_directory=False),
         ],
     }
     copy_calls = []
@@ -810,8 +826,9 @@ def test_copy_remote_listing_failure_propagates(
 
     monkeypatch.setattr(fsutil_generic.api, 'isdir', isdir)
     monkeypatch.setattr(fsutil_generic.api, 'listdir', listdir)
-    monkeypatch.setattr(fsutil_generic, 'copy_file',
-                        lambda *args: copy_calls.append(args))
+    monkeypatch.setattr(
+        fsutil_generic, 'copy_file', lambda *args: copy_calls.append(args)
+    )
 
     with pytest.raises(RuntimeError, match='listing boom'):
         fsutil.copy(source, destination, overwrite=True, raise_on_exists=False)
@@ -823,7 +840,8 @@ def test_copy_remote_listing_failure_propagates(
 
 
 def test_copy_tree_threaded_remote_src_falls_back_without_detailed_listing(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     """Listings without entry types retain compatibility via explicit probes. Goes
     through copy_tree_threaded's delegate to copy(), which now owns the
     isdir/exists checks that decide file-vs-directory before any listing
@@ -836,8 +854,7 @@ def test_copy_tree_threaded_remote_src_falls_back_without_detailed_listing(
     destination = str(tmp_path / 'dst')
     copy_calls = []
 
-    monkeypatch.setattr(fsutil_generic, 'is_local',
-                        lambda path: path == destination)
+    monkeypatch.setattr(fsutil_generic, 'is_local', lambda path: path == destination)
 
     def listdir(path, *, detail=False, **_kwargs):
         assert path == source
@@ -858,12 +875,14 @@ def test_copy_tree_threaded_remote_src_falls_back_without_detailed_listing(
 
     fsutil.copy_tree_threaded(source, destination, max_workers=1)
 
-    assert copy_calls == [(source_file, osp.join(destination,
-                                                 'tt.parquet'), True, False)]
+    assert copy_calls == [
+        (source_file, osp.join(destination, 'tt.parquet'), True, False)
+    ]
 
 
 def test_copy_tree_threaded_remote_src_copies_whole_bundle(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     """A source treated as remote copies the entire bundle (nested subdir +
     spec sibling) end to end via the delegated copy() path, where the old code
     copied nothing. Forces is_local False; copy() works local->local."""
@@ -916,7 +935,8 @@ def test_copy_accepts_pool_and_enable_multi_process(tmp_path):
     (src / 'nested' / 'f.txt').write_text('payload')
     dst = tmp_path / 'dst'
 
-    fsutil.copy(str(src), str(dst), overwrite=True, enable_multi_process=True,
-                pool=object())
+    fsutil.copy(
+        str(src), str(dst), overwrite=True, enable_multi_process=True, pool=object()
+    )
 
     assert (dst / 'nested' / 'f.txt').read_text() == 'payload'

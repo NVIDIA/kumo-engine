@@ -35,14 +35,14 @@ def fresh_store(monkeypatch):
     embedding_model_store.cache_clear()
 
 
-def test_the_baked_directory_is_registered_under_default_names(
-        tmp_path, monkeypatch):
-    pd.DataFrame({
-        'index': ['hello', 'world']
-    }).to_parquet(tmp_path / 'glove_6B_index.parquet')
+def test_the_baked_directory_is_registered_under_default_names(tmp_path, monkeypatch):
+    pd.DataFrame({'index': ['hello', 'world']}).to_parquet(
+        tmp_path / 'glove_6B_index.parquet'
+    )
     for dim in (50, 100):
-        np.save(tmp_path / f'glove_6B_{dim}d_emb.npy',
-                np.ones((2, dim), dtype=np.float32))
+        np.save(
+            tmp_path / f'glove_6B_{dim}d_emb.npy', np.ones((2, dim), dtype=np.float32)
+        )
     monkeypatch.setenv('KUMO_GLOVE_PATH', str(tmp_path))
 
     store = embedding_model_store()
@@ -52,18 +52,17 @@ def test_the_baked_directory_is_registered_under_default_names(
     assert embedding_model_store() is store
 
     with pytest.raises(EmbeddingModelNotFoundError) as error:
-        resolve_encoder(TextEmbedding('glove.42B-300d'), store, ['a.x'],
-                        'override')
+        resolve_encoder(TextEmbedding('glove.42B-300d'), store, ['a.x'], 'override')
     assert str(error.value) == (
         "Column 'a.x' uses the embedding model 'glove.42B-300d', which this "
         "deployment's image does not include (it has 'glove.6B-100d', "
         "'glove.6B-50d'). Use one of those, or bake the model into the image "
-        "(BAKE_GLOVE_LEVEL=all).")
+        '(BAKE_GLOVE_LEVEL=all).'
+    )
 
 
 @pytest.mark.parametrize('path', [None, 'missing', 'empty'])
-def test_no_baked_directory_leaves_the_store_empty(path, tmp_path,
-                                                   monkeypatch):
+def test_no_baked_directory_leaves_the_store_empty(path, tmp_path, monkeypatch):
     monkeypatch.delenv('KUMO_GLOVE_PATH', raising=False)
     if path is not None:
         (tmp_path / 'empty').mkdir()
@@ -90,38 +89,37 @@ def test_plans_may_only_name_official_glove_models():
 def test_hosted_training_resolves_from_the_baked_store(tmp_path, monkeypatch):
     baked = tmp_path / 'baked'
     baked.mkdir()
-    pd.DataFrame({
-        'index': ['hello', 'world']
-    }).to_parquet(baked / 'glove_6B_index.parquet')
+    pd.DataFrame({'index': ['hello', 'world']}).to_parquet(
+        baked / 'glove_6B_index.parquet'
+    )
     np.save(baked / 'glove_6B_50d_emb.npy', np.ones((2, 50), np.float32))
     monkeypatch.setenv('KUMO_GLOVE_PATH', str(baked))
     # Not the tests' default store: only what the monolith builds.
     monkeypatch.setattr(embedding_models, '_default_store', None)
-    monkeypatch.setattr(embedding_models, '_RESOLVED',
-                        weakref.WeakValueDictionary())
+    monkeypatch.setattr(embedding_models, '_RESOLVED', weakref.WeakValueDictionary())
     with pytest.raises(EmbeddingModelNotFoundError):
         resolve_encoder(TextEmbedding())
 
     log_dir = str(tmp_path / 'automl')
     monkeypatch.setattr(AutoTrainer, 'log_dir', log_dir)
     monkeypatch.setattr(
-        AutoTrainer, '_resolve_encoders', lambda self: EncodersConfig(
-            {'users': {
-                'bio': TextEmbedding()
-            }}))
+        AutoTrainer,
+        '_resolve_encoders',
+        lambda self: EncodersConfig({'users': {'bio': TextEmbedding()}}),
+    )
     auto_trainer = AutoTrainer.__new__(AutoTrainer)
     auto_trainer.runtime = MonolithAutoTrainingRuntime()
     encoders = auto_trainer.encoders
     trainer = Trainer.__new__(Trainer)
-    trainer._embedding_models = (
-        auto_trainer.runtime.trainer_runtime_kwargs()['embedding_models'])
+    trainer._embedding_models = auto_trainer.runtime.trainer_runtime_kwargs()[
+        'embedding_models'
+    ]
     trainer.encoders = encoders
     mapper = TensorMapper.from_encoder(encoders.encoders['users']['bio'])
     assert mapper.model.path == baked
 
     # Prediction, in another process, loads the saved encoders.
-    monkeypatch.setattr(embedding_models, '_RESOLVED',
-                        weakref.WeakValueDictionary())
+    monkeypatch.setattr(embedding_models, '_RESOLVED', weakref.WeakValueDictionary())
     predictor = Trainer.__new__(Trainer)
     predictor._embedding_models = embedding_model_store()
     predictor.encoders = load_encoders(log_dir)

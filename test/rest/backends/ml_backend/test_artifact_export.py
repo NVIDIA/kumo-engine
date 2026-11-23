@@ -84,8 +84,10 @@ def test_databricks_export_rejects_other_schema_before_open():
         schema_name='authorized_schema',
     )
 
-    with patch.object(connector, 'open') as mock_open, pytest.raises(
-            ConnectorError, match='connector schema'):
+    with (
+        patch.object(connector, 'open') as mock_open,
+        pytest.raises(ConnectorError, match='connector schema'),
+    ):
         write_artifact_to_databricks(
             's3://internal-artifacts/predictions/',
             connector,
@@ -120,14 +122,13 @@ def test_databricks_export_honors_write_mode(
     )
 
     with (
-            patch.object(connector, 'open'),
-            patch.object(connector, 'write_artifacts_to_table') as write,
-            patch.object(
-                artifact_export,
-                '_artifact_size',
-                side_effect=AssertionError(
-                    'known artifact size must not be rescanned'),
-            ) as artifact_size,
+        patch.object(connector, 'open'),
+        patch.object(connector, 'write_artifacts_to_table') as write,
+        patch.object(
+            artifact_export,
+            '_artifact_size',
+            side_effect=AssertionError('known artifact size must not be rescanned'),
+        ) as artifact_size,
     ):
         stats = write_artifact_to_databricks(
             str(artifact_path),
@@ -152,33 +153,32 @@ def test_write_to_bigquery_rejects_s3_before_credentials_or_io(caplog):
     connector = writable_bigquery_connector(_TEST_CONNECTOR_ID).as_connector()
 
     with (
-            patch.object(connector, 'open', side_effect=AssertionError) as
-            open_,
-            patch.object(
-                connector,
-                'write_artifacts_to_table',
-                side_effect=AssertionError,
-            ) as write,
-            patch.object(
-                artifact_export.fsutil,
-                'dirsize',
-                side_effect=AssertionError,
-            ) as dirsize,
-            patch('google.auth.default', side_effect=AssertionError) as adc,
-            patch.object(
-                connector,
-                '_use_credentials',
-                side_effect=AssertionError,
-            ) as secret_lookup,
-            patch.object(
-                connector,
-                '_initialize_gcs_client',
-                side_effect=AssertionError,
-            ) as gcs_client,
-            pytest.raises(
-                ArtifactExportError,
-                match='requires a gs:// artifact path',
-            ) as exc_info,
+        patch.object(connector, 'open', side_effect=AssertionError) as open_,
+        patch.object(
+            connector,
+            'write_artifacts_to_table',
+            side_effect=AssertionError,
+        ) as write,
+        patch.object(
+            artifact_export.fsutil,
+            'dirsize',
+            side_effect=AssertionError,
+        ) as dirsize,
+        patch('google.auth.default', side_effect=AssertionError) as adc,
+        patch.object(
+            connector,
+            '_use_credentials',
+            side_effect=AssertionError,
+        ) as secret_lookup,
+        patch.object(
+            connector,
+            '_initialize_gcs_client',
+            side_effect=AssertionError,
+        ) as gcs_client,
+        pytest.raises(
+            ArtifactExportError,
+            match='requires a gs:// artifact path',
+        ) as exc_info,
     ):
         write_artifact_to_bigquery(
             secret_path,
@@ -212,8 +212,9 @@ def test_warehouse_append_rejects_staging_table_before_provider_io(
 ):
     connector = Mock(spec=connector_type)
 
-    with pytest.raises(ArtifactExportError,
-                       match=f'{provider} staging table.*OVERWRITE'):
+    with pytest.raises(
+        ArtifactExportError, match=f'{provider} staging table.*OVERWRITE'
+    ):
         writer(
             's3://internal-artifacts/predictions/',
             connector,
@@ -230,11 +231,12 @@ def test_write_to_s3_parquet(tmp_path: pathlib.Path):
     input_path = osp.join(temp_path, 'input.parquet')
     fsutil.makedirs(input_path)
     df = prepare_input_data(input_path)
-    output_path = osp.join(temp_path, "output.parquet")
+    output_path = osp.join(temp_path, 'output.parquet')
     with patch.object(
-            artifact_export.fsutil, 'copy_files_threaded',
-            side_effect=AssertionError(
-                'legacy directory exports must retain fsutil.copy')):
+        artifact_export.fsutil,
+        'copy_files_threaded',
+        side_effect=AssertionError('legacy directory exports must retain fsutil.copy'),
+    ):
         stats = write_artifact_to_s3(input_path, output_path, FileType.PARQUET)
     assert stats.display_path == output_path + '/'
     assert stats.size_bytes > 0
@@ -261,15 +263,15 @@ def test_write_to_parquet_copies_only_selected_files(tmp_path: pathlib.Path):
     )
 
     output_parts = {
-        path.name
-        for path in output_path.iterdir() if path.suffix == '.parquet'
+        path.name for path in output_path.iterdir() if path.suffix == '.parquet'
     }
     assert output_parts == {part.name for part in parts}
     assert stale.name not in output_parts
 
 
 def test_selected_parquet_copy_retries_and_publishes_success_last(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     output_path = (tmp_path / 'output.parquet').as_posix()
     artifact_files = [
         f's3://internal/attempt/part-{index:03}.parquet' for index in range(3)
@@ -283,12 +285,12 @@ def test_selected_parquet_copy_retries_and_publishes_success_last(
             raise OSError('transient copy failure')
 
     with (
-            patch.object(
-                artifact_export.fsutil,
-                'copy_files_threaded',
-                side_effect=copy_files,
-            ),
-            patch('io_utils.retry.time.sleep') as sleep,
+        patch.object(
+            artifact_export.fsutil,
+            'copy_files_threaded',
+            side_effect=copy_files,
+        ),
+        patch('io_utils.retry.time.sleep') as sleep,
     ):
         write_artifact_to_s3(
             's3://internal/attempt/',
@@ -297,34 +299,42 @@ def test_selected_parquet_copy_retries_and_publishes_success_last(
             artifact_files=artifact_files,
         )
 
-    expected_transfers = [(path, osp.join(output_path, osp.basename(path)))
-                          for path in artifact_files]
+    expected_transfers = [
+        (path, osp.join(output_path, osp.basename(path))) for path in artifact_files
+    ]
     assert attempts == [
-        (expected_transfers, {
-            'overwrite': True,
-            'max_workers': artifact_export._PARQUET_COPY_MAX_WORKERS,
-        }),
-        (expected_transfers, {
-            'overwrite': True,
-            'max_workers': artifact_export._PARQUET_COPY_MAX_WORKERS,
-        }),
+        (
+            expected_transfers,
+            {
+                'overwrite': True,
+                'max_workers': artifact_export._PARQUET_COPY_MAX_WORKERS,
+            },
+        ),
+        (
+            expected_transfers,
+            {
+                'overwrite': True,
+                'max_workers': artifact_export._PARQUET_COPY_MAX_WORKERS,
+            },
+        ),
     ]
     sleep.assert_called_once_with(60)
     assert fsutil.exists(osp.join(output_path, '_SUCCESS'))
 
 
 def test_selected_parquet_copy_failure_propagates_without_success(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     output_path = (tmp_path / 'output.parquet').as_posix()
 
     with (
-            patch.object(
-                artifact_export.fsutil,
-                'copy_files_threaded',
-                side_effect=OSError('persistent copy failure'),
-            ) as copy_files,
-            patch('io_utils.retry.time.sleep') as sleep,
-            pytest.raises(OSError, match='persistent copy failure'),
+        patch.object(
+            artifact_export.fsutil,
+            'copy_files_threaded',
+            side_effect=OSError('persistent copy failure'),
+        ) as copy_files,
+        patch('io_utils.retry.time.sleep') as sleep,
+        pytest.raises(OSError, match='persistent copy failure'),
     ):
         write_artifact_to_s3(
             's3://internal/attempt/',
@@ -342,13 +352,13 @@ def test_selected_parquet_copy_failure_propagates_without_success(
 
 
 # NOTE: CSV export with multiple parquet files fails.
-@pytest.mark.parametrize("multi_sharded", [True, False])
+@pytest.mark.parametrize('multi_sharded', [True, False])
 def test_write_to_s3_csv(tmp_path: pathlib.Path, multi_sharded: bool):
     temp_path = tmp_path.resolve().as_posix()
     input_path = osp.join(temp_path, 'input.parquet')
     fsutil.makedirs(input_path)
     df = prepare_input_data(input_path, chunking=multi_sharded)
-    output_path = osp.join(temp_path, "output.csv")
+    output_path = osp.join(temp_path, 'output.csv')
     stats = write_artifact_to_s3(input_path, output_path, FileType.CSV)
     if multi_sharded:
         # if artifact is multi sharded, write to output path as directory
@@ -360,8 +370,7 @@ def test_write_to_s3_csv(tmp_path: pathlib.Path, multi_sharded: bool):
         assert osp.join(output_path, '_KUMO_EXPORT') in output_files
         assert osp.join(output_path, '_SUCCESS') in output_files
         data_files = [
-            path for path in output_files
-            if osp.basename(path).startswith('part-')
+            path for path in output_files if osp.basename(path).startswith('part-')
         ]
         out_df = pd.concat([pd.read_csv(path) for path in data_files])
         assert len(out_df) == len(df)
@@ -373,8 +382,7 @@ def test_write_to_s3_csv(tmp_path: pathlib.Path, multi_sharded: bool):
         assert len(out_df) == len(df)
 
 
-def test_write_to_csv_preserves_uppercase_explicit_extension(
-        tmp_path: pathlib.Path):
+def test_write_to_csv_preserves_uppercase_explicit_extension(tmp_path: pathlib.Path):
     input_path = (tmp_path / 'input.parquet').as_posix()
     fsutil.makedirs(input_path)
     expected = prepare_input_data(input_path, chunking=False)
@@ -389,7 +397,8 @@ def test_write_to_csv_preserves_uppercase_explicit_extension(
 
 
 def test_write_to_csv_cleans_private_staging_on_converter_failure(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     input_path = tmp_path / 'input.parquet'
     input_path.mkdir()
     prepare_input_data(input_path.as_posix(), chunking=False)
@@ -415,16 +424,18 @@ def test_write_to_csv_cleans_private_staging_on_converter_failure(
 
 @pytest.mark.snowflake
 @withSnowflakeCredentials
-@pytest.mark.parametrize("with_staging", [True, False])
-def test_write_to_snowflake(snowflake_key_pair_credentials: KeyPair,
-                            with_staging: bool):
+@pytest.mark.parametrize('with_staging', [True, False])
+def test_write_to_snowflake(
+    snowflake_key_pair_credentials: KeyPair, with_staging: bool
+):
     # Existing S3 test data under the snowflake-integ-test/ prefix.
     # Must be under this prefix (not databricks-integ-test/) so the
     # unittest-iam-role STS credentials passed to Snowflake's COPY INTO
     # can access it — Snowflake reads the parquet directly from S3.
-    input_path = ('s3://kumo-preprod-dataplane-bucket/'
-                  'snowflake-integ-test/bp_output_test')
-    id = str(uuid.uuid1()).upper().replace("-", "")
+    input_path = (
+        's3://kumo-preprod-dataplane-bucket/snowflake-integ-test/bp_output_test'
+    )
+    id = str(uuid.uuid1()).upper().replace('-', '')
 
     connector_id = _TEST_CONNECTOR_ID
     connector_config = writable_snowflake_config(connector_id)
@@ -447,10 +458,13 @@ def test_write_to_snowflake(snowflake_key_pair_credentials: KeyPair,
         extra_fields=[],
     )
     try:
-        stats = write_artifact_to_snowflake(input_path, connector,
-                                            output_config.write_mode,
-                                            output_config.table_name,
-                                            output_config.staging_table_name)
+        stats = write_artifact_to_snowflake(
+            input_path,
+            connector,
+            output_config.write_mode,
+            output_config.table_name,
+            output_config.staging_table_name,
+        )
         assert stats.size_bytes > 0
         assert stats.display_path.endswith(output_config.table_name)
 
@@ -474,7 +488,7 @@ def test_failed_s3_parquet_copy_retry(tmp_path: pathlib.Path):
     fsutil.makedirs(input_path)
     df = prepare_input_data(input_path)
 
-    output_path = osp.join(temp_path, "embed_output.parquet")
+    output_path = osp.join(temp_path, 'embed_output.parquet')
     stats = write_artifact_to_s3(input_path, output_path, None)
 
     # Make sure multiple files are created
@@ -494,7 +508,8 @@ def test_failed_s3_parquet_copy_retry(tmp_path: pathlib.Path):
 
 
 def test_partitioned_export_allows_empty_destination_but_rejects_stale_data(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     input_path = (tmp_path / 'input.parquet').as_posix()
     fsutil.makedirs(input_path)
     prepare_input_data(input_path)
@@ -509,8 +524,9 @@ def test_partitioned_export_allows_empty_destination_but_rejects_stale_data(
     )
 
     fsutil.rm(osp.join(output_path, '_KUMO_EXPORT'))
-    with pytest.raises(ArtifactExportError,
-                       match='data from another export') as exc_info:
+    with pytest.raises(
+        ArtifactExportError, match='data from another export'
+    ) as exc_info:
         write_artifact_to_s3(
             input_path,
             output_path,
@@ -526,7 +542,7 @@ def test_csv_ready_renders_embedding_columns(tmp_path):
     df['embedding'] = arr.tolist()
 
     # Use parquet file to simulate production
-    fname = os.path.join(tmp_path, "file.parquet")
+    fname = os.path.join(tmp_path, 'file.parquet')
     df.to_parquet(fname, index=False)
     df2 = parquet_util.read_parquet(fname)
 
@@ -534,9 +550,9 @@ def test_csv_ready_renders_embedding_columns(tmp_path):
 
     col = ready['embedding']
     assert col is not None
-    assert col[0] == "1 2 3"
-    assert col[1] == "4 5 6"
-    assert col[2] == "7 8 9"
+    assert col[0] == '1 2 3'
+    assert col[1] == '4 5 6'
+    assert col[2] == '7 8 9'
 
 
 def test_the_hosted_refusal_carries_the_shared_wording():
@@ -557,8 +573,7 @@ def test_the_hosted_refusal_carries_the_shared_wording():
 
     with pytest.raises(MultiDimensionalCsvError) as shared:
         flatten_arrays_for_csv(df)
-    with pytest.raises(ArtifactExportError,
-                       match='multi-dimensional array') as hosted:
+    with pytest.raises(ArtifactExportError, match='multi-dimensional array') as hosted:
         artifact_export._csv_ready(df)
 
     assert str(shared.value) == hosted.value.message
@@ -590,8 +605,11 @@ def test_an_array_cell_renders_as_the_shared_rule_renders_it(value):
 
     df = pd.DataFrame({'EMBEDDING': [value]})
 
-    assert (artifact_export._csv_ready(df)['EMBEDDING'].tolist() ==
-            flatten_arrays_for_csv(df)['EMBEDDING'].tolist() == ['0.1 0.2'])
+    assert (
+        artifact_export._csv_ready(df)['EMBEDDING'].tolist()
+        == flatten_arrays_for_csv(df)['EMBEDDING'].tolist()
+        == ['0.1 0.2']
+    )
 
 
 def test_the_export_marker_is_the_digest_both_backends_write(tmp_path):
@@ -612,17 +630,18 @@ def test_the_export_marker_is_the_digest_both_backends_write(tmp_path):
     prepare_input_data(input_path, chunking=True)
     output_path = osp.join(temp_path, 'output')
 
-    write_artifact_to_s3(input_path, output_path, FileType.PARQUET,
-                         export_id='job-1')
+    write_artifact_to_s3(input_path, output_path, FileType.PARQUET, export_id='job-1')
 
     marker = fsutil.read_text(osp.join(output_path, EXPORT_MARKER_NAME))
     assert marker == export_marker('job-1')
 
 
 @pytest.mark.parametrize('fail_conversion', [False, True])
-def test_selected_csv_uses_hosted_scratch_and_cleans_it(tmp_path, monkeypatch,
-                                                        fail_conversion):
+def test_selected_csv_uses_hosted_scratch_and_cleans_it(
+    tmp_path, monkeypatch, fail_conversion
+):
     from io_utils.fsutil import common
+
     scratch = tmp_path / 'hosted-scratch'
     scratch.mkdir()
     monkeypatch.setattr(common, '_temp_prefix', lambda: str(scratch) + '/')
@@ -640,9 +659,13 @@ def test_selected_csv_uses_hosted_scratch_and_cleans_it(tmp_path, monkeypatch,
             raise RuntimeError('injected conversion failure')
 
     def export():
-        return write_artifact_to_s3(str(source), str(tmp_path / 'output.csv'),
-                                    FileType.CSV, artifact_files=[str(source)],
-                                    csv_shard_converter=convert)
+        return write_artifact_to_s3(
+            str(source),
+            str(tmp_path / 'output.csv'),
+            FileType.CSV,
+            artifact_files=[str(source)],
+            csv_shard_converter=convert,
+        )
 
     if fail_conversion:
         with pytest.raises(RuntimeError, match='conversion failure'):
@@ -656,8 +679,10 @@ def test_selected_csv_uses_hosted_scratch_and_cleans_it(tmp_path, monkeypatch,
 
 @pytest.mark.parametrize('selected', [False, True])
 def test_hosted_selected_and_legacy_share_destination_rules(
-        tmp_path, monkeypatch, selected):
+    tmp_path, monkeypatch, selected
+):
     from kumo_core import artifact_export as shared
+
     source = tmp_path / 'source.parquet'
     source.write_bytes(b'parquet-fixture')
     destination = str(tmp_path / 'output') + '/'
@@ -678,19 +703,22 @@ def test_hosted_selected_and_legacy_share_destination_rules(
     monkeypatch.setattr(shared, 'prepare_export_destination', preparing)
     monkeypatch.setattr(shared, 'publish_export_destination', publishing)
     kwargs = {'artifact_files': [str(source)]} if selected else {}
-    write_artifact_to_s3(str(source), destination, FileType.PARQUET,
-                         export_id='job-1', **kwargs)
+    write_artifact_to_s3(
+        str(source), destination, FileType.PARQUET, export_id='job-1', **kwargs
+    )
     assert calls == ['prepare', 'publish']
     assert (tmp_path / 'output' / '_SUCCESS').exists()
     with pytest.raises(ArtifactExportError, match='another export'):
-        write_artifact_to_s3(str(source), destination, FileType.PARQUET,
-                             export_id='job-2', **kwargs)
+        write_artifact_to_s3(
+            str(source), destination, FileType.PARQUET, export_id='job-2', **kwargs
+        )
     assert calls == ['prepare', 'publish', 'prepare']
 
 
 @pytest.mark.parametrize('selected', [False, True])
 def test_hosted_empty_destination_and_failed_recopy_can_retry(
-        tmp_path, monkeypatch, selected):
+    tmp_path, monkeypatch, selected
+):
     from kumo_core.artifact_export import EXPORT_MARKER_NAME
 
     from rest.backends.ml_backend import artifact_export
@@ -702,9 +730,13 @@ def test_hosted_empty_destination_and_failed_recopy_can_retry(
     kwargs = {'artifact_files': [str(source)]} if selected else {}
 
     def export():
-        return write_artifact_to_s3(str(source),
-                                    str(target) + '/', FileType.PARQUET,
-                                    export_id='job-1', **kwargs)
+        return write_artifact_to_s3(
+            str(source),
+            str(target) + '/',
+            FileType.PARQUET,
+            export_id='job-1',
+            **kwargs,
+        )
 
     copy = artifact_export._write_artifact_to_s3_parquet
 
@@ -715,8 +747,7 @@ def test_hosted_empty_destination_and_failed_recopy_can_retry(
 
     for _ in range(2):
         with monkeypatch.context() as patch:
-            patch.setattr(artifact_export, '_write_artifact_to_s3_parquet',
-                          interrupted)
+            patch.setattr(artifact_export, '_write_artifact_to_s3_parquet', interrupted)
             with pytest.raises(RuntimeError, match='transfer interrupted'):
                 export()
         assert (target / EXPORT_MARKER_NAME).exists()
@@ -728,7 +759,8 @@ def test_hosted_empty_destination_and_failed_recopy_can_retry(
 
 @pytest.mark.parametrize('selected', [False, True])
 def test_hosted_csv_retry_replaces_partially_uploaded_part(
-        tmp_path, monkeypatch, selected):
+    tmp_path, monkeypatch, selected
+):
     source = tmp_path / 'source.parquet'
     expected = pd.DataFrame({'ENTITY': [10, 20]})
     expected.to_parquet(source)
@@ -736,13 +768,12 @@ def test_hosted_csv_retry_replaces_partially_uploaded_part(
     kwargs = {'artifact_files': [str(source)]} if selected else {}
 
     def export():
-        write_artifact_to_s3(str(source),
-                             str(target) + '/', FileType.CSV, export_id='job-1',
-                             **kwargs)
+        write_artifact_to_s3(
+            str(source), str(target) + '/', FileType.CSV, export_id='job-1', **kwargs
+        )
 
     def interrupted(source, destination, **kwargs):
-        pathlib.Path(destination).write_bytes(
-            pathlib.Path(source).read_bytes()[:10])
+        pathlib.Path(destination).write_bytes(pathlib.Path(source).read_bytes()[:10])
         raise RuntimeError('partial upload')
 
     with monkeypatch.context() as patch:

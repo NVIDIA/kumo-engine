@@ -22,6 +22,7 @@ connector with ``_get_path`` and a Rust-producer manifest sidecar.
 off the strict path with the connector-resolver raise. This test
 codifies that the sibling helper closes that gap.
 """
+
 import numpy as np
 import pandas as pd
 from kumo_core.types import ColStatType
@@ -33,16 +34,19 @@ from kumo.task.task import Task
 
 
 def test_seed_train_table_col_stats_from_dataframe_unblocks_strict_path(
-    seed_col_stats, ):
+    seed_col_stats,
+):
     # 1. Build a minimal one-table graph with a PandasConnector. The
     #    ``seed_col_stats`` fixture covers entity-table cache seeding so
     #    ``graph.infer_metadata()`` can resolve. The new helper fills in
     #    the *train-table* cache namespace, which the entity-table
     #    helper does not cover.
-    graph_df = pd.DataFrame({
-        'STORE_ID': np.arange(20),
-        'BRAND': ['PATAGONIA', 'KUMO'] * 10,
-    })
+    graph_df = pd.DataFrame(
+        {
+            'STORE_ID': np.arange(20),
+            'BRAND': ['PATAGONIA', 'KUMO'] * 10,
+        }
+    )
     seed_col_stats(
         graph_df,
         table_name='STORES',
@@ -60,19 +64,23 @@ def test_seed_train_table_col_stats_from_dataframe_unblocks_strict_path(
     # ``train_table_data_version`` so the cache key is stable; without
     # this the strict path raises a different (data_version-is-None)
     # error before reaching the missing-stat raise we care about here.
-    train_df = pd.DataFrame({
-        'STORE_ID': np.arange(20),
-        'AMOUNT': np.linspace(1.0, 20.0, 20),
-    })
+    train_df = pd.DataFrame(
+        {
+            'STORE_ID': np.arange(20),
+            'AMOUNT': np.linspace(1.0, 20.0, 20),
+        }
+    )
     task = Task(
         graph,
         task_type='regression',
         train_table_name='TRAINING_AMOUNT',
         target_col=dict(name='AMOUNT', dtype=Dtype.float),
-        fkeys=[{
-            'name': 'STORE_ID',
-            'dst_table': 'STORES',
-        }],
+        fkeys=[
+            {
+                'name': 'STORE_ID',
+                'dst_table': 'STORES',
+            }
+        ],
         data_source=train_df,
         train_table_data_version='seed-smoke-v1',
         ignore_encoders=True,
@@ -97,7 +105,8 @@ def test_seed_train_table_col_stats_from_dataframe_unblocks_strict_path(
     #    requires precomputed encoder stats; missing for ...`` for the
     #    target column.
     target_stats = task._get_encoder_stats_from_cache_or_fail(
-        task.train_table.target_col)
+        task.train_table.target_col
+    )
 
     # 6. Verify the seeded numeric stats round-trip the source data.
     assert ColStatType.MIN in target_stats

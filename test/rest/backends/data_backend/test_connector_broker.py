@@ -68,10 +68,12 @@ def _reference() -> ConnectorExecutionRef:
 def _delegation_broker(recheck_effects, *, delegated=None):
     references = [_reference(), _reference()]
     action = ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER
-    parent = SimpleNamespace(allowed_actions=(
-        ConnectorCapabilityAction.DELEGATE_CHILD,
-        action,
-    ))
+    parent = SimpleNamespace(
+        allowed_actions=(
+            ConnectorCapabilityAction.DELEGATE_CHILD,
+            action,
+        )
+    )
     recheck = AsyncMock(side_effect=recheck_effects)
     delegate = AsyncMock(return_value=delegated)
     revoke = AsyncMock(return_value=True)
@@ -84,8 +86,7 @@ def _delegation_broker(recheck_effects, *, delegated=None):
     )
     broker = ConnectorCredentialBroker()
     broker._authorize_reference = AsyncMock(return_value=parent)
-    broker.run = Mock(
-        side_effect=lambda operation: asyncio.run(operation(services)))
+    broker.run = Mock(side_effect=lambda operation: asyncio.run(operation(services)))
     return broker, references, action, parent, recheck, delegate, revoke
 
 
@@ -99,8 +100,9 @@ def test_broker_resolves_only_the_durable_project_connector_reference() -> None:
 
     resolved = object()
     resolve_for_activity = AsyncMock(return_value=resolved)
-    services = SimpleNamespace(connectors=SimpleNamespace(
-        resolve_for_activity=resolve_for_activity))
+    services = SimpleNamespace(
+        connectors=SimpleNamespace(resolve_for_activity=resolve_for_activity)
+    )
 
     def run(operation):
         return asyncio.run(operation(services))
@@ -108,8 +110,10 @@ def test_broker_resolves_only_the_durable_project_connector_reference() -> None:
     broker.run = Mock(side_effect=run)
     broker._authorize_reference = AsyncMock(return_value=object())
 
-    with patch('rest.backends.data_backend.connector_broker.activity.info',
-               return_value=SimpleNamespace()):
+    with patch(
+        'rest.backends.data_backend.connector_broker.activity.info',
+        return_value=SimpleNamespace(),
+    ):
         assert broker.resolve(reference) is resolved
 
     resolve_for_activity.assert_awaited_once_with(
@@ -132,10 +136,12 @@ def test_broker_rechecks_principal_only_for_management_work(
 ) -> None:
     authorization = object()
     authorize = AsyncMock(return_value=authorization)
-    resolver = SimpleNamespace(resolve=AsyncMock(
-        side_effect=PermissionError('submitter was demoted')))
-    services = SimpleNamespace(connector_authorizations=SimpleNamespace(
-        authorize_activity=authorize))
+    resolver = SimpleNamespace(
+        resolve=AsyncMock(side_effect=PermissionError('submitter was demoted'))
+    )
+    services = SimpleNamespace(
+        connector_authorizations=SimpleNamespace(authorize_activity=authorize)
+    )
     broker = ConnectorCredentialBroker()
     broker._services = services
     broker._principal_authority = resolver
@@ -147,26 +153,34 @@ def test_broker_rechecks_principal_only_for_management_work(
         ),
     )
 
-    method = (broker.authorize_project_activity_scope
-              if project_owned else broker.authorize_activity_scope)
+    method = (
+        broker.authorize_project_activity_scope
+        if project_owned
+        else broker.authorize_activity_scope
+    )
     kwargs = dict(
         resource_kind=(
             ConnectorAuthorizationResourceKind.PROJECT_CONNECTOR_CREATE
-            if project_owned else
-            ConnectorAuthorizationResourceKind.IDENTITY_VALIDATE),
+            if project_owned
+            else ConnectorAuthorizationResourceKind.IDENTITY_VALIDATE
+        ),
         resource_id='identity-1',
         project_id='project-1' if project_owned else '',
         request_digest='digest',
-        action=(ConnectorCapabilityAction.CREATE_PROJECT_CONNECTOR if
-                project_owned else ConnectorCapabilityAction.VALIDATE_IDENTITY),
+        action=(
+            ConnectorCapabilityAction.CREATE_PROJECT_CONNECTOR
+            if project_owned
+            else ConnectorCapabilityAction.VALIDATE_IDENTITY
+        ),
     )
     if rechecks_principal:
         with pytest.raises(PermissionError, match='demoted'):
             method(ActivityAuthorizationRef('opaque-token'), **kwargs)
         resolver.resolve.assert_awaited_once_with(authorization)
     else:
-        assert method(ActivityAuthorizationRef('opaque-token'),
-                      **kwargs) is authorization
+        assert (
+            method(ActivityAuthorizationRef('opaque-token'), **kwargs) is authorization
+        )
         resolver.resolve.assert_not_awaited()
 
 
@@ -182,14 +196,17 @@ def test_broker_rejects_resolution_outside_an_activity() -> None:
 
 
 def test_multi_delegation_prevalidates_all_before_minting() -> None:
-    broker, references, action, _parent, recheck, delegate, revoke = (
-        _delegation_broker([
+    broker, references, action, _parent, recheck, delegate, revoke = _delegation_broker(
+        [
             None,
             ConnectorDoesNotExistError(_CONNECTOR_ID),
-        ]))
+        ]
+    )
 
-    with patch('rest.backends.data_backend.connector_broker.activity.info',
-               return_value=SimpleNamespace()):
+    with patch(
+        'rest.backends.data_backend.connector_broker.activity.info',
+        return_value=SimpleNamespace(),
+    ):
         with pytest.raises(ConnectorDoesNotExistError):
             broker.delegate_connector_references(
                 references,
@@ -205,15 +222,15 @@ def test_multi_delegation_prevalidates_all_before_minting() -> None:
 def test_multi_delegation_revokes_earlier_mint_on_late_live_denial() -> None:
     # Two phase-one validations, then one validation immediately before each
     # mint. The second reference loses its binding during phase two.
-    broker, references, action, parent, _recheck, delegate, revoke = (
-        _delegation_broker(
-            [None, None, None,
-             IdentityForbiddenError('binding removed')],
-            delegated=(object(), 'first-child-token'),
-        ))
+    broker, references, action, parent, _recheck, delegate, revoke = _delegation_broker(
+        [None, None, None, IdentityForbiddenError('binding removed')],
+        delegated=(object(), 'first-child-token'),
+    )
 
-    with patch('rest.backends.data_backend.connector_broker.activity.info',
-               return_value=SimpleNamespace()):
+    with patch(
+        'rest.backends.data_backend.connector_broker.activity.info',
+        return_value=SimpleNamespace(),
+    ):
         with pytest.raises(IdentityForbiddenError, match='binding removed'):
             broker.delegate_connector_references(
                 references,
@@ -239,25 +256,27 @@ async def test_broker_opens_the_shared_state_db_root() -> None:
     resolve_for_activity = AsyncMock(return_value=resolved)
     open_state_db = AsyncMock(return_value=state_db)
 
-    with (patch(
+    with (
+        patch(
             'rest.backends.data_backend.connector_broker.deploy_env',
             return_value=deploy_config,
-    ),
-          patch(
-              'rest.backends.data_backend.connector_broker.'
-              'get_db_storage_root',
-              return_value='/shared/db',
-          ),
-          patch(
-              'rest.backends.data_backend.connector_broker.'
-              'open_state_db_from_deploy_config',
-              open_state_db,
-          ),
-          patch(
-              'rest.backends.data_backend.connector_broker.StateServices',
-              return_value=SimpleNamespace(connectors=SimpleNamespace(
-                  resolve_for_activity=resolve_for_activity)),
-          )):
+        ),
+        patch(
+            'rest.backends.data_backend.connector_broker.get_db_storage_root',
+            return_value='/shared/db',
+        ),
+        patch(
+            'rest.backends.data_backend.connector_broker.'
+            'open_state_db_from_deploy_config',
+            open_state_db,
+        ),
+        patch(
+            'rest.backends.data_backend.connector_broker.StateServices',
+            return_value=SimpleNamespace(
+                connectors=SimpleNamespace(resolve_for_activity=resolve_for_activity)
+            ),
+        ),
+    ):
 
         async def resolve(services):
             return await services.connectors.resolve_for_activity(
@@ -276,8 +295,7 @@ async def test_broker_opens_the_shared_state_db_root() -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_cold_broker_opens_shared_state_db_once(
-        monkeypatch) -> None:
+async def test_concurrent_cold_broker_opens_shared_state_db_once(monkeypatch) -> None:
     state_db = object()
     services = object()
     opens = 0
@@ -289,8 +307,7 @@ async def test_concurrent_cold_broker_opens_shared_state_db_once(
         return state_db
 
     monkeypatch.setattr(
-        'rest.backends.data_backend.connector_broker.'
-        'open_state_db_from_deploy_config',
+        'rest.backends.data_backend.connector_broker.open_state_db_from_deploy_config',
         open_state_db,
     )
     monkeypatch.setattr(
@@ -299,8 +316,7 @@ async def test_concurrent_cold_broker_opens_shared_state_db_once(
     )
     broker = ConnectorCredentialBroker()
 
-    resolved = await asyncio.gather(*(broker._get_services()
-                                      for _ in range(16)))
+    resolved = await asyncio.gather(*(broker._get_services() for _ in range(16)))
 
     assert opens == 1
     assert resolved == [services] * 16
@@ -308,7 +324,8 @@ async def test_concurrent_cold_broker_opens_shared_state_db_once(
 
 @pytest.mark.asyncio
 async def test_async_resolve_rechecks_each_access_without_blocking_event_loop(
-        activity_context) -> None:
+    activity_context,
+) -> None:
     reference = _reference()
 
     class _Connectors:
@@ -329,8 +346,7 @@ async def test_async_resolve_rechecks_each_access_without_blocking_event_loop(
     broker._services = SimpleNamespace(connectors=connectors)
     broker._authorize_reference = AsyncMock(return_value=object())
 
-    results = await asyncio.gather(*(broker.resolve_async(reference)
-                                     for _ in range(8)))
+    results = await asyncio.gather(*(broker.resolve_async(reference) for _ in range(8)))
 
     assert set(results) == {f'generation-{index}' for index in range(1, 9)}
     assert connectors.calls == 8
@@ -354,8 +370,7 @@ async def test_async_hung_state_db_open_times_out_and_is_cancelled(
             cancelled.set()
 
     monkeypatch.setattr(
-        'rest.backends.data_backend.connector_broker.'
-        'open_state_db_from_deploy_config',
+        'rest.backends.data_backend.connector_broker.open_state_db_from_deploy_config',
         hung_open,
     )
     broker = ConnectorCredentialBroker(timeout_seconds=0.05)
@@ -376,7 +391,8 @@ async def test_async_hung_state_db_open_times_out_and_is_cancelled(
 
 @pytest.mark.asyncio
 async def test_async_waiter_cancellation_cancels_broker_operation(
-        activity_context) -> None:
+    activity_context,
+) -> None:
     started = threading.Event()
     cancelled = threading.Event()
     broker = ConnectorCredentialBroker(timeout_seconds=1)
@@ -398,8 +414,7 @@ async def test_async_waiter_cancellation_cancels_broker_operation(
     assert await asyncio.to_thread(cancelled.wait, 1)
 
 
-def test_sync_hung_resolution_has_bounded_wait_and_cancels(
-        activity_context) -> None:
+def test_sync_hung_resolution_has_bounded_wait_and_cancels(activity_context) -> None:
     started = threading.Event()
     cancelled = threading.Event()
     broker = ConnectorCredentialBroker(timeout_seconds=0.05)
@@ -435,8 +450,7 @@ def test_broker_operations_remain_activity_only(monkeypatch) -> None:
         broker.run(operation)
 
     async def invoke_async():
-        with pytest.raises(RuntimeError,
-                           match='only inside a Temporal activity'):
+        with pytest.raises(RuntimeError, match='only inside a Temporal activity'):
             await broker.run_async(operation)
 
     asyncio.run(invoke_async())

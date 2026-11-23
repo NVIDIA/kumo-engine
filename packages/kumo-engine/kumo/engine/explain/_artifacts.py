@@ -44,8 +44,7 @@ class _TrialState:
     refit_cfg: _RefitState
 
 
-def explanation_trial(trial_root: str | Path, *,
-                      refitted_trainval: bool) -> str:
+def explanation_trial(trial_root: str | Path, *, refitted_trainval: bool) -> str:
     """Use the same TEST-stage refit rule for fit results and reopened runs."""
     root = str(trial_root).rstrip('/')
     return f'{root}_refit_trainval' if refitted_trainval else root
@@ -69,7 +68,8 @@ def read_typed(path: str, cls: type[T]) -> T:
         return value
     except (ValueError, TypeError, OSError) as error:
         raise InvalidExplanationError(
-            f'Invalid explanation artifact {path}: {error}') from error
+            f'Invalid explanation artifact {path}: {error}'
+        ) from error
 
 
 def resolve_run(run_root: str | Path) -> tuple[str, str]:
@@ -84,30 +84,36 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
     if not filesystem.exists(models):
         raise InvalidRunError(
             f'Expected a retained training run with models/: {root}. '
-            'A model bundle alone does not contain training explanations.')
+            'A model bundle alone does not contain training explanations.'
+        )
     records = []
     for task in filesystem.listdir(models):
-        record = posixpath.join(models, posixpath.basename(task), 'automl',
-                                'best_trainer.json')
+        record = posixpath.join(
+            models, posixpath.basename(task), 'automl', 'best_trainer.json'
+        )
         if filesystem.exists(record):
             records.append(record)
     if len(records) != 1:
         raise InvalidRunError(
             f'Expected one selected-trial record in {root}; '
-            f'found {len(records)}. Supply one training run root.')
+            f'found {len(records)}. Supply one training run root.'
+        )
     record = records[0]
     try:
         selected = read_typed(record, _SelectedTrial).best_trainer.rstrip('/')
         automl = posixpath.dirname(record)
         trial_name = posixpath.basename(selected)
         # A selected path identifies an original trial, never a refit or parent.
-        if (not trial_name.startswith('version_')
-                or not trial_name.removeprefix('version_').isdigit()):
+        if (
+            not trial_name.startswith('version_')
+            or not trial_name.removeprefix('version_').isdigit()
+        ):
             raise InvalidRunError(f'Invalid selected trial in {record}')
         if posixpath.basename(posixpath.dirname(selected)) != 'automl':
             raise InvalidRunError(f'Invalid selected trial path in {record}')
-        selected_task = posixpath.basename(posixpath.dirname(
-            posixpath.dirname(selected)))
+        selected_task = posixpath.basename(
+            posixpath.dirname(posixpath.dirname(selected))
+        )
         recorded_task = posixpath.basename(posixpath.dirname(automl))
         if selected_task != recorded_task:
             raise InvalidRunError(f'Selected trial belongs to another task: {record}')
@@ -117,7 +123,8 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
         config = posixpath.join(trial, 'config.json')
         state = read_typed(config, _TrialState)
         return root, explanation_trial(
-            trial, refitted_trainval=state.refit_cfg.refitted_trainval)
+            trial, refitted_trainval=state.refit_cfg.refitted_trainval
+        )
     except (InvalidExplanationError, ExplanationUnavailableError) as error:
         raise InvalidRunError(f'Invalid run selection: {error}') from error
 
@@ -135,8 +142,7 @@ def read_gradient(path: str) -> GraphGradientScore:
                 raise ValueError('expected CSV header table,column,score')
             for row in reader:
                 table, column = row['table'], row['column']
-                if (not table or not column or None in row
-                        or row['score'] is None):
+                if not table or not column or None in row or row['score'] is None:
                     raise ValueError('incomplete gradient score row')
                 key = (table, column)
                 if key in seen:
@@ -150,7 +156,8 @@ def read_gradient(path: str) -> GraphGradientScore:
         return scores
     except (ValueError, TypeError, OSError, csv.Error) as error:
         raise InvalidExplanationError(
-            f'Invalid gradient artifact {path}: {error}') from error
+            f'Invalid gradient artifact {path}: {error}'
+        ) from error
 
 
 def _finite(value: float, name: str) -> None:
@@ -166,9 +173,13 @@ def _vector(values: list[float], length: int, name: str) -> None:
 
 
 def validate_cohort(cohort: ColumnCohorts) -> None:
-    if (not cohort.table_name or cohort.table_name == '???'
-            or not cohort.col_name or cohort.col_name == '???'
-            or cohort.hop < 0):
+    if (
+        not cohort.table_name
+        or cohort.table_name == '???'
+        or not cohort.col_name
+        or cohort.col_name == '???'
+        or cohort.hop < 0
+    ):
         raise ValueError('cohort requires table, nonnegative hop, and column')
     length = len(cohort.cohorts)
     if length == 0:
@@ -219,7 +230,8 @@ def read_cohorts(path: str) -> ColumnAnalysisOutput:
         return result
     except ValueError as error:
         raise InvalidExplanationError(
-            f'Invalid cohort artifact {path}: {error}') from error
+            f'Invalid cohort artifact {path}: {error}'
+        ) from error
 
 
 def _artifact_id(value: str) -> str:
@@ -246,24 +258,32 @@ def mapped_sample_ids(root: str) -> frozenset[str]:
         return frozenset()
     mappings = read_typed(path, EntityMappings)
     try:
-        return frozenset(_artifact_id(item)
-                         for group in mappings.mappings.values() for item in group)
+        return frozenset(
+            _artifact_id(item) for group in mappings.mappings.values() for item in group
+        )
     except ValueError as error:
         raise InvalidExplanationError(
-            f'Invalid selection metadata {path}: {error}') from error
+            f'Invalid selection metadata {path}: {error}'
+        ) from error
 
 
 def list_samples(root: str) -> tuple[SampleReference, ...]:
     paths = sample_paths(posixpath.join(root, 'subgraph_json'))
     mapping_path = posixpath.join(root, 'strategy_mappings.json')
-    mappings = (read_typed(mapping_path, EntityMappings)
-                if filesystem.exists(mapping_path) else EntityMappings())
+    mappings = (
+        read_typed(mapping_path, EntityMappings)
+        if filesystem.exists(mapping_path)
+        else EntityMappings()
+    )
     categories: dict[str, list[str]] = {}
     originals: dict[str, dict[str, str | int]] = {}
     try:
         for category, ids in mappings.mappings.items():
-            original = (mappings.orig_mappings.get(category)
-                        if mappings.orig_mappings is not None else None)
+            original = (
+                mappings.orig_mappings.get(category)
+                if mappings.orig_mappings is not None
+                else None
+            )
             if original is not None and len(original) != len(ids):
                 raise ValueError('original entity IDs must align with artifact IDs')
             for index, artifact in enumerate(ids):
@@ -274,15 +294,19 @@ def list_samples(root: str) -> tuple[SampleReference, ...]:
         return tuple(
             SampleReference(
                 artifact_id=artifact,
-                path=paths.get(artifact, posixpath.join(
-                    root, 'subgraph_json', f'{artifact}.json')),
+                path=paths.get(
+                    artifact, posixpath.join(root, 'subgraph_json', f'{artifact}.json')
+                ),
                 available=artifact in paths,
                 categories=tuple(categories.get(artifact, [])),
                 original_ids=originals.get(artifact, {}),
-            ) for artifact in sorted(paths.keys() | categories.keys(), key=int))
+            )
+            for artifact in sorted(paths.keys() | categories.keys(), key=int)
+        )
     except ValueError as error:
         raise InvalidExplanationError(
-            f'Invalid selection metadata {mapping_path}: {error}') from error
+            f'Invalid selection metadata {mapping_path}: {error}'
+        ) from error
 
 
 def read_sample(root: str, artifact_id: str) -> Subgraph:
@@ -316,4 +340,5 @@ def read_sample(root: str, artifact_id: str) -> Subgraph:
         return graph
     except ValueError as error:
         raise InvalidExplanationError(
-            f'Invalid sampled graph {path}: {error}') from error
+            f'Invalid sampled graph {path}: {error}'
+        ) from error

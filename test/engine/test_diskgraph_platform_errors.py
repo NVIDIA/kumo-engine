@@ -7,15 +7,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from kumo_core.diskgraph.runner import \
-    DiskgraphCancelledError as CoreDiskgraphCancelledError
-from kumo_core.diskgraph.runner import \
-    DiskgraphDataplaneNoSpaceError as CoreDiskgraphDataplaneNoSpaceError
-from kumo_core.diskgraph.runner import \
-    DiskgraphNoSpaceError as CoreDiskgraphNoSpaceError
+from kumo_core.diskgraph.runner import (
+    DiskgraphCancelledError as CoreDiskgraphCancelledError,
+)
+from kumo_core.diskgraph.runner import (
+    DiskgraphDataplaneNoSpaceError as CoreDiskgraphDataplaneNoSpaceError,
+)
+from kumo_core.diskgraph.runner import (
+    DiskgraphNoSpaceError as CoreDiskgraphNoSpaceError,
+)
 from kumo_core.diskgraph.runner import DiskgraphRetryExhaustedError
-from kumo_core.diskgraph.runner import \
-    NonRetryableDiskgraphError as CoreNonRetryableDiskgraphError
+from kumo_core.diskgraph.runner import (
+    NonRetryableDiskgraphError as CoreNonRetryableDiskgraphError,
+)
 from temporalio import activity
 from temporalio.common import Priority
 from temporalio.exceptions import ApplicationError
@@ -116,17 +120,17 @@ def _activity_info() -> activity.Info:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_error_crosses_activity_boundary_as_retryable(
-        monkeypatch):
+async def test_cancelled_error_crosses_activity_boundary_as_retryable(monkeypatch):
     cancelled = as_platform_diskgraph_exception(
         CoreDiskgraphCancelledError(
             'cancel detail',
             private_output_tail='provider-secret-cancel-canary',
-        ))
+        )
+    )
     next_interceptor = SimpleNamespace(
-        execute_activity=AsyncMock(side_effect=cancelled))
-    interceptor = worker_interceptors.KumoActivityInboundInterceptor(
-        next_interceptor)
+        execute_activity=AsyncMock(side_effect=cancelled)
+    )
+    interceptor = worker_interceptors.KumoActivityInboundInterceptor(next_interceptor)
     interceptor._outbound = SimpleNamespace(track_last_heartbeat=False)
     monkeypatch.setattr(
         'temporalio_commons.worker_interceptors.activity.info',

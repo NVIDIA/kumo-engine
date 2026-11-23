@@ -42,8 +42,13 @@ FIELDS = {
     'denied_artifact_root',
 }
 COMMON = {
-    'platform', 'artifact_root', 'experiment', 'model_prefix', 'accelerator',
-    'execution_context', 'environment'
+    'platform',
+    'artifact_root',
+    'experiment',
+    'model_prefix',
+    'accelerator',
+    'execution_context',
+    'environment',
 }
 
 
@@ -62,38 +67,54 @@ def denied_access(error, *, provider_only=False, provider=None):
     if provider == 'databricks':
         try:
             from databricks.sdk.errors import PermissionDenied
-            databricks_denied = (PermissionDenied, )
+
+            databricks_denied = (PermissionDenied,)
         except ImportError:
             pass
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
         response = getattr(error, 'response', None)
-        code = response.get('Error', {}).get('Code') if isinstance(
-            response, dict) else None
-        aws_denied = (code in ('AccessDenied', 'AccessDeniedException')
-                      or type(error) is OSError and re.match(
-                          r"^When initiating multiple part upload for key '.+' "
-                          r"in bucket '.+': AWS Error ACCESS_DENIED during "
-                          r'CreateMultipartUpload operation:', str(error)))
-        if (getattr(error, 'sqlstate', None) == '42501'
-                or getattr(error, 'status_code', None) == 403
-                or getattr(response, 'status_code', None) == 403
-                or isinstance(error, databricks_denied) or
-            ((not provider_only or provider == 'sagemaker') and aws_denied) or
-            (provider in (None, 'databricks')
-             and getattr(error, 'error_code', None) == 'PERMISSION_DENIED') or
-            (not provider_only and
-             (getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM)
-              or type(error).__name__ == 'PermissionDenied'))):
+        code = (
+            response.get('Error', {}).get('Code')
+            if isinstance(response, dict)
+            else None
+        )
+        aws_denied = (
+            code in ('AccessDenied', 'AccessDeniedException')
+            or type(error) is OSError
+            and re.match(
+                r"^When initiating multiple part upload for key '.+' "
+                r"in bucket '.+': AWS Error ACCESS_DENIED during "
+                r'CreateMultipartUpload operation:',
+                str(error),
+            )
+        )
+        if (
+            getattr(error, 'sqlstate', None) == '42501'
+            or getattr(error, 'status_code', None) == 403
+            or getattr(response, 'status_code', None) == 403
+            or isinstance(error, databricks_denied)
+            or ((not provider_only or provider == 'sagemaker') and aws_denied)
+            or (
+                provider in (None, 'databricks')
+                and getattr(error, 'error_code', None) == 'PERMISSION_DENIED'
+            )
+            or (
+                not provider_only
+                and (
+                    getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM)
+                    or type(error).__name__ == 'PermissionDenied'
+                )
+            )
+        ):
             return True
         error = error.__cause__ or error.__context__
     return False
 
 
 def identifier(value):
-    if not isinstance(value, str) or not re.fullmatch('[A-Za-z][A-Za-z0-9_]*',
-                                                      value):
+    if not isinstance(value, str) or not re.fullmatch('[A-Za-z][A-Za-z0-9_]*', value):
         raise ValueError(f'Expected an unquoted test identifier, got {value!r}')
     return f'"{value.upper()}"'
 
@@ -104,50 +125,51 @@ def validate(config):
         raise ValueError('Profile must contain only the documented fields')
     missing = COMMON - set(config)
     if missing or not all(
-            isinstance(value, str) and value.strip()
-            for value in config.values()):
+        isinstance(value, str) and value.strip() for value in config.values()
+    ):
         raise ValueError(f'Missing or empty profile fields: {sorted(missing)}')
     platform = config['platform']
     if platform not in PLATFORMS:
         raise ValueError('Unknown platform')
     context = config.get('notebook_context')
-    if context and (platform != 'sagemaker' or config['execution_context']
-                    != 'sagemaker' or not Path(context).is_absolute()
-                    or '..' in Path(context).parts):
-        raise ValueError(
-            'notebook_context requires an absolute SageMaker runtime path')
+    if context and (
+        platform != 'sagemaker'
+        or config['execution_context'] != 'sagemaker'
+        or not Path(context).is_absolute()
+        or '..' in Path(context).parts
+    ):
+        raise ValueError('notebook_context requires an absolute SageMaker runtime path')
     if platform == 'sagemaker' and config['accelerator'] != 'cpu':
         raise ValueError('Notebook lifecycle validation requires CPU')
     if config['accelerator'] not in ('cpu', 'gpu'):
         raise ValueError('accelerator must be cpu or gpu')
     if config['environment'] not in ('venv', 'managed'):
         raise ValueError('environment must be venv or managed')
-    if config['execution_context'] not in ('client', platform,
-                                           'snowflake_notebook'):
-        raise ValueError(
-            'execution_context must be client or the selected platform')
+    if config['execution_context'] not in ('client', platform, 'snowflake_notebook'):
+        raise ValueError('execution_context must be client or the selected platform')
     root = config['artifact_root']
-    if any(part in ('..', '.')
-           for part in root.split('/')) or '?' in root or '#' in root:
-        raise ValueError(
-            'Artifact roots cannot contain traversal or URL parameters')
+    if (
+        any(part in ('..', '.') for part in root.split('/'))
+        or '?' in root
+        or '#' in root
+    ):
+        raise ValueError('Artifact roots cannot contain traversal or URL parameters')
     if not re.fullmatch('[A-Za-z][A-Za-z0-9_-]{0,23}', config['model_prefix']):
         raise ValueError('Use a short alphanumeric model prefix')
     if platform == 'snowflake':
-        for name in ('database', 'schema', 'warehouse', 'experiment',
-                     'model_prefix'):
+        for name in ('database', 'schema', 'warehouse', 'experiment', 'model_prefix'):
             identifier(config.get(name))
         if config.get('role'):
             identifier(config['role'])
-        if (config.get('identity') != 'notebook'
-                or config['execution_context'] != 'snowflake_notebook'
-                or config['environment'] != 'managed'):
-            raise ValueError(
-                'Snowflake requires the managed notebook execution path')
+        if (
+            config.get('identity') != 'notebook'
+            or config['execution_context'] != 'snowflake_notebook'
+            or config['environment'] != 'managed'
+        ):
+            raise ValueError('Snowflake requires the managed notebook execution path')
         stage = r'@[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_/-]+'
         if not re.fullmatch(stage, root):
-            raise ValueError(
-                'Use an explicit @DATABASE.SCHEMA.STAGE/test-prefix root')
+            raise ValueError('Use an explicit @DATABASE.SCHEMA.STAGE/test-prefix root')
     elif platform == 'databricks':
         if config['execution_context'] == 'snowflake_notebook':
             raise ValueError('Notebook context is only for Snowflake')
@@ -155,30 +177,31 @@ def validate(config):
             identifier(config.get(name))
         if bool(config.get('cluster_id')) == bool(config.get('warehouse_id')):
             raise ValueError(
-                'Databricks requires exactly one cluster_id or warehouse_id')
+                'Databricks requires exactly one cluster_id or warehouse_id'
+            )
         if config.get('identity') not in ('ambient', 'service_principal'):
+            raise ValueError('Databricks identity must be ambient or service_principal')
+        if (
+            not root.startswith(f'/Volumes/{config["catalog"]}/{config["schema"]}/')
+            or len(root.split('/')) < 6
+        ):
             raise ValueError(
-                'Databricks identity must be ambient or service_principal')
-        if not root.startswith(
-                f'/Volumes/{config["catalog"]}/{config["schema"]}/') or len(
-                    root.split('/')) < 6:
-            raise ValueError(
-                'Use a volume and test prefix in the selected catalog/schema')
+                'Use a volume and test prefix in the selected catalog/schema'
+            )
         if not config['experiment'].startswith('/'):
-            raise ValueError(
-                'Use a workspace experiment path with an existing parent')
+            raise ValueError('Use a workspace experiment path with an existing parent')
     elif platform == 'sagemaker':
         if config['execution_context'] == 'snowflake_notebook':
             raise ValueError('Notebook context is only for Snowflake')
         if not re.fullmatch(r's3://[a-z0-9][a-z0-9.-]+/[A-Za-z0-9_/-]+', root):
             raise ValueError('Use an S3 bucket and test prefix')
         if not re.fullmatch(
-                r'arn:aws[a-z-]*:sagemaker:[a-z0-9-]+:[0-9]{12}:(mlflow-tracking-server|mlflow-app)/[A-Za-z0-9-]+',
-                config.get('tracking_arn', '')):
+            r'arn:aws[a-z-]*:sagemaker:[a-z0-9-]+:[0-9]{12}:(mlflow-tracking-server|mlflow-app)/[A-Za-z0-9-]+',
+            config.get('tracking_arn', ''),
+        ):
             raise ValueError('Use a managed MLflow server or app ARN')
         if '_' in config['model_prefix']:
-            raise ValueError(
-                'SageMaker model prefixes cannot contain underscores')
+            raise ValueError('SageMaker model prefixes cannot contain underscores')
     denied = config.get('denied_artifact_root')
     if denied:
         other = dict(config, artifact_root=denied)
@@ -187,19 +210,19 @@ def validate(config):
             match = re.fullmatch(
                 r'/Volumes/([A-Za-z][A-Za-z0-9_]*)/([A-Za-z][A-Za-z0-9_]*)/'
                 r'[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*',
-                denied.rstrip('/'))
+                denied.rstrip('/'),
+            )
             if match is None:
-                raise ValueError(
-                    'Use an explicit Volume test-prefix for denied access')
+                raise ValueError('Use an explicit Volume test-prefix for denied access')
             other.update(catalog=match[1], schema=match[2])
         validate(other)
         if denied.rstrip('/') == root.rstrip('/'):
-            raise ValueError(
-                'The denied root must differ from the writable test root')
-        if (platform == 'snowflake' and denied.split('/', 1)[0].upper()
-                == root.split('/', 1)[0].upper()):
-            raise ValueError(
-                'The denied root must use a separate Snowflake stage')
+            raise ValueError('The denied root must differ from the writable test root')
+        if (
+            platform == 'snowflake'
+            and denied.split('/', 1)[0].upper() == root.split('/', 1)[0].upper()
+        ):
+            raise ValueError('The denied root must use a separate Snowflake stage')
     return dict(config)
 
 
@@ -207,8 +230,9 @@ def prepare(root, filename, attempt=None):
     config = validate(json.loads(filename.read_text()))
     if attempt is None and config['platform'] == 'snowflake':
         attempt = os.environ.get(NOTEBOOK_ATTEMPT)
-    if attempt is not None and (not isinstance(attempt, str)
-                                or not re.fullmatch('[a-f0-9]{12}', attempt)):
+    if attempt is not None and (
+        not isinstance(attempt, str) or not re.fullmatch('[a-f0-9]{12}', attempt)
+    ):
         raise ValueError('Invalid notebook lifecycle attempt')
     state = dict(config=config, attempt=attempt or uuid4().hex[:12])
     (root / 'platform.json').write_text(json.dumps(state, indent=2) + '\n')
@@ -223,11 +247,9 @@ def backend(root):
     config = validate(state['config'])
     if not re.fullmatch('[a-f0-9]{12}', state['attempt']):
         raise ValueError('Invalid attempt identifier')
-    cls = {
-        'snowflake': Snowflake,
-        'databricks': Mlflow,
-        'sagemaker': SageMaker
-    }[config['platform']]
+    cls = {'snowflake': Snowflake, 'databricks': Mlflow, 'sagemaker': SageMaker}[
+        config['platform']
+    ]
     return cls(config, state['attempt'])
 
 
@@ -239,8 +261,7 @@ class Backend:
         self.experiment = config['experiment'] + suffix + attempt
         self.model = config['model_prefix'] + suffix + attempt
         if config['platform'] == 'snowflake':
-            self.experiment, self.model = self.experiment.upper(
-            ), self.model.upper()
+            self.experiment, self.model = self.experiment.upper(), self.model.upper()
         if config['platform'] == 'databricks':
             self.model = f'{config["catalog"]}.{config["schema"]}.{self.model}'
         self.artifact_root = config['artifact_root'].rstrip('/') + '/' + attempt
@@ -252,64 +273,73 @@ class Backend:
     def placement(self):
         context = self.config['execution_context']
         if context == 'client':
-            return dict(context='client',
-                        native_platform_qualification='blocked')
+            return dict(context='client', native_platform_qualification='blocked')
         if context == 'snowflake_notebook':
             try:
                 launch = json.loads(os.environ.get(NOTEBOOK_CONTEXT, '{}'))
             except ValueError as error:
+                raise PlatformUnavailable('Invalid notebook launch context') from error
+            if (
+                not isinstance(launch, dict)
+                or not str(launch.get('session', '')).isdecimal()
+                or launch.get('notebook_extension') is not True
+                or launch.get('workspace') != os.environ.get('SNOWFLAKE_WORKSPACE_ID')
+                or not isinstance(launch.get('identity'), list)
+                or len(launch['identity']) != 3
+            ):
                 raise PlatformUnavailable(
-                    'Invalid notebook launch context') from error
-            if (not isinstance(launch, dict)
-                    or not str(launch.get('session', '')).isdecimal()
-                    or launch.get('notebook_extension') is not True
-                    or launch.get('workspace')
-                    != os.environ.get('SNOWFLAKE_WORKSPACE_ID')
-                    or not isinstance(launch.get('identity'), list)
-                    or len(launch['identity']) != 3):
-                raise PlatformUnavailable(
-                    'Launch Snowflake validation from the notebook')
+                    'Launch Snowflake validation from the notebook'
+                )
             from kumo_snowflake.spcs import SPCS_TOKEN_PATH
-            if (not Path(SPCS_TOKEN_PATH).is_file()
-                    or not os.environ.get('SNOWFLAKE_ACCOUNT')
-                    or not os.environ.get('SNOWFLAKE_HOST')):
+
+            if (
+                not Path(SPCS_TOKEN_PATH).is_file()
+                or not os.environ.get('SNOWFLAKE_ACCOUNT')
+                or not os.environ.get('SNOWFLAKE_HOST')
+            ):
                 raise PlatformUnavailable(
                     'Notebook Container Runtime must expose fresh-process authentication'
                 )
             return dict(
-                context=context, notebook=launch,
-                identity='mounted runtime token; verified against notebook')
+                context=context,
+                notebook=launch,
+                identity='mounted runtime token; verified against notebook',
+            )
         if context == 'databricks':
             version = os.environ.get('DATABRICKS_RUNTIME_VERSION')
             if not version:
-                raise PlatformUnavailable(
-                    'Run inside the selected Databricks runtime')
+                raise PlatformUnavailable('Run inside the selected Databricks runtime')
             from databricks.sdk import WorkspaceClient
+
             user = WorkspaceClient().current_user.me().user_name
             expected = os.environ.get('KUMO_MLOPS_EXPECTED_DATABRICKS_USER')
             if expected and user != expected:
                 raise PlatformUnavailable(
-                    'Fresh Databricks process resolved another identity')
+                    'Fresh Databricks process resolved another identity'
+                )
             return dict(context='databricks', runtime=version, user=user)
         if self.config.get('notebook_context'):
             path = Path(__file__).with_name('sagemaker_runtime.py')
-            spec = importlib.util.spec_from_file_location(
-                'sagemaker_runtime', path)
+            spec = importlib.util.spec_from_file_location('sagemaker_runtime', path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module.qualify(
-                json.loads(Path(self.config['notebook_context']).read_text()))
+                json.loads(Path(self.config['notebook_context']).read_text())
+            )
         processing = Path('/opt/ml/config/processingjobconfig.json')
         if processing.is_file():
             record = json.loads(processing.read_text())
-            return dict(context='sagemaker', job=record['ProcessingJobName'],
-                        arn=record['ProcessingJobArn'])
+            return dict(
+                context='sagemaker',
+                job=record['ProcessingJobName'],
+                arn=record['ProcessingJobArn'],
+            )
         training = os.environ.get('TRAINING_JOB_NAME')
-        if training and Path(
-                '/opt/ml/input/config/resourceconfig.json').is_file():
+        if training and Path('/opt/ml/input/config/resourceconfig.json').is_file():
             return dict(context='sagemaker', job=training)
         raise PlatformUnavailable(
-            'Run inside the selected SageMaker training/processing job')
+            'Run inside the selected SageMaker training/processing job'
+        )
 
     def negative(self):
         import kumo.engine as kumo
@@ -322,14 +352,16 @@ class Backend:
         try:
             kumo.MLOps(
                 (self.connector, denied.rstrip('/') + '/' + self.attempt),
-                on_error='raise')
+                on_error='raise',
+            )
         except PermissionError as error:
-            if denied_access(error, provider_only=True,
-                             provider=self.config['platform']):
-                return dict(denied_artifact_access='passed',
-                            diagnostic=str(error))
+            if denied_access(
+                error, provider_only=True, provider=self.config['platform']
+            ):
+                return dict(denied_artifact_access='passed', diagnostic=str(error))
             raise PlatformUnavailable(
-                'Probe failed without permission-denial evidence') from error
+                'Probe failed without permission-denial evidence'
+            ) from error
         raise AssertionError('The denied artifact root was writable')
 
 
@@ -340,19 +372,28 @@ class Mlflow(Backend):
 
         identity = None
         if self.config['identity'] == 'service_principal':
-            names = ('DATABRICKS_HOST', 'DATABRICKS_CLIENT_ID',
-                     'DATABRICKS_CLIENT_SECRET')
+            names = (
+                'DATABRICKS_HOST',
+                'DATABRICKS_CLIENT_ID',
+                'DATABRICKS_CLIENT_SECRET',
+            )
             missing = [name for name in names if not os.environ.get(name)]
             if missing:
                 raise PlatformUnavailable(
-                    f'Missing credential environment names: {missing}')
+                    f'Missing credential environment names: {missing}'
+                )
             identity = kumo.DatabricksIdentity(
-                host=os.environ[names[0]], client_id=os.environ[names[1]],
-                client_secret=os.environ[names[2]])
+                host=os.environ[names[0]],
+                client_id=os.environ[names[1]],
+                client_secret=os.environ[names[2]],
+            )
         return kumo.DatabricksConnector(
-            catalog=self.config['catalog'], schema_name=self.config['schema'],
-            identity=identity, cluster_id=self.config.get('cluster_id'),
-            warehouse_id=self.config.get('warehouse_id'))
+            catalog=self.config['catalog'],
+            schema_name=self.config['schema'],
+            identity=identity,
+            cluster_id=self.config.get('cluster_id'),
+            warehouse_id=self.config.get('warehouse_id'),
+        )
 
     def settings(self, register):
         import mlflow
@@ -366,33 +407,44 @@ class Mlflow(Backend):
         mlflow.set_registry_uri('databricks-uc')
         return kumo.MLOps(
             self.artifact_root,
-            tracking=MlflowTracking(self.experiment, target=target,
-                                    log_system_metrics=False),
-            registry=kumo.ModelRegistryLocation(self.model)
-            if register else None, on_error='raise')
+            tracking=MlflowTracking(
+                self.experiment, target=target, log_system_metrics=False
+            ),
+            registry=kumo.ModelRegistryLocation(self.model) if register else None,
+            on_error='raise',
+        )
 
     def record(self, cfg, ref):
         require(ref is not None, 'Expected a tracked platform run')
         with cfg.tracking.client() as client:
             run = client.get_run(ref.run_id)
             history = {
-                name: [(int(p.step), float(p.value))
-                       for p in client.get_metric_history(ref.run_id, name)]
+                name: [
+                    (int(p.step), float(p.value))
+                    for p in client.get_metric_history(ref.run_id, name)
+                ]
                 for name in ('train/loss', 'val/auroc')
             }
-        require(run.info.status == 'FINISHED',
-                'Platform tracking run did not finish')
-        return dict(params=run.data.tags, metrics=run.data.metrics,
-                    history=history, run=ref.run_id, experiment=self.experiment,
-                    experiment_id=run.info.experiment_id, url=ref.url,
-                    status=run.info.status, run_name=run.info.run_name)
+        require(run.info.status == 'FINISHED', 'Platform tracking run did not finish')
+        return dict(
+            params=run.data.tags,
+            metrics=run.data.metrics,
+            history=history,
+            run=ref.run_id,
+            experiment=self.experiment,
+            experiment_id=run.info.experiment_id,
+            url=ref.url,
+            status=run.info.status,
+            run_name=run.info.run_name,
+        )
 
     def registered(self, cfg, version, bundle):
         with cfg.tracking.client() as client:
             model = client.get_model_version(self.model, version)
         require(
             model.tags.get('kumo_bundle_id') == bundle,
-            'Registry version refers to another bundle')
+            'Registry version refers to another bundle',
+        )
 
     def set_alias(self, cfg, version):
         with cfg.tracking.client() as client:
@@ -401,8 +453,8 @@ class Mlflow(Backend):
     def alias(self, cfg):
         with cfg.tracking.client() as client:
             return str(
-                client.get_model_version_by_alias(self.model,
-                                                  'champion').version)
+                client.get_model_version_by_alias(self.model, 'champion').version
+            )
 
 
 class SageMaker(Backend):
@@ -410,8 +462,11 @@ class SageMaker(Backend):
     def connector(self):
         import kumo.engine as kumo
 
-        identity = (kumo.S3Identity(role_arn=self.config['role_arn'])
-                    if self.config.get('role_arn') else None)
+        identity = (
+            kumo.S3Identity(role_arn=self.config['role_arn'])
+            if self.config.get('role_arn')
+            else None
+        )
         return kumo.S3Connector(identity=identity)
 
     def settings(self, register):
@@ -424,40 +479,54 @@ class SageMaker(Backend):
         )
 
         self.placement()
-        identity = (kumo.S3Identity(role_arn=self.config['role_arn'])
-                    if self.config.get('role_arn') else None)
+        identity = (
+            kumo.S3Identity(role_arn=self.config['role_arn'])
+            if self.config.get('role_arn')
+            else None
+        )
         target = SageMakerMLflow(self.config['tracking_arn'], identity=identity)
         mlflow.set_tracking_uri(self.config['tracking_arn'])
         mlflow.set_registry_uri(self.config['tracking_arn'])
-        return kumo.MLOps((self.connector, self.artifact_root),
-                          tracking=MlflowTracking(self.experiment,
-                                                  target=target,
-                                                  log_system_metrics=False),
-                          registry=kumo.ModelRegistryLocation(self.model)
-                          if register else None, on_error='raise')
+        return kumo.MLOps(
+            (self.connector, self.artifact_root),
+            tracking=MlflowTracking(
+                self.experiment, target=target, log_system_metrics=False
+            ),
+            registry=kumo.ModelRegistryLocation(self.model) if register else None,
+            on_error='raise',
+        )
 
     def record(self, cfg, ref):
         require(ref is not None, 'Expected a tracked platform run')
         with cfg.tracking.client() as client:
             run = client.get_run(ref.run_id)
             history = {
-                name: [(int(p.step), float(p.value))
-                       for p in client.get_metric_history(ref.run_id, name)]
+                name: [
+                    (int(p.step), float(p.value))
+                    for p in client.get_metric_history(ref.run_id, name)
+                ]
                 for name in ('train/loss', 'val/auroc')
             }
-        require(run.info.status == 'FINISHED',
-                'Platform tracking run did not finish')
-        return dict(params=run.data.tags, metrics=run.data.metrics,
-                    history=history, run=ref.run_id, experiment=self.experiment,
-                    experiment_id=run.info.experiment_id, url=ref.url,
-                    status=run.info.status, run_name=run.info.run_name)
+        require(run.info.status == 'FINISHED', 'Platform tracking run did not finish')
+        return dict(
+            params=run.data.tags,
+            metrics=run.data.metrics,
+            history=history,
+            run=ref.run_id,
+            experiment=self.experiment,
+            experiment_id=run.info.experiment_id,
+            url=ref.url,
+            status=run.info.status,
+            run_name=run.info.run_name,
+        )
 
     def registered(self, cfg, version, bundle):
         with cfg.tracking.client() as client:
             model = client.get_model_version(self.model, version)
         require(
             model.tags.get('kumo_bundle_id') == bundle,
-            'Registry version refers to another bundle')
+            'Registry version refers to another bundle',
+        )
 
     def set_alias(self, cfg, version):
         with cfg.tracking.client() as client:
@@ -466,8 +535,8 @@ class SageMaker(Backend):
     def alias(self, cfg):
         with cfg.tracking.client() as client:
             return str(
-                client.get_model_version_by_alias(self.model,
-                                                  'champion').version)
+                client.get_model_version_by_alias(self.model, 'champion').version
+            )
 
 
 class Snowflake(Backend):
@@ -475,10 +544,10 @@ class Snowflake(Backend):
     def history_api():
         from snowflake.ml.experiment import ExperimentTracking
 
-        if not callable(getattr(ExperimentTracking, 'get_metric_history',
-                                None)):
+        if not callable(getattr(ExperimentTracking, 'get_metric_history', None)):
             raise PlatformUnavailable(
-                'Snowflake experiment SDK requires get_metric_history()')
+                'Snowflake experiment SDK requires get_metric_history()'
+            )
         return ExperimentTracking
 
     @cached_property
@@ -494,7 +563,8 @@ class Snowflake(Backend):
         observed = list(connector.session().sql(IDENTITY_SQL).collect()[0])
         if observed != launch['identity']:
             raise PlatformUnavailable(
-                'Worker account/user/role differs from the notebook session')
+                'Worker account/user/role differs from the notebook session'
+            )
         return connector
 
     def settings(self, register):
@@ -505,88 +575,109 @@ class Snowflake(Backend):
         self.history_api()
         return kumo.MLOps(
             (self.connector, self.artifact_root),
-            tracking=SnowflakeTracking(self.connector,
-                                       experiment_name=self.experiment,
-                                       database=self.config['database'],
-                                       schema_name=self.config['schema']),
-            registry=kumo.ModelRegistryLocation(self.model)
-            if register else None, on_error='raise')
+            tracking=SnowflakeTracking(
+                self.connector,
+                experiment_name=self.experiment,
+                database=self.config['database'],
+                schema_name=self.config['schema'],
+            ),
+            registry=kumo.ModelRegistryLocation(self.model) if register else None,
+            on_error='raise',
+        )
 
     def rows(self, session, sql):
-        return [{
-            str(k).lower(): v
-            for k, v in row.as_dict().items()
-        } for row in session.sql(sql).collect()]
+        return [
+            {str(k).lower(): v for k, v in row.as_dict().items()}
+            for row in session.sql(sql).collect()
+        ]
 
     def record(self, cfg, ref):
         require(ref is not None, 'Expected a Snowflake tracking run')
         session = cfg.tracking.session
         experiment = '.'.join(
             identifier(name)
-            for name in (self.config['database'], self.config['schema'],
-                         self.experiment))
+            for name in (
+                self.config['database'],
+                self.config['schema'],
+                self.experiment,
+            )
+        )
         run = identifier(ref.run_id)
         rows = self.rows(session, f'SHOW RUNS IN EXPERIMENT {experiment}')
         selected = [row for row in rows if row['name'] == ref.run_id]
-        require(
-            len(selected) == 1, 'Snowflake tracking run missing or duplicated')
+        require(len(selected) == 1, 'Snowflake tracking run missing or duplicated')
         metadata = selected[0]['metadata']
-        metadata = json.loads(metadata) if isinstance(metadata,
-                                                      str) else metadata
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
         require(
             metadata.get('status') == 'FINISHED',
-            'Snowflake tracking run did not finish')
+            'Snowflake tracking run did not finish',
+        )
         parameters = self.rows(
-            session,
-            f'SHOW RUN PARAMETERS IN EXPERIMENT {experiment} RUN {run}')
+            session, f'SHOW RUN PARAMETERS IN EXPERIMENT {experiment} RUN {run}'
+        )
         points = self.rows(
-            session, f'SHOW RUN METRICS IN EXPERIMENT {experiment} RUN {run}')
-        tracking = self.history_api()(session,
-                                      database_name=self.config['database'],
-                                      schema_name=self.config['schema'])
-        tracking.set_experiment(self.experiment,
-                                database_name=self.config['database'],
-                                schema_name=self.config['schema'])
-        full_history = [{
-            str(k).lower(): v
-            for k, v in row.as_dict().items()
-        } for row in tracking.get_metric_history(run_name=ref.run_id).collect()]
+            session, f'SHOW RUN METRICS IN EXPERIMENT {experiment} RUN {run}'
+        )
+        tracking = self.history_api()(
+            session,
+            database_name=self.config['database'],
+            schema_name=self.config['schema'],
+        )
+        tracking.set_experiment(
+            self.experiment,
+            database_name=self.config['database'],
+            schema_name=self.config['schema'],
+        )
+        full_history = [
+            {str(k).lower(): v for k, v in row.as_dict().items()}
+            for row in tracking.get_metric_history(run_name=ref.run_id).collect()
+        ]
         history = {}
         metrics = {point['name']: float(point['value']) for point in points}
         for point in sorted(full_history, key=lambda p: int(p['step'])):
             name, value = point['name'], float(point['value'])
             history.setdefault(name, []).append((int(point['step']), value))
-        return dict(params={p['name']: str(p['value'])
-                            for p in parameters}, metrics=metrics,
-                    history=history, run=ref.run_id, experiment=experiment,
-                    url=None)
+        return dict(
+            params={p['name']: str(p['value']) for p in parameters},
+            metrics=metrics,
+            history=history,
+            run=ref.run_id,
+            experiment=experiment,
+            url=None,
+        )
 
     def registered(self, cfg, version, bundle):
         from snowflake.ml.registry import Registry
 
-        registry = Registry(cfg.tracking.session,
-                            database_name=self.config['database'],
-                            schema_name=self.config['schema'])
+        registry = Registry(
+            cfg.tracking.session,
+            database_name=self.config['database'],
+            schema_name=self.config['schema'],
+        )
         metrics = registry.get_model(self.model).version(version).show_metrics()
         require(
             metrics.get('kumo_bundle_id') == bundle,
-            'Snowflake registry version refers to another bundle')
+            'Snowflake registry version refers to another bundle',
+        )
 
     def set_alias(self, cfg, version):
         import kumo.engine as kumo
 
         self.connector.sink_backend.set_model_alias(
             self.connector,
-            kumo.ModelRegistryLocation(self.model, version=version), 'champion')
+            kumo.ModelRegistryLocation(self.model, version=version),
+            'champion',
+        )
 
     def alias(self, cfg):
         from snowflake.ml.registry import Registry
 
-        registry = Registry(cfg.tracking.session,
-                            database_name=self.config['database'],
-                            schema_name=self.config['schema'])
-        return str(
-            registry.get_model(self.model).version('CHAMPION').version_name)
+        registry = Registry(
+            cfg.tracking.session,
+            database_name=self.config['database'],
+            schema_name=self.config['schema'],
+        )
+        return str(registry.get_model(self.model).version('CHAMPION').version_name)
 
 
 def fit_record(profile, cfg, result):
@@ -594,12 +685,14 @@ def fit_record(profile, cfg, result):
     for name in ('train/loss', 'val/auroc'):
         points = record['history'].get(name, [])
         require(
-            len({step
-                 for step, _ in points}) >= 2
+            len({step for step, _ in points}) >= 2
             and all(math.isfinite(value) for _, value in points),
-            f'Missing multi-epoch metric history: {name}')
-    require(record['params'].get('kumo.bundle_id') == result.id,
-            'Fit tracking refers to another bundle')
+            f'Missing multi-epoch metric history: {name}',
+        )
+    require(
+        record['params'].get('kumo.bundle_id') == result.id,
+        'Fit tracking refers to another bundle',
+    )
     profile.registered(cfg, result.registered_model.version, result.id)
     return record
 
@@ -609,16 +702,20 @@ def prediction_record(profile, cfg, run, expected):
     require(
         record['metrics'].get('pred/rows') == run.scored_rows
         and all(math.isfinite(value) for value in record['metrics'].values()),
-        'Platform prediction tracking lost its row metrics')
+        'Platform prediction tracking lost its row metrics',
+    )
     require(
         all(
-            record['params'].get(key) == value for key, value in {
+            record['params'].get(key) == value
+            for key, value in {
                 'kumo.model_name': profile.model,
                 'kumo.model_version': expected['version'],
                 'kumo.bundle_id': expected['bundle'],
                 'kumo.prediction_id': run.id,
-            }.items()),
-        'Platform prediction tracking records the wrong identity')
+            }.items()
+        ),
+        'Platform prediction tracking records the wrong identity',
+    )
     return record
 
 
@@ -627,21 +724,34 @@ def drift_record(profile, cfg, run, drift):
     require(
         record['params'].get('kumo.prediction_id') == run.id
         and record['params'].get('kumo.bundle_id') == run.bundle_id
-        and record['params'].get('kumo.drift_previous')
-        == drift.previous_prediction_id,
-        'Platform drift tracking records another prediction/model/reference')
+        and record['params'].get('kumo.drift_previous') == drift.previous_prediction_id,
+        'Platform drift tracking records another prediction/model/reference',
+    )
     for name in ('psi', 'ks', 'wasserstein'):
         expected = getattr(drift, 'previous_' + name)
         require(
-            expected is not None and math.isclose(
+            expected is not None
+            and math.isclose(
                 record['metrics'].get(f'drift/{name}_vs_prev', math.nan),
-                expected, rel_tol=0, abs_tol=1e-6),
-            'Platform drift metric differs from the previous-prediction result')
+                expected,
+                rel_tol=0,
+                abs_tol=1e-6,
+            ),
+            'Platform drift metric differs from the previous-prediction result',
+        )
     return record
 
 
-def run_notebook(*, config, wheel, expected_version, output_dir,
-                 python_executable=None, phase=None, attempt=None):
+def run_notebook(
+    *,
+    config,
+    wheel,
+    expected_version,
+    output_dir,
+    python_executable=None,
+    phase=None,
+    attempt=None,
+):
     """Launch fresh lifecycle processes from a Snowflake Container Runtime notebook."""
     profile = validate(json.loads(Path(config).read_text()))
     if profile['platform'] != 'snowflake':
@@ -652,45 +762,55 @@ def run_notebook(*, config, wheel, expected_version, output_dir,
     from snowflake.snowpark.context import get_active_session
 
     shell = get_ipython()
-    extensions = getattr(getattr(shell, 'extension_manager', None), 'loaded',
-                         ())
-    if 'snowflake_notebook_utils.ipython_execution_context_monitor_extension' not in extensions:
-        raise PlatformUnavailable(
-            'Run in a Snowflake Workspace notebook kernel')
+    extensions = getattr(getattr(shell, 'extension_manager', None), 'loaded', ())
+    if (
+        'snowflake_notebook_utils.ipython_execution_context_monitor_extension'
+        not in extensions
+    ):
+        raise PlatformUnavailable('Run in a Snowflake Workspace notebook kernel')
     session = get_active_session()
     session_id = str(session.sql('SELECT CURRENT_SESSION()').collect()[0][0])
     if not session_id.isdecimal():
         raise PlatformUnavailable('Cannot identify the active notebook session')
-    launch = dict(session=session_id,
-                  workspace=os.environ.get('SNOWFLAKE_WORKSPACE_ID'),
-                  notebook_extension=True,
-                  identity=list(session.sql(IDENTITY_SQL).collect()[0]))
+    launch = dict(
+        session=session_id,
+        workspace=os.environ.get('SNOWFLAKE_WORKSPACE_ID'),
+        notebook_extension=True,
+        identity=list(session.sql(IDENTITY_SQL).collect()[0]),
+    )
     environment = dict(os.environ)
     environment['MPLBACKEND'] = 'Agg'
     environment[NOTEBOOK_CONTEXT] = json.dumps(launch)
     if attempt is not None:
-        if not isinstance(attempt, str) or not re.fullmatch(
-                '[a-f0-9]{12}', attempt):
+        if not isinstance(attempt, str) or not re.fullmatch('[a-f0-9]{12}', attempt):
             raise ValueError('Invalid notebook lifecycle attempt')
         environment[NOTEBOOK_ATTEMPT] = attempt
     else:
         environment.pop(NOTEBOOK_ATTEMPT, None)
     helper = Path(__file__).with_name('wheel_mlops_lifecycle.py')
     command = [
-        str(python_executable or sys.executable), '-I',
-        str(helper), '--execute-platform', '--platform-config',
-        str(Path(config).resolve()), '--wheel',
-        str(Path(wheel).resolve()), '--expected-version', expected_version,
+        str(python_executable or sys.executable),
+        '-I',
+        str(helper),
+        '--execute-platform',
+        '--platform-config',
+        str(Path(config).resolve()),
+        '--wheel',
+        str(Path(wheel).resolve()),
+        '--expected-version',
+        expected_version,
         '--output-dir',
-        str(Path(output_dir).resolve())
+        str(Path(output_dir).resolve()),
     ]
     if phase == 'negative':
         Path(output_dir).mkdir(parents=True, exist_ok=False)
         prepare(Path(output_dir), Path(config), attempt=attempt)
         command += ['--phase', phase]
-    completed = subprocess.run(command, env=environment, check=False,
-                               timeout=300 if phase else None)
+    completed = subprocess.run(
+        command, env=environment, check=False, timeout=300 if phase else None
+    )
     summary = Path(output_dir) / ('negative.json' if phase else 'summary.json')
     return dict(
         returncode=completed.returncode,
-        summary=json.loads(summary.read_text()) if summary.is_file() else None)
+        summary=json.loads(summary.read_text()) if summary.is_file() else None,
+    )

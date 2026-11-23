@@ -25,8 +25,8 @@ from kumo_databricks.streaming import (
     stream_to_parquet,
 )
 
-QUERY = "SELECT `c_custkey`, `c_name` FROM `samples`.`tpch`.`customer`"
-SCHEMA = pa.schema([("c_custkey", pa.int64()), ("c_name", pa.string())])
+QUERY = 'SELECT `c_custkey`, `c_name` FROM `samples`.`tpch`.`customer`'
+SCHEMA = pa.schema([('c_custkey', pa.int64()), ('c_name', pa.string())])
 ROWS = 20_000
 SMALL, LARGE = 1 << 12, 1 << 16
 
@@ -34,9 +34,11 @@ SMALL, LARGE = 1 << 12, 1 << 16
 def table(rows):
     return pa.table(
         {
-            "c_custkey": list(range(rows)),
-            "c_name": [f"n{index}" for index in range(rows)]
-        }, schema=SCHEMA)
+            'c_custkey': list(range(rows)),
+            'c_name': [f'n{index}' for index in range(rows)],
+        },
+        schema=SCHEMA,
+    )
 
 
 def cursor(rows=ROWS, **shape):
@@ -57,21 +59,23 @@ def test_each_page_is_asked_for_from_where_the_last_one_ended():
     """The offset handed over is the driver's own contiguity check."""
     reader = cursor()
     pages = list(arrow_pages(reader, QUERY, max_bytes=SMALL))
-    assert [call["expected_row_start_offset"] for call in reader.backend.calls
-            ] == list(accumulate(page.num_rows for page in pages))[:-1]
+    assert [call['expected_row_start_offset'] for call in reader.backend.calls] == list(
+        accumulate(page.num_rows for page in pages)
+    )[:-1]
 
 
-@pytest.mark.parametrize("links,reported", [
-    (True, RowCountMismatchError),
-    (False, DataError),
-])
+@pytest.mark.parametrize(
+    'links,reported',
+    [
+        (True, RowCountMismatchError),
+        (False, DataError),
+    ],
+)
 def test_a_page_shorter_than_it_advertised_is_refused(links, reported):
     """Links are what a page is reconciled against; without them a shortfall
     surfaces only later, as the offset the driver checks."""
     with pytest.raises(reported):
-        list(
-            arrow_pages(cursor(delivers=3, links=links), QUERY,
-                        max_bytes=SMALL))
+        list(arrow_pages(cursor(delivers=3, links=links), QUERY, max_bytes=SMALL))
 
 
 def test_every_page_queue_is_closed_because_each_owns_a_download_pool():
@@ -83,18 +87,16 @@ def test_every_page_queue_is_closed_because_each_owns_a_download_pool():
 
 def out(tmp_path) -> Path:
     """``run_prepare`` empties the destination; a read only fills it."""
-    destination = tmp_path / "out"
+    destination = tmp_path / 'out'
     destination.mkdir()
     return destination
 
 
 def test_streaming_writes_parquet_holding_every_row_it_read(tmp_path):
-    result = stream_to_parquet(cursor(), QUERY, str(out(tmp_path)),
-                               max_bytes=SMALL)
+    result = stream_to_parquet(cursor(), QUERY, str(out(tmp_path)), max_bytes=SMALL)
     assert result.rows == ROWS
     assert len(set(result.paths)) == len(result.paths)
-    assert sum(pq.ParquetFile(path).metadata.num_rows
-               for path in result.paths) == ROWS
+    assert sum(pq.ParquetFile(path).metadata.num_rows for path in result.paths) == ROWS
 
 
 def test_an_empty_source_still_writes_one_file_carrying_its_schema(tmp_path):
@@ -115,22 +117,28 @@ def test_pages_reach_a_parquet_part_for_every_encoder(tmp_path, monkeypatch):
     gate holds each stream at its first page, so all three must be fed. The
     budget is pinned because a ceiling only caps: a narrower runner would
     otherwise start fewer encoders than the gate waits for."""
-    monkeypatch.setattr(cpu, "cpu_budget", lambda: 3)
+    monkeypatch.setattr(cpu, 'cpu_budget', lambda: 3)
     relay = PageRelay(3)
     gate = threading.Barrier(3, timeout=10)
-    producer = threading.Thread(target=relay.feed,
-                                args=(iter([table(10)] * 3), ), daemon=True)
+    producer = threading.Thread(
+        target=relay.feed, args=(iter([table(10)] * 3),), daemon=True
+    )
     producer.start()
     try:
         result = materialize_arrow_streams(
             [_gated(relay.stream(), gate) for _ in range(3)],
-            str(out(tmp_path)), worker_ceiling=3)
+            str(out(tmp_path)),
+            worker_ceiling=3,
+        )
     finally:
         relay.abandon()
         producer.join(timeout=5)
     assert result.rows == 30
-    assert {Path(path).name.split("-")[1]
-            for path in result.paths} == {"00000", "00001", "00002"}
+    assert {Path(path).name.split('-')[1] for path in result.paths} == {
+        '00000',
+        '00001',
+        '00002',
+    }
 
 
 def test_the_producer_stalls_rather_than_buffering_the_whole_result():
@@ -142,8 +150,7 @@ def test_the_producer_stalls_rather_than_buffering_the_whole_result():
             produced.append(index)
             yield table(1)
 
-    producer = threading.Thread(target=relay.feed, args=(pages(), ),
-                                daemon=True)
+    producer = threading.Thread(target=relay.feed, args=(pages(),), daemon=True)
     producer.start()
     try:
         assert _settles(produced, relay.capacity + 1)
@@ -172,7 +179,7 @@ def _settles(produced, expected, seconds=2.0):
 def test_the_queued_page_bound_outranks_the_worker_ceiling(monkeypatch):
     # A ceiling caps the available CPUs; pin the budget independently of the
     # runner's quota so this test exercises the queue and worker limits.
-    monkeypatch.setattr(cpu, "cpu_budget", lambda: 8)
+    monkeypatch.setattr(cpu, 'cpu_budget', lambda: 8)
     assert _encoder_count(QUEUED_PAGE_BYTES, 1000) == 1
     assert _encoder_count(PAGE_BYTES, 2) == 2
     assert _encoder_count(PAGE_BYTES, 0) == 1

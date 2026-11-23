@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for pool.errors helpers (no-space detection across the Temporal
 serialization boundary)."""
+
 from temporalio.exceptions import ActivityError, ApplicationError
 
 from pool.errors import NO_SPACE_ERROR_TYPE, is_no_space_activity_error

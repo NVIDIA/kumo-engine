@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-from test.statedb.db.matrix_assertions import only_instance
 
 import asyncpg
 import kumoapi.data_source as api
@@ -80,6 +79,7 @@ from statedb.utils.errors import (
     ProjectNotFoundError,
     ResourceSlugConflictError,
 )
+from test.statedb.db.matrix_assertions import only_instance
 
 
 async def _reset_postgres_schema(connection) -> None:
@@ -88,13 +88,11 @@ async def _reset_postgres_schema(connection) -> None:
 
 
 def _new_identity_service(state_db: StateDB, **kwargs) -> IdentityService:
-    return IdentityService(state_db, ConnectorAuthorizationService(state_db),
-                           **kwargs)
+    return IdentityService(state_db, ConnectorAuthorizationService(state_db), **kwargs)
 
 
 def _new_connector_service(state_db: StateDB, **kwargs) -> ConnectorService:
-    return ConnectorService(state_db, ConnectorAuthorizationService(state_db),
-                            **kwargs)
+    return ConnectorService(state_db, ConnectorAuthorizationService(state_db), **kwargs)
 
 
 @pytest.mark.asyncio
@@ -111,8 +109,11 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
     tables = StateDBTableRepository()
     graphs = StateDBGraphRepository()
     try:
-        group = (await groups.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name='Alias race group')], admin))[0]
+        group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Alias race group')], admin
+            )
+        )[0]
         project = await projects.create_project(
             name='Alias race project',
             group_id=str(group.id),
@@ -128,7 +129,8 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
                     name='uploads',
                     normalized_name='uploads',
                     config=FileConnectorResourceConfig(
-                        name='uploads', root_dir='/tmp/alias-race'),
+                        name='uploads', root_dir='/tmp/alias-race'
+                    ),
                     timestamps=get_current_timestamps(),
                 ),
             )
@@ -139,10 +141,7 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
                 cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int)],
                 source_table=S3SourceTable(
                     connector_id=connector_id,
-                    source={
-                        'mode': 'relative',
-                        'path': f'{source}.parquet'
-                    },
+                    source={'mode': 'relative', 'path': f'{source}.parquet'},
                     file_type='PARQUET',
                     data_source_type=DataSourceType.S3,
                 ),
@@ -155,7 +154,8 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
                     col_dtypes={},
                     alias=alias,
                     timestamps=get_current_timestamps(),
-                ))
+                )
+            )
 
         async def persist_table(entry) -> None:
             async with state_db.write_tx() as tx:
@@ -166,13 +166,19 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
             return_exceptions=True,
         )
         assert sum(result is None for result in table_results) == 1
-        assert sum(
-            isinstance(result, (ValueError, asyncpg.UniqueViolationError))
-            for result in table_results) == 1
+        assert (
+            sum(
+                isinstance(result, (ValueError, asyncpg.UniqueViolationError))
+                for result in table_results
+            )
+            == 1
+        )
 
-        winner = next(entry
-                      for entry, result in zip(table_entries, table_results)
-                      if result is None)
+        winner = next(
+            entry
+            for entry, result in zip(table_entries, table_results)
+            if result is None
+        )
         graph_entries = [
             GraphDBEntryV2(
                 id=FPID(character * 32),
@@ -181,7 +187,8 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
                 col_groups=[],
                 alias=alias,
                 timestamps=get_current_timestamps(),
-            ) for character, alias in (('a', 'first'), ('b', 'second'))
+            )
+            for character, alias in (('a', 'first'), ('b', 'second'))
         ]
         for entry in graph_entries:
             async with state_db.write_tx() as tx:
@@ -198,16 +205,17 @@ async def test_postgres_table_and_graph_alias_races_preserve_unique_nfkc_owner(
         )
         assert any(result is None for result in graph_results)
         assert all(
-            result is None or isinstance(result, (ValueError,
-                                                  asyncpg.UniqueViolationError))
-            for result in graph_results)
+            result is None
+            or isinstance(result, (ValueError, asyncpg.UniqueViolationError))
+            for result in graph_results
+        )
         async with state_db.read_tx() as tx:
             named = await graphs.list_named(tx, project.id)
-            assert len([
-                entry for entry in named if entry.normalized_alias == 'graph'
-            ]) == 1
-            assert await graphs.get_by_alias(tx, project.id,
-                                             ' graph ') is not None
+            assert (
+                len([entry for entry in named if entry.normalized_alias == 'graph'])
+                == 1
+            )
+            assert await graphs.get_by_alias(tx, project.id, ' graph ') is not None
     finally:
         await state_db.close()
         await _reset_postgres_schema(postgres_connection)
@@ -242,15 +250,14 @@ async def test_postgres_artifact_request_insert_is_atomic_for_same_id(
         assert not any(entry.cancel_requested for entry in sealed)
 
         cancel_id = ArtifactExportJobID.make_random_id()
-        await service.create(**{
-            **base, 'id': cancel_id
-        }, request_digest='cancel-race')
+        await service.create(**{**base, 'id': cancel_id}, request_digest='cancel-race')
         await asyncio.gather(
             service.seal_dispatch(cancel_id, project_id=base['project_id']),
             service.request_cancel(cancel_id, project_id=base['project_id']),
         )
-        cancelled = await service.request_cancel(cancel_id,
-                                                 project_id=base['project_id'])
+        cancelled = await service.request_cancel(
+            cancel_id, project_id=base['project_id']
+        )
         assert cancelled.dispatch_sealed
         assert cancelled.cancel_requested
 
@@ -282,64 +289,80 @@ async def test_postgres_default_bootstrap_and_global_name_races(
             groups.ensure_default_resources(),
             groups.ensure_default_resources(),
         )
-        assert {str(result[0].id)
-                for result in bootstrapped} == {DEFAULT_GROUP_ID}
-        assert {str(result[1].id)
-                for result in bootstrapped} == {DEFAULT_PROJECT_ID}
+        assert {str(result[0].id) for result in bootstrapped} == {DEFAULT_GROUP_ID}
+        assert {str(result[1].id) for result in bootstrapped} == {DEFAULT_PROJECT_ID}
         async with state_db.read_tx() as tx:
-            rules = await groups._rules.list_by_field(tx, 'group_id',
-                                                      DEFAULT_GROUP_ID)
+            rules = await groups._rules.list_by_field(tx, 'group_id', DEFAULT_GROUP_ID)
         assert len(rules) == 1
 
-        group_a, group_b = await groups.create_kumo_groups([
-            KumoGroupCreateSpec(display_name='Engineering'),
-            KumoGroupCreateSpec(display_name='Finance'),
-        ], admin)
+        group_a, group_b = await groups.create_kumo_groups(
+            [
+                KumoGroupCreateSpec(display_name='Engineering'),
+                KumoGroupCreateSpec(display_name='Finance'),
+            ],
+            admin,
+        )
         group_results = await asyncio.gather(
-            groups.create_kumo_groups([
-                KumoGroupCreateSpec(display_name='Platform',
-                                    slug='platform-one')
-            ], admin),
-            groups.create_kumo_groups([
-                KumoGroupCreateSpec(display_name=' ＰＬＡＴＦＯＲＭ ',
-                                    slug='platform-two')
-            ], admin),
+            groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Platform', slug='platform-one')],
+                admin,
+            ),
+            groups.create_kumo_groups(
+                [
+                    KumoGroupCreateSpec(
+                        display_name=' ＰＬＡＴＦＯＲＭ ', slug='platform-two'
+                    )
+                ],
+                admin,
+            ),
             return_exceptions=True,
         )
         only_instance(group_results, list)
         only_instance(group_results, GroupAlreadyExists)
 
-        member_results = await asyncio.gather(*(groups.add_member(
-            group_a.id,
-            principal_id,
-            PrincipalType.USER,
-            principal=admin,
-        ) for principal_id in (' member ', 'member', ' member ')))
-        assert all(
-            isinstance(result, GroupMemberEntry) for result in member_results)
+        member_results = await asyncio.gather(
+            *(
+                groups.add_member(
+                    group_a.id,
+                    principal_id,
+                    PrincipalType.USER,
+                    principal=admin,
+                )
+                for principal_id in (' member ', 'member', ' member ')
+            )
+        )
+        assert all(isinstance(result, GroupMemberEntry) for result in member_results)
         assert len({result.id for result in member_results}) == 1
         assert member_results[0].principal_id == 'member'
 
-        await asyncio.gather(*(groups.set_all_authenticated_users(
-            group_a.id, True, principal=admin) for _ in range(4)))
+        await asyncio.gather(
+            *(
+                groups.set_all_authenticated_users(group_a.id, True, principal=admin)
+                for _ in range(4)
+            )
+        )
         async with state_db.read_tx() as tx:
-            rules = await groups._rules.list_by_field(tx, 'group_id',
-                                                      str(group_a.id))
+            rules = await groups._rules.list_by_field(tx, 'group_id', str(group_a.id))
         assert len(rules) == 1
 
-        mapping_results = await asyncio.gather(*(groups.create_external_mapping(
-            group_a.id,
-            provider_id,
-            external_id,
-            principal=admin,
-        ) for provider_id, external_id in (
-            (' DIRECT_CONNECT ', ' same-external '),
-            ('direct_connect', 'same-external'),
-            ('Direct_Connect', ' same-external'),
-        )))
+        mapping_results = await asyncio.gather(
+            *(
+                groups.create_external_mapping(
+                    group_a.id,
+                    provider_id,
+                    external_id,
+                    principal=admin,
+                )
+                for provider_id, external_id in (
+                    (' DIRECT_CONNECT ', ' same-external '),
+                    ('direct_connect', 'same-external'),
+                    ('Direct_Connect', ' same-external'),
+                )
+            )
+        )
         assert all(
-            isinstance(result, ExternalGroupMappingEntry)
-            for result in mapping_results)
+            isinstance(result, ExternalGroupMappingEntry) for result in mapping_results
+        )
         assert len({result.id for result in mapping_results}) == 1
 
         mapping_conflict_results = await asyncio.gather(
@@ -360,8 +383,11 @@ async def test_postgres_default_bootstrap_and_global_name_races(
         only_instance(mapping_conflict_results, ExternalGroupMappingEntry)
         only_instance(mapping_conflict_results, GroupRelationConflictError)
 
-        race_group = (await groups.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name='Delete race')], admin))[0]
+        race_group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Delete race')], admin
+            )
+        )[0]
         project_delete_results = await asyncio.gather(
             projects.create_project(
                 name='Race project',
@@ -411,10 +437,10 @@ async def test_postgres_default_bootstrap_and_global_name_races(
             user_authorization=admin,
         )
         update_results = await asyncio.gather(
-            projects.update_project(first.id, name='Winner',
-                                    user_authorization=admin),
-            projects.update_project(second.id, name=' ＷＩＮＮＥＲ ',
-                                    user_authorization=admin),
+            projects.update_project(first.id, name='Winner', user_authorization=admin),
+            projects.update_project(
+                second.id, name=' ＷＩＮＮＥＲ ', user_authorization=admin
+            ),
             return_exceptions=True,
         )
         only_instance(update_results, ProjectDBEntry)
@@ -434,18 +460,25 @@ async def test_postgres_global_slug_indexes_have_one_concurrent_winner(
     admin = UserAuthorization.disabled()
     groups = GroupService(state_db)
     projects = ProjectService(state_db)
-    identities = _new_identity_service(state_db,
-                                       identity_validator=lambda *_: None)
+    identities = _new_identity_service(state_db, identity_validator=lambda *_: None)
     try:
         group_results = await asyncio.gather(
-            groups.create_kumo_groups([
-                KumoGroupCreateSpec(display_name='Slug Group One',
-                                    slug='postgres-group')
-            ], admin),
-            groups.create_kumo_groups([
-                KumoGroupCreateSpec(display_name='Slug Group Two',
-                                    slug='postgres-group')
-            ], admin),
+            groups.create_kumo_groups(
+                [
+                    KumoGroupCreateSpec(
+                        display_name='Slug Group One', slug='postgres-group'
+                    )
+                ],
+                admin,
+            ),
+            groups.create_kumo_groups(
+                [
+                    KumoGroupCreateSpec(
+                        display_name='Slug Group Two', slug='postgres-group'
+                    )
+                ],
+                admin,
+            ),
             return_exceptions=True,
         )
         owner_group = only_instance(group_results, list)[0]
@@ -477,14 +510,13 @@ async def test_postgres_global_slug_indexes_have_one_concurrent_winner(
                     authentication=api.S3AssumeRoleAuthentication(
                         partition='aws',
                         role_arn=(f'arn:aws:iam::123456789012:role/{role}'),
-                    ), ),
+                    ),
+                ),
             )
 
         identity_results = await asyncio.gather(
-            identities.create(identity_args('Slug Identity One', 'slug-one'),
-                              admin),
-            identities.create(identity_args('Slug Identity Two', 'slug-two'),
-                              admin),
+            identities.create(identity_args('Slug Identity One', 'slug-one'), admin),
+            identities.create(identity_args('Slug Identity Two', 'slug-two'), admin),
             return_exceptions=True,
         )
         only_instance(identity_results, api.IdentityResponse)
@@ -506,10 +538,12 @@ async def test_postgres_connector_name_is_reusable_after_tombstone(
     projects = ProjectService(state_db)
     connectors = StateDBConnectorRepository()
     try:
-        group = (await groups.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name='Reusable connector group')],
-            admin,
-        ))[0]
+        group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Reusable connector group')],
+                admin,
+            )
+        )[0]
         project = await projects.create_project(
             name='Reusable connector project',
             group_id=str(group.id),
@@ -556,7 +590,8 @@ async def test_postgres_connector_name_is_reusable_after_tombstone(
 
         async with state_db.read_tx() as tx:
             live = await connectors.find_live_by_project_and_name(
-                tx, project.id, 'data lake')
+                tx, project.id, 'data lake'
+            )
             history = await connectors.list(tx, project_id=project.id)
         assert live is not None
         assert live.id == second.id
@@ -590,8 +625,11 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
     connector_repository = StateDBConnectorRepository()
     table_repository = StateDBTableRepository()
     try:
-        group = (await groups.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name='Race group')], admin))[0]
+        group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Race group')], admin
+            )
+        )[0]
         project = await projects.create_project(
             name='Race project',
             group_id=str(group.id),
@@ -604,7 +642,8 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
                     authentication=api.S3AssumeRoleAuthentication(
                         partition='aws',
                         role_arn=('arn:aws:iam::123456789012:role/race-reader'),
-                    ), ),
+                    ),
+                ),
             ),
             admin,
         )
@@ -628,8 +667,7 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
                     created_by='admin',
                     config=S3ConnectorResourceConfig(
                         name=str(connector_id),
-                        target=api.S3RootedConnectorTarget(
-                            bucket='race-bucket'),
+                        target=api.S3RootedConnectorTarget(bucket='race-bucket'),
                     ),
                     timestamps=timestamps,
                 ),
@@ -669,7 +707,8 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
                 project.id,
                 connector_id,
                 api.UpdateConnectorMetadataArgs(
-                    description='must not commit after unbind'),
+                    description='must not commit after unbind'
+                ),
                 admin,
             ),
             name='mutation',
@@ -686,8 +725,7 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
         assert isinstance(mutation_result[0], IdentityForbiddenError)
 
         async with state_db.read_tx() as tx:
-            unchanged_connector = await connector_repository.get(
-                tx, connector_id)
+            unchanged_connector = await connector_repository.get(tx, connector_id)
         assert unchanged_connector is not None
         assert unchanged_connector.description == ''
         assert unchanged_connector.tombstoned_at is None
@@ -738,7 +776,8 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
                     project.id,
                     connector_id,
                     api.UpdateConnectorMetadataArgs(
-                        description='must not commit after archive'),
+                        description='must not commit after archive'
+                    ),
                     admin,
                 )
             else:
@@ -764,10 +803,10 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
                 project_row = await projects._projects.get(tx, str(project.id))
                 assert project_row is not None
                 project_row.payload.status = ProjectStatus.ACTIVE
-                await projects._projects.upsert(tx, str(project.id),
-                                                project_row.payload)
-                unchanged_connector = await connector_repository.get(
-                    tx, connector_id)
+                await projects._projects.upsert(
+                    tx, str(project.id), project_row.payload
+                )
+                unchanged_connector = await connector_repository.get(tx, connector_id)
             assert unchanged_connector is not None
             assert unchanged_connector.description == ''
             assert unchanged_connector.tombstoned_at is None
@@ -787,10 +826,7 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
             cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int)],
             source_table=S3SourceTable(
                 connector_id=connector_id,
-                source={
-                    'mode': 'relative',
-                    'path': 'race.parquet'
-                },
+                source={'mode': 'relative', 'path': 'race.parquet'},
                 file_type='PARQUET',
                 data_source_type=DataSourceType.S3,
             ),
@@ -819,8 +855,9 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
                 if waiter_count == 2:
                     both_waiting.set()
             await asyncio.wait_for(both_waiting.wait(), timeout=5)
-            await lock_connector_admission_and_delete(tx, project_id,
-                                                      locked_connector_id)
+            await lock_connector_admission_and_delete(
+                tx, project_id, locked_connector_id
+            )
 
         monkeypatch.setattr(
             connector_admission_module,
@@ -844,10 +881,8 @@ async def test_postgres_connector_mutations_serialize_with_binding_and_table(
         )
 
         async with state_db.read_tx() as tx:
-            persisted_table = await table_repository.get(
-                tx, project.id, table.id)
-            persisted_connector = await connector_repository.get(
-                tx, connector_id)
+            persisted_table = await table_repository.get(tx, project.id, table.id)
+            persisted_connector = await connector_repository.get(tx, connector_id)
 
         assert persisted_connector is not None
         if table_result is None:
@@ -882,18 +917,23 @@ async def test_postgres_identity_delete_serializes_all_identity_mutations(
         identity_validator=lambda *_: None,
     )
     try:
-        group = (await groups.create_kumo_groups([
-            KumoGroupCreateSpec(display_name=f'Identity race {mutation_name}')
-        ], admin))[0]
+        group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name=f'Identity race {mutation_name}')],
+                admin,
+            )
+        )[0]
         identity = await identities.create(
             api.CreateIdentityArgs(
                 display_name=f'Identity {mutation_name}',
                 config=api.S3IdentityConfig(
                     authentication=api.S3AssumeRoleAuthentication(
                         partition='aws',
-                        role_arn=('arn:aws:iam::123456789012:role/'
-                                  f'identity-{mutation_name}'),
-                    ), ),
+                        role_arn=(
+                            f'arn:aws:iam::123456789012:role/identity-{mutation_name}'
+                        ),
+                    ),
+                ),
             ),
             admin,
         )
@@ -956,10 +996,10 @@ async def test_postgres_identity_delete_serializes_all_identity_mutations(
         assert isinstance(mutation_result[0], IdentityDoesNotExistError)
 
         async with state_db.read_tx() as tx:
-            identity_row = await identities._identities.get(
-                tx, str(identity.id))
+            identity_row = await identities._identities.get(tx, str(identity.id))
             binding_rows = await identities._bindings.list_by_field(
-                tx, 'identity_id', str(identity.id))
+                tx, 'identity_id', str(identity.id)
+            )
         assert identity_row is not None
         assert identity_row.payload.tombstoned_at is not None
         assert identity_row.payload.encrypted_credentials is None
@@ -996,9 +1036,11 @@ async def test_postgres_connector_admission_rechecks_after_revocation(
     jobs = MLJobService(state_db)
     try:
         suffix = f'{resource_kind}-{revocation}'
-        group = (await groups.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name=f'Admission {suffix}')],
-            admin))[0]
+        group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name=f'Admission {suffix}')], admin
+            )
+        )[0]
         project = await projects.create_project(
             name=f'Admission project {suffix}',
             group_id=str(group.id),
@@ -1010,9 +1052,9 @@ async def test_postgres_connector_admission_rechecks_after_revocation(
                 config=api.S3IdentityConfig(
                     authentication=api.S3AssumeRoleAuthentication(
                         partition='aws',
-                        role_arn=('arn:aws:iam::123456789012:role/'
-                                  f'admission-{suffix}'),
-                    ), ),
+                        role_arn=(f'arn:aws:iam::123456789012:role/admission-{suffix}'),
+                    ),
+                ),
             ),
             admin,
         )
@@ -1035,8 +1077,7 @@ async def test_postgres_connector_admission_rechecks_after_revocation(
                     created_by='admin',
                     config=S3ConnectorResourceConfig(
                         name=str(connector_id),
-                        target=api.S3RootedConnectorTarget(
-                            bucket='admission-bucket'),
+                        target=api.S3RootedConnectorTarget(bucket='admission-bucket'),
                     ),
                     timestamps=timestamps,
                 ),
@@ -1050,10 +1091,7 @@ async def test_postgres_connector_admission_rechecks_after_revocation(
                 cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int)],
                 source_table=S3SourceTable(
                     connector_id=connector_id,
-                    source={
-                        'mode': 'relative',
-                        'path': f'{suffix}.parquet'
-                    },
+                    source={'mode': 'relative', 'path': f'{suffix}.parquet'},
                     file_type='PARQUET',
                     data_source_type=DataSourceType.S3,
                 ),
@@ -1190,15 +1228,15 @@ async def test_postgres_connector_admission_rechecks_after_revocation(
         if resource_kind == 'table':
             assert table is not None
             async with state_db.read_tx() as tx:
-                assert await table_repository.get(tx, project.id,
-                                                  table.id) is None
+                assert await table_repository.get(tx, project.id, table.id) is None
         elif resource_kind == 'custom-training':
             assert training_id is not None
             assert await jobs.get_training_job(training_id) is None
         elif resource_kind == 'batch-prediction':
             assert batch_id is not None
-            assert await jobs.get_batch_prediction_jobs([batch_id],
-                                                        project_ids=None) == []
+            assert (
+                await jobs.get_batch_prediction_jobs([batch_id], project_ids=None) == []
+            )
     finally:
         await state_db.close()
         await _reset_postgres_schema(postgres_connection)

@@ -42,56 +42,54 @@ class TableRouter:
         self._table_driver = table_driver
 
         self.router = APIRouter(
-            prefix="/tables",
-            tags=["API v1 (Under Development): Tables"],
+            prefix='/tables',
+            tags=['API v1 (Under Development): Tables'],
             dependencies=[Depends(api_key_auth)],
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.create_table,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a new table with its full definition.",
+            summary='Create a new table with its full definition.',
             responses={
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description':
-                    "A table name is required or the table definition is "
-                    "invalid."
+                    'description': 'A table name is required or the table definition is '
+                    'invalid.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/{table_id_or_alias}",
+            '/{table_id_or_alias}',
             self.get_table,
             response_model=api.TableResource,
             methods=['GET'],
-            summary="Get a table with its full definition by id or alias",
+            summary='Get a table with its full definition by id or alias',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the table with the given id or name alias."
+                    'description': 'Unable to find the table with the given id or name alias.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/infer_metadata",
+            '/infer_metadata',
             self.infer_metadata,
             response_model=api.TableMetadataResponse,
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/resolve_sql",
+            '/resolve_sql',
             self.resolve_sql,
             response_model=api.SqlTableResolveResponse,
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/validate",
+            '/validate',
             self.validate,
             response_model=ValidationResponse,
             methods=['POST'],
@@ -103,7 +101,8 @@ class TableRouter:
         project_id: Annotated[str, Query()],
         name_alias: Annotated[str, Query(min_length=1, max_length=64)],
         force_rename: Annotated[
-            bool, Query(description=_force_table_rename_desc)] = False,
+            bool, Query(description=_force_table_rename_desc)
+        ] = False,
     ) -> IDResponse:
         """Create a table under a human-friendly alias."""
         with wrap_driver_errors():
@@ -125,24 +124,24 @@ class TableRouter:
         with wrap_driver_errors(), wrap_validation_exceptions():
             if _FP_SUFFIX_SEPARATOR in table_id_or_alias:
                 if not table_id_or_alias.startswith('table-'):
-                    raise ValueError(f'Table resource id is malformed '
-                                     f': {table_id_or_alias}')
+                    raise ValueError(
+                        f'Table resource id is malformed : {table_id_or_alias}'
+                    )
                 try:
                     table_id_or_alias = f'NA.{table_id_or_alias}'
-                    fpid = (TableIDv2.parse(
-                        TableIDv2.from_public(table_id_or_alias))[2])
+                    fpid = TableIDv2.parse(TableIDv2.from_public(table_id_or_alias))[2]
                     assert fpid is not None
                     fpid = FPID(fpid)
                 except BaseException:
-                    raise ValueError(f'Table resource id is malformed'
-                                     f': {table_id_or_alias}')
+                    raise ValueError(
+                        f'Table resource id is malformed: {table_id_or_alias}'
+                    )
                 # TODO(manan): fix this later.
                 out = await self._table_driver.get_table(fpid, project_id)
             else:
                 alias = ID(table_id_or_alias)
                 # TODO(manan): fix this later.
-                out = await self._table_driver.get_table_by_name(
-                    alias, project_id)
+                out = await self._table_driver.get_table_by_name(alias, project_id)
             return api.TableResource(
                 id=out.id,
                 table=out.table,
@@ -158,7 +157,8 @@ class TableRouter:
         incomplete) table definition."""
         with wrap_driver_errors():
             return await self._table_driver.infer_table_metadata(
-                request, project_id=project_id)
+                request, project_id=project_id
+            )
 
     async def resolve_sql(
         self,
@@ -167,8 +167,7 @@ class TableRouter:
     ) -> api.SqlTableResolveResponse:
         """Resolve and validate a Custom SQL table authored through the SDK."""
         with wrap_driver_errors():
-            return await self._table_driver.resolve_sql(request,
-                                                        project_id=project_id)
+            return await self._table_driver.resolve_sql(request, project_id=project_id)
 
     async def validate(
         self,
@@ -182,4 +181,5 @@ class TableRouter:
         """
         with wrap_driver_errors():
             return await self._table_driver.validate_table(
-                request.table_definition, project_id=project_id)
+                request.table_definition, project_id=project_id
+            )

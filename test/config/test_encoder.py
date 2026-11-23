@@ -30,40 +30,22 @@ from io_utils.locate import locate
 @kumo_dataclass
 class Encoders:
     """Some config class that holds an Encoder as one of its attributes."""
+
     encoders: list[EncoderType]
 
 
 @pytest.mark.parametrize(
     ('encoder_type', 'deprecated_args'),
     [
-        (Index, {
-            'na_values': None
-        }),
-        (Hash, {
-            'num_components': 2,
-            'min_occ': 1
-        }),
-        (MultiCategorical, {
-            'na_values': None
-        }),
-        (MaxLogNumerical, {
-            'base': 'natural'
-        }),
-        (MinLogNumerical, {
-            'base': 'natural'
-        }),
-        (NumericalList, {
-            'num_dimensions': 3
-        }),
-        (Datetime, {
-            'format': None
-        }),
-        (Datetime, {
-            'include_month': True
-        }),
-        (Datetime, {
-            'include_week_of_year': False
-        }),
+        (Index, {'na_values': None}),
+        (Hash, {'num_components': 2, 'min_occ': 1}),
+        (MultiCategorical, {'na_values': None}),
+        (MaxLogNumerical, {'base': 'natural'}),
+        (MinLogNumerical, {'base': 'natural'}),
+        (NumericalList, {'num_dimensions': 3}),
+        (Datetime, {'format': None}),
+        (Datetime, {'include_month': True}),
+        (Datetime, {'include_week_of_year': False}),
     ],
 )
 def test_deprecated_encoder_args_are_rejected(encoder_type, deprecated_args):
@@ -98,40 +80,37 @@ def test_encoder_target_is_canonical_and_resolvable(encoder):
 
 
 def test_invalid_na_strategy():
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='mean'"):
+    with pytest.raises(ValueError, match=r"Input should be.*input_value='mean'"):
         Index(na_strategy='mean')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='mean'"):
+    with pytest.raises(ValueError, match=r"Input should be.*input_value='mean'"):
         Hash(num_components=10, na_strategy='mean')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='mean'"):
+    with pytest.raises(ValueError, match=r"Input should be.*input_value='mean'"):
         MultiCategorical(na_strategy='mean')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='mean'"):
+    with pytest.raises(ValueError, match=r"Input should be.*input_value='mean'"):
         TextEmbedding(na_strategy='mean')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='most_frequent'"):
+    with pytest.raises(
+        ValueError, match=r"Input should be.*input_value='most_frequent'"
+    ):
         Numerical(na_strategy='most_frequent')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='most_frequent'"):
+    with pytest.raises(
+        ValueError, match=r"Input should be.*input_value='most_frequent'"
+    ):
         MaxLogNumerical(na_strategy='most_frequent')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='most_frequent'"):
+    with pytest.raises(
+        ValueError, match=r"Input should be.*input_value='most_frequent'"
+    ):
         MinLogNumerical(na_strategy='most_frequent')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='mean'"):
+    with pytest.raises(ValueError, match=r"Input should be.*input_value='mean'"):
         NumericalList(na_strategy='mean')
 
-    with pytest.raises(ValueError,
-                       match=r"Input should be.*input_value='mean'"):
+    with pytest.raises(ValueError, match=r"Input should be.*input_value='mean'"):
         Datetime(na_strategy='mean')
 
 
@@ -150,7 +129,7 @@ def test_index():
     cfg = Index(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
     cfg._stats = {
-        ColStatType.CATEGORY_COUNTS: [["C", 403], ["A", 203], ["D", 45], ["B", 31]]
+        ColStatType.CATEGORY_COUNTS: [['C', 403], ['A', 203], ['D', 45], ['B', 31]]
     }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
@@ -172,7 +151,7 @@ def test_hash():
     cfg = Hash(num_components=2, na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
     cfg._stats = {
-        ColStatType.CATEGORY_COUNTS: [["C", 403], ["A", 203], ["D", 45], ["B", 31]]
+        ColStatType.CATEGORY_COUNTS: [['C', 403], ['A', 203], ['D', 45], ['B', 31]]
     }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
@@ -229,15 +208,15 @@ def test_multicategorical():
     cfg = MultiCategorical(na_strategy='zero')
     assert cfg.na_strategy is NAStrategy.ZERO
     cfg._stats = {
-        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
         ColStatType.MULTI_CATEGORY_COUNTS: [
-            ["D", 4],
-            ["A", 2],
-            ["C", 2],
-            ["E", 2],
-            ["F", 2],
-            ["B", 1],
-            ["G", 1],
+            ['D', 4],
+            ['A', 2],
+            ['C', 2],
+            ['E', 2],
+            ['F', 2],
+            ['B', 1],
+            ['G', 1],
         ],
     }
     encoders = Encoders(encoders=[cfg])
@@ -247,8 +226,7 @@ def test_multicategorical():
         '_target_': 'kumoapi.encoder.MultiCategorical',
         'na_strategy': NAStrategy.ZERO,
         '_stats': {
-            ColStatType.MULTI_CATEGORIES_SEPARATOR:
-            '|',
+            ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
             ColStatType.MULTI_CATEGORY_COUNTS: [
                 ['D', 4],
                 ['A', 2],
@@ -270,8 +248,7 @@ def test_multicategorical():
             ColStatType.MULTI_CATEGORY_COUNTS: [],
         }
         encoders = Encoders(encoders=[cfg])
-        assert encoders == TypeAdapter(Encoders).validate_python(
-            asdict(encoders))
+        assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
         assert asdict(encoders)['encoders'][0] == {
             'name': 'MultiCategorical',
             '_target_': 'kumoapi.encoder.MultiCategorical',
@@ -287,7 +264,7 @@ def test_multicategorical():
     assert cfg.na_strategy is NAStrategy.ZERO
     cfg._stats = {
         ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
-        ColStatType.MULTI_CATEGORY_COUNTS: [["B", 3], ["A", 2]],
+        ColStatType.MULTI_CATEGORY_COUNTS: [['B', 3], ['A', 2]],
     }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
@@ -309,7 +286,7 @@ def test_multicategorical():
     assert cfg.na_strategy is NAStrategy.ZERO
     cfg._stats = {
         ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
-        ColStatType.MULTI_CATEGORY_COUNTS: [["A", 4]],
+        ColStatType.MULTI_CATEGORY_COUNTS: [['A', 4]],
     }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
@@ -329,15 +306,15 @@ def test_multicategorical():
     cfg = MultiCategorical(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
     cfg._stats = {
-        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
         ColStatType.MULTI_CATEGORY_COUNTS: [
-            ["D", 4],
-            ["A", 2],
-            ["C", 2],
-            ["E", 2],
-            ["F", 2],
-            ["B", 1],
-            ["G", 1],
+            ['D', 4],
+            ['A', 2],
+            ['C', 2],
+            ['E', 2],
+            ['F', 2],
+            ['B', 1],
+            ['G', 1],
         ],
     }
     encoders = Encoders(encoders=[cfg])
@@ -348,8 +325,7 @@ def test_multicategorical():
         'min_occ': 1,
         'na_strategy': NAStrategy.SEPARATE,
         '_stats': {
-            ColStatType.MULTI_CATEGORIES_SEPARATOR:
-            '|',
+            ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
             ColStatType.MULTI_CATEGORY_COUNTS: [
                 ['D', 4],
                 ['A', 2],
@@ -365,15 +341,15 @@ def test_multicategorical():
     cfg = MultiCategorical(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
     cfg._stats = {
-        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
         ColStatType.MULTI_CATEGORY_COUNTS: [
-            ["D", 5],
-            ["A", 3],
-            ["C", 2],
-            ["E", 2],
-            ["F", 2],
-            ["G", 2],
-            ["B", 1],
+            ['D', 5],
+            ['A', 3],
+            ['C', 2],
+            ['E', 2],
+            ['F', 2],
+            ['G', 2],
+            ['B', 1],
         ],
     }
     encoders = Encoders(encoders=[cfg])
@@ -384,8 +360,7 @@ def test_multicategorical():
         'min_occ': 1,
         'na_strategy': NAStrategy.SEPARATE,
         '_stats': {
-            ColStatType.MULTI_CATEGORIES_SEPARATOR:
-            '|',
+            ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
             ColStatType.MULTI_CATEGORY_COUNTS: [
                 ['D', 5],
                 ['A', 3],
@@ -401,15 +376,15 @@ def test_multicategorical():
     cfg = MultiCategorical(na_strategy='most_frequent')
     assert cfg.na_strategy is NAStrategy.MOST_FREQUENT
     cfg._stats = {
-        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
         ColStatType.MULTI_CATEGORY_COUNTS: [
-            ["D", 4],
-            ["A", 2],
-            ["C", 2],
-            ["E", 2],
-            ["F", 2],
-            ["B", 1],
-            ["G", 1],
+            ['D', 4],
+            ['A', 2],
+            ['C', 2],
+            ['E', 2],
+            ['F', 2],
+            ['B', 1],
+            ['G', 1],
         ],
     }
     encoders = Encoders(encoders=[cfg])
@@ -420,8 +395,7 @@ def test_multicategorical():
         'min_occ': 1,
         'na_strategy': NAStrategy.MOST_FREQUENT,
         '_stats': {
-            ColStatType.MULTI_CATEGORIES_SEPARATOR:
-            '|',
+            ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
             ColStatType.MULTI_CATEGORY_COUNTS: [
                 ['D', 4],
                 ['A', 2],
@@ -461,7 +435,7 @@ def test_numerical():
         '_target_': 'kumoapi.encoder.Numerical',
         'na_strategy': NAStrategy.MEAN,
         '_stats': {
-            ColStatType.MEAN: 3.,  # required by NAStrategy.MEAN
+            ColStatType.MEAN: 3.0,  # required by NAStrategy.MEAN
             ColStatType.MIN: 1,  # required by Scaler.MINMAX
             ColStatType.MAX: 5,  # required by Scaler.MINMAX
         },
@@ -542,8 +516,8 @@ def test_datetime():
     }
 
     cfg._stats = {
-        ColStatType.MIN: "kumo_timestamp_1993-07-05 00:00:00",
-        ColStatType.MAX: "kumo_timestamp_1998-12-08 00:00:00",
+        ColStatType.MIN: 'kumo_timestamp_1993-07-05 00:00:00',
+        ColStatType.MAX: 'kumo_timestamp_1998-12-08 00:00:00',
     }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))

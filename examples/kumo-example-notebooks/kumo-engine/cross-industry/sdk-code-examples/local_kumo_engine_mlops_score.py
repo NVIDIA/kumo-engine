@@ -11,6 +11,7 @@ Synthetic evaluation metrics are demonstration only.
 Install: pip install "kumo-engine[s3,text]"
 Pass --model-path, --source-root, --scratch-dir on SSD and a new --output-dir.
 """
+
 import pandas as pd
 from mlops_companions.local_kumo_engine_mlops_settings import (
     QUERY,
@@ -30,12 +31,14 @@ def main():
     query = PredictiveQuery(graph, QUERY)
     # Batch predictions
     population = query.generate_prediction_table(
-        snapshot, plan=trainer.training_table_generation_plan)
+        snapshot, plan=trainer.training_table_generation_plan
+    )
     expected = pd.read_parquet(population.table_path)['ENTITY1']
     if len(expected) < 2:
         raise ValueError('Supply at least two users to score.')
-    scores = trainer.predict(population, snapshot=snapshot,
-                             binary_classification_threshold=0.5).frame
+    scores = trainer.predict(
+        population, snapshot=snapshot, binary_classification_threshold=0.5
+    ).frame
     if len(scores) != len(expected) or set(scores['ENTITY']) != set(expected):
         raise ValueError('Scores do not match the requested users.')
     print('True_PROB is seven-day repeat purchase probability.')

@@ -22,13 +22,17 @@ async def test_artifact_status_and_cancel_forward_exact_project() -> None:
     router._driver = driver
 
     status = await router.get_artifact_export_job_status(
-        'ae-job-status', str(PROJECT_ID))
+        'ae-job-status', str(PROJECT_ID)
+    )
     cancelled = await router.cancel_artifact_export_job(
-        'ae-job-cancel', str(PROJECT_ID))
+        'ae-job-cancel', str(PROJECT_ID)
+    )
 
     assert status == JobStatus.RUNNING
     assert cancelled == JobStatus.CANCELLED
     driver.get_artifact_export_job_status.assert_awaited_once_with(
-        'ae-job-status', PROJECT_ID)
+        'ae-job-status', PROJECT_ID
+    )
     driver.cancel_artifact_export_job.assert_awaited_once_with(
-        'ae-job-cancel', PROJECT_ID)
+        'ae-job-cancel', PROJECT_ID
+    )

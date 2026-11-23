@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 
 class DecimalOutOfBoundsError(ValueError):
     """A scale-zero decimal cannot be represented by Kumo's int64 dtype."""
+
     def __init__(self, column_name: str):
         self.column_name = column_name
         super().__init__(
             f"Decimal column '{column_name}' contains a scale-zero value "
-            "outside the signed 64-bit integer range.")
+            'outside the signed 64-bit integer range.'
+        )
 
 
 def fix_types_for_pandas(table: pa.Table) -> pa.Table:
@@ -74,8 +76,7 @@ def safe_to_pandas(table: pa.Table) -> pd.DataFrame:
     ]
     # Convert the table to pandas, casting all timestamp columns to object
     df = table.to_pandas(timestamp_as_object=True)
-    df[timestamp_cols] = df[timestamp_cols].apply(pd.to_datetime,
-                                                  errors='coerce')
+    df[timestamp_cols] = df[timestamp_cols].apply(pd.to_datetime, errors='coerce')
     return df
 
 
@@ -85,8 +86,7 @@ def safe_to_pandas(table: pa.Table) -> pd.DataFrame:
 PYARROW_CLOUD_FS_TTL = 600
 
 
-def _resolve_s3_filesystem(
-        bucket_uri: str) -> Optional[fs.FileSystem]:  # type: ignore
+def _resolve_s3_filesystem(bucket_uri: str) -> Optional[fs.FileSystem]:  # type: ignore
     r"""Build a credentialed pyarrow ``S3FileSystem`` for the given bucket.
 
     Credential, region and endpoint handling belong to ``kumo_s3``, which the
@@ -106,7 +106,8 @@ def _resolve_s3_filesystem(
     connection = active_s3_connection()
     if connection is not None and connection.access_key and connection.secret_key:
         return fs.S3FileSystem(  # type: ignore[call-arg]
-            **connection.pyarrow_options())
+            **connection.pyarrow_options()
+        )
 
     # lazy_auth wires up any custom credential provider before we read
     # frozen credentials, mirroring the boto3 path.
@@ -121,13 +122,16 @@ def _resolve_s3_filesystem(
     options = None
     if connection is not None and connection.endpoint_url:
         options = connection.pyarrow_options()
-        for key in ('access_key', 'secret_key', 'session_token', 'anonymous',
-                    'region'):
+        for key in ('access_key', 'secret_key', 'session_token', 'anonymous', 'region'):
             options.pop(key, None)
 
-    return kumo_s3.filesystem(bucket.bucket, session=threadsafe_boto.session(),
-                              endpoint_url=endpoint_url,
-                              default_region=AWS_REGION, options=options)
+    return kumo_s3.filesystem(
+        bucket.bucket,
+        session=threadsafe_boto.session(),
+        endpoint_url=endpoint_url,
+        default_region=AWS_REGION,
+        options=options,
+    )
 
 
 @cached(cache=TTLCache(maxsize=10, ttl=PYARROW_CLOUD_FS_TTL), lock=Lock())
@@ -141,7 +145,7 @@ def _arrow_cloud_filesystem(path: str, connection_identity=None):
     # cachetools includes this value in its cache key; the function body only
     # needs the path after the caller's connection state has been identified.
     del connection_identity
-    if path.startswith("s3://"):
+    if path.startswith('s3://'):
         # Prefer explicit boto3/IRSA credentials so cross-account buckets and
         # fork children do not 403; fall back to from_uri when none resolve
         # (public / anonymous reads).
@@ -150,15 +154,17 @@ def _arrow_cloud_filesystem(path: str, connection_identity=None):
             filesystem = _resolve_s3_filesystem(path)
         except Exception as e:  # noqa: BLE001 - fall back to native resolution
             from io_utils.fsutil.s3_connection import active_s3_connection
+
             if active_s3_connection() is not None:
                 raise
             logger.warning(
-                "Falling back to native pyarrow S3 credentials after "
-                "explicit-credential resolution failed (error_type=%s)",
-                type(e).__name__)
+                'Falling back to native pyarrow S3 credentials after '
+                'explicit-credential resolution failed (error_type=%s)',
+                type(e).__name__,
+            )
             logger.debug(
-                "Restricted raw pyarrow credential-resolution failure "
-                "(path=%s, error_type=%s)",
+                'Restricted raw pyarrow credential-resolution failure '
+                '(path=%s, error_type=%s)',
                 path,
                 type(e).__name__,
                 exc_info=(type(e), e, e.__traceback__),
@@ -178,13 +184,14 @@ def arrow_cloud_filesystem(path: str):
     """
     uri = ParseURI(path)
     if isinstance(uri, S3URI):
-        uri.path = ""  # only use bucket for cache keying
+        uri.path = ''  # only use bucket for cache keying
         from io_utils.fsutil.s3_connection import active_s3_connection
+
         connection = active_s3_connection()
         identity = connection.identity if connection is not None else None
         return _arrow_cloud_filesystem(uri.as_s3(), identity)
     elif isinstance(uri, GCSURI):
-        uri.path = ""  # only use bucket for cache keying
+        uri.path = ''  # only use bucket for cache keying
         return _arrow_cloud_filesystem(uri.as_gs())
     else:
-        raise ValueError(f"Not a cloud path (S3 or GCS): {path}")
+        raise ValueError(f'Not a cloud path (S3 or GCS): {path}')

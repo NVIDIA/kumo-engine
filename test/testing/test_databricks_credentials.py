@@ -11,28 +11,27 @@ from kumo.testing.databricks import (
 
 
 def _result() -> str:
-    return "ran"
+    return 'ran'
 
 
 def test_personal_access_token_decorator_uses_environment(monkeypatch) -> None:
-    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example.test")
-    monkeypatch.setenv("DATABRICKS_TOKEN", "token")
+    monkeypatch.setenv('DATABRICKS_HOST', 'workspace.example.test')
+    monkeypatch.setenv('DATABRICKS_TOKEN', 'token')
 
-    assert withDatabricksCredentials(_result)() == "ran"
+    assert withDatabricksCredentials(_result)() == 'ran'
 
 
-def test_personal_access_token_decorator_skips_without_environment(
-        monkeypatch) -> None:
-    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+def test_personal_access_token_decorator_skips_without_environment(monkeypatch) -> None:
+    monkeypatch.delenv('DATABRICKS_HOST', raising=False)
+    monkeypatch.delenv('DATABRICKS_TOKEN', raising=False)
 
     with pytest.raises(pytest.skip.Exception):
         withDatabricksCredentials(_result)()
 
 
 def test_oauth_decorator_uses_environment(monkeypatch) -> None:
-    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example.test")
-    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client")
-    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "secret")
+    monkeypatch.setenv('DATABRICKS_HOST', 'workspace.example.test')
+    monkeypatch.setenv('DATABRICKS_CLIENT_ID', 'client')
+    monkeypatch.setenv('DATABRICKS_CLIENT_SECRET', 'secret')
 
-    assert withDatabricksOauthCredentials(_result)() == "ran"
+    assert withDatabricksOauthCredentials(_result)() == 'ran'

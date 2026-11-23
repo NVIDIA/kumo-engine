@@ -51,22 +51,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
-          task_type: TaskType, scoring: RunScoring,
-          started_at: str) -> Optional[PredictionManifest]:
+def start(
+    *,
+    result: Any,
+    trainer: Any,
+    snapshot: Any,
+    prediction_table: Any,
+    task_type: TaskType,
+    scoring: RunScoring,
+    started_at: str,
+) -> Optional[PredictionManifest]:
     r"""The run's manifest so far; None, with a warning, if it fails."""
     try:
-        return _manifest(result, trainer, snapshot, prediction_table,
-                         task_type, scoring, started_at)
+        return _manifest(
+            result, trainer, snapshot, prediction_table, task_type, scoring, started_at
+        )
     except Exception as error:
-        warnings.warn(f"Predicting without a prediction manifest: {error}",
-                      UserWarning, stacklevel=3)
+        warnings.warn(
+            f'Predicting without a prediction manifest: {error}',
+            UserWarning,
+            stacklevel=3,
+        )
         return None
 
 
-def finish(result: Any, manifest: Optional[PredictionManifest],
-           output_config: Any, settings: Any, model: Any,
-           snapshot: Any) -> Optional[TrackingRef]:
+def finish(
+    result: Any,
+    manifest: Optional[PredictionManifest],
+    output_config: Any,
+    settings: Any,
+    model: Any,
+    snapshot: Any,
+) -> Optional[TrackingRef]:
     r"""Export, record, store and track a prediction run."""
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import (
@@ -75,7 +91,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
         tracking_ref,
     )
 
-    records = ([] if output_config is None else output_records(output_config))
+    records = [] if output_config is None else output_records(output_config)
     written: List[PredictionOutput] = []
     error: Optional[BaseException] = None
     untracked: Optional[BaseException] = None
@@ -84,17 +100,22 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
     try:
         if output_config is not None:
             result._export(
-                output_config, None if manifest is None else replace(
-                    manifest, outputs=records), records, written)
+                output_config,
+                None if manifest is None else replace(manifest, outputs=records),
+                records,
+                written,
+            )
     except BaseException as raised:
         error = raised
         raise
     finally:
         if manifest is not None:
             manifest = replace(
-                manifest, status='failed' if error else 'succeeded',
+                manifest,
+                status='failed' if error else 'succeeded',
                 outputs=None if records is None else written,
-                timings=replace(manifest.timings, finished_at=_now()))
+                timings=replace(manifest.timings, finished_at=_now()),
+            )
             write(result, manifest)
         if settings is not None:
             if error is None and settings.wants('prediction'):
@@ -104,24 +125,34 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                     unstored = failure
             skipped = _local_skipped(result)
             untracked = track_prediction(
-                manifest, settings.tracking, error or unstored, model,
+                manifest,
+                settings.tracking,
+                error or unstored,
+                model,
                 lambda: _scoring_summaries(manifest, snapshot),
-                files={} if error or skipped is None else
-                {SKIPPED_DIR: str(skipped)})
+                files={} if error or skipped is None else {SKIPPED_DIR: str(skipped)},
+            )
             tracker = as_tracking(settings.tracking)
-            if (untracked is None and tracker is not None
-                    and tracker.log_prediction_run is not None):
+            if (
+                untracked is None
+                and tracker is not None
+                and tracker.log_prediction_run is not None
+            ):
                 tracking = tracking_ref(settings.tracking)
     untracked = unstored or untracked
     if untracked is not None:
-        raise_on_error(settings, untracked,
-                       f'Trainer.predict (run {result.id}, outputs written)',
-                       stacklevel=4)
+        raise_on_error(
+            settings,
+            untracked,
+            f'Trainer.predict (run {result.id}, outputs written)',
+            stacklevel=4,
+        )
     return tracking
 
 
-def _scoring_summaries(manifest: Optional[PredictionManifest],
-                       snapshot: Any) -> List[Summary]:
+def _scoring_summaries(
+    manifest: Optional[PredictionManifest], snapshot: Any
+) -> List[Summary]:
     from kumo.engine._data_summaries import snapshot_summaries, table_details
     from kumo.engine._manifest import SCORING_ROLES, artifact_summaries
 
@@ -130,43 +161,51 @@ def _scoring_summaries(manifest: Optional[PredictionManifest],
     index = Path(snapshot.index_path)
     return [
         *snapshot_summaries(index, snapshot.graph_config),
-        *artifact_summaries(manifest, SCORING_ROLES,
-                            table_details(index, snapshot.id)),
+        *artifact_summaries(manifest, SCORING_ROLES, table_details(index, snapshot.id)),
     ]
 
 
-def store(result: Any, manifest: Optional[PredictionManifest],
-          settings: Any) -> Optional[PredictionManifest]:
+def store(
+    result: Any, manifest: Optional[PredictionManifest], settings: Any
+) -> Optional[PredictionManifest]:
     r"""Copy the run's outputs and manifest under predictions/<id>/."""
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     try:
-        selection = load_prediction_selection(result.selection,
-                                              validate_objects=False)
-        names = [item.artifact_type.value.lower()
-                 for item in selection.artifacts]
+        selection = load_prediction_selection(result.selection, validate_objects=False)
+        names = [item.artifact_type.value.lower() for item in selection.artifacts]
         base = f'predictions/{result.id}'
-        manifest = settings.locate(result._manifest_path, PredictionManifest,
-                                   base) or manifest
+        manifest = (
+            settings.locate(result._manifest_path, PredictionManifest, base) or manifest
+        )
         stored = [
-            PredictionOutput(artifact=name, destination=destination_record(
-                settings.root.connector,
-                settings.root.location(f'{base}/{name}'))) for name in names
+            PredictionOutput(
+                artifact=name,
+                destination=destination_record(
+                    settings.root.connector, settings.root.location(f'{base}/{name}')
+                ),
+            )
+            for name in names
         ]
         if manifest is not None:
-            manifest = replace(manifest,
-                               outputs=[*(manifest.outputs or []), *stored])
+            manifest = replace(manifest, outputs=[*(manifest.outputs or []), *stored])
             manifest = _store_skipped(result, manifest, settings, base)
         result._export(
-            PredictionOutputConfig(settings.root.connector, output_paths={
-                name: settings.root.location(f'{base}/{name}/')
-                for name in names
-            }, write_mode=WriteMode.OVERWRITE), manifest)
+            PredictionOutputConfig(
+                settings.root.connector,
+                output_paths={
+                    name: settings.root.location(f'{base}/{name}/') for name in names
+                },
+                write_mode=WriteMode.OVERWRITE,
+            ),
+            manifest,
+        )
     except Exception as error:
-        raise RuntimeError(f"Could not store prediction run {result.id} in "
-                           f"the artifact root: {error}") from error
+        raise RuntimeError(
+            f'Could not store prediction run {result.id} in the artifact root: {error}'
+        ) from error
     if manifest is not None:
         write(result, manifest)
     return manifest
@@ -190,24 +229,34 @@ def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
 def _rows(directory: Path) -> int:
     from pyarrow import parquet
 
-    return sum(parquet.ParquetFile(part).metadata.num_rows
-               for part in directory.glob('*.parquet'))
+    return sum(
+        parquet.ParquetFile(part).metadata.num_rows
+        for part in directory.glob('*.parquet')
+    )
 
 
-def _store_skipped(result: Any, manifest: PredictionManifest, settings: Any,
-                   base: str) -> PredictionManifest:
+def _store_skipped(
+    result: Any, manifest: PredictionManifest, settings: Any, base: str
+) -> PredictionManifest:
     local = _local_skipped(result)
     if local is None:
         return manifest
     connector = settings.root.connector
     destination = settings.root.location(f'{base}/{SKIPPED_DIR}/')
     connector.sink_backend.write_files(
-        connector, destination,
+        connector,
+        destination,
         sorted(str(part) for part in local.glob('*.parquet')),
-        WriteMode.OVERWRITE, export_id=f'{result.id}-{SKIPPED_DIR}')
-    return replace(manifest, prediction_table=replace(
-        manifest.prediction_table, skipped_location=destination_record(
-            connector, destination).location))
+        WriteMode.OVERWRITE,
+        export_id=f'{result.id}-{SKIPPED_DIR}',
+    )
+    return replace(
+        manifest,
+        prediction_table=replace(
+            manifest.prediction_table,
+            skipped_location=destination_record(connector, destination).location,
+        ),
+    )
 
 
 def write(result: Any, manifest: PredictionManifest) -> None:
@@ -216,43 +265,59 @@ def write(result: Any, manifest: PredictionManifest) -> None:
     try:
         write_manifest(result._manifest_path, manifest)
     except Exception as error:
-        warnings.warn(f"Could not write the prediction manifest: {error}",
-                      UserWarning, stacklevel=3)
+        warnings.warn(
+            f'Could not write the prediction manifest: {error}',
+            UserWarning,
+            stacklevel=3,
+        )
 
 
-def _manifest(result: Any, trainer: Any, snapshot: Any,
-              prediction_table: Any, task_type: TaskType, scoring: RunScoring,
-              started_at: str) -> PredictionManifest:
+def _manifest(
+    result: Any,
+    trainer: Any,
+    snapshot: Any,
+    prediction_table: Any,
+    task_type: TaskType,
+    scoring: RunScoring,
+    started_at: str,
+) -> PredictionManifest:
     from kumo_core.prediction import COUNTS_FILE
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine._events import query_sha256
 
-    selection = load_prediction_selection(result.selection,
-                                          validate_objects=False)
+    selection = load_prediction_selection(result.selection, validate_objects=False)
     counts = Path(result.selection.pointer_path).parent / COUNTS_FILE
     model: Optional[ModelManifest] = trainer.result.manifest
     scoring_snapshot = snapshot.manifest
     skipped = _keep_skipped(prediction_table, result._manifest_path.parent)
-    skipped_rows = (prediction_table.skipped_rows
-                    if skipped is None else _rows(skipped))
+    skipped_rows = prediction_table.skipped_rows if skipped is None else _rows(skipped)
     return _record_predictions(
-        result.id, {
-            item.artifact_type.value.lower():
-            (item.num_rows, lambda kind=item.artifact_type: replace(
-                result, artifact_type=kind).files)
+        result.id,
+        {
+            item.artifact_type.value.lower(): (
+                item.num_rows,
+                lambda kind=item.artifact_type: (
+                    replace(result, artifact_type=kind).files
+                ),
+            )
             for item in selection.artifacts
         },
         model=(stub('model', trainer.result.id) if model is None else model),
-        snapshot=(stub('snapshot', snapshot.id)
-                  if scoring_snapshot is None else scoring_snapshot),
+        snapshot=(
+            stub('snapshot', snapshot.id)
+            if scoring_snapshot is None
+            else scoring_snapshot
+        ),
         task_type=task_type,
         table=PredictionTableRecord(
             query_sha256=query_sha256(prediction_table.query),
             source=prediction_table.source,
             anchors=[
                 datetime.fromtimestamp(ts / 1e9, timezone.utc).isoformat(
-                    timespec='seconds') for ts in prediction_table.timestamps
+                    timespec='seconds'
+                )
+                for ts in prediction_table.timestamps
             ],
             rows=prediction_table.row_count,
             requested_rows=prediction_table.row_count + skipped_rows,
@@ -261,8 +326,11 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
             skipped_sample=list(prediction_table.skipped_sample),
             skip_reason=prediction_table.skip_reason,
             skipped_location=None if skipped is None else str(skipped),
-        ), scoring=scoring, started_at=started_at,
-        counts=json.loads(counts.read_text()) if counts.is_file() else None)
+        ),
+        scoring=scoring,
+        started_at=started_at,
+        counts=json.loads(counts.read_text()) if counts.is_file() else None,
+    )
 
 
 def _record_predictions(
@@ -281,21 +349,24 @@ def _record_predictions(
     for name, (rows, files) in outputs.items():
         if name == 'predictions' and counts is None:
             try:
-                counted = output_counts(files(), task_type,
-                                        count_edges(model, task_type))
+                counted = output_counts(
+                    files(), task_type, count_edges(model, task_type)
+                )
                 counts = None if counted is None else counted.to_dict()
             except Exception as error:
                 warnings.warn(
-                    f"Recording the prediction manifest without score "
-                    f"counts: {error}", UserWarning, stacklevel=5)
+                    f'Recording the prediction manifest without score counts: {error}',
+                    UserWarning,
+                    stacklevel=5,
+                )
         stats[name] = ArtifactStats(
-            rows=rows, counts=counts if name == 'predictions' else None)
+            rows=rows, counts=counts if name == 'predictions' else None
+        )
     return PredictionManifest(
         id=run_id,
         parents=PredictionParents(
             model=(model if model.reconstructed else embedded_model(model)),
-            snapshot=(snapshot if snapshot.reconstructed else
-                      embedded(snapshot)),
+            snapshot=(snapshot if snapshot.reconstructed else embedded(snapshot)),
         ),
         prediction_table=table,
         scoring=scoring,
@@ -312,13 +383,17 @@ def output_records(output_config: Any) -> Optional[List[PredictionOutput]]:
     try:
         return [
             PredictionOutput(
-                artifact=name, destination=destination_record(
-                    output_config.connector, destination))
+                artifact=name,
+                destination=destination_record(output_config.connector, destination),
+            )
             for name, destination in output_config.destinations().items()
         ]
     except Exception as error:
-        warnings.warn(f"Exporting without a prediction manifest: {error}",
-                      UserWarning, stacklevel=4)
+        warnings.warn(
+            f'Exporting without a prediction manifest: {error}',
+            UserWarning,
+            stacklevel=4,
+        )
         return None
 
 
@@ -331,10 +406,12 @@ def destination_record(connector: Any, destination: str) -> OutputDestination:
     if '://' in destination or destination.startswith(('/', '@')):
         location = destination.rstrip('/')
     elif root is not None:
-        location = (f"{root.rstrip('/')}/{destination}" if '://' in root
-                    else str(Path(root, destination)))
-    elif (kind not in PATH_CONNECTORS
-          and is_file_destination(connector, destination)):
+        location = (
+            f'{root.rstrip("/")}/{destination}'
+            if '://' in root
+            else str(Path(root, destination))
+        )
+    elif kind not in PATH_CONNECTORS and is_file_destination(connector, destination):
         location = destination.rstrip('/')
     else:
         location = source_location(connector, destination)

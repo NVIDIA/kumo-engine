@@ -151,7 +151,8 @@ def _service() -> DiskgraphService:
     ],
 )
 def test_list_ready_handles_skips_inaccessible_snapshot_and_keeps_sibling(
-        monkeypatch, tmp_path, error):
+    monkeypatch, tmp_path, error
+):
     import kumo_core.diskgraph.snapshot as snapshot_module
 
     root = tmp_path / 'diskgraph'
@@ -197,16 +198,16 @@ def _object_source(
     version: str | None = None,
 ) -> dict[str, Any]:
     return {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': 's3://bucket/events/part-000.parquet',
-            'size': size,
-            'e_tag': e_tag,
-            'version': version,
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': 's3://bucket/events/part-000.parquet',
+                'size': size,
+                'e_tag': e_tag,
+                'version': version,
+            }
+        ],
+        'auth_profile': 'ambient',
     }
 
 
@@ -248,8 +249,7 @@ class _DownloadConnector:
         self.calls = 0
         self.control_markers = control_markers
 
-    def download(self, _source_name, _fingerprint, _data_version,
-                 local_dest) -> None:
+    def download(self, _source_name, _fingerprint, _data_version, local_dest) -> None:
         self.calls += 1
         Path(local_dest, 'part-a.parquet').write_bytes(b'PAR1-a')
         Path(local_dest, 'part-b.parquet').write_bytes(b'PAR1-b')
@@ -276,14 +276,14 @@ def _download_staged_source(monkeypatch, tmp_path, *, data_version='v1'):
 
 
 def test_download_marker_reuses_exact_staged_inventory(monkeypatch, tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     marker = Path(destination, '_DOWNLOAD_SUCCESS')
     payload = json.loads(marker.read_text())
-    assert payload['schema_version'] == (
-        diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA)
-    assert [entry['path'] for entry in payload['files']
-            ] == ['part-a.parquet', 'part-b.parquet']
+    assert payload['schema_version'] == (diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA)
+    assert [entry['path'] for entry in payload['files']] == [
+        'part-a.parquet',
+        'part-b.parquet',
+    ]
 
     _service().download_table_files(
         {str(table.get_connector_id()): object()},
@@ -294,10 +294,10 @@ def test_download_marker_reuses_exact_staged_inventory(monkeypatch, tmp_path):
     assert connector.calls == 1
 
 
-def test_download_marker_accepts_and_binds_empty_control_files(monkeypatch,
-                                                               tmp_path):
+def test_download_marker_accepts_and_binds_empty_control_files(monkeypatch, tmp_path):
     connector = _DownloadConnector(
-        control_markers=('_SUCCESS', '_committed_123', '_started_123'))
+        control_markers=('_SUCCESS', '_committed_123', '_started_123')
+    )
     table = _s3_table()
     connector_id = str(table.get_connector_id())
     monkeypatch.setattr(
@@ -316,8 +316,11 @@ def test_download_marker_accepts_and_binds_empty_control_files(monkeypatch,
 
     payload = json.loads(Path(destination, '_DOWNLOAD_SUCCESS').read_text())
     assert [entry['path'] for entry in payload['files']] == [
-        '_SUCCESS', '_committed_123', '_started_123', 'part-a.parquet',
-        'part-b.parquet'
+        '_SUCCESS',
+        '_committed_123',
+        '_started_123',
+        'part-a.parquet',
+        'part-b.parquet',
     ]
     assert connector.calls == 1
 
@@ -327,8 +330,7 @@ def test_download_removes_stale_incomplete_attempt(monkeypatch, tmp_path):
     stale_attempt.mkdir()
     (stale_attempt / 'part.parquet').write_bytes(b'partial')
 
-    connector, _table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+    connector, _table, destination = _download_staged_source(monkeypatch, tmp_path)
 
     assert connector.calls == 1
     assert Path(destination, '_DOWNLOAD_SUCCESS').exists()
@@ -336,10 +338,8 @@ def test_download_removes_stale_incomplete_attempt(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('damage', ['missing', 'extra', 'changed', 'legacy'])
-def test_download_marker_rebuilds_inconsistent_inventory(
-        monkeypatch, tmp_path, damage):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_marker_rebuilds_inconsistent_inventory(monkeypatch, tmp_path, damage):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     if damage == 'missing':
         Path(destination, 'part-b.parquet').unlink()
     elif damage == 'extra':
@@ -358,16 +358,14 @@ def test_download_marker_rebuilds_inconsistent_inventory(
         {'events_alias': destination},
     )
     assert connector.calls == 2
-    assert sorted(path.name
-                  for path in Path(destination).glob('*.parquet')) == [
-                      'part-a.parquet', 'part-b.parquet'
-                  ]
+    assert sorted(path.name for path in Path(destination).glob('*.parquet')) == [
+        'part-a.parquet',
+        'part-b.parquet',
+    ]
 
 
-def test_download_marker_rejects_cross_attempt_data_version(
-        monkeypatch, tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_marker_rejects_cross_attempt_data_version(monkeypatch, tmp_path):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     _service().download_table_files(
         {str(table.get_connector_id()): object()},
         {'events_alias': 'v2'},
@@ -379,25 +377,27 @@ def test_download_marker_rejects_cross_attempt_data_version(
     assert payload['context']['data_version'] == 'v2'
 
 
-@pytest.mark.parametrize('damage', [
-    'corrupt',
-    'wrong_shape',
-    'oversized',
-    'symlink_directory',
-    'zero_byte',
-])
+@pytest.mark.parametrize(
+    'damage',
+    [
+        'corrupt',
+        'wrong_shape',
+        'oversized',
+        'symlink_directory',
+        'zero_byte',
+    ],
+)
 def test_download_marker_rebuilds_bounded_or_unsafe_inventory(
-        monkeypatch, tmp_path, damage):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+    monkeypatch, tmp_path, damage
+):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     marker = Path(destination, '_DOWNLOAD_SUCCESS')
     if damage == 'corrupt':
         marker.write_text('{not json')
     elif damage == 'wrong_shape':
         marker.write_text('[]')
     elif damage == 'oversized':
-        marker.write_bytes(
-            b'x' * (diskgraph_service._MAX_DOWNLOAD_MARKER_BYTES + 1))
+        marker.write_bytes(b'x' * (diskgraph_service._MAX_DOWNLOAD_MARKER_BYTES + 1))
     elif damage == 'symlink_directory':
         external = tmp_path / 'external'
         external.mkdir()
@@ -413,16 +413,14 @@ def test_download_marker_rebuilds_bounded_or_unsafe_inventory(
     )
 
     assert connector.calls == 2
-    assert sorted(path.name
-                  for path in Path(destination).glob('*.parquet')) == [
-                      'part-a.parquet', 'part-b.parquet'
-                  ]
+    assert sorted(path.name for path in Path(destination).glob('*.parquet')) == [
+        'part-a.parquet',
+        'part-b.parquet',
+    ]
 
 
-def test_download_failure_preserves_previous_staged_copy(monkeypatch,
-                                                         tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_failure_preserves_previous_staged_copy(monkeypatch, tmp_path):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     Path(destination, 'part-b.parquet').unlink()
     previous_marker = Path(destination, '_DOWNLOAD_SUCCESS').read_bytes()
 
@@ -446,15 +444,16 @@ def test_download_failure_preserves_previous_staged_copy(monkeypatch,
 
 
 def test_interrupted_marker_publication_preserves_previous_staged_copy(
-        monkeypatch, tmp_path):
-    _connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+    monkeypatch, tmp_path
+):
+    _connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     Path(destination, 'part-b.parquet').unlink()
     previous_marker = Path(destination, '_DOWNLOAD_SUCCESS').read_bytes()
     monkeypatch.setattr(
         'kumo.diskgraph.service._write_download_inventory_marker',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError('marker publication interrupted')),
+            RuntimeError('marker publication interrupted')
+        ),
     )
 
     with pytest.raises(RuntimeError, match='publication interrupted'):
@@ -472,9 +471,9 @@ def test_interrupted_marker_publication_preserves_previous_staged_copy(
 
 
 def test_connector_resolution_failure_happens_before_cached_copy_deletion(
-        monkeypatch, tmp_path):
-    _connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+    monkeypatch, tmp_path
+):
+    _connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     Path(destination, 'part-b.parquet').unlink()
     previous_marker = Path(destination, '_DOWNLOAD_SUCCESS').read_bytes()
     monkeypatch.setattr(
@@ -494,8 +493,7 @@ def test_connector_resolution_failure_happens_before_cached_copy_deletion(
     assert Path(destination, '_DOWNLOAD_SUCCESS').read_bytes() == previous_marker
 
 
-def test_download_marker_replace_ack_loss_leaves_complete_marker(
-        monkeypatch, tmp_path):
+def test_download_marker_replace_ack_loss_leaves_complete_marker(monkeypatch, tmp_path):
     marker = tmp_path / '_DOWNLOAD_SUCCESS'
     original_replace = os.replace
 
@@ -509,33 +507,33 @@ def test_download_marker_replace_ack_loss_leaves_complete_marker(
     )
     with pytest.raises(RuntimeError, match='acknowledgement lost'):
         diskgraph_service._write_download_inventory_marker(
-            str(marker), {
+            str(marker),
+            {
                 'schema_version': diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA,
                 'context': {},
                 'files': [],
-            })
+            },
+        )
 
-    assert json.loads(marker.read_text())['schema_version'] == \
-        diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA
+    assert (
+        json.loads(marker.read_text())['schema_version']
+        == diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA
+    )
     assert not list(tmp_path.glob('._DOWNLOAD_SUCCESS.*.tmp'))
 
 
-def test_download_final_swap_failure_rolls_back_previous_copy(
-        monkeypatch, tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_final_swap_failure_rolls_back_previous_copy(monkeypatch, tmp_path):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     Path(destination, 'part-b.parquet').unlink()
     previous_marker = Path(destination, '_DOWNLOAD_SUCCESS').read_bytes()
     original_replace = os.replace
 
     def fail_before_final_swap(source, target):
-        if (target == destination
-                and '.source.download-' in os.path.basename(source)):
+        if target == destination and '.source.download-' in os.path.basename(source):
             raise OSError('final swap failed before publication')
         return original_replace(source, target)
 
-    monkeypatch.setattr(
-        'kumo.diskgraph.service.os.replace', fail_before_final_swap)
+    monkeypatch.setattr('kumo.diskgraph.service.os.replace', fail_before_final_swap)
     with pytest.raises(OSError, match='final swap failed'):
         _service().download_table_files(
             {str(table.get_connector_id()): object()},
@@ -552,10 +550,8 @@ def test_download_final_swap_failure_rolls_back_previous_copy(
     assert connector.calls == 2
 
 
-def test_download_final_swap_ack_loss_accepts_exact_new_copy(
-        monkeypatch, tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_final_swap_ack_loss_accepts_exact_new_copy(monkeypatch, tmp_path):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     Path(destination, 'part-b.parquet').unlink()
     original_replace = os.replace
     lost_ack = False
@@ -563,14 +559,18 @@ def test_download_final_swap_ack_loss_accepts_exact_new_copy(
     def replace_then_lose_final_ack(source, target):
         nonlocal lost_ack
         result = original_replace(source, target)
-        if (not lost_ack and target == destination
-                and '.source.download-' in os.path.basename(source)):
+        if (
+            not lost_ack
+            and target == destination
+            and '.source.download-' in os.path.basename(source)
+        ):
             lost_ack = True
             raise OSError('final swap acknowledgement lost')
         return result
 
-    monkeypatch.setattr('kumo.diskgraph.service.os.replace',
-                        replace_then_lose_final_ack)
+    monkeypatch.setattr(
+        'kumo.diskgraph.service.os.replace', replace_then_lose_final_ack
+    )
     _service().download_table_files(
         {str(table.get_connector_id()): object()},
         {'events_alias': 'v1'},
@@ -580,17 +580,15 @@ def test_download_final_swap_ack_loss_accepts_exact_new_copy(
 
     assert connector.calls == 2
     assert lost_ack
-    assert sorted(path.name
-                  for path in Path(destination).glob('*.parquet')) == [
-                      'part-a.parquet', 'part-b.parquet'
-                  ]
+    assert sorted(path.name for path in Path(destination).glob('*.parquet')) == [
+        'part-a.parquet',
+        'part-b.parquet',
+    ]
     assert not Path(f'{destination}.previous').exists()
 
 
-def test_download_recovers_crash_after_old_cache_rename(monkeypatch,
-                                                        tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_recovers_crash_after_old_cache_rename(monkeypatch, tmp_path):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     backup = f'{destination}.previous'
     os.replace(destination, backup)
 
@@ -606,10 +604,8 @@ def test_download_recovers_crash_after_old_cache_rename(monkeypatch,
     assert not Path(backup).exists()
 
 
-def test_download_recovers_crash_after_new_copy_publication(
-        monkeypatch, tmp_path):
-    connector, table, destination = _download_staged_source(
-        monkeypatch, tmp_path)
+def test_download_recovers_crash_after_new_copy_publication(monkeypatch, tmp_path):
+    connector, table, destination = _download_staged_source(monkeypatch, tmp_path)
     Path(destination, 'part-b.parquet').unlink()
     original_remove = diskgraph_service._remove_owned_download_path
     backup = f'{destination}.previous'
@@ -619,8 +615,9 @@ def test_download_recovers_crash_after_new_copy_publication(
             raise OSError('process stopped before backup cleanup')
         return original_remove(path)
 
-    monkeypatch.setattr(diskgraph_service, '_remove_owned_download_path',
-                        fail_backup_cleanup)
+    monkeypatch.setattr(
+        diskgraph_service, '_remove_owned_download_path', fail_backup_cleanup
+    )
     with pytest.raises(OSError, match='before backup cleanup'):
         _service().download_table_files(
             {str(table.get_connector_id()): object()},
@@ -631,8 +628,9 @@ def test_download_recovers_crash_after_new_copy_publication(
     assert Path(destination, 'part-b.parquet').exists()
     assert Path(backup).exists()
 
-    monkeypatch.setattr(diskgraph_service, '_remove_owned_download_path',
-                        original_remove)
+    monkeypatch.setattr(
+        diskgraph_service, '_remove_owned_download_path', original_remove
+    )
     _service().download_table_files(
         {str(table.get_connector_id()): object()},
         {'events_alias': 'v1'},
@@ -645,13 +643,18 @@ def test_download_recovers_crash_after_new_copy_publication(
 
 
 def test_download_marker_rejects_file_count_before_local_inventory(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     marker = tmp_path / '_DOWNLOAD_SUCCESS'
-    marker.write_text(json.dumps({
-        'schema_version': diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA,
-        'context': {},
-        'files': [{}, {}],
-    }))
+    marker.write_text(
+        json.dumps(
+            {
+                'schema_version': diskgraph_service._DOWNLOAD_INVENTORY_SCHEMA,
+                'context': {},
+                'files': [{}, {}],
+            }
+        )
+    )
     monkeypatch.setattr(diskgraph_service, '_MAX_DOWNLOAD_FILES', 1)
     monkeypatch.setattr(
         diskgraph_service,
@@ -665,28 +668,28 @@ def test_download_marker_rejects_file_count_before_local_inventory(
     )
 
     valid, reason = diskgraph_service._validate_download_inventory(
-        str(marker), 'alias', MagicMock(), 'v1', str(tmp_path))
+        str(marker), 'alias', MagicMock(), 'v1', str(tmp_path)
+    )
     assert not valid
     assert 'file-count' in reason
 
 
 @pytest.mark.parametrize('unsafe_output', ['zero_byte', 'symlink_directory'])
 def test_download_rejects_unsafe_connector_output_without_publication(
-        monkeypatch, tmp_path, unsafe_output):
+    monkeypatch, tmp_path, unsafe_output
+):
     connector = _DownloadConnector()
     table = _s3_table()
     connector_id = str(table.get_connector_id())
 
-    def unsafe_download(_source_name, _fingerprint, _data_version,
-                        local_dest):
+    def unsafe_download(_source_name, _fingerprint, _data_version, local_dest):
         connector.calls += 1
         if unsafe_output == 'zero_byte':
             Path(local_dest, 'empty.parquet').write_bytes(b'')
         else:
             external = tmp_path / 'external'
             external.mkdir()
-            Path(local_dest, 'linked').symlink_to(
-                external, target_is_directory=True)
+            Path(local_dest, 'linked').symlink_to(external, target_is_directory=True)
 
     monkeypatch.setattr(connector, 'download', unsafe_download)
     monkeypatch.setattr(
@@ -715,22 +718,24 @@ def test_resolve_joins_data_root_key_version():
 
 def test_dataplane_snapshot_path_keeps_non_adls_roots():
     h = DiskgraphHandle(graph_key='gk', graph_data_version='v10')
-    assert DiskgraphService.dataplane_snapshot_path(
-        h, '/dp') == ('/dp/diskgraph_snapshots/gk/v10')
-    assert DiskgraphService.dataplane_snapshot_path(
-        h,
-        's3://bucket/root') == ('s3://bucket/root/diskgraph_snapshots/gk/v10')
+    assert DiskgraphService.dataplane_snapshot_path(h, '/dp') == (
+        '/dp/diskgraph_snapshots/gk/v10'
+    )
+    assert DiskgraphService.dataplane_snapshot_path(h, 's3://bucket/root') == (
+        's3://bucket/root/diskgraph_snapshots/gk/v10'
+    )
 
 
 def test_dataplane_snapshot_path_converts_adls_for_diskgraph():
     h = DiskgraphHandle(graph_key='gk', graph_data_version='v10')
     root = 'abfss://cont@acct.dfs.core.windows.net/dev/root'
 
-    assert DiskgraphService.dataplane_snapshot_path(
-        h, root) == ('abfss://cont@acct.dfs.core.windows.net/dev/root/'
-                     'diskgraph_snapshots/gk/v10')
-    assert DiskgraphService.diskgraph_dataplane_snapshot_path(
-        h, root) == ('az://acct/cont/dev/root/diskgraph_snapshots/gk/v10')
+    assert DiskgraphService.dataplane_snapshot_path(h, root) == (
+        'abfss://cont@acct.dfs.core.windows.net/dev/root/diskgraph_snapshots/gk/v10'
+    )
+    assert DiskgraphService.diskgraph_dataplane_snapshot_path(h, root) == (
+        'az://acct/cont/dev/root/diskgraph_snapshots/gk/v10'
+    )
 
 
 def test_ingest_delegates_to_run_diskgraph_ingest(monkeypatch):
@@ -764,16 +769,15 @@ def test_ingest_delegates_to_run_diskgraph_ingest(monkeypatch):
     )
     assert captured['output_dir'] == '/tmp/dg-contract-test/gk/v10'
     assert captured['data_persist_dir'] == '/d'
-    assert captured['output_dataplane_dir'] == (
-        '/dp/diskgraph_snapshots/gk/v10')
+    assert captured['output_dataplane_dir'] == ('/dp/diskgraph_snapshots/gk/v10')
     assert captured['heartbeat'] is heartbeat
     assert result.index_path == '/i'
 
 
-@pytest.mark.parametrize('source', [_object_source(), None],
-                         ids=['direct', 'staged'])
+@pytest.mark.parametrize('source', [_object_source(), None], ids=['direct', 'staged'])
 def test_prepare_direct_sources_reuses_frozen_decision_without_connector(
-        monkeypatch, tmp_path, source):
+    monkeypatch, tmp_path, source
+):
     import rest.utils.driver_common as driver_common
 
     table = _s3_table()
@@ -782,17 +786,22 @@ def test_prepare_direct_sources_reuses_frozen_decision_without_connector(
         driver_common,
         'get_connector_from_spec',
         lambda _reference: pytest.fail(
-            'a frozen decision must not reopen the connector'),
+            'a frozen decision must not reopen the connector'
+        ),
     )
 
     sources = _prepare_s3_sources(tmp_path, table)
 
-    expected_sources = {} if source is None else {
-        'events_alias': {
-            'source': source,
-            'source_size': 123,
+    expected_sources = (
+        {}
+        if source is None
+        else {
+            'events_alias': {
+                'source': source,
+                'source_size': 123,
+            }
         }
-    }
+    )
     assert sources == expected_sources
 
 
@@ -807,18 +816,20 @@ def test_prepare_direct_sources_rejects_frozen_manifest_size_mismatch(tmp_path):
 def test_prepare_direct_sources_rejects_malformed_decision(tmp_path):
     table = _s3_table()
     _persist_source_decision(
-        tmp_path, table, {
+        tmp_path,
+        table,
+        {
             'type': 'object_store_parquet',
             'objects': 'not-a-list',
             'auth_profile': 'ambient',
-        })
+        },
+    )
 
     with pytest.raises(RuntimeError, match='malformed'):
         _prepare_s3_sources(tmp_path, table)
 
 
-def test_prepare_direct_sources_builds_object_manifest(
-        monkeypatch, tmp_path):
+def test_prepare_direct_sources_builds_object_manifest(monkeypatch, tmp_path):
     import rest.utils.driver_common as driver_common
     from kumo.connector.composite_file_connector import CompositeFileConnector
 
@@ -828,25 +839,24 @@ def test_prepare_direct_sources_builds_object_manifest(
         root_dir='abfss://events@customer.dfs.core.windows.net/root',
     )
     source = {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': ('abfss://events@customer.dfs.core.windows.net/'
-                     'root/events/part.parquet'),
-            'size':
-            123,
-            'e_tag':
-            'etag',
-            'version':
-            None,
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': (
+                    'abfss://events@customer.dfs.core.windows.net/'
+                    'root/events/part.parquet'
+                ),
+                'size': 123,
+                'e_tag': 'etag',
+                'version': None,
+            }
+        ],
+        'auth_profile': 'ambient',
     }
-    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for',
-                        lambda name: name == 'events')
-    monkeypatch.setattr(connector, 'diskgraph_source',
-                        lambda *, source_name: source)
+    monkeypatch.setattr(
+        connector, 'uses_direct_diskgraph_source_for', lambda name: name == 'events'
+    )
+    monkeypatch.setattr(connector, 'diskgraph_source', lambda *, source_name: source)
     closed = []
 
     def close():
@@ -854,8 +864,9 @@ def test_prepare_direct_sources_builds_object_manifest(
         raise RuntimeError('cleanup failure must not replace handoff')
 
     monkeypatch.setattr(connector, 'close', close)
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: connector)
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: connector
+    )
     table = TableDefinition(
         cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int)],
         source_table=ADLSSourceTable(
@@ -881,11 +892,12 @@ def test_prepare_direct_sources_builds_object_manifest(
         'events_alias': {
             'source': {
                 **source,
-                'objects': [{
-                    **source['objects'][0],
-                    'path':
-                    'az://customer/events/root/events/part.parquet',
-                }],
+                'objects': [
+                    {
+                        **source['objects'][0],
+                        'path': 'az://customer/events/root/events/part.parquet',
+                    }
+                ],
             },
             'source_size': 123,
         }
@@ -893,14 +905,14 @@ def test_prepare_direct_sources_builds_object_manifest(
     assert closed == [True]
 
 
-def test_prepare_subprocess_environment_preserves_renewable_s3_provider(
-        monkeypatch):
+def test_prepare_subprocess_environment_preserves_renewable_s3_provider(monkeypatch):
     import rest.utils.driver_common as driver_common
     from kumo.connector.composite_file_connector import CompositeFileConnector
     from service_framework import deploy_env_config
 
     monkeypatch.setattr(
-        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {})
+        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {}
+    )
     monkeypatch.setattr(
         deploy_env_config,
         'deploy_env',
@@ -908,16 +920,16 @@ def test_prepare_subprocess_environment_preserves_renewable_s3_provider(
     )
     monkeypatch.setenv('AWS_ACCESS_KEY_ID', 'competing-static-key')
     monkeypatch.setenv('AWS_PROFILE', 'competing-profile')
-    monkeypatch.setenv('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-                       '/v2/credentials/pod')
+    monkeypatch.setenv('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', '/v2/credentials/pod')
     monkeypatch.setenv('AWS_EC2_METADATA_DISABLED', 'true')
 
     connector = CompositeFileConnector(
         's3',
         root_dir='s3://customer-bucket/root',
     )
-    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for',
-                        lambda name: name == 'events')
+    monkeypatch.setattr(
+        connector, 'uses_direct_diskgraph_source_for', lambda name: name == 'events'
+    )
     monkeypatch.setattr(
         connector,
         'diskgraph_subprocess_environment',
@@ -926,8 +938,9 @@ def test_prepare_subprocess_environment_preserves_renewable_s3_provider(
             'AWS_DEFAULT_REGION': 'us-west-2',
         },
     )
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: connector)
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: connector
+    )
     table = SimpleNamespace(
         is_sql=False,
         get_connector_id=lambda: 's3',
@@ -947,7 +960,8 @@ def test_prepare_subprocess_environment_preserves_renewable_s3_provider(
     assert environment['AWS_ACCESS_KEY_ID'] is None
     assert environment['AWS_SECRET_ACCESS_KEY'] is None
     assert environment['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] == (
-        '/v2/credentials/pod')
+        '/v2/credentials/pod'
+    )
     assert environment['AWS_EC2_METADATA_DISABLED'] is None
     assert environment['AWS_CONFIG_FILE'] == os.devnull
     assert environment['AWS_SHARED_CREDENTIALS_FILE'] == os.devnull
@@ -955,14 +969,14 @@ def test_prepare_subprocess_environment_preserves_renewable_s3_provider(
     assert environment['S3_ACCESS_KEY'] is None
 
 
-def test_prepare_subprocess_environment_uses_exact_fresh_source_aliases(
-        monkeypatch):
+def test_prepare_subprocess_environment_uses_exact_fresh_source_aliases(monkeypatch):
     import rest.utils.driver_common as driver_common
     from kumo.connector.composite_file_connector import CompositeFileConnector
     from service_framework import deploy_env_config
 
     monkeypatch.setattr(
-        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {})
+        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {}
+    )
     monkeypatch.setattr(
         deploy_env_config,
         'deploy_env',
@@ -973,14 +987,16 @@ def test_prepare_subprocess_environment_uses_exact_fresh_source_aliases(
         root_dir='s3://customer-bucket/root',
     )
     eligibility = MagicMock(
-        side_effect=AssertionError('fresh sources must not be re-probed'))
+        side_effect=AssertionError('fresh sources must not be re-probed')
+    )
     monkeypatch.setattr(direct, 'uses_direct_diskgraph_source_for', eligibility)
-    environment_for = MagicMock(return_value={
-        'AWS_REGION': 'us-west-2',
-        'AWS_DEFAULT_REGION': 'us-west-2',
-    })
-    monkeypatch.setattr(direct, 'diskgraph_subprocess_environment',
-                        environment_for)
+    environment_for = MagicMock(
+        return_value={
+            'AWS_REGION': 'us-west-2',
+            'AWS_DEFAULT_REGION': 'us-west-2',
+        }
+    )
+    monkeypatch.setattr(direct, 'diskgraph_subprocess_environment', environment_for)
     get_connector = MagicMock(return_value=direct)
     monkeypatch.setattr(driver_common, 'get_connector_from_spec', get_connector)
     direct_table = SimpleNamespace(
@@ -1017,18 +1033,23 @@ def test_prepare_subprocess_environment_uses_exact_fresh_source_aliases(
     eligibility.assert_not_called()
 
 
-@pytest.mark.parametrize('source,expected_direct', [
-    (_object_source(), True),
-    (None, False),
-])
+@pytest.mark.parametrize(
+    'source,expected_direct',
+    [
+        (_object_source(), True),
+        (None, False),
+    ],
+)
 def test_prepare_subprocess_environment_reuses_frozen_retry_decision(
-        monkeypatch, tmp_path, source, expected_direct):
+    monkeypatch, tmp_path, source, expected_direct
+):
     import rest.utils.driver_common as driver_common
     from kumo.connector.composite_file_connector import CompositeFileConnector
     from service_framework import deploy_env_config
 
     monkeypatch.setattr(
-        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {})
+        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {}
+    )
     monkeypatch.setattr(
         deploy_env_config,
         'deploy_env',
@@ -1041,15 +1062,16 @@ def test_prepare_subprocess_environment_reuses_frozen_retry_decision(
         root_dir='s3://customer-bucket/root',
     )
     eligibility = MagicMock(
-        side_effect=AssertionError('frozen decisions must not be re-probed'))
-    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for',
-                        eligibility)
-    environment_for = MagicMock(return_value={
-        'AWS_REGION': 'us-west-2',
-        'AWS_DEFAULT_REGION': 'us-west-2',
-    })
-    monkeypatch.setattr(connector, 'diskgraph_subprocess_environment',
-                        environment_for)
+        side_effect=AssertionError('frozen decisions must not be re-probed')
+    )
+    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for', eligibility)
+    environment_for = MagicMock(
+        return_value={
+            'AWS_REGION': 'us-west-2',
+            'AWS_DEFAULT_REGION': 'us-west-2',
+        }
+    )
+    monkeypatch.setattr(connector, 'diskgraph_subprocess_environment', environment_for)
     get_connector = MagicMock(return_value=connector)
     monkeypatch.setattr(driver_common, 'get_connector_from_spec', get_connector)
     connector_id = str(table.get_connector_id())
@@ -1073,13 +1095,15 @@ def test_prepare_subprocess_environment_reuses_frozen_retry_decision(
 
 
 def test_direct_and_staged_s3_retry_preserves_credential_inventory_split(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     import rest.utils.driver_common as driver_common
     from kumo.connector.composite_file_connector import CompositeFileConnector
     from service_framework import deploy_env_config
 
     monkeypatch.setattr(
-        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {})
+        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {}
+    )
     monkeypatch.setattr(
         deploy_env_config,
         'deploy_env',
@@ -1090,26 +1114,28 @@ def test_direct_and_staged_s3_retry_preserves_credential_inventory_split(
     connector_id = str(direct_table.get_connector_id())
     assert connector_id == str(staged_table.get_connector_id())
     _persist_source_decision(
-        tmp_path, direct_table, _object_source(), data_version='v1')
-    _persist_source_decision(
-        tmp_path, staged_table, None, data_version='v2')
+        tmp_path, direct_table, _object_source(), data_version='v1'
+    )
+    _persist_source_decision(tmp_path, staged_table, None, data_version='v2')
 
-    connector = CompositeFileConnector(
-        's3', root_dir='s3://customer-bucket/root')
+    connector = CompositeFileConnector('s3', root_dir='s3://customer-bucket/root')
     eligibility = MagicMock(
-        side_effect=AssertionError('frozen decisions must not be re-probed'))
-    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for',
-                        eligibility)
-    environment_for = MagicMock(return_value={
-        'AWS_REGION': 'us-west-2',
-        'AWS_DEFAULT_REGION': 'us-west-2',
-    })
-    monkeypatch.setattr(connector, 'diskgraph_subprocess_environment',
-                        environment_for)
-    download = MagicMock(side_effect=lambda *_args: (
-        Path(_args[-1], 'part-a.parquet').write_bytes(b'PAR1-a'),
-        Path(_args[-1], 'part-b.parquet').write_bytes(b'PAR1-b'),
-    ))
+        side_effect=AssertionError('frozen decisions must not be re-probed')
+    )
+    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for', eligibility)
+    environment_for = MagicMock(
+        return_value={
+            'AWS_REGION': 'us-west-2',
+            'AWS_DEFAULT_REGION': 'us-west-2',
+        }
+    )
+    monkeypatch.setattr(connector, 'diskgraph_subprocess_environment', environment_for)
+    download = MagicMock(
+        side_effect=lambda *_args: (
+            Path(_args[-1], 'part-a.parquet').write_bytes(b'PAR1-a'),
+            Path(_args[-1], 'part-b.parquet').write_bytes(b'PAR1-b'),
+        )
+    )
     monkeypatch.setattr(connector, 'download', download)
     get_connector = MagicMock(return_value=connector)
     monkeypatch.setattr(driver_common, 'get_connector_from_spec', get_connector)
@@ -1143,8 +1169,7 @@ def test_direct_and_staged_s3_retry_preserves_credential_inventory_split(
     assert fresh_environment['AWS_REGION'] == 'us-west-2'
     environment_for.assert_called_once_with('direct-events')
     download.assert_called_once()
-    marker = json.loads(
-        Path(staged_root, '_DOWNLOAD_SUCCESS').read_text())
+    marker = json.loads(Path(staged_root, '_DOWNLOAD_SUCCESS').read_text())
     assert marker['context']['alias'] == 'staged'
     assert marker['context']['data_version'] == 'v2'
     assert [item['path'] for item in marker['files']] == [
@@ -1172,21 +1197,21 @@ def test_direct_and_staged_s3_retry_preserves_credential_inventory_split(
     eligibility.assert_not_called()
 
 
-def test_prepare_subprocess_environment_preserves_ambient_s3_dataplane(
-        monkeypatch):
+def test_prepare_subprocess_environment_preserves_ambient_s3_dataplane(monkeypatch):
     import rest.utils.driver_common as driver_common
     from service_framework import deploy_env_config
 
     monkeypatch.setattr(
-        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {})
+        'io_utils.fsutil.s3_connection.s3_subprocess_environment', lambda: {}
+    )
     monkeypatch.setattr(
         deploy_env_config,
         'deploy_env',
-        lambda: SimpleNamespace(
-            data_plane_storage_root='s3://example-dataplane/root'),
+        lambda: SimpleNamespace(data_plane_storage_root='s3://example-dataplane/root'),
     )
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: object())
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: object()
+    )
     table = SimpleNamespace(
         is_sql=False,
         get_connector_id=lambda: 'warehouse',
@@ -1204,8 +1229,7 @@ def test_prepare_subprocess_environment_preserves_ambient_s3_dataplane(
     assert environment == {}
 
 
-def test_prepare_subprocess_environment_uses_explicit_s3_dataplane(
-        monkeypatch):
+def test_prepare_subprocess_environment_uses_explicit_s3_dataplane(monkeypatch):
     import rest.utils.driver_common as driver_common
 
     deployment = {
@@ -1217,8 +1241,9 @@ def test_prepare_subprocess_environment_uses_explicit_s3_dataplane(
         'io_utils.fsutil.s3_connection.s3_subprocess_environment',
         lambda: deployment,
     )
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: object())
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: object()
+    )
     table = SimpleNamespace(
         is_sql=False,
         get_connector_id=lambda: 'warehouse',
@@ -1237,8 +1262,7 @@ def test_prepare_subprocess_environment_uses_explicit_s3_dataplane(
     assert environment['AWS_PROFILE'] is None
 
 
-def test_prepare_subprocess_environment_rejects_distinct_s3_connections(
-        monkeypatch):
+def test_prepare_subprocess_environment_rejects_distinct_s3_connections(monkeypatch):
     import rest.utils.driver_common as driver_common
     from kumo.connector.composite_file_connector import CompositeFileConnector
 
@@ -1250,8 +1274,9 @@ def test_prepare_subprocess_environment_rejects_distinct_s3_connections(
         's3',
         root_dir='s3://customer-bucket/root',
     )
-    monkeypatch.setattr(connector, 'uses_direct_diskgraph_source_for',
-                        lambda _name: True)
+    monkeypatch.setattr(
+        connector, 'uses_direct_diskgraph_source_for', lambda _name: True
+    )
     monkeypatch.setattr(
         connector,
         'diskgraph_subprocess_environment',
@@ -1264,8 +1289,9 @@ def test_prepare_subprocess_environment_rejects_distinct_s3_connections(
         'io_utils.fsutil.s3_connection.s3_subprocess_environment',
         lambda: deployment,
     )
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: connector)
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: connector
+    )
     table = SimpleNamespace(
         is_sql=False,
         get_connector_id=lambda: 's3',
@@ -1283,7 +1309,8 @@ def test_prepare_subprocess_environment_rejects_distinct_s3_connections(
 
 
 def test_prepare_direct_sources_leaves_a_databricks_query_to_the_reader(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """A Databricks Custom SQL graph table is staged as Kumo Parquet before
     ingest, so it contributes no direct source and no credential profile:
     the engine is handed nothing it could open a warehouse connection with."""
@@ -1293,9 +1320,12 @@ def test_prepare_direct_sources_leaves_a_databricks_query_to_the_reader(
     from rest.config.table_v2 import CustomSQLSourceTable
 
     monkeypatch.setattr(
-        driver_common, 'get_connector_from_spec',
+        driver_common,
+        'get_connector_from_spec',
         lambda _reference: pytest.fail(
-            'a staged Databricks query must not open a connector here'))
+            'a staged Databricks query must not open a connector here'
+        ),
+    )
     table = SimpleNamespace(
         cols=[SimpleNamespace(name='ID')],
         is_sql=True,
@@ -1327,16 +1357,17 @@ def test_has_resumable_ingest_requires_contiguous_encode_chain(tmp_path):
 
     service = DiskgraphService(_Config())
     handle = DiskgraphHandle(graph_key='graph', graph_data_version='v1')
-    marker_dir = (tmp_path / handle.graph_key / handle.graph_data_version /
-                  '_tmp')
+    marker_dir = tmp_path / handle.graph_key / handle.graph_data_version / '_tmp'
     marker_dir.mkdir(parents=True)
 
     assert service.has_resumable_ingest(handle) is False
     (marker_dir / '_phase_complete_encode').touch()
     assert service.has_resumable_ingest(handle) is False
     from kumo_core.diskgraph.runner import persisted_ingest_config_path
-    config_path = persisted_ingest_config_path(tmp_path / handle.graph_key /
-                                               handle.graph_data_version)
+
+    config_path = persisted_ingest_config_path(
+        tmp_path / handle.graph_key / handle.graph_data_version
+    )
     config_path.write_text('{truncated')
     assert service.has_resumable_ingest(handle) is False
     config_path.write_text(json.dumps({'tables': []}))
@@ -1371,11 +1402,11 @@ def test_persisted_ingest_config_survives_early_retry_cleanup(tmp_path):
 def _write_persisted_ingest_config(tmp_path, source):
     from kumo_core.diskgraph.runner import persisted_ingest_config_path
 
-    service = DiskgraphService(
-        SimpleNamespace(data_root=str(tmp_path / 'diskgraph')))
+    service = DiskgraphService(SimpleNamespace(data_root=str(tmp_path / 'diskgraph')))
     handle = DiskgraphHandle(graph_key='graph', graph_data_version='v1')
     config_path = persisted_ingest_config_path(
-        Path(service.local_snapshot_path(handle)))
+        Path(service.local_snapshot_path(handle))
+    )
     config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({'tables': [{'source': source}]}))
     return service, handle, config_path
@@ -1383,7 +1414,8 @@ def _write_persisted_ingest_config(tmp_path, source):
 
 @pytest.mark.parametrize('source_type', ['parquet', 'csv'])
 def test_persisted_ingest_config_requires_all_local_sources(
-        tmp_path, source_type, monkeypatch):
+    tmp_path, source_type, monkeypatch
+):
     existing = tmp_path / 'staged' / 'part-0'
     existing.parent.mkdir()
     existing.write_bytes(b'data')
@@ -1399,14 +1431,19 @@ def test_persisted_ingest_config_requires_all_local_sources(
     assert service.has_persisted_ingest_config(handle)
 
     config_path.write_text(
-        json.dumps({
-            'tables': [{
-                'source': {
-                    'type': source_type,
-                    'paths': [str(existing), str(missing)],
-                },
-            }],
-        }))
+        json.dumps(
+            {
+                'tables': [
+                    {
+                        'source': {
+                            'type': source_type,
+                            'paths': [str(existing), str(missing)],
+                        },
+                    }
+                ],
+            }
+        )
+    )
     assert not service.has_persisted_ingest_config(handle)
 
     monkeypatch.setattr(
@@ -1430,13 +1467,15 @@ def test_persisted_ingest_config_requires_all_local_sources(
     ],
 )
 def test_persisted_ingest_config_leaves_remote_validation_to_diskgraph(
-        tmp_path, source, monkeypatch):
+    tmp_path, source, monkeypatch
+):
     service, handle, _ = _write_persisted_ingest_config(tmp_path, source)
     monkeypatch.setattr(
         Path,
         'exists',
         lambda _path: (_ for _ in ()).throw(
-            AssertionError('remote sources must not be filesystem-probed')),
+            AssertionError('remote sources must not be filesystem-probed')
+        ),
     )
 
     assert service.has_persisted_ingest_config(handle)
@@ -1552,6 +1591,10 @@ def test_cleanup_staging_removes_per_job_dirs(tmp_path):
 
 
 def test_result_dataclasses_constructible():
-    IngestResult(index_path='/i', col_stats_path='/c', ingest_stats_path='/s',
-                 kumo_stats_dir='/k')
+    IngestResult(
+        index_path='/i',
+        col_stats_path='/c',
+        ingest_stats_path='/s',
+        kumo_stats_dir='/k',
+    )
     TrainTableResult(output_path='/o', manifest_path='/m')

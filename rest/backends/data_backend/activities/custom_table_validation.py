@@ -40,18 +40,19 @@ async def validate_custom_train_table_activity(
     source_table, source_table_name, _ = extract_source_table_type(custom_table)
     source_type = getattr(source_table, 'data_source_type', None)
     source_type = getattr(source_type, 'value', source_type)
-    is_custom_sql = (isinstance(source_table,
-                                source_table_api.CustomSQLSourceTable)
-                     or (isinstance(source_type, str)
-                         and source_type.casefold() == 'custom_sql'))
+    is_custom_sql = isinstance(source_table, source_table_api.CustomSQLSourceTable) or (
+        isinstance(source_type, str) and source_type.casefold() == 'custom_sql'
+    )
     connector = await get_connector_from_spec_async(
-        reference, resolved_factory=get_connector_from_spec)
+        reference, resolved_factory=get_connector_from_spec
+    )
     async with async_connector_lifecycle(connector):
         try:
             assert source_table_name is not None
             connector_type_name = connector._get_connector_type()
-            connector_type_name = getattr(connector_type_name, 'value',
-                                          connector_type_name)
+            connector_type_name = getattr(
+                connector_type_name, 'value', connector_type_name
+            )
             connector_type_name = str(connector_type_name).casefold()
             if is_custom_sql:
                 from kumo_core.types import ConnectorType
@@ -67,10 +68,12 @@ async def validate_custom_train_table_activity(
                 if connector_type != ConnectorType.DATABRICKS:
                     raise ValueError(
                         'Custom SQL training sources are currently supported '
-                        'only for Databricks connectors.')
+                        'only for Databricks connectors.'
+                    )
                 advisory_read_only_check(source_table.sql, connector_type)
-                validate_connector_sql_scope(source_table.sql, connector_type,
-                                             connector)
+                validate_connector_sql_scope(
+                    source_table.sql, connector_type, connector
+                )
                 sql = subquery_safe_sql(source_table.sql, connector_type)
                 table_metadata = await sync_to_async(
                     connector.get_query_metadata,
@@ -78,49 +81,67 @@ async def validate_custom_train_table_activity(
                 )(sql)
             else:
                 table_metadata = await _get_source_table_metadata.coroutine(
-                    source_table_name, connector)
-        except ConnectorError as error:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title=('Warehouse query failed' if is_custom_sql else
-                           'Source table validation failed'),
-                    message=(
-                        sql_query_error_message(error) if is_custom_sql else
-                        'The warehouse could not validate this source table. '
-                        'Verify that it exists and that the connector can '
-                        'read it.'),
+                    source_table_name, connector
                 )
-            ])
+        except ConnectorError as error:
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title=(
+                            'Warehouse query failed'
+                            if is_custom_sql
+                            else 'Source table validation failed'
+                        ),
+                        message=(
+                            sql_query_error_message(error)
+                            if is_custom_sql
+                            else 'The warehouse could not validate this source table. '
+                            'Verify that it exists and that the connector can '
+                            'read it.'
+                        ),
+                    )
+                ]
+            )
         except (AssertionError, ValueError, PublicException) as error:
             public_error = ValidationException(message=str(error))
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title=('Invalid custom SQL'
-                           if is_custom_sql else 'Source table not found'),
-                    message=str(public_error),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title=(
+                            'Invalid custom SQL'
+                            if is_custom_sql
+                            else 'Source table not found'
+                        ),
+                        message=str(public_error),
+                    )
+                ]
+            )
 
-        columns_by_name = {
-            column.name: column
-            for column in table_metadata.cols
-        }
+        columns_by_name = {column.name: column for column in table_metadata.cols}
         if weight_col is not None and weight_col not in columns_by_name:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title='Weight column not found',
-                    message=(f"Weight column '{weight_col}' not found in "
-                             f"source table '{source_table_name}'."),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Weight column not found',
+                        message=(
+                            f"Weight column '{weight_col}' not found in "
+                            f"source table '{source_table_name}'."
+                        ),
+                    )
+                ]
+            )
         if split_col is not None and split_col not in columns_by_name:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title='Split column not found',
-                    message=(f"Split column '{split_col}' not found in "
-                             f"source table '{source_table_name}'."),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Split column not found',
+                        message=(
+                            f"Split column '{split_col}' not found in "
+                            f"source table '{source_table_name}'."
+                        ),
+                    )
+                ]
+            )
 
         # Names only, and the same rule on every vendor. What the columns
         # have to be *typed* as is checked on the parquet that arrives, by
@@ -142,18 +163,20 @@ async def validate_custom_train_table_activity(
         response = ValidationResponse()
         if extensive_validation:
             if CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.parse_value():
-                log.warning(
-                    'Skipping custom training table row-count validation')
+                log.warning('Skipping custom training table row-count validation')
             else:
                 from async_utils.sync import sync_to_async
+
                 reference_rows = await sync_to_async(
                     custom_train_table.exported_reference_rows,
                     executor=None,
                 )(orig_train_table_path, split_col, column_names)
-                response.merge(await validate_weight_table_num_rows(
-                    connector,
-                    source_table,
-                    train_table_path=orig_train_table_path,
-                    train_table_num_rows=reference_rows,
-                ))
+                response.merge(
+                    await validate_weight_table_num_rows(
+                        connector,
+                        source_table,
+                        train_table_path=orig_train_table_path,
+                        train_table_num_rows=reference_rows,
+                    )
+                )
         return response

@@ -27,20 +27,24 @@ class TestGenerateTrainTableViaDiskgraph:
 
     def test_writes_parquet_with_arange(self, tmp_path):
         """Verify that batches are written with a contiguous arange column."""
-        output_path = str(tmp_path / "output" / "train_table.parquet")
+        output_path = str(tmp_path / 'output' / 'train_table.parquet')
 
         # Simulate what generate_train_table_via_diskgraph does:
         # 1. Gets an iterator of RecordBatches from execute_tt_plan
         # 2. Appends arange column to each batch
         # 3. Writes to single parquet file
-        batch1 = pa.record_batch({
-            "ENTITY": pa.array([100, 200, 300], type=pa.int64()),
-            "TARGET": pa.array([1.0, 2.0, 3.0], type=pa.float64()),
-        })
-        batch2 = pa.record_batch({
-            "ENTITY": pa.array([400, 500], type=pa.int64()),
-            "TARGET": pa.array([4.0, 5.0], type=pa.float64()),
-        })
+        batch1 = pa.record_batch(
+            {
+                'ENTITY': pa.array([100, 200, 300], type=pa.int64()),
+                'TARGET': pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+            }
+        )
+        batch2 = pa.record_batch(
+            {
+                'ENTITY': pa.array([400, 500], type=pa.int64()),
+                'TARGET': pa.array([4.0, 5.0], type=pa.float64()),
+            }
+        )
         mock_batches = [batch1, batch2]
 
         os.makedirs(osp.dirname(output_path), exist_ok=True)
@@ -53,12 +57,13 @@ class TestGenerateTrainTableViaDiskgraph:
                     range(global_row_offset, global_row_offset + num_rows),
                     type=pa.int64(),
                 )
-                batch_with_idx = raw_batch.append_column("arange", arange_array)
+                batch_with_idx = raw_batch.append_column('arange', arange_array)
                 global_row_offset += num_rows
 
                 if writer is None:
                     writer = pq.ParquetWriter(
-                        output_path, batch_with_idx.schema, compression='snappy')
+                        output_path, batch_with_idx.schema, compression='snappy'
+                    )
                 writer.write_batch(batch_with_idx)
         finally:
             if writer is not None:
@@ -67,32 +72,32 @@ class TestGenerateTrainTableViaDiskgraph:
         # Verify output
         table = pq.read_table(output_path)
         assert len(table) == 5
-        assert "arange" in table.column_names
-        assert "ENTITY" in table.column_names
-        assert "TARGET" in table.column_names
+        assert 'arange' in table.column_names
+        assert 'ENTITY' in table.column_names
+        assert 'TARGET' in table.column_names
 
-        arange_vals = table.column("arange").to_pylist()
+        arange_vals = table.column('arange').to_pylist()
         assert arange_vals == [0, 1, 2, 3, 4]  # Contiguous 0..N-1
 
     def test_returns_manifest_from_native_artifact_execution(self, tmp_path):
         """Verify strict path returns output and manifest paths from native call."""
 
         class _FakeCompiler:
-
             def __init__(self, *, index_path):
                 pass
 
             def compile(self, **kwargs):
-                return "{\"fake\": true}"
+                return '{"fake": true}'
 
         class _FakeSplitSpec:
-
             def __init__(self, **kwargs):
                 self.kind = kwargs.get('kind')
 
         def _fake_execute_tt_plan_with_artifacts(**kwargs):
             return {
-                'manifest_path': str(tmp_path / 'out' / 'train_table.parquet.manifest.json'),
+                'manifest_path': str(
+                    tmp_path / 'out' / 'train_table.parquet.manifest.json'
+                ),
                 'row_count': 2,
                 'split_meta': {'family': 'RandomSplit', 'authoritative': True},
                 'split_counts': {'train': 1, 'val': 1, 'test': 0},
@@ -111,12 +116,12 @@ class TestGenerateTrainTableViaDiskgraph:
             execute_tt_plan_with_artifacts=_fake_execute_tt_plan_with_artifacts,
         )
 
-        original = sys.modules.get("diskgraph")
-        sys.modules["diskgraph"] = fake_diskgraph_mod
+        original = sys.modules.get('diskgraph')
+        sys.modules['diskgraph'] = fake_diskgraph_mod
         try:
-            index_path = tmp_path / "idx"
+            index_path = tmp_path / 'idx'
             index_path.mkdir()
-            output_path = str(tmp_path / "out" / "train_table.parquet")
+            output_path = str(tmp_path / 'out' / 'train_table.parquet')
 
             out_path, manifest_path = generate_train_table_via_diskgraph(
                 query=object(),
@@ -129,7 +134,10 @@ class TestGenerateTrainTableViaDiskgraph:
                 entity_time_col=None,
                 index_path=str(index_path),
                 output_path=output_path,
-                split_config={'_target_': 'kumo.task.split.RandomSplit', 'ratio': [0.8, 0.2]},
+                split_config={
+                    '_target_': 'kumo.task.split.RandomSplit',
+                    'ratio': [0.8, 0.2],
+                },
                 split_family='RandomSplit',
                 downsampling={'enabled': False, 'max_rows': 100},
                 input_timestamp_unit=_FakeTimeUnit.Nanoseconds,
@@ -140,9 +148,9 @@ class TestGenerateTrainTableViaDiskgraph:
             assert manifest_path.endswith('.manifest.json')
         finally:
             if original is None:
-                sys.modules.pop("diskgraph", None)
+                sys.modules.pop('diskgraph', None)
             else:
-                sys.modules["diskgraph"] = original
+                sys.modules['diskgraph'] = original
 
     def test_empty_iterator_raises(self):
         """Verify that zero rows raises an error."""

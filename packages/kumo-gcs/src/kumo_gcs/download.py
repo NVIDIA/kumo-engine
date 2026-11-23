@@ -41,15 +41,16 @@ def _configured_gcs_download_max_concurrency() -> int:
     if value < 1:
         logger.warning(
             '%s must be a positive integer; got %r, using default %d',
-            _GCS_DOWNLOAD_MAX_CONCURRENCY_ENV, raw_value,
-            _GCS_DOWNLOAD_MAX_CONCURRENCY_DEFAULT)
+            _GCS_DOWNLOAD_MAX_CONCURRENCY_ENV,
+            raw_value,
+            _GCS_DOWNLOAD_MAX_CONCURRENCY_DEFAULT,
+        )
         return _GCS_DOWNLOAD_MAX_CONCURRENCY_DEFAULT
     return value
 
 
 _gcs_download_max_concurrency = _configured_gcs_download_max_concurrency()
-_gcs_download_semaphore = threading.BoundedSemaphore(
-    _gcs_download_max_concurrency)
+_gcs_download_semaphore = threading.BoundedSemaphore(_gcs_download_max_concurrency)
 
 #: ``google-cloud-storage`` streams a single-shot download through Python in
 #: ``_SINGLE_GET_CHUNK_SIZE``-byte pieces, and ships that constant at 8 KiB.
@@ -91,7 +92,10 @@ def gcs_io_threads() -> int:
             return min(value, _GCS_IO_THREADS_MAX)
         logger.warning(
             '%s must be a positive integer; got %r, deriving from '
-            'the CPU budget instead', _GCS_IO_THREADS_ENV, raw)
+            'the CPU budget instead',
+            _GCS_IO_THREADS_ENV,
+            raw,
+        )
     derived = _GCS_IO_THREADS_PER_CPU * cpu_budget()
     # Pods without a CPU limit can see the whole node's CPU count.
     return max(_GCS_IO_THREADS_MIN, min(_GCS_IO_THREADS_DEFAULT_MAX, derived))
@@ -108,24 +112,25 @@ _gcs_io_pool_lock = threading.Lock()
 
 class _ScopedDownloadFilesystem:
     """Share one token snapshot per scope; renew between file downloads."""
+
     def __init__(self, credential: Credentials):
         self.credential = credential
         self.lock = threading.Lock()
         # Arrow's stubs omit these public filesystem re-exports.
         self.filesystem: pafs.GcsFileSystem | None = None  # pyright: ignore[reportPrivateImportUsage]
-        self.refresh_at = datetime.datetime.min.replace(
-            tzinfo=datetime.timezone.utc)
+        self.refresh_at = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
 
-    def get(
-        self
-    ) -> pafs.GcsFileSystem:  # pyright: ignore[reportPrivateImportUsage]
+    def get(self) -> pafs.GcsFileSystem:  # pyright: ignore[reportPrivateImportUsage]
         with self.lock:
             now = datetime.datetime.now(datetime.timezone.utc)
             if self.filesystem is not None and now < self.refresh_at:
                 return self.filesystem
             expiry = self.credential.expiry
-            if (not self.credential.token or expiry is None
-                    or _utc_expiry(expiry) <= now + _GCS_TOKEN_REFRESH_MARGIN):
+            if (
+                not self.credential.token
+                or expiry is None
+                or _utc_expiry(expiry) <= now + _GCS_TOKEN_REFRESH_MARGIN
+            ):
                 self.credential.refresh(requests.Request())
             # Metadata requests also use this credential. Read expiry first
             # so a concurrent token renewal cannot extend an old token's TTL.
@@ -136,11 +141,12 @@ class _ScopedDownloadFilesystem:
                 raise ValueError('GCS credential has no token or expiry')
             expiry = _utc_expiry(expiry)
             if expiry <= now:
-                raise ValueError(
-                    'GCS credential refresh returned an expired token')
+                raise ValueError('GCS credential refresh returned an expired token')
             filesystem = pafs.GcsFileSystem(  # pyright: ignore[reportPrivateImportUsage]
-                access_token=token, credential_token_expiration=expiry,
-                retry_time_limit=datetime.timedelta(seconds=_GCS_RETRY_SECONDS))
+                access_token=token,
+                credential_token_expiration=expiry,
+                retry_time_limit=datetime.timedelta(seconds=_GCS_RETRY_SECONDS),
+            )
             margin = _GCS_TOKEN_REFRESH_MARGIN
             # Providers issuing tokens shorter than the margin must not
             # trigger another refresh on every file.
@@ -158,20 +164,29 @@ def _utc_expiry(expiry: datetime.datetime) -> datetime.datetime:
 
 
 class GCSDownloader:
-    def __init__(self, credentials: Credentials | None = None,
-                 project: str | None = None,
-                 requester_pays_project: str | None = None):
-        self.credentials = (cast(
-            Credentials,
-            with_scopes_if_required(credentials, scopes=storage.Client.SCOPE))
-                            if credentials is not None else None)
+    def __init__(
+        self,
+        credentials: Credentials | None = None,
+        project: str | None = None,
+        requester_pays_project: str | None = None,
+    ):
+        self.credentials = (
+            cast(
+                Credentials,
+                with_scopes_if_required(credentials, scopes=storage.Client.SCOPE),
+            )
+            if credentials is not None
+            else None
+        )
         self.project = project
         self.requester_pays_project = requester_pays_project
         self._clients = threading.local()
-        self._scoped = (_ScopedDownloadFilesystem(self.credentials)
-                        if self.credentials is not None and
-                        not isinstance(self.credentials, AnonymousCredentials)
-                        else None)
+        self._scoped = (
+            _ScopedDownloadFilesystem(self.credentials)
+            if self.credentials is not None
+            and not isinstance(self.credentials, AnonymousCredentials)
+            else None
+        )
         self._filesystem_lock = threading.Lock()
         self._ambient_filesystem = None
         self._ambient_expires = 0.0
@@ -179,25 +194,27 @@ class GCSDownloader:
     def _blob(self, bucket: str, key: str):
         if not hasattr(self._clients, 'client'):
             project = self.project
-            if project is None and isinstance(self.credentials,
-                                              AnonymousCredentials):
+            if project is None and isinstance(self.credentials, AnonymousCredentials):
                 project = ''
-            self._clients.client = storage.Client(project=project,
-                                                  credentials=self.credentials)
+            self._clients.client = storage.Client(
+                project=project, credentials=self.credentials
+            )
         return self._clients.client.bucket(
-            bucket, user_project=self.requester_pays_project).blob(key)
+            bucket, user_project=self.requester_pays_project
+        ).blob(key)
 
     def filesystem(self):
         if self._scoped is not None:
             return self._scoped.get()
         with self._filesystem_lock:
-            if (self._ambient_filesystem is None
-                    or time.monotonic() >= self._ambient_expires):
+            if (
+                self._ambient_filesystem is None
+                or time.monotonic() >= self._ambient_expires
+            ):
                 self._ambient_filesystem = pafs.GcsFileSystem(  # pyright: ignore[reportPrivateImportUsage]
-                    anonymous=isinstance(self.credentials,
-                                         AnonymousCredentials),
-                    retry_time_limit=datetime.timedelta(
-                        seconds=_GCS_RETRY_SECONDS))
+                    anonymous=isinstance(self.credentials, AnonymousCredentials),
+                    retry_time_limit=datetime.timedelta(seconds=_GCS_RETRY_SECONDS),
+                )
                 self._ambient_expires = time.monotonic() + 600
             return self._ambient_filesystem
 
@@ -205,7 +222,8 @@ class GCSDownloader:
         return bool(
             os.environ.get('STORAGE_EMULATOR_HOST')
             or self.requester_pays_project
-            or getattr(self.credentials, 'quota_project_id', None))
+            or getattr(self.credentials, 'quota_project_id', None)
+        )
 
     def object_identity(self, bucket: str, key: str) -> tuple[str, ...]:
         """Fetch current metadata, never the generation pinned by an old Blob."""
@@ -233,9 +251,12 @@ class GCSDownloader:
         local = pafs.LocalFileSystem(  # pyright: ignore[reportPrivateImportUsage]
         )
         try:
-            pafs.copy_files(f'{bucket}/{key}', target,
-                            source_filesystem=source_fs,
-                            destination_filesystem=local)
+            pafs.copy_files(
+                f'{bucket}/{key}',
+                target,
+                source_filesystem=source_fs,
+                destination_filesystem=local,
+            )
         except (FileNotFoundError, PermissionError):
             raise
         except pa.ArrowCapacityError as error:
@@ -250,7 +271,8 @@ class GCSDownloader:
     def download(self, bucket: str, key: str, target: str) -> int | None:
         temporary = os.path.join(
             os.path.dirname(target),
-            f'.{os.path.basename(target)}.gcsdl-{uuid.uuid4().hex}')
+            f'.{os.path.basename(target)}.gcsdl-{uuid.uuid4().hex}',
+        )
         try:
             blob = self._blob(bucket, key)
             blob.reload()
@@ -264,7 +286,9 @@ class GCSDownloader:
                     if waited >= 0.1:
                         logger.debug(
                             'GCS download permit acquired after %.3fs (limit=%d)',
-                            waited, _gcs_download_max_concurrency)
+                            waited,
+                            _gcs_download_max_concurrency,
+                        )
                     with open(temporary, 'wb') as output:
                         blob.download_to_file(output)
             else:
@@ -276,12 +300,14 @@ class GCSDownloader:
                     raise IOError(
                         f'File gs://{bucket}/{key} was replaced while it was '
                         f'being copied: generation {expected_generation} '
-                        f'became {current_generation}.')
+                        f'became {current_generation}.'
+                    )
             actual_size = os.path.getsize(temporary)
             if not is_gzip_encoded and expected_size != actual_size:
                 raise IOError(
                     f'File gs://{bucket}/{key} might be incomplete! Expected '
-                    f'{expected_size} bytes, but got {actual_size} bytes.')
+                    f'{expected_size} bytes, but got {actual_size} bytes.'
+                )
             os.replace(temporary, target)
             return actual_size if is_gzip_encoded else None
         except gcs_exceptions.NotFound:

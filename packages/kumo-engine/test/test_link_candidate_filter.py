@@ -14,8 +14,10 @@ from kumo.engine._scratch import get_scratch_dir
 
 START = pd.Timestamp('2024-01-01')
 ANCHOR = START + pd.Timedelta(days=50)
-QUERY = ('PREDICT LIST_DISTINCT(purchases.PRODUCT_ID{}, 0, 7, days) '
-         'RANK TOP 12 FOR EACH customers.CUSTOMER_ID')
+QUERY = (
+    'PREDICT LIST_DISTINCT(purchases.PRODUCT_ID{}, 0, 7, days) '
+    'RANK TOP 12 FOR EACH customers.CUSTOMER_ID'
+)
 AVAILABLE = ' WHERE products.IS_AVAILABLE = true'
 # Even products are available. Odd products 1-29 end on day 40, product 0
 # at the anchor and 2 a second later; product 4 has no create time;
@@ -46,43 +48,51 @@ def graph(tmp_path_factory):
     ended[[0, 2]] = ANCHOR + pd.to_timedelta([0, 1], unit='s')
     customers = pd.DataFrame({'CUSTOMER_ID': range(50)})
     customers.to_parquet(data / 'customers.parquet')
-    pd.DataFrame({
-        'PRODUCT_ID': range(60),
-        'IS_AVAILABLE': np.arange(60) % 2 == 0,
-        'RATING': np.arange(60) / 10,
-        'CREATED': created,
-        'ENDED': ended,
-    }).to_parquet(data / 'products.parquet')
+    pd.DataFrame(
+        {
+            'PRODUCT_ID': range(60),
+            'IS_AVAILABLE': np.arange(60) % 2 == 0,
+            'RATING': np.arange(60) / 10,
+            'CREATED': created,
+            'ENDED': ended,
+        }
+    ).to_parquet(data / 'products.parquet')
     days = pd.to_timedelta(rng.integers(0, 60, 4000), unit='D')
-    pd.DataFrame({
-        'PURCHASE_ID': range(4000),
-        'CUSTOMER_ID': rng.integers(0, 50, 4000),
-        'PRODUCT_ID': rng.integers(0, 60, 4000),
-        'AMOUNT': rng.uniform(0, 10, 4000),
-        'TS': START + days,
-    }).to_parquet(data / 'purchases.parquet')
+    pd.DataFrame(
+        {
+            'PURCHASE_ID': range(4000),
+            'CUSTOMER_ID': rng.integers(0, 50, 4000),
+            'PRODUCT_ID': rng.integers(0, 60, 4000),
+            'AMOUNT': rng.uniform(0, 10, 4000),
+            'TS': START + days,
+        }
+    ).to_parquet(data / 'purchases.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
 
     def table(name, key, **kwargs):
-        return kumo.Table.from_source_table(connector[f'{name}.parquet'],
-                                            primary_key=key,
-                                            **kwargs).infer_metadata()
+        return kumo.Table.from_source_table(
+            connector[f'{name}.parquet'], primary_key=key, **kwargs
+        ).infer_metadata()
 
-    purchases = table('purchases', 'PURCHASE_ID', time_column='TS').with_column(
-        'CUSTOMER_ID', stype=Stype.ID).with_column('PRODUCT_ID', stype=Stype.ID)
-    products = table('products', 'PRODUCT_ID', time_column='CREATED',
-                     end_time_column='ENDED')
+    purchases = (
+        table('purchases', 'PURCHASE_ID', time_column='TS')
+        .with_column('CUSTOMER_ID', stype=Stype.ID)
+        .with_column('PRODUCT_ID', stype=Stype.ID)
+    )
+    products = table(
+        'products', 'PRODUCT_ID', time_column='CREATED', end_time_column='ENDED'
+    )
     yield kumo.Graph(
         tables={
             'customers': table('customers', 'CUSTOMER_ID'),
             'products': products,
             'purchases': purchases,
-        }, edges=[
-            Edge(src_table='purchases', fkey='CUSTOMER_ID',
-                 dst_table='customers'),
-            Edge(src_table='purchases', fkey='PRODUCT_ID',
-                 dst_table='products'),
-        ])
+        },
+        edges=[
+            Edge(src_table='purchases', fkey='CUSTOMER_ID', dst_table='customers'),
+            Edge(src_table='purchases', fkey='PRODUCT_ID', dst_table='products'),
+        ],
+    )
     kumo.configure(scratch_dir=previous)
 
 
@@ -99,33 +109,36 @@ def predict(graph):
             plan.optimization.max_steps_per_epoch = 2
             plan.model_architecture.module = module
             trainer = kumo.Trainer(model_plan=plan)
-            query = kumo.PredictiveQuery(graph=graph,
-                                         query=QUERY.format(trained))
-            trainer.fit(query.generate_training_table(snapshot),
-                        snapshot=snapshot)
+            query = kumo.PredictiveQuery(graph=graph, query=QUERY.format(trained))
+            trainer.fit(query.generate_training_table(snapshot), snapshot=snapshot)
             trainers[module, trained] = trainer
         query = kumo.PredictiveQuery(graph=graph, query=QUERY.format(predicted))
         table = query.generate_prediction_table(snapshot, prediction_time=at)
         trainer = trainers[module, trained]
-        return trainer.predict(table, snapshot=snapshot,
-                               num_classes_to_return=count, **options).frame
+        return trainer.predict(
+            table, snapshot=snapshot, num_classes_to_return=count, **options
+        ).frame
 
     return predict
 
 
-@pytest.mark.parametrize('module, trained, predicted, expected', [
-    ('context', '', AVAILABLE, VALID_AVAILABLE),
-    ('context', AVAILABLE, AVAILABLE, VALID_AVAILABLE),
-    ('two_tower', '', AVAILABLE, VALID_AVAILABLE),
-    ('context', '', AVAILABLE + ' AND products.RATING > 3', RATED),
-    ('context', AVAILABLE, '', VALID),
-    ('context', '', ' WHERE purchases.AMOUNT > 5', 'without a target filter'),
-    ('context', '', ' WHERE products.RATING > 100', 'No row of table'),
-    ('context', '', ' WHERE products.RATING = 5.8', 'valid at the prediction'),
-    ('pairwise', '', AVAILABLE, 'pairwise model'),
-])
-def test_prediction_ranks_valid_passing_candidates(predict, module, trained,
-                                                   predicted, expected):
+@pytest.mark.parametrize(
+    'module, trained, predicted, expected',
+    [
+        ('context', '', AVAILABLE, VALID_AVAILABLE),
+        ('context', AVAILABLE, AVAILABLE, VALID_AVAILABLE),
+        ('two_tower', '', AVAILABLE, VALID_AVAILABLE),
+        ('context', '', AVAILABLE + ' AND products.RATING > 3', RATED),
+        ('context', AVAILABLE, '', VALID),
+        ('context', '', ' WHERE purchases.AMOUNT > 5', 'without a target filter'),
+        ('context', '', ' WHERE products.RATING > 100', 'No row of table'),
+        ('context', '', ' WHERE products.RATING = 5.8', 'valid at the prediction'),
+        ('pairwise', '', AVAILABLE, 'pairwise model'),
+    ],
+)
+def test_prediction_ranks_valid_passing_candidates(
+    predict, module, trained, predicted, expected
+):
     if isinstance(expected, str):
         with pytest.raises(ValueError, match=expected):
             predict(module, trained, predicted, 12)
@@ -133,15 +146,12 @@ def test_prediction_ranks_valid_passing_candidates(predict, module, trained,
     for count in (12, 60):
         frame = predict(module, trained, predicted, count)
         assert set(frame['CLASS'].astype(int)) <= expected
-        assert (frame.groupby('ENTITY').size() == min(count,
-                                                      len(expected))).all()
+        assert (frame.groupby('ENTITY').size() == min(count, len(expected))).all()
     assert set(frame['CLASS'].astype(int)) == expected
 
 
-def test_pairwise_rejects_its_trained_filter_before_materializing(
-        predict, monkeypatch):
-    monkeypatch.setattr('kumo.engine.trainer.trainer._materialize_prediction',
-                        None)
+def test_pairwise_rejects_its_trained_filter_before_materializing(predict, monkeypatch):
+    monkeypatch.setattr('kumo.engine.trainer.trainer._materialize_prediction', None)
 
     with pytest.raises(ValueError, match='pairwise model'):
         predict('pairwise', AVAILABLE, AVAILABLE, 12)
@@ -156,9 +166,11 @@ def test_unfiltered_pairwise_prediction_ignores_the_time_rule(predict):
 def test_unfiltered_embeddings_ignore_the_time_rule(predict, tmp_path):
     output = kumo.PredictionOutputConfig(
         connector=kumo.FileConnector(root_dir=str(tmp_path)),
-        output_paths={'embeddings': 'embeddings'})
+        output_paths={'embeddings': 'embeddings'},
+    )
 
-    frame = predict('context', '', '', 12, at=START + pd.Timedelta(days=200),
-                    output_config=output)
+    frame = predict(
+        'context', '', '', 12, at=START + pd.Timedelta(days=200), output_config=output
+    )
 
     assert len(frame) == 50

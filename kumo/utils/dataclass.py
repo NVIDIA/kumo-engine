@@ -19,9 +19,7 @@ from io_utils.json import from_json, from_json_dict
 
 def _field_signature(cls: Any) -> inspect.Signature:
     """Rebuild an ``__init__``-style signature from a dataclass's real fields."""
-    params = [
-        inspect.Parameter('self', inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
+    params = [inspect.Parameter('self', inspect.Parameter.POSITIONAL_OR_KEYWORD)]
     for f in dataclasses.fields(cls):
         if f.default is not dataclasses.MISSING:
             default: Any = f.default
@@ -30,9 +28,13 @@ def _field_signature(cls: Any) -> inspect.Signature:
         else:
             default = inspect.Parameter.empty
         params.append(
-            inspect.Parameter(f.name,
-                              inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                              default=default, annotation=f.type))
+            inspect.Parameter(
+                f.name,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=default,
+                annotation=f.type,
+            )
+        )
     return inspect.Signature(params)
 
 
@@ -70,8 +72,9 @@ def _real_dataclass_init_signature(cls: Any) -> Iterator[None]:
 
 # patch to_dataclass to convert returned Python dataclasses to Pydantic
 # dataclasses by default
-def to_dataclass(cls: Any, *args,
-                 **kwargs) -> 'pydantic.dataclasses.DataclassClassOrWrapper':
+def to_dataclass(
+    cls: Any, *args, **kwargs
+) -> 'pydantic.dataclasses.DataclassClassOrWrapper':
     with _real_dataclass_init_signature(cls):
         return kumo_dataclass(to_default_dataclass(cls, *args, **kwargs))
 
@@ -79,8 +82,9 @@ def to_dataclass(cls: Any, *args,
 ResponseType = TypeVar('ResponseType')
 
 
-def parse_dataclass(response_type: type[ResponseType],
-                    response: Response | HTTPXResponse) -> ResponseType:
+def parse_dataclass(
+    response_type: type[ResponseType], response: Response | HTTPXResponse
+) -> ResponseType:
     """Parse the HTTP response body into a Pydantic data structure.
 
     Args:
@@ -94,20 +98,17 @@ def parse_dataclass(response_type: type[ResponseType],
         ResponseType: the parsed response
     """
     # Case 0: no parsing needed
-    if response_type == str:
+    if response_type is str:
         return response.text  # type: ignore
-    if response_type == bool:
+    if response_type is bool:
         return response.text.lower() == 'true'  # type: ignore
 
-    if response_type == dict:
+    if response_type is dict:
         k_type, v_type = get_args(response_type)
         assert issubclass(k_type, str)
         data = response.json()
         assert isinstance(data, dict)
-        return {
-            k: from_json_dict(v, v_type)
-            for k, v in data.items()
-        }  # type: ignore
+        return {k: from_json_dict(v, v_type) for k, v in data.items()}  # type: ignore
 
     # Case 1: response is a list of pydantic data classes
     if get_origin(response_type) is list:
@@ -124,8 +125,8 @@ _DataclassType = TypeVar('_DataclassType')
 
 
 def _parse_dataclass_list(
-        data_class: type[_DataclassType],
-        response: Response | HTTPXResponse) -> list[_DataclassType]:
+    data_class: type[_DataclassType], response: Response | HTTPXResponse
+) -> list[_DataclassType]:
     json_response = response.json()
     assert isinstance(json_response, list)
 

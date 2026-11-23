@@ -18,11 +18,11 @@ class APIKeyType(str, Enum):
     never confers admin authority, regardless of its owner's role.
     """
 
-    ADMIN = "admin"
-    USER = "user"
+    ADMIN = 'admin'
+    USER = 'user'
 
 
-_REDACTED = "<redacted>"
+_REDACTED = '<redacted>'
 
 
 def _redacted_dataclass_dict(
@@ -30,11 +30,11 @@ def _redacted_dataclass_dict(
     redacted_fields: set[str],
 ) -> dict[str, Any]:
     if not is_dataclass(value):
-        raise TypeError(f"Expected dataclass instance, got {type(value)!r}")
+        raise TypeError(f'Expected dataclass instance, got {type(value)!r}')
     return {
-        field.name:
-        _REDACTED if field.name in redacted_fields else getattr(
-            value, field.name)
+        field.name: _REDACTED
+        if field.name in redacted_fields
+        else getattr(value, field.name)
         for field in fields(value)
     }
 
@@ -43,10 +43,13 @@ def _redacted_dataclass_repr(
     value: object,
     redacted_fields: set[str],
 ) -> str:
-    fields_repr = ", ".join(f"{name}={field_value!r}"
-                            for name, field_value in _redacted_dataclass_dict(
-                                value, redacted_fields).items())
-    return f"{type(value).__name__}({fields_repr})"
+    fields_repr = ', '.join(
+        f'{name}={field_value!r}'
+        for name, field_value in _redacted_dataclass_dict(
+            value, redacted_fields
+        ).items()
+    )
+    return f'{type(value).__name__}({fields_repr})'
 
 
 @kumo_dataclass
@@ -67,7 +70,7 @@ class APIKeyMetadataRecord(DBEntry):
     owner_user_hash: Optional[str] = None
 
 
-_API_KEY_SECRET_REDACTED_FIELDS = {"salt_b64", "hash_b64"}
+_API_KEY_SECRET_REDACTED_FIELDS = {'salt_b64', 'hash_b64'}
 
 
 @kumo_dataclass(repr=False)

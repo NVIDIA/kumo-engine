@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Check rendered explanation labels; provider qualification still needs real notebooks."""
+
 import importlib.util
 from pathlib import Path
 
@@ -13,7 +14,10 @@ matplotlib.use('Agg')
 
 @pytest.fixture
 def layout():
-    path = Path(__file__).resolve().parents[2] / 'packages/kumo-engine/test/snowflake_notebook/explanation.py'
+    path = (
+        Path(__file__).resolve().parents[2]
+        / 'packages/kumo-engine/test/snowflake_notebook/explanation.py'
+    )
     spec = importlib.util.spec_from_file_location('notebook_explanation_layout', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -21,14 +25,16 @@ def layout():
 
 
 @pytest.mark.parametrize('count', [10, 11, 12])
-def test_default_size_rotated_cohort_labels_do_not_falsely_overlap(
-        layout, count):
+def test_default_size_rotated_cohort_labels_do_not_falsely_overlap(layout, count):
     import matplotlib.pyplot as plt
 
     figure, axis = plt.subplots(figsize=(8, 6))
-    axis.set_xticks(range(count),
-                    [f'({i * 1000} - {(i + 1) * 1000}]' for i in range(count)],
-                    rotation=35, ha='right')
+    axis.set_xticks(
+        range(count),
+        [f'({i * 1000} - {(i + 1) * 1000}]' for i in range(count)],
+        rotation=35,
+        ha='right',
+    )
     figure.tight_layout()
     try:
         figure.canvas.draw()
@@ -46,9 +52,12 @@ def test_rotated_outlines_still_reject_actual_text_overlap(layout):
 
     figure, axis = plt.subplots(figsize=(8, 6))
     axis.set_xlim(0, 10)
-    axis.set_xticks([4, 4.01],
-                    ['Long cohort label one', 'Long cohort label two'],
-                    rotation=35, ha='right')
+    axis.set_xticks(
+        [4, 4.01],
+        ['Long cohort label one', 'Long cohort label two'],
+        rotation=35,
+        ha='right',
+    )
     figure.tight_layout()
     try:
         with pytest.raises(AssertionError):

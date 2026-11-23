@@ -12,10 +12,8 @@ from kumo.utils import to_dataclass
 
 class AnyURIS3Connector(AnyURIFileConnector):
     def __init__(self, name: str):
-        super().__init__(name, normalizer=normalize_s3_source_uri,
-                         provider_name='S3')
+        super().__init__(name, normalizer=normalize_s3_source_uri, provider_name='S3')
 
 
-AnyURIS3ConnectorConfig = to_dataclass(AnyURIS3Connector,
-                                       base_cls=ConnectorConfig)
+AnyURIS3ConnectorConfig = to_dataclass(AnyURIS3Connector, base_cls=ConnectorConfig)
 register(AnyURIS3Connector, AnyURIS3ConnectorConfig, group='connector')

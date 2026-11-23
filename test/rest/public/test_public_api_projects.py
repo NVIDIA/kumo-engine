@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for public Projects router (GET/POST /v1/projects)."""
+
 from datetime import datetime, timezone
 from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock
@@ -25,9 +26,9 @@ from temporalio_commons import RpcError
 _NOW = datetime(2024, 1, 1, tzinfo=timezone.utc)
 _TIMESTAMPS = ResourceTimestamps(created_at=_NOW, updated_at=_NOW)
 
-_PROJECT_ID = ProjectID(f"project_{'a' * 32}")
-_GROUP_ID = GroupID(f"group_{'b' * 32}")
-_USER_ID = "test-user-123"
+_PROJECT_ID = ProjectID(f'project_{"a" * 32}')
+_GROUP_ID = GroupID(f'group_{"b" * 32}')
+_USER_ID = 'test-user-123'
 
 
 def _noop_auth():
@@ -66,7 +67,7 @@ def client(projects_driver, auth):
         projects_driver=projects_driver,
         auth=auth,
     )
-    app.include_router(router.router, prefix="/v1")
+    app.include_router(router.router, prefix='/v1')
     with TestClient(app) as c:
         yield c
 
@@ -74,7 +75,7 @@ def client(projects_driver, auth):
 def _make_project_entry(
     project_id=_PROJECT_ID,
     group_id=_GROUP_ID,
-    name="my-project",
+    name='my-project',
 ) -> ProjectDBEntry:
     return ProjectDBEntry(
         id=project_id,
@@ -92,8 +93,9 @@ def _make_project_entry(
         [],
         [
             _make_project_entry(name='proj-a'),
-            _make_project_entry(project_id=ProjectID(f"project_{'c' * 32}"),
-                                name='proj-b'),
+            _make_project_entry(
+                project_id=ProjectID(f'project_{"c" * 32}'), name='proj-b'
+            ),
         ],
     ],
     ids=('empty', 'populated'),
@@ -104,29 +106,40 @@ def test_list_projects_contract(client, projects_driver, projects):
     response = client.get('/v1/projects', params={'group_id': str(_GROUP_ID)})
 
     assert response.status_code == HTTPStatus.OK
-    assert [entry['display_name'] for entry in response.json()
-            ] == [project.display_name for project in projects]
+    assert [entry['display_name'] for entry in response.json()] == [
+        project.display_name for project in projects
+    ]
     assert all(
         set(entry) == {'id', 'slug', 'display_name', 'group_id'}
-        for entry in response.json())
+        for entry in response.json()
+    )
     assert _USER_ID not in response.text
-    projects_driver.list_projects_in_group.assert_awaited_once_with(
-        group_id=_GROUP_ID)
+    projects_driver.list_projects_in_group.assert_awaited_once_with(group_id=_GROUP_ID)
 
 
 @pytest.mark.parametrize(
     ('route', 'driver_method', 'argument', 'project'),
     [
-        ('/v1/projects/by-slug/my-project', 'get_project_by_slug', 'my-project',
-         _make_project_entry()),
-        ('/v1/projects/default', '_get_project', DEFAULT_PROJECT_ID,
-         _make_project_entry(project_id=ProjectID(DEFAULT_PROJECT_ID),
-                             name='default')),
+        (
+            '/v1/projects/by-slug/my-project',
+            'get_project_by_slug',
+            'my-project',
+            _make_project_entry(),
+        ),
+        (
+            '/v1/projects/default',
+            '_get_project',
+            DEFAULT_PROJECT_ID,
+            _make_project_entry(
+                project_id=ProjectID(DEFAULT_PROJECT_ID), name='default'
+            ),
+        ),
     ],
     ids=('slug', 'default-id'),
 )
-def test_get_project_contract(client, projects_driver, route, driver_method,
-                              argument, project):
+def test_get_project_contract(
+    client, projects_driver, route, driver_method, argument, project
+):
     method = getattr(projects_driver, driver_method)
     method.return_value = project
 
@@ -146,11 +159,12 @@ def test_get_project_contract(client, projects_driver, route, driver_method,
     ],
     ids=('id', 'slug'),
 )
-def test_hidden_or_missing_project_has_safe_404(client, projects_driver, route,
-                                                driver_method):
-    getattr(
-        projects_driver,
-        driver_method).side_effect = ProjectNotFoundError('Project not found')
+def test_hidden_or_missing_project_has_safe_404(
+    client, projects_driver, route, driver_method
+):
+    getattr(projects_driver, driver_method).side_effect = ProjectNotFoundError(
+        'Project not found'
+    )
 
     response = client.get(route)
 
@@ -175,23 +189,42 @@ def test_create_project_contract(client, projects_driver):
     assert response.json()['display_name'] == 'my-project'
     assert response.json()['group_id'] == str(_GROUP_ID)
     projects_driver.create_project.assert_awaited_once_with(
-        **request, description='', is_private=False)
+        **request, description='', is_private=False
+    )
 
 
 @pytest.mark.parametrize(
     ('method', 'route', 'driver_method', 'error_type', 'message', 'status'),
     [
-        ('get', '/v1/projects?group_id=' + f"group_{'f' * 32}",
-         'list_projects_in_group', 'KeyError', 'group not found',
-         HTTPStatus.NOT_FOUND),
-        ('post', '/v1/projects', 'create_project', 'KeyError',
-         'Group not found', HTTPStatus.NOT_FOUND),
-        ('post', '/v1/projects', 'create_project', 'ProjectForbiddenError',
-         'Not a member of this group', HTTPStatus.FORBIDDEN),
+        (
+            'get',
+            '/v1/projects?group_id=' + f'group_{"f" * 32}',
+            'list_projects_in_group',
+            'KeyError',
+            'group not found',
+            HTTPStatus.NOT_FOUND,
+        ),
+        (
+            'post',
+            '/v1/projects',
+            'create_project',
+            'KeyError',
+            'Group not found',
+            HTTPStatus.NOT_FOUND,
+        ),
+        (
+            'post',
+            '/v1/projects',
+            'create_project',
+            'ProjectForbiddenError',
+            'Not a member of this group',
+            HTTPStatus.FORBIDDEN,
+        ),
     ],
 )
-def test_project_rpc_errors(client, projects_driver, method, route,
-                            driver_method, error_type, message, status):
+def test_project_rpc_errors(
+    client, projects_driver, method, route, driver_method, error_type, message, status
+):
     getattr(projects_driver, driver_method).side_effect = RpcError(
         rpc_service='ProjectsService',
         rpc_method=driver_method,
@@ -200,12 +233,11 @@ def test_project_rpc_errors(client, projects_driver, method, route,
         stack_trace='',
         non_retryable=True,
     )
-    kwargs = ({
-        'json': {
-            'name': 'my-project',
-            'group_id': str(_GROUP_ID)
-        }
-    } if method == 'post' else {})
+    kwargs = (
+        {'json': {'name': 'my-project', 'group_id': str(_GROUP_ID)}}
+        if method == 'post'
+        else {}
+    )
 
     response = getattr(client, method)(route, **kwargs)
 
@@ -215,9 +247,7 @@ def test_project_rpc_errors(client, projects_driver, method, route,
 @pytest.mark.parametrize(
     'payload',
     [
-        {
-            'group_id': str(_GROUP_ID)
-        },
+        {'group_id': str(_GROUP_ID)},
         {
             'name': 'my-project',
             'group_id': str(_GROUP_ID),
@@ -239,8 +269,15 @@ def test_project_openapi_uses_exact_api_contract(client):
     response_schema = schema['components']['schemas']['ProjectResponse']
     assert create_schema['additionalProperties'] is False
     assert set(create_schema['properties']) == {
-        'name', 'group_id', 'slug', 'description', 'is_private'
+        'name',
+        'group_id',
+        'slug',
+        'description',
+        'is_private',
     }
     assert set(response_schema['properties']) == {
-        'id', 'slug', 'display_name', 'group_id'
+        'id',
+        'slug',
+        'display_name',
+        'group_id',
     }

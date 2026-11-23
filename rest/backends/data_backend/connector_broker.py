@@ -41,6 +41,7 @@ class ConnectorCredentialBrokerTimeout(RuntimeError):
 
 class ConnectorCredentialBroker:
     """Resolve a project-owned identity only inside an activity process."""
+
     def __init__(
         self,
         timeout_seconds: float = _DEFAULT_BROKER_TIMEOUT_SECONDS,
@@ -58,8 +59,7 @@ class ConnectorCredentialBroker:
     def resolve(self, reference: ConnectorExecutionRef) -> ConnectorOpenSpec:
         activity_info = activity.info()
 
-        async def resolve_connector(
-                services: StateServices) -> ConnectorOpenSpec:
+        async def resolve_connector(services: StateServices) -> ConnectorOpenSpec:
             await self._authorize_reference(services, reference, activity_info)
             return await services.connectors.resolve_for_activity(
                 reference.project_id,
@@ -75,8 +75,7 @@ class ConnectorCredentialBroker:
         """Resolve without blocking an async Temporal activity event loop."""
         activity_info = activity.info()
 
-        async def resolve_connector(
-                services: StateServices) -> ConnectorOpenSpec:
+        async def resolve_connector(services: StateServices) -> ConnectorOpenSpec:
             await self._authorize_reference(services, reference, activity_info)
             return await services.connectors.resolve_for_activity(
                 reference.project_id,
@@ -91,17 +90,19 @@ class ConnectorCredentialBroker:
         reference: ConnectorExecutionRef,
         info,
     ) -> ConnectorAuthorizationDBEntry:
-        if (info.workflow_id is None or info.workflow_run_id is None
-                or not info.activity_id):
+        if (
+            info.workflow_id is None
+            or info.workflow_run_id is None
+            or not info.activity_id
+        ):
             raise RuntimeError(
-                'Connector resolution requires workflow activity provenance')
-        action = connector_capability_action_for_activity_type(
-            info.activity_type)
+                'Connector resolution requires workflow activity provenance'
+            )
+        action = connector_capability_action_for_activity_type(info.activity_type)
         deploy_config = deploy_env()
         authorization = await services.connector_authorizations.authorize_activity(
             reference.authorization_token,
-            deployment_id=(f'{deploy_config.instance_id}:'
-                           f'{deploy_config.client_id}'),
+            deployment_id=(f'{deploy_config.instance_id}:{deploy_config.client_id}'),
             temporal_namespace=info.namespace,
             workflow_id=info.workflow_id,
             workflow_run_id=info.workflow_run_id,
@@ -131,17 +132,19 @@ class ConnectorCredentialBroker:
         async def delegate(services: StateServices) -> dict[str, str]:
             prepared = []
             for reference in references:
-                parent = await self._authorize_reference(
-                    services, reference, info)
+                parent = await self._authorize_reference(services, reference, info)
                 await services.connectors.require_delegatable_for_project(
-                    reference.project_id, reference.connector_id)
+                    reference.project_id, reference.connector_id
+                )
                 requested = child_actions.intersection(parent.allowed_actions)
                 if not requested:
                     from statedb.db.connector_authorizations import (
                         ConnectorAuthorizationError,
                     )
+
                     raise ConnectorAuthorizationError(
-                        'Child workflow has no authorized connector actions')
+                        'Child workflow has no authorized connector actions'
+                    )
                 prepared.append((reference, parent, requested))
 
             replacements: dict[str, str] = {}
@@ -154,13 +157,14 @@ class ConnectorCredentialBroker:
                         reference.project_id,
                         reference.connector_id,
                     )
-                    _, token = (
-                        await
-                        services.connector_authorizations.delegate_to_child(
-                            parent,
-                            child_workflow_id=child_workflow_id,
-                            child_actions=requested,
-                        ))
+                    (
+                        _,
+                        token,
+                    ) = await services.connector_authorizations.delegate_to_child(
+                        parent,
+                        child_workflow_id=child_workflow_id,
+                        child_actions=requested,
+                    )
                     minted_tokens.append(token)
                     replacements[reference.authorization_token] = token
             except BaseException:
@@ -193,27 +197,27 @@ class ConnectorCredentialBroker:
 
         async def authorize(services: StateServices):
             deploy_config = deploy_env()
-            authorization = (
-                await services.connector_authorizations.authorize_activity(
-                    reference.authorization_token,
-                    deployment_id=(f'{deploy_config.instance_id}:'
-                                   f'{deploy_config.client_id}'),
-                    temporal_namespace=info.namespace,
-                    workflow_id=info.workflow_id or '',
-                    workflow_run_id=info.workflow_run_id or '',
-                    activity_id=info.activity_id,
-                    action=action,
-                    resource_kind=resource_kind,
-                    resource_id=resource_id,
-                    project_id=project_id,
-                    request_digest=request_digest,
-                ))
+            authorization = await services.connector_authorizations.authorize_activity(
+                reference.authorization_token,
+                deployment_id=(
+                    f'{deploy_config.instance_id}:{deploy_config.client_id}'
+                ),
+                temporal_namespace=info.namespace,
+                workflow_id=info.workflow_id or '',
+                workflow_run_id=info.workflow_run_id or '',
+                activity_id=info.activity_id,
+                action=action,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                project_id=project_id,
+                request_digest=request_digest,
+            )
             if self._principal_authority is None:
                 from rest.backends.data_backend.principal_authority import (
                     WorkerPrincipalAuthorityResolver,
                 )
-                self._principal_authority = WorkerPrincipalAuthorityResolver(
-                    services)
+
+                self._principal_authority = WorkerPrincipalAuthorityResolver(services)
             return await self._principal_authority.resolve(authorization)
 
         return self.run(authorize)
@@ -240,8 +244,9 @@ class ConnectorCredentialBroker:
             deploy_config = deploy_env()
             return await services.connector_authorizations.authorize_activity(
                 reference.authorization_token,
-                deployment_id=(f'{deploy_config.instance_id}:'
-                               f'{deploy_config.client_id}'),
+                deployment_id=(
+                    f'{deploy_config.instance_id}:{deploy_config.client_id}'
+                ),
                 temporal_namespace=info.namespace,
                 workflow_id=info.workflow_id or '',
                 workflow_run_id=info.workflow_run_id or '',
@@ -260,16 +265,17 @@ class ConnectorCredentialBroker:
         if not activity.in_activity():
             raise RuntimeError(
                 'Credential-bearing StateServices operations may run only '
-                'inside a Temporal activity.')
+                'inside a Temporal activity.'
+            )
         loop = self._ensure_loop()
-        future: Future = asyncio.run_coroutine_threadsafe(
-            self._run(operation), loop)
+        future: Future = asyncio.run_coroutine_threadsafe(self._run(operation), loop)
         try:
             return future.result(timeout=self._timeout_seconds)
         except FutureTimeoutError:
             future.cancel()
             raise ConnectorCredentialBrokerTimeout(
-                'Connector credential resolution timed out') from None
+                'Connector credential resolution timed out'
+            ) from None
 
     async def run_async(
         self,
@@ -279,10 +285,10 @@ class ConnectorCredentialBroker:
         if not activity.in_activity():
             raise RuntimeError(
                 'Credential-bearing StateServices operations may run only '
-                'inside a Temporal activity.')
+                'inside a Temporal activity.'
+            )
         loop = self._ensure_loop()
-        future: Future = asyncio.run_coroutine_threadsafe(
-            self._run(operation), loop)
+        future: Future = asyncio.run_coroutine_threadsafe(self._run(operation), loop)
         wrapped = asyncio.wrap_future(future)
         try:
             return await asyncio.wait_for(
@@ -292,7 +298,8 @@ class ConnectorCredentialBroker:
         except asyncio.TimeoutError:
             future.cancel()
             raise ConnectorCredentialBrokerTimeout(
-                'Connector credential resolution timed out') from None
+                'Connector credential resolution timed out'
+            ) from None
         except asyncio.CancelledError:
             future.cancel()
             raise
@@ -340,7 +347,8 @@ class ConnectorCredentialBroker:
             thread.start()
             if not ready.wait(timeout=self._timeout_seconds):
                 raise ConnectorCredentialBrokerTimeout(
-                    'Connector credential broker failed to start')
+                    'Connector credential broker failed to start'
+                )
             self._loop = loop
             return loop
 

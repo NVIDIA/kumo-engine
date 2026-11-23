@@ -32,11 +32,13 @@ class FakeLink:
 
 class FakeChunk:
     """One page's result queue: what its links promised, and what arrived."""
-    def __init__(self, advertised: pa.Table, delivered: pa.Table, offset: int,
-                 links: bool) -> None:
-        self.result_links = [
-            FakeLink(offset, advertised.num_rows, advertised.nbytes)
-        ] if links else []
+
+    def __init__(
+        self, advertised: pa.Table, delivered: pa.Table, offset: int, links: bool
+    ) -> None:
+        self.result_links = (
+            [FakeLink(offset, advertised.num_rows, advertised.nbytes)] if links else []
+        )
         self.delivered = delivered
         self.closed = False
 
@@ -52,8 +54,10 @@ class FakeWarehouse:
     behind, the way ``ThriftDatabricksClient.fetch_results`` does. ``delivers``
     returns fewer rows than were advertised, which Databricks is documented to
     do while still reporting success."""
-    def __init__(self, table: pa.Table, delivers: int | None = None,
-                 links: bool = True) -> None:
+
+    def __init__(
+        self, table: pa.Table, delivers: int | None = None, links: bool = True
+    ) -> None:
         self.table = table
         self.delivers = delivers
         self.links = links
@@ -63,28 +67,27 @@ class FakeWarehouse:
 
     def fetch_results(self, **asked: Any) -> tuple:
         self.calls.append(asked)
-        if asked["expected_row_start_offset"] < self.position:
-            raise DataError("some result batches must have been skipped")
-        return self.page(asked["max_rows"], asked["max_bytes"])
+        if asked['expected_row_start_offset'] < self.position:
+            raise DataError('some result batches must have been skipped')
+        return self.page(asked['max_rows'], asked['max_bytes'])
 
     def page(self, max_rows: int, max_bytes: int) -> tuple:
         rows = self._within(max_rows, max_bytes)
         advertised = self.table.slice(self.position, rows)
-        delivered = (advertised if self.delivers is None else advertised.slice(
-            0, self.delivers))
+        delivered = (
+            advertised if self.delivers is None else advertised.slice(0, self.delivers)
+        )
         chunk = FakeChunk(advertised, delivered, self.position, self.links)
         self.chunks.append(chunk)
         self.position += rows
-        return (chunk, self.position
-                < self.table.num_rows, len(chunk.result_links))
+        return (chunk, self.position < self.table.num_rows, len(chunk.result_links))
 
     def _within(self, max_rows: int, max_bytes: int) -> int:
         remaining = self.table.num_rows - self.position
         if remaining <= 0:
             return 0
         rows = min(max_rows, remaining)
-        while rows > 1 and self.table.slice(self.position,
-                                            rows).nbytes > max_bytes:
+        while rows > 1 and self.table.slice(self.position, rows).nbytes > max_bytes:
             rows //= 2
         return rows
 
@@ -92,19 +95,26 @@ class FakeWarehouse:
 class FakeResultSet:
     """The executed statement: its first page, and the Arrow schema bytes the
     driver keeps private to the result set."""
+
     def __init__(self, chunk: FakeChunk, more: bool, links: int) -> None:
         self.results = chunk
         self.has_more_rows = more
         self.num_chunks = links
         self.lz4_compressed = True
-        self._arrow_schema_bytes = b"arrow-schema"
+        self._arrow_schema_bytes = b'arrow-schema'
 
 
 class FakeCursor(RecordingCursor):
     """Records every statement, and pages an Arrow result as the driver does."""
-    def __init__(self, responses=None, raises=None,
-                 arrow: pa.Table | None = None, delivers: int | None = None,
-                 links: bool = True) -> None:
+
+    def __init__(
+        self,
+        responses=None,
+        raises=None,
+        arrow: pa.Table | None = None,
+        delivers: int | None = None,
+        links: bool = True,
+    ) -> None:
         super().__init__(responses, raises)
         self.buffer_size_bytes = EXECUTE_BYTES
         self.arraysize = EXECUTE_ROWS
@@ -116,20 +126,22 @@ class FakeCursor(RecordingCursor):
         self.active_command_id: str | None = None
         self.description: list | None = None
 
-    def execute(self, sql: str, params: Any = None) -> "FakeCursor":
+    def execute(self, sql: str, params: Any = None) -> 'FakeCursor':
         result = super().execute(sql, params)
-        if self.arrow is not None and sql.lstrip().startswith("SELECT"):
+        if self.arrow is not None and sql.lstrip().startswith('SELECT'):
             self._begin()
         return result
 
     def _begin(self) -> None:
         assert self.arrow is not None
         self.backend = FakeWarehouse(self.arrow, self.delivers, self.links)
-        self.active_command_id = "command"
-        self.description = [(field.name, str(field.type), None)
-                            for field in self.arrow.schema]
+        self.active_command_id = 'command'
+        self.description = [
+            (field.name, str(field.type), None) for field in self.arrow.schema
+        ]
         self.active_result_set = FakeResultSet(
-            *self.backend.page(self.arraysize, self.buffer_size_bytes))
+            *self.backend.page(self.arraysize, self.buffer_size_bytes)
+        )
 
 
 @dataclass
@@ -141,8 +153,8 @@ class FakeEntry:
 
 class TrackedStream(io.BytesIO):
     """A stream that remembers whether the reader closed it."""
-    def __init__(self, body: bytes,
-                 raises: BaseException | None = None) -> None:
+
+    def __init__(self, body: bytes, raises: BaseException | None = None) -> None:
         super().__init__(body)
         self.raises = raises
         self.closed_by_reader = False
@@ -164,23 +176,27 @@ class FakeDownload:
 
 class FakeFiles:
     """An in-memory volume directory."""
-    def __init__(self, objects: Mapping[str, bytes] | None = None,
-                 read_raises: BaseException | None = None,
-                 on_delete: Callable[[str], Any] | None = None) -> None:
+
+    def __init__(
+        self,
+        objects: Mapping[str, bytes] | None = None,
+        read_raises: BaseException | None = None,
+        on_delete: Callable[[str], Any] | None = None,
+    ) -> None:
         self.objects = dict(objects or {})
         self.on_delete = on_delete
         self.read_raises = read_raises
         self.streams: list[TrackedStream] = []
 
     def list_directory_contents(self, path: str) -> list[FakeEntry]:
-        prefix = path.rstrip("/") + "/"
+        prefix = path.rstrip('/') + '/'
         entries = [
             FakeEntry(name, len(body))
             for name, body in sorted(self.objects.items())
             if name.startswith(prefix)
         ]
         if not entries:
-            raise NotFound("The directory being accessed is not found.")
+            raise NotFound('The directory being accessed is not found.')
         return entries
 
     def download(self, path: str) -> FakeDownload:
@@ -192,7 +208,7 @@ class FakeFiles:
         if self.on_delete is not None:
             self.on_delete(path)
         if self.objects.pop(path, None) is None:
-            raise NotFound(f"No such file: {path}")
+            raise NotFound(f'No such file: {path}')
 
     def delete_directory(self, path: str) -> None:
         return None
@@ -200,22 +216,25 @@ class FakeFiles:
 
 class FakeVolume(FakeFiles):
     """A volume with uploads and ranged downloads."""
+
     def __init__(self, objects: Mapping[str, bytes] | None = None) -> None:
         super().__init__(objects)
         self.ignore_range = False
 
     def list_directory_contents(self, path: str) -> list[FakeEntry]:
-        path = path.rstrip("/")
+        path = path.rstrip('/')
         children: dict[str, FakeEntry] = {}
         for name in sorted(self.objects):
-            if not name.startswith(path + "/"):
+            if not name.startswith(path + '/'):
                 continue
-            child = f"{path}/{name[len(path) + 1:].split('/')[0]}"
-            children[child] = (FakeEntry(child, len(self.objects[child]))
-                               if child in self.objects else FakeEntry(
-                                   child + "/", 0, is_directory=True))
+            child = f'{path}/{name[len(path) + 1 :].split("/")[0]}'
+            children[child] = (
+                FakeEntry(child, len(self.objects[child]))
+                if child in self.objects
+                else FakeEntry(child + '/', 0, is_directory=True)
+            )
         if not children:
-            raise NotFound(f"No such directory: {path}")
+            raise NotFound(f'No such directory: {path}')
         return list(children.values())
 
     def upload(self, path: str, contents: Any, *, overwrite: bool) -> None:
@@ -223,29 +242,32 @@ class FakeVolume(FakeFiles):
         self.objects[path] = contents.read()
 
     def get_metadata(self, path: str) -> Any:
-        if path.endswith("/"):
-            raise BadRequest("Bad Request")
+        if path.endswith('/'):
+            raise BadRequest('Bad Request')
         if path not in self.objects:
-            raise NotFound(f"No such file: {path}")
+            raise NotFound(f'No such file: {path}')
         return FakeMetadata(len(self.objects[path]))
 
-    def do(self, method: str, path: str, *, raw: bool,
-           response_headers: list[str], headers: Mapping[str, str]) -> dict:
-        assert method == "GET" and raw
-        remote = unquote(path.removeprefix("/api/2.0/fs/files"))
+    def do(
+        self,
+        method: str,
+        path: str,
+        *,
+        raw: bool,
+        response_headers: list[str],
+        headers: Mapping[str, str],
+    ) -> dict:
+        assert method == 'GET' and raw
+        remote = unquote(path.removeprefix('/api/2.0/fs/files'))
         if remote not in self.objects:
-            raise NotFound(f"No such file: {remote}")
+            raise NotFound(f'No such file: {remote}')
         if self.ignore_range:
-            return {"contents": FakeStreamingResponse(self.objects[remote])}
-        first, last = headers["Range"].removeprefix("bytes=").split("-")
+            return {'contents': FakeStreamingResponse(self.objects[remote])}
+        first, last = headers['Range'].removeprefix('bytes=').split('-')
         size = len(self.objects[remote])
         last = last or str(size - 1)
-        stream = FakeStreamingResponse(
-            self.objects[remote][int(first):int(last) + 1])
-        return {
-            "contents": stream,
-            "content-range": f"bytes {first}-{last}/{size}"
-        }
+        stream = FakeStreamingResponse(self.objects[remote][int(first) : int(last) + 1])
+        return {'contents': stream, 'content-range': f'bytes {first}-{last}/{size}'}
 
 
 @dataclass
@@ -260,6 +282,7 @@ class FakeStreamingResponse(TrackedStream):
 
 class FakeWorkspaceClient:
     """Exposes only the files API the reader uses."""
+
     def __init__(self, files: FakeFiles) -> None:
         self.files = files
         self.api_client = files

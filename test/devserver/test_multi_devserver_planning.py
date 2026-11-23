@@ -20,19 +20,17 @@ def test_auto_requires_nums_and_generates_stable_child_ids():
 
     assert plan.cgroup_mode == 'auto'
     assert [child.devserver_id for child in plan.devservers] == [
-        'devserver-1', 'devserver-2'
+        'devserver-1',
+        'devserver-2',
     ]
     assert [child.base_port for child in plan.devservers] == [None, None]
     assert all(child.cgroup_limits is None for child in plan.devservers)
 
 
 def test_auto_enforces_nums_and_devserver_ids_cardinality():
-    plan = build_multi_devserver_plan('auto', nums=2,
-                                      devserver_ids='Train-A,train-b')
+    plan = build_multi_devserver_plan('auto', nums=2, devserver_ids='Train-A,train-b')
 
-    assert [child.devserver_id for child in plan.devservers] == [
-        'train-a', 'train-b'
-    ]
+    assert [child.devserver_id for child in plan.devservers] == ['train-a', 'train-b']
 
     with pytest.raises(DevserverPlanError, match='DEVSERVER_IDS has 1 values'):
         build_multi_devserver_plan('auto', nums=2, devserver_ids='train-a')
@@ -44,13 +42,12 @@ def test_custom_json_uses_child_ids_as_keys_and_builds_immutable_plan():
         '"train-b":{"cpus":16,"memory_gib":64}}',
         nums=2,
         devserver_ids='train-b,train-a',
-        base_ports='11000,12000')
+        base_ports='11000,12000',
+    )
 
     assert plan.cgroup_mode == 'custom'
     assert tuple(plan.devservers) == plan.devservers
-    assert [child.devserver_id for child in plan.devservers] == [
-        'train-b', 'train-a'
-    ]
+    assert [child.devserver_id for child in plan.devservers] == ['train-b', 'train-a']
     assert plan.devservers[0].cgroup_limits.cpus == 16
     assert plan.devservers[1].cgroup_limits.memory_gib == 128
     assert plan.devservers[0].expected_ports['prometheus'] == 11016
@@ -62,12 +59,12 @@ def test_custom_json_uses_child_ids_as_keys_and_builds_immutable_plan():
     [
         ('[]', 'non-empty object'),
         ('{"train-a": {}}', 'exactly cpus and memory_gib'),
-        ('{"train-a":{"cpus":true,"memory_gib":1}}',
-         'finite positive number'),
-        ('{"train-a":{"cpus":1,"memory_gib":0}}',
-         'finite positive number'),
-        ('{"train-a":{"cpus":1,"memory_gib":1,"extra":2}}',
-         'exactly cpus and memory_gib'),
+        ('{"train-a":{"cpus":true,"memory_gib":1}}', 'finite positive number'),
+        ('{"train-a":{"cpus":1,"memory_gib":0}}', 'finite positive number'),
+        (
+            '{"train-a":{"cpus":1,"memory_gib":1,"extra":2}}',
+            'exactly cpus and memory_gib',
+        ),
     ],
 )
 def test_custom_json_requires_exact_finite_positive_allocations(config, error):
@@ -78,18 +75,16 @@ def test_custom_json_requires_exact_finite_positive_allocations(config, error):
 def test_custom_json_rejects_duplicate_raw_and_normalized_child_ids():
     with pytest.raises(DevserverPlanError, match='duplicate JSON key'):
         build_multi_devserver_plan(
-            '{"train-a":{"cpus":1,"memory_gib":1},'
-            '"train-a":{"cpus":2,"memory_gib":2}}')
-    with pytest.raises(DevserverPlanError,
-                       match='duplicate IDs after normalization'):
+            '{"train-a":{"cpus":1,"memory_gib":1},"train-a":{"cpus":2,"memory_gib":2}}'
+        )
+    with pytest.raises(DevserverPlanError, match='duplicate IDs after normalization'):
         build_multi_devserver_plan(
-            '{"Train-A":{"cpus":1,"memory_gib":1},'
-            '"train-a":{"cpus":2,"memory_gib":2}}')
+            '{"Train-A":{"cpus":1,"memory_gib":1},"train-a":{"cpus":2,"memory_gib":2}}'
+        )
 
 
 def test_custom_json_and_explicit_ids_must_have_same_normalized_set():
-    config = ('{"train-a":{"cpus":1,"memory_gib":1},'
-              '"train-b":{"cpus":2,"memory_gib":2}}')
+    config = '{"train-a":{"cpus":1,"memory_gib":1},"train-b":{"cpus":2,"memory_gib":2}}'
 
     with pytest.raises(DevserverPlanError, match='NUMS is 1'):
         build_multi_devserver_plan(config, nums=1)
@@ -116,7 +111,8 @@ def test_port_cardinality_duplicates_overlap_and_overflow_are_rejected():
 
 def test_auto_base_ports_are_deferred_to_stateful_coordinator():
     plan = build_multi_devserver_plan(
-        'auto', nums=2, devserver_ids='train-a,train-b', base_ports='auto')
+        'auto', nums=2, devserver_ids='train-a,train-b', base_ports='auto'
+    )
 
     assert [child.base_port for child in plan.devservers] == [None, None]
 
@@ -128,7 +124,8 @@ def test_unfenced_requires_nums_and_cannot_mix_cgroup_config():
         build_multi_devserver_plan('auto', nums=2, unfenced=True)
 
     plan = build_multi_devserver_plan(
-        nums=2, devserver_ids='train-a,train-b', unfenced=True)
+        nums=2, devserver_ids='train-a,train-b', unfenced=True
+    )
 
     assert plan.cgroup_mode == 'unfenced'
     assert all(child.cgroup_limits is None for child in plan.devservers)

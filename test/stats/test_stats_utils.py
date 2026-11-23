@@ -11,12 +11,12 @@ from kumo.stats.utils import col_stat_dict_complete
 
 
 def test_col_stat_dict_complete_returns_false_for_missing_stat():
-    col = BaseColumnConfig('embedding', dtype=Dtype.floatlist,
-                           stype=Stype.sequence)
+    col = BaseColumnConfig('embedding', dtype=Dtype.floatlist, stype=Stype.sequence)
     result = {
         col: {
-            ColStatType.SEQUENCE_MIN_LENGTH:
-            Stats(value=3, approx=False, data_version='test')
+            ColStatType.SEQUENCE_MIN_LENGTH: Stats(
+                value=3, approx=False, data_version='test'
+            )
         }
     }
     request = {

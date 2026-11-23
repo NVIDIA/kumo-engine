@@ -11,18 +11,19 @@ from io_utils import fsutil
 from io_utils.fsutil import impl_s3
 
 
-@pytest.mark.parametrize(('code', 'operation'), [
-    ('NoSuchKey', 'HeadObject'),
-    ('404', 'HeadObject'),
-    ('NoSuchBucket', 'ListObjectsV2'),
-])
+@pytest.mark.parametrize(
+    ('code', 'operation'),
+    [
+        ('NoSuchKey', 'HeadObject'),
+        ('404', 'HeadObject'),
+        ('NoSuchBucket', 'ListObjectsV2'),
+    ],
+)
 def test_exists_returns_false_only_for_missing_s3_resources(
-        monkeypatch, code, operation):
+    monkeypatch, code, operation
+):
     error = ClientError(
-        {'Error': {
-            'Code': code,
-            'Message': 'not found'
-        }},
+        {'Error': {'Code': code, 'Message': 'not found'}},
         operation,
     )
     if operation == 'ListObjectsV2':
@@ -41,10 +42,7 @@ def test_exists_returns_false_only_for_missing_s3_resources(
 @pytest.mark.parametrize('code', ['AccessDenied', 'SlowDown'])
 def test_exists_propagates_ambiguous_s3_client_errors(monkeypatch, code):
     error = ClientError(
-        {'Error': {
-            'Code': code,
-            'Message': 'not proof of absence'
-        }},
+        {'Error': {'Code': code, 'Message': 'not proof of absence'}},
         'ListObjectsV2',
     )
     if code == 'AccessDenied':

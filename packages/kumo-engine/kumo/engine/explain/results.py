@@ -67,17 +67,17 @@ class _CohortExplanations(ABC):
         return read_cohorts(self._cohort_path())
 
     def cohort_keys(self) -> tuple[CohortKey, ...]:
-        return tuple((cohort.table_name, cohort.hop, cohort.col_name)
-                     for cohort in self.column_analysis().cohorts)
+        return tuple(
+            (cohort.table_name, cohort.hop, cohort.col_name)
+            for cohort in self.column_analysis().cohorts
+        )
 
     def classes(self, key: CohortKey) -> tuple[str, ...]:
         """List recorded class labels; binary/regression vectors return empty."""
         cohort = self.column_analysis()[key]
-        return (tuple(cohort.predictions)
-                if isinstance(cohort.predictions, dict) else ())
+        return tuple(cohort.predictions) if isinstance(cohort.predictions, dict) else ()
 
-    def cohort(self, key: CohortKey, *,
-               class_name: str | None = None) -> ColumnCohorts:
+    def cohort(self, key: CohortKey, *, class_name: str | None = None) -> ColumnCohorts:
         """Select a cohort, explicitly choosing among recorded class labels.
 
         The shared cohort object retains every class. ``class_name`` validates
@@ -88,8 +88,10 @@ class _CohortExplanations(ABC):
         cohort = self.column_analysis()[key]
         if isinstance(cohort.predictions, dict):
             if class_name is None:
-                raise ValueError('Select a classification class explicitly; '
-                                 'use classes(key) to list labels.')
+                raise ValueError(
+                    'Select a classification class explicitly; '
+                    'use classes(key) to list labels.'
+                )
             if class_name not in cohort.predictions:
                 raise KeyError(f'Unknown classification class {class_name!r}')
         elif class_name is not None:
@@ -99,24 +101,30 @@ class _CohortExplanations(ABC):
     def samples(self) -> tuple[SampleReference, ...]:
         """List collector IDs and optional metadata without loading graphs."""
         root, ids = self._collector_root(), self._sample_ids()
-        return tuple(item for item in list_samples(root)
-                     if ids is None or item.artifact_id in ids)
+        return tuple(
+            item
+            for item in list_samples(root)
+            if ids is None or item.artifact_id in ids
+        )
 
     def sample(self, artifact_id: str) -> Subgraph:
         """Load one eligible graph by its collector ID."""
         root, ids = self._collector_root(), self._sample_ids()
         if ids is not None and artifact_id not in ids:
             raise ExplanationUnavailableError(
-                f'Sample {artifact_id!r} is not a completed artifact')
+                f'Sample {artifact_id!r} is not a completed artifact'
+            )
         return read_sample(root, artifact_id)
 
-    def plot_cohort(self, key: CohortKey, *, class_name: str | None = None
-                    ) -> tuple['Figure', tuple['Axes', 'Axes']]:
+    def plot_cohort(
+        self, key: CohortKey, *, class_name: str | None = None
+    ) -> tuple['Figure', tuple['Axes', 'Axes']]:
         """Return prediction/target and population panels without displaying."""
         from kumo.engine.explain.plotting import plot_cohort
 
-        return plot_cohort(self.cohort(key, class_name=class_name),
-                           class_name=class_name)
+        return plot_cohort(
+            self.cohort(key, class_name=class_name), class_name=class_name
+        )
 
 
 @dataclass(frozen=True)
@@ -147,17 +155,22 @@ class TrainingExplanations(_CohortExplanations):
         return cls(root, trial)
 
     @classmethod
-    def from_trial(cls, run_root: str | Path, trial_root: str | Path, *,
-                   disabled: bool = False, failure: str | None = None) -> Self:
+    def from_trial(
+        cls,
+        run_root: str | Path,
+        trial_root: str | Path,
+        *,
+        disabled: bool = False,
+        failure: str | None = None,
+    ) -> Self:
         """Attach an already selected trial during fit, without reading files."""
-        reason: UnavailableReason = ('disabled' if disabled else
-                                     'failed' if failure else 'unknown')
-        return cls(artifact_root(run_root), artifact_root(trial_root), reason,
-                   failure)
+        reason: UnavailableReason = (
+            'disabled' if disabled else 'failed' if failure else 'unknown'
+        )
+        return cls(artifact_root(run_root), artifact_root(trial_root), reason, failure)
 
     @classmethod
-    def unavailable(cls, *,
-                    reason: UnavailableReason = 'model_only') -> Self:
+    def unavailable(cls, *, reason: UnavailableReason = 'model_only') -> Self:
         """Represent a restored model whose training artifacts are unknown."""
         return cls(None, None, reason)
 
@@ -176,10 +189,12 @@ class TrainingExplanations(_CohortExplanations):
         for kind, path in (('gradient', gradient), ('cohorts', cohorts)):
             present = path is not None and filesystem.exists(path)
             states[kind] = ArtifactAvailability(
-                present, path, None if present else self._reason, self._failure)
+                present, path, None if present else self._reason, self._failure
+            )
         present = samples is not None and bool(sample_paths(samples))
         states['samples'] = ArtifactAvailability(
-            present, samples, None if present else self._reason, self._failure)
+            present, samples, None if present else self._reason, self._failure
+        )
         return states
 
     def _require(self, relative: str) -> str:
@@ -187,7 +202,8 @@ class TrainingExplanations(_CohortExplanations):
         if path is None:
             raise ExplanationUnavailableError(
                 f'Training explanations unavailable ({self._reason}); '
-                'retain and open the training run separately.')
+                'retain and open the training run separately.'
+            )
         return path
 
     def gradient_scores(self) -> GraphGradientScore:
@@ -236,17 +252,23 @@ class PredictionExplanations(_CohortExplanations):
             record = read_record(root)
         except (OSError, ValueError) as error:
             raise InvalidRunError(
-                f'Invalid retained prediction explanations at {root}: '
-                f'{error}') from error
+                f'Invalid retained prediction explanations at {root}: {error}'
+            ) from error
         if record.state == 'running':
             return cls(root, 'failed', record.result, record.run_id)
-        return cls.from_run(root, enabled=record.enabled, result=record.result,
-                            run_id=record.run_id)
+        return cls.from_run(
+            root, enabled=record.enabled, result=record.result, run_id=record.run_id
+        )
 
     @classmethod
-    def from_run(cls, run_root: str | Path, *, enabled: bool = False,
-                 result: 'PredictionExplanationResult | None' = None,
-                 run_id: str | None = None) -> Self:
+    def from_run(
+        cls,
+        run_root: str | Path,
+        *,
+        enabled: bool = False,
+        result: 'PredictionExplanationResult | None' = None,
+        run_id: str | None = None,
+    ) -> Self:
         """Attach generation status without reading any artifact bodies."""
         reason: UnavailableReason = 'unknown' if enabled else 'disabled'
         return cls(artifact_root(run_root), reason, result, run_id)
@@ -257,8 +279,11 @@ class PredictionExplanations(_CohortExplanations):
         return cls(None)
 
     def _path(self, relative: str) -> str | None:
-        return (None if self.run_root is None else
-                posixpath.join(self.run_root, 'xai', relative))
+        return (
+            None
+            if self.run_root is None
+            else posixpath.join(self.run_root, 'xai', relative)
+        )
 
     @property
     def run_id(self) -> str | None:
@@ -268,56 +293,75 @@ class PredictionExplanations(_CohortExplanations):
     @property
     def coverage(self) -> PredictionExplanationCoverage:
         """Observed generation counts and the published checkpoint identity."""
-        return (self._result.coverage if self._result is not None else
-                PredictionExplanationCoverage())
+        return (
+            self._result.coverage
+            if self._result is not None
+            else PredictionExplanationCoverage()
+        )
 
-    def _producer(self, kind: Literal['cohorts', 'samples']
-                  ) -> 'ProducerOutcome | None':
+    def _producer(
+        self, kind: Literal['cohorts', 'samples']
+    ) -> 'ProducerOutcome | None':
         if self._result is None:
             return None
         return self._result.cohorts if kind == 'cohorts' else self._result.samples
 
-    def _availability(self, kind: Literal['cohorts', 'samples']
-                      ) -> ArtifactAvailability:
-        relative = ('column_analysis/pred/column_analysis.json'
-                    if kind == 'cohorts' else
-                    'subgraph_collector/pred/subgraph_json')
+    def _availability(
+        self, kind: Literal['cohorts', 'samples']
+    ) -> ArtifactAvailability:
+        relative = (
+            'column_analysis/pred/column_analysis.json'
+            if kind == 'cohorts'
+            else 'subgraph_collector/pred/subgraph_json'
+        )
         path = self._path(relative)
         outcome = self._producer(kind)
         reason: UnavailableReason | None = self._reason
         if outcome is not None and outcome.status != 'complete':
-            reason = ('unsupported' if outcome.status == 'unsupported'
-                      else 'failed')
+            reason = 'unsupported' if outcome.status == 'unsupported' else 'failed'
         error = outcome.error if outcome else None
-        if (outcome is None or outcome.status != 'complete'
-                or reason in {'disabled', 'failed'} or path is None):
+        if (
+            outcome is None
+            or outcome.status != 'complete'
+            or reason in {'disabled', 'failed'}
+            or path is None
+        ):
             return ArtifactAvailability(False, path, reason, error)
         if kind == 'samples':
             collector = self._path('subgraph_collector/pred')
             ids = frozenset() if collector is None else mapped_sample_ids(collector)
-            present = any(filesystem.exists(posixpath.join(path, f'{id}.json'))
-                          for id in ids)
+            present = any(
+                filesystem.exists(posixpath.join(path, f'{id}.json')) for id in ids
+            )
         else:
             present = filesystem.exists(path)
-        return ArtifactAvailability(present, path, None if present else reason,
-                                    error)
+        return ArtifactAvailability(present, path, None if present else reason, error)
 
     @property
     def availability(self) -> dict[str, ArtifactAvailability]:
         """Only completed producers expose their present artifacts."""
-        return {'cohorts': self._availability('cohorts'),
-                'samples': self._availability('samples')}
+        return {
+            'cohorts': self._availability('cohorts'),
+            'samples': self._availability('samples'),
+        }
 
     def _require_producer(self, kind: Literal['cohorts', 'samples']) -> None:
         outcome = self._producer(kind)
-        if (outcome is None or outcome.status != 'complete'
-                or self._reason in {'disabled', 'failed'}):
-            reason = (('unsupported' if outcome.status == 'unsupported' else
-                       'failed') if outcome is not None else self._reason)
+        if (
+            outcome is None
+            or outcome.status != 'complete'
+            or self._reason in {'disabled', 'failed'}
+        ):
+            reason = (
+                ('unsupported' if outcome.status == 'unsupported' else 'failed')
+                if outcome is not None
+                else self._reason
+            )
             error = outcome.error if outcome is not None else None
             raise ExplanationUnavailableError(
                 f'Prediction {kind} unavailable ({reason})'
-                + (f': {error}' if error else ''))
+                + (f': {error}' if error else '')
+            )
 
     def _cohort_path(self) -> str:
         self._require_producer('cohorts')

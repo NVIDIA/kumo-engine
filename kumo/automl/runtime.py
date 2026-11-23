@@ -37,22 +37,26 @@ def infer_authoring_max_target_neighbors_per_entity(task: Task) -> int | None:
     `Graph` do not exist in `kumo_core`, so they stay behind these two
     closures rather than crossing the boundary.
     """
+
     def avg_entity_degree() -> float | None:
         train_table_stats = task.get_train_table_stats(after_split=False)
         temporal_types = {
             TrainTableType.TEMPORAL_NODE_PRED,
             TrainTableType.TEMPORAL_LINK_PRED,
         }
-        if (train_table_stats is not None
-                and train_table_stats.stats_type in temporal_types and getattr(
-                    train_table_stats, 'node_degree_stats', None) is not None):
+        if (
+            train_table_stats is not None
+            and train_table_stats.stats_type in temporal_types
+            and getattr(train_table_stats, 'node_degree_stats', None) is not None
+        ):
             return train_table_stats.node_degree_stats.avg_entity_degree
         return None
 
     return infer_target_edge_fanout(
         task.target_to_entity_paths,
         row_count=lambda table_name: task.graph[table_name].num_rows(
-            compute_table_stats_if_missing=True),
+            compute_table_stats_if_missing=True
+        ),
         avg_entity_degree=avg_entity_degree,
     )
 
@@ -100,8 +104,7 @@ def monolith_vital_artifact_sources(
     trainer_dir = best_trainer.log_dir
     return VitalArtifactSources(
         selected_checkpoint=Path(best_trainer.best_ckpt),
-        trainer_config=Path(
-            osp.join(best_trainer.original_log_dir, 'config.json')),
+        trainer_config=Path(osp.join(best_trainer.original_log_dir, 'config.json')),
         encoders=Path(osp.join(auto_trainer.log_dir, 'encoders.json')),
         target_encoder=Path(osp.join(trainer_dir, 'target_encoder.json')),
         resolved_model_plan=Path(osp.join(trainer_dir, 'model_plan.json')),
@@ -115,6 +118,7 @@ def monolith_vital_artifact_sources(
 
 class MonolithVitalArtifactPublisher:
     """Expose monolith-owned artifact paths; legacy deployment owns copying."""
+
     def publish(self, sources: VitalArtifactSources) -> dict[str, str]:
         return {name: str(path) for name, path in sources.as_dict().items()}
 

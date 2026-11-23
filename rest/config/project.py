@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Project request models."""
+
 from __future__ import annotations
 
 from typing import Optional

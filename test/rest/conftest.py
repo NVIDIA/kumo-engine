@@ -109,24 +109,24 @@ _HNM_TINY_ROOT = os.path.join(os.path.dirname(__file__), 'csv_data', 'HNM_TINY')
 _TEST_REST_ADMIN_API_KEY = 'pytest-rest-admin-fixture'
 
 _REST_METADATA_STATE_TABLES = (
-    "connectors",
-    "uploaded_files",
-    "identities",
-    "identity_groups",
-    "tables",
-    "graphs",
-    "predictive_queries",
-    "pquery_definitions",
-    "pquery_aliases",
-    "job_tags",
-    "groups",
-    "group_members",
-    "external_group_mappings",
-    "group_membership_rules",
-    "projects",
-    "batch_prediction_jobs",
-    "api_keys",
-    "api_key_secrets",
+    'connectors',
+    'uploaded_files',
+    'identities',
+    'identity_groups',
+    'tables',
+    'graphs',
+    'predictive_queries',
+    'pquery_definitions',
+    'pquery_aliases',
+    'job_tags',
+    'groups',
+    'group_members',
+    'external_group_mappings',
+    'group_membership_rules',
+    'projects',
+    'batch_prediction_jobs',
+    'api_keys',
+    'api_key_secrets',
 )
 
 
@@ -150,7 +150,8 @@ def _register_test_project_upload_connector(
             client,
             source_root=root_dir,
             api_prefix='/v0',
-        ))
+        )
+    )
     return connector.id
 
 
@@ -164,11 +165,11 @@ def default_project_id(state_services: StateServices) -> str:
 
 
 _ML_JOB_STATE_TABLES = (
-    "training_jobs",
-    "batch_prediction_jobs",
-    "generate_train_table_jobs",
-    "generate_pred_table_jobs",
-    "job_tags",
+    'training_jobs',
+    'batch_prediction_jobs',
+    'generate_train_table_jobs',
+    'generate_pred_table_jobs',
+    'job_tags',
 )
 
 
@@ -186,12 +187,12 @@ class RestStateDBTestStorage:
     async def reset_storage(self) -> None:
         async with self._state_db.write_tx() as tx:
             for table_name in _REST_METADATA_STATE_TABLES:
-                await tx.execute(f"DELETE FROM {table_name}")
+                await tx.execute(f'DELETE FROM {table_name}')
 
     async def reset_ml_storage(self) -> None:
         async with self._state_db.write_tx() as tx:
             for table_name in _ML_JOB_STATE_TABLES:
-                await tx.execute(f"DELETE FROM {table_name}")
+                await tx.execute(f'DELETE FROM {table_name}')
 
 
 # Skip the autouse fixture `run_before_and_after_tests` (/test/conftest.py)
@@ -219,6 +220,7 @@ def auto_setup_kumo_backend() -> bool:
 @pytest.fixture(autouse=True)
 def _rest_install_dg_col_stats_fallback() -> Generator[None, None, None]:
     from test.conftest import _install_dg_col_stats_fallback
+
     restore = _install_dg_col_stats_fallback()
     try:
         yield
@@ -228,16 +230,22 @@ def _rest_install_dg_col_stats_fallback() -> Generator[None, None, None]:
 
 @pytest.fixture(autouse=True, scope='session')
 def setup_rest_test_session(
-        deploy_env_config: DeployEnvConfig) -> Generator[str, None, None]:
+    deploy_env_config: DeployEnvConfig,
+) -> Generator[str, None, None]:
     default_home = get_default_home_dir()
     fsutil.makedirs(default_home, exist_ok=True)
     # Preserve the test temporal target so the re-installed singleton
     # below keeps pointing at the dev server, not Temporal Cloud.
     from service_framework._raw_deploy_config import CustomTemporalConfig
-    target_host = (deploy_env_config.orchestration.server_address if isinstance(
-        deploy_env_config.orchestration, CustomTemporalConfig) else None)
-    with TemporaryDirectory(dir=default_home,
-                            ignore_cleanup_errors=True) as test_home_dir:
+
+    target_host = (
+        deploy_env_config.orchestration.server_address
+        if isinstance(deploy_env_config.orchestration, CustomTemporalConfig)
+        else None
+    )
+    with TemporaryDirectory(
+        dir=default_home, ignore_cleanup_errors=True
+    ) as test_home_dir:
         os.environ[ENV_KUMO_HOME] = test_home_dir
         # Reset + re-install the deploy_env singleton so it re-reads
         # ENV_KUMO_HOME (resolves data_plane_storage_root to the temp
@@ -256,13 +264,14 @@ def setup_rest_test_session(
     os.environ[ENV_KUMO_HOME] = default_home
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def fixture_export_path(
-        deploy_env_config: DeployEnvConfig) -> Generator[str, None, None]:
+    deploy_env_config: DeployEnvConfig,
+) -> Generator[str, None, None]:
     yield os.path.join(deploy_env_config.data_plane_storage_root, 'fixtures')
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def deploy_env_config(temporal_workflow_env) -> DeployEnvConfig:
     os.environ['DEPLOY_STAGE'] = 'test'
     # The shared REST app is explicitly authentication-disabled.  Worker-side
@@ -271,19 +280,21 @@ def deploy_env_config(temporal_workflow_env) -> DeployEnvConfig:
     os.environ['DISABLE_AUTH'] = 'true'
     unique_suffix = uuid.uuid4().hex[:8]
     # Isolate AutoRPC task queues by unique instance id
-    os.environ["INSTANCE_ID"] = f"pytest-{unique_suffix}"
+    os.environ['INSTANCE_ID'] = f'pytest-{unique_suffix}'
     target_host = (
         temporal_workflow_env.client.service_client.config.target_host
-        if temporal_workflow_env is not None else None)
+        if temporal_workflow_env is not None
+        else None
+    )
     return DeployEnvConfig.for_test(temporal_target_host=target_host)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def job_base_dir(deploy_env_config: DeployEnvConfig) -> str:
     return get_job_base_dir()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def temporal_client(
     deploy_env_config: DeployEnvConfig,
     event_loop: asyncio.AbstractEventLoop,
@@ -295,28 +306,27 @@ def temporal_client(
         event_loop.run_until_complete(client.close())
 
 
-@pytest.fixture(scope="session")
-def ml_backend_settings(
-        deploy_env_config: DeployEnvConfig) -> MLBackendSettings:
-    return MLBackendSettings(ml_job_settings=MLJobSettings(
-        use_fake_job_backend=True))
+@pytest.fixture(scope='session')
+def ml_backend_settings(deploy_env_config: DeployEnvConfig) -> MLBackendSettings:
+    return MLBackendSettings(ml_job_settings=MLJobSettings(use_fake_job_backend=True))
 
 
-@pytest.fixture(scope="session")
-def ml_state_db(rest_state_db: StateDB, ) -> StateDB:
+@pytest.fixture(scope='session')
+def ml_state_db(
+    rest_state_db: StateDB,
+) -> StateDB:
     """Use the single authoritative StateDB for REST and ML metadata."""
     return rest_state_db
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def ml_backend(
     ml_backend_settings: MLBackendSettings,
     temporal_client: TemporalClient,
     ml_state_db: StateDB,
     event_loop: asyncio.AbstractEventLoop,
 ) -> Generator[MLJobBackend, None, None]:
-    """In-memory ML backend with mock jobs
-    """
+    """In-memory ML backend with mock jobs"""
     backend = MLJobBackend(
         ml_backend_settings,
         temporal_client,
@@ -326,14 +336,14 @@ def ml_backend(
     yield backend
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def data_backend_settings() -> DataBackendSettings:
     # TODO(siyang): enable this in unitttest once Temporal testing
     # framework is released
     return DataBackendSettings(disable_async_ingestion=True)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def data_backend_ctx(
     deploy_env_config: DeployEnvConfig,
     data_backend_settings: DataBackendSettings,
@@ -341,23 +351,22 @@ def data_backend_ctx(
     return DataBackendContext(deploy_env_config, data_backend_settings)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def data_scale_limits(deploy_env_config: DeployEnvConfig) -> DataScaleLimits:
     return DataScaleLimits.parse_from_env(deploy_env_config)
 
 
-@pytest.fixture(scope="session")
-def pquery_settings(
-        deploy_env_config: DeployEnvConfig) -> PredictiveQuerySettings:
+@pytest.fixture(scope='session')
+def pquery_settings(deploy_env_config: DeployEnvConfig) -> PredictiveQuerySettings:
     return PredictiveQuerySettings.parse_from_env(deploy_env_config)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def graph_driver(rest_api_driver: RestApiDriver) -> GraphDriver:
     return rest_api_driver.graph_driver
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def rest_api_driver_settings(
     fixture_export_path: str,
     data_scale_limits: DataScaleLimits,
@@ -368,49 +377,49 @@ def rest_api_driver_settings(
         allow_local_batch_pred_paths=True,
         allow_local_connector_file_paths=True,
     )
-    settings.supported_connector_types = \
-        list(ConnectorType.__members__.values())
+    settings.supported_connector_types = list(ConnectorType.__members__.values())
     settings.allow_predict_on_new_data_version = True
     settings.data_scale_limits = data_scale_limits
     settings.pquery_settings = pquery_settings
     return settings
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def authentication_settings() -> AuthenticationSettings:
     return AuthenticationSettings(
         disable=True,
-        kumo_external_shared_iam_role="arn:aws:iam::123456789012:root",
-        is_unit_test=True)
+        kumo_external_shared_iam_role='arn:aws:iam::123456789012:root',
+        is_unit_test=True,
+    )
 
 
 @pytest.fixture
-def apply_predictive_query_setting(deploy_env_config: DeployEnvConfig,
-                                   client: TestClient,
-                                   monkeypatch: MonkeyPatch):
+def apply_predictive_query_setting(
+    deploy_env_config: DeployEnvConfig, client: TestClient, monkeypatch: MonkeyPatch
+):
     def _apply(key: str, value: bool):
         app_builder: AppBuilder = getattr(client, 'app_builder')
 
         monkeypatch.setenv(key, str(value))
 
         predictive_query_settings = PredictiveQuerySettings.parse_from_env(
-            deploy_env_config)
+            deploy_env_config
+        )
         predictive_query_settings.__dict__.update({key: value})
-        app_builder._driver.pquery_driver._pquery_settings = (
-            predictive_query_settings)
+        app_builder._driver.pquery_driver._pquery_settings = predictive_query_settings
 
     return _apply
 
 
 @pytest_asyncio.fixture
 async def ctx(
-    authentication_settings: AuthenticationSettings, ) -> RequestContext:
+    authentication_settings: AuthenticationSettings,
+) -> RequestContext:
     assert authentication_settings.disable
-    return RequestContext(user_authorization=UserAuthorization.disabled(),
-                          trace_id="")
+    return RequestContext(user_authorization=UserAuthorization.disabled(), trace_id='')
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def rest_state_db() -> StateDB:
     # REST, public API, ML, and activity workers must share the configured
     # metadata store. A private tmp_path database makes activity-only
@@ -426,10 +435,11 @@ def rest_state_db() -> StateDB:
         open_state_db_from_deploy_config(
             deploy_env_v2(),
             state_root=metadata_root,
-        ))
+        )
+    )
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope='session', autouse=True)
 def temporal_workers_ready(
     deploy_env_config: DeployEnvConfig,
     rest_state_db: StateDB,
@@ -439,12 +449,12 @@ def temporal_workers_ready(
     yield from integration.run_temporal_workers(deploy_env_config)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def state_services(rest_state_db: StateDB) -> StateServices:
     return StateServices(rest_state_db)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def storage_dao(state_services: StateServices) -> RestStateDBTestStorage:
     storage = RestStateDBTestStorage(state_services)
     asyncio.run(storage.init_once())
@@ -471,7 +481,7 @@ def _make_rest_api_driver(
     return driver
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def rest_api_driver(
     rest_api_driver_settings: RestApiDriverSettings,
     ml_backend: MLJobBackend,
@@ -512,8 +522,9 @@ def _make_app_builder_with_auth_disabled(
 ) -> AppBuilder:
     auth_settings = AuthenticationSettings(
         disable=True,
-        kumo_external_shared_iam_role="arn:aws:iam::123456789012:root",
-        is_unit_test=True)
+        kumo_external_shared_iam_role='arn:aws:iam::123456789012:root',
+        is_unit_test=True,
+    )
     auth = Authentication(auth_settings, is_unit_test=True)
     # Each app owns its MLJobBackend (its startup binds it to the app's StateDB
     # and the app closes that StateDB on shutdown). The shared session
@@ -537,9 +548,9 @@ def _session_app_builder(
     ml_backend_settings: MLBackendSettings,
     deploy_env_config: DeployEnvConfig,
 ) -> AppBuilder:
-    return _make_app_builder_with_auth_disabled(rest_api_driver,
-                                                temporal_client,
-                                                ml_backend_settings)
+    return _make_app_builder_with_auth_disabled(
+        rest_api_driver, temporal_client, ml_backend_settings
+    )
 
 
 @pytest.fixture
@@ -561,13 +572,15 @@ def app_builder(
         data_backend_ctx,
         state_services,
     )
-    yield _make_app_builder_with_auth_disabled(rest_api_driver, temporal_client,
-                                               ml_backend_settings)
+    yield _make_app_builder_with_auth_disabled(
+        rest_api_driver, temporal_client, ml_backend_settings
+    )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def _session_client(
-        _session_app_builder: AppBuilder) -> Generator[TestClient, None, None]:
+    _session_app_builder: AppBuilder,
+) -> Generator[TestClient, None, None]:
     app = _session_app_builder.app
     with TestClient(app) as client:
         token = {'access_token': PYTEST_TOKEN, 'refresh_token': PYTEST_TOKEN}
@@ -623,9 +636,11 @@ def client(
     # Keep the fixture credential out of StateDB: API-key tests need to
     # observe exactly the records they create, and StateDB background tasks
     # must only be started by the TestClient application's event loop.
-    monkeypatch.setattr(authentication_deps,
-                        'resolve_user_authorization_from_api_key',
-                        resolve_test_api_key)
+    monkeypatch.setattr(
+        authentication_deps,
+        'resolve_user_authorization_from_api_key',
+        resolve_test_api_key,
+    )
     _session_client.headers['X-API-Key'] = _TEST_REST_ADMIN_API_KEY
     try:
         yield _session_client
@@ -636,7 +651,8 @@ def client(
 
 @pytest.fixture
 def unauthenticated_client(
-    _session_client: TestClient, ) -> Generator[TestClient, None, None]:
+    _session_client: TestClient,
+) -> Generator[TestClient, None, None]:
     """Return the shared auth-disabled client without fixture authority."""
     assert 'X-API-Key' not in _session_client.headers
     yield _session_client
@@ -652,18 +668,20 @@ def unauthenticated_client(
 # conftest.py of sub-package) to toggle the cleanup options.
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope='function')
 def test_cleanup_options() -> TestFunctionCleanupOptions:
     return TestFunctionCleanupOptions()
 
 
-@pytest.fixture(scope="function", autouse=True)
-def auto_cleanup_per_func(rest_api_driver: RestApiDriver,
-                          storage_dao: RestStateDBTestStorage,
-                          state_services: StateServices,
-                          deploy_env_config: DeployEnvConfig,
-                          test_cleanup_options: TestFunctionCleanupOptions,
-                          event_loop: asyncio.AbstractEventLoop):
+@pytest.fixture(scope='function', autouse=True)
+def auto_cleanup_per_func(
+    rest_api_driver: RestApiDriver,
+    storage_dao: RestStateDBTestStorage,
+    state_services: StateServices,
+    deploy_env_config: DeployEnvConfig,
+    test_cleanup_options: TestFunctionCleanupOptions,
+    event_loop: asyncio.AbstractEventLoop,
+):
     yield
 
     if test_cleanup_options.should_reset_rest_db:
@@ -747,23 +765,20 @@ def public_api_client(
 @pytest.fixture()
 def make_default_table_def_v2() -> Callable[..., table_api.TableDefinition]:
     def _make_default_table_def_v2(
-        source_table_name: str = 'source_table', ) -> table_api.TableDefinition:
+        source_table_name: str = 'source_table',
+    ) -> table_api.TableDefinition:
         return table_api.TableDefinition(
             cols=[
                 table_api.Column(name='pkey', stype=Stype.ID, dtype=Dtype.int),
-                table_api.Column(name='f1', stype=Stype.categorical,
-                                 dtype=Dtype.string),
-                table_api.Column(name='f2', stype=Stype.sequence,
-                                 dtype=Dtype.string),
-                table_api.Column(name='f3', stype=Stype.numerical,
-                                 dtype=Dtype.int),
+                table_api.Column(
+                    name='f1', stype=Stype.categorical, dtype=Dtype.string
+                ),
+                table_api.Column(name='f2', stype=Stype.sequence, dtype=Dtype.string),
+                table_api.Column(name='f3', stype=Stype.numerical, dtype=Dtype.int),
             ],
             source_table=S3SourceTable(
                 connector_id=f'connector_{"1" * 32}',
-                source={
-                    'mode': 'relative',
-                    'path': source_table_name
-                },
+                source={'mode': 'relative', 'path': source_table_name},
                 file_type=FileType.PARQUET,  # pyright: ignore
                 data_source_type=DataSourceType.S3,
             ),
@@ -774,19 +789,18 @@ def make_default_table_def_v2() -> Callable[..., table_api.TableDefinition]:
 
 
 @pytest.fixture()
-def fake_graph_and_tables_request_v2(
-) -> List[Tuple[TableName, TableDefinition]]:
+def fake_graph_and_tables_request_v2() -> List[Tuple[TableName, TableDefinition]]:
     """Connector-relative financial-shaped tables for graph validators."""
     connector_id = f'connector_{"1" * 32}'
     column_names = {
-        'DISTRICT': ('DISTRICT_ID', ),
+        'DISTRICT': ('DISTRICT_ID',),
         'ACCOUNT': ('DISTRICT_ID', 'ACCOUNT_ID'),
         'CLIENT': ('DISTRICT_ID', 'CLIENT_ID'),
         'DISP': ('CLIENT_ID', 'ACCOUNT_ID', 'DISP_ID'),
         'LOAN': ('ACCOUNT_ID', 'DATE'),
-        'ORDERS': ('ACCOUNT_ID', ),
+        'ORDERS': ('ACCOUNT_ID',),
         'TRANS': ('ACCOUNT_ID', 'DATE'),
-        'CARD': ('DISP_ID', ),
+        'CARD': ('DISP_ID',),
     }
     pairs: List[Tuple[TableName, TableDefinition]] = []
     for source_name, names in column_names.items():
@@ -795,16 +809,14 @@ def fake_graph_and_tables_request_v2(
                 name=name,
                 stype=Stype.timestamp if name == 'DATE' else Stype.ID,
                 dtype=Dtype.date if name == 'DATE' else Dtype.int,
-            ) for name in names
+            )
+            for name in names
         ]
         table_def = TableDefinition(
             cols=cols,
             source_table=S3SourceTable(
                 connector_id=connector_id,
-                source={
-                    'mode': 'relative',
-                    'path': source_name
-                },
+                source={'mode': 'relative', 'path': source_name},
                 file_type=FileType.CSV,
                 data_source_type=DataSourceType.S3,
             ),
@@ -823,12 +835,10 @@ def fake_graph_v2(
     """Create the financial graph inside the real default project."""
     connector_id = _register_test_project_upload_connector(
         client,
-        root_dir=os.path.join(os.path.dirname(__file__), '..', 'csv_data',
-                              'FINANCIAL'),
+        root_dir=os.path.join(os.path.dirname(__file__), '..', 'csv_data', 'FINANCIAL'),
     )
     resource = load_json(
-        os.path.join(os.path.dirname(__file__), 'test_data',
-                     'pquery_resource.json'),
+        os.path.join(os.path.dirname(__file__), 'test_data', 'pquery_resource.json'),
         pquery_api.PQueryResource,
     )
     for table_name, table in list(resource.graph.tables.items()):
@@ -841,13 +851,13 @@ def fake_graph_v2(
         )
     response = post_and_expect_success(
         client,
-        f"/v1/graphs?project_id={default_project_id}&skip_validation=true",
+        f'/v1/graphs?project_id={default_project_id}&skip_validation=true',
         resource.graph,
         IDResponse,
     )
     return get_and_expect_success(
         client,
-        f"/v1/graphs/{response.id}",
+        f'/v1/graphs/{response.id}',
         {'project_id': default_project_id},
         GraphResourceResponse,
     )
@@ -858,7 +868,7 @@ def _v2_table_id(graph: GraphResourceResponse, table_name: str) -> TableIDv2:
     fpid = graph.table_name_to_fpid_mapping[TableName(table_name)]
     return TableIDv2.public(
         pquery_id=None,
-        table_name=TableName("NA"),
+        table_name=TableName('NA'),
         fpid=fpid,
     )
 
@@ -868,6 +878,7 @@ class FakePQueryRequest:
     """Request carrier for the fake predictive-query fixtures: just the
     fields `_fake_pquery` consumes to drive the v1 resource endpoints.
     """
+
     name: str
     project_id: str
     graph_id: str
@@ -886,17 +897,23 @@ def fake_predictive_query_request(
     Make a predictive query that predicts one column.
     """
     trans_id = _v2_table_id(fake_graph_v2, 'TRANS')
-    table_resp = get_and_expect_success(client, f'/v1/tables/{trans_id}', {
-        'project_id': default_project_id,
-    }, TableResourceResponse)
+    table_resp = get_and_expect_success(
+        client,
+        f'/v1/tables/{trans_id}',
+        {
+            'project_id': default_project_id,
+        },
+        TableResourceResponse,
+    )
     pkey = table_resp.table.pkey
     assert pkey is not None
     return FakePQueryRequest(
-        name="fake_query",
+        name='fake_query',
         project_id=default_project_id,
         graph_id=fake_graph_v2.id,
-        query_yaml=(f'PREDICT TRANS.K_SYMBOL != "1"\n'
-                    f'            FOR EACH TRANS.{pkey}'),
+        query_yaml=(
+            f'PREDICT TRANS.K_SYMBOL != "1"\n            FOR EACH TRANS.{pkey}'
+        ),
         run_mode=RunMode.FAST,
     )
 
@@ -912,13 +929,18 @@ def fake_predictive_query_pqlv2_request(
     Make a predictive query that predicts one column.
     """
     trans_id = _v2_table_id(fake_graph_v2, 'TRANS')
-    table_resp = get_and_expect_success(client, f'/v1/tables/{trans_id}', {
-        'project_id': default_project_id,
-    }, TableResourceResponse)
+    table_resp = get_and_expect_success(
+        client,
+        f'/v1/tables/{trans_id}',
+        {
+            'project_id': default_project_id,
+        },
+        TableResourceResponse,
+    )
     pkey = table_resp.table.pkey
     assert pkey is not None
     return FakePQueryRequest(
-        name="fake_query",
+        name='fake_query',
         project_id=default_project_id,
         graph_id=fake_graph_v2.id,
         query_yaml=f"PREDICT TRANS.K_SYMBOL != '1'\nFOR EACH TRANS.{pkey}",
@@ -937,17 +959,23 @@ def fake_predictive_query_with_model_plan_request(
     Make a predictive query that predicts one column.
     """
     account_id = _v2_table_id(fake_graph_v2, 'ACCOUNT')
-    account_resp = get_and_expect_success(client, f'/v1/tables/{account_id}', {
-        'project_id': default_project_id,
-    }, TableResourceResponse)
+    account_resp = get_and_expect_success(
+        client,
+        f'/v1/tables/{account_id}',
+        {
+            'project_id': default_project_id,
+        },
+        TableResourceResponse,
+    )
     pkey = account_resp.table.pkey
     assert pkey is not None
     return FakePQueryRequest(
-        name="fake_temporal_query",
+        name='fake_temporal_query',
         project_id=default_project_id,
         graph_id=fake_graph_v2.id,
-        query_yaml=(f'\nPREDICT FIRST(LOAN.STATUS, 0, 7) = "A"\n'
-                    f'FOR EACH ACCOUNT.{pkey}'),
+        query_yaml=(
+            f'\nPREDICT FIRST(LOAN.STATUS, 0, 7) = "A"\nFOR EACH ACCOUNT.{pkey}'
+        ),
         run_mode=RunMode.FAST,
     )
 
@@ -957,6 +985,7 @@ class FakePQuery:
     """Job-centric stand-in carrying just the predictive-query fields
     consumers need (id, graph, query_string, task_type).
     """
+
     id: PredictiveQueryID
     project_id: str
     graph_id: str
@@ -968,6 +997,7 @@ class FakePQuery:
 @dataclasses.dataclass
 class FakeTrainingJob:
     """A predictive query plus the training job created for it (job-centric)."""
+
     pquery_id: PredictiveQueryID
     project_id: str
     training_job_id: TrainingJobID
@@ -980,10 +1010,18 @@ def _fake_pquery(client: TestClient, request: FakePQueryRequest) -> FakePQuery:
     # definition, not just an id), then create the (named) predictive query.
     # The model plan makes the query trainable; task_type is read off the
     # suggested plan rather than a v0 GET.
-    graph = RestGraphDefinition(**dataclasses.asdict(
-        get_and_expect_success(client, f"/v1/graphs/{request.graph_id}", {
-            'project_id': request.project_id,
-        }, GraphResourceResponse).graph))
+    graph = RestGraphDefinition(
+        **dataclasses.asdict(
+            get_and_expect_success(
+                client,
+                f'/v1/graphs/{request.graph_id}',
+                {
+                    'project_id': request.project_id,
+                },
+                GraphResourceResponse,
+            ).graph
+        )
+    )
     model_plan = post_and_expect_success(
         client,
         f'/v1/predictive_queries/model_plan?project_id={request.project_id}',
@@ -999,7 +1037,7 @@ def _fake_pquery(client: TestClient, request: FakePQueryRequest) -> FakePQuery:
     # returned (content/FPID-based) id everywhere.
     pq_id = post_and_expect_success(
         client,
-        f"/v1/predictive_queries/?project_id={request.project_id}",
+        f'/v1/predictive_queries/?project_id={request.project_id}',
         pquery_api.PQueryResource(
             name=request.name,
             query_string=request.query_yaml,
@@ -1020,8 +1058,8 @@ def _fake_pquery(client: TestClient, request: FakePQueryRequest) -> FakePQuery:
 
 @pytest.fixture()
 def fake_predictive_query(
-        client: TestClient,
-        fake_predictive_query_request: FakePQueryRequest) -> FakePQuery:
+    client: TestClient, fake_predictive_query_request: FakePQueryRequest
+) -> FakePQuery:
     return _fake_pquery(client, fake_predictive_query_request)
 
 
@@ -1036,23 +1074,21 @@ def fake_predictive_query_pqlv2(
 
 @pytest.fixture()
 def fake_predictive_query_with_model_plan(
-    client: TestClient,
-    fake_predictive_query_with_model_plan_request: FakePQueryRequest
+    client: TestClient, fake_predictive_query_with_model_plan_request: FakePQueryRequest
 ) -> FakePQuery:
     return _fake_pquery(client, fake_predictive_query_with_model_plan_request)
 
 
 @pytest.fixture()
 def fake_predictive_query_2(
-        client: TestClient,
-        fake_predictive_query_request: FakePQueryRequest) -> FakePQuery:
+    client: TestClient, fake_predictive_query_request: FakePQueryRequest
+) -> FakePQuery:
     request = deepcopy(fake_predictive_query_request)
-    request.name = "fake_query2"
+    request.name = 'fake_query2'
     return _fake_pquery(client, request)
 
 
-def _fake_training_job(client: TestClient,
-                       query: FakePQuery) -> FakeTrainingJob:
+def _fake_training_job(client: TestClient, query: FakePQuery) -> FakeTrainingJob:
     # Train the already-created predictive query job-centrically: pass its
     # pquery_id so the training job links to it. No /v0/predictive_queries
     # route is used.
@@ -1089,8 +1125,9 @@ def _fake_training_job(client: TestClient,
 
 
 @pytest.fixture()
-def fake_predictive_query_v2_id(client: TestClient, graph_definition_v2,
-                                default_project_id: str) -> PredictiveQueryID:
+def fake_predictive_query_v2_id(
+    client: TestClient, graph_definition_v2, default_project_id: str
+) -> PredictiveQueryID:
     post_and_expect_success(
         client,
         f'/v1/graphs/?project_id={default_project_id}',
@@ -1098,12 +1135,13 @@ def fake_predictive_query_v2_id(client: TestClient, graph_definition_v2,
         IDResponse,
     )
     graph_definition_internal = RestGraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
     post_and_expect_success(
         client,
         f'/v1/predictive_queries/?project_id={default_project_id}',
         pquery_api.PQueryResource(
-            name="fake_query",
+            name='fake_query',
             query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
             'customers.customer_id',
             graph=graph_definition_internal,
@@ -1111,7 +1149,7 @@ def fake_predictive_query_v2_id(client: TestClient, graph_definition_v2,
         ),
         IDResponse,
     )
-    return PredictiveQueryID("fake_query")
+    return PredictiveQueryID('fake_query')
 
 
 @pytest.fixture()
@@ -1121,15 +1159,15 @@ def fake_training_job_v2(
     default_project_id: str,
 ) -> TrainingJobID:
     graph_definition_internal = RestGraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
     graph_id = post_and_expect_success(
         client,
         f'/v1/graphs/?project_id={default_project_id}',
         graph_definition_v2,
         IDResponse,
     ).id
-    pquery_str = (
-        'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id')
+    pquery_str = 'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id'
     model_plan = post_and_expect_success(
         client,
         f'/v1/predictive_queries/model_plan?project_id={default_project_id}',
@@ -1147,8 +1185,9 @@ def fake_training_job_v2(
         TrainingJobRequest(
             predictive_query=pquery_str,
             graph_definition=graph_definition_internal,
-            training_table_gen_plan=(model_plan.suggested_model_plan.model_plan.
-                                     training_table_generation),
+            training_table_gen_plan=(
+                model_plan.suggested_model_plan.model_plan.training_table_generation
+            ),
             model_plan=model_plan.suggested_model_plan.model_plan,
             project_id=default_project_id,
         ),
@@ -1201,13 +1240,13 @@ def table_definition_v2(client: TestClient):
     table = table_api.TableDefinition(
         cols=[
             table_api.Column(
-                name="t_dat",
+                name='t_dat',
                 stype=Stype.timestamp,
                 dtype=Dtype.time,
                 timestamp_format=None,
             ),
             table_api.Column(
-                name="customer_id",
+                name='customer_id',
                 stype=Stype.ID,
                 dtype=Dtype.string,
                 timestamp_format=None,
@@ -1215,15 +1254,12 @@ def table_definition_v2(client: TestClient):
         ],
         source_table=S3SourceTable(
             connector_id=str(connector_id),
-            source={
-                'mode': 'relative',
-                'path': "transactions"
-            },
+            source={'mode': 'relative', 'path': 'transactions'},
             file_type=FileType.PARQUET,  # pyright: ignore
             data_source_type=DataSourceType.S3,
         ),
         pkey=None,
-        time_col="t_dat",
+        time_col='t_dat',
         end_time_col=None,
     )
     return table
@@ -1241,35 +1277,34 @@ def graph_definition_v2(client: TestClient):
     )
     return GraphDefinition(
         tables={
-            "transactions":
-            table_api.TableDefinition(
+            'transactions': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="t_dat",
+                        name='t_dat',
                         stype=Stype.timestamp,
                         dtype=Dtype.time,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="customer_id",
+                        name='customer_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="article_id",
+                        name='article_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="sales_channel_id",
+                        name='sales_channel_id',
                         stype=Stype.numerical,
                         dtype=Dtype.int,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="price",
+                        name='price',
                         stype=Stype.numerical,
                         dtype=Dtype.float,
                         timestamp_format=None,
@@ -1277,34 +1312,30 @@ def graph_definition_v2(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "transactions"
-                    },
+                    source={'mode': 'relative', 'path': 'transactions'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
                 pkey=None,
-                time_col="t_dat",
+                time_col='t_dat',
                 end_time_col=None,
             ),
-            "customers":
-            table_api.TableDefinition(
+            'customers': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="customer_id",
+                        name='customer_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="age",
+                        name='age',
                         stype=Stype.numerical,
                         dtype=Dtype.int,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="club_member_status",
+                        name='club_member_status',
                         stype=Stype.categorical,
                         dtype=Dtype.string,
                         timestamp_format=None,
@@ -1312,22 +1343,18 @@ def graph_definition_v2(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "customers"
-                    },
+                    source={'mode': 'relative', 'path': 'customers'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="customer_id",
+                pkey='customer_id',
                 time_col=None,
                 end_time_col=None,
             ),
-            "articles":
-            table_api.TableDefinition(
+            'articles': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="article_id",
+                        name='article_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
@@ -1335,39 +1362,40 @@ def graph_definition_v2(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "articles"
-                    },
+                    source={'mode': 'relative', 'path': 'articles'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="article_id",
+                pkey='article_id',
                 time_col=None,
                 end_time_col=None,
             ),
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(
-                    table_name="transactions",
-                    col_name="customer_id",
-                ),
-                ColumnKey(
-                    table_name="customers",
-                    col_name="customer_id",
-                ),
-            )),
-            ColumnKeyGroup(columns=(
-                ColumnKey(
-                    table_name="transactions",
-                    col_name="article_id",
-                ),
-                ColumnKey(
-                    table_name="articles",
-                    col_name="article_id",
-                ),
-            ))
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(
+                        table_name='transactions',
+                        col_name='customer_id',
+                    ),
+                    ColumnKey(
+                        table_name='customers',
+                        col_name='customer_id',
+                    ),
+                )
+            ),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(
+                        table_name='transactions',
+                        col_name='article_id',
+                    ),
+                    ColumnKey(
+                        table_name='articles',
+                        col_name='article_id',
+                    ),
+                )
+            ),
         ],
     )
 
@@ -1388,41 +1416,40 @@ def graph_definition_v2_with_tx_pkey(client: TestClient):
     )
     return GraphDefinition(
         tables={
-            "transactions":
-            table_api.TableDefinition(
+            'transactions': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="transaction_id",
+                        name='transaction_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="t_dat",
+                        name='t_dat',
                         stype=Stype.timestamp,
                         dtype=Dtype.time,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="customer_id",
+                        name='customer_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="article_id",
+                        name='article_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="sales_channel_id",
+                        name='sales_channel_id',
                         stype=Stype.numerical,
                         dtype=Dtype.int,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="price",
+                        name='price',
                         stype=Stype.numerical,
                         dtype=Dtype.float,
                         timestamp_format=None,
@@ -1430,28 +1457,24 @@ def graph_definition_v2_with_tx_pkey(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "transactions_w_pkey"
-                    },
+                    source={'mode': 'relative', 'path': 'transactions_w_pkey'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="transaction_id",
-                time_col="t_dat",
+                pkey='transaction_id',
+                time_col='t_dat',
                 end_time_col=None,
             ),
-            "customers":
-            table_api.TableDefinition(
+            'customers': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="customer_id",
+                        name='customer_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="age",
+                        name='age',
                         stype=Stype.numerical,
                         dtype=Dtype.int,
                         timestamp_format=None,
@@ -1459,22 +1482,18 @@ def graph_definition_v2_with_tx_pkey(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "customers"
-                    },
+                    source={'mode': 'relative', 'path': 'customers'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="customer_id",
+                pkey='customer_id',
                 time_col=None,
                 end_time_col=None,
             ),
-            "articles":
-            table_api.TableDefinition(
+            'articles': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="article_id",
+                        name='article_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
@@ -1482,39 +1501,40 @@ def graph_definition_v2_with_tx_pkey(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "articles"
-                    },
+                    source={'mode': 'relative', 'path': 'articles'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="article_id",
+                pkey='article_id',
                 time_col=None,
                 end_time_col=None,
             ),
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(
-                    table_name="transactions",
-                    col_name="customer_id",
-                ),
-                ColumnKey(
-                    table_name="customers",
-                    col_name="customer_id",
-                ),
-            )),
-            ColumnKeyGroup(columns=(
-                ColumnKey(
-                    table_name="transactions",
-                    col_name="article_id",
-                ),
-                ColumnKey(
-                    table_name="articles",
-                    col_name="article_id",
-                ),
-            ))
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(
+                        table_name='transactions',
+                        col_name='customer_id',
+                    ),
+                    ColumnKey(
+                        table_name='customers',
+                        col_name='customer_id',
+                    ),
+                )
+            ),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(
+                        table_name='transactions',
+                        col_name='article_id',
+                    ),
+                    ColumnKey(
+                        table_name='articles',
+                        col_name='article_id',
+                    ),
+                )
+            ),
         ],
     )
 
@@ -1532,35 +1552,34 @@ def graph_definition_v2_no_edges(client: TestClient):
     )
     return GraphDefinition(
         tables={
-            "transactions":
-            table_api.TableDefinition(
+            'transactions': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="t_dat",
+                        name='t_dat',
                         stype=Stype.timestamp,
                         dtype=Dtype.time,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="customer_id",
+                        name='customer_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="article_id",
+                        name='article_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="sales_channel_id",
+                        name='sales_channel_id',
                         stype=Stype.numerical,
                         dtype=Dtype.int,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="price",
+                        name='price',
                         stype=Stype.numerical,
                         dtype=Dtype.float,
                         timestamp_format=None,
@@ -1568,28 +1587,24 @@ def graph_definition_v2_no_edges(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "transactions"
-                    },
+                    source={'mode': 'relative', 'path': 'transactions'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
                 pkey=None,
-                time_col="t_dat",
+                time_col='t_dat',
                 end_time_col=None,
             ),
-            "customers":
-            table_api.TableDefinition(
+            'customers': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="customer_id",
+                        name='customer_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
                     ),
                     table_api.Column(
-                        name="age",
+                        name='age',
                         stype=Stype.numerical,
                         dtype=Dtype.int,
                         timestamp_format=None,
@@ -1597,22 +1612,18 @@ def graph_definition_v2_no_edges(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "customers"
-                    },
+                    source={'mode': 'relative', 'path': 'customers'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="customer_id",
+                pkey='customer_id',
                 time_col=None,
                 end_time_col=None,
             ),
-            "articles":
-            table_api.TableDefinition(
+            'articles': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
-                        name="article_id",
+                        name='article_id',
                         stype=Stype.ID,
                         dtype=Dtype.string,
                         timestamp_format=None,
@@ -1620,14 +1631,11 @@ def graph_definition_v2_no_edges(client: TestClient):
                 ],
                 source_table=S3SourceTable(
                     connector_id=str(connector_id),
-                    source={
-                        'mode': 'relative',
-                        'path': "articles"
-                    },
+                    source={'mode': 'relative', 'path': 'articles'},
                     file_type=FileType.PARQUET,  # pyright: ignore
                     data_source_type=DataSourceType.S3,
                 ),
-                pkey="article_id",
+                pkey='article_id',
                 time_col=None,
                 end_time_col=None,
             ),
@@ -1646,7 +1654,8 @@ def graph_definition_v2_no_edges(client: TestClient):
 @pytest.fixture()
 def snowflake_key_pair_credentials() -> Generator[KeyPair, None, None]:
     from io_utils.secrets import get_secrets
-    secrets = get_secrets("xva19026.snowflakecomputing.com")
+
+    secrets = get_secrets('xva19026.snowflakecomputing.com')
     credentials = KeyPair(
         user=SecretStr('mfatest'),
         private_key=SecretStr(secrets['kumo_secretkey']),
@@ -1672,7 +1681,7 @@ def snowflake_connector_request(
     )
 
     def _snowflake_connector_request(
-        connector_name: str = "financial",
+        connector_name: str = 'financial',
         keypair: Optional[bool] = True,
     ) -> CreateConnectorArgs:
         if not keypair:
@@ -1689,11 +1698,14 @@ def snowflake_connector_request(
 @pytest.fixture()
 def snowflake_connector(
     client: TestClient,
-    snowflake_connector_request: Callable[[str], CreateConnectorArgs]
+    snowflake_connector_request: Callable[[str], CreateConnectorArgs],
 ) -> ConnectorResponse:
     response1 = post_and_expect_success(
-        client, "/v0/projects/default/connectors/",
-        snowflake_connector_request("financial_2"), IDResponse)
+        client,
+        '/v0/projects/default/connectors/',
+        snowflake_connector_request('financial_2'),
+        IDResponse,
+    )
     return get_and_expect_success(
-        client, f"/v0/projects/default/connectors/{response1.id}", {},
-        ConnectorResponse)
+        client, f'/v0/projects/default/connectors/{response1.id}', {}, ConnectorResponse
+    )

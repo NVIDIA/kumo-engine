@@ -36,7 +36,8 @@ def read_four(fs, path=PATH):
 
 
 def test_reopened_file_checks_properties_and_changed_etag_misses(
-        service, cache, monkeypatch):
+    service, cache, monkeypatch
+):
     fs = filesystem(service)
     heads = []
     original = FakeFile.get_file_properties
@@ -58,7 +59,8 @@ def test_reopened_file_checks_properties_and_changed_etag_misses(
 
 
 def test_open_snapshot_can_reuse_old_bytes_but_identity_guard_rejects_mutation(
-        service, connector, cache, tmp_path):
+    service, connector, cache, tmp_path
+):
     reader, name = ADLSSourceBackend()._reader(connector(), 'events')
     fs = reader.filesystem.handler.fs
     found = reader._objects(name, PATH)
@@ -79,13 +81,13 @@ def test_open_snapshot_can_reuse_old_bytes_but_identity_guard_rejects_mutation(
 
 
 @pytest.mark.parametrize('response', ['error', 'short', 'empty'])
-def test_errors_and_incomplete_reads_never_enter_cache(service, cache,
-                                                       monkeypatch, response):
+def test_errors_and_incomplete_reads_never_enter_cache(
+    service, cache, monkeypatch, response
+):
     def broken(self, **kwargs):
         if response == 'error':
             raise ResourceModifiedError('changed')
-        return SimpleNamespace(
-            readall=lambda: b'ab' if response == 'short' else b'')
+        return SimpleNamespace(readall=lambda: b'ab' if response == 'short' else b'')
 
     monkeypatch.setattr(FakeFile, 'download_file', broken)
     fs = filesystem(service)
@@ -106,8 +108,7 @@ def test_zero_and_large_ranges_not_admitted(service, cache):
     assert not cache._entries
 
 
-def test_raw_etags_and_full_authorities_are_distinct(service, cache,
-                                                     monkeypatch):
+def test_raw_etags_and_full_authorities_are_distinct(service, cache, monkeypatch):
     fs = filesystem(service)
     original = FakeFile.get_file_properties
     token = ['"opaque"']
@@ -120,8 +121,9 @@ def test_raw_etags_and_full_authorities_are_distinct(service, cache,
 
     def download(self, offset=None, length=None, **kwargs):
         calls.append(kwargs['etag'])
-        return SimpleNamespace(readall=lambda: self.service.files[self.name][
-            offset:offset + length])
+        return SimpleNamespace(
+            readall=lambda: self.service.files[self.name][offset : offset + length]
+        )
 
     monkeypatch.setattr(FakeFile, 'get_file_properties', properties)
     monkeypatch.setattr(FakeFile, 'download_file', download)
@@ -134,8 +136,7 @@ def test_raw_etags_and_full_authorities_are_distinct(service, cache,
     assert len(cache._entries) == 3
 
 
-def test_filesystems_do_not_share_bytes_and_gc_releases_namespace(
-        service, cache):
+def test_filesystems_do_not_share_bytes_and_gc_releases_namespace(service, cache):
     one = filesystem(service)
     two = filesystem(service)
     assert read_four(one) == read_four(two)
@@ -187,8 +188,7 @@ def test_lru_updates_on_hits_replacements_and_namespace_cleanup():
     assert not cache._entries
 
 
-def test_reads_past_eof_use_pinned_size_and_do_not_cache_empty_ranges(
-        service, cache):
+def test_reads_past_eof_use_pinned_size_and_do_not_cache_empty_ranges(service, cache):
     service.files['curated/orders/events.parquet'] = b'abc'
     fs = filesystem(service)
     with fs.open(PATH, 'rb', cache_type='none') as stream:

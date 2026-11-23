@@ -7,6 +7,7 @@
 Configured entirely via env vars (see ``EnvVar`` declarations below); the
 spawner (k8s pod spec / singlehost bootstrap / test fixture) populates them.
 """
+
 import asyncio
 import contextlib
 import dataclasses
@@ -77,8 +78,10 @@ _POOL_MAX_CONCURRENT_ACTIVITIES = EnvVar(
     'POOL_MAX_CONCURRENT_ACTIVITIES',
     int,
     default_value=0,
-    description=('Worker.max_concurrent_activities cap; 0 = unlimited. '
-                 'Forced to 1 for activity-scoped workers.'),
+    description=(
+        'Worker.max_concurrent_activities cap; 0 = unlimited. '
+        'Forced to 1 for activity-scoped workers.'
+    ),
 )
 _POOL_NOFILE_SOFT_LIMIT = EnvVar(
     'POOL_NOFILE_SOFT_LIMIT',
@@ -91,8 +94,7 @@ _POOL_ACTIVITY_WORKER_POD_NAME = EnvVar(
     ACTIVITY_WORKER_POD_NAME_ENV,
     str,
     default_value='',
-    description=(
-        'Kubernetes pod name injected for activity-scoped worker identity.'),
+    description=('Kubernetes pod name injected for activity-scoped worker identity.'),
 )
 
 # Dump stacktrace on segfault (useful for native-extension crashes).
@@ -119,20 +121,23 @@ def _configure_nofile_soft_limit() -> int:
         raise RuntimeError(
             f'POOL_NOFILE_SOFT_LIMIT={requested} was requested, but the hard '
             f'open-file limit is {hard}; configure the container runtime with '
-            f'a hard nofile limit of at least {requested}.')
+            f'a hard nofile limit of at least {requested}.'
+        )
 
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (requested, hard))
     except (OSError, ValueError) as exc:
         raise RuntimeError(
             f'Failed to raise the pool worker soft open-file limit from '
-            f'{soft} to {requested} (hard={hard}).') from exc
+            f'{soft} to {requested} (hard={hard}).'
+        ) from exc
 
     effective, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
     if effective < requested:
         raise RuntimeError(
             f'Pool worker soft open-file limit remained {effective} after '
-            f'requesting {requested}.')
+            f'requesting {requested}.'
+        )
     log.info(
         'raised pool worker soft open-file limit: %d -> %d (hard=%s)',
         soft,
@@ -142,12 +147,10 @@ def _configure_nofile_soft_limit() -> int:
     return effective
 
 
-def _discover_activities(
-        snapshot_activities: SnapshotActivities) -> List[Callable]:
+def _discover_activities(snapshot_activities: SnapshotActivities) -> List[Callable]:
     """Collect ``@activity.defn``-decorated methods on the instance."""
     found: List[Callable] = []
-    for name, member in inspect.getmembers(snapshot_activities,
-                                           predicate=callable):
+    for name, member in inspect.getmembers(snapshot_activities, predicate=callable):
         if name.startswith('_'):
             continue
         try:
@@ -212,15 +215,15 @@ async def _run_worker_until_shutdown(
     activity_done_task: 'asyncio.Task[bool] | None' = None
     if activity_done is not None:
         activity_done_task = asyncio.create_task(
-            activity_done.wait(), name='pool-self-exit-watcher')
+            activity_done.wait(), name='pool-self-exit-watcher'
+        )
 
     waiters: list[asyncio.Future[Any]] = [worker_task, signal_request]
     if activity_done_task is not None:
         waiters.append(activity_done_task)
 
     try:
-        done, _ = await asyncio.wait(waiters,
-                                     return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         if worker_task in done:
             await worker_task
             return signal_request.done()
@@ -228,11 +231,14 @@ async def _run_worker_until_shutdown(
         if signal_request in done:
             signum = signal_request.result()
             log.info(
-                'pool worker_main: received %s; initiating Temporal worker '
-                'shutdown.', signal.Signals(signum).name)
+                'pool worker_main: received %s; initiating Temporal worker shutdown.',
+                signal.Signals(signum).name,
+            )
         else:
-            log.info('pool worker_main: activity_done fired; '
-                     'initiating Temporal worker shutdown.')
+            log.info(
+                'pool worker_main: activity_done fired; '
+                'initiating Temporal worker shutdown.'
+            )
 
         if signal_request in done:
             # The daemon Worker is configured with zero Core grace, so this
@@ -240,7 +246,8 @@ async def _run_worker_until_shutdown(
             # application deadline below the 30s container/pod grace; native
             # process cleanup itself is bounded to 10s TERM + 5s KILL/reap.
             await asyncio.wait_for(
-                worker.shutdown(), timeout=_SIGNAL_SHUTDOWN_TIMEOUT_SECS)
+                worker.shutdown(), timeout=_SIGNAL_SHUTDOWN_TIMEOUT_SECS
+            )
         else:
             await worker.shutdown()
         await worker_task
@@ -262,9 +269,11 @@ async def _run_worker_until_shutdown(
 
 def _exit_after_signal_shutdown(exit_code: int = 0) -> None:
     """Exit without joining native work abandoned by activity cancellation."""
-    log.info('pool worker_main: Temporal shutdown and activity cleanup '
-             'complete; exiting signal-stopped worker with code %d.',
-             exit_code)
+    log.info(
+        'pool worker_main: Temporal shutdown and activity cleanup '
+        'complete; exiting signal-stopped worker with code %d.',
+        exit_code,
+    )
     logging.drain_logs()
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(OSError):
@@ -294,7 +303,8 @@ async def _finalize_worker(
 
     if signal_shutdown:
         _exit_after_signal_shutdown(
-            1 if signal_shutdown_failed or cleanup_errors else 0)
+            1 if signal_shutdown_failed or cleanup_errors else 0
+        )
         return
     if cleanup_errors:
         raise cleanup_errors[0]
@@ -323,21 +333,25 @@ async def main() -> None:
     # The data persist dir is derived from deploy_env() on demand
     # (kumo.data.get_persist_dir); no process-global state to prime here.
     from kumo.data import get_persist_dir
-    log.info('pool worker_main: data backend derived at %s',
-             get_persist_dir())
+
+    log.info('pool worker_main: data backend derived at %s', get_persist_dir())
 
     controller = get_controller_client(deploy_config)
     # Activity-scoped pods sharing a daemon's PVC delegate ensure_snapshot
     # writes back to that daemon — see Snapshot Mutation Invariant.
     temporal_client: Optional[TemporalClient] = (
-        TemporalClient(deploy_config) if is_activity_scoped_pod(
-            pool_worker_uid, storage_mode) else None)
+        TemporalClient(deploy_config)
+        if is_activity_scoped_pod(pool_worker_uid, storage_mode)
+        else None
+    )
     if temporal_client is not None:
         log.info(
             'pool worker_main: activity-scoped pod (uid=%s, storage_mode=%s); '
             'ensure_snapshot delegates to daemon at task_queue=%s',
-            pool_worker_uid, storage_mode.value,
-            daemon_dispatch_queue(pool_worker_uid))
+            pool_worker_uid,
+            storage_mode.value,
+            daemon_dispatch_queue(pool_worker_uid),
+        )
     activities = SnapshotActivities(
         pool_worker_uid=pool_worker_uid,
         controller=controller,
@@ -355,6 +369,7 @@ async def main() -> None:
     from rest.backends.data_backend.activities.diskgraph_ingest_activity import (
         cleanup_source_files,
     )
+
     discovered = discovered + [
         diskgraph_ingest_stats_activity,
         cleanup_source_files,
@@ -362,11 +377,18 @@ async def main() -> None:
 
     log.info(
         'pool worker_main starting (pid=%d): uid=%s tq=%s storage_mode=%s '
-        'activities=%s gpu=%d', os.getpid(), pool_worker_uid, task_queue,
-        storage_mode.value, [a.__name__ for a in discovered], gpu_concurrency)
+        'activities=%s gpu=%d',
+        os.getpid(),
+        pool_worker_uid,
+        task_queue,
+        storage_mode.value,
+        [a.__name__ for a in discovered],
+        gpu_concurrency,
+    )
 
-    worker_deploy_config = dataclasses.replace(deploy_config,
-                                               client_id=POOL_WORKER_NAME)
+    worker_deploy_config = dataclasses.replace(
+        deploy_config, client_id=POOL_WORKER_NAME
+    )
     # max_worker_threads gives build_worker a ThreadPoolExecutor for sync
     # activities (e.g., download_table_files, diskgraph_ingest_stats_activity).
     worker_env = WorkerEnv(
@@ -398,8 +420,9 @@ async def main() -> None:
     try:
         signal_shutdown = await _run_worker_until_shutdown(
             worker,
-            activity_done=(activities.activity_done
-                           if storage_mode.is_activity_scoped else None),
+            activity_done=(
+                activities.activity_done if storage_mode.is_activity_scoped else None
+            ),
             signal_requested=signal_requested,
         )
     except BaseException:
@@ -410,10 +433,12 @@ async def main() -> None:
         # threads. Native DiskGraph calls cannot be stopped by cancelling
         # their ``to_thread`` awaiter, so a signal-stopped worker exits only
         # after Temporal and activity cleanup are done.
-        await _finalize_worker(worker_env, activities,
-                               signal_shutdown=(signal_shutdown
-                                                or signal_requested.is_set()),
-                               signal_shutdown_failed=signal_shutdown_failed)
+        await _finalize_worker(
+            worker_env,
+            activities,
+            signal_shutdown=(signal_shutdown or signal_requested.is_set()),
+            signal_shutdown_failed=signal_shutdown_failed,
+        )
 
     # Propagate activity failure as a non-zero exit so the K8s Job's
     # OnFailure restart triggers and Temporal retries onto the new pod.

@@ -33,7 +33,8 @@ class EnvVar(Generic[T]):
         if not is_required ^ default_value_exists:
             raise ValueError(
                 f'{self.name} is required: {is_required} but has default '
-                f'value: {default_value_exists}')
+                f'value: {default_value_exists}'
+            )
         return self
 
     def is_set(self) -> bool:
@@ -51,7 +52,7 @@ class EnvVar(Generic[T]):
         return self.default_value
 
     def _evaluate_raw_value(self, raw_value: str) -> T:
-        if self.type == bool:
+        if self.type is bool:
             bool_val_str = raw_value.strip().lower()
             if bool_val_str in ('1', 'enabled', 'true', 'yes', 'on'):
                 return True
@@ -60,7 +61,7 @@ class EnvVar(Generic[T]):
             raise ValueError(f'Unable to parse bool value from {raw_value}')
         if issubclass(self.type, Enum):
             try:
-                raw_value = raw_value.strip("\"")  # support string values
+                raw_value = raw_value.strip('"')  # support string values
                 return self.type[raw_value]  # by enum member name
             except KeyError:
                 # Pass through to convert to enum by value (which only works

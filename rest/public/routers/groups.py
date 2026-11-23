@@ -24,36 +24,38 @@ class GroupsRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/groups",
-            tags=["API v1 (Under Development): Groups"],
+            prefix='/groups',
+            tags=['API v1 (Under Development): Groups'],
             dependencies=[Depends(api_key_auth)],
         )
 
         self.router.add_api_route(
-            "/by-slug/{slug}",
+            '/by-slug/{slug}',
             self.get_group_by_slug,
             response_model=api.GroupResponse,
             methods=['GET'],
-            summary="Get one visible group by immutable slug.",
+            summary='Get one visible group by immutable slug.',
         )
         self.router.add_api_route(
-            "",
+            '',
             self.list_user_groups,
             response_model=List[api.GroupResponse],
             methods=['GET'],
-            summary="List groups the current user belongs to.",
+            summary='List groups the current user belongs to.',
         )
 
     async def list_user_groups(self) -> List[api.GroupResponse]:
         with wrap_driver_errors():
-            groups: List[ListUserKumoGroupsResponse] = (
-                await self._driver.list_user_groups())
+            groups: List[
+                ListUserKumoGroupsResponse
+            ] = await self._driver.list_user_groups()
             return [
                 api.GroupResponse(
                     id=group.group_id,
                     slug=group.slug,
                     display_name=group.display_name,
-                ) for group in groups
+                )
+                for group in groups
             ]
 
     async def get_group_by_slug(self, slug: str) -> api.GroupResponse:

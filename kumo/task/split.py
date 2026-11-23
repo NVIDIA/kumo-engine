@@ -63,8 +63,7 @@ class Split(ConfigMixin, ABC):
         (`kumo/task/task.py`, `rest/.../activities/split.py`). This is the
         one entry point that is.
         """
-        return super().from_config(_normalize_legacy_split(cfg), *args,
-                                   **kwargs)
+        return super().from_config(_normalize_legacy_split(cfg), *args, **kwargs)
 
     @cached_property
     def fpid(self):
@@ -94,8 +93,10 @@ class Split(ConfigMixin, ABC):
 
     def assert_has_time_col(self, table: Table) -> None:
         if not table.has_time_col():
-            raise ValueError(f"Cannot apply '{self.__class__.__name__}' "
-                             f"without a 'time_col' in table '{table.name}'")
+            raise ValueError(
+                f"Cannot apply '{self.__class__.__name__}' "
+                f"without a 'time_col' in table '{table.name}'"
+            )
 
 
 @register(group='split', base_cls=SplitConfig)
@@ -107,6 +108,7 @@ class RandomSplit(core_splits.RandomSplit, Split):
         ratio (List[float]): The ratio for each split.
         seed (int, optional): Random seed for reproducible splits.
     """
+
     _external_args: set[str] = {'ratio', 'seed'}
 
     @property
@@ -115,9 +117,10 @@ class RandomSplit(core_splits.RandomSplit, Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
 
 @register(group='split', base_cls=SplitConfig)
@@ -131,6 +134,7 @@ class RandomLinkSplit(core_splits.RandomLinkSplit, Split):
     Args:
         ratio (List[float]): The ratio for each split.
     """
+
     _external_args: set[str] = {'ratio'}
     _PERMUTATION_COL = '__internal_kumo_permutation_col__'
     _SPLIT_ID_COL = '__internal_kumo_split_id_col__'
@@ -141,9 +145,10 @@ class RandomLinkSplit(core_splits.RandomLinkSplit, Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.ratio})'
@@ -157,6 +162,7 @@ class FixedSplit(Split):
     Args:
         ratio (List[float]): The ratio for each split.
     """
+
     _external_args: set[str] = {'ratio'}
 
     def __init__(self, ratio: list[float]) -> None:
@@ -174,9 +180,10 @@ class FixedSplit(Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.ratio})'
@@ -204,6 +211,7 @@ class BaseTemporalSplit(core_splits.TemporalSplitArguments, Split):
             shift the provided boundaries to ensure the maximal use of the
             data. (default: :obj:`True`)
     """
+
     @property
     def is_temporal_split(self) -> bool:
         return True
@@ -254,10 +262,8 @@ class BaseTemporalSplit(core_splits.TemporalSplitArguments, Split):
             # guaranteed to be at least one timeframe worth of data after it.
             if cum_offset < finish:
                 finish = cum_offset
-            if (start + self.anchor_start_date_offset + self.timeframe_offset
-                    > finish):
-                start = (finish - self.timeframe_offset -
-                         self.anchor_start_date_offset)
+            if start + self.anchor_start_date_offset + self.timeframe_offset > finish:
+                start = finish - self.timeframe_offset - self.anchor_start_date_offset
             # if timeframe_step is not None, samples will be generated at
             # timestamps - timeframe - k * step. Make sure that
             # the left boundary/offset coincides with one generated sample
@@ -272,16 +278,20 @@ class BaseTemporalSplit(core_splits.TemporalSplitArguments, Split):
         new_boundaries[0] = (boundaries[0][0], new_boundaries[0][1])
         if new_boundaries != boundaries:
             logger.warning(
-                f"Changed boundaries {boundaries} to {new_boundaries} "
-                f"to ensure that all offsets contain at least "
-                f"one full timeframe (value {self.timeframe}).")
+                f'Changed boundaries {boundaries} to {new_boundaries} '
+                f'to ensure that all offsets contain at least '
+                f'one full timeframe (value {self.timeframe}).'
+            )
 
-        if (new_boundaries[0][0] + self.timeframe_offset +
-                self.anchor_start_date_offset > new_boundaries[0][1]):
+        if (
+            new_boundaries[0][0] + self.timeframe_offset + self.anchor_start_date_offset
+            > new_boundaries[0][1]
+        ):
             raise ValueError(
                 'Not enough data for the split - the training set will end up '
                 'empty. Provide a longer history of data or reduce the size '
-                'of the window.')
+                'of the window.'
+            )
 
         self.boundaries = new_boundaries
         return new_boundaries
@@ -296,6 +306,7 @@ class TemporalSplit(core_splits.TemporalSplit, BaseTemporalSplit):
     Args:
         ratio (List[float]): The ratio for each split.
     """
+
     _external_args: set[str] = {'ratio'}
 
     def get_masks(
@@ -303,13 +314,15 @@ class TemporalSplit(core_splits.TemporalSplit, BaseTemporalSplit):
         table: Table,
     ) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
 
-@register(group='split', base_cls=SplitConfig,
-          map_args={'unit': (TimeUnit, TimeUnit.DAYS)})
+@register(
+    group='split', base_cls=SplitConfig, map_args={'unit': (TimeUnit, TimeUnit.DAYS)}
+)
 class DateOffsetSplit(core_splits.DateOffsetSplit, BaseTemporalSplit):
     r"""Defines a date offset split of the training table according to the
     (relative) offsets from the max date.
@@ -338,6 +351,7 @@ class DateOffsetSplit(core_splits.DateOffsetSplit, BaseTemporalSplit):
             shift the provided boundaries to ensure the maximal use of the
             data. (default: :obj:`True`)
     """
+
     _external_args: set[str] = {'offsets', 'offset_unit'}
 
     def get_masks(
@@ -345,13 +359,14 @@ class DateOffsetSplit(core_splits.DateOffsetSplit, BaseTemporalSplit):
         table: Table,
     ) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
     def get_adjusted_boundaries(
-            self, max_date: pd.Timestamp,
-            min_date: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+        self, max_date: pd.Timestamp, min_date: pd.Timestamp
+    ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
         """A helper function that gets the boundaries of the split based on
         the max date and the offsets. It also adjusts the boundaries to ensure
         that each split set starts with a training sample and that each set is
@@ -366,14 +381,15 @@ class DateOffsetSplit(core_splits.DateOffsetSplit, BaseTemporalSplit):
         """
         boundaries = [min_date]
         for offset in self.offsets:
-            boundaries.append(max_date + pd.DateOffset(
-                **{self.offset_unit.value: offset}))  # type: ignore
+            boundaries.append(
+                max_date + pd.DateOffset(**{self.offset_unit.value: offset})
+            )  # type: ignore
         assert self.timeframe_offset is not None
         assert self.anchor_start_date_offset is not None
-        boundaries.append(max_date + self.timeframe_offset +
-                          self.anchor_start_date_offset)
-        return self.adjust_boundaries(
-            [x for x in zip(boundaries[:-1], boundaries[1:])])
+        boundaries.append(
+            max_date + self.timeframe_offset + self.anchor_start_date_offset
+        )
+        return self.adjust_boundaries([x for x in zip(boundaries[:-1], boundaries[1:])])
 
 
 @register(group='split', base_cls=SplitConfig)
@@ -402,6 +418,7 @@ class ApproxDateOffsetSplit(core_splits.ApproxDateOffsetSplit, Split):
     Args:
         ratio (List[float]): The ratio for each split.
     """
+
     _external_args: set[str] = {'ratio'}
 
     #: The `DateOffsetSplit` this split resolves to once boundaries are
@@ -421,8 +438,7 @@ class ApproxDateOffsetSplit(core_splits.ApproxDateOffsetSplit, Split):
 
     def set_date_offset_boundary(
         self,
-        train_table_stats: (TemporalNodeTrainTableStats
-                            | TemporalLinkTrainTableStats),
+        train_table_stats: (TemporalNodeTrainTableStats | TemporalLinkTrainTableStats),
         timeframe: int,
         unit: TimeUnit | str = 'days',
         timeframe_step: int | None = None,
@@ -464,31 +480,41 @@ class ApproxDateOffsetSplit(core_splits.ApproxDateOffsetSplit, Split):
         # timeframes in train table stats. We will reverse it in the process
         # of determining train/val split boundary and val/test split boundary
         from kumo_core.training.options import allow_array_targets
+
         use_num_links = (  # If LP, use link ratio, not row ratio
             allow_array_targets()
             and isinstance(train_table_stats, TemporalLinkTrainTableStats)
             and train_table_stats.num_links is not None
-            and train_table_stats.num_links > 0)
+            and train_table_stats.num_links > 0
+        )
         timeframe_ratios = np.array(
             list(
-                reversed([
-                    (
-                        timeframe_stat.num_links  # type: ignore
-                        if use_num_links else timeframe_stat.num_train_rows)
-                    /  # type: ignore
-                    train_table_stats.num_train_rows
-                    for timeframe_stat in timeframe_stats
-                ])))
+                reversed(
+                    [
+                        (
+                            timeframe_stat.num_links  # type: ignore
+                            if use_num_links
+                            else timeframe_stat.num_train_rows
+                        )
+                        /  # type: ignore
+                        train_table_stats.num_train_rows
+                        for timeframe_stat in timeframe_stats
+                    ]
+                )
+            )
+        )
         timeframe_cum_ratios = np.cumsum(timeframe_ratios)
 
         # 2. Obtain the boundary of train/val set and val/test set
         # obtain the start index of val set.
         train_val_index = int(
-            np.searchsorted(timeframe_cum_ratios, self.ratio[0], side='left'))
+            np.searchsorted(timeframe_cum_ratios, self.ratio[0], side='left')
+        )
         # Make sure there are enough timeframes left for val/test set
         train_val_index = min(train_val_index, num_timeframes - num_split)
-        train_val_timeframe_index = timeframe_stats[num_timeframes -
-                                                    train_val_index - 2].index
+        train_val_timeframe_index = timeframe_stats[
+            num_timeframes - train_val_index - 2
+        ].index
         assert train_val_timeframe_index is not None
 
         # obtain the start index of test set
@@ -499,38 +525,42 @@ class ApproxDateOffsetSplit(core_splits.ApproxDateOffsetSplit, Split):
                     timeframe_cum_ratios,
                     self.ratio[0] + self.ratio[1],
                     side='left',
-                ))
+                )
+            )
             # Make sure there are enough timeframes left for test set
             val_test_index = min(val_test_index, num_timeframes - 2)
             # Make sure val set contains at least one timeframe
             val_test_index = max(val_test_index, train_val_index + 1)
-            val_test_timeframe_index = timeframe_stats[num_timeframes -
-                                                       val_test_index - 2].index
+            val_test_timeframe_index = timeframe_stats[
+                num_timeframes - val_test_index - 2
+            ].index
             assert val_test_timeframe_index is not None
 
         # 3. Adjusting the split boundaries of date offset split.
-        diff = (timeframe if timeframe_step is None else timeframe_step)
+        diff = timeframe if timeframe_step is None else timeframe_step
 
         # obtain the index of the last non empty timeframe
         max_boundary_index = timeframe_stats[0].index
         assert max_boundary_index is not None
         offsets = None
         # get the time difference betwen max date and train set end date
-        train_val_offset = (max_boundary_index -
-                            train_val_timeframe_index) * diff
+        train_val_offset = (max_boundary_index - train_val_timeframe_index) * diff
         offsets = [train_val_offset]
         if num_split == 3:
             assert val_test_timeframe_index is not None
             # get the time difference betwen max date and val set end date
-            val_test_offset = (max_boundary_index -
-                               val_test_timeframe_index) * diff
+            val_test_offset = (max_boundary_index - val_test_timeframe_index) * diff
             offsets.append(val_test_offset)
 
         # 4. Initialize a DateOffsetSplit object.
-        self.split = DateOffsetSplit(offsets, offset_unit=unit, unit=unit,
-                                     timeframe=timeframe,
-                                     timeframe_step=timeframe_step,
-                                     flexible_boundaries=flexible_boundaries)
+        self.split = DateOffsetSplit(
+            offsets,
+            offset_unit=unit,
+            unit=unit,
+            timeframe=timeframe,
+            timeframe_step=timeframe_step,
+            flexible_boundaries=flexible_boundaries,
+        )
 
     @property
     def is_initialized(self) -> bool:
@@ -538,9 +568,10 @@ class ApproxDateOffsetSplit(core_splits.ApproxDateOffsetSplit, Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.ratio})'
@@ -577,6 +608,7 @@ class TimeRangeSplit(core_splits.TimeRangeSplit, BaseTemporalSplit):
             shift the provided boundaries to ensure the maximal use of the
             data. (default: :obj:`True`)
     """
+
     _external_args: set[str] = {'ranges'}
 
     @property
@@ -585,9 +617,10 @@ class TimeRangeSplit(core_splits.TimeRangeSplit, BaseTemporalSplit):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
 
 @register(group='split', base_cls=SplitConfig)
@@ -600,6 +633,7 @@ class BacktestingSplit(Split):
         timestamp (pd.Timestamp or str): The timestamp to generate the labels
             for.
     """
+
     _external_args: set[str] = {'timestamp'}
 
     def __init__(
@@ -624,12 +658,13 @@ class BacktestingSplit(Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}({self.timestamp})')
+        return f'{self.__class__.__name__}({self.timestamp})'
 
 
 @register(group='split', base_cls=SplitConfig)
@@ -643,6 +678,7 @@ class ColumnSplit(Split):
             then be use to create splits based on the :obj:`ratio` argument
         ratio (List[float]): The ratio for each split.
     """
+
     _external_args: set[str] = {'col', 'ratio'}
 
     def __init__(self, col: str | BaseColumn, ratio: list[float]) -> None:
@@ -662,13 +698,13 @@ class ColumnSplit(Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}(col={self.col.name}, '
-                f'ratio={self.ratio})')
+        return f'{self.__class__.__name__}(col={self.col.name}, ratio={self.ratio})'
 
 
 @register(group='split', base_cls=SplitConfig)
@@ -687,6 +723,7 @@ class ManualSplit(core_splits.ManualSplit, Split):
             be used to indicate the test split (default: :obj:`None`, for
             which an all-zero test split is produced).
     """
+
     _external_args: set[str] = {'col', 'train_value', 'val_value', 'test_value'}
 
     @property
@@ -695,9 +732,10 @@ class ManualSplit(core_splits.ManualSplit, Split):
 
     def get_masks(self, table: Table) -> list[Mask]:
         raise UnsupportedInDiskgraphError(
-            "whole-table split via Split.get_masks is dead on TT-NG; "
-            "per-stage train/val/test masks come from the native "
-            "DiskGraph split (split-stats sidecar / bundle)")
+            'whole-table split via Split.get_masks is dead on TT-NG; '
+            'per-stage train/val/test masks come from the native '
+            'DiskGraph split (split-stats sidecar / bundle)'
+        )
 
 
 def _normalize_legacy_split(cfg: Any) -> Any:

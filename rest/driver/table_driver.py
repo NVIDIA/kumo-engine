@@ -96,6 +96,7 @@ class TableDriver:
     on the v2 object models. So all operations supported here can be
     interpretted as operations supported for v2 table objects.
     """
+
     def __init__(
         self,
         data_backend_ctx: DataBackendContext,
@@ -110,7 +111,7 @@ class TableDriver:
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError("TableDriver StateServices is not configured")
+            raise RuntimeError('TableDriver StateServices is not configured')
         return self._state_services
 
     def _table_service(self) -> TableService:
@@ -131,8 +132,7 @@ class TableDriver:
     def _require_project_service(self) -> ProjectService:
         return self._project_service()
 
-    async def _require_project_access(self,
-                                      project_id: ProjectID | str) -> None:
+    async def _require_project_access(self, project_id: ProjectID | str) -> None:
         """Authorize a project before any table repository or cache read."""
         await self._require_project_service().get_project(
             ProjectID(project_id),
@@ -145,7 +145,8 @@ class TableDriver:
         table_fpid: FPID,
     ) -> Optional[TableDBEntryV2]:
         return await self._require_table_service().get_table_entry(
-            project_id, table_fpid)
+            project_id, table_fpid
+        )
 
     async def _list_named_table_entries(
         self,
@@ -161,7 +162,8 @@ class TableDriver:
         _, _, table_fpid = TableIDv2.parse(table_id)
         assert table_fpid is not None
         return await self._require_table_service().get_table_entry(
-            project_id, table_fpid)
+            project_id, table_fpid
+        )
 
     async def _get_table_definition_by_id(
         self,
@@ -171,7 +173,8 @@ class TableDriver:
         _, _, table_fpid = TableIDv2.parse(table_id)
         assert table_fpid is not None
         return await self._require_table_service().get_table_definition(
-            project_id, table_fpid)
+            project_id, table_fpid
+        )
 
     async def _get_table_entries_by_fpids(
         self,
@@ -179,7 +182,8 @@ class TableDriver:
         table_fpids: List[FPID],
     ) -> Dict[FPID, TableDBEntryV2]:
         return await self._require_table_service().get_table_entries(
-            project_id, table_fpids)
+            project_id, table_fpids
+        )
 
     async def _execution_ref(
         self,
@@ -222,7 +226,8 @@ class TableDriver:
                     table_kind=derive_table_kind(table_def),
                     created_by=table_entry.created_by,
                     created_by_name=table_entry.created_by_name,
-                ))
+                )
+            )
         return results
 
     async def _validate_new_table_for_state_service(
@@ -238,18 +243,21 @@ class TableDriver:
             # alias as a physical table (which would fail, or validate an
             # unrelated table that happens to share the synthetic name).
             connector_type = await self._validate_custom_sql_request(
-                table.get_connector_id(), table.source_table.sql, project_id)
+                table.get_connector_id(), table.source_table.sql, project_id
+            )
             reference_stypes = await _sql_reference_stype_hints(
-                self._require_state_services(), _current_user_ctx.get(),
-                project_id, table.get_connector_id(), table.source_table.sql,
-                connector_type=connector_type)
-            reference = await self._execution_ref(table.get_connector_id(),
-                                                  project_id)
+                self._require_state_services(),
+                _current_user_ctx.get(),
+                project_id,
+                table.get_connector_id(),
+                table.source_table.sql,
+                connector_type=connector_type,
+            )
+            reference = await self._execution_ref(table.get_connector_id(), project_id)
             response = await DataBackend._execute_single_activity(
                 self._data_backend_ctx,
                 validate_custom_sql,
-                [reference,
-                 _sql_resolve_request(table), reference_stypes],
+                [reference, _sql_resolve_request(table), reference_stypes],
                 f'validate-custom-sql:{project_id}',
                 execution_timeout=timedelta(minutes=5),
             )
@@ -257,10 +265,10 @@ class TableDriver:
                 raise ValidationException(
                     'Custom SQL Table Validation Failure',
                     ' '.join(error.message for error in response.errors)
-                    or 'The SQL query is not a valid Custom SQL Table.')
+                    or 'The SQL query is not a valid Custom SQL Table.',
+                )
             return
-        reference = await self._execution_ref(table.get_connector_id(),
-                                              project_id)
+        reference = await self._execution_ref(table.get_connector_id(), project_id)
         await DataBackend._execute_single_activity(
             self._data_backend_ctx,
             validate_table_definition_activity,
@@ -277,26 +285,26 @@ class TableDriver:
         force_rename: bool = False,
     ) -> TableIDv2:
         """Validate and persist a table.
-          A new physical table definition is validated before it is first persisted.
-          Existing Custom SQL definitions are revalidated before an alias or create
-          operation can reactivate them.
-          Args:
-              table: Complete table definition to persist.
-              project_id: Project in which the table will be created.
-              alias: Project-local display name.
-              force_rename: Whether an existing conflicting alias may be reassigned.
-          Returns:
-              The public identifier of the persisted table.
-          Raises:
-              ValueError: If ``project_id`` or ``alias`` is missing.
-              TableExistsInProjectError: If ``alias`` already exists and
-                  ``force_rename`` is false.
-              ValidationException: If the table definition or Custom SQL is invalid.
-              SourceTableNotFoundError: If a physical source table is definitively
-                  absent.
-              SourceTableUnavailableError: If the provider cannot distinguish a
-                  missing source from an inaccessible source.
-          """
+        A new physical table definition is validated before it is first persisted.
+        Existing Custom SQL definitions are revalidated before an alias or create
+        operation can reactivate them.
+        Args:
+            table: Complete table definition to persist.
+            project_id: Project in which the table will be created.
+            alias: Project-local display name.
+            force_rename: Whether an existing conflicting alias may be reassigned.
+        Returns:
+            The public identifier of the persisted table.
+        Raises:
+            ValueError: If ``project_id`` or ``alias`` is missing.
+            TableExistsInProjectError: If ``alias`` already exists and
+                ``force_rename`` is false.
+            ValidationException: If the table definition or Custom SQL is invalid.
+            SourceTableNotFoundError: If a physical source table is definitively
+                absent.
+            SourceTableUnavailableError: If the provider cannot distinguish a
+                missing source from an inaccessible source.
+        """
         if project_id is None:
             raise ValueError('project_id is required')
         if not alias:
@@ -310,7 +318,7 @@ class TableDriver:
         if alias and force_rename is False:
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=table.fpid,
             )
             name_validation = await self.validate_project_table_name(
@@ -321,7 +329,8 @@ class TableDriver:
             if not name_validation.is_valid:
                 raise TableExistsInProjectError(
                     name_validation.error_msg
-                    or "Table display name already exists in project.")
+                    or 'Table display name already exists in project.'
+                )
 
         table_id = await self._persist_table_definition(
             table=table,
@@ -342,16 +351,18 @@ class TableDriver:
         table_service = self._require_table_service()
         typed_project_id = ProjectID(project_id)
         existing_entry = await table_service.get_table_entry(
-            typed_project_id, table.fpid)
+            typed_project_id, table.fpid
+        )
         if existing_entry is None:
             await self._validate_new_table_for_state_service(
-                table, project_id=project_id)
+                table, project_id=project_id
+            )
         elif table.is_sql:
             # A matching fingerprint may predate the namespace guard. Re-check
             # it before an alias/create operation can reactivate that definition.
-            await self._validate_custom_sql_request(table.get_connector_id(),
-                                                    table.source_table.sql,
-                                                    project_id)
+            await self._validate_custom_sql_request(
+                table.get_connector_id(), table.source_table.sql, project_id
+            )
 
         try:
             principal = _current_user_ctx.get()
@@ -370,7 +381,7 @@ class TableDriver:
             pass
 
         self._data_scale_limits.validate_table(
-            table_name=TableName(alias or "NA"),  # to fix.
+            table_name=TableName(alias or 'NA'),  # to fix.
             num_cols=len(table.cols),
             raise_on_error=True,
             approx=True,
@@ -378,7 +389,7 @@ class TableDriver:
 
         return TableIDv2.public(
             pquery_id=None,
-            table_name=TableName("NA"),
+            table_name=TableName('NA'),
             fpid=table.fpid,
         )
 
@@ -390,12 +401,13 @@ class TableDriver:
         """Clear a table alias without deleting its fingerprint resource."""
         await self._require_project_access(project_id)
         entry = await self._require_table_service().clear_table_alias(
-            ProjectID(project_id), table_alias)
+            ProjectID(project_id), table_alias
+        )
         if entry is None:
             raise TableDoesNotExistError(table_alias)
         return TableIDv2.public(
             pquery_id=None,
-            table_name=TableName("NA"),
+            table_name=TableName('NA'),
             fpid=entry.id,
         )
 
@@ -427,12 +439,12 @@ class TableDriver:
                 asynchronously.
         """
         await self._require_project_access(project_id)
-        table_entry = await self._get_table_entry_by_id(ProjectID(project_id),
-                                                        table_id)
+        table_entry = await self._get_table_entry_by_id(ProjectID(project_id), table_id)
         if table_entry is None:
             raise TableDoesNotExistError(table_id)
         await self._trigger_async_refresh_for_table_entry(
-            table_entry, project_id=project_id)
+            table_entry, project_id=project_id
+        )
 
     async def _trigger_async_refresh_for_table_entry(
         self,
@@ -447,20 +459,22 @@ class TableDriver:
             # dispatched; this also covers definitions saved before scope
             # enforcement was introduced.
             await self._validate_custom_sql_request(
-                table_def.get_connector_id(), table_def.source_table.sql,
-                project_id)
-        table_alias = (TableName(table_entry.alias)
-                       if table_entry.alias else None)
+                table_def.get_connector_id(), table_def.source_table.sql, project_id
+            )
+        table_alias = TableName(table_entry.alias) if table_entry.alias else None
         connector_id = table_def.get_connector_id()
         source_table_name = str(table_def.get_source_table_name())
         connector_service = self._require_connector_service()
         execution_spec = await connector_service.execution_ref_for_project(
-            _current_user_ctx.get(), ProjectID(project_id), connector_id,
-            CONNECTOR_TABLE_SOURCE_ACTIONS)
+            _current_user_ctx.get(),
+            ProjectID(project_id),
+            connector_id,
+            CONNECTOR_TABLE_SOURCE_ACTIONS,
+        )
 
-        src_table_data_ver = (
-            await get_active_cache().table_version_cache.get.coroutine(
-                connector_id, source_table_name))
+        src_table_data_ver = await get_active_cache().table_version_cache.get.coroutine(
+            connector_id, source_table_name
+        )
 
         # A Custom SQL table's data_version is a content hash over the SQL +
         # output cols + referenced-table versions; the name-keyed
@@ -469,52 +483,60 @@ class TableDriver:
         force_source_refresh = refresh_source or src_table_data_ver is None
         if table_def.is_sql or force_source_refresh:
             try:
-                src_table_data_ver = await DataBackend.get_table_data_version_in_activity(
-                    self._data_backend_ctx,
-                    execution_spec,
-                    source_table_name,
-                    refresh_table_version=force_source_refresh,
-                    table_def=table_def,
+                src_table_data_ver = (
+                    await DataBackend.get_table_data_version_in_activity(
+                        self._data_backend_ctx,
+                        execution_spec,
+                        source_table_name,
+                        refresh_table_version=force_source_refresh,
+                        table_def=table_def,
+                    )
                 )
             except (FileNotFoundError, ConnectorError) as e:
                 raise ValidationHTTPException(
-                    TABLE_READ_ERROR_MESSAGE.format(source_table_name,
-                                                    connector_id,
-                                                    TABLE_READ_PROVIDER_ERROR),
+                    TABLE_READ_ERROR_MESSAGE.format(
+                        source_table_name, connector_id, TABLE_READ_PROVIDER_ERROR
+                    ),
                     e,
                 )
-            execution_spec, = await connector_service.fresh_execution_refs_for_workflow(
+            (
+                execution_spec,
+            ) = await connector_service.fresh_execution_refs_for_workflow(
                 _current_user_ctx.get(),
-                (execution_spec, ),
+                (execution_spec,),
                 CONNECTOR_TABLE_SOURCE_ACTIONS,
             )
 
         data_ver = TableDataVersion(src_table_data_ver)
-        refresh_result = (await DataBackend.get_many_table_refresh_results([
-            (table_def, data_ver)
-        ]))[0]
+        refresh_result = (
+            await DataBackend.get_many_table_refresh_results([(table_def, data_ver)])
+        )[0]
         if refresh_result:
-            refresh_wf_id = TableRefreshWorkflow.compose_wf_id(
-                table_def, data_ver)
+            refresh_wf_id = TableRefreshWorkflow.compose_wf_id(table_def, data_ver)
             if not refresh_result.status.completed:
                 tclient = self._data_backend_ctx.temporal_client()
                 wf_desc = await tclient.get_workflow_desc(refresh_wf_id)
-                if (wf_desc
-                        and wf_desc.status == WorkflowExecutionStatus.RUNNING):
-                    logger.info("Table refresh workflow is already running: %s",
-                                refresh_wf_id)
+                if wf_desc and wf_desc.status == WorkflowExecutionStatus.RUNNING:
+                    logger.info(
+                        'Table refresh workflow is already running: %s', refresh_wf_id
+                    )
                     return data_ver
 
-            if (refresh_result.status == AsyncDataTaskStatus.DONE
-                    and refresh_result.stage == TableRefreshStage.COMPLETED
-                    and not refresh_source):
-                logger.info("Table refresh is already completed, wf: %s",
-                            refresh_wf_id)
+            if (
+                refresh_result.status == AsyncDataTaskStatus.DONE
+                and refresh_result.stage == TableRefreshStage.COMPLETED
+                and not refresh_source
+            ):
+                logger.info('Table refresh is already completed, wf: %s', refresh_wf_id)
                 return data_ver
 
-        await DataBackend.start_refresh_table(self._data_backend_ctx,
-                                              execution_spec, table_def,
-                                              data_ver, alias=table_alias)
+        await DataBackend.start_refresh_table(
+            self._data_backend_ctx,
+            execution_spec,
+            table_def,
+            data_ver,
+            alias=table_alias,
+        )
 
         return data_ver
 
@@ -534,7 +556,8 @@ class TableDriver:
         await self._require_project_access(project_id)
         table_id_v2 = TableIDv2(table_id)
         table_def = await self._get_table_definition_by_id(
-            ProjectID(project_id), table_id_v2)
+            ProjectID(project_id), table_id_v2
+        )
         if table_def is None:
             raise TableDoesNotExistError(table_id)
         return await self._get_last_ingested_timestamp_for_table_def(
@@ -550,7 +573,9 @@ class TableDriver:
         cache = get_active_cache()
         versioned_source_table_id = (
             await cache.table_version_cache.get_many.coroutine(
-                tables=[table_def.source_table_id]))[0]
+                tables=[table_def.source_table_id]
+            )
+        )[0]
 
         if versioned_source_table_id is None:
             logger.warning(
@@ -561,17 +586,24 @@ class TableDriver:
         else:
             latest_table_data_version = versioned_source_table_id.version
 
-        ingestion_info = (await cache.ingestion_info.get_many.coroutine(
-            [(
-                table_def.get_connector_id(),
-                table_def.get_source_table_name(),
-                latest_table_data_version,
-            )],
-            TableIngestionInfo,
-        ))[0]
+        ingestion_info = (
+            await cache.ingestion_info.get_many.coroutine(
+                [
+                    (
+                        table_def.get_connector_id(),
+                        table_def.get_source_table_name(),
+                        latest_table_data_version,
+                    )
+                ],
+                TableIngestionInfo,
+            )
+        )[0]
 
-        return (ingestion_info.ingest_start_time if isinstance(
-            ingestion_info, TableIngestionInfo) else None)
+        return (
+            ingestion_info.ingest_start_time
+            if isinstance(ingestion_info, TableIngestionInfo)
+            else None
+        )
 
     async def infer_table_metadata(
         self,
@@ -606,8 +638,7 @@ class TableDriver:
             Without StateServices, this method requires read-write access to
             the database for connector management operations.
         """
-        source_table, _, connector_id = extract_source_table_type(
-            request.source_table)
+        source_table, _, connector_id = extract_source_table_type(request.source_table)
         assert connector_id is not None
         # A Custom SQL table inherits stypes from the sibling Kumo tables its
         # query reads; resolve those hints REST-side (state DB is reachable) and
@@ -621,13 +652,20 @@ class TableDriver:
             # resolved dialect for the stype hints so no second connector read is
             # needed.
             connector_type = await self._validate_custom_sql_request(
-                connector_id, source_table.sql, project_id)
+                connector_id, source_table.sql, project_id
+            )
             reference = await self._execution_ref(connector_id, project_id)
             activity_inputs = [reference, request]
-            activity_inputs.append(await _sql_reference_stype_hints(
-                self._require_state_services(), _current_user_ctx.get(),
-                project_id, connector_id, source_table.sql,
-                connector_type=connector_type))
+            activity_inputs.append(
+                await _sql_reference_stype_hints(
+                    self._require_state_services(),
+                    _current_user_ctx.get(),
+                    project_id,
+                    connector_id,
+                    source_table.sql,
+                    connector_type=connector_type,
+                )
+            )
         else:
             reference = await self._execution_ref(connector_id, project_id)
             activity_inputs = [reference, request]
@@ -664,7 +702,7 @@ class TableDriver:
             table_def = table_entry.config
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=fpid,
             )
             connector_conf, src_tbl_conf = (
@@ -672,16 +710,17 @@ class TableDriver:
                     table_entry,
                     table_id,
                     table_fpid_to_name_in_graph,
-                ))
+                )
+            )
 
             table_metadata = {
-                "cols": table_def.cols,
-                "pkey": table_def.pkey,
-                "time_col": table_def.time_col,
-                "end_time_col": table_def.end_time_col,
+                'cols': table_def.cols,
+                'pkey': table_def.pkey,
+                'time_col': table_def.time_col,
+                'end_time_col': table_def.end_time_col,
             }
             table_config = TableReferenceMetadata(
-                source_table_name=src_tbl_conf["table_name"],
+                source_table_name=src_tbl_conf['table_name'],
                 table_fpid=fpid,
                 table_config={
                     **src_tbl_conf,
@@ -697,29 +736,31 @@ class TableDriver:
 
         for config in connector_confs_set:
             config_as_dict = dict(config)
-            if "connector_id" in config_as_dict:
-                connector_id = ConnectorID(config_as_dict["connector_id"])
-            elif "name" in config_as_dict:
-                connector_id = ConnectorID(config_as_dict["name"])
+            if 'connector_id' in config_as_dict:
+                connector_id = ConnectorID(config_as_dict['connector_id'])
+            elif 'name' in config_as_dict:
+                connector_id = ConnectorID(config_as_dict['name'])
             else:
-                raise ValueError(f"Connector with config {config_as_dict} does "
-                                 "not have a valied connector ID.")
-            connector = await self._require_connector_service(
-            ).source_table_connector_for_project(
+                raise ValueError(
+                    f'Connector with config {config_as_dict} does '
+                    'not have a valied connector ID.'
+                )
+            connector = await self._require_connector_service().source_table_connector_for_project(
                 project_id,
                 connector_id,
                 _current_user_ctx.get(),
             )
-            config_as_dict["connector_id"] = str(connector_id)
+            config_as_dict['connector_id'] = str(connector_id)
             if connector is None:
-                config_as_dict["is_project_upload"] = True
+                config_as_dict['is_project_upload'] = True
             else:
-                config_as_dict["lookup_name"] = connector.name
+                config_as_dict['lookup_name'] = connector.name
             connector_spec_arr.append(
                 ConnectorSpec(
                     connector_id=connector_id,
                     connector_config=config_as_dict,
-                ))
+                )
+            )
 
         return connector_spec_arr, table_confs
 
@@ -759,17 +800,20 @@ class TableDriver:
             await self._validate_new_table_for_state_service(
                 table_def,
                 project_id=project_id,
-                max_table_size_limits=(self._data_scale_limits.parse_from_env().
-                                       max_table_size_bytes_by_connector),
+                max_table_size_limits=(
+                    self._data_scale_limits.parse_from_env().max_table_size_bytes_by_connector
+                ),
             )
         except Exception as e:
             # TODO(manan): fix wide net:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title="Table Validation Failure",
-                    message=str(e),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Table Validation Failure',
+                        message=str(e),
+                    )
+                ]
+            )
         return ValidationResponse()
 
     async def resolve_sql(
@@ -782,17 +826,25 @@ class TableDriver:
         connector_id = ConnectorID(request.source_table.connector_id)
         try:
             connector_type = await self._validate_custom_sql_request(
-                connector_id, request.source_table.sql, project_id)
+                connector_id, request.source_table.sql, project_id
+            )
         except ValueError as error:
-            return table_api.SqlTableResolveResponse(errors=[
-                ApiValidationError(title='Invalid Custom SQL table',
-                                   message=str(error))
-            ])
+            return table_api.SqlTableResolveResponse(
+                errors=[
+                    ApiValidationError(
+                        title='Invalid Custom SQL table', message=str(error)
+                    )
+                ]
+            )
         reference = await self._execution_ref(connector_id, project_id)
         reference_stypes = await _sql_reference_stype_hints(
-            self._require_state_services(), _current_user_ctx.get(), project_id,
-            connector_id, request.source_table.sql,
-            connector_type=connector_type)
+            self._require_state_services(),
+            _current_user_ctx.get(),
+            project_id,
+            connector_id,
+            request.source_table.sql,
+            connector_type=connector_type,
+        )
         return await DataBackend._execute_single_activity(
             self._data_backend_ctx,
             validate_custom_sql,
@@ -809,7 +861,8 @@ class TableDriver:
     ) -> ConnectorType:
         """Reject unsafe or out-of-scope SQL before any worker dispatch."""
         connector = await self._connector_service().get_for_project(
-            ProjectID(project_id), connector_id, _current_user_ctx.get())
+            ProjectID(project_id), connector_id, _current_user_ctx.get()
+        )
         connector_type = ConnectorType(connector.config.type.value)
         authoritative_sql_connector_type(connector_type)
         advisory_read_only_check(sql, connector_type)
@@ -826,7 +879,8 @@ class TableDriver:
         callers that must be authoritative (name canonicalization) let it
         propagate."""
         connector = await self._connector_service().get_for_project(
-            ProjectID(project_id), connector_id, _current_user_ctx.get())
+            ProjectID(project_id), connector_id, _current_user_ctx.get()
+        )
         return ConnectorType(connector.config.type.value)
 
     async def _canonicalize_custom_sql_name(
@@ -860,8 +914,7 @@ class TableDriver:
         """
         if not table.is_sql:
             return table
-        connector_type = await self._sql_dialect(table.get_connector_id(),
-                                                 project_id)
+        connector_type = await self._sql_dialect(table.get_connector_id(), project_id)
         return canonicalize_custom_sql_source(table, connector_type)
 
     async def get_table(
@@ -902,9 +955,8 @@ class TableDriver:
             table_fpid,
         )
         if table_entry is None:
-            raise KeyError(f"Table id {table_fpid} is not found")
-        return (await
-                self._table_resource_responses_from_entries([table_entry]))[0]
+            raise KeyError(f'Table id {table_fpid} is not found')
+        return (await self._table_resource_responses_from_entries([table_entry]))[0]
 
     async def get_table_by_name(
         self,
@@ -938,12 +990,12 @@ class TableDriver:
             comprehensive table information including statistics.
         """
         await self._require_project_access(project_id)
-        table_entry = await self._require_table_service(
-        ).get_table_entry_by_alias(ProjectID(project_id), name)
+        table_entry = await self._require_table_service().get_table_entry_by_alias(
+            ProjectID(project_id), name
+        )
         if table_entry is None:
-            raise KeyError(f"Table name {name} is not found")
-        return (await
-                self._table_resource_responses_from_entries([table_entry]))[0]
+            raise KeyError(f'Table name {name} is not found')
+        return (await self._table_resource_responses_from_entries([table_entry]))[0]
 
     async def resolve_project_table(
         self,
@@ -965,10 +1017,12 @@ class TableDriver:
             _, _, fpid = TableIDv2.parse(table_id)
             assert fpid is not None
             table_entry = await self._require_table_service().get_table_entry(
-                project_id, fpid)
+                project_id, fpid
+            )
         except ValueError:
-            table_entry = await self._require_table_service(
-            ).get_table_entry_by_alias(project_id, table_id_or_name)
+            table_entry = await self._require_table_service().get_table_entry_by_alias(
+                project_id, table_id_or_name
+            )
         if not table_entry:
             raise TableDoesNotExistError(table_id_or_name)
         return table_entry
@@ -986,21 +1040,22 @@ class TableDriver:
         """List table names scoped to a project using project-local aliases."""
         project_id = ProjectID(project_id)
         await self._require_project_access(project_id)
-        entries = await self._require_table_service().list_named_tables(
-            project_id)
+        entries = await self._require_table_service().list_named_tables(project_id)
         return [
             ListResponse(
                 name=entry.alias,
                 id=TableIDv2.public(
                     pquery_id=None,
-                    table_name=TableName("NA"),
+                    table_name=TableName('NA'),
                     fpid=entry.id,
                 ),
                 connector_id=entry.config.get_connector_id(),
                 source_table_name=str(entry.config.get_source_table_name()),
                 timestamps=entry.timestamps,
                 table_kind=derive_table_kind(entry.config),
-            ) for entry in entries if entry.alias
+            )
+            for entry in entries
+            if entry.alias
         ]
 
     async def list_table_names(
@@ -1026,20 +1081,21 @@ class TableDriver:
             lightweight information about all tables.
         """
         await self._require_project_access(project_id)
-        table_entries = await self._list_named_table_entries(
-            ProjectID(project_id))
+        table_entries = await self._list_named_table_entries(ProjectID(project_id))
         return [
             ListResponse(
                 name=entry.alias,
                 id=TableIDv2.compose(
                     None,
-                    TableName("NA"),
+                    TableName('NA'),
                     FPID(entry.id),
                 ),
                 connector_id=entry.config.get_connector_id(),
                 source_table_name=str(entry.config.get_source_table_name()),
                 timestamps=entry.timestamps,
-            ) for entry in table_entries if entry.alias
+            )
+            for entry in table_entries
+            if entry.alias
         ]
 
     async def get_col_stats_and_sample_rows(
@@ -1077,12 +1133,10 @@ class TableDriver:
         _, _, table_fpid = TableIDv2.parse(id)
         if table_fpid is None:
             raise TableDoesNotExistError(id)
-        table_def = await self._get_table_definition_by_id(
-            ProjectID(project_id), id)
+        table_def = await self._get_table_definition_by_id(ProjectID(project_id), id)
         if table_def is None:
             raise TableDoesNotExistError(id)
-        reference = await self._execution_ref(table_def.get_connector_id(),
-                                              project_id)
+        reference = await self._execution_ref(table_def.get_connector_id(), project_id)
         return await DataBackend._execute_single_activity(
             self._data_backend_ctx,
             get_table_col_stats_and_sample_rows_activity,
@@ -1125,7 +1179,8 @@ class TableDriver:
         """
         await self._require_project_access(project_id)
         table_entries = await self._require_table_service().list_tables(
-            ProjectID(project_id), connector_id=connector_id)
+            ProjectID(project_id), connector_id=connector_id
+        )
         return await self._table_resource_responses_from_entries(
             table_entries,
             fetch_column_stats=fetch_column_stats,
@@ -1198,13 +1253,15 @@ class TableDriver:
         typed_project_id = ProjectID(project_id)
         await self._require_project_access(typed_project_id)
         existing = await self._require_table_service().get_table_entry_by_alias(
-            typed_project_id, name)
+            typed_project_id, name
+        )
         if existing is None:
             return ValidateNameResponse(is_valid=True, error_msg=None)
         if exclude_table_id is not None:
             try:
                 _, _, excluded_fpid = TableIDv2.parse(
-                    TableIDv2.from_public(exclude_table_id))
+                    TableIDv2.from_public(exclude_table_id)
+                )
             except ValueError:
                 excluded_fpid = None
             if excluded_fpid == existing.id:
@@ -1237,21 +1294,21 @@ class TableDriver:
         _, table_name, fpid = TableIDv2.parse(table_id)
         if fpid is None:
             raise ValueError(
-                f"Unsupported table ID: {table_id}." +
-                " Please pass a table ID with the format: pquery_id.table_name-fpid."
+                f'Unsupported table ID: {table_id}.'
+                + ' Please pass a table ID with the format: pquery_id.table_name-fpid.'
             )
         configs = await self._get_many_table_configs_for_sdk_from_entries(
             ProjectID(project_id),
             {table_name: fpid},
-            await self._get_table_entries_by_fpids(ProjectID(project_id),
-                                                   [fpid]),
+            await self._get_table_entries_by_fpids(ProjectID(project_id), [fpid]),
         )
         connector_configs, table_configs = configs
 
         return make_stype_and_dtype_sdk_compat(
-            generate_conn_graph_or_table_sdk_script(connector_configs,
-                                                    table_configs,
-                                                    project_id=project_id))
+            generate_conn_graph_or_table_sdk_script(
+                connector_configs, table_configs, project_id=project_id
+            )
+        )
 
     async def get_table_validation(
         self,
@@ -1274,8 +1331,7 @@ class TableDriver:
         """
         await self._require_project_access(project_id)
         table_id = TableIDv2(table_id)
-        table_entry = await self._get_table_entry_by_id(ProjectID(project_id),
-                                                        table_id)
+        table_entry = await self._get_table_entry_by_id(ProjectID(project_id), table_id)
 
         if not table_entry:
             raise TableDoesNotExistError(table_id)
@@ -1286,8 +1342,9 @@ class TableDriver:
             # Check if source table already has successfully ingested data_version
             src_table_data_ver = (
                 await get_active_cache().table_version_cache.get.coroutine(
-                    table_def.get_connector_id(),
-                    table_def.get_source_table_name()))
+                    table_def.get_connector_id(), table_def.get_source_table_name()
+                )
+            )
 
             # Refresh the source table's data version if needed
             if src_table_data_ver is None:
@@ -1296,8 +1353,8 @@ class TableDriver:
             src_table_data_ver = data_version
 
         data_ver = TableDataVersion(src_table_data_ver)
-        refresh_result = (await DataBackend.get_many_table_refresh_results([
-            (table_def, data_ver)
-        ]))[0]
+        refresh_result = (
+            await DataBackend.get_many_table_refresh_results([(table_def, data_ver)])
+        )[0]
 
         return refresh_result

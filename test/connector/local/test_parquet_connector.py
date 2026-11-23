@@ -41,10 +41,10 @@ from kumo.stats import compute_col_stats_python
 from kumo.validation.validation import ValidationException
 from statedb.config.typing import to_pandas_type
 
-TEST_TABLE_PARQUET_FILE = "test_table.parquet"
+TEST_TABLE_PARQUET_FILE = 'test_table.parquet'
 
 
-def get_cur_dir_path(file_name="test_table.parquet"):
+def get_cur_dir_path(file_name='test_table.parquet'):
     root_dir = osp.dirname(osp.dirname(osp.realpath(__file__)))
     file_path = osp.join(root_dir, file_name)
     return file_path, root_dir
@@ -84,9 +84,7 @@ def test_parquet_connector_load():
     df = connector.read_table('TRANS', pkey, cols)
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
 
     df = connector.read_table('TRANS', pkey, cols, num_rows=1234)
     assert df.shape[0] == 1234
@@ -99,18 +97,18 @@ def test_bounded_read_spans_row_groups_and_dataset_files(tmp_path):
     root = tmp_path / 'parts'
     root.mkdir()
     for part, start in enumerate((0, 4)):
-        table = pa.table(
-            {'id': pa.array(range(start, start + 4), type=pa.int64())})
+        table = pa.table({'id': pa.array(range(start, start + 4), type=pa.int64())})
         pq.write_table(table, root / f'part-{part}.parquet', row_group_size=2)
 
     connector = ParquetConnector('parquet', root_dir=str(tmp_path))
-    sample = connector.load_dataset(str(root), 'parquet', cols=['id'],
-                                    num_rows=6)
+    sample = connector.load_dataset(str(root), 'parquet', cols=['id'], num_rows=6)
 
     assert sample.columns.tolist() == ['id']
     assert sample['id'].tolist() == list(range(6))
-    assert connector.load_dataset(str(root), 'parquet', cols=[],
-                                  num_rows=6).shape == (6, 0)
+    assert connector.load_dataset(str(root), 'parquet', cols=[], num_rows=6).shape == (
+        6,
+        0,
+    )
 
 
 def test_parquet_connector_load_ordered(mocker):
@@ -120,13 +118,17 @@ def test_parquet_connector_load_ordered(mocker):
     connector = ParquetConnector('parquet', root_dir=root_dir)
     spy_load_file = mocker.spy(connector, 'load_file')
     # Call read_table_sample to load the table
-    df = connector.read_table_sample('COUPON_PURCHASE_PREDICTION', num_rows=12,
-                                     skip_cache=True)
+    df = connector.read_table_sample(
+        'COUPON_PURCHASE_PREDICTION', num_rows=12, skip_cache=True
+    )
     assert df.shape[0] == 12
     # Check that the smallest file was loaded.
     spy_load_file.assert_called_once_with(
         osp.join(root_dir, 'COUPON_PURCHASE_PREDICTION', 'USER_LIST.parquet'),
-        cols=None, num_rows=12, col_types={})
+        cols=None,
+        num_rows=12,
+        col_types={},
+    )
 
 
 def test_error_on_large_partition(monkeypatch: pytest.MonkeyPatch, caplog):
@@ -137,8 +139,9 @@ def test_error_on_large_partition(monkeypatch: pytest.MonkeyPatch, caplog):
 
     monkeypatch.setenv('PARQUET_PARTITION_SIZE', '1')
     with caplog.at_level(logging.ERROR):
-        connector.read_table_sample('COUPON_PURCHASE_PREDICTION', num_rows=12,
-                                    skip_cache=True)
+        connector.read_table_sample(
+            'COUPON_PURCHASE_PREDICTION', num_rows=12, skip_cache=True
+        )
     assert 'Bad parquet partitioning' in caplog.text
 
 
@@ -146,36 +149,41 @@ def test_object_store_hive_dataset_preserves_partitions(monkeypatch, tmp_path):
     root = tmp_path / 'events'
     files = []
     for country, year, row_id in [('US', 2025, 1), ('CA', 2026, 2)]:
-        file_path = (root / f'country={country}' / f'year={year}' /
-                     'day=2026-07-11' / 'part-000.parquet')
+        file_path = (
+            root
+            / f'country={country}'
+            / f'year={year}'
+            / 'day=2026-07-11'
+            / 'part-000.parquet'
+        )
         file_path.parent.mkdir(parents=True)
-        pd.DataFrame({
-            'id': [row_id, row_id + 10]
-        }).to_parquet(file_path, index=False)
+        pd.DataFrame({'id': [row_id, row_id + 10]}).to_parquet(file_path, index=False)
         files.append(file_path)
 
     physical = tmp_path / 'physical'
-    monkeypatch.setattr('kumo.data.utils.get_materialize_path',
-                        lambda *args: str(physical))
-    ParquetConnector('parquet',
-                     str(tmp_path)).export_table('events',
-                                                 SimpleNamespace(cols={}),
-                                                 'version')
+    monkeypatch.setattr(
+        'kumo.data.utils.get_materialize_path', lambda *args: str(physical)
+    )
+    ParquetConnector('parquet', str(tmp_path)).export_table(
+        'events', SimpleNamespace(cols={}), 'version'
+    )
     physical_table = pd.read_parquet(physical)
     assert physical_table.columns.tolist() == ['id', 'country', 'year', 'day']
     assert sorted(physical_table['country']) == ['CA', 'CA', 'US', 'US']
     assert sorted(physical_table['year']) == [2025, 2025, 2026, 2026]
 
-    monkeypatch.setattr('kumo.connector.object_store_access.source_access',
-                        lambda path: None)
-    uri = f"gs://{root.as_posix().lstrip('/')}"
+    monkeypatch.setattr(
+        'kumo.connector.object_store_access.source_access', lambda path: None
+    )
+    uri = f'gs://{root.as_posix().lstrip("/")}'
     monkeypatch.setattr(fsutil, 'is_gcs', lambda path: path == uri)
     monkeypatch.setattr(fsutil, 'is_s3', lambda path: False)
     monkeypatch.setattr(fsutil, 'isdir', lambda path: path == uri)
     monkeypatch.setattr(
         'kumo.connector.parquet_connector._list_dataset_files',
-        lambda path, suffixes:
-        [f"gs://{file.as_posix().lstrip('/')}" for file in files],
+        lambda path, suffixes: [
+            f'gs://{file.as_posix().lstrip("/")}' for file in files
+        ],
     )
     monkeypatch.setattr(
         fsutil,
@@ -185,17 +193,14 @@ def test_object_store_hive_dataset_preserves_partitions(monkeypatch, tmp_path):
 
     dataset = ParquetConnector('parquet', uri)._parquet_dataset(uri)
     assert dataset.schema.names == ['id', 'country', 'year', 'day']
-    assert sorted(
-        dataset.to_table().to_pandas()['country']) == ['CA', 'CA', 'US', 'US']
-    sample = ParquetConnector('parquet',
-                              uri).load_dataset(uri, 'parquet', num_rows=4)
+    assert sorted(dataset.to_table().to_pandas()['country']) == ['CA', 'CA', 'US', 'US']
+    sample = ParquetConnector('parquet', uri).load_dataset(uri, 'parquet', num_rows=4)
     assert sorted(sample['country']) == ['CA', 'CA', 'US', 'US']
     assert isinstance(sample['country'].dtype, pd.CategoricalDtype)
     assert sorted(sample['year']) == [2025, 2025, 2026, 2026]
-    partition_only = ParquetConnector('parquet',
-                                      uri).load_dataset(uri, 'parquet',
-                                                        cols=['country'],
-                                                        num_rows=1)
+    partition_only = ParquetConnector('parquet', uri).load_dataset(
+        uri, 'parquet', cols=['country'], num_rows=1
+    )
     assert partition_only.columns.tolist() == ['country']
     assert len(partition_only) == 1
     assert partition_only['country'].iloc[0] in {'CA', 'US'}
@@ -208,16 +213,18 @@ def test_object_store_flat_dataset_uses_physical_schema(monkeypatch, tmp_path):
     for row_id, file_path in enumerate(files, start=1):
         pd.DataFrame({'id': [row_id]}).to_parquet(file_path, index=False)
 
-    monkeypatch.setattr('kumo.connector.object_store_access.source_access',
-                        lambda path: None)
-    uri = f"gs://{root.as_posix().lstrip('/')}"
+    monkeypatch.setattr(
+        'kumo.connector.object_store_access.source_access', lambda path: None
+    )
+    uri = f'gs://{root.as_posix().lstrip("/")}'
     monkeypatch.setattr(fsutil, 'is_gcs', lambda path: path == uri)
     monkeypatch.setattr(fsutil, 'is_s3', lambda path: False)
     monkeypatch.setattr(fsutil, 'isdir', lambda path: path == uri)
     monkeypatch.setattr(
         'kumo.connector.parquet_connector._list_dataset_files',
-        lambda path, suffixes:
-        [f"gs://{file.as_posix().lstrip('/')}" for file in files],
+        lambda path, suffixes: [
+            f'gs://{file.as_posix().lstrip("/")}' for file in files
+        ],
     )
     monkeypatch.setattr(
         fsutil,
@@ -243,36 +250,39 @@ def test_parquet_connector_index_level_col():
     table_version = connector.get_data_version('Movies')
     # Create a TableFingerprint for the table
     from kumo_core.types.schema import IngestedTableFingerprint
-    table_fp = IngestedTableFingerprint(connector.name, 'Movies', cols={},
-                                        pkey=None, time_col=None,
-                                        end_time_col=None)
+
+    table_fp = IngestedTableFingerprint(
+        connector.name, 'Movies', cols={}, pkey=None, time_col=None, end_time_col=None
+    )
     get_active_cache().save_col_stats_cache(table_fp, table_version)
     get_active_cache().load_col_stats_cache(table_fp, table_version)
     cache_sample = get_active_cache().table_samples_cache.get_v1(
-        connector.name, 'Movies', table_version)
+        connector.name, 'Movies', table_version
+    )
     assert set(cache_sample.columns) == {'MovieID', 'YearOfRelease', 'Title'}
 
 
 def test_parquet_connector_infer_timestamp_dtypes():
     # Generate a test DataFrame
     file_path, root_dir = get_cur_dir_path(TEST_TABLE_PARQUET_FILE)
-    df = pd.DataFrame({
-        "0": [0, 1],
-        "1": ["random", "string"],
-        "2": [pd.Timestamp('2017-01-01T12'),
-              pd.Timestamp('2018-01-01T12')],
-        "some_valid_DATE": ["05/11/2011", "03/11/2011"],
-        "another_TIME": ["23:58:27", "22:53:21"],
-        "bad_DATE": ["wait! these", "aren't datas"],
-        "OOB_DATE": ["05/11/1011", "01/05/2994"],
-        "not_DATE": [123123.01, 420e-13]
-    })
+    df = pd.DataFrame(
+        {
+            '0': [0, 1],
+            '1': ['random', 'string'],
+            '2': [pd.Timestamp('2017-01-01T12'), pd.Timestamp('2018-01-01T12')],
+            'some_valid_DATE': ['05/11/2011', '03/11/2011'],
+            'another_TIME': ['23:58:27', '22:53:21'],
+            'bad_DATE': ['wait! these', "aren't datas"],
+            'OOB_DATE': ['05/11/1011', '01/05/2994'],
+            'not_DATE': [123123.01, 420e-13],
+        }
+    )
     # Write it to Parquet file
     df.to_parquet(file_path)
 
     # Read if from ParquetConnector
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["test_table"])[0]
+    metadata = connector.get_table_metadata(['test_table'])[0]
     assert metadata.cols[0].dtype == Dtype.int64
     assert metadata.cols[1].dtype == Dtype.string
     assert metadata.cols[2].dtype == Dtype.date
@@ -286,24 +296,27 @@ def test_parquet_connector_infer_timestamp_dtypes():
 def test_parquet_connector_read_boolean_dtypes():
     # Generate a test DataFrame
     file_path, root_dir = get_cur_dir_path(TEST_TABLE_PARQUET_FILE)
-    int_ser = pd.Series([0, 1, 2], dtype="int64")
-    bool_ser = pd.Series([True, False, True], dtype="bool")
-    df = pd.DataFrame({
-        "0": int_ser,
-        "1": bool_ser,
-    })
+    int_ser = pd.Series([0, 1, 2], dtype='int64')
+    bool_ser = pd.Series([True, False, True], dtype='bool')
+    df = pd.DataFrame(
+        {
+            '0': int_ser,
+            '1': bool_ser,
+        }
+    )
     # Write it to Parquet file
     df.to_parquet(file_path)
 
     # Read if from ParquetConnector
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["test_table"])[0]
+    metadata = connector.get_table_metadata(['test_table'])[0]
     assert metadata.cols[0].dtype == Dtype.int64
     assert metadata.cols[1].dtype == Dtype.bool
 
     # Reading the data should have Pd.BooleanDtype for the boolean column
-    df = connector.read_table('test_table', pkey='0',
-                              cols=[('1', Stype.categorical, Dtype.bool)])
+    df = connector.read_table(
+        'test_table', pkey='0', cols=[('1', Stype.categorical, Dtype.bool)]
+    )
     assert df.dtypes.values.tolist() == [pd.BooleanDtype()]
 
 
@@ -314,10 +327,12 @@ def test_parquet_connector_handle_unsupported_types():
 
     # Generate a test DataFrame
     file_path, root_dir = get_cur_dir_path(TEST_TABLE_PARQUET_FILE)
-    df = pd.DataFrame({
-        "int_col": [-1, 0, 1],
-        "list_col": [[1.0, 2.0], [3.1, 4.1], [5.1, 6.1]],
-    })
+    df = pd.DataFrame(
+        {
+            'int_col': [-1, 0, 1],
+            'list_col': [[1.0, 2.0], [3.1, 4.1], [5.1, 6.1]],
+        }
+    )
 
     table = pa.Table.from_pandas(df)
     # Write it to Parquet file
@@ -325,7 +340,7 @@ def test_parquet_connector_handle_unsupported_types():
 
     # Read if from ParquetConnector
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["test_table"])[0]
+    metadata = connector.get_table_metadata(['test_table'])[0]
     assert metadata.cols[0].dtype == Dtype.int64
     assert metadata.cols[1].dtype == Dtype.floatlist
 
@@ -333,7 +348,7 @@ def test_parquet_connector_handle_unsupported_types():
     root_dir = osp.dirname(osp.dirname(osp.realpath(__file__)))
     root_dir = osp.join(root_dir, '..', 'parquet_data', 'TEST')
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["TRANS4"])[0]
+    metadata = connector.get_table_metadata(['TRANS4'])[0]
     assert metadata.cols[0].dtype == Dtype.int64
     assert metadata.cols[1].dtype == Dtype.unsupported  # null type
     assert metadata.cols[2].dtype == Dtype.int64
@@ -364,16 +379,19 @@ def test_parquet_connector_handle_categorical_types():
     file_path, root_dir = get_cur_dir_path(TEST_TABLE_PARQUET_FILE)
     cat_ser = pd.Series(
         ['Awesome', 'Amazing', 'Awesome'],
-        dtype=(pd.CategoricalDtype(categories=['Awesome', 'Amazing'])))
-    df = pd.DataFrame({
-        "0": cat_ser,
-    })
+        dtype=(pd.CategoricalDtype(categories=['Awesome', 'Amazing'])),
+    )
+    df = pd.DataFrame(
+        {
+            '0': cat_ser,
+        }
+    )
     # Write it to Parquet file
     df.to_parquet(file_path)
 
     # Read if from ParquetConnector
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["test_table"])[0]
+    metadata = connector.get_table_metadata(['test_table'])[0]
     col = connector.read_table('test_table', cols=metadata.cols)['0'].tolist()
     assert col == ['Awesome', 'Amazing', 'Awesome']
     assert metadata.cols[0].dtype == Dtype.string
@@ -388,12 +406,12 @@ def test_parquet_connector_list_types(monkeypatch):
     root_dir = osp.dirname(osp.dirname(osp.realpath(__file__)))
     root_dir = osp.join(root_dir, '..', 'parquet_data', 'movielens_lists')
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["movie_stringlist"])[0]
+    metadata = connector.get_table_metadata(['movie_stringlist'])[0]
 
     genres_col = [col for col in metadata.cols if col.name == 'genres'][0]
     assert genres_col.dtype == Dtype.stringlist
 
-    metadata = connector.get_table_metadata(["movie_intlist"])[0]
+    metadata = connector.get_table_metadata(['movie_intlist'])[0]
     genres_col = [col for col in metadata.cols if col.name == 'genres'][0]
     assert genres_col.dtype == Dtype.intlist
 
@@ -418,9 +436,7 @@ def test_parquet_connector_load_dataset():
     df = connector.read_table(table_name, pkey, cols)
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
     assert df.shape[0] == 3072
 
     df = connector.read_table(table_name, pkey, cols, num_rows=1234)
@@ -437,16 +453,13 @@ def test_parquet_connector_load_dataset():
 def test_parquet_connector_decimal():
     import pyarrow as pa
 
-    data = [{
-        "name": "ted",
-        "age": 34,
-        "value": 0.10
-    }, {
-        "name": "barney",
-        "age": 35,
-        "value": 1.2
-    }]
-    df = pd.DataFrame.from_dict(data, )
+    data = [
+        {'name': 'ted', 'age': 34, 'value': 0.10},
+        {'name': 'barney', 'age': 35, 'value': 1.2},
+    ]
+    df = pd.DataFrame.from_dict(
+        data,
+    )
     df['age'] = df['age'].astype(int)
     df['age_decimal'] = df['age'].astype(str).map(decimal.Decimal)
     df['value'] = df['value'].astype(float, 2)
@@ -460,21 +473,24 @@ def test_parquet_connector_decimal():
         np.dtype('int64'),
         np.dtype('float64'),
         np.dtype('int64'),
-        np.dtype('float64')
+        np.dtype('float64'),
     ]
 
 
 def test_parquet_connector_decimal_to_str():
     import pyarrow as pa
 
-    data = [{
-        "value": decimal.Decimal(12345678901234567),
-    }, {
-        "value": decimal.Decimal(12345678901234568),
-    }]
+    data = [
+        {
+            'value': decimal.Decimal(12345678901234567),
+        },
+        {
+            'value': decimal.Decimal(12345678901234568),
+        },
+    ]
     df = pd.DataFrame.from_dict(data)
     col_types = {
-        "value": np.dtype('int64'),
+        'value': np.dtype('int64'),
     }
     table = clean_parquet_table(pa.Table.from_pandas(df), col_types)
     df = table.to_pandas(types_mapper=to_pandas_type, timestamp_as_object=True)
@@ -484,37 +500,26 @@ def test_parquet_connector_decimal_to_str():
 def test_parquet_connector_validate():
     import pyarrow as pa
 
-    data = [{
-        "value": decimal.Decimal(12345678901234567),
-        "sv": "abc",
-    }, {
-        "value": decimal.Decimal(12345678901234568),
-        "sv": "abc",
-    }]
+    data = [
+        {
+            'value': decimal.Decimal(12345678901234567),
+            'sv': 'abc',
+        },
+        {
+            'value': decimal.Decimal(12345678901234568),
+            'sv': 'abc',
+        },
+    ]
     df = pd.DataFrame.from_dict(data)
     validate_parquet_schema(pa.Table.from_pandas(df).schema)
 
     # Dictionary types are not supported in Kumo, should fail:
     with pytest.raises(ValidationException):
-        data = [{
-            'col1': 1,
-            'col2': 'a',
-            'col3': {
-                'a': 'f'
-            }
-        }, {
-            'col1': 2,
-            'col2': 'b',
-            'col3': {
-                'b': 'e'
-            }
-        }, {
-            'col1': 3,
-            'col2': 'c',
-            'col3': {
-                'c': 'd'
-            }
-        }]
+        data = [
+            {'col1': 1, 'col2': 'a', 'col3': {'a': 'f'}},
+            {'col1': 2, 'col2': 'b', 'col3': {'b': 'e'}},
+            {'col1': 3, 'col2': 'c', 'col3': {'c': 'd'}},
+        ]
         df = pd.DataFrame.from_records(data)
         validate_parquet_schema(pa.Table.from_pandas(df).schema)
 
@@ -579,15 +584,13 @@ def test_parquet_connector_iterator():
     try:
         fsutil.makedirs(osp.join(test_dir, 'TRANS_TEST'), exist_ok=True)
         for i in range(int(len(df) / 1000) + 1):
-            seg_df = df[i * 1000:i * 1000 + 1000]
-            seg_df.to_parquet(
-                osp.join(test_dir, 'TRANS_TEST', 'seg_%d.parquet' % i))
+            seg_df = df[i * 1000 : i * 1000 + 1000]
+            seg_df.to_parquet(osp.join(test_dir, 'TRANS_TEST', 'seg_%d.parquet' % i))
 
         connector = ParquetConnector('parquet', root_dir=test_dir)
-        test_df = pd.concat([
-            d
-            for d in connector.get_iterator('TRANS_TEST', pkey=pkey, cols=cols)
-        ])
+        test_df = pd.concat(
+            [d for d in connector.get_iterator('TRANS_TEST', pkey=pkey, cols=cols)]
+        )
 
         assert test_df.equals(df)
     finally:
@@ -595,16 +598,13 @@ def test_parquet_connector_iterator():
 
 
 def test_write_parquet_table():
-    data = [{
-        "name": "ted",
-        "age": 34,
-        "value": 0.10
-    }, {
-        "name": "barney",
-        "age": 35,
-        "value": 1.2
-    }]
-    df = pd.DataFrame.from_dict(data, )
+    data = [
+        {'name': 'ted', 'age': 34, 'value': 0.10},
+        {'name': 'barney', 'age': 35, 'value': 1.2},
+    ]
+    df = pd.DataFrame.from_dict(
+        data,
+    )
 
     temp_dir = osp.join(get_home_dir(), 'test_csv')
     fsutil.makedirs(temp_dir, exist_ok=True)
@@ -622,8 +622,9 @@ def test_parquet_col_types_infer_and_cast():
     # on) were dropped. The surviving load-bearing surface is the local
     # dtype + stype inference and the ``compute_col_stats_python`` NUM_NA
     # checks over a read-table-sample frame.
-    root = osp.join(osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data',
-                    'SYNTHETIC')
+    root = osp.join(
+        osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data', 'SYNTHETIC'
+    )
     connector = ParquetConnector('parquet', root_dir=root)
 
     table_metadata_configs = connector.get_table_metadata()
@@ -650,7 +651,7 @@ def test_parquet_col_types_infer_and_cast():
             'date': Dtype.string,
             'lists': Dtype.stringlist,
             'multicat1': Dtype.string,
-            'multicat2': Dtype.string
+            'multicat2': Dtype.string,
         },
         # DAT_1 and TIME_1 have string types from pyarrow since they are not
         # time since epoch formatted - date formats like DAT_1 can be manually
@@ -670,9 +671,7 @@ def test_parquet_col_types_infer_and_cast():
             'TIME_4': Dtype.date,
             'TIME_5': Dtype.date,
         },
-        f'parquet.{table_name_3}': {
-            'ID': Dtype.float64
-        }
+        f'parquet.{table_name_3}': {'ID': Dtype.float64},
     }
     expected_stypes = {
         f'parquet.{table_name_2}': {
@@ -693,7 +692,7 @@ def test_parquet_col_types_infer_and_cast():
             # types_infer_and_cast`` xfail).
             'lists': Stype.multicategorical,
             'multicat1': Stype.multicategorical,
-            'multicat2': Stype.multicategorical
+            'multicat2': Stype.multicategorical,
         },
         f'parquet.{table_name_1}': {
             'NUM_1': Stype.numerical,
@@ -712,9 +711,7 @@ def test_parquet_col_types_infer_and_cast():
             'TIME_4': Stype.timestamp,
             'TIME_5': Stype.timestamp,
         },
-        f'parquet.{table_name_3}': {
-            'ID': Stype.numerical
-        }
+        f'parquet.{table_name_3}': {'ID': Stype.numerical},
     }
 
     table_dict = {table.name: table for table in table_metadata_configs}
@@ -745,8 +742,8 @@ def test_parquet_col_types_infer_and_cast():
     # read table sample checks if the data can be cast to the assigned types
     # without failures
     df = connector.read_table_sample(
-        table_name_1,
-        cols=[col.base_config() for col in graph[table_name_1].cols])
+        table_name_1, cols=[col.base_config() for col in graph[table_name_1].cols]
+    )
     assert df.shape[0] == 100
     assert df.shape[1] == 13
 
@@ -755,8 +752,8 @@ def test_parquet_col_types_infer_and_cast():
         assert stats_result[ColStatType.NUM_NA].value == 0
 
     df = connector.read_table_sample(
-        table_name_2,
-        cols=[col.base_config() for col in graph[table_name_2].cols])
+        table_name_2, cols=[col.base_config() for col in graph[table_name_2].cols]
+    )
     assert df.shape[0] == 10000
     assert df.shape[1] == 10
 
@@ -766,8 +763,9 @@ def test_parquet_col_types_infer_and_cast():
 
 
 def test_duration_cast_to_timestamp():
-    root = osp.join(osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data',
-                    'SYNTHETIC')
+    root = osp.join(
+        osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data', 'SYNTHETIC'
+    )
     connector = ParquetConnector('parquet', root_dir=root)
     table_metadata_configs = connector.get_table_metadata()
 
@@ -795,13 +793,14 @@ def test_duration_cast_to_timestamp():
     graph[table.name].infer_dtypes_from_stypes()
 
     connector.read_table_sample(
-        table_name_2,
-        cols=[col.base_config() for col in graph[table.name].cols])
+        table_name_2, cols=[col.base_config() for col in graph[table.name].cols]
+    )
 
 
 def test_numeric_no_cast_to_timestamp():
-    root = osp.join(osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data',
-                    'SYNTHETIC')
+    root = osp.join(
+        osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data', 'SYNTHETIC'
+    )
     connector = ParquetConnector('parquet', root_dir=root)
     table_metadata_configs = connector.get_table_metadata()
 
@@ -824,8 +823,8 @@ def test_numeric_no_cast_to_timestamp():
     graph[table.name].infer_dtypes_from_stypes()
 
     connector.read_table_sample(
-        table_name_2,
-        cols=[col.base_config() for col in graph[table.name].cols])
+        table_name_2, cols=[col.base_config() for col in graph[table.name].cols]
+    )
 
 
 def test_tz_cast():
@@ -837,8 +836,9 @@ def test_tz_cast():
     ``read_table_sample`` and inspects the resulting pandas frame; the Rust
     ingest path preserves TZ-bearing rows, so all 1000 survive.
     """
-    root = osp.join(osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data',
-                    'SYNTHETIC')
+    root = osp.join(
+        osp.dirname(osp.dirname(osp.realpath(__file__))), '../parquet_data', 'SYNTHETIC'
+    )
     connector = ParquetConnector('parquet', root_dir=root)
 
     graph = Graph(name='test_graph')
@@ -873,10 +873,9 @@ def test_to_pandas_ns_safe_clamps_out_of_range_timestamp(caplog):
     future = datetime.datetime(3000, 1, 1)  # well past pd.Timestamp.max (2262)
     past = datetime.datetime(1011, 5, 11)  # well before pd.Timestamp.min (1677)
 
-    table = pa.table({
-        'ts':
-        pa.array([in_range, future, past, None], type=pa.timestamp('us'))
-    })
+    table = pa.table(
+        {'ts': pa.array([in_range, future, past, None], type=pa.timestamp('us'))}
+    )
 
     with caplog.at_level(logging.WARNING):
         df = to_pandas_ns_safe(table, types_mapper=to_pandas_type)
@@ -931,7 +930,8 @@ def test_to_pandas_ns_safe_clamps_out_of_range_duration(caplog):
 
     # ~1.16e13 days far exceeds the ns-representable timedelta range.
     table = pa.table(
-        {'dur': pa.array([1, 10**18, -10**18, None], type=pa.duration('s'))})
+        {'dur': pa.array([1, 10**18, -(10**18), None], type=pa.duration('s'))}
+    )
     with caplog.at_level(logging.WARNING):
         df = to_pandas_ns_safe(table, types_mapper=to_pandas_type)
 
@@ -939,8 +939,9 @@ def test_to_pandas_ns_safe_clamps_out_of_range_duration(caplog):
     assert col.dtype == np.dtype('timedelta64[ns]')
     assert col[0] == pd.Timedelta(seconds=1)
     # Clamped to in-range boundaries (not wrapped to a small/negative value).
-    assert col[1] == pd.Timedelta(pd.Timedelta.max.value // 1_000_000_000 *
-                                  1_000_000_000)
+    assert col[1] == pd.Timedelta(
+        pd.Timedelta.max.value // 1_000_000_000 * 1_000_000_000
+    )
     assert col[1] > pd.Timedelta(days=100_000)
     assert col[2] < pd.Timedelta(days=-100_000)
     assert pd.isna(col[3])
@@ -954,24 +955,25 @@ def test_parquet_connector_out_of_range_timestamp_not_wrapped():
     import pyarrow.parquet as pq
 
     file_path, root_dir = get_cur_dir_path(TEST_TABLE_PARQUET_FILE)
-    table = pa.table({
-        'id':
-        pa.array([0, 1, 2], type=pa.int64()),
-        'ts':
-        pa.array(
-            [
-                datetime.datetime(2000, 3, 1),
-                datetime.datetime(3000, 1, 1),  # out of ns range
-                datetime.datetime(2018, 6, 15),
-            ],
-            type=pa.timestamp('us'),
-        ),
-    })
+    table = pa.table(
+        {
+            'id': pa.array([0, 1, 2], type=pa.int64()),
+            'ts': pa.array(
+                [
+                    datetime.datetime(2000, 3, 1),
+                    datetime.datetime(3000, 1, 1),  # out of ns range
+                    datetime.datetime(2018, 6, 15),
+                ],
+                type=pa.timestamp('us'),
+            ),
+        }
+    )
     pq.write_table(table, file_path)
 
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    df = connector.read_table('test_table', pkey='id',
-                              cols=[('ts', Stype.timestamp, Dtype.date)])
+    df = connector.read_table(
+        'test_table', pkey='id', cols=[('ts', Stype.timestamp, Dtype.date)]
+    )
 
     ts = df['ts']
     assert ts.dtype == np.dtype('datetime64[ns]')
@@ -992,12 +994,13 @@ def test_parquet_connector_dont_infer_temporal_types():
     with tempfile.TemporaryDirectory() as tmp_dir:
         data = {
             'DATE_1': [
-                '2024-01-01 00:00:00', '2024-02-15 00:00:00',
-                '2024-03-30 00:00:00', '2024-04-12 00:00:00',
-                '2024-05-25 00:00:00'
+                '2024-01-01 00:00:00',
+                '2024-02-15 00:00:00',
+                '2024-03-30 00:00:00',
+                '2024-04-12 00:00:00',
+                '2024-05-25 00:00:00',
             ],
-            'TIME_1':
-            [1704060000, 1707984000, 1711800000, 1712908800, 1716609600]
+            'TIME_1': [1704060000, 1707984000, 1711800000, 1712908800, 1716609600],
         }
         df = pd.DataFrame(data)
 
@@ -1019,16 +1022,18 @@ def test_parquet_connector_dont_infer_temporal_types():
 
 
 def test_hosted_and_local_parquet_schema_inference_share_types():
-    schema = pa.schema([
-        ('small_integer', pa.decimal128(18, 0)),
-        ('wide_integer', pa.decimal128(38, 0)),
-        ('fraction', pa.decimal128(38, 2)),
-        ('dictionary', pa.dictionary(pa.int32(), pa.string())),
-        ('nested', pa.list_(pa.struct([('value', pa.int64())]))),
-        ('__index_level_0__', pa.int64()),
-        ('__index_level_12__suffix', pa.int64()),
-        ('__index_level_text__', pa.string()),
-    ])
+    schema = pa.schema(
+        [
+            ('small_integer', pa.decimal128(18, 0)),
+            ('wide_integer', pa.decimal128(38, 0)),
+            ('fraction', pa.decimal128(38, 2)),
+            ('dictionary', pa.dictionary(pa.int32(), pa.string())),
+            ('nested', pa.list_(pa.struct([('value', pa.int64())]))),
+            ('__index_level_0__', pa.int64()),
+            ('__index_level_12__suffix', pa.int64()),
+            ('__index_level_text__', pa.string()),
+        ]
+    )
     expected = {
         'small_integer': Dtype.int64,
         'wide_integer': Dtype.int64,
@@ -1040,31 +1045,35 @@ def test_hosted_and_local_parquet_schema_inference_share_types():
     existing = BaseColumnConfig('existing', dtype=Dtype.bool)
     metadata = TableMetadataConfig('table', 'table', 'source', cols=[existing])
     result = add_metadata_cols_from_parquet_dataset(
-        metadata, SimpleNamespace(schema=schema))
+        metadata, SimpleNamespace(schema=schema)
+    )
     assert result is metadata
     assert result.cols[0] is existing
-    assert [(column.name, column.dtype)
-            for column in result.cols[1:]] == list(expected.items())
+    assert [(column.name, column.dtype) for column in result.cols[1:]] == list(
+        expected.items()
+    )
     assert column_dtypes(schema) == expected
 
 
 def test_parquet_metadata_keeps_duplicate_field_occurrences():
     schema = pa.schema([('same', pa.int64()), ('same', pa.string())])
     metadata = TableMetadataConfig('table', 'table', 'source')
-    add_metadata_cols_from_parquet_dataset(metadata,
-                                           SimpleNamespace(schema=schema))
-    assert [(column.name, column.dtype)
-            for column in metadata.cols] == [('same', Dtype.int64),
-                                             ('same', Dtype.string)]
+    add_metadata_cols_from_parquet_dataset(metadata, SimpleNamespace(schema=schema))
+    assert [(column.name, column.dtype) for column in metadata.cols] == [
+        ('same', Dtype.int64),
+        ('same', Dtype.string),
+    ]
     assert column_dtypes(schema) == {'same': Dtype.string}
 
 
 def test_unsigned_parquet_columns_are_typed_read_and_profiled(tmp_path):
-    data = pa.table({
-        'u8': pa.array([0, 255, 1], pa.uint8()),
-        'u16': pa.array([65535, 0, 1], pa.uint16()),
-        'u32': pa.array([4294967295, 2, 0], pa.uint32()),
-    })
+    data = pa.table(
+        {
+            'u8': pa.array([0, 255, 1], pa.uint8()),
+            'u16': pa.array([65535, 0, 1], pa.uint16()),
+            'u32': pa.array([4294967295, 2, 0], pa.uint32()),
+        }
+    )
     pq.write_table(data, tmp_path / 'events.parquet')
     connector = ParquetConnector('parquet', root_dir=str(tmp_path))
     metadata = connector.get_table_metadata(['events'])[0]
@@ -1086,16 +1095,19 @@ def test_unsigned_parquet_columns_are_typed_read_and_profiled(tmp_path):
     assert all(col.stype is not None for col in graph[metadata.name].cols)
 
 
-def test_a_declared_dtype_over_an_unreadable_column_is_read_and_profiled(
-        tmp_path):
+def test_a_declared_dtype_over_an_unreadable_column_is_read_and_profiled(tmp_path):
     from kumo.connector.connector import _compute_col_stats_from_sample
     from kumo.graph.table import StypeInferralStats
 
     pq.write_table(
-        pa.table({
-            'big': pa.array([1, 2**63 - 1, 7], pa.uint64()),
-            'half': pa.array([1.5, None, 2.0], pa.float16()),
-        }), tmp_path / 'events.parquet')
+        pa.table(
+            {
+                'big': pa.array([1, 2**63 - 1, 7], pa.uint64()),
+                'half': pa.array([1.5, None, 2.0], pa.float16()),
+            }
+        ),
+        tmp_path / 'events.parquet',
+    )
     connector = ParquetConnector('parquet', root_dir=str(tmp_path))
     metadata = connector.get_table_metadata(['events'])[0]
     assert {col.dtype for col in metadata.cols} == {Dtype.unsupported}
@@ -1103,12 +1115,15 @@ def test_a_declared_dtype_over_an_unreadable_column_is_read_and_profiled(
     for col in metadata.cols:
         col.dtype = declared[col.name]
 
-    df = connector.read_table_sample('events', None, metadata.cols,
-                                     num_rows=10)
+    df = connector.read_table_sample('events', None, metadata.cols, num_rows=10)
     assert df['big'].tolist() == [1, 2**63 - 1, 7]
-    raw = connector.read_table_sample('events', None, metadata.cols,
-                                      num_rows=10, cast_response=False)
+    raw = connector.read_table_sample(
+        'events', None, metadata.cols, num_rows=10, cast_response=False
+    )
     stats = _compute_col_stats_from_sample(
-        {col: StypeInferralStats.REQUIRED_STATS
-         for col in metadata.cols}, raw, approx=True, data_version=None)
+        {col: StypeInferralStats.REQUIRED_STATS for col in metadata.cols},
+        raw,
+        approx=True,
+        data_version=None,
+    )
     assert all(stats[col] for col in metadata.cols)

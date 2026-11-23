@@ -33,12 +33,12 @@ class ArtifactRouterV1:
 
         self.router = APIRouter(
             prefix='/artifact',
-            tags=["API v1 (Under Development): Kumo Artifact"],
+            tags=['API v1 (Under Development): Kumo Artifact'],
             dependencies=[Depends(api_key_auth)],
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.create_artifact_export_job,
             response_model=api.ArtifactExportResponse,
             summary='Launch an artifact export job.',
@@ -47,13 +47,13 @@ class ArtifactRouterV1:
             response_description='Export job summary for the artifact.',
             responses={
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description': "The artifact is missing."
+                    'description': 'The artifact is missing.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/{job_id}",
+            '/{job_id}',
             self.get_artifact_export_job_status,
             response_model=JobStatus,
             methods=['GET'],
@@ -62,13 +62,12 @@ class ArtifactRouterV1:
         )
 
         self.router.add_api_route(
-            "/{job_id}/cancel",
+            '/{job_id}/cancel',
             self.cancel_artifact_export_job,
             response_model=JobStatus,
             methods=['POST'],
             summary='Cancel an artifact export job.',
-            response_description=(
-                'Cancel and returns the artifact export job status.'),
+            response_description=('Cancel and returns the artifact export job status.'),
         )
 
     async def create_artifact_export_job(
@@ -94,7 +93,8 @@ class ArtifactRouterV1:
     ) -> JobStatus:
         with wrap_driver_errors():
             return await self._driver.get_artifact_export_job_status(
-                job_id, ProjectID(project_id))
+                job_id, ProjectID(project_id)
+            )
 
     async def cancel_artifact_export_job(
         self,
@@ -103,4 +103,5 @@ class ArtifactRouterV1:
     ) -> JobStatus:
         with wrap_driver_errors():
             return await self._driver.cancel_artifact_export_job(
-                job_id, ProjectID(project_id))
+                job_id, ProjectID(project_id)
+            )

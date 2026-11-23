@@ -6,6 +6,7 @@
 
 Uses short thresholds/intervals so the test suite stays fast.
 """
+
 import asyncio
 import logging
 import threading
@@ -37,8 +38,9 @@ async def test_healthy_loop_does_not_trigger(caplog):
         probe_interval_sec=0.05,
         check_interval_sec=0.05,
     )
-    with caplog.at_level(logging.ERROR,
-                         logger='temporalio_commons.event_loop_watchdog'):
+    with caplog.at_level(
+        logging.ERROR, logger='temporalio_commons.event_loop_watchdog'
+    ):
         watchdog.start()
         # Yield often enough that the probe runs and the watchdog never sees
         # a gap larger than the threshold.
@@ -46,16 +48,14 @@ async def test_healthy_loop_does_not_trigger(caplog):
             await asyncio.sleep(0.05)
         watchdog.stop()
 
-    stall_errors = [
-        r for r in caplog.records if 'STALL DETECTED' in r.getMessage()
-    ]
+    stall_errors = [r for r in caplog.records if 'STALL DETECTED' in r.getMessage()]
     assert stall_errors == [], (
-        f'Watchdog falsely flagged a healthy loop as stalled: {stall_errors}')
+        f'Watchdog falsely flagged a healthy loop as stalled: {stall_errors}'
+    )
 
 
 @pytest.mark.asyncio
-async def test_blocked_loop_triggers_stall_and_captures_stacks(
-        caplog, tmp_path):
+async def test_blocked_loop_triggers_stall_and_captures_stacks(caplog, tmp_path):
     """Blocking the loop past the threshold should log ERROR with stacks
     and write a dump file under ``dump_dir``."""
     watchdog = EventLoopWatchdog(
@@ -64,8 +64,7 @@ async def test_blocked_loop_triggers_stall_and_captures_stacks(
         check_interval_sec=0.05,
         dump_dir=str(tmp_path),
     )
-    with caplog.at_level(logging.DEBUG,
-                         logger='async_utils.event_loop_watchdog'):
+    with caplog.at_level(logging.DEBUG, logger='async_utils.event_loop_watchdog'):
         watchdog.start()
         # Let the probe arm itself once.
         await asyncio.sleep(0.1)
@@ -77,12 +76,10 @@ async def test_blocked_loop_triggers_stall_and_captures_stacks(
         await asyncio.sleep(0.15)
         watchdog.stop()
 
-    stall_records = [
-        r for r in caplog.records if 'STALL DETECTED' in r.getMessage()
-    ]
+    stall_records = [r for r in caplog.records if 'STALL DETECTED' in r.getMessage()]
     assert len(stall_records) >= 1, (
-        f'Expected stall detection log, got: '
-        f'{[r.getMessage() for r in caplog.records]}')
+        f'Expected stall detection log, got: {[r.getMessage() for r in caplog.records]}'
+    )
 
     msg = stall_records[0].getMessage()
     assert 'asyncio loop blocked' in msg
@@ -93,7 +90,8 @@ async def test_blocked_loop_triggers_stall_and_captures_stacks(
     # A dump file should have been written to tmp_path.
     dump_files = list(tmp_path.glob('event-loop-stall-*.txt'))
     assert len(dump_files) >= 1, (
-        f'Expected a dump file in {tmp_path}, got: {list(tmp_path.iterdir())}')
+        f'Expected a dump file in {tmp_path}, got: {list(tmp_path.iterdir())}'
+    )
     dump_content = dump_files[0].read_text()
     assert 'event_id:' in dump_content
     assert 'EVENT LOOP THREAD' in dump_content
@@ -108,8 +106,9 @@ async def test_stall_resolution_is_logged(caplog):
         probe_interval_sec=0.05,
         check_interval_sec=0.05,
     )
-    with caplog.at_level(logging.WARNING,
-                         logger='temporalio_commons.event_loop_watchdog'):
+    with caplog.at_level(
+        logging.WARNING, logger='temporalio_commons.event_loop_watchdog'
+    ):
         watchdog.start()
         await asyncio.sleep(0.1)
         time.sleep(0.4)
@@ -117,12 +116,10 @@ async def test_stall_resolution_is_logged(caplog):
         await asyncio.sleep(0.2)
         watchdog.stop()
 
-    resolved = [
-        r for r in caplog.records if 'stall resolved' in r.getMessage()
-    ]
+    resolved = [r for r in caplog.records if 'stall resolved' in r.getMessage()]
     assert len(resolved) >= 1, (
-        f'Expected stall-resolved log, got: '
-        f'{[r.getMessage() for r in caplog.records]}')
+        f'Expected stall-resolved log, got: {[r.getMessage() for r in caplog.records]}'
+    )
 
 
 @pytest.mark.asyncio
@@ -156,8 +153,9 @@ async def test_double_start_is_idempotent(caplog):
         probe_interval_sec=0.05,
         check_interval_sec=0.05,
     )
-    with caplog.at_level(logging.WARNING,
-                         logger='temporalio_commons.event_loop_watchdog'):
+    with caplog.at_level(
+        logging.WARNING, logger='temporalio_commons.event_loop_watchdog'
+    ):
         watchdog.start()
         thread_after_first = watchdog._thread  # pylint: disable=protected-access
         watchdog.start()
@@ -165,7 +163,8 @@ async def test_double_start_is_idempotent(caplog):
         watchdog.stop()
 
     assert thread_after_first is thread_after_second, (
-        'Double start should reuse the same thread')
+        'Double start should reuse the same thread'
+    )
     second_start_warning = [
         r for r in caplog.records if 'already started' in r.getMessage()
     ]
@@ -190,8 +189,7 @@ def test_format_diagnostics_dedupes_other_threads():
     parked = threading.Event()
     parked_threads = []
     for i in range(4):
-        t = threading.Thread(target=parked.wait, daemon=True,
-                             name=f'parked-{i}')
+        t = threading.Thread(target=parked.wait, daemon=True, name=f'parked-{i}')
         t.start()
         parked_threads.append(t)
     try:
@@ -231,7 +229,7 @@ def test_watchdog_stops_when_monitored_loop_exits():
                 check_interval_sec=0.01,
             )
             watchdog.start()
-            holder["watchdog"] = watchdog
+            holder['watchdog'] = watchdog
             ready.set()
 
         asyncio.run(main())
@@ -242,7 +240,7 @@ def test_watchdog_stops_when_monitored_loop_exits():
     loop_thread.join(timeout=1.0)
     assert not loop_thread.is_alive()
 
-    watchdog = holder["watchdog"]
+    watchdog = holder['watchdog']
     watchdog_thread = watchdog._thread  # pylint: disable=protected-access
     assert watchdog_thread is not None
     watchdog_thread.join(timeout=1.0)
@@ -255,9 +253,9 @@ def test_watchdog_stops_when_monitored_loop_exits():
 @pytest.mark.asyncio
 async def test_global_watchdog_is_singleton():
     """``start_global_watchdog()`` returns the same instance across calls."""
-    first = start_global_watchdog(stall_threshold_sec=0.5,
-                                  probe_interval_sec=0.05,
-                                  check_interval_sec=0.05)
+    first = start_global_watchdog(
+        stall_threshold_sec=0.5, probe_interval_sec=0.05, check_interval_sec=0.05
+    )
     second = start_global_watchdog(stall_threshold_sec=0.01)  # kwargs ignored
     assert first is second
     # kwargs of the second call are ignored — the first call's config wins.

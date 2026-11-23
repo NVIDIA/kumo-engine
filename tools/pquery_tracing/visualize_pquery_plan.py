@@ -25,7 +25,7 @@ from io_utils import fsutil
 
 def get_execution_plan(df: DataFrame) -> str:
     with contextlib.redirect_stdout(io.StringIO()) as stdout:
-        df.explain(mode="cost")
+        df.explain(mode='cost')
 
     plan = stdout.getvalue()
     return plan
@@ -38,6 +38,7 @@ class PlanNode:
     Takes a line from the text output of the plan as input, and parses out all
     information/attributes, including tree level based on indentation.
     """
+
     id: str
     level: int
     node_type: str
@@ -102,7 +103,7 @@ class SparkPlanNode(PlanNode):
     node_matching_text: Optional[str]
 
     def __init__(self, line, line_number, plan_type):
-        if line.startswith("*"):  # replace whole-stage code gen prefix
+        if line.startswith('*'):  # replace whole-stage code gen prefix
             line = re.sub(r'([^*]*)\*\([0-9]*\)\s(.*)', r'\1\2', line)
 
         self.line = line
@@ -161,17 +162,16 @@ class SparkPlanNode(PlanNode):
     def get_sub_operation(self) -> str:
         m = re.search(r'^[:\s+-]*([A-Za-z]+)\s([A-Za-z]+)', self.line)
         if m:
-            if m.group(1) in ["Join", "FileScan"]:
+            if m.group(1) in ['Join', 'FileScan']:
                 return m.group(2)
             return m.group(1)
         else:
             return self.get_operation()
 
     def get_table(self) -> Optional[str]:
-        m = re.search(r'([a-z0-9-_]*)\.([a-z0-9-_]*)\.([a-z0-9-_]*)',
-                      self.line)
+        m = re.search(r'([a-z0-9-_]*)\.([a-z0-9-_]*)\.([a-z0-9-_]*)', self.line)
         if m:
-            return f"{m.group(2)}.{m.group(3)}"
+            return f'{m.group(2)}.{m.group(3)}'
         else:
             return None
 
@@ -184,9 +184,9 @@ class SparkPlanNode(PlanNode):
         else:
             return -1
 
-        units = units.replace("i", "")
+        units = units.replace('i', '')
 
-        size_names = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"]
+        size_names = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
         i = size_names.index(units)
         p = math.pow(1024, i)
 
@@ -202,25 +202,25 @@ class SparkPlanNode(PlanNode):
             return None
 
         if size_bytes == 0:
-            return "0B"
+            return '0B'
 
-        size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+        size_name = ('B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB')
         i = int(math.floor(math.log(size_bytes, 1024)))
         p = math.pow(1024, i)
         s = round(size_bytes / p, 2)
-        return "%s %s" % (s, size_name[i])
+        return '%s %s' % (s, size_name[i])
 
     def get_node_type(self) -> str:
         if self.table:
-            return "table"
+            return 'table'
         else:
-            if "Join" in self.operation:
-                return "join"
+            if 'Join' in self.operation:
+                return 'join'
             return self.operation.lower()
 
     def get_node_label(self) -> str:
         if not self.parent:
-            return "RESULT"
+            return 'RESULT'
         return insert_newlines(self.text)
 
     # Text and mouseover text for HTML renditions of the plan graph:
@@ -239,9 +239,9 @@ class SparkPlanNode(PlanNode):
         return m.group(1)
 
     def get_node_matching_text(self) -> Optional[str]:
-        if self.node_type == "table":
+        if self.node_type == 'table':
             return self.table
-        if self.operation == "Filter":
+        if self.operation == 'Filter':
             if self.text:
                 return self.text.split(',')[0]
 
@@ -273,17 +273,23 @@ class SnowflakePlanNode(PlanNode):
 
 
 def spark_execution_plan_to_nodes(
-        exec_plan: str, plan_type: str = "combined") -> list[SparkPlanNode]:
-    assert plan_type in ["logical", "physical", "combined"]
+    exec_plan: str, plan_type: str = 'combined'
+) -> list[SparkPlanNode]:
+    assert plan_type in ['logical', 'physical', 'combined']
 
-    if plan_type == "combined":
-        logical_nodes = spark_execution_plan_to_nodes(exec_plan, "logical")
-        physical_nodes = spark_execution_plan_to_nodes(exec_plan, "physical")
+    if plan_type == 'combined':
+        logical_nodes = spark_execution_plan_to_nodes(exec_plan, 'logical')
+        physical_nodes = spark_execution_plan_to_nodes(exec_plan, 'physical')
 
         for node in physical_nodes:
             log_node = next(
-                (nd for nd in logical_nodes
-                 if nd.node_matching_text == node.node_matching_text), None)
+                (
+                    nd
+                    for nd in logical_nodes
+                    if nd.node_matching_text == node.node_matching_text
+                ),
+                None,
+            )
             if log_node:
                 node.size = log_node.size
                 node.size_in_bytes = log_node.size_in_bytes
@@ -292,7 +298,7 @@ def spark_execution_plan_to_nodes(
 
         return physical_nodes
 
-    lines = [line for line in exec_plan.split("\n") if len(line.strip()) > 0]
+    lines = [line for line in exec_plan.split('\n') if len(line.strip()) > 0]
 
     nodes = []
     line_number = 1
@@ -301,21 +307,23 @@ def spark_execution_plan_to_nodes(
         node = SparkPlanNode(line, line_number, plan_type)
         line_number += 1
 
-        if line.startswith("==") and line.endswith("=="):
+        if line.startswith('==') and line.endswith('=='):
             if not capture_started:
-                if plan_type == "logical":
-                    if "== Optimized Logical Plan ==" in line:
+                if plan_type == 'logical':
+                    if '== Optimized Logical Plan ==' in line:
                         capture_started = True
-                        node.line = "RESULT"
+                        node.line = 'RESULT'
                         node.level = -1
-                elif plan_type == "physical":
-                    if line == "== Physical Plan ==":
+                elif plan_type == 'physical':
+                    if line == '== Physical Plan ==':
                         capture_started = True
-                        node.line = "RESULT"
+                        node.line = 'RESULT'
                         node.level = -1
                 else:
-                    raise Exception("Invalid plan_type! Only 'logical'"
-                                    " and 'physical' are supported!")
+                    raise Exception(
+                        "Invalid plan_type! Only 'logical'"
+                        " and 'physical' are supported!"
+                    )
             else:
                 break
 
@@ -323,7 +331,8 @@ def spark_execution_plan_to_nodes(
             continue
 
         parent = next(
-            (nd for nd in reversed(nodes) if nd.level == node.level - 1), None)
+            (nd for nd in reversed(nodes) if nd.level == node.level - 1), None
+        )
         node.parent = parent
         node.populate_fields()
 
@@ -332,34 +341,37 @@ def spark_execution_plan_to_nodes(
     return nodes
 
 
-def snowflake_execution_plan_to_nodes(
-        exec_plan: str) -> list[SnowflakePlanNode]:
+def snowflake_execution_plan_to_nodes(exec_plan: str) -> list[SnowflakePlanNode]:
     # get the part EXPLAIN USING TEXT
-    exec_plan = exec_plan.split("Operations:")[1]
-    lines = [line for line in exec_plan.split("\n") if len(line.strip()) > 0]
+    exec_plan = exec_plan.split('Operations:')[1]
+    lines = [line for line in exec_plan.split('\n') if len(line.strip()) > 0]
 
     nodes = []
     for line in lines:
         # Match the line to extract node details
         match = re.match(r'(\d+:\d+)(\s+)->\s*(\w+)\s*(.*)', line)
         if match:
-            node = SnowflakePlanNode(id=match.group(1)[2:],
-                                     level=len(match.group(2)),
-                                     node_type=match.group(3),
-                                     details=match.group(4))
+            node = SnowflakePlanNode(
+                id=match.group(1)[2:],
+                level=len(match.group(2)),
+                node_type=match.group(3),
+                details=match.group(4),
+            )
             parent = next(
-                (nd for nd in reversed(nodes) if nd.level == node.level - 5),
-                None)
+                (nd for nd in reversed(nodes) if nd.level == node.level - 5), None
+            )
             node.parent = parent
             nodes.append(node)
     return nodes
 
 
 # https://graphviz.readthedocs.io/en/stable/examples.html
-def get_graph_from_nodes(nodes: Union[list[SparkPlanNode],
-                                      list[SnowflakePlanNode]], backend: str,
-                         skip_operations: list[str] = []):
-    g = Digraph(name="Execution Plan", comment='Execution Plan')
+def get_graph_from_nodes(
+    nodes: Union[list[SparkPlanNode], list[SnowflakePlanNode]],
+    backend: str,
+    skip_operations: list[str] = [],
+):
+    g = Digraph(name='Execution Plan', comment='Execution Plan')
 
     g.attr(label='')
     g.attr(fontsize='12')
@@ -371,24 +383,33 @@ def get_graph_from_nodes(nodes: Union[list[SparkPlanNode],
         if node.operation in skip_operations:
             continue
 
-        if "table" in node.get_node_type().lower():
+        if 'table' in node.get_node_type().lower():
             color = 'lightgreen'
-        elif "join" in node.get_node_type().lower():
+        elif 'join' in node.get_node_type().lower():
             color = 'lightblue'
-        elif "filter" in node.get_node_type().lower():
+        elif 'filter' in node.get_node_type().lower():
             color = 'lightgoldenrodyellow'
         else:
             color = 'white'
 
-        g.node(node.get_id(), node.get_node_label(), style='filled',
-               fillcolor=color, tooltip=node.get_node_tooltip())
+        g.node(
+            node.get_id(),
+            node.get_node_label(),
+            style='filled',
+            fillcolor=color,
+            tooltip=node.get_node_tooltip(),
+        )
 
         if node.get_parent(skip_operations):
             assert node.id
             parent = node.get_parent(skip_operations)
             assert isinstance(parent, PlanNode)
-            g.edge(node.id, parent.get_id(), node.get_edge_label(),
-                   tooltip=node.get_node_tooltip())
+            g.edge(
+                node.id,
+                parent.get_id(),
+                node.get_edge_label(),
+                tooltip=node.get_node_tooltip(),
+            )
     return g
 
 
@@ -396,11 +417,12 @@ def load_plan_from_path(file_path: str):
     return fsutil.read_text(file_path)
 
 
-def get_plan_viz_textfile(file_path: str, backend: str,
-                          skip_operations: list[str] = []):
+def get_plan_viz_textfile(
+    file_path: str, backend: str, skip_operations: list[str] = []
+):
     exec_plan = load_plan_from_path(file_path)
     if backend == 'spark':
-        nodes = spark_execution_plan_to_nodes(exec_plan, plan_type="physical")
+        nodes = spark_execution_plan_to_nodes(exec_plan, plan_type='physical')
     else:
         assert backend == 'snowflake'
         nodes = snowflake_execution_plan_to_nodes(exec_plan)
@@ -411,13 +433,12 @@ def get_plan_viz_textfile(file_path: str, backend: str,
 
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         '--src_dir',
         type=str,
-        help='Pquery debug dir (full s3 path \'s3://*debug_pquery/\')',
+        help="Pquery debug dir (full s3 path 's3://*debug_pquery/')",
         required=True,
     )
 
@@ -428,9 +449,13 @@ if __name__ == '__main__':
         default=None,
     )
 
-    parser.add_argument('--backend', type=str,
-                        help='spark or snowflake compute backend',
-                        choices=['spark', 'snowflake'], default='spark')
+    parser.add_argument(
+        '--backend',
+        type=str,
+        help='spark or snowflake compute backend',
+        choices=['spark', 'snowflake'],
+        default='spark',
+    )
 
     args = parser.parse_args()
 
@@ -440,15 +465,14 @@ if __name__ == '__main__':
     files = fsutil.listdir(trace_job_dir)
     plan_files = [f for f in files if 'execute_plan.txt' in f]
     for plan_file in plan_files:
-        print(f"Using plan file: {plan_file}")
+        print(f'Using plan file: {plan_file}')
         plan_vis = get_plan_viz_textfile(plan_file, args.backend)
-        plan_name = '.'.join(
-            plan_file.split('.')[0:-1]).split('/')[-1].split('_')[1:4]
-        print(f"Parsed plan name: {plan_name}")
+        plan_name = '.'.join(plan_file.split('.')[0:-1]).split('/')[-1].split('_')[1:4]
+        print(f'Parsed plan name: {plan_name}')
         plan_name = '_'.join(plan_name)
         plan_vis.format = 'svg'
         html_output = plan_vis.pipe().decode()
         output_path = osp.join(out_dir, plan_name + '.html')
-        print(f"Saving visualized graph: {output_path}\n\n")
+        print(f'Saving visualized graph: {output_path}\n\n')
         fsutil.rm(output_path, ignore_errors=True)
         fsutil.write_text(output_path, html_output)

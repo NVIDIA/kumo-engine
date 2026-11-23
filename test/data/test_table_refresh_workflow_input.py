@@ -49,8 +49,9 @@ async def test_start_refresh_table_emits_typed_input_without_positional_shift():
     context._settings.disable_async_ingestion = False
     context.temporal_client.return_value = provider
 
-    await DataBackend.start_refresh_table(context, connector_ref, table,
-                                          data_version, alias)
+    await DataBackend.start_refresh_table(
+        context, connector_ref, table, data_version, alias
+    )
 
     args = client.start_workflow.await_args.kwargs['args']
     assert len(args) == 2
@@ -68,8 +69,7 @@ async def test_start_refresh_table_emits_typed_input_without_positional_shift():
 
     converter = KumoPayloadConverter()
     payloads = converter.to_payloads([args[1]])
-    assert converter.from_payloads(
-        payloads, [TableRefreshWorkflowInput])[0] == args[1]
+    assert converter.from_payloads(payloads, [TableRefreshWorkflowInput])[0] == args[1]
 
 
 @pytest.mark.asyncio
@@ -95,22 +95,24 @@ async def test_graph_refresh_marks_child_timestamp_units_as_already_inferred():
     workflow = GraphRefreshWorkflow()
     workflow._ctx = mock.Mock()
     workflow._job_id = 'test-job'
-    workflow._input = cast(Any, SimpleNamespace(
-        table_aliases={table_id: TableName('orders')},
-        connectors={connector_id: connector_ref},
-        tables={table_id: mock.Mock()},
-    ))
-    workflow._graph_version_info = cast(Any, SimpleNamespace(
-        table_data_versions={TableName('orders'): data_version}))
+    workflow._input = cast(
+        Any,
+        SimpleNamespace(
+            table_aliases={table_id: TableName('orders')},
+            connectors={connector_id: connector_ref},
+            tables={table_id: mock.Mock()},
+        ),
+    )
+    workflow._graph_version_info = cast(
+        Any, SimpleNamespace(table_data_versions={TableName('orders'): data_version})
+    )
     start_child_refresh = mock.AsyncMock()
-    with mock.patch.object(
-            workflow, 'start_child_refresh', new=start_child_refresh):
+    with mock.patch.object(workflow, 'start_child_refresh', new=start_child_refresh):
         await workflow._start_refresh_table(
-            'refresh-orders', table_id, table,
-            ParentClosePolicy.REQUEST_CANCEL)
+            'refresh-orders', table_id, table, ParentClosePolicy.REQUEST_CANCEL
+        )
 
     child_call = start_child_refresh.await_args
     assert child_call is not None
-    child_input = cast(TableRefreshWorkflowInput,
-                       child_call.kwargs['args'][1])
+    child_input = cast(TableRefreshWorkflowInput, child_call.kwargs['args'][1])
     assert child_input.timestamp_units_inferred_by_parent is True

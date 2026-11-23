@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 #: The storage namespace of ordinary AWS S3. A coordinate records this rather
 #: than the principal that read it, so rotating a credential does not
 #: re-identify the data.
-AWS_NAMESPACE = "aws-s3"
+AWS_NAMESPACE = 'aws-s3'
 
 S3_MAX_RETRIES = 10
 
@@ -84,21 +84,17 @@ def filesystem(
         try:
             region = bucket_region(bucket) or region
         except Exception as error:  # noqa: BLE001 - best effort
-            logger.debug("Could not resolve region for bucket %s: %s", bucket,
-                         error)
+            logger.debug('Could not resolve region for bucket %s: %s', bucket, error)
 
     if options is not None:
         extra = dict(options)
     elif endpoint_url:
         # pyarrow-24 defaults to path-style for a custom endpoint_override,
         # where the boto3 client this signs alongside addresses virtually.
-        extra = {
-            "endpoint_override": endpoint_url,
-            "force_virtual_addressing": True
-        }
+        extra = {'endpoint_override': endpoint_url, 'force_virtual_addressing': True}
     else:
         extra = {}
-    extra.setdefault("retry_strategy", retry_strategy())
+    extra.setdefault('retry_strategy', retry_strategy())
 
     return fs.S3FileSystem(
         access_key=frozen.access_key,
@@ -114,8 +110,9 @@ def retry_strategy() -> fs.S3RetryStrategy:
     return fs.AwsDefaultS3RetryStrategy(max_attempts=S3_MAX_RETRIES)
 
 
-def arrow_connection_options(endpoint_url: str | None, addressing_style: str,
-                             ca_path: str | None = None) -> dict[str, Any]:
+def arrow_connection_options(
+    endpoint_url: str | None, addressing_style: str, ca_path: str | None = None
+) -> dict[str, Any]:
     options: dict[str, Any] = {
         'force_virtual_addressing': addressing_style == 'virtual',
         'retry_strategy': retry_strategy(),
@@ -128,7 +125,8 @@ def arrow_connection_options(endpoint_url: str | None, addressing_style: str,
             raise RuntimeError(
                 'A custom CA bundle for S3 needs pyarrow>=21 '
                 f'(installed {pyarrow.__version__}). Upgrade it with '
-                '`pip install --upgrade "pyarrow>=21"` and restart Python.')
+                '`pip install --upgrade "pyarrow>=21"` and restart Python.'
+            )
         options['tls_ca_file_path'] = ca_path
     return options
 
@@ -143,5 +141,6 @@ def anonymous_filesystem(
     options.setdefault('retry_strategy', retry_strategy())
     if not region and not options.get('endpoint_override'):
         import kumo_s3
+
         region = kumo_s3.bucket_region(bucket)
     return fs.S3FileSystem(anonymous=True, region=region, **options)

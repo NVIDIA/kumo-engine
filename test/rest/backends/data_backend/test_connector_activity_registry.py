@@ -51,10 +51,13 @@ def _decorator_name(decorator: ast.expr) -> str:
 def _assigned_names(path: Path, assignment: str) -> set[str]:
     tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
     [value] = [
-        node.value for node in ast.walk(tree)
-        if isinstance(node, ast.Assign) and any(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
             isinstance(target, ast.Name) and target.id == assignment
-            for target in node.targets)
+            for target in node.targets
+        )
     ]
     return {node.id for node in ast.walk(value) if isinstance(node, ast.Name)}
 
@@ -78,7 +81,8 @@ def _enclosing_function(
 def _is_direct_broker_resolve(call: ast.Call) -> bool:
     func = call.func
     if not isinstance(func, ast.Attribute) or func.attr not in {
-            'resolve', 'resolve_async'
+        'resolve',
+        'resolve_async',
     }:
         return False
     try:
@@ -89,7 +93,8 @@ def _is_direct_broker_resolve(call: ast.Call) -> bool:
 
 
 def _connector_reachable_activity_violations(
-    sources: dict[str, str], ) -> tuple[list[str], set[str]]:
+    sources: dict[str, str],
+) -> tuple[list[str], set[str]]:
     """Return activities transitively reaching a credential-resolution root.
 
     Imports, same-module functions, and ``self`` methods are resolved exactly.
@@ -122,17 +127,19 @@ def _connector_reachable_activity_violations(
             if isinstance(node, ast.ImportFrom) and node.module:
                 imported_module = node.module
                 if node.level:
-                    package = module.split('.')[:-node.level]
+                    package = module.split('.')[: -node.level]
                     imported_module = '.'.join([*package, imported_module])
                 for alias in node.names:
-                    module_imports[alias.asname
-                                   or alias.name] = (imported_module,
-                                                     alias.name)
+                    module_imports[alias.asname or alias.name] = (
+                        imported_module,
+                        alias.name,
+                    )
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    module_imports[alias.asname
-                                   or alias.name.split('.')[0]] = (alias.name,
-                                                                   None)
+                    module_imports[alias.asname or alias.name.split('.')[0]] = (
+                        alias.name,
+                        None,
+                    )
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             decorators = {_decorator_name(item) for item in node.decorator_list}
@@ -147,15 +154,16 @@ def _connector_reachable_activity_violations(
             record = (key, source_name, module, class_name, node, decorators)
             functions.append(record)
             by_module_name.setdefault((module, node.name), []).append(key)
-            by_module_class_name.setdefault((module, class_name, node.name),
-                                            []).append(key)
+            by_module_class_name.setdefault((module, class_name, node.name), []).append(
+                key
+            )
             by_name.setdefault(node.name, []).append(key)
             if 'connector_resolution_helper' in decorators:
                 resolution_root_keys.add(key)
             if any(
-                    isinstance(call, ast.Call)
-                    and _is_direct_broker_resolve(call)
-                    for call in ast.walk(node)):
+                isinstance(call, ast.Call) and _is_direct_broker_resolve(call)
+                for call in ast.walk(node)
+            ):
                 resolution_root_keys.add(key)
         imports[source_name] = module_imports
 
@@ -170,22 +178,19 @@ def _connector_reachable_activity_violations(
             return set(by_module_name.get((target_module, symbol), []))
         if symbol is None:
             return set(by_module_name.get((target_module, attribute), []))
-        return set(
-            by_module_class_name.get((target_module, symbol, attribute), []))
+        return set(by_module_class_name.get((target_module, symbol, attribute), []))
 
     references = {}
     for key, source_name, module, class_name, node, _decorators in functions:
         targets = set()
         for statement in node.body:
             for child in ast.walk(statement):
-                if isinstance(child, ast.Name) and isinstance(
-                        child.ctx, ast.Load):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
                     imported = imported_target(source_name, child.id)
                     if imported:
                         targets.update(imported)
                     else:
-                        targets.update(
-                            by_module_name.get((module, child.id), []))
+                        targets.update(by_module_name.get((module, child.id), []))
                 elif isinstance(child, ast.Attribute):
                     attribute_targets = set()
                     if isinstance(child.value, ast.Name):
@@ -193,13 +198,14 @@ def _connector_reachable_activity_violations(
                         if receiver in {'self', 'cls'} and class_name:
                             attribute_targets.update(
                                 by_module_class_name.get(
-                                    (module, class_name, child.attr), []))
+                                    (module, class_name, child.attr), []
+                                )
+                            )
                         else:
                             attribute_targets.update(
-                                imported_target(source_name, receiver,
-                                                child.attr))
-                    if (not attribute_targets
-                            and len(by_name.get(child.attr, [])) == 1):
+                                imported_target(source_name, receiver, child.attr)
+                            )
+                    if not attribute_targets and len(by_name.get(child.attr, [])) == 1:
                         attribute_targets.update(by_name[child.attr])
                     targets.update(attribute_targets)
         references[key] = targets
@@ -218,13 +224,19 @@ def _connector_reachable_activity_violations(
     violations = []
     for key, source_name, _module, _class, node, decorators in functions:
         is_activity = bool(
-            decorators.intersection({
-                'defn',
-                'process_pool_activity_defn',
-                'connector_authorized_activity',
-            }))
-        if (is_activity and key in reachable
-                and 'connector_authorized_activity' not in decorators):
+            decorators.intersection(
+                {
+                    'defn',
+                    'process_pool_activity_defn',
+                    'connector_authorized_activity',
+                }
+            )
+        )
+        if (
+            is_activity
+            and key in reachable
+            and 'connector_authorized_activity' not in decorators
+        ):
             violations.append(f'{source_name}:{node.lineno}:{node.name}')
     root_names = {key[2] for key in resolution_root_keys}
     return sorted(violations), root_names
@@ -241,11 +253,12 @@ def test_every_closed_connector_action_has_one_registered_activity_and_policy():
 
 
 def test_connector_actions_are_registered_on_a_production_worker():
-    sources = '\n'.join(
-        path.read_text(encoding='utf-8') for path in _WORKER_SOURCES)
+    sources = '\n'.join(path.read_text(encoding='utf-8') for path in _WORKER_SOURCES)
     missing = []
-    for action, activity_func in (connector_activity_registry.
-                                  registered_connector_activities().items()):
+    for (
+        action,
+        activity_func,
+    ) in connector_activity_registry.registered_connector_activities().items():
         module = inspect.getmodule(activity_func)
         assert module is not None
         if module.__name__ == 'pool.activities':
@@ -260,10 +273,8 @@ def test_connector_actions_are_registered_on_a_production_worker():
 def test_custom_prediction_staging_is_registered_on_data_worker():
     """Keep staging on the queue used by the prediction parent workflow."""
     activity = 'stage_custom_prediction_table'
-    assert activity in _assigned_names(_WORKER_SOURCES[0],
-                                       'data_backend_activities')
-    assert activity not in _assigned_names(_WORKER_SOURCES[1],
-                                           'ml_backend_activities')
+    assert activity in _assigned_names(_WORKER_SOURCES[0], 'data_backend_activities')
+    assert activity not in _assigned_names(_WORKER_SOURCES[1], 'ml_backend_activities')
 
 
 def test_root_issuance_and_child_delegation_cover_table_version_activity():
@@ -274,33 +285,46 @@ def test_root_issuance_and_child_delegation_cover_table_version_activity():
 
     for workflow_type in connector_authorization._KNOWN_CONNECTOR_WORKFLOWS:
         child_actions = connector_authorization._actions_for_child_workflow(
-            workflow_type)
+            workflow_type
+        )
         assert child_actions <= CONNECTOR_REFERENCE_ACTIONS
-        assert not child_actions.intersection(
-            CONNECTOR_ACTIVITY_AUTHORIZATION_ACTIONS)
+        assert not child_actions.intersection(CONNECTOR_ACTIVITY_AUTHORIZATION_ACTIONS)
         assert child_actions <= set(
-            connector_activity_registry.registered_connector_activities())
+            connector_activity_registry.registered_connector_activities()
+        )
 
     assert action in connector_authorization._actions_for_child_workflow(
-        'GraphRefreshWorkflow')
+        'GraphRefreshWorkflow'
+    )
     assert action in connector_authorization._actions_for_child_workflow(
-        'TableRefreshWorkflow')
+        'TableRefreshWorkflow'
+    )
 
 
 @pytest.mark.parametrize(
     ('workflow_type', 'pool_action'),
     [
         ('DiskgraphIngestWorkflow', ConnectorCapabilityAction.ENSURE_SNAPSHOT),
-        ('GenerateTrainingTableWorkflow',
-         ConnectorCapabilityAction.POOL_GENERATE_TARGET_TABLE),
-        ('GeneratePredictionTableWorkflow',
-         ConnectorCapabilityAction.POOL_GENERATE_TARGET_TABLE),
-        ('CustomTrainTableWorkflow',
-         ConnectorCapabilityAction.BUILD_TTNG_CUSTOM_TRAIN_TABLE_BUNDLE),
-        ('MaterializeTrainingTaskWorkflow',
-         ConnectorCapabilityAction.POOL_MATERIALIZE_TRAINING_TASK),
-        ('MaterializePredictionTaskWorkflow',
-         ConnectorCapabilityAction.POOL_MATERIALIZE_PREDICTION_TASK),
+        (
+            'GenerateTrainingTableWorkflow',
+            ConnectorCapabilityAction.POOL_GENERATE_TARGET_TABLE,
+        ),
+        (
+            'GeneratePredictionTableWorkflow',
+            ConnectorCapabilityAction.POOL_GENERATE_TARGET_TABLE,
+        ),
+        (
+            'CustomTrainTableWorkflow',
+            ConnectorCapabilityAction.BUILD_TTNG_CUSTOM_TRAIN_TABLE_BUNDLE,
+        ),
+        (
+            'MaterializeTrainingTaskWorkflow',
+            ConnectorCapabilityAction.POOL_MATERIALIZE_TRAINING_TASK,
+        ),
+        (
+            'MaterializePredictionTaskWorkflow',
+            ConnectorCapabilityAction.POOL_MATERIALIZE_PREDICTION_TASK,
+        ),
     ],
 )
 def test_pool_child_workflows_receive_their_downstream_connector_action(
@@ -319,51 +343,52 @@ def test_pool_child_workflows_receive_their_downstream_connector_action(
 
 def test_job_children_receive_only_their_connector_boundaries() -> None:
     training_actions = connector_authorization._actions_for_child_workflow(
-        'TrainingJobWorkflow')
+        'TrainingJobWorkflow'
+    )
     assert training_actions == {
         ConnectorCapabilityAction.POSTPROCESS_TRAINING_JOB_OUTPUT,
     }
 
-    batch_prediction_actions = (
-        connector_authorization._actions_for_child_workflow(
-            'BatchPredictionJobWorkflow'))
+    batch_prediction_actions = connector_authorization._actions_for_child_workflow(
+        'BatchPredictionJobWorkflow'
+    )
     assert batch_prediction_actions == set(
-        CONNECTOR_DATABRICKS_BATCH_PREDICTION_OUTPUT_ACTIONS)
+        CONNECTOR_DATABRICKS_BATCH_PREDICTION_OUTPUT_ACTIONS
+    )
     assert ConnectorCapabilityAction.START_BATCH_PREDICTION_STATS in (
-        batch_prediction_actions)
+        batch_prediction_actions
+    )
     assert ConnectorCapabilityAction.DELEGATE_CHILD in batch_prediction_actions
 
 
 def test_every_direct_production_broker_resolve_is_declared():
     violations = []
     for path in (_REPOSITORY_ROOT / 'rest').rglob('*.py'):
-        if path.name in {
-                'connector_broker.py', 'connector_activity_registry.py'
-        }:
+        if path.name in {'connector_broker.py', 'connector_activity_registry.py'}:
             continue
         tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node,
-                              ast.Call) or not _is_direct_broker_resolve(node):
+            if not isinstance(node, ast.Call) or not _is_direct_broker_resolve(node):
                 continue
             function = _enclosing_function(tree, node)
-            decorators = ({
-                _decorator_name(item)
-                for item in function.decorator_list
-            } if function is not None else set())
-            if not decorators.intersection({
+            decorators = (
+                {_decorator_name(item) for item in function.decorator_list}
+                if function is not None
+                else set()
+            )
+            if not decorators.intersection(
+                {
                     'connector_authorized_activity',
                     'connector_resolution_helper',
-            }):
-                violations.append(
-                    f'{path.relative_to(_REPOSITORY_ROOT)}:{node.lineno}')
+                }
+            ):
+                violations.append(f'{path.relative_to(_REPOSITORY_ROOT)}:{node.lineno}')
     assert violations == []
 
 
 def test_every_transitive_connector_activity_has_a_closed_action():
     sources = {
-        str(path.relative_to(_REPOSITORY_ROOT)):
-        path.read_text(encoding='utf-8')
+        str(path.relative_to(_REPOSITORY_ROOT)): path.read_text(encoding='utf-8')
         for root in _AUDIT_ROOTS
         for path in root.rglob('*.py')
     }
@@ -382,8 +407,7 @@ def test_multi_workflow_connector_inputs_are_reissued_between_boundaries():
     """Inventory request paths that probe, then start with connector input."""
     expected = {
         ('rest/driver/data_snapshot_api_driver.py', 'create_graph_snapshot'),
-        ('rest/driver/table_driver.py',
-         '_trigger_async_refresh_for_table_entry'),
+        ('rest/driver/table_driver.py', '_trigger_async_refresh_for_table_entry'),
         ('rest/driver/table_logic.py', '_do_async_refresh'),
     }
     found = set()
@@ -398,10 +422,11 @@ def test_multi_workflow_connector_inputs_are_reissued_between_boundaries():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            calls = sorted((child.lineno, child.func.attr)
-                           for child in ast.walk(node)
-                           if isinstance(child, ast.Call)
-                           and isinstance(child.func, ast.Attribute))
+            calls = sorted(
+                (child.lineno, child.func.attr)
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+            )
             probes = [line for line, name in calls if name in probe_calls]
             starts = [line for line, name in calls if name in start_calls]
             if not probes or not starts:
@@ -409,18 +434,22 @@ def test_multi_workflow_connector_inputs_are_reissued_between_boundaries():
             key = (source_name, node.name)
             found.add(key)
             reissues = [
-                line for line, name in calls
+                line
+                for line, name in calls
                 if name == 'fresh_execution_refs_for_workflow'
             ]
-            assert any(probe < reissue < start for probe in probes
-                       for reissue in reissues for start in starts), key
+            assert any(
+                probe < reissue < start
+                for probe in probes
+                for reissue in reissues
+                for start in starts
+            ), key
     assert found == expected
 
     # Batched snapshot refresh deliberately separates capability preparation
     # from the all-or-rollback start fanout.  Preserve the same security
     # ordering across that explicit helper boundary.
-    snapshot_path = (_REPOSITORY_ROOT / 'rest/driver/'
-                     'data_snapshot_api_driver.py')
+    snapshot_path = _REPOSITORY_ROOT / 'rest/driver/data_snapshot_api_driver.py'
     snapshot_tree = ast.parse(snapshot_path.read_text(encoding='utf-8'))
     functions = {
         node.name: node
@@ -432,14 +461,13 @@ def test_multi_workflow_connector_inputs_are_reissued_between_boundaries():
         return {
             child.func.attr
             for child in ast.walk(functions[function_name])
-            if isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Attribute)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
         }
 
     prepare_calls = called_attributes(
-        '_prepare_state_services_table_refresh_with_connector')
-    start_calls = called_attributes(
-        '_trigger_many_state_services_table_refresh')
+        '_prepare_state_services_table_refresh_with_connector'
+    )
+    start_calls = called_attributes('_trigger_many_state_services_table_refresh')
     assert 'get_table_data_version_in_activity' in prepare_calls
     assert 'fresh_execution_refs_for_workflow' in prepare_calls
     assert '_prepare_state_services_table_refresh_with_connector' in start_calls
@@ -448,9 +476,9 @@ def test_multi_workflow_connector_inputs_are_reissued_between_boundaries():
 
 
 def test_transitive_audit_rejects_an_unmapped_indirect_activity():
-    violations, _ = _connector_reachable_activity_violations({
-        'artificial.py':
-        '''
+    violations, _ = _connector_reachable_activity_violations(
+        {
+            'artificial.py': """
 @connector_resolution_helper
 def resolve_credentials():
     pass
@@ -461,8 +489,9 @@ def intermediate_helper():
 @activity.defn
 def silently_unmapped_activity():
     intermediate_helper()
-'''
-    })
+"""
+        }
+    )
 
     assert violations == [
         'artificial.py:10:silently_unmapped_activity',

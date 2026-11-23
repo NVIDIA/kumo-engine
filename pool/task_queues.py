@@ -6,6 +6,7 @@ worker identity — both the controller (returning ``task_queue`` from
 ``place_snapshot``) and the K8s pod spawner use this module so worker
 subscriptions match.
 """
+
 from enum import Enum
 
 from pool.storage_mode import PoolStorageMode
@@ -50,13 +51,13 @@ def activity_worker_name_suffix(pod_name: str) -> str:
 
 def activity_worker_identity(pod_name: str, instance_id: str) -> str:
     """Exact Temporal poller identity expected from ``pod_name``."""
-    return (f'{POOL_WORKER_NAME}{activity_worker_name_suffix(pod_name)}-'
-            f'{instance_id}')
+    return f'{POOL_WORKER_NAME}{activity_worker_name_suffix(pod_name)}-{instance_id}'
 
 
-def is_activity_scoped_pod(pool_worker_uid: str,
-                           storage_mode: PoolStorageMode) -> bool:
+def is_activity_scoped_pod(pool_worker_uid: str, storage_mode: PoolStorageMode) -> bool:
     """True if this pod must delegate ``ensure_snapshot`` writes to a
     long-lived daemon (writer-side snapshot mutation invariant)."""
-    return (storage_mode == PoolStorageMode.ACTIVITY_ON_PVC
-            and pool_worker_uid.startswith(POOL_WORKER_UID_PREFIX_DURABLE))
+    return (
+        storage_mode == PoolStorageMode.ACTIVITY_ON_PVC
+        and pool_worker_uid.startswith(POOL_WORKER_UID_PREFIX_DURABLE)
+    )

@@ -5,8 +5,7 @@
 import os
 
 
-def hold_prediction_materialization_ownership(index_path, job_id, entered,
-                                              release):
+def hold_prediction_materialization_ownership(index_path, job_id, entered, release):
     from kumo.diskgraph.job_sidecars import (
         prediction_materialization_ownership,
     )
@@ -22,8 +21,9 @@ def hold_prediction_materialization_ownership(index_path, job_id, entered,
 def hold_prediction_extension_shared_lock(index_path, job_id, entered, release):
     from kumo.diskgraph.job_sidecars import _SharedSidecarLock
 
-    lock = _SharedSidecarLock(index_path,
-                              os.path.join('train_tables', f'pred_{job_id}'))
+    lock = _SharedSidecarLock(
+        index_path, os.path.join('train_tables', f'pred_{job_id}')
+    )
     lock.acquire_shared()
     entered.set()
     assert release.wait(timeout=60)

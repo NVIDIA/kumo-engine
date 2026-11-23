@@ -13,9 +13,7 @@ async def ensure_startup_ambient_identities(
     auth_disabled: bool,
 ) -> None:
     if auth_disabled:
-        await identities.ensure_ambient_s3_identity_bound_to_group(
-            default_group_id)
+        await identities.ensure_ambient_s3_identity_bound_to_group(default_group_id)
     else:
         await identities.ensure_ambient_s3_identity()
-    await identities.ensure_ambient_adls_identity_bound_on_create(
-        default_group_id)
+    await identities.ensure_ambient_adls_identity_bound_on_create(default_group_id)

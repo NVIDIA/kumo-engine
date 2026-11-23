@@ -15,22 +15,28 @@ from pyarrow.fs import FileSelector, FSSpecHandler, PyFileSystem
 AUTHORITY = 'curated@companylake.dfs.core.windows.net'
 
 
-@pytest.mark.parametrize('adls_limit, copy_limit, expected', [
-    (None, None, 128),
-    (None, '4', 4),
-    ('4', None, 4),
-    ('16', '4', 4),
-    ('4', '16', 4),
-    ('1', '128', 1),
-    ('256', None, 128),
-])
+@pytest.mark.parametrize(
+    'adls_limit, copy_limit, expected',
+    [
+        (None, None, 128),
+        (None, '4', 4),
+        ('4', None, 4),
+        ('16', '4', 4),
+        ('4', '16', 4),
+        ('1', '128', 1),
+        ('256', None, 128),
+    ],
+)
 def test_transfer_ceiling_is_provider_specific_and_respects_copy_limit(
-        monkeypatch, adls_limit, copy_limit, expected):
+    monkeypatch, adls_limit, copy_limit, expected
+):
     from kumo_core.sources import cpu
 
     monkeypatch.setattr(cpu, 'cpu_budget', lambda: 32)
-    for name, value in [(transfer.TRANSFER_WORKERS_ENV, adls_limit),
-                        (cpu.COPY_WORKERS_ENV, copy_limit)]:
+    for name, value in [
+        (transfer.TRANSFER_WORKERS_ENV, adls_limit),
+        (cpu.COPY_WORKERS_ENV, copy_limit),
+    ]:
         if value is None:
             monkeypatch.delenv(name, raising=False)
         else:
@@ -50,12 +56,10 @@ def test_invalid_transfer_ceiling_is_rejected(monkeypatch, value):
 def test_arrow_projection_does_not_read_unrequested_bytes(service):
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     path = AUTHORITY + '/orders/events.parquet'
-    with PyFileSystem(
-            FSSpecHandler(filesystem)).open_input_file(path) as stream:
+    with PyFileSystem(FSSpecHandler(filesystem)).open_input_file(path) as stream:
         stream.seek(4)
         assert len(stream.read(8)) == 8
-    assert [(offset, length)
-            for _, offset, length, _ in service.downloads] == [(4, 8)]
+    assert [(offset, length) for _, offset, length, _ in service.downloads] == [(4, 8)]
 
 
 def test_recursive_arrow_listing_uses_one_sdk_traversal(service, monkeypatch):
@@ -75,8 +79,7 @@ def test_recursive_arrow_listing_uses_one_sdk_traversal(service, monkeypatch):
     monkeypatch.setattr(FakeFilesystem, 'get_paths', paths)
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     arrow = PyFileSystem(FSSpecHandler(filesystem))
-    entries = arrow.get_file_info(
-        FileSelector(AUTHORITY + '/orders', recursive=True))
+    entries = arrow.get_file_info(FileSelector(AUTHORITY + '/orders', recursive=True))
     assert len(entries) == 41
     assert calls == [{'path': 'orders', 'recursive': True}]
     assert len(filesystem.find(AUTHORITY + '/orders', maxdepth=1)) == 1
@@ -112,7 +115,8 @@ def test_request_budget_is_shared_and_released_after_failure(monkeypatch):
 
 @pytest.mark.parametrize('bulk', [True, False])
 def test_download_memory_failure_has_guidance_and_releases_resources(
-        service, tmp_path, monkeypatch, bulk):
+    service, tmp_path, monkeypatch, bulk
+):
     from fakes import FakeFile
 
     def download(*args, **kwargs):
@@ -137,8 +141,7 @@ def test_download_memory_failure_has_guidance_and_releases_resources(
         assert workers == 4
 
 
-def test_failed_fetch_keeps_previous_destination(service, tmp_path,
-                                                 monkeypatch):
+def test_failed_fetch_keeps_previous_destination(service, tmp_path, monkeypatch):
     from fakes import FakeFile
     from kumo_core.sources.errors import TransientSourceError
 
@@ -146,8 +149,10 @@ def test_failed_fetch_keeps_previous_destination(service, tmp_path,
     target = tmp_path / 'existing'
     target.write_bytes(b'previous')
     monkeypatch.setattr(
-        FakeFile, 'download_file', lambda *a, **k: SimpleNamespace(
-            readinto=lambda stream: stream.write(b'bad')))
+        FakeFile,
+        'download_file',
+        lambda *a, **k: SimpleNamespace(readinto=lambda stream: stream.write(b'bad')),
+    )
     with pytest.raises(TransientSourceError, match='truncated'):
         filesystem.fetch(AUTHORITY + '/orders/events.parquet', str(target))
     assert target.read_bytes() == b'previous'
@@ -156,7 +161,8 @@ def test_failed_fetch_keeps_previous_destination(service, tmp_path,
 
 @pytest.mark.parametrize('failure', [None, 'download', 'promotion'])
 def test_fetch_closes_temporary_file_before_promotion_and_cleanup(
-        service, tmp_path, monkeypatch, failure):
+    service, tmp_path, monkeypatch, failure
+):
     import os
     import stat
 
@@ -197,8 +203,7 @@ def test_fetch_closes_temporary_file_before_promotion_and_cleanup(
     destination.write_bytes(b'previous')
     if failure:
         with pytest.raises(OSError, match=failure + ' failed'):
-            filesystem.fetch(AUTHORITY + '/orders/events.parquet',
-                             str(destination))
+            filesystem.fetch(AUTHORITY + '/orders/events.parquet', str(destination))
         assert destination.read_bytes() == b'previous'
     else:
         filesystem.fetch(AUTHORITY + '/orders/events.parquet', str(destination))
@@ -211,7 +216,8 @@ def test_fetch_closes_temporary_file_before_promotion_and_cleanup(
 
 
 def test_file_export_uses_native_copy_and_keeps_prepared_columns(
-        service, connector, tmp_path, monkeypatch):
+    service, connector, tmp_path, monkeypatch
+):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from fakes import FakeFile
@@ -224,11 +230,16 @@ def test_file_export_uses_native_copy_and_keeps_prepared_columns(
     monkeypatch.setattr(ADLSFileSystem, 'put_file', unexpected_upload)
     source = tmp_path / 'source.parquet'
     pq.write_table(pa.table({'id': [1, 2]}), source)
-    ADLSSinkBackend().write_files(connector(), 'predictions/', [str(source)],
-                                  extra_columns={'tag':
-                                                 'test'}, export_id='run')
+    ADLSSinkBackend().write_files(
+        connector(),
+        'predictions/',
+        [str(source)],
+        extra_columns={'tag': 'test'},
+        export_id='run',
+    )
     outputs = [
-        name for name in service.files
+        name
+        for name in service.files
         if '/predictions/' in name and name.endswith('.parquet')
     ]
     assert len(outputs) == 1
@@ -242,11 +253,11 @@ def test_owned_http_pool_is_reused_and_closed(monkeypatch):
 
     session.close()
     credential = Mock()
-    monkeypatch.setattr(session, 'DefaultAzureCredential',
-                        Mock(return_value=credential))
+    monkeypatch.setattr(
+        session, 'DefaultAzureCredential', Mock(return_value=credential)
+    )
     transport_session = Mock()
-    monkeypatch.setattr(client_module, 'Session',
-                        Mock(return_value=transport_session))
+    monkeypatch.setattr(client_module, 'Session', Mock(return_value=transport_session))
     # Real SDK clients exercise ownership and child-client propagation.
     original_transport = client_module.RequestsTransport
     transports = []
@@ -258,10 +269,10 @@ def test_owned_http_pool_is_reused_and_closed(monkeypatch):
 
     monkeypatch.setattr(client_module, 'RequestsTransport', transport)
     client = session.session_for(None, 'companylake', 'dfs.core.windows.net')
-    assert session.session_for(None, 'companylake',
-                               'dfs.core.windows.net') is client
-    assert transports[
-        0].connection_config.data_block_size == transfer.NETWORK_BLOCK_BYTES
+    assert session.session_for(None, 'companylake', 'dfs.core.windows.net') is client
+    assert (
+        transports[0].connection_config.data_block_size == transfer.NETWORK_BLOCK_BYTES
+    )
     assert transport_session.mount.call_count == 2
     adapter = transport_session.mount.call_args.args[1]
     assert adapter._pool_maxsize == transfer.CONNECTIONS
@@ -284,14 +295,16 @@ def test_empty_local_file_creates_and_truncates_remote_file(service, tmp_path):
 
 
 def test_upload_parallelism_uses_all_chunks_without_download_initial_request(
-        monkeypatch):
+    monkeypatch,
+):
     monkeypatch.setattr(transfer, '_SLOTS', threading.BoundedSemaphore(4))
     with transfer.concurrency(12 << 20, upload=True) as workers:
         assert workers == 3
 
 
 def test_failed_export_does_not_delete_another_writers_replacement(
-        service, monkeypatch, tmp_path):
+    service, monkeypatch, tmp_path
+):
     from azure.core.exceptions import ResourceModifiedError
     from fakes import FakeFile
     from kumo_core.sources.errors import TransientSourceError
@@ -309,8 +322,7 @@ def test_failed_export_does_not_delete_another_writers_replacement(
     assert service.files['curated/shared'] == b'other writer completed'
 
 
-def test_upload_reserves_and_releases_memory_on_failure(service, tmp_path,
-                                                        monkeypatch):
+def test_upload_reserves_and_releases_memory_on_failure(service, tmp_path, monkeypatch):
     from fakes import FakeFile
     from kumo_core.sources import cpu
 
@@ -332,7 +344,8 @@ def test_upload_reserves_and_releases_memory_on_failure(service, tmp_path,
 
 @pytest.mark.parametrize('upload_fails', [False, True])
 def test_put_file_conditions_bind_upload_and_cleanup_to_creation(
-        tmp_path, upload_fails):
+    tmp_path, upload_fails
+):
     from azure.core import MatchConditions
     from azure.core.exceptions import ResourceModifiedError
     from azure.storage.filedatalake import DataLakeFileClient
@@ -342,8 +355,9 @@ def test_put_file_conditions_bind_upload_and_cleanup_to_creation(
     source.write_bytes(b'prepared bytes')
     client = Mock(spec=DataLakeFileClient)
     client.create_file.return_value = {'etag': '"created"'}
-    service = Mock(account_name='companylake',
-                   url='https://companylake.dfs.core.windows.net/')
+    service = Mock(
+        account_name='companylake', url='https://companylake.dfs.core.windows.net/'
+    )
     service.get_file_system_client.return_value.get_file_client.return_value = client
 
     def upload(stream, **kwargs):
@@ -366,7 +380,8 @@ def test_put_file_conditions_bind_upload_and_cleanup_to_creation(
         with pytest.raises(TransientSourceError):
             filesystem.put_file(str(source), AUTHORITY + '/prepared')
         client.delete_file.assert_called_once_with(
-            etag='"created"', match_condition=MatchConditions.IfNotModified)
+            etag='"created"', match_condition=MatchConditions.IfNotModified
+        )
     else:
         filesystem.put_file(str(source), AUTHORITY + '/prepared')
         client.delete_file.assert_not_called()
@@ -381,16 +396,16 @@ def test_version_checks_overlap_and_remain_independent_of_listing_order():
 
     def identity(path):
         barrier.wait()
-        return ('etag:' + path, )
+        return ('etag:' + path,)
 
     entries = [SimpleNamespace(path=f'object-{i}') for i in range(4)]
     reader = ADLSSourceReader(None, object_identity=identity)
     assert reader._data_version('table', entries) == reader._data_version(
-        'table', entries[::-1])
+        'table', entries[::-1]
+    )
 
 
-def test_model_download_uses_conditional_bulk_fetch(service, connector,
-                                                    tmp_path):
+def test_model_download_uses_conditional_bulk_fetch(service, connector, tmp_path):
     from kumo_adls.sink import ADLSSinkBackend
 
     service.directories.add('curated/orders/bundle')
@@ -404,7 +419,8 @@ def test_model_download_uses_conditional_bulk_fetch(service, connector,
 
 
 def test_filesystem_client_cache_is_bounded_and_does_not_cache_metadata(
-        service, monkeypatch):
+    service, monkeypatch
+):
     original = service.get_file_system_client
     factory = Mock(side_effect=original)
     monkeypatch.setattr(service, 'get_file_system_client', factory)
@@ -415,13 +431,13 @@ def test_filesystem_client_cache_is_bounded_and_does_not_cache_metadata(
     assert filesystem.object_identity(path) != first
     factory.assert_called_once_with('curated')
     for i in range(40):
-        filesystem._address(
-            f'filesystem-{i}@companylake.dfs.core.windows.net/path')
+        filesystem._address(f'filesystem-{i}@companylake.dfs.core.windows.net/path')
     assert len(filesystem._filesystems) == 32
 
 
 def test_large_fetch_uses_one_sdk_downloader_and_cleans_failure(
-        service, tmp_path, monkeypatch):
+    service, tmp_path, monkeypatch
+):
     from azure.core import MatchConditions
     from fakes import FakeFile
     from kumo_core.sources.errors import TransientSourceError
@@ -436,10 +452,13 @@ def test_large_fetch_uses_one_sdk_downloader_and_cleans_failure(
 
     def download(self, **kwargs):
         calls.append(kwargs)
-        assert kwargs == dict(offset=0, length=100 << 30,
-                              etag=original(self).etag,
-                              match_condition=MatchConditions.IfNotModified,
-                              max_concurrency=1)
+        assert kwargs == dict(
+            offset=0,
+            length=100 << 30,
+            etag=original(self).etag,
+            match_condition=MatchConditions.IfNotModified,
+            max_concurrency=1,
+        )
         raise TransientSourceError('later download failed')
 
     monkeypatch.setattr(FakeFile, 'get_file_properties', properties)
@@ -474,9 +493,9 @@ def test_empty_fetch_omits_range_arguments(service, tmp_path, monkeypatch):
     monkeypatch.setattr(FakeFile, 'download_file', download)
     destination = tmp_path / 'existing'
     destination.write_bytes(b'previous')
-    ADLSFileSystem(service, 'companylake',
-                   'dfs.core.windows.net').fetch(AUTHORITY + '/empty',
-                                                 str(destination))
+    ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net').fetch(
+        AUTHORITY + '/empty', str(destination)
+    )
     assert destination.read_bytes() == b''
     assert len(calls) == 1
 
@@ -511,7 +530,8 @@ def test_serial_fetch_preserves_callers_context(service, tmp_path, monkeypatch):
     destination = tmp_path / 'download'
     try:
         ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net').fetch(
-            AUTHORITY + '/orders/events.parquet', str(destination))
+            AUTHORITY + '/orders/events.parquet', str(destination)
+        )
     finally:
         tracing_context.reset(token)
     assert destination.read_bytes() == contents
@@ -529,13 +549,22 @@ def test_bulk_download_uses_one_slot_and_releases_on_failure(monkeypatch, size):
         assert workers == 4
 
 
-@pytest.mark.parametrize('size, expected', [(0, 1), (16 << 20, 1),
-                                            ((16 << 20) + 1, 1), (32 << 20, 1),
-                                            ((32 << 20) + 1, 2), (48 << 20, 2),
-                                            ((48 << 20) + 1, 3), (80 << 20, 4),
-                                            (64 << 20, 3), (100 << 30, 4)])
-def test_projection_download_counts_remaining_sdk_chunks(
-        monkeypatch, size, expected):
+@pytest.mark.parametrize(
+    'size, expected',
+    [
+        (0, 1),
+        (16 << 20, 1),
+        ((16 << 20) + 1, 1),
+        (32 << 20, 1),
+        ((32 << 20) + 1, 2),
+        (48 << 20, 2),
+        ((48 << 20) + 1, 3),
+        (80 << 20, 4),
+        (64 << 20, 3),
+        (100 << 30, 4),
+    ],
+)
+def test_projection_download_counts_remaining_sdk_chunks(monkeypatch, size, expected):
     monkeypatch.setattr(transfer, '_SLOTS', threading.BoundedSemaphore(4))
     with transfer.concurrency(size) as workers:
         assert workers == expected
@@ -553,11 +582,12 @@ def test_bulk_tuning_preserves_upload_chunking_and_parallelism(monkeypatch):
         assert workers == 3
 
 
-@pytest.mark.parametrize('short_write, wrong_report', [(True, False),
-                                                       (False, True),
-                                                       (True, True)])
+@pytest.mark.parametrize(
+    'short_write, wrong_report', [(True, False), (False, True), (True, True)]
+)
 def test_fetch_checks_actual_position_and_reported_length(
-        service, tmp_path, monkeypatch, short_write, wrong_report):
+    service, tmp_path, monkeypatch, short_write, wrong_report
+):
     from fakes import FakeFile
     from kumo_core.sources.errors import TransientSourceError
 

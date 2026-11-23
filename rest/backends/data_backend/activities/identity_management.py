@@ -34,11 +34,11 @@ def create_project_connector_activity(
     try:
         digest = canonical_request_digest(args)
         authorizations_by_identity = {
-            identity_id:
-            connector_credential_broker.authorize_project_activity_scope(
+            identity_id: connector_credential_broker.authorize_project_activity_scope(
                 reference,
-                resource_kind=(ConnectorAuthorizationResourceKind.
-                               PROJECT_CONNECTOR_CREATE),
+                resource_kind=(
+                    ConnectorAuthorizationResourceKind.PROJECT_CONNECTOR_CREATE
+                ),
                 resource_id=str(identity_id),
                 project_id=str(project_id),
                 request_digest=digest,
@@ -46,11 +46,12 @@ def create_project_connector_activity(
             )
             for identity_id, reference in authorizations.items()
         }
-        owners = {(authorization.principal_id, authorization.auth_backend)
-                  for authorization in authorizations_by_identity.values()}
+        owners = {
+            (authorization.principal_id, authorization.auth_backend)
+            for authorization in authorizations_by_identity.values()
+        }
         if len(owners) != 1:
-            raise PermissionError(
-                'Connector authorizations have different owners')
+            raise PermissionError('Connector authorizations have different owners')
         accepted_submitter_id, _ = next(iter(owners))
 
         async def create(services: StateServices) -> api.ConnectorResponse:
@@ -67,8 +68,10 @@ def create_project_connector_activity(
         # strip ValueError-compatible and same-name impostors before Temporal.
         if type(error) is ConnectorNameConflictError:
             raise
-        if (not isinstance(error, ValueError) and type(error).__name__
-                != ConnectorNameConflictError.__name__):
+        if (
+            not isinstance(error, ValueError)
+            and type(error).__name__ != ConnectorNameConflictError.__name__
+        ):
             raise
     raise ValueError
 
@@ -79,10 +82,12 @@ def validate_identity_credentials_activity(
     authorization: ActivityAuthorizationRef,
 ) -> api.IdentityResponse:
     """Load, decrypt or exchange, and test a stored identity in an activity."""
-    digest = canonical_request_digest({
-        'operation': 'validate_identity',
-        'identity_id': str(identity_id),
-    })
+    digest = canonical_request_digest(
+        {
+            'operation': 'validate_identity',
+            'identity_id': str(identity_id),
+        }
+    )
     principal = connector_credential_broker.authorize_activity_scope(
         authorization,
         resource_kind=ConnectorAuthorizationResourceKind.IDENTITY_VALIDATE,
@@ -94,6 +99,7 @@ def validate_identity_credentials_activity(
 
     async def test(services: StateServices) -> api.IdentityResponse:
         return await services.identities.test_credentials_from_activity(
-            identity_id, principal)
+            identity_id, principal
+        )
 
     return connector_credential_broker.run(test)

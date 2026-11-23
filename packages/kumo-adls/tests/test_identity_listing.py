@@ -25,10 +25,12 @@ PATHS = [AUTHORITY + '/orders/a.parquet', AUTHORITY + '/orders/b.parquet']
 
 
 def reader(filesystem):
-    return ADLSSourceReader(PyFileSystem(FSSpecHandler(filesystem)),
-                            root=AUTHORITY + '/orders',
-                            object_identity=filesystem.object_identity,
-                            fetch=filesystem.fetch)
+    return ADLSSourceReader(
+        PyFileSystem(FSSpecHandler(filesystem)),
+        root=AUTHORITY + '/orders',
+        object_identity=filesystem.object_identity,
+        fetch=filesystem.fetch,
+    )
 
 
 @pytest.fixture
@@ -43,16 +45,15 @@ def listing_service(service, monkeypatch):
         for item in original(self, path=path, recursive=recursive):
             if not item.is_directory:
                 item.etag = hashlib.sha256(
-                    self.service.files[self.filesystem + '/' +
-                                       item.name]).hexdigest()
+                    self.service.files[self.filesystem + '/' + item.name]
+                ).hexdigest()
             yield item
 
     monkeypatch.setattr(FakeFilesystem, 'get_paths', listing)
     return service, calls
 
 
-def test_fresh_listing_replaces_heads_and_keeps_order(listing_service,
-                                                      monkeypatch):
+def test_fresh_listing_replaces_heads_and_keeps_order(listing_service, monkeypatch):
     service, calls = listing_service
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     identities = [filesystem.object_identity(path) for path in PATHS]
@@ -70,10 +71,9 @@ def test_fresh_listing_replaces_heads_and_keeps_order(listing_service,
 
 
 @pytest.mark.parametrize(
-    'kind',
-    ['etag', 'size', 'missing', 'duplicate', 'directory', 'denied', 'bound'])
-def test_incomplete_or_unusable_listing_falls_back(listing_service, monkeypatch,
-                                                   kind):
+    'kind', ['etag', 'size', 'missing', 'duplicate', 'directory', 'denied', 'bound']
+)
+def test_incomplete_or_unusable_listing_falls_back(listing_service, monkeypatch, kind):
     service, _ = listing_service
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     expected = [filesystem.object_identity(path) for path in PATHS]
@@ -82,11 +82,10 @@ def test_incomplete_or_unusable_listing_falls_back(listing_service, monkeypatch,
     def broken(self, **kwargs):
         if kind == 'denied':
             raise HttpResponseError(
-                'denied', response=Mock(status_code=403, reason='denied',
-                                        headers={}))
+                'denied', response=Mock(status_code=403, reason='denied', headers={})
+            )
         items = list(original(self, **kwargs))
-        selected = next(item for item in items
-                        if item.name == 'orders/a.parquet')
+        selected = next(item for item in items if item.name == 'orders/a.parquet')
         if kind == 'etag':
             selected.etag = None
         elif kind == 'size':
@@ -99,16 +98,23 @@ def test_incomplete_or_unusable_listing_falls_back(listing_service, monkeypatch,
             items.append(selected)
         elif kind == 'bound':
             items = [
-                SimpleNamespace(name='orders/unrelated', is_directory=False,
-                                etag='x', content_length=1)
+                SimpleNamespace(
+                    name='orders/unrelated',
+                    is_directory=False,
+                    etag='x',
+                    content_length=1,
+                )
             ] * 1025 + items
         yield from items
 
     monkeypatch.setattr(FakeFilesystem, 'get_paths', broken)
-    assert filesystem.object_identities(PATHS,
-                                        root=AUTHORITY + '/orders') is None
-    assert reader(filesystem)._identities(
-        [SimpleNamespace(path=path) for path in PATHS], 1) == expected
+    assert filesystem.object_identities(PATHS, root=AUTHORITY + '/orders') is None
+    assert (
+        reader(filesystem)._identities(
+            [SimpleNamespace(path=path) for path in PATHS], 1
+        )
+        == expected
+    )
 
 
 def test_scopes_nested_paths_and_never_scans_filesystem_root(listing_service):
@@ -116,7 +122,7 @@ def test_scopes_nested_paths_and_never_scans_filesystem_root(listing_service):
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     nested = [
         AUTHORITY + '/orders/year=1/same.parquet',
-        AUTHORITY + '/orders/year=2/same.parquet'
+        AUTHORITY + '/orders/year=2/same.parquet',
     ]
     service.files['curated/orders/year=1/same.parquet'] = b'one'
     service.files['curated/orders/year=2/same.parquet'] = b'two'
@@ -124,10 +130,10 @@ def test_scopes_nested_paths_and_never_scans_filesystem_root(listing_service):
     assert result[0] != result[1]
     assert calls[-1] == ('curated', 'orders', True)
     count = len(calls)
-    assert filesystem.object_identities(
-        [AUTHORITY + '/one', AUTHORITY + '/two']) is None
-    assert filesystem.object_identities(PATHS,
-                                        root=AUTHORITY + '/private') is None
+    assert (
+        filesystem.object_identities([AUTHORITY + '/one', AUTHORITY + '/two']) is None
+    )
+    assert filesystem.object_identities(PATHS, root=AUTHORITY + '/private') is None
     assert filesystem.object_identities(PATHS[:1]) is None
     assert len(calls) == count
 
@@ -137,16 +143,18 @@ def test_custom_identity_callback_is_never_bypassed(listing_service):
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     source = reader(filesystem)
     source.object_identity = Mock(return_value=('custom', '4'))
-    assert source._identities([SimpleNamespace(path=path) for path in PATHS],
-                              1) == [('custom', '4')] * 2
+    assert (
+        source._identities([SimpleNamespace(path=path) for path in PATHS], 1)
+        == [('custom', '4')] * 2
+    )
     assert not calls
     assert source.object_identity.call_count == 2
 
 
 @pytest.mark.parametrize('listing_identities', [False, True])
-def test_prepare_stamps_and_reads_one_discovery(listing_service, tmp_path,
-                                                monkeypatch,
-                                                listing_identities):
+def test_prepare_stamps_and_reads_one_discovery(
+    listing_service, tmp_path, monkeypatch, listing_identities
+):
     service, _ = listing_service
     # Keep source valid and use two parts so identities use listing.
     original = service.files.pop('curated/orders/events.parquet')
@@ -154,8 +162,7 @@ def test_prepare_stamps_and_reads_one_discovery(listing_service, tmp_path,
     service.files['curated/orders/b.parquet'] = original
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     if not listing_identities:
-        monkeypatch.setattr(filesystem, 'object_identities',
-                            Mock(return_value=None))
+        monkeypatch.setattr(filesystem, 'object_identities', Mock(return_value=None))
     source = reader(filesystem)
     version = source.data_version('')
     objects = ADLSSourceReader._objects
@@ -175,9 +182,10 @@ def test_prepare_stamps_and_reads_one_discovery(listing_service, tmp_path,
     monkeypatch.setattr(ADLSSourceReader, '_objects', listed)
     monkeypatch.setattr(ADLSSourceReader, '_data_version', stamp)
     monkeypatch.setattr(
-        ADLSSourceReader, 'data_version',
-        Mock(side_effect=AssertionError(
-            'must not relist the table for its version')))
+        ADLSSourceReader,
+        'data_version',
+        Mock(side_effect=AssertionError('must not relist the table for its version')),
+    )
     fetch = ADLSFileSystem.fetch
 
     def add_part(self, path, destination):
@@ -188,8 +196,9 @@ def test_prepare_stamps_and_reads_one_discovery(listing_service, tmp_path,
     monkeypatch.setattr(ADLSFileSystem, 'fetch', add_part)
     # The callback must be bound after patching the SDK fetch method.
     source.fetch = filesystem.fetch
-    output = source.prepare('', str(tmp_path / 'out'), columns=None,
-                            mode=ReadMode.STREAMED)
+    output = source.prepare(
+        '', str(tmp_path / 'out'), columns=None, mode=ReadMode.STREAMED
+    )
     assert output.version == version
     assert len(listings) == len(stamps) == 1
     assert stamps[0] is listings[0]
@@ -212,14 +221,18 @@ def test_real_sdk_json_pagination_and_quoted_head_etags():
         if not continuation:
             context.headers['x-ms-continuation'] = 'next-page'
         name = 'a' if not continuation else 'b'
-        return json.dumps({
-            'paths': [{
-                'name': f'orders/{name}.parquet',
-                'etag': 'stable',
-                'contentLength': '3',
-                'lastModified': HEADERS['Last-Modified'],
-            }]
-        }).encode()
+        return json.dumps(
+            {
+                'paths': [
+                    {
+                        'name': f'orders/{name}.parquet',
+                        'etag': 'stable',
+                        'contentLength': '3',
+                        'lastModified': HEADERS['Last-Modified'],
+                    }
+                ]
+            }
+        ).encode()
 
     def head(request, context):
         heads.append(request.url)
@@ -229,22 +242,26 @@ def test_real_sdk_json_pagination_and_quoted_head_etags():
         assert request.headers['If-Match'] == '"stable"'
         return b'abc'
 
-    http.register_uri('GET',
-                      re.compile(r'https://companylake\.dfs\.[^/]+/curated\?'),
-                      headers={'Content-Type':
-                               'application/json'}, content=listing)
-    http.register_uri('HEAD', re.compile(r'https://companylake\.'), headers={
-        **HEADERS, 'Content-Length': '3'
-    }, content=head)
     http.register_uri(
-        'GET', re.compile(r'https://companylake\.[^/]+/curated/orders/'),
-        headers={
-            **HEADERS, 'Content-Length': '3',
-            'Content-Range': 'bytes 0-2/3'
-        }, content=download)
+        'GET',
+        re.compile(r'https://companylake\.dfs\.[^/]+/curated\?'),
+        headers={'Content-Type': 'application/json'},
+        content=listing,
+    )
+    http.register_uri(
+        'HEAD',
+        re.compile(r'https://companylake\.'),
+        headers={**HEADERS, 'Content-Length': '3'},
+        content=head,
+    )
+    http.register_uri(
+        'GET',
+        re.compile(r'https://companylake\.[^/]+/curated/orders/'),
+        headers={**HEADERS, 'Content-Length': '3', 'Content-Range': 'bytes 0-2/3'},
+        content=download,
+    )
     with client(http) as service:
-        filesystem = ADLSFileSystem(service, 'companylake',
-                                    'dfs.core.windows.net')
+        filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
         assert filesystem.object_identities(PATHS) == [('stable', '3')] * 2
         assert list_calls == ['', 'next-page']
         assert not heads
@@ -282,14 +299,16 @@ def test_non_sdk_filesystem_keeps_custom_identity_path(tmp_path):
 
     identity = Mock(return_value=('version', '4'))
     source = ADLSSourceReader(LocalFileSystem(), object_identity=identity)
-    assert source._identities([SimpleNamespace(path=str(tmp_path / 'one'))],
-                              1) == [('version', '4')]
+    assert source._identities([SimpleNamespace(path=str(tmp_path / 'one'))], 1) == [
+        ('version', '4')
+    ]
     identity.assert_called_once()
 
 
 @pytest.mark.parametrize('status', [401, 429, 503])
-def test_listing_auth_and_transient_errors_propagate(listing_service,
-                                                     monkeypatch, status):
+def test_listing_auth_and_transient_errors_propagate(
+    listing_service, monkeypatch, status
+):
     from kumo_core.sources.errors import ReconnectRequiredError
 
     service, _ = listing_service
@@ -297,8 +316,8 @@ def test_listing_auth_and_transient_errors_propagate(listing_service,
 
     def failed(*args, **kwargs):
         raise HttpResponseError(
-            'failed', response=Mock(status_code=status, reason='failed',
-                                    headers={}))
+            'failed', response=Mock(status_code=status, reason='failed', headers={})
+        )
 
     monkeypatch.setattr(FakeFilesystem, 'get_paths', failed)
     expected = ReconnectRequiredError if status == 401 else TransientSourceError
@@ -306,31 +325,30 @@ def test_listing_auth_and_transient_errors_propagate(listing_service,
         filesystem.object_identities(PATHS)
 
 
-def test_versions_say_whether_they_name_one_object_or_a_listing(
-        listing_service):
+def test_versions_say_whether_they_name_one_object_or_a_listing(listing_service):
     from kumo_core.sources.identity import version_kind
 
     service, _ = listing_service
-    source = reader(ADLSFileSystem(service, 'companylake',
-                                   'dfs.core.windows.net'))
+    source = reader(ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net'))
     assert version_kind(source.data_version('')) == 'listing'
     assert version_kind(source.data_version('a.parquet')) == 'exact'
 
 
 @pytest.mark.parametrize('prefix', ['', 'nested/'])
 def test_nested_exact_versions_use_the_readers_resolved_coordinate_space(
-        listing_service, prefix):
+    listing_service, prefix
+):
     from kumo_core.sources.identity import version_kind
 
     service, _ = listing_service
     service.files['curated/orders/nested/dir/a.parquet'] = b'parquet'
-    service.directories.update(
-        {'curated/orders/nested', 'curated/orders/nested/dir'})
+    service.directories.update({'curated/orders/nested', 'curated/orders/nested/dir'})
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
-    source = ADLSSourceReader(PyFileSystem(FSSpecHandler(filesystem)),
-                              root=AUTHORITY + '/orders/' + prefix,
-                              object_identity=filesystem.object_identity)
+    source = ADLSSourceReader(
+        PyFileSystem(FSSpecHandler(filesystem)),
+        root=AUTHORITY + '/orders/' + prefix,
+        object_identity=filesystem.object_identity,
+    )
     table = 'dir/a.parquet' if prefix else 'nested/dir/a.parquet'
     assert version_kind(source.data_version(table)) == 'exact'
-    assert version_kind(source.data_version(table.rsplit('/',
-                                                         1)[0])) == 'listing'
+    assert version_kind(source.data_version(table.rsplit('/', 1)[0])) == 'listing'

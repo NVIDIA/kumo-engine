@@ -13,6 +13,8 @@ async def preserves_s3_ca_certificate(request: Request) -> bool:
     if not isinstance(payload, Mapping):
         return False
     credentials = payload.get('credentials')
-    return (isinstance(credentials, Mapping)
-            and credentials.get('kind') == 's3_access_key'
-            and 'ca_certificate' not in credentials)
+    return (
+        isinstance(credentials, Mapping)
+        and credentials.get('kind') == 's3_access_key'
+        and 'ca_certificate' not in credentials
+    )

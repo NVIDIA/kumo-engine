@@ -63,17 +63,17 @@ class TableSnapshotRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/tablesnapshots",
-            tags=["API v1 (Under Development): Table data snapshots"],
+            prefix='/tablesnapshots',
+            tags=['API v1 (Under Development): Table data snapshots'],
             dependencies=[Depends(api_key_auth)],
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.create,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a table data snapshot.",
+            summary='Create a table data snapshot.',
         )
 
         self.router.add_api_route(
@@ -89,7 +89,8 @@ class TableSnapshotRouter:
         table_definition: ApiTableDefinition,
         project_id: Annotated[str, Query()],
         refresh_source: Annotated[
-            bool, Query(description=_refresh_source_desc)] = False,
+            bool, Query(description=_refresh_source_desc)
+        ] = False,
     ) -> IDResponse:
         """Create a TableSnapshotResource."""
         with wrap_driver_errors():
@@ -107,8 +108,7 @@ class TableSnapshotRouter:
         project_id: Annotated[str, Query()],
     ) -> snapshot_interfaces.TableSnapshotResource:
         with wrap_driver_errors():
-            snapshot = await self._driver.get_table_snapshot(
-                id, ProjectID(project_id))
+            snapshot = await self._driver.get_table_snapshot(id, ProjectID(project_id))
             return _public_table_snapshot(snapshot)
 
 
@@ -123,18 +123,18 @@ class GraphSnapshotRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/graphsnapshots",
-            tags=["API v1 (Under Development): Graph data snapshots"],
+            prefix='/graphsnapshots',
+            tags=['API v1 (Under Development): Graph data snapshots'],
             dependencies=[Depends(api_key_auth)],
             route_class=StrictQueryAPIRoute,
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.create,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a graph data snapshot.",
+            summary='Create a graph data snapshot.',
         )
 
         self.router.add_api_route(
@@ -150,21 +150,18 @@ class GraphSnapshotRouter:
             self.get_edge_health,
             response_model=EdgeHealthResponse,
             methods=['GET'],
-            summary=(
-                'Get edge health statistics corresponding to a graph snapshot.'
-            ),
+            summary=('Get edge health statistics corresponding to a graph snapshot.'),
         )
 
     async def create(
         self,
         response: Response,
-        graph_id: Annotated[str,
-                            Query(description='Graph resource identifier')],
+        graph_id: Annotated[str, Query(description='Graph resource identifier')],
         project_id: Annotated[str, Query()],
         refresh_source: Annotated[
-            bool, Query(description=_refresh_source_desc)] = False,
-        timestamp_precision: Annotated[TimestampPrecision,
-                                       Query()] = 'seconds',
+            bool, Query(description=_refresh_source_desc)
+        ] = False,
+        timestamp_precision: Annotated[TimestampPrecision, Query()] = 'seconds',
     ) -> IDResponse:
         """Create a GraphSnapshotResource."""
         with wrap_driver_errors(), wrap_validation_exceptions():
@@ -179,8 +176,7 @@ class GraphSnapshotRouter:
             built_precision = timestamp_precision
             if timestamp_precision != 'seconds':
                 # A worker that predates index clocks records a seconds build.
-                _, version_info = await get_graph_snapshot_info(
-                    graph_snapshot_id)
+                _, version_info = await get_graph_snapshot_info(graph_snapshot_id)
                 built_precision = version_info.timestamp_precision
         response.headers['X-Kumo-Timestamp-Precision'] = built_precision
         return IDResponse(graph_snapshot_id)
@@ -193,11 +189,14 @@ class GraphSnapshotRouter:
     ) -> snapshot_interfaces.GraphSnapshotResource:
         with wrap_driver_errors(), wrap_validation_exceptions():
             graph_snapshot = await self._driver.get_graph_snapshot(
-                GraphSnapshotRequest(graph_snapshot_id=id, ),
+                GraphSnapshotRequest(
+                    graph_snapshot_id=id,
+                ),
                 ProjectID(project_id),
             )
         response.headers['X-Kumo-Timestamp-Precision'] = (
-            graph_snapshot.timestamp_precision)
+            graph_snapshot.timestamp_precision
+        )
         return graph_snapshot.snapshot_resource
 
     async def get_edge_health(

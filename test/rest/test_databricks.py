@@ -31,9 +31,9 @@ def test_list_databricks_tables_with_schema_async(client: TestClient):
 
     resp = get_and_expect_success(
         client,
-        f"/v0/projects/{setup.project_id}/connectors/"
-        f"{setup.connector_id}/source-tables",
-        {"group_id": setup.group_id},
+        f'/v0/projects/{setup.project_id}/connectors/'
+        f'{setup.connector_id}/source-tables',
+        {'group_id': setup.group_id},
         source_api.SourceTableListResponse,
     )
 

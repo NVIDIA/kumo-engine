@@ -10,8 +10,6 @@ import time
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from functools import lru_cache
-from test.statedb.db.connector_fixtures import seed_connector
-from test.statedb.db.matrix_assertions import only_instance
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -113,6 +111,8 @@ from statedb.utils.errors import (
     NoIdentityValidatesTargetError,
     ProjectNotFoundError,
 )
+from test.statedb.db.connector_fixtures import seed_connector
+from test.statedb.db.matrix_assertions import only_instance
 
 
 @dataclass(frozen=True)
@@ -130,38 +130,35 @@ ADMIN = _Principal(UserID('admin'), 'Admin', (), True)
 class _TestWorkloadExchanger:
     def exchange(self, config, credentials):
         if isinstance(config, api.S3IdentityConfig):
-            if isinstance(config.authentication,
-                          api.S3AccessKeyAuthentication):
+            if isinstance(config.authentication, api.S3AccessKeyAuthentication):
                 assert isinstance(credentials, api.S3AccessKeyCredentials)
                 return AWSAccessKeyCredentials(
                     access_key_id=credentials.access_key_id,
                     secret_access_key=credentials.secret_access_key,
                     session_token=credentials.session_token,
-                    region=(config.connection.region
-                            if config.connection else None),
+                    region=(config.connection.region if config.connection else None),
                 )
             return AWSFederatedCredentials(
                 access_key_id=SecretStr('temporary-access-key'),
                 secret_access_key=SecretStr('temporary-secret-key'),
                 session_token=SecretStr('temporary-session-token'),
             )
-        if isinstance(config,
-                      (api.BigQueryIdentityConfig, api.GCSIdentityConfig)):
+        if isinstance(config, (api.BigQueryIdentityConfig, api.GCSIdentityConfig)):
             return GoogleCloudCredentials(
                 provider=config.type.value,
                 credential=MagicMock(name='gcs-credential'),
                 project='workload-project',
             )
         if isinstance(config, api.ADLSIdentityConfig):
-            return AzureFederatedCredentials(credential=MagicMock(
-                name='azure-credential'))
+            return AzureFederatedCredentials(
+                credential=MagicMock(name='azure-credential')
+            )
         raise TypeError(type(config))
 
 
 @pytest.fixture
 def db(tmp_path):
-    state_db = asyncio.run(
-        StateDB.open_sqlite(str(tmp_path / 'state.db'), pool_size=1))
+    state_db = asyncio.run(StateDB.open_sqlite(str(tmp_path / 'state.db'), pool_size=1))
     try:
         yield state_db
     finally:
@@ -172,7 +169,7 @@ async def _create_group(db: StateDB, name: str) -> GroupID:
     group_id = GroupID.generate()
     entry = KumoGroupDBEntry(
         id=group_id,
-        slug=f"group-{str(group_id)[-8:]}",
+        slug=f'group-{str(group_id)[-8:]}',
         display_name=name,
         normalized_display_name=name.casefold(),
         description='',
@@ -197,7 +194,7 @@ async def _create_project(
     entry = ProjectDBEntry(
         id=project_id,
         group_id=group_id,
-        slug=f"project-{str(project_id)[-8:]}",
+        slug=f'project-{str(project_id)[-8:]}',
         display_name=name,
         normalized_display_name=name.casefold(),
         created_by=owner,
@@ -219,8 +216,7 @@ def _identity_args(name: str, secret: str) -> api.CreateIdentityArgs:
             host='https://workspace.cloud.databricks.com',
             client_id=f'{name}-service-principal',
         ),
-        credentials=api.DatabricksOAuthCredentials(
-            client_secret=SecretStr(secret)),
+        credentials=api.DatabricksOAuthCredentials(client_secret=SecretStr(secret)),
     )
 
 
@@ -278,13 +274,13 @@ def _google_identity_args(
     name: str,
     email: str = 'kumo@service-project.iam.gserviceaccount.com',
 ) -> api.CreateIdentityArgs:
-    config_type = (api.BigQueryIdentityConfig
-                   if provider == 'bigquery' else api.GCSIdentityConfig)
+    config_type = (
+        api.BigQueryIdentityConfig if provider == 'bigquery' else api.GCSIdentityConfig
+    )
     if mode == 'service_account_key':
         return api.CreateIdentityArgs(
             display_name=name,
-            config=config_type(
-                authentication=_google_key_authentication(email)),
+            config=config_type(authentication=_google_key_authentication(email)),
             credentials=api.GoogleServiceAccountKeyCredentials(
                 private_key_id=SecretStr(f'{name}-key-id'),
                 private_key=SecretStr(_google_private_key_pem()),
@@ -294,7 +290,9 @@ def _google_identity_args(
         display_name=name,
         config=config_type(
             authentication=api.GoogleWorkloadIdentityAuthentication(
-                service_account_email=email)),
+                service_account_email=email
+            )
+        ),
     )
 
 
@@ -320,8 +318,8 @@ def _new_identity_service(
     **kwargs,
 ) -> IdentityService:
     return IdentityService(
-        db, connector_authorizations or ConnectorAuthorizationService(db),
-        **kwargs)
+        db, connector_authorizations or ConnectorAuthorizationService(db), **kwargs
+    )
 
 
 def _new_connector_service(
@@ -330,8 +328,8 @@ def _new_connector_service(
     **kwargs,
 ) -> ConnectorService:
     return ConnectorService(
-        db, connector_authorizations or ConnectorAuthorizationService(db),
-        **kwargs)
+        db, connector_authorizations or ConnectorAuthorizationService(db), **kwargs
+    )
 
 
 def _services(db: StateDB):
@@ -354,7 +352,8 @@ def _services(db: StateDB):
 
 @pytest.mark.asyncio
 async def test_s3_access_key_identity_is_encrypted_and_fingerprinted(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     identities, _ = _services(db)
     args = _s3_access_key_args(
         'minio-identity',
@@ -386,11 +385,11 @@ async def test_s3_access_key_identity_is_encrypted_and_fingerprinted(
 
 @pytest.mark.asyncio
 async def test_s3_access_key_rotation_updates_identity_key_atomically(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     identities, _ = _services(db)
     first_args = _s3_access_key_args('first-minio', 'first-key', 'first-secret')
-    second_args = _s3_access_key_args(
-        'second-minio', 'second-key', 'second-secret')
+    second_args = _s3_access_key_args('second-minio', 'second-key', 'second-secret')
     first = await identities.create(first_args, ADMIN)
     await identities.create(second_args, ADMIN)
     repository = JsonRepository('identities', IdentityDBEntry)
@@ -409,7 +408,8 @@ async def test_s3_access_key_rotation_updates_identity_key_atomically(
         unchanged = await repository.get(tx, first.id)
     assert unchanged is not None
     assert unchanged.payload.identity_key == identity_key(
-        first_args.config, first_args.credentials)
+        first_args.config, first_args.credentials
+    )
 
     rotated_credentials = api.S3AccessKeyCredentials(
         access_key_id=SecretStr('rotated-key'),
@@ -425,9 +425,11 @@ async def test_s3_access_key_rotation_updates_identity_key_atomically(
         updated = await repository.get(tx, first.id)
     assert updated is not None
     assert updated.payload.identity_key == identity_key(
-        first_args.config, rotated_credentials)
+        first_args.config, rotated_credentials
+    )
     decrypted = CredentialsEncryptor().decrypt_identity_credentials(
-        updated.payload.encrypted_credentials)
+        updated.payload.encrypted_credentials
+    )
     assert decrypted == rotated_credentials
     assert rotated.credential_status.last_rotated_at is not None
 
@@ -442,8 +444,8 @@ async def test_s3_access_key_rotation_updates_identity_key_atomically(
 )
 @pytest.mark.asyncio
 async def test_s3_access_key_rotation_ca_certificate_tri_state(
-        db: StateDB, submitted_ca: str | None, preserve_ca: bool,
-        expected_ca: str | None) -> None:
+    db: StateDB, submitted_ca: str | None, preserve_ca: bool, expected_ca: str | None
+) -> None:
     validator = MagicMock()
     identities = _new_identity_service(
         db,
@@ -452,9 +454,11 @@ async def test_s3_access_key_rotation_ca_certificate_tri_state(
     )
     certificates = {
         'initial-ca': SecretStr(
-            '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'),
+            '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
+        ),
         'replacement-ca': SecretStr(
-            '-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----'),
+            '-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----'
+        ),
     }
     create_args = _s3_access_key_args(
         'private-ca-minio',
@@ -475,8 +479,9 @@ async def test_s3_access_key_rotation_ca_certificate_tri_state(
     submitted = api.S3AccessKeyCredentials(
         access_key_id=SecretStr('rotated-key'),
         secret_access_key=SecretStr('rotated-secret'),
-        ca_certificate=(certificates[submitted_ca]
-                        if submitted_ca is not None else None),
+        ca_certificate=(
+            certificates[submitted_ca] if submitted_ca is not None else None
+        ),
     )
     await identities.rotate_credentials(
         created.id,
@@ -487,8 +492,7 @@ async def test_s3_access_key_rotation_ca_certificate_tri_state(
 
     expected = replace(
         submitted,
-        ca_certificate=(certificates[expected_ca]
-                        if expected_ca is not None else None),
+        ca_certificate=(certificates[expected_ca] if expected_ca is not None else None),
     )
     validator.assert_called_once_with(
         create_args.config,
@@ -500,16 +504,18 @@ async def test_s3_access_key_rotation_ca_certificate_tri_state(
         updated = await repository.get(tx, created.id)
     assert updated is not None
     decrypted = CredentialsEncryptor().decrypt_identity_credentials(
-        updated.payload.encrypted_credentials)
+        updated.payload.encrypted_credentials
+    )
     assert decrypted == expected
 
 
 @pytest.mark.asyncio
 async def test_s3_connector_resolution_carries_identity_owned_connection(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'minio-team')
     project_id = await _create_project(db, group_id, 'minio-project')
-    member = _Principal(UserID('minio-member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('minio-member'), 'Member', (str(group_id),))
     identities, connectors = _services(db)
     args = replace(
         _s3_access_key_args(
@@ -554,7 +560,8 @@ async def test_s3_connector_resolution_carries_identity_owned_connection(
 @pytest.mark.parametrize('mode', ['service_account_key', 'workload_identity'])
 @pytest.mark.asyncio
 async def test_google_identity_mode_persistence_and_status(
-        db: StateDB, provider: str, mode: str) -> None:
+    db: StateDB, provider: str, mode: str
+) -> None:
     identities, _ = _services(db)
     args = _google_identity_args(
         provider,
@@ -565,10 +572,12 @@ async def test_google_identity_mode_persistence_and_status(
     response = await identities.create(args, ADMIN)
 
     assert response.credential_status.configured is True
-    assert (response.credential_status.last_rotated_at
-            is not None) == (mode == 'service_account_key')
+    assert (response.credential_status.last_rotated_at is not None) == (
+        mode == 'service_account_key'
+    )
     assert identity_key(args.config) == (
-        f'{provider}:{mode}:kumo@service-project.iam.gserviceaccount.com')
+        f'{provider}:{mode}:kumo@service-project.iam.gserviceaccount.com'
+    )
     repository = JsonRepository('identities', IdentityDBEntry)
     async with db.read_tx() as tx:
         row = await repository.get(tx, response.id)
@@ -583,7 +592,8 @@ async def test_google_identity_mode_persistence_and_status(
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 @pytest.mark.asyncio
 async def test_activity_google_key_revalidation_observes_revocation_without_cached_success(
-        db: StateDB, provider: str) -> None:
+    db: StateDB, provider: str
+) -> None:
     poison = 'provider-revocation-response-with-private-material'
 
     class _MutableValidator:
@@ -616,15 +626,13 @@ async def test_activity_google_key_revalidation_observes_revocation_without_cach
     assert tested.id == created.id
 
     demoted_admin = _Principal(UserID('admin'), 'Admin', (), False)
-    with pytest.raises(IdentityForbiddenError,
-                       match='Administrator access required'):
-        await identities.test_credentials_from_activity(created.id,
-                                                        demoted_admin)
+    with pytest.raises(IdentityForbiddenError, match='Administrator access required'):
+        await identities.test_credentials_from_activity(created.id, demoted_admin)
 
     validator.revoked = True
     with pytest.raises(
-            IdentityValidationError,
-            match='stored Google service-account key is invalid') as caught:
+        IdentityValidationError, match='stored Google service-account key is invalid'
+    ) as caught:
         await identities.test_credentials_from_activity(created.id, ADMIN)
 
     assert validator.calls == 3
@@ -637,10 +645,11 @@ async def test_activity_google_key_revalidation_observes_revocation_without_cach
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 @pytest.mark.asyncio
 async def test_same_google_principal_modes_coexist_and_are_ambiguous_for_auto_selection(
-        db: StateDB, provider: str) -> None:
+    db: StateDB, provider: str
+) -> None:
     group_id = await _create_group(db, f'{provider}-team')
     project_id = await _create_project(db, group_id, f'{provider}-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, _ = _services(db)
     email = 'shared@service-project.iam.gserviceaccount.com'
     created = []
@@ -664,14 +673,18 @@ async def test_same_google_principal_modes_coexist_and_are_ambiguous_for_auto_se
     assert created[0].id != created[1].id
     assert created[0].config.authentication.mode == 'service_account_key'
     assert created[1].config.authentication.mode == 'workload_identity'
-    resource_config = (api.BigQueryConnectorResourceConfig(
-        project_id='data-project',
-        dataset_id='events',
-        location='US',
-    ) if provider == 'bigquery' else api.GCSConnectorResourceConfig(
-        bucket='data-bucket',
-        prefix='events',
-    ))
+    resource_config = (
+        api.BigQueryConnectorResourceConfig(
+            project_id='data-project',
+            dataset_id='events',
+            location='US',
+        )
+        if provider == 'bigquery'
+        else api.GCSConnectorResourceConfig(
+            bucket='data-bucket',
+            prefix='events',
+        )
+    )
     connectors = _new_connector_service(
         db,
         connector_validator=lambda *_: None,
@@ -705,7 +718,8 @@ async def test_same_google_principal_modes_coexist_and_are_ambiguous_for_auto_se
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 @pytest.mark.asyncio
 async def test_google_key_rotation_is_local_and_requires_same_principal(
-        db: StateDB, provider: str) -> None:
+    db: StateDB, provider: str
+) -> None:
     validator = MagicMock()
     exchanger = MagicMock()
     identities = _new_identity_service(
@@ -753,8 +767,7 @@ async def test_google_key_rotation_is_local_and_requires_same_principal(
             ),
             ADMIN,
         )
-    with pytest.raises(IdentityValidationError,
-                       match='service-account key is invalid'):
+    with pytest.raises(IdentityValidationError, match='service-account key is invalid'):
         await identities.rotate_credentials(
             created.id,
             api.RotateIdentityCredentialsArgs(
@@ -773,11 +786,11 @@ async def test_google_key_rotation_is_local_and_requires_same_principal(
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 @pytest.mark.asyncio
 async def test_subsequent_resolution_observes_rotated_google_key(
-        db: StateDB, provider: str) -> None:
+    db: StateDB, provider: str
+) -> None:
     group_id = await _create_group(db, f'{provider}-rotation-team')
-    project_id = await _create_project(db, group_id,
-                                       f'{provider}-rotation-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    project_id = await _create_project(db, group_id, f'{provider}-rotation-project')
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, _ = _services(db)
     args = _google_identity_args(
         provider,
@@ -790,10 +803,13 @@ async def test_subsequent_resolution_observes_rotated_google_key(
         api.ReplaceIdentityGroupsArgs(group_ids=[str(group_id)]),
         ADMIN,
     )
-    config = (api.BigQueryConnectorResourceConfig(
-        project_id='data-project', dataset_id='events', location='US')
-              if provider == 'bigquery' else api.GCSConnectorResourceConfig(
-                  bucket='data-bucket', prefix='events'))
+    config = (
+        api.BigQueryConnectorResourceConfig(
+            project_id='data-project', dataset_id='events', location='US'
+        )
+        if provider == 'bigquery'
+        else api.GCSConnectorResourceConfig(bucket='data-bucket', prefix='events')
+    )
     connectors = _new_connector_service(
         db,
         connector_validator=lambda *_: None,
@@ -812,7 +828,8 @@ async def test_subsequent_resolution_observes_rotated_google_key(
 
     before = await connectors.resolve_for_activity(project_id, connector.id)
     assert before.credentials.credential.signer.key_id == (
-        f'{provider}-rotating-key-key-id')
+        f'{provider}-rotating-key-key-id'
+    )
     await identities.rotate_credentials(
         identity.id,
         api.RotateIdentityCredentialsArgs(
@@ -832,11 +849,11 @@ async def test_subsequent_resolution_observes_rotated_google_key(
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 @pytest.mark.asyncio
 async def test_subsequent_workload_resolution_observes_impersonation_failure(
-        db: StateDB, provider: str) -> None:
+    db: StateDB, provider: str
+) -> None:
     group_id = await _create_group(db, f'{provider}-workload-team')
-    project_id = await _create_project(db, group_id,
-                                       f'{provider}-workload-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    project_id = await _create_project(db, group_id, f'{provider}-workload-project')
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     available = _TestWorkloadExchanger()
     identities = _new_identity_service(
         db,
@@ -863,7 +880,8 @@ async def test_subsequent_workload_resolution_observes_impersonation_failure(
         def exchange(self, config, credentials):
             if self.denied:
                 raise IdentityAuthenticationCategoryError(
-                    IdentityAuthenticationCategory.IMPERSONATION_DENIED)
+                    IdentityAuthenticationCategory.IMPERSONATION_DENIED
+                )
             return super().exchange(config, credentials)
 
     exchanger = _MutableExchanger()
@@ -872,10 +890,13 @@ async def test_subsequent_workload_resolution_observes_impersonation_failure(
         connector_validator=lambda *_: None,
         workload_exchanger=exchanger,
     )
-    config = (api.BigQueryConnectorResourceConfig(
-        project_id='data-project', dataset_id='events', location='US')
-              if provider == 'bigquery' else api.GCSConnectorResourceConfig(
-                  bucket='data-bucket', prefix='events'))
+    config = (
+        api.BigQueryConnectorResourceConfig(
+            project_id='data-project', dataset_id='events', location='US'
+        )
+        if provider == 'bigquery'
+        else api.GCSConnectorResourceConfig(bucket='data-bucket', prefix='events')
+    )
     connector = await _create_connector(
         connectors,
         project_id,
@@ -887,11 +908,13 @@ async def test_subsequent_workload_resolution_observes_impersonation_failure(
         member,
     )
 
-    assert (await connectors.resolve_for_activity(
-        project_id, connector.id)).credentials.provider == provider
+    assert (
+        await connectors.resolve_for_activity(project_id, connector.id)
+    ).credentials.provider == provider
     exchanger.denied = True
-    with pytest.raises(IdentityResolutionUnavailableError,
-                       match='impersonation was denied') as caught:
+    with pytest.raises(
+        IdentityResolutionUnavailableError, match='impersonation was denied'
+    ) as caught:
         await connectors.resolve_for_activity(project_id, connector.id)
     assert caught.value.__cause__ is None
 
@@ -899,7 +922,8 @@ async def test_subsequent_workload_resolution_observes_impersonation_failure(
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 @pytest.mark.asyncio
 async def test_google_workload_identity_rotation_is_not_applicable(
-        db: StateDB, provider: str) -> None:
+    db: StateDB, provider: str
+) -> None:
     identities, _ = _services(db)
     created = await identities.create(
         _google_identity_args(
@@ -951,7 +975,8 @@ def _all_connector_cases():
                     client_id='databricks-client',
                 ),
                 credentials=api.DatabricksOAuthCredentials(
-                    client_secret=SecretStr('databricks-secret')),
+                    client_secret=SecretStr('databricks-secret')
+                ),
             ),
             api.DatabricksConnectorResourceConfig(
                 warehouse_id='warehouse-id',
@@ -968,7 +993,8 @@ def _all_connector_cases():
                     authentication=api.SnowflakeAuthenticationKind.PASSWORD,
                 ),
                 credentials=api.SnowflakePasswordCredentials(
-                    password=SecretStr('snowflake-secret')),
+                    password=SecretStr('snowflake-secret')
+                ),
             ),
             api.SnowflakeConnectorResourceConfig(
                 role='KUMO_READER',
@@ -981,7 +1007,8 @@ def _all_connector_cases():
             api.CreateIdentityArgs(
                 display_name='bigquery',
                 config=api.BigQueryIdentityConfig(
-                    authentication=_google_key_authentication(), ),
+                    authentication=_google_key_authentication(),
+                ),
                 credentials=api.GoogleServiceAccountKeyCredentials(
                     private_key_id=SecretStr('private-key-id'),
                     private_key=SecretStr(_google_private_key_pem()),
@@ -1015,20 +1042,23 @@ def _all_connector_cases():
                     authentication=api.S3AssumeRoleAuthentication(
                         partition='aws',
                         role_arn=('arn:aws:iam::123456789012:role/kumo-reader'),
-                    ), ),
+                    ),
+                ),
             ),
             api.S3ConnectorResourceConfig(
                 target=api.S3RootedConnectorTarget(
                     bucket='company-data',
                     prefix='raw/events',
                     region='us-west-2',
-                ), ),
+                ),
+            ),
         ),
         (
             api.CreateIdentityArgs(
                 display_name='gcs-key',
                 config=api.GCSIdentityConfig(
-                    authentication=_google_key_authentication(), ),
+                    authentication=_google_key_authentication(),
+                ),
                 credentials=api.GoogleServiceAccountKeyCredentials(
                     private_key_id=SecretStr('gcs-private-key-id'),
                     private_key=SecretStr(_google_private_key_pem()),
@@ -1047,7 +1077,9 @@ def _all_connector_cases():
                     authentication=api.GoogleWorkloadIdentityAuthentication(
                         service_account_email=(
                             'kumo-reader@example.iam.gserviceaccount.com'
-                        ), ), ),
+                        ),
+                    ),
+                ),
             ),
             api.GCSConnectorResourceConfig(
                 bucket='training-data',
@@ -1080,11 +1112,10 @@ async def _create_connector(
     args: api.CreateConnectorArgs,
     principal: _Principal,
 ):
-    authorizations = await connectors.authorize_create(project_id, args,
-                                                       principal)
-    return await connectors.create_from_activity(project_id, args,
-                                                 principal.user_id,
-                                                 set(authorizations))
+    authorizations = await connectors.authorize_create(project_id, args, principal)
+    return await connectors.create_from_activity(
+        project_id, args, principal.user_id, set(authorizations)
+    )
 
 
 async def _bound_databricks_connector(
@@ -1101,46 +1132,44 @@ async def _bound_databricks_connector(
 ):
     group_id = await _create_group(db, group_name)
     project_id = await _create_project(db, group_id, project_name)
-    user = _Principal(UserID(user_id), user_name, (str(group_id), ))
+    user = _Principal(UserID(user_id), user_name, (str(group_id),))
     identities, connectors = _services(db)
-    identity = await _create_bound_databricks_identity(identities, group_id,
-                                                       identity_name,
-                                                       identity_secret)
+    identity = await _create_bound_databricks_identity(
+        identities, group_id, identity_name, identity_secret
+    )
     connector = await _create_connector(
         connectors,
         project_id,
         _connector_args(connector_name, identity.id, schema_name),
         user,
     )
-    return (group_id, project_id, user, identities, connectors, identity,
-            connector)
+    return (group_id, project_id, user, identities, connectors, identity, connector)
 
 
 async def _automatic_resolution_project(db: StateDB):
     group_id = await _create_group(db, 'team')
     project_id = await _create_project(db, group_id, 'project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(db, identity_validator=lambda *_: None)
     return group_id, project_id, user, identities
 
 
 def _enable_ambient_s3(monkeypatch) -> None:
-    monkeypatch.setattr('statedb.db.identities._ambient_s3_enabled',
-                        lambda: True)
-    monkeypatch.setattr('statedb.db.identities._require_ambient_s3_enabled',
-                        lambda: None)
+    monkeypatch.setattr('statedb.db.identities._ambient_s3_enabled', lambda: True)
+    monkeypatch.setattr(
+        'statedb.db.identities._require_ambient_s3_enabled', lambda: None
+    )
 
 
 def _disable_ambient_s3(monkeypatch) -> None:
-    monkeypatch.setattr('statedb.db.identities._ambient_s3_enabled',
-                        lambda: False)
+    monkeypatch.setattr('statedb.db.identities._ambient_s3_enabled', lambda: False)
 
     def disabled() -> None:
         raise IdentityResolutionUnavailableError(
-            'Ambient S3 workload identity is disabled')
+            'Ambient S3 workload identity is disabled'
+        )
 
-    monkeypatch.setattr('statedb.db.identities._require_ambient_s3_enabled',
-                        disabled)
+    monkeypatch.setattr('statedb.db.identities._require_ambient_s3_enabled', disabled)
 
 
 def _enable_ambient_adls(monkeypatch) -> api.ADLSIdentityConfig:
@@ -1149,27 +1178,24 @@ def _enable_ambient_adls(monkeypatch) -> api.ADLSIdentityConfig:
         client_id='client-id',
         cloud=api.AzureCloud.PUBLIC,
     )
-    monkeypatch.setattr('statedb.db.identities._ambient_adls_config',
-                        lambda: config)
-    monkeypatch.setattr('statedb.db.identities._ambient_adls_enabled',
-                        lambda: True)
-    monkeypatch.setattr('statedb.db.identities._require_ambient_adls_enabled',
-                        lambda: None)
+    monkeypatch.setattr('statedb.db.identities._ambient_adls_config', lambda: config)
+    monkeypatch.setattr('statedb.db.identities._ambient_adls_enabled', lambda: True)
+    monkeypatch.setattr(
+        'statedb.db.identities._require_ambient_adls_enabled', lambda: None
+    )
     return config
 
 
 def _disable_ambient_adls(monkeypatch) -> None:
-    monkeypatch.setattr('statedb.db.identities._ambient_adls_config',
-                        lambda: None)
-    monkeypatch.setattr('statedb.db.identities._ambient_adls_enabled',
-                        lambda: False)
+    monkeypatch.setattr('statedb.db.identities._ambient_adls_config', lambda: None)
+    monkeypatch.setattr('statedb.db.identities._ambient_adls_enabled', lambda: False)
 
     def disabled() -> None:
         raise IdentityResolutionUnavailableError(
-            'Ambient ADLS workload identity is disabled')
+            'Ambient ADLS workload identity is disabled'
+        )
 
-    monkeypatch.setattr('statedb.db.identities._require_ambient_adls_enabled',
-                        disabled)
+    monkeypatch.setattr('statedb.db.identities._require_ambient_adls_enabled', disabled)
 
 
 def _assume_role_identity_args(name: str) -> api.CreateIdentityArgs:
@@ -1179,19 +1205,21 @@ def _assume_role_identity_args(name: str) -> api.CreateIdentityArgs:
             authentication=api.S3AssumeRoleAuthentication(
                 partition='aws',
                 role_arn=f'arn:aws:iam::123456789012:role/{name}',
-            ), ),
+            ),
+        ),
     )
 
 
 @pytest.mark.parametrize('auth_disabled', [True, False])
 @pytest.mark.asyncio
 async def test_startup_ambient_s3_binding_depends_on_auth(
-        db: StateDB, monkeypatch, *, auth_disabled: bool) -> None:
+    db: StateDB, monkeypatch, *, auth_disabled: bool
+) -> None:
     _enable_ambient_s3(monkeypatch)
     _disable_ambient_adls(monkeypatch)
     group_id = await _create_group(db, 'default-team')
     project_id = await _create_project(db, group_id, 'default-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, _ = _services(db)
 
     await ensure_startup_ambient_identities(
@@ -1201,18 +1229,22 @@ async def test_startup_ambient_s3_binding_depends_on_auth(
     )
 
     async with db.read_tx() as tx:
-        assert await identities._identities.get(
-            tx, str(AMBIENT_S3_IDENTITY_ID)) is not None
+        assert (
+            await identities._identities.get(tx, str(AMBIENT_S3_IDENTITY_ID))
+            is not None
+        )
 
     available = await identities.available_for_project(project_id, member)
-    assert [identity.id for identity in available
-            ] == ([AMBIENT_S3_IDENTITY_ID] if auth_disabled else [])
+    assert [identity.id for identity in available] == (
+        [AMBIENT_S3_IDENTITY_ID] if auth_disabled else []
+    )
 
 
 @pytest.mark.parametrize('auth_disabled', [True, False])
 @pytest.mark.asyncio
-async def test_startup_ambient_s3_disabled_is_noop(db: StateDB, monkeypatch, *,
-                                                   auth_disabled: bool) -> None:
+async def test_startup_ambient_s3_disabled_is_noop(
+    db: StateDB, monkeypatch, *, auth_disabled: bool
+) -> None:
     _disable_ambient_s3(monkeypatch)
     _disable_ambient_adls(monkeypatch)
     group_id = await _create_group(db, 'default-team')
@@ -1225,45 +1257,48 @@ async def test_startup_ambient_s3_disabled_is_noop(db: StateDB, monkeypatch, *,
     )
 
     async with db.read_tx() as tx:
-        assert await identities._identities.get(
-            tx, str(AMBIENT_S3_IDENTITY_ID)) is None
+        assert await identities._identities.get(tx, str(AMBIENT_S3_IDENTITY_ID)) is None
 
 
 @pytest.mark.asyncio
 async def test_startup_ambient_adls_binds_default_only_when_first_created(
-        db: StateDB, monkeypatch) -> None:
+    db: StateDB, monkeypatch
+) -> None:
     _disable_ambient_s3(monkeypatch)
     config = _enable_ambient_adls(monkeypatch)
     default_group_id = await _create_group(db, 'default-team')
     narrow_group_id = await _create_group(db, 'narrow-team')
-    default_project_id = await _create_project(db, default_group_id,
-                                               'default-project')
-    narrow_project_id = await _create_project(db, narrow_group_id,
-                                              'narrow-project')
-    default_member = _Principal(UserID('default-member'), 'Default member',
-                                (str(default_group_id), ))
-    narrow_member = _Principal(UserID('narrow-member'), 'Narrow member',
-                               (str(narrow_group_id), ))
+    default_project_id = await _create_project(db, default_group_id, 'default-project')
+    narrow_project_id = await _create_project(db, narrow_group_id, 'narrow-project')
+    default_member = _Principal(
+        UserID('default-member'), 'Default member', (str(default_group_id),)
+    )
+    narrow_member = _Principal(
+        UserID('narrow-member'), 'Narrow member', (str(narrow_group_id),)
+    )
     identities, connectors = _services(db)
 
-    await asyncio.gather(*[
-        ensure_startup_ambient_identities(
-            identities,
-            default_group_id,
-            auth_disabled=False,
-        ) for _ in range(2)
-    ])
+    await asyncio.gather(
+        *[
+            ensure_startup_ambient_identities(
+                identities,
+                default_group_id,
+                auth_disabled=False,
+            )
+            for _ in range(2)
+        ]
+    )
 
-    available = await identities.available_for_project(default_project_id,
-                                                       default_member)
+    available = await identities.available_for_project(
+        default_project_id, default_member
+    )
     assert [identity.id for identity in available] == [AMBIENT_ADLS_IDENTITY_ID]
     identity = available[0]
     assert identity.slug == AMBIENT_ADLS_IDENTITY_SLUG
     assert identity.display_name == AMBIENT_ADLS_IDENTITY_DISPLAY_NAME
     assert identity.config == config
     async with db.read_tx() as tx:
-        row = await identities._identities.get(tx,
-                                               str(AMBIENT_ADLS_IDENTITY_ID))
+        row = await identities._identities.get(tx, str(AMBIENT_ADLS_IDENTITY_ID))
         assert row is not None
         assert row.payload.encrypted_credentials is None
         assert row.payload.credentials_rotated_at is None
@@ -1294,11 +1329,14 @@ async def test_startup_ambient_adls_binds_default_only_when_first_created(
         auth_disabled=False,
     )
 
-    assert await identities.available_for_project(default_project_id,
-                                                  default_member) == []
+    assert (
+        await identities.available_for_project(default_project_id, default_member) == []
+    )
     assert [
-        identity.id for identity in await identities.available_for_project(
-            narrow_project_id, narrow_member)
+        identity.id
+        for identity in await identities.available_for_project(
+            narrow_project_id, narrow_member
+        )
     ] == [AMBIENT_ADLS_IDENTITY_ID]
     with pytest.raises(IdentityForbiddenError, match='immutable'):
         await identities.update_metadata(
@@ -1311,8 +1349,7 @@ async def test_startup_ambient_adls_binds_default_only_when_first_created(
 
 
 @pytest.mark.asyncio
-async def test_startup_ambient_adls_disabled_is_noop(db: StateDB,
-                                                     monkeypatch) -> None:
+async def test_startup_ambient_adls_disabled_is_noop(db: StateDB, monkeypatch) -> None:
     _disable_ambient_s3(monkeypatch)
     _disable_ambient_adls(monkeypatch)
     group_id = await _create_group(db, 'default-team')
@@ -1325,17 +1362,19 @@ async def test_startup_ambient_adls_disabled_is_noop(db: StateDB,
     )
 
     async with db.read_tx() as tx:
-        assert await identities._identities.get(
-            tx, str(AMBIENT_ADLS_IDENTITY_ID)) is None
+        assert (
+            await identities._identities.get(tx, str(AMBIENT_ADLS_IDENTITY_ID)) is None
+        )
 
 
 @pytest.mark.asyncio
 async def test_ambient_s3_identity_is_canonical_unbound_and_immutable(
-        db: StateDB, monkeypatch) -> None:
+    db: StateDB, monkeypatch
+) -> None:
     _enable_ambient_s3(monkeypatch)
     group_id = await _create_group(db, 'ambient-team')
     project_id = await _create_project(db, group_id, 'ambient-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, _ = _services(db)
 
     first, second = await asyncio.gather(
@@ -1353,7 +1392,8 @@ async def test_ambient_s3_identity_is_canonical_unbound_and_immutable(
             api.CreateIdentityArgs(
                 display_name='another ambient identity',
                 config=api.S3IdentityConfig(
-                    authentication=api.S3AmbientAuthentication()),
+                    authentication=api.S3AmbientAuthentication()
+                ),
             ),
             ADMIN,
         )
@@ -1364,8 +1404,8 @@ async def test_ambient_s3_identity_is_canonical_unbound_and_immutable(
         ADMIN,
     )
     assert [
-        identity.id for identity in await identities.available_for_project(
-            project_id, member)
+        identity.id
+        for identity in await identities.available_for_project(project_id, member)
     ] == [AMBIENT_S3_IDENTITY_ID]
     with pytest.raises(IdentityForbiddenError, match='immutable'):
         await identities.update_metadata(
@@ -1386,22 +1426,25 @@ async def test_ambient_s3_identity_is_canonical_unbound_and_immutable(
 @pytest.mark.parametrize(
     'target',
     [
-        api.S3RootedConnectorTarget(bucket='company-data', prefix='root',
-                                    region='us-west-2'),
+        api.S3RootedConnectorTarget(
+            bucket='company-data', prefix='root', region='us-west-2'
+        ),
         api.S3AnyURIConnectorTarget(),
     ],
 )
 @pytest.mark.asyncio
 async def test_omitted_s3_identity_selects_only_bound_ambient_identity(
-        db: StateDB, monkeypatch, target) -> None:
+    db: StateDB, monkeypatch, target
+) -> None:
     _enable_ambient_s3(monkeypatch)
     group_id = await _create_group(db, 'ambient-team')
     project_id = await _create_project(db, group_id, 'ambient-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, _ = _services(db)
     await identities.ensure_ambient_s3_identity()
     assume_role = await identities.create(
-        _assume_role_identity_args('explicit-role'), ADMIN)
+        _assume_role_identity_args('explicit-role'), ADMIN
+    )
     for identity_id in (AMBIENT_S3_IDENTITY_ID, assume_role.id):
         await identities.replace_groups(
             identity_id,
@@ -1430,10 +1473,14 @@ async def test_omitted_s3_identity_selects_only_bound_ambient_identity(
     retried = await _create_connector(connectors, project_id, args, member)
     assert retried.id == created.id
     assert len(validated) == 1
-    different_target = (api.S3AnyURIConnectorTarget() if target.mode == 'rooted'
-                        else api.S3RootedConnectorTarget(bucket='other-bucket'))
-    with pytest.raises(ConnectorNameConflictError,
-                       match='already exists in this project'):
+    different_target = (
+        api.S3AnyURIConnectorTarget()
+        if target.mode == 'rooted'
+        else api.S3RootedConnectorTarget(bucket='other-bucket')
+    )
+    with pytest.raises(
+        ConnectorNameConflictError, match='already exists in this project'
+    ):
         await _create_connector(
             connectors,
             project_id,
@@ -1447,15 +1494,15 @@ async def test_omitted_s3_identity_selects_only_bound_ambient_identity(
 
 @pytest.mark.asyncio
 async def test_omitted_s3_disabled_or_unbound_is_safe_422_and_persists_nothing(
-        db: StateDB, monkeypatch) -> None:
+    db: StateDB, monkeypatch
+) -> None:
     group_id = await _create_group(db, 'ambient-team')
     project_id = await _create_project(db, group_id, 'ambient-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, connectors = _services(db)
     args = api.CreateConnectorArgs(
         name='rootless-s3',
-        config=api.S3ConnectorResourceConfig(
-            target=api.S3AnyURIConnectorTarget()),
+        config=api.S3ConnectorResourceConfig(target=api.S3AnyURIConnectorTarget()),
     )
 
     _disable_ambient_s3(monkeypatch)
@@ -1478,17 +1525,17 @@ async def test_omitted_s3_disabled_or_unbound_is_safe_422_and_persists_nothing(
         await connectors.authorize_create(project_id, explicit_missing, member)
 
     async with db.read_tx() as tx:
-        assert await connectors._connectors.list(tx,
-                                                 project_id=project_id) == []
+        assert await connectors._connectors.list(tx, project_id=project_id) == []
 
 
 @pytest.mark.asyncio
 async def test_ambient_connector_disable_unbind_and_rebind_take_effect_immediately(
-        db: StateDB, monkeypatch) -> None:
+    db: StateDB, monkeypatch
+) -> None:
     _enable_ambient_s3(monkeypatch)
     group_id = await _create_group(db, 'ambient-team')
     project_id = await _create_project(db, group_id, 'ambient-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, connectors = _services(db)
     await identities.ensure_ambient_s3_identity()
     await identities.replace_groups(
@@ -1498,8 +1545,9 @@ async def test_ambient_connector_disable_unbind_and_rebind_take_effect_immediate
     )
     args = api.CreateConnectorArgs(
         name='ambient-root',
-        config=api.S3ConnectorResourceConfig(target=api.S3RootedConnectorTarget(
-            bucket='company-data')),
+        config=api.S3ConnectorResourceConfig(
+            target=api.S3RootedConnectorTarget(bucket='company-data')
+        ),
     )
     connector = await _create_connector(connectors, project_id, args, member)
 
@@ -1520,11 +1568,11 @@ async def test_ambient_connector_disable_unbind_and_rebind_take_effect_immediate
         ADMIN,
     )
     assert [
-        item.id
-        for item in await connectors.list_for_project(project_id, member)
+        item.id for item in await connectors.list_for_project(project_id, member)
     ] == [connector.id]
-    assert (await connectors.get_for_project(project_id, connector.id,
-                                             member)).id == connector.id
+    assert (
+        await connectors.get_for_project(project_id, connector.id, member)
+    ).id == connector.id
 
     _disable_ambient_s3(monkeypatch)
     assert await connectors.list_for_project(project_id, member) == []
@@ -1534,9 +1582,9 @@ async def test_ambient_connector_disable_unbind_and_rebind_take_effect_immediate
     with pytest.raises(IdentityResolutionUnavailableError):
         await connectors.config_for_project(member, project_id, connector.id)
     with pytest.raises(IdentityResolutionUnavailableError):
-        await connectors.execution_ref_for_project(member, project_id,
-                                                   connector.id,
-                                                   CONNECTOR_GRAPH_ACTIONS)
+        await connectors.execution_ref_for_project(
+            member, project_id, connector.id, CONNECTOR_GRAPH_ACTIONS
+        )
     with pytest.raises(IdentityResolutionUnavailableError):
         await connectors.resolve_for_activity(project_id, connector.id)
     with pytest.raises(NoIdentityValidatesTargetError):
@@ -1545,7 +1593,8 @@ async def test_ambient_connector_disable_unbind_and_rebind_take_effect_immediate
 
 @pytest.mark.asyncio
 async def test_identity_validation_never_exposes_provider_error_or_secret(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     secret = 'provider-returned-client-secret'
 
     def rejected(*_args) -> None:
@@ -1588,7 +1637,8 @@ async def test_identity_validation_never_exposes_provider_error_or_secret(
 )
 @pytest.mark.asyncio
 async def test_identity_validation_preserves_only_trusted_google_category(
-        db: StateDB, category, message) -> None:
+    db: StateDB, category, message
+) -> None:
     def rejected(*_args) -> None:
         raise IdentityAuthenticationCategoryError(category)
 
@@ -1610,7 +1660,8 @@ async def test_identity_validation_preserves_only_trusted_google_category(
 
 @pytest.mark.asyncio
 async def test_identity_validation_enforces_provider_deadline(
-        db: StateDB, monkeypatch) -> None:
+    db: StateDB, monkeypatch
+) -> None:
     started = threading.Event()
     release = threading.Event()
 
@@ -1619,8 +1670,7 @@ async def test_identity_validation_enforces_provider_deadline(
         release.wait(timeout=5)
 
     monkeypatch.setattr(
-        'statedb.db.identities.'
-        'IDENTITY_AUTHENTICATION_VALIDATION_TIMEOUT_SECONDS',
+        'statedb.db.identities.IDENTITY_AUTHENTICATION_VALIDATION_TIMEOUT_SECONDS',
         0.01,
     )
     service = _new_identity_service(db, identity_validator=blocked)
@@ -1640,7 +1690,8 @@ async def test_identity_validation_enforces_provider_deadline(
 
 @pytest.mark.asyncio
 async def test_connector_validation_never_exposes_provider_error_or_secret(
-        db: StateDB, caplog) -> None:
+    db: StateDB, caplog
+) -> None:
     secret = 'provider-returned-temporary-token'
 
     def rejected(*_args) -> None:
@@ -1648,11 +1699,10 @@ async def test_connector_validation_never_exposes_provider_error_or_secret(
 
     group_id = await _create_group(db, 'sales')
     project_id = await _create_project(db, group_id, 'analytics')
-    user = _Principal(UserID('sales-user'), 'Sales User', (str(group_id), ))
+    user = _Principal(UserID('sales-user'), 'Sales User', (str(group_id),))
     identities = _new_identity_service(db, identity_validator=lambda *_: None)
     connectors = _new_connector_service(db, connector_validator=rejected)
-    identity = await identities.create(_identity_args('sales', 'secret-1'),
-                                       ADMIN)
+    identity = await identities.create(_identity_args('sales', 'secret-1'), ADMIN)
     await identities.replace_groups(
         identity.id,
         api.ReplaceIdentityGroupsArgs(group_ids=[str(group_id)]),
@@ -1682,16 +1732,16 @@ async def test_connector_validation_never_exposes_provider_error_or_secret(
 
 @pytest.mark.asyncio
 async def test_explicit_connector_validation_surfaces_only_safe_diagnostic(
-        db: StateDB, caplog) -> None:
-    code = (
-        ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS)
+    db: StateDB, caplog
+) -> None:
+    code = ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
 
     def rejected(*_args) -> None:
         raise ConnectorValidationDiagnosticError(code)
 
     group_id = await _create_group(db, 'safe-diagnostic-team')
     project_id = await _create_project(db, group_id, 'safe-diagnostic-project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(db, identity_validator=lambda *_: None)
     identity = await _create_bound_databricks_identity(
         identities,
@@ -1722,19 +1772,18 @@ async def test_explicit_connector_validation_surfaces_only_safe_diagnostic(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_multi_candidate_hides_safe_diagnostics(
-        db: StateDB, caplog) -> None:
+    db: StateDB, caplog
+) -> None:
     # More than one candidate was checked, so the aggregate stays generic: the
     # message must not reveal which bound identity failed or its category.
-    code = (
-        ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS)
+    code = ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
 
     def rejected(*_args) -> None:
         raise ConnectorValidationDiagnosticError(code)
 
     group_id = await _create_group(db, 'hidden-diagnostic-team')
-    project_id = await _create_project(db, group_id,
-                                       'hidden-diagnostic-project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    project_id = await _create_project(db, group_id, 'hidden-diagnostic-project')
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(db, identity_validator=lambda *_: None)
     await _create_bound_databricks_identity(
         identities,
@@ -1769,20 +1818,19 @@ async def test_automatic_resolution_multi_candidate_hides_safe_diagnostics(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_single_candidate_surfaces_safe_diagnostic(
-        db: StateDB, caplog) -> None:
+    db: StateDB, caplog
+) -> None:
     # Exactly one candidate was checked and it failed with a classified
     # diagnostic, so identity-less creation surfaces the same safe aggregate
     # the explicit path emits instead of a bare "no identity" message.
-    code = (
-        ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS)
+    code = ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
 
     def rejected(*_args) -> None:
         raise ConnectorValidationDiagnosticError(code)
 
     group_id = await _create_group(db, 'single-diagnostic-team')
-    project_id = await _create_project(db, group_id,
-                                       'single-diagnostic-project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    project_id = await _create_project(db, group_id, 'single-diagnostic-project')
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(db, identity_validator=lambda *_: None)
     await _create_bound_databricks_identity(
         identities,
@@ -1812,7 +1860,8 @@ async def test_automatic_resolution_single_candidate_surfaces_safe_diagnostic(
 
 @pytest.mark.asyncio
 async def test_activity_credential_resolution_never_exposes_exchange_secret(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     secret = 'provider-returned-signed-assertion'
 
     class _RejectedExchange:
@@ -1821,7 +1870,7 @@ async def test_activity_credential_resolution_never_exposes_exchange_secret(
 
     group_id = await _create_group(db, 'storage')
     project_id = await _create_project(db, group_id, 'lake')
-    user = _Principal(UserID('storage-user'), 'Storage User', (str(group_id), ))
+    user = _Principal(UserID('storage-user'), 'Storage User', (str(group_id),))
     identities = _new_identity_service(
         db,
         identity_validator=lambda *_: None,
@@ -1839,7 +1888,8 @@ async def test_activity_credential_resolution_never_exposes_exchange_secret(
                 authentication=api.S3AssumeRoleAuthentication(
                     partition='aws',
                     role_arn='arn:aws:iam::123456789012:role/storage',
-                ), ),
+                ),
+            ),
             credentials=None,
         ),
         ADMIN,
@@ -1857,13 +1907,15 @@ async def test_activity_credential_resolution_never_exposes_exchange_secret(
                 bucket='company-data',
                 prefix='events',
                 region='us-west-2',
-            ), ),
+            ),
+        ),
     )
     authorizations = await connectors.authorize_create(project_id, args, user)
 
     with pytest.raises(IdentityValidationError) as caught:
-        await connectors.create_from_activity(project_id, args, user.user_id,
-                                              set(authorizations))
+        await connectors.create_from_activity(
+            project_id, args, user.user_id, set(authorizations)
+        )
 
     assert str(caught.value) == 'Identity credential resolution failed'
     assert secret not in str(caught.value)
@@ -1872,13 +1924,13 @@ async def test_activity_credential_resolution_never_exposes_exchange_secret(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_with_no_candidates_returns_sanitized_422(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'team')
     project_id = await _create_project(db, group_id, 'project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     connector_validator = MagicMock()
-    connectors = _new_connector_service(db,
-                                        connector_validator=connector_validator)
+    connectors = _new_connector_service(db, connector_validator=connector_validator)
     args = _connector_args('warehouse', None, 'analytics')
 
     with pytest.raises(NoIdentityValidatesTargetError) as caught:
@@ -1888,19 +1940,20 @@ async def test_automatic_resolution_with_no_candidates_returns_sanitized_422(
     assert str(caught.value) == (
         "No databricks identity is assigned to this project's group. "
         'Assign an existing databricks identity to the group under '
-        'Admin -> Identity Settings, or create one and add it to the group.')
+        'Admin -> Identity Settings, or create one and add it to the group.'
+    )
     connector_validator.assert_not_called()
     assert await connectors.list_for_project(project_id, user) == []
 
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_filters_by_type_and_persists_the_only_success(
-        db: StateDB) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    selected = await _create_bound_databricks_identity(identities, group_id,
-                                                       'selected',
-                                                       'selected-secret')
+    db: StateDB,
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    selected = await _create_bound_databricks_identity(
+        identities, group_id, 'selected', 'selected-secret'
+    )
     bigquery_args, _ = _all_connector_cases()[2]
     other_type = await identities.create(bigquery_args, ADMIN)
     await identities.replace_groups(
@@ -1909,8 +1962,7 @@ async def test_automatic_resolution_filters_by_type_and_persists_the_only_succes
         ADMIN,
     )
     validated = []
-    connectors = _new_connector_service(db,
-                                        connector_validator=validated.append)
+    connectors = _new_connector_service(db, connector_validator=validated.append)
 
     created = await _create_connector(
         connectors,
@@ -1922,11 +1974,13 @@ async def test_automatic_resolution_filters_by_type_and_persists_the_only_succes
     assert created.identity_id == selected.id
     assert len(validated) == 1
     assert isinstance(validated[0].credentials, DatabricksCredentials)
-    assert (validated[0].credentials.client_secret.get_secret_value() ==
-            'selected-secret')
+    assert (
+        validated[0].credentials.client_secret.get_secret_value() == 'selected-secret'
+    )
     async with db.read_tx() as tx:
-        row = await tx.fetchrow('SELECT payload FROM connectors WHERE id = ?',
-                                created.id)
+        row = await tx.fetchrow(
+            'SELECT payload FROM connectors WHERE id = ?', created.id
+        )
     assert row is not None
     payload = json.loads(str(row['payload']))
     assert payload['identity_id'] == selected.id
@@ -1939,27 +1993,29 @@ async def test_automatic_resolution_filters_by_type_and_persists_the_only_succes
     ['provider-unavailable', 'new-valid-candidate'],
 )
 async def test_automatic_resolution_exact_retry_reuses_persisted_selection(
-        db: StateDB, retry_change: str) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    await _create_bound_databricks_identity(identities, group_id, 'selected',
-                                            'selected-secret')
+    db: StateDB, retry_change: str
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    await _create_bound_databricks_identity(
+        identities, group_id, 'selected', 'selected-secret'
+    )
     validator = MagicMock()
     connectors = _new_connector_service(db, connector_validator=validator)
     args = _connector_args('warehouse', None, 'analytics')
 
     created = await _create_connector(connectors, project_id, args, user)
     if retry_change == 'new-valid-candidate':
-        await _create_bound_databricks_identity(identities, group_id,
-                                                'new-valid', 'new-valid-secret')
+        await _create_bound_databricks_identity(
+            identities, group_id, 'new-valid', 'new-valid-secret'
+        )
     validator.reset_mock()
     if retry_change == 'provider-unavailable':
         validator.side_effect = RuntimeError('provider is now unavailable')
 
     authorizations = await connectors.authorize_create(project_id, args, user)
-    retried = await connectors.create_from_activity(project_id, args,
-                                                    user.user_id,
-                                                    set(authorizations))
+    retried = await connectors.create_from_activity(
+        project_id, args, user.user_id, set(authorizations)
+    )
 
     assert retried.id == created.id
     assert retried.identity_id == created.identity_id
@@ -1968,12 +2024,12 @@ async def test_automatic_resolution_exact_retry_reuses_persisted_selection(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_retry_denies_unbound_persisted_identity(
-        db: StateDB) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    identity = await _create_bound_databricks_identity(identities, group_id,
-                                                       'selected',
-                                                       'selected-secret')
+    db: StateDB,
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    identity = await _create_bound_databricks_identity(
+        identities, group_id, 'selected', 'selected-secret'
+    )
     validator = MagicMock()
     connectors = _new_connector_service(db, connector_validator=validator)
     args = _connector_args('warehouse', None, 'analytics')
@@ -1986,24 +2042,27 @@ async def test_automatic_resolution_retry_denies_unbound_persisted_identity(
     validator.reset_mock()
 
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
-        await connectors.create_from_activity(project_id, args, user.user_id,
-                                              {identity.id})
+        await connectors.create_from_activity(
+            project_id, args, user.user_id, {identity.id}
+        )
 
     validator.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_selects_exactly_one_of_several_candidates(
-        db: StateDB) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    await _create_bound_databricks_identity(identities, group_id, 'denied-one',
-                                            'denied-secret-one')
-    expected = await _create_bound_databricks_identity(identities, group_id,
-                                                       'allowed',
-                                                       'allowed-secret')
-    await _create_bound_databricks_identity(identities, group_id, 'denied-two',
-                                            'denied-secret-two')
+    db: StateDB,
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    await _create_bound_databricks_identity(
+        identities, group_id, 'denied-one', 'denied-secret-one'
+    )
+    expected = await _create_bound_databricks_identity(
+        identities, group_id, 'allowed', 'allowed-secret'
+    )
+    await _create_bound_databricks_identity(
+        identities, group_id, 'denied-two', 'denied-secret-two'
+    )
 
     def validate(spec) -> None:
         secret = spec.credentials.client_secret.get_secret_value()
@@ -2021,24 +2080,24 @@ async def test_automatic_resolution_selects_exactly_one_of_several_candidates(
 
     assert created.identity_id == expected.id
     assert [
-        value.id
-        for value in await connectors.list_for_project(project_id, user)
+        value.id for value in await connectors.list_for_project(project_id, user)
     ] == [created.id]
 
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_multiple_successes_returns_safe_409_only(
-        db: StateDB) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    first = await _create_bound_databricks_identity(identities, group_id,
-                                                    'Production A', 'allowed-a')
-    second = await _create_bound_databricks_identity(identities, group_id,
-                                                     'Production B',
-                                                     'allowed-b')
-    denied = await _create_bound_databricks_identity(identities, group_id,
-                                                     'Private Failure',
-                                                     'failed-provider-secret')
+    db: StateDB,
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    first = await _create_bound_databricks_identity(
+        identities, group_id, 'Production A', 'allowed-a'
+    )
+    second = await _create_bound_databricks_identity(
+        identities, group_id, 'Production B', 'allowed-b'
+    )
+    denied = await _create_bound_databricks_identity(
+        identities, group_id, 'Private Failure', 'failed-provider-secret'
+    )
 
     def validate(spec) -> None:
         secret = spec.credentials.client_secret.get_secret_value()
@@ -2066,13 +2125,13 @@ async def test_automatic_resolution_multiple_successes_returns_safe_409_only(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_caps_candidate_validation_concurrency_at_four(
-        db: StateDB) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
+    db: StateDB,
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
     for index in range(9):
-        await _create_bound_databricks_identity(identities, group_id,
-                                                f'candidate-{index}',
-                                                f'secret-{index}')
+        await _create_bound_databricks_identity(
+            identities, group_id, f'candidate-{index}', f'secret-{index}'
+        )
 
     lock = threading.Lock()
     active = 0
@@ -2112,11 +2171,12 @@ async def test_automatic_resolution_caps_candidate_validation_concurrency_at_fou
     ],
 )
 async def test_automatic_resolution_rechecks_authority_before_insert(
-        db: StateDB, concurrent_change, error_type, message) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    identity = await _create_bound_databricks_identity(identities, group_id,
-                                                       'candidate', 'secret')
+    db: StateDB, concurrent_change, error_type, message
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    identity = await _create_bound_databricks_identity(
+        identities, group_id, 'candidate', 'secret'
+    )
     validation_started = threading.Event()
     finish_validation = threading.Event()
 
@@ -2129,8 +2189,10 @@ async def test_automatic_resolution_rechecks_authority_before_insert(
     args = _connector_args('warehouse', None, 'analytics')
     authorizations = await connectors.authorize_create(project_id, args, user)
     create_task = asyncio.create_task(
-        connectors.create_from_activity(project_id, args, user.user_id,
-                                        set(authorizations)))
+        connectors.create_from_activity(
+            project_id, args, user.user_id, set(authorizations)
+        )
+    )
     assert await _wait_for_thread_event(validation_started)
     if concurrent_change == 'remove-binding':
         await identities.replace_groups(
@@ -2139,8 +2201,9 @@ async def test_automatic_resolution_rechecks_authority_before_insert(
             ADMIN,
         )
     elif concurrent_change == 'add-binding':
-        await _create_bound_databricks_identity(identities, group_id,
-                                                'new-valid', 'new-valid-secret')
+        await _create_bound_databricks_identity(
+            identities, group_id, 'new-valid', 'new-valid-secret'
+        )
     else:
         projects = JsonRepository('projects', ProjectDBEntry)
         async with db.write_tx() as tx:
@@ -2161,11 +2224,12 @@ async def test_automatic_resolution_rechecks_authority_before_insert(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_provider_timeout_fails_closed_and_redacts(
-        db: StateDB, caplog) -> None:
-    group_id, project_id, user, identities = await _automatic_resolution_project(
-        db)
-    await _create_bound_databricks_identity(identities, group_id, 'candidate',
-                                            'provider-timeout-secret')
+    db: StateDB, caplog
+) -> None:
+    group_id, project_id, user, identities = await _automatic_resolution_project(db)
+    await _create_bound_databricks_identity(
+        identities, group_id, 'candidate', 'provider-timeout-secret'
+    )
 
     def timeout(_spec) -> None:
         raise TimeoutError('provider-timeout-secret signed request timed out')
@@ -2188,10 +2252,11 @@ async def test_automatic_resolution_provider_timeout_fails_closed_and_redacts(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_enforces_provider_deadline(
-        db: StateDB, monkeypatch) -> None:
+    db: StateDB, monkeypatch
+) -> None:
     group_id = await _create_group(db, 'deadline-team')
     project_id = await _create_project(db, group_id, 'deadline-project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(db, identity_validator=lambda *_: None)
     await _create_bound_databricks_identity(
         identities,
@@ -2208,8 +2273,7 @@ async def test_automatic_resolution_enforces_provider_deadline(
         release.wait(timeout=5)
 
     monkeypatch.setattr(
-        'statedb.db.identities.'
-        'CONNECTOR_TARGET_VALIDATION_TIMEOUT_SECONDS',
+        'statedb.db.identities.CONNECTOR_TARGET_VALIDATION_TIMEOUT_SECONDS',
         0.01,
     )
     connectors = _new_connector_service(db, connector_validator=blocked)
@@ -2231,7 +2295,8 @@ async def test_automatic_resolution_enforces_provider_deadline(
 
 @pytest.mark.asyncio
 async def test_explicit_s3_resolution_redacts_workload_exchange_failures(
-        db: StateDB, caplog) -> None:
+    db: StateDB, caplog
+) -> None:
     provider_secret = 'provider-signed-assertion'
 
     class _RejectedExchange:
@@ -2240,7 +2305,7 @@ async def test_explicit_s3_resolution_redacts_workload_exchange_failures(
 
     group_id = await _create_group(db, 'storage')
     project_id = await _create_project(db, group_id, 'lake')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(
         db,
         identity_validator=lambda *_: None,
@@ -2253,9 +2318,9 @@ async def test_explicit_s3_resolution_redacts_workload_exchange_failures(
                 config=api.S3IdentityConfig(
                     authentication=api.S3AssumeRoleAuthentication(
                         partition='aws',
-                        role_arn=('arn:aws:iam::123456789012:role/'
-                                  f'storage-{index}'),
-                    ), ),
+                        role_arn=(f'arn:aws:iam::123456789012:role/storage-{index}'),
+                    ),
+                ),
                 credentials=None,
             ),
             ADMIN,
@@ -2278,7 +2343,8 @@ async def test_explicit_s3_resolution_redacts_workload_exchange_failures(
                 bucket='company-data',
                 prefix='events',
                 region='us-west-2',
-            ), ),
+            ),
+        ),
     )
 
     with pytest.raises(IdentityValidationError) as caught:
@@ -2291,17 +2357,19 @@ async def test_explicit_s3_resolution_redacts_workload_exchange_failures(
 
 @pytest.mark.asyncio
 async def test_automatic_resolution_returns_sanitized_503_when_workload_broker_is_unavailable(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     provider_secret = 'deployment-workload-secret'
 
     class _UnavailableExchange:
         def exchange(self, *_args):
             raise WorkloadExchangeConfigurationError(
-                f'broker configuration includes {provider_secret}')
+                f'broker configuration includes {provider_secret}'
+            )
 
     group_id = await _create_group(db, 'storage')
     project_id = await _create_project(db, group_id, 'lake')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities = _new_identity_service(
         db,
         identity_validator=lambda *_: None,
@@ -2314,7 +2382,8 @@ async def test_automatic_resolution_returns_sanitized_503_when_workload_broker_i
                 authentication=api.S3AssumeRoleAuthentication(
                     partition='aws',
                     role_arn='arn:aws:iam::123456789012:role/storage',
-                ), ),
+                ),
+            ),
             credentials=None,
         ),
         ADMIN,
@@ -2337,7 +2406,8 @@ async def test_automatic_resolution_returns_sanitized_503_when_workload_broker_i
                 bucket='company-data',
                 prefix='events',
                 region='us-west-2',
-            ), ),
+            ),
+        ),
     )
 
     with pytest.raises(IdentityResolutionUnavailableError) as caught:
@@ -2346,7 +2416,8 @@ async def test_automatic_resolution_returns_sanitized_503_when_workload_broker_i
     assert caught.value.http_code == 503
     assert str(caught.value) == (
         'Connector identity resolution is temporarily unavailable; please '
-        'retry or contact an administrator')
+        'retry or contact an administrator'
+    )
     assert provider_secret not in str(caught.value)
 
 
@@ -2369,15 +2440,17 @@ async def test_automatic_resolution_returns_sanitized_503_when_workload_broker_i
 )
 @pytest.mark.asyncio
 async def test_all_external_connector_types_use_the_project_identity_lifecycle(
-        db: StateDB, identity_args, resource_config) -> None:
+    db: StateDB, identity_args, resource_config
+) -> None:
     group_id = await _create_group(db, f'{resource_config.type.value}-team')
     outsider_group_id = await _create_group(
-        db, f'{resource_config.type.value}-outsiders')
-    project_id = await _create_project(db, group_id,
-                                       f'{resource_config.type.value}-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
-    outsider = _Principal(UserID('outsider'), 'Outsider',
-                          (str(outsider_group_id), ))
+        db, f'{resource_config.type.value}-outsiders'
+    )
+    project_id = await _create_project(
+        db, group_id, f'{resource_config.type.value}-project'
+    )
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
+    outsider = _Principal(UserID('outsider'), 'Outsider', (str(outsider_group_id),))
     exchanger = _TestWorkloadExchanger()
     validated = []
     identities = _new_identity_service(
@@ -2403,8 +2476,7 @@ async def test_all_external_connector_types_use_the_project_identity_lifecycle(
         config=resource_config,
     )
 
-    created = await _create_connector(connectors, project_id, create_args,
-                                      member)
+    created = await _create_connector(connectors, project_id, create_args, member)
 
     assert created.project_id == str(project_id)
     assert created.identity_id == identity.id
@@ -2412,17 +2484,17 @@ async def test_all_external_connector_types_use_the_project_identity_lifecycle(
     assert len(validated) == 1
     assert validated[0].connector_id == created.id
     assert [
-        item.id
-        for item in await identities.available_for_project(project_id, member)
+        item.id for item in await identities.available_for_project(project_id, member)
     ] == [identity.id]
     assert [
-        item.id
-        for item in await connectors.list_for_project(project_id, member)
+        item.id for item in await connectors.list_for_project(project_id, member)
     ] == [created.id]
-    assert (await connectors.get_for_project(project_id, created.id,
-                                             member)).id == created.id
-    assert (await connectors.resolve_for_activity(
-        project_id, created.id)).connector_id == created.id
+    assert (
+        await connectors.get_for_project(project_id, created.id, member)
+    ).id == created.id
+    assert (
+        await connectors.resolve_for_activity(project_id, created.id)
+    ).connector_id == created.id
 
     with pytest.raises(ProjectNotFoundError):
         await connectors.get_for_project(project_id, created.id, outsider)
@@ -2439,12 +2511,14 @@ async def test_all_external_connector_types_use_the_project_identity_lifecycle(
         )
 
     connectors._tables.partition_connector_references = AsyncMock(
-        return_value=([_live_table_reference('customers')], [], []))
+        return_value=([_live_table_reference('customers')], [], [])
+    )
     with pytest.raises(ConnectorInUseError, match='live table: customers'):
         await connectors.delete(project_id, created.id, member)
 
     connectors._tables.partition_connector_references = AsyncMock(
-        return_value=([], [], []))
+        return_value=([], [], [])
+    )
     deleted = await connectors.delete(project_id, created.id, member)
     assert deleted.id == created.id
     with pytest.raises(ConnectorDoesNotExistError):
@@ -2452,8 +2526,7 @@ async def test_all_external_connector_types_use_the_project_identity_lifecycle(
 
 
 @pytest.mark.asyncio
-async def test_identity_create_atomically_binds_multiple_groups(
-        db: StateDB) -> None:
+async def test_identity_create_atomically_binds_multiple_groups(db: StateDB) -> None:
     group_a = await _create_group(db, 'group-a')
     group_b = await _create_group(db, 'group-b')
     identities, _ = _services(db)
@@ -2465,13 +2538,13 @@ async def test_identity_create_atomically_binds_multiple_groups(
     with pytest.raises(IdentityConflictError):
         await identities.create(args, ADMIN)
 
-    bound_group_ids = (await identities.list_groups(identity.id,
-                                                    ADMIN)).group_ids
+    bound_group_ids = (await identities.list_groups(identity.id, ADMIN)).group_ids
     assert set(bound_group_ids) == {str(group_a), str(group_b)}
     async with db.read_tx() as tx:
         rows = await identities._identities.list_all(tx)
         bindings = await identities._bindings.list_by_field(
-            tx, 'identity_id', str(identity.id))
+            tx, 'identity_id', str(identity.id)
+        )
     assert [row.payload.id for row in rows] == [identity.id]
     binding_group_ids = {str(row.payload.group_id) for row in bindings}
     assert binding_group_ids == {str(group_a), str(group_b)}
@@ -2487,7 +2560,8 @@ async def test_identity_create_atomically_binds_multiple_groups(
     ],
 )
 async def test_identity_create_with_groups_rolls_back_on_failure(
-        db: StateDB, failure_mode, error_type, message) -> None:
+    db: StateDB, failure_mode, error_type, message
+) -> None:
     group_id = await _create_group(db, 'group')
     identities, _ = _services(db)
     args = _identity_args('must-rollback', 'provider-secret')
@@ -2503,9 +2577,10 @@ async def test_identity_create_with_groups_rolls_back_on_failure(
         args.group_ids.append(str(GroupID.generate()))
     elif failure_mode == 'binding-write':
         identities._bindings.upsert = AsyncMock(
-            side_effect=RuntimeError('simulated binding write failure'))
+            side_effect=RuntimeError('simulated binding write failure')
+        )
     else:
-        principal = _Principal(UserID('member'), 'Member', (str(group_id), ))
+        principal = _Principal(UserID('member'), 'Member', (str(group_id),))
 
     with pytest.raises(error_type, match=message):
         await identities.create(args, principal)
@@ -2518,7 +2593,8 @@ async def test_identity_create_with_groups_rolls_back_on_failure(
 
 @pytest.mark.asyncio
 async def test_concurrent_identity_creates_cannot_bypass_normalized_name_or_principal_uniqueness(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     identities, _ = _services(db)
     same_normalized_name = (
         _identity_args('Production', 'secret-1'),
@@ -2529,7 +2605,8 @@ async def test_concurrent_identity_creates_cannot_bypass_normalized_name_or_prin
                 client_id='other-client',
             ),
             credentials=api.DatabricksOAuthCredentials(
-                client_secret=SecretStr('secret-2')),
+                client_secret=SecretStr('secret-2')
+            ),
         ),
     )
 
@@ -2544,7 +2621,8 @@ async def test_concurrent_identity_creates_cannot_bypass_normalized_name_or_prin
         display_name='different display name',
         config=first.config,
         credentials=api.DatabricksOAuthCredentials(
-            client_secret=SecretStr('replacement-secret')),
+            client_secret=SecretStr('replacement-secret')
+        ),
     )
     with pytest.raises(IdentityConflictError, match='external principal'):
         await identities.create(same_principal, ADMIN)
@@ -2552,11 +2630,11 @@ async def test_concurrent_identity_creates_cannot_bypass_normalized_name_or_prin
 
 @pytest.mark.asyncio
 async def test_concurrent_identity_renames_translate_database_name_conflict(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     identities, _ = _services(db)
     first = await identities.create(_identity_args('first', 'secret-1'), ADMIN)
-    second = await identities.create(_identity_args('second', 'secret-2'),
-                                     ADMIN)
+    second = await identities.create(_identity_args('second', 'secret-2'), ADMIN)
 
     # Model two transactions that both observed the name as available before
     # the database unique index selected the winner. The precheck is only an
@@ -2584,14 +2662,14 @@ async def test_concurrent_identity_renames_translate_database_name_conflict(
 
 @pytest.mark.asyncio
 async def test_concurrent_connector_names_are_unique_per_project_but_reusable_across_projects(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'team')
     project_a = await _create_project(db, group_id, 'a')
     project_b = await _create_project(db, group_id, 'b')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, connectors = _services(db)
-    identity = await identities.create(_identity_args('identity', 'secret'),
-                                       ADMIN)
+    identity = await identities.create(_identity_args('identity', 'secret'), ADMIN)
     await identities.replace_groups(
         identity.id,
         api.ReplaceIdentityGroupsArgs(group_ids=[str(group_id)]),
@@ -2605,10 +2683,12 @@ async def test_concurrent_connector_names_are_unique_per_project_but_reusable_ac
     )
 
     results = await asyncio.gather(
-        connectors.create_from_activity(project_a, first_args, member.user_id,
-                                        set(authorizations[0])),
-        connectors.create_from_activity(project_a, second_args, member.user_id,
-                                        set(authorizations[1])),
+        connectors.create_from_activity(
+            project_a, first_args, member.user_id, set(authorizations[0])
+        ),
+        connectors.create_from_activity(
+            project_a, second_args, member.user_id, set(authorizations[1])
+        ),
         return_exceptions=True,
     )
 
@@ -2625,16 +2705,18 @@ async def test_concurrent_connector_names_are_unique_per_project_but_reusable_ac
 
 @pytest.mark.asyncio
 async def test_concurrent_identical_connector_create_is_idempotent_and_mismatches_conflict(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'idempotent-team')
     project_id = await _create_project(db, group_id, 'idempotent-project')
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, _ = _services(db)
-    identity = await _create_bound_databricks_identity(identities, group_id,
-                                                       'primary',
-                                                       'primary-secret')
+    identity = await _create_bound_databricks_identity(
+        identities, group_id, 'primary', 'primary-secret'
+    )
     other_identity = await _create_bound_databricks_identity(
-        identities, group_id, 'secondary', 'secondary-secret')
+        identities, group_id, 'secondary', 'secondary-secret'
+    )
 
     validation_barrier = threading.Barrier(2)
 
@@ -2646,10 +2728,12 @@ async def test_concurrent_identical_connector_create_is_idempotent_and_mismatche
     authorizations = await connectors.authorize_create(project_id, args, member)
 
     results = await asyncio.gather(
-        connectors.create_from_activity(project_id, args, member.user_id,
-                                        set(authorizations)),
-        connectors.create_from_activity(project_id, args, member.user_id,
-                                        set(authorizations)),
+        connectors.create_from_activity(
+            project_id, args, member.user_id, set(authorizations)
+        ),
+        connectors.create_from_activity(
+            project_id, args, member.user_id, set(authorizations)
+        ),
     )
 
     assert results[0].id == results[1].id
@@ -2657,29 +2741,37 @@ async def test_concurrent_identical_connector_create_is_idempotent_and_mismatche
         rows = await connectors._connectors.list(tx, project_id=project_id)
     assert [row.id for row in rows] == [results[0].id]
 
-    different_target = _connector_args('Production Data', identity.id,
-                                       'different-schema')
-    different_identity = _connector_args('Production Data', other_identity.id,
-                                         'analytics')
+    different_target = _connector_args(
+        'Production Data', identity.id, 'different-schema'
+    )
+    different_identity = _connector_args(
+        'Production Data', other_identity.id, 'analytics'
+    )
     conflict_authorizations = await asyncio.gather(
         connectors.authorize_create(project_id, different_target, member),
         connectors.authorize_create(project_id, different_identity, member),
     )
     conflicts = await asyncio.gather(
-        connectors.create_from_activity(project_id, different_target,
-                                        member.user_id,
-                                        set(conflict_authorizations[0])),
-        connectors.create_from_activity(project_id, different_identity,
-                                        member.user_id,
-                                        set(conflict_authorizations[1])),
+        connectors.create_from_activity(
+            project_id,
+            different_target,
+            member.user_id,
+            set(conflict_authorizations[0]),
+        ),
+        connectors.create_from_activity(
+            project_id,
+            different_identity,
+            member.user_id,
+            set(conflict_authorizations[1]),
+        ),
         return_exceptions=True,
     )
 
+    assert all(isinstance(error, ConnectorNameConflictError) for error in conflicts)
     assert all(
-        isinstance(error, ConnectorNameConflictError) for error in conflicts)
-    assert all(
-        "Connector named 'Production Data' already exists in this project"
-        == str(error) for error in conflicts)
+        "Connector named 'Production Data' already exists in this project" == str(error)
+        for error in conflicts
+    )
     async with db.read_tx() as tx:
         rows = await connectors._connectors.list(tx, project_id=project_id)
     assert [row.id for row in rows] == [results[0].id]
@@ -2687,33 +2779,40 @@ async def test_concurrent_identical_connector_create_is_idempotent_and_mismatche
 
 @pytest.mark.asyncio
 async def test_one_identity_backs_multiple_project_connectors_without_secret_duplication(
-        db: StateDB) -> None:
-    (_, project_id, user, identities, connectors, identity,
-     first) = await _bound_databricks_connector(
-         db,
-         group_name='sales',
-         project_name='analytics',
-         user_id='sales-user',
-         user_name='Sales User',
-         identity_name='sales',
-         identity_secret='secret-1',
-         connector_name='sales-eu',
-         schema_name='eu',
-     )
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        user,
+        identities,
+        connectors,
+        identity,
+        first,
+    ) = await _bound_databricks_connector(
+        db,
+        group_name='sales',
+        project_name='analytics',
+        user_id='sales-user',
+        user_name='Sales User',
+        identity_name='sales',
+        identity_secret='secret-1',
+        connector_name='sales-eu',
+        schema_name='eu',
+    )
     assert [
-        available.id for available in await identities.available_for_project(
-            project_id, user)
+        available.id
+        for available in await identities.available_for_project(project_id, user)
     ] == [identity.id]
     second = await _create_connector(
-        connectors, project_id, _connector_args('sales-us', identity.id, 'us'),
-        user)
+        connectors, project_id, _connector_args('sales-us', identity.id, 'us'), user
+    )
 
     assert first.identity_id == identity.id
     assert second.identity_id == identity.id
     assert first.project_id == str(project_id)
     assert {
-        item.name
-        for item in await connectors.list_for_project(project_id, user)
+        item.name for item in await connectors.list_for_project(project_id, user)
     } == {'sales-eu', 'sales-us'}
 
     resolved = await connectors.resolve_for_activity(project_id, first.id)
@@ -2733,33 +2832,36 @@ async def test_one_identity_backs_multiple_project_connectors_without_secret_dup
 
 
 @pytest.mark.asyncio
-async def test_identity_group_replacement_deduplicates_group_ids(
-        db: StateDB) -> None:
+async def test_identity_group_replacement_deduplicates_group_ids(db: StateDB) -> None:
     group_id = await _create_group(db, 'team')
     identities, _ = _services(db)
-    identity = await identities.create(_identity_args('identity', 'secret'),
-                                       ADMIN)
+    identity = await identities.create(_identity_args('identity', 'secret'), ADMIN)
 
     response = await identities.replace_groups(
         identity.id,
-        SimpleNamespace(group_ids=[str(group_id),
-                                   str(group_id),
-                                   str(group_id)]),
+        SimpleNamespace(group_ids=[str(group_id), str(group_id), str(group_id)]),
         ADMIN,
     )
 
     assert response.group_ids == [str(group_id)]
-    assert (await identities.list_groups(identity.id,
-                                         ADMIN)).group_ids == [str(group_id)]
+    assert (await identities.list_groups(identity.id, ADMIN)).group_ids == [
+        str(group_id)
+    ]
 
 
 @pytest.mark.asyncio
-async def test_connector_is_exclusively_owned_by_exact_project(
-        db: StateDB) -> None:
-    (group_id, _, user, _, connectors, _,
-     connector) = await _bound_databricks_connector(db, group_name='sales',
-                                                    project_name='a',
-                                                    connector_name='warehouse')
+async def test_connector_is_exclusively_owned_by_exact_project(db: StateDB) -> None:
+    (
+        group_id,
+        _,
+        user,
+        _,
+        connectors,
+        _,
+        connector,
+    ) = await _bound_databricks_connector(
+        db, group_name='sales', project_name='a', connector_name='warehouse'
+    )
     project_b = await _create_project(db, group_id, 'b')
 
     with pytest.raises(ConnectorDoesNotExistError):
@@ -2770,68 +2872,92 @@ async def test_connector_is_exclusively_owned_by_exact_project(
 
 @pytest.mark.asyncio
 async def test_shared_members_mutate_and_private_project_is_owner_only(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'team')
     shared = await _create_project(db, group_id, 'shared', owner='owner')
-    private = await _create_project(db, group_id, 'private', owner='owner',
-                                    private=True)
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
-    owner = _Principal(UserID('owner'), 'Owner', (str(group_id), ))
+    private = await _create_project(
+        db, group_id, 'private', owner='owner', private=True
+    )
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
+    owner = _Principal(UserID('owner'), 'Owner', (str(group_id),))
     identities, connectors = _services(db)
-    identity = await identities.create(_identity_args('identity', 'secret'),
-                                       ADMIN)
+    identity = await identities.create(_identity_args('identity', 'secret'), ADMIN)
     await identities.replace_groups(
-        identity.id, api.ReplaceIdentityGroupsArgs(group_ids=[str(group_id)]),
-        ADMIN)
+        identity.id, api.ReplaceIdentityGroupsArgs(group_ids=[str(group_id)]), ADMIN
+    )
 
     created = await _create_connector(
-        connectors, shared, _connector_args('shared-data', identity.id,
-                                            'schema'), member)
+        connectors,
+        shared,
+        _connector_args('shared-data', identity.id, 'schema'),
+        member,
+    )
     updated = await connectors.update_metadata(
-        shared, created.id,
-        api.UpdateConnectorMetadataArgs(description='member update'), member)
+        shared,
+        created.id,
+        api.UpdateConnectorMetadataArgs(description='member update'),
+        member,
+    )
     assert updated.description == 'member update'
 
     with pytest.raises(ProjectNotFoundError):
         await _create_connector(
-            connectors, private, _connector_args('denied', identity.id,
-                                                 'schema'), member)
+            connectors,
+            private,
+            _connector_args('denied', identity.id, 'schema'),
+            member,
+        )
     private_connector = await _create_connector(
-        connectors, private, _connector_args('owner-data', identity.id,
-                                             'schema'), owner)
+        connectors, private, _connector_args('owner-data', identity.id, 'schema'), owner
+    )
     assert private_connector.project_id == str(private)
 
     removed_owner = _Principal(UserID('owner'), 'Owner', ())
     with pytest.raises(ProjectNotFoundError):
-        await connectors.get_for_project(private, private_connector.id,
-                                         removed_owner)
-    unavailable_owner = _Principal(UserID('owner'), 'Owner', (),
-                                   external_membership_unavailable=True)
+        await connectors.get_for_project(private, private_connector.id, removed_owner)
+    unavailable_owner = _Principal(
+        UserID('owner'), 'Owner', (), external_membership_unavailable=True
+    )
     with pytest.raises(ExternalMembershipUnavailableError):
-        await connectors.get_for_project(private, private_connector.id,
-                                         unavailable_owner)
-    assert (await connectors.get_for_project(private, private_connector.id,
-                                             ADMIN)).id == private_connector.id
+        await connectors.get_for_project(
+            private, private_connector.id, unavailable_owner
+        )
+    assert (
+        await connectors.get_for_project(private, private_connector.id, ADMIN)
+    ).id == private_connector.id
 
 
 @pytest.mark.asyncio
 async def test_activity_execution_is_project_owned_not_submitter_owned(
-        db: StateDB) -> None:
-    (_, project_id, submitter, _, connectors, identity,
-     connector) = await _bound_databricks_connector(db, user_id='submitter',
-                                                    user_name='Submitter')
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        submitter,
+        _,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(
+        db, user_id='submitter', user_name='Submitter'
+    )
     reference = await connectors.execution_ref_for_project(
-        submitter, project_id, connector.id, CONNECTOR_GRAPH_ACTIONS)
-    accepted_args = _connector_args('accepted-before-membership-removal',
-                                    identity.id, 'accepted_schema')
+        submitter, project_id, connector.id, CONNECTOR_GRAPH_ACTIONS
+    )
+    accepted_args = _connector_args(
+        'accepted-before-membership-removal', identity.id, 'accepted_schema'
+    )
     accepted_authorizations = await connectors.authorize_create(
-        project_id, accepted_args, submitter)
+        project_id, accepted_args, submitter
+    )
 
     removed_submitter = _Principal(UserID('submitter'), 'Submitter', ())
     with pytest.raises(ProjectNotFoundError):
-        await connectors.execution_ref_for_project(removed_submitter,
-                                                   project_id, connector.id,
-                                                   CONNECTOR_GRAPH_ACTIONS)
+        await connectors.execution_ref_for_project(
+            removed_submitter, project_id, connector.id, CONNECTOR_GRAPH_ACTIONS
+        )
     with pytest.raises(ProjectNotFoundError):
         await connectors.authorize_create(
             project_id,
@@ -2839,19 +2965,24 @@ async def test_activity_execution_is_project_owned_not_submitter_owned(
             removed_submitter,
         )
     accepted = await connectors.create_from_activity(
-        project_id, accepted_args, submitter.user_id,
-        set(accepted_authorizations))
+        project_id, accepted_args, submitter.user_id, set(accepted_authorizations)
+    )
     assert accepted.project_id == str(project_id)
-    assert (await connectors.resolve_for_activity(
-        reference.project_id,
-        reference.connector_id)).connector_id == connector.id
-    await connectors.require_delegatable_for_project(reference.project_id,
-                                                     reference.connector_id)
+    assert (
+        await connectors.resolve_for_activity(
+            reference.project_id, reference.connector_id
+        )
+    ).connector_id == connector.id
+    await connectors.require_delegatable_for_project(
+        reference.project_id, reference.connector_id
+    )
 
-    admin_args = _connector_args('accepted-before-admin-demotion', identity.id,
-                                 'admin_schema')
+    admin_args = _connector_args(
+        'accepted-before-admin-demotion', identity.id, 'admin_schema'
+    )
     admin_authorizations = await connectors.authorize_create(
-        project_id, admin_args, ADMIN)
+        project_id, admin_args, ADMIN
+    )
     demoted_admin = _Principal(UserID('admin'), 'Admin', ())
     with pytest.raises(ProjectNotFoundError):
         await connectors.authorize_create(
@@ -2860,37 +2991,51 @@ async def test_activity_execution_is_project_owned_not_submitter_owned(
             demoted_admin,
         )
     accepted_admin = await connectors.create_from_activity(
-        project_id, admin_args, ADMIN.user_id, set(admin_authorizations))
+        project_id, admin_args, ADMIN.user_id, set(admin_authorizations)
+    )
     assert accepted_admin.project_id == str(project_id)
 
 
 @pytest.mark.asyncio
 async def test_fresh_workflow_references_preserve_scope_and_replay_protection(
-        db: StateDB) -> None:
-    (group_id, project_id, user, identities, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        project_id,
+        user,
+        identities,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
     other_project_id = await _create_project(db, group_id, 'other-project')
     version_reference = await connectors.execution_ref_for_project(
-        user, project_id, connector.id, CONNECTOR_GRAPH_ACTIONS)
-    refresh_reference, = await connectors.fresh_execution_refs_for_workflow(
+        user, project_id, connector.id, CONNECTOR_GRAPH_ACTIONS
+    )
+    (refresh_reference,) = await connectors.fresh_execution_refs_for_workflow(
         user,
-        (version_reference, ),
+        (version_reference,),
         CONNECTOR_GRAPH_ACTIONS,
     )
 
     assert refresh_reference.project_id == version_reference.project_id
     assert refresh_reference.connector_id == version_reference.connector_id
-    assert (refresh_reference.authorization_token
-            != version_reference.authorization_token)
+    assert (
+        refresh_reference.authorization_token != version_reference.authorization_token
+    )
 
     authorizations = connectors._connector_authorizations
     async with db.read_tx() as tx:
         version_authorization = await authorizations._get_by_token_in_tx(
-            tx, version_reference.authorization_token)
+            tx, version_reference.authorization_token
+        )
         refresh_authorization = await authorizations._get_by_token_in_tx(
-            tx, refresh_reference.authorization_token)
+            tx, refresh_reference.authorization_token
+        )
     expected_actions = tuple(
-        sorted(CONNECTOR_GRAPH_ACTIONS, key=lambda action: action.value))
+        sorted(CONNECTOR_GRAPH_ACTIONS, key=lambda action: action.value)
+    )
     assert version_authorization.allowed_actions == expected_actions
     assert refresh_authorization.allowed_actions == expected_actions
     assert version_authorization.workflow_id == ''
@@ -2922,7 +3067,7 @@ async def test_fresh_workflow_references_preserve_scope_and_replay_protection(
     with pytest.raises(ConnectorDoesNotExistError):
         await connectors.fresh_execution_refs_for_workflow(
             user,
-            (replace(version_reference, project_id=other_project_id), ),
+            (replace(version_reference, project_id=other_project_id),),
             CONNECTOR_GRAPH_ACTIONS,
         )
 
@@ -2934,26 +3079,25 @@ async def test_fresh_workflow_references_preserve_scope_and_replay_protection(
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
         await connectors.fresh_execution_refs_for_workflow(
             user,
-            (refresh_reference, ),
+            (refresh_reference,),
             CONNECTOR_GRAPH_ACTIONS,
         )
 
 
 @pytest.mark.asyncio
 async def test_binding_removal_immediately_hides_connector_discovery_and_rebind_restores_it(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_a = await _create_group(db, 'team-a')
     group_b = await _create_group(db, 'team-b')
     project_a = await _create_project(db, group_a, 'project-a')
     project_b = await _create_project(db, group_b, 'project-b')
     user = _Principal(UserID('member'), 'Member', (str(group_a), str(group_b)))
     identities, connectors = _services(db)
-    identity = await identities.create(_identity_args('identity', 'secret'),
-                                       ADMIN)
+    identity = await identities.create(_identity_args('identity', 'secret'), ADMIN)
     await identities.replace_groups(
         identity.id,
-        api.ReplaceIdentityGroupsArgs(
-            group_ids=[str(group_a), str(group_b)]),
+        api.ReplaceIdentityGroupsArgs(group_ids=[str(group_a), str(group_b)]),
         ADMIN,
     )
     connector_a = await _create_connector(
@@ -2970,16 +3114,21 @@ async def test_binding_removal_immediately_hides_connector_discovery_and_rebind_
     )
 
     assert [
-        connector.id
-        for connector in await connectors.list_for_project(project_a, user)
+        connector.id for connector in await connectors.list_for_project(project_a, user)
     ] == [connector_a.id]
-    assert (await connectors.get_for_project(project_a, connector_a.id,
-                                             ADMIN)).id == connector_a.id
-    assert (await connectors.source_table_connector_for_project(
-        project_a, connector_a.id, user)).id == connector_a.id
-    assert (await connectors.execution_ref_for_project(
-        user, project_a, connector_a.id,
-        CONNECTOR_GRAPH_ACTIONS)).connector_id == connector_a.id
+    assert (
+        await connectors.get_for_project(project_a, connector_a.id, ADMIN)
+    ).id == connector_a.id
+    assert (
+        await connectors.source_table_connector_for_project(
+            project_a, connector_a.id, user
+        )
+    ).id == connector_a.id
+    assert (
+        await connectors.execution_ref_for_project(
+            user, project_a, connector_a.id, CONNECTOR_GRAPH_ACTIONS
+        )
+    ).connector_id == connector_a.id
 
     await identities.replace_groups(
         identity.id,
@@ -2991,8 +3140,7 @@ async def test_binding_removal_immediately_hides_connector_discovery_and_rebind_
     assert await connectors.list_for_project(project_a, ADMIN) == []
     for principal in (user, ADMIN):
         with pytest.raises(IdentityForbiddenError, match='not mapped'):
-            await connectors.get_for_project(project_a, connector_a.id,
-                                             principal)
+            await connectors.get_for_project(project_a, connector_a.id, principal)
         with pytest.raises(IdentityForbiddenError, match='not mapped'):
             await connectors.update_metadata(
                 project_a,
@@ -3004,51 +3152,57 @@ async def test_binding_removal_immediately_hides_connector_discovery_and_rebind_
         await connectors.delete(project_a, connector_a.id, user)
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
         await connectors.source_table_connector_for_project(
-            project_a, connector_a.id, user)
+            project_a, connector_a.id, user
+        )
     # Refresh and source-table discovery both authorize their activity
     # reference through this method before queuing external access.
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
-        await connectors.execution_ref_for_project(user, project_a,
-                                                   connector_a.id,
-                                                   CONNECTOR_GRAPH_ACTIONS)
+        await connectors.execution_ref_for_project(
+            user, project_a, connector_a.id, CONNECTOR_GRAPH_ACTIONS
+        )
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
         await connectors.config_for_project(user, project_a, connector_a.id)
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
         await connectors.resolve_for_activity(project_a, connector_a.id)
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
-        await connectors.require_delegatable_for_project(
-            project_a, connector_a.id)
+        await connectors.require_delegatable_for_project(project_a, connector_a.id)
 
     # Removing one group binding neither exposes a connector cross-project nor
     # disrupts the same reusable identity where it remains bound.
     assert [
-        connector.id
-        for connector in await connectors.list_for_project(project_b, user)
+        connector.id for connector in await connectors.list_for_project(project_b, user)
     ] == [connector_b.id]
-    assert (await connectors.get_for_project(project_b, connector_b.id,
-                                             ADMIN)).id == connector_b.id
-    assert (await connectors.source_table_connector_for_project(
-        project_b, connector_b.id, user)).id == connector_b.id
+    assert (
+        await connectors.get_for_project(project_b, connector_b.id, ADMIN)
+    ).id == connector_b.id
+    assert (
+        await connectors.source_table_connector_for_project(
+            project_b, connector_b.id, user
+        )
+    ).id == connector_b.id
     with pytest.raises(ConnectorDoesNotExistError):
         await connectors.get_for_project(project_b, connector_a.id, user)
 
     await identities.replace_groups(
         identity.id,
-        api.ReplaceIdentityGroupsArgs(
-            group_ids=[str(group_a), str(group_b)]),
+        api.ReplaceIdentityGroupsArgs(group_ids=[str(group_a), str(group_b)]),
         ADMIN,
     )
 
     assert [
-        connector.id
-        for connector in await connectors.list_for_project(project_a, user)
+        connector.id for connector in await connectors.list_for_project(project_a, user)
     ] == [connector_a.id]
-    assert (await connectors.get_for_project(project_a, connector_a.id,
-                                             ADMIN)).id == connector_a.id
-    assert (await connectors.source_table_connector_for_project(
-        project_a, connector_a.id, user)).id == connector_a.id
-    assert (await connectors.resolve_for_activity(
-        project_a, connector_a.id)).connector_id == connector_a.id
+    assert (
+        await connectors.get_for_project(project_a, connector_a.id, ADMIN)
+    ).id == connector_a.id
+    assert (
+        await connectors.source_table_connector_for_project(
+            project_a, connector_a.id, user
+        )
+    ).id == connector_a.id
+    assert (
+        await connectors.resolve_for_activity(project_a, connector_a.id)
+    ).connector_id == connector_a.id
     updated = await connectors.update_metadata(
         project_a,
         connector_a.id,
@@ -3062,9 +3216,17 @@ async def test_binding_removal_immediately_hides_connector_discovery_and_rebind_
 
 @pytest.mark.asyncio
 async def test_tombstoned_connector_retains_safe_history_and_allows_identity_delete(
-        db: StateDB, monkeypatch) -> None:
-    (_, project_id, user, identities, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB, monkeypatch
+) -> None:
+    (
+        _,
+        project_id,
+        user,
+        identities,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
 
     await connectors.delete(project_id, connector.id, user)
     with pytest.raises(ConnectorDoesNotExistError):
@@ -3073,18 +3235,20 @@ async def test_tombstoned_connector_retains_safe_history_and_allows_identity_del
     async def fail_full_connector_scan(*_args, **_kwargs):
         raise AssertionError('identity deletion must use the indexed lookup')
 
-    monkeypatch.setattr(StateDBConnectorRepository, 'list',
-                        fail_full_connector_scan)
+    monkeypatch.setattr(StateDBConnectorRepository, 'list', fail_full_connector_scan)
     deleted_identity = await identities.delete(identity.id, ADMIN)
     assert deleted_identity.id == identity.id
 
     async with db.read_tx() as tx:
-        row = await tx.fetchrow('SELECT payload FROM connectors WHERE id = ?',
-                                connector.id)
+        row = await tx.fetchrow(
+            'SELECT payload FROM connectors WHERE id = ?', connector.id
+        )
         identity_row = await tx.fetchrow(
-            'SELECT payload FROM identities WHERE id = ?', identity.id)
+            'SELECT payload FROM identities WHERE id = ?', identity.id
+        )
         bindings = await identities._bindings.list_by_field(
-            tx, 'identity_id', str(identity.id))
+            tx, 'identity_id', str(identity.id)
+        )
     assert row is not None
     payload = json.loads(str(row['payload']))
     assert payload['tombstoned_at'] is not None
@@ -3112,7 +3276,8 @@ async def test_deleted_identity_can_be_recreated(db: StateDB) -> None:
         await identities.get_admin(first.id, ADMIN)
 
     args.credentials = api.DatabricksOAuthCredentials(
-        client_secret=SecretStr('replacement-secret'))
+        client_secret=SecretStr('replacement-secret')
+    )
     second = await identities.create(args, ADMIN)
     assert second.id != first.id
     assert second.slug == first.slug
@@ -3129,10 +3294,13 @@ async def test_deleted_identity_can_be_recreated(db: StateDB) -> None:
         assert old.payload.encrypted_credentials is None
         assert new.payload.tombstoned_at is None
         assert new.payload.encrypted_credentials is not None
-        assert await identities._bindings.list_by_field(
-            tx, 'identity_id', str(first.id)) == []
+        assert (
+            await identities._bindings.list_by_field(tx, 'identity_id', str(first.id))
+            == []
+        )
         bindings = await identities._bindings.list_by_field(
-            tx, 'identity_id', str(second.id))
+            tx, 'identity_id', str(second.id)
+        )
         assert [row.payload.group_id for row in bindings] == [group_id]
 
 
@@ -3140,10 +3308,11 @@ async def test_deleted_identity_can_be_recreated(db: StateDB) -> None:
 async def test_tombstoned_connector_name_can_be_recreated(db: StateDB) -> None:
     group_id = await _create_group(db, 'team')
     project_id = await _create_project(db, group_id, 'project')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     identities, connectors = _services(db)
-    identity = await _create_bound_databricks_identity(identities, group_id,
-                                                       'identity', 'secret')
+    identity = await _create_bound_databricks_identity(
+        identities, group_id, 'identity', 'secret'
+    )
     args = _connector_args('Data Warehouse', identity.id, 'schema')
 
     first = await _create_connector(connectors, project_id, args, user)
@@ -3163,8 +3332,7 @@ async def test_tombstoned_connector_name_can_be_recreated(db: StateDB) -> None:
     with pytest.raises(ConnectorDoesNotExistError):
         await connectors.get_for_project(project_id, first.id, user)
     async with db.read_tx() as tx:
-        rows = await tx.fetch(
-            "SELECT payload FROM connectors ORDER BY created_at, id")
+        rows = await tx.fetch('SELECT payload FROM connectors ORDER BY created_at, id')
     payloads = [json.loads(str(row['payload'])) for row in rows]
     assert [payload['id'] for payload in payloads] == [first.id, second.id]
     assert payloads[0]['tombstoned_at'] is not None
@@ -3173,9 +3341,17 @@ async def test_tombstoned_connector_name_can_be_recreated(db: StateDB) -> None:
 
 @pytest.mark.asyncio
 async def test_archived_project_connector_does_not_block_identity_delete(
-        db: StateDB) -> None:
-    (_, project_id, _, identities, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        _,
+        identities,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
 
     archived = await ProjectService(db).archive_project(project_id, ADMIN)
     deleted = await identities.delete(identity.id, ADMIN)
@@ -3195,10 +3371,19 @@ async def test_archived_project_connector_does_not_block_identity_delete(
 
 @pytest.mark.asyncio
 async def test_list_connectors_using_identity_reports_active_project_blocker(
-        db: StateDB) -> None:
-    (_, project_id, _, identities, _, identity,
-     connector) = await _bound_databricks_connector(
-         db, project_name='Sales', connector_name='Data Warehouse')
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        _,
+        identities,
+        _,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(
+        db, project_name='Sales', connector_name='Data Warehouse'
+    )
 
     usage = await identities.list_connectors_using_identity(identity.id, ADMIN)
 
@@ -3213,9 +3398,17 @@ async def test_list_connectors_using_identity_reports_active_project_blocker(
 
 @pytest.mark.asyncio
 async def test_list_connectors_using_identity_reports_missing_project(
-        db: StateDB) -> None:
-    (_, project_id, _, identities, _, identity,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        _,
+        identities,
+        _,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
 
     async with db.write_tx() as tx:
         await identities._projects.delete(tx, str(project_id))
@@ -3231,9 +3424,11 @@ async def test_list_connectors_using_identity_reports_missing_project(
 
 @pytest.mark.asyncio
 async def test_list_connectors_using_identity_excludes_archived_project(
-        db: StateDB) -> None:
-    (_, project_id, _, identities, _, identity,
-     _) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (_, project_id, _, identities, _, identity, _) = await _bound_databricks_connector(
+        db
+    )
 
     await ProjectService(db).archive_project(project_id, ADMIN)
 
@@ -3245,11 +3440,13 @@ async def test_list_connectors_using_identity_excludes_archived_project(
 
 @pytest.mark.asyncio
 async def test_list_connectors_using_identity_empty_for_unused_identity(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'team')
     identities, _ = _services(db)
-    identity = await _create_bound_databricks_identity(identities, group_id,
-                                                       'identity', 'secret')
+    identity = await _create_bound_databricks_identity(
+        identities, group_id, 'identity', 'secret'
+    )
 
     usage = await identities.list_connectors_using_identity(identity.id, ADMIN)
 
@@ -3257,11 +3454,9 @@ async def test_list_connectors_using_identity_empty_for_unused_identity(
 
 
 @pytest.mark.asyncio
-async def test_list_connectors_using_identity_requires_admin(
-        db: StateDB) -> None:
-    (group_id, _, _, identities, _, identity,
-     _) = await _bound_databricks_connector(db)
-    member = _Principal(UserID('member'), 'Member', (str(group_id), ))
+async def test_list_connectors_using_identity_requires_admin(db: StateDB) -> None:
+    (group_id, _, _, identities, _, identity, _) = await _bound_databricks_connector(db)
+    member = _Principal(UserID('member'), 'Member', (str(group_id),))
 
     with pytest.raises(IdentityForbiddenError):
         await identities.list_connectors_using_identity(identity.id, member)
@@ -3274,16 +3469,25 @@ async def test_list_connectors_using_identity_requires_admin(
     ids=('decommission-and-delete', 'live-reference-blocks-delete'),
 )
 async def test_unbound_connector_admin_delete_semantics(
-        db: StateDB, live_reference: bool) -> None:
-    (_, project_id, user, identities, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
-    await identities.replace_groups(identity.id,
-                                    api.ReplaceIdentityGroupsArgs(group_ids=[]),
-                                    ADMIN)
+    db: StateDB, live_reference: bool
+) -> None:
+    (
+        _,
+        project_id,
+        user,
+        identities,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
+    await identities.replace_groups(
+        identity.id, api.ReplaceIdentityGroupsArgs(group_ids=[]), ADMIN
+    )
 
     if live_reference:
         connectors._tables.partition_connector_references = AsyncMock(
-            return_value=([_live_table_reference('customers')], [], []))
+            return_value=([_live_table_reference('customers')], [], [])
+        )
         with pytest.raises(ConnectorInUseError, match='live table'):
             await connectors.delete(project_id, connector.id, ADMIN)
         with pytest.raises(IdentityInUseError):
@@ -3291,8 +3495,7 @@ async def test_unbound_connector_admin_delete_semantics(
     else:
         with pytest.raises(IdentityForbiddenError, match='not mapped'):
             await connectors.delete(project_id, connector.id, user)
-        deleted_connector = await connectors.delete(project_id, connector.id,
-                                                    ADMIN)
+        deleted_connector = await connectors.delete(project_id, connector.id, ADMIN)
         deleted_identity = await identities.delete(identity.id, ADMIN)
         assert deleted_connector.id == connector.id
         assert deleted_identity.id == identity.id
@@ -3316,19 +3519,25 @@ def _connector_table_definition(connector_id: ConnectorID) -> TableDefinition:
 
 
 @pytest.mark.asyncio
-async def test_unbound_connector_allows_table_alias_cleanup(
-        db: StateDB) -> None:
-    (_, project_id, _, identities, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
+async def test_unbound_connector_allows_table_alias_cleanup(db: StateDB) -> None:
+    (
+        _,
+        project_id,
+        _,
+        identities,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
     tables = TableService(db)
     created = await tables.save_table_definition(
         project_id,
         _connector_table_definition(connector.id),
         alias='customers',
     )
-    await identities.replace_groups(identity.id,
-                                    api.ReplaceIdentityGroupsArgs(group_ids=[]),
-                                    ADMIN)
+    await identities.replace_groups(
+        identity.id, api.ReplaceIdentityGroupsArgs(group_ids=[]), ADMIN
+    )
 
     cleared = await tables.clear_table_alias(project_id, 'customers')
 
@@ -3344,9 +3553,17 @@ async def test_unbound_connector_allows_table_alias_cleanup(
 
 @pytest.mark.asyncio
 async def test_unbound_connector_allows_graph_and_table_reference_cleanup(
-        db: StateDB) -> None:
-    (_, project_id, _, identities, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        _,
+        identities,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
     tables = TableService(db)
     table = await tables.save_table_definition(
         project_id,
@@ -3367,9 +3584,9 @@ async def test_unbound_connector_allows_graph_and_table_reference_cleanup(
     async with db.write_tx() as tx:
         await StateDBTableRepository().upsert(tx, table.id, table)
         await StateDBGraphRepository().upsert(tx, graph.id, graph)
-    await identities.replace_groups(identity.id,
-                                    api.ReplaceIdentityGroupsArgs(group_ids=[]),
-                                    ADMIN)
+    await identities.replace_groups(
+        identity.id, api.ReplaceIdentityGroupsArgs(group_ids=[]), ADMIN
+    )
 
     graphs = GraphService(db, connectors)
     with pytest.raises(ConnectorInUseError, match='live table'):
@@ -3380,8 +3597,7 @@ async def test_unbound_connector_allows_graph_and_table_reference_cleanup(
     assert cleared.ref_count == 1
     with pytest.raises(ConnectorInUseError, match='live table'):
         await connectors.delete(project_id, connector.id, ADMIN)
-    assert await graphs.decrement_or_delete_graph_definition(
-        project_id, graph.id)
+    assert await graphs.decrement_or_delete_graph_definition(project_id, graph.id)
     assert await tables.get_table_entry(project_id, table.id) is None
     deleted_connector = await connectors.delete(project_id, connector.id, ADMIN)
     deleted_identity = await identities.delete(identity.id, ADMIN)
@@ -3393,9 +3609,17 @@ async def test_unbound_connector_allows_graph_and_table_reference_cleanup(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('queued_job', ['training', 'artifact-export'])
 async def test_connector_delete_during_queued_job_makes_resolution_fail(
-        db: StateDB, queued_job: str) -> None:
-    (_, project_id, user, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB, queued_job: str
+) -> None:
+    (
+        _,
+        project_id,
+        user,
+        _,
+        connectors,
+        _,
+        connector,
+    ) = await _bound_databricks_connector(db)
 
     if queued_job == 'training':
         await MLJobService(db).create_training_job(
@@ -3405,8 +3629,9 @@ async def test_connector_delete_during_queued_job_makes_resolution_fail(
             now=now_utc(),
             advanced_options=ModelPlan(),
             custom_train_table=CustomTrainingTable(
-                connector_spec=ConnectorExecutionRef(project_id=project_id,
-                                                     connector_id=connector.id),
+                connector_spec=ConnectorExecutionRef(
+                    project_id=project_id, connector_id=connector.id
+                ),
                 source_table=DatabricksSourceTable(
                     databricks_connector_id=str(connector.id),
                     table='training_data',
@@ -3427,7 +3652,8 @@ async def test_connector_delete_during_queued_job_makes_resolution_fail(
         actions = CONNECTOR_OUTPUT_ACTIONS
 
     reference = await connectors.execution_ref_for_project(
-        user, project_id, connector.id, actions)
+        user, project_id, connector.id, actions
+    )
     deleted = await connectors.delete(project_id, connector.id, user)
     assert deleted.id == connector.id
     assert reference.authorization_token
@@ -3437,26 +3663,29 @@ async def test_connector_delete_during_queued_job_makes_resolution_fail(
 
 @pytest.mark.asyncio
 async def test_project_scoped_upload_connector_is_not_reused_across_projects(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'team')
     project_a = await _create_project(db, group_id, 'a')
     project_b = await _create_project(db, group_id, 'b')
-    user = _Principal(UserID('member'), 'Member', (str(group_id), ))
+    user = _Principal(UserID('member'), 'Member', (str(group_id),))
     _, connectors = _services(db)
 
     connector_a = await connectors.register_project_upload_connector(
-        project_a, '/tmp/project-a/uploads')
+        project_a, '/tmp/project-a/uploads'
+    )
     connector_b = await connectors.register_project_upload_connector(
-        project_b, '/tmp/project-b/uploads')
+        project_b, '/tmp/project-b/uploads'
+    )
 
     assert connector_a != connector_b
-    assert (await connectors.get_internal(project_a,
-                                          connector_a)).project_id == project_a
+    assert (
+        await connectors.get_internal(project_a, connector_a)
+    ).project_id == project_a
     resolved = await connectors.config_for_project(user, project_a, connector_a)
     assert resolved.connector_id == connector_a
     assert resolved.connector_config.name == str(connector_a)
-    activity_resolved = await connectors.resolve_for_activity(
-        project_a, connector_a)
+    activity_resolved = await connectors.resolve_for_activity(project_a, connector_a)
     assert isinstance(activity_resolved, ConnectorSpec)
     assert activity_resolved.is_project_upload is True
     with pytest.raises(ConnectorDoesNotExistError):
@@ -3465,25 +3694,33 @@ async def test_project_scoped_upload_connector_is_not_reused_across_projects(
 
 @pytest.mark.asyncio
 async def test_child_delegation_recheck_accepts_only_visible_external_or_canonical_upload(
-        db: StateDB) -> None:
-    (group_id, project_id, user, identities, connectors, identity,
-     external) = await _bound_databricks_connector(
-         db,
-         group_name='delegation-team',
-         project_name='delegation-project',
-         identity_name='delegation-identity',
-         connector_name='warehouse',
-     )
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        project_id,
+        user,
+        identities,
+        connectors,
+        identity,
+        external,
+    ) = await _bound_databricks_connector(
+        db,
+        group_name='delegation-team',
+        project_name='delegation-project',
+        identity_name='delegation-identity',
+        connector_name='warehouse',
+    )
     upload_id = await connectors.register_project_upload_connector(
-        project_id, '/tmp/delegation-project/uploads')
+        project_id, '/tmp/delegation-project/uploads'
+    )
     arbitrary_internal = InternalConnectorDBEntry(
         id=ConnectorID.generate(),
         project_id=project_id,
         name='fixture',
         normalized_name='fixture',
         description='test-only internal connector',
-        config=FileConnectorResourceConfig(name='fixture',
-                                           root_dir='/tmp/fixture'),
+        config=FileConnectorResourceConfig(name='fixture', root_dir='/tmp/fixture'),
         timestamps=get_current_timestamps(),
     )
     await seed_connector(db, arbitrary_internal)
@@ -3495,7 +3732,8 @@ async def test_child_delegation_recheck_accepts_only_visible_external_or_canonic
         await connectors.get_for_project(project_id, upload_id, user)
     with pytest.raises(ConnectorDoesNotExistError):
         await connectors.require_delegatable_for_project(
-            project_id, arbitrary_internal.id)
+            project_id, arbitrary_internal.id
+        )
 
     await identities.replace_groups(
         identity.id,
@@ -3503,8 +3741,7 @@ async def test_child_delegation_recheck_accepts_only_visible_external_or_canonic
         ADMIN,
     )
     with pytest.raises(IdentityForbiddenError, match='not mapped'):
-        await connectors.require_delegatable_for_project(
-            project_id, external.id)
+        await connectors.require_delegatable_for_project(project_id, external.id)
 
     await identities.replace_groups(
         identity.id,
@@ -3520,8 +3757,7 @@ async def test_child_delegation_recheck_accepts_only_visible_external_or_canonic
     with pytest.raises(IdentityForbiddenError, match='Group is not active'):
         await connectors.resolve_for_activity(project_id, external.id)
     with pytest.raises(IdentityForbiddenError, match='Group is not active'):
-        await connectors.require_delegatable_for_project(
-            project_id, external.id)
+        await connectors.require_delegatable_for_project(project_id, external.id)
     async with db.write_tx() as tx:
         group = await groups.get(tx, str(group_id))
         assert group is not None
@@ -3529,8 +3765,7 @@ async def test_child_delegation_recheck_accepts_only_visible_external_or_canonic
         await groups.upsert(tx, group.id, group.payload)
     await connectors.delete(project_id, external.id, user)
     with pytest.raises(ConnectorDoesNotExistError):
-        await connectors.require_delegatable_for_project(
-            project_id, external.id)
+        await connectors.require_delegatable_for_project(project_id, external.id)
 
     async with db.write_tx() as tx:
         upload = await connectors._connectors.get_required(tx, upload_id)
@@ -3542,42 +3777,59 @@ async def test_child_delegation_recheck_accepts_only_visible_external_or_canonic
 
 @pytest.mark.asyncio
 async def test_source_table_connector_metadata_enforces_project_lifecycle_and_internal_kind(
-        db: StateDB) -> None:
-    (group_id, project_a, user, _, connectors, _,
-     external) = await _bound_databricks_connector(db, project_name='a',
-                                                   connector_name='warehouse')
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        project_a,
+        user,
+        _,
+        connectors,
+        _,
+        external,
+    ) = await _bound_databricks_connector(
+        db, project_name='a', connector_name='warehouse'
+    )
     project_b = await _create_project(db, group_id, 'b')
     archived_project = await _create_project(db, group_id, 'archived')
     upload = await connectors.register_project_upload_connector(
-        project_a, '/tmp/project-a/uploads')
+        project_a, '/tmp/project-a/uploads'
+    )
     archived_upload = await connectors.register_project_upload_connector(
-        archived_project, '/tmp/archived/uploads')
+        archived_project, '/tmp/archived/uploads'
+    )
     generic_internal = InternalConnectorDBEntry(
         id=ConnectorID.generate(),
         project_id=project_a,
         name='fixture',
         normalized_name='fixture',
         description='test-only internal connector',
-        config=FileConnectorResourceConfig(name='fixture',
-                                           root_dir='/tmp/fixture'),
+        config=FileConnectorResourceConfig(name='fixture', root_dir='/tmp/fixture'),
         timestamps=get_current_timestamps(),
     )
     await seed_connector(db, generic_internal)
     generic_resolved = await connectors.resolve_for_activity(
-        project_a, generic_internal.id)
+        project_a, generic_internal.id
+    )
     assert isinstance(generic_resolved, ConnectorSpec)
     assert generic_resolved.is_project_upload is False
 
-    assert await connectors.source_table_connector_for_project(
-        project_a, external.id, user) == external
-    assert await connectors.source_table_connector_for_project(
-        project_a, upload, user) is None
+    assert (
+        await connectors.source_table_connector_for_project(
+            project_a, external.id, user
+        )
+        == external
+    )
+    assert (
+        await connectors.source_table_connector_for_project(project_a, upload, user)
+        is None
+    )
+    with pytest.raises(ConnectorDoesNotExistError):
+        await connectors.source_table_connector_for_project(project_b, upload, user)
     with pytest.raises(ConnectorDoesNotExistError):
         await connectors.source_table_connector_for_project(
-            project_b, upload, user)
-    with pytest.raises(ConnectorDoesNotExistError):
-        await connectors.source_table_connector_for_project(
-            project_a, generic_internal.id, user)
+            project_a, generic_internal.id, user
+        )
 
     async with db.write_tx() as tx:
         persisted_upload = await connectors._connectors.get(tx, upload)
@@ -3585,8 +3837,7 @@ async def test_source_table_connector_metadata_enforces_project_lifecycle_and_in
         persisted_upload.tombstoned_at = now_utc()
         await connectors._connectors.upsert(tx, persisted_upload)
     with pytest.raises(ConnectorDoesNotExistError):
-        await connectors.source_table_connector_for_project(
-            project_a, upload, user)
+        await connectors.source_table_connector_for_project(project_a, upload, user)
 
     projects = JsonRepository('projects', ProjectDBEntry)
     async with db.write_tx() as tx:
@@ -3596,79 +3847,113 @@ async def test_source_table_connector_metadata_enforces_project_lifecycle_and_in
         await projects.upsert(tx, str(archived_project), archived.payload)
     with pytest.raises(ProjectNotFoundError, match='not found'):
         await connectors.source_table_connector_for_project(
-            archived_project, archived_upload, user)
+            archived_project, archived_upload, user
+        )
 
 
 @pytest.mark.asyncio
 async def test_upload_connector_uses_reserved_namespace_and_exact_root(
-        db: StateDB) -> None:
-    (_, project_id, user, _, connectors, identity,
-     external) = await _bound_databricks_connector(db, connector_name='uploads')
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        user,
+        _,
+        connectors,
+        identity,
+        external,
+    ) = await _bound_databricks_connector(db, connector_name='uploads')
 
     # The ordinary name remains distinct from the hidden connector namespace.
     internal_id = await connectors.register_project_upload_connector(
-        project_id, '/tmp/project/uploads')
+        project_id, '/tmp/project/uploads'
+    )
     assert external.id != internal_id
 
     # Reuse is permitted only for the exact canonical project/root config.
-    assert await connectors.register_project_upload_connector(
-        project_id, '/tmp/project/uploads') == internal_id
+    assert (
+        await connectors.register_project_upload_connector(
+            project_id, '/tmp/project/uploads'
+        )
+        == internal_id
+    )
     with pytest.raises(ValueError, match='Invalid existing'):
         await connectors.register_project_upload_connector(
-            project_id, '/tmp/other/uploads')
+            project_id, '/tmp/other/uploads'
+        )
 
-    reserved_args = _connector_args(PROJECT_UPLOAD_CONNECTOR_NAME, identity.id,
-                                    'schema')
+    reserved_args = _connector_args(
+        PROJECT_UPLOAD_CONNECTOR_NAME, identity.id, 'schema'
+    )
     with pytest.raises(ValueError, match='reserved for internal uploads'):
         await connectors.authorize_create(project_id, reserved_args, user)
 
 
 @pytest.mark.asyncio
 async def test_connector_name_length_is_bounded_on_every_write_path(
-        db: StateDB) -> None:
-    (_, project_id, user, _, connectors, identity,
-     connector) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        _,
+        project_id,
+        user,
+        _,
+        connectors,
+        identity,
+        connector,
+    ) = await _bound_databricks_connector(db)
     over_long = 'n' * (MAX_CONNECTOR_NAME_LENGTH + 1)
     args = _connector_args(over_long, identity.id, 'schema')
 
     with pytest.raises(ValueError, match='must be at most'):
         await connectors.authorize_create(project_id, args, user)
     with pytest.raises(ValueError, match='must be at most'):
-        await connectors.create_from_activity(project_id, args, user.user_id,
-                                              set())
+        await connectors.create_from_activity(project_id, args, user.user_id, set())
     with pytest.raises(ValueError, match='must be at most') as caught:
         await connectors.update_metadata(
-            project_id, connector.id,
-            api.UpdateConnectorMetadataArgs(name=over_long), user)
+            project_id,
+            connector.id,
+            api.UpdateConnectorMetadataArgs(name=over_long),
+            user,
+        )
 
     assert over_long not in str(caught.value)
     at_bound = 'b' * MAX_CONNECTOR_NAME_LENGTH
     renamed = await connectors.update_metadata(
-        project_id, connector.id,
-        api.UpdateConnectorMetadataArgs(name=at_bound), user)
+        project_id, connector.id, api.UpdateConnectorMetadataArgs(name=at_bound), user
+    )
     assert renamed.name == at_bound
 
 
 @pytest.mark.asyncio
 async def test_provider_outage_allows_native_membership_without_leaking_hidden_project(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     group_id = await _create_group(db, 'team')
     project_id = await _create_project(db, group_id, 'project')
-    private_id = await _create_project(db, group_id, 'private', owner='owner',
-                                       private=True)
+    private_id = await _create_project(
+        db, group_id, 'private', owner='owner', private=True
+    )
     _, connectors = _services(db)
-    native_member = _Principal(UserID('native'), 'Native', (str(group_id), ),
-                               external_membership_unavailable=True)
-    unresolved_user = _Principal(UserID('external'), 'External', (),
-                                 external_membership_unavailable=True)
+    native_member = _Principal(
+        UserID('native'),
+        'Native',
+        (str(group_id),),
+        external_membership_unavailable=True,
+    )
+    unresolved_user = _Principal(
+        UserID('external'), 'External', (), external_membership_unavailable=True
+    )
 
-    assert (await
-            connectors.require_project_access(native_member,
-                                              project_id)).id == project_id
+    assert (
+        await connectors.require_project_access(native_member, project_id)
+    ).id == project_id
     with pytest.raises(ExternalMembershipUnavailableError) as shared_error:
         await connectors.require_project_access(unresolved_user, project_id)
     assert str(shared_error.value) == (
-        'External group membership is unavailable; please retry')
+        'External group membership is unavailable; please retry'
+    )
 
     unresolved_owner = _Principal(
         UserID('owner'),
@@ -3685,8 +3970,7 @@ async def test_provider_outage_allows_native_membership_without_leaking_hidden_p
 
 
 @pytest.mark.asyncio
-async def test_a_container_mounted_snowflake_token_is_refused(
-        db: StateDB) -> None:
+async def test_a_container_mounted_snowflake_token_is_refused(db: StateDB) -> None:
     """The token lives on the filesystem of a running Snowpark Container
     Services container. This service is not that container and has no such
     file, so an identity created here would be stored and then fail at every
@@ -3698,8 +3982,7 @@ async def test_a_container_mounted_snowflake_token_is_refused(
         display_name='snowflake-spcs',
         config=api.SnowflakeIdentityConfig(
             account='organization-account',
-            authentication=(
-                api.SnowflakeAuthenticationKind.OAUTH_TOKEN_FILE),
+            authentication=(api.SnowflakeAuthenticationKind.OAUTH_TOKEN_FILE),
         ),
     )
 
@@ -3709,8 +3992,7 @@ async def test_a_container_mounted_snowflake_token_is_refused(
     assert await identities.list_admin(ADMIN) == []
 
 
-def _retry_definition(connector_id: ConnectorID,
-                      num_cols: int) -> TableDefinition:
+def _retry_definition(connector_id: ConnectorID, num_cols: int) -> TableDefinition:
     """One attempt at adding the same source table, with the column the stats
     step choked on progressively dropped, so each retry is a new fingerprint.
     """
@@ -3720,7 +4002,8 @@ def _retry_definition(connector_id: ConnectorID,
                 name=f'c{index}',
                 stype=Stype.ID if index == 0 else Stype.numerical,
                 dtype=Dtype.int64 if index == 0 else Dtype.float64,
-            ) for index in range(num_cols)
+            )
+            for index in range(num_cols)
         ],
         source_table=DatabricksSourceTable(
             databricks_connector_id=connector_id,
@@ -3736,8 +4019,7 @@ async def _all_table_rows(db: StateDB, project_id: ProjectID):
 
 
 @pytest.mark.asyncio
-async def test_renaming_over_an_unreferenced_table_deletes_it(
-        db: StateDB) -> None:
+async def test_renaming_over_an_unreferenced_table_deletes_it(db: StateDB) -> None:
     """Retried table adds must not accumulate rows nothing can reach.
 
     Each retry claims the same display name under a new fingerprint, which
@@ -3745,16 +4027,22 @@ async def test_renaming_over_an_unreferenced_table_deletes_it(
     alias-only Tables list and have no delete handle, yet still count as live
     connector references.
     """
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = TableService(db)
 
-    fpids = [(await tables.save_table_definition(
-        project_id,
-        _retry_definition(connector.id, num_cols),
-        alias='dim_cr_merch_acct',
-        force_rename=True,
-    )).id for num_cols in (5, 4, 3, 2)]
+    fpids = [
+        (
+            await tables.save_table_definition(
+                project_id,
+                _retry_definition(connector.id, num_cols),
+                alias='dim_cr_merch_acct',
+                force_rename=True,
+            )
+        ).id
+        for num_cols in (5, 4, 3, 2)
+    ]
     assert len(set(fpids)) == 4
 
     rows = await _all_table_rows(db, project_id)
@@ -3762,17 +4050,16 @@ async def test_renaming_over_an_unreferenced_table_deletes_it(
 
     await tables.clear_table_alias(project_id, 'dim_cr_merch_acct')
     assert await _all_table_rows(db, project_id) == []
-    assert (await connectors.delete(project_id, connector.id,
-                                    ADMIN)).id == connector.id
+    assert (await connectors.delete(project_id, connector.id, ADMIN)).id == connector.id
 
 
 @pytest.mark.asyncio
-async def test_renaming_over_a_graph_referenced_table_keeps_it(
-        db: StateDB) -> None:
+async def test_renaming_over_a_graph_referenced_table_keeps_it(db: StateDB) -> None:
     """The row is only dropped when nothing reaches it: a graph pinning the
     fingerprint keeps it, unnamed, exactly as before."""
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = TableService(db)
     pinned = await tables.save_table_definition(
         project_id,
@@ -3812,15 +4099,17 @@ async def test_renaming_releases_the_alias_reference(db: StateDB) -> None:
     Left alone the row keeps looking claimed by a name it no longer has, and a
     later graph delete strands it at a count nothing accounts for.
     """
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = TableService(db)
     definition = _retry_definition(connector.id, 5)
     # ``ref_count`` counts claims on one fingerprint, and saving the same
     # definition again takes another. Two claims, one of which is the alias.
     for _ in range(2):
         pinned = await tables.save_table_definition(
-            project_id, definition, alias='dim_cr_merch_acct')
+            project_id, definition, alias='dim_cr_merch_acct'
+        )
     async with db.write_tx() as tx:
         before = await StateDBTableRepository().get(tx, project_id, pinned.id)
     assert before is not None and before.ref_count == 2
@@ -3841,20 +4130,21 @@ async def test_renaming_releases_the_alias_reference(db: StateDB) -> None:
 
 
 @pytest.mark.asyncio
-async def test_connector_delete_collects_the_graph_it_orphans(
-        db: StateDB) -> None:
+async def test_connector_delete_collects_the_graph_it_orphans(db: StateDB) -> None:
     """A graph is readable by ``graph-<fpid>`` without an alias, so its tables
     cannot be dropped from under it. It has no delete route either, so leaving
     it would move the wedge up a level -- it goes in the same transaction.
     """
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = StateDBTableRepository()
     graphs = StateDBGraphRepository()
     definition = _retry_definition(connector.id, 5)
     async with db.write_tx() as tx:
         await tables.upsert(
-            tx, definition.fpid,
+            tx,
+            definition.fpid,
             TableDBEntryV2(
                 id=definition.fpid,
                 project_id=project_id,
@@ -3862,7 +4152,8 @@ async def test_connector_delete_collects_the_graph_it_orphans(
                 col_dtypes={},
                 alias=None,
                 timestamps=get_current_timestamps(),
-            ))
+            ),
+        )
         stale = GraphDBEntryV2(
             id=FPID('d' * 32),
             project_id=project_id,
@@ -3874,8 +4165,7 @@ async def test_connector_delete_collects_the_graph_it_orphans(
         )
         await graphs.upsert(tx, stale.id, stale)
 
-    assert (await connectors.delete(project_id, connector.id,
-                                    ADMIN)).id == connector.id
+    assert (await connectors.delete(project_id, connector.id, ADMIN)).id == connector.id
     assert await _all_table_rows(db, project_id) == []
     async with db.write_tx() as tx:
         # The graph went with its tables: nothing is left to read and break.
@@ -3883,12 +4173,12 @@ async def test_connector_delete_collects_the_graph_it_orphans(
 
 
 @pytest.mark.asyncio
-async def test_connector_delete_collects_unreachable_table_rows(
-        db: StateDB) -> None:
+async def test_connector_delete_collects_unreachable_table_rows(db: StateDB) -> None:
     """Rows orphaned before this fix shipped are collected on connector
     delete, so an already-wedged deployment recovers without a migration."""
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = StateDBTableRepository()
     orphans = []
     async with db.write_tx() as tx:
@@ -3908,28 +4198,29 @@ async def test_connector_delete_collects_unreachable_table_rows(
     assert len(await _all_table_rows(db, project_id)) == 3
     assert await TableService(db).list_named_tables(project_id) == []
 
-    assert (await connectors.delete(project_id, connector.id,
-                                    ADMIN)).id == connector.id
+    assert (await connectors.delete(project_id, connector.id, ADMIN)).id == connector.id
     assert await _all_table_rows(db, project_id) == []
 
 
 @pytest.mark.asyncio
 async def test_connector_delete_names_the_blocking_tables(db: StateDB) -> None:
     """The error has to say what to remove; the old message named nothing."""
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = TableService(db)
     for num_cols, alias in ((5, 'merchants'), (4, 'accounts')):
         await tables.save_table_definition(
-            project_id, _retry_definition(connector.id, num_cols), alias=alias)
+            project_id, _retry_definition(connector.id, num_cols), alias=alias
+        )
 
-    with pytest.raises(ConnectorInUseError,
-                       match='live table: accounts, merchants'):
+    with pytest.raises(ConnectorInUseError, match='live table: accounts, merchants'):
         await connectors.delete(project_id, connector.id, ADMIN)
 
 
-async def _graph_over(db: StateDB, project_id: ProjectID, fpid: str,
-                      table_fpid: FPID, alias: str | None) -> FPID:
+async def _graph_over(
+    db: StateDB, project_id: ProjectID, fpid: str, table_fpid: FPID, alias: str | None
+) -> FPID:
     entry = GraphDBEntryV2(
         id=FPID(fpid),
         project_id=project_id,
@@ -3940,26 +4231,27 @@ async def _graph_over(db: StateDB, project_id: ProjectID, fpid: str,
         timestamps=get_current_timestamps(),
     )
     async with db.write_tx() as tx:
-        await StateDBGraphRepository().upsert(tx, entry.id, entry,
-                                              force_rename=True)
+        await StateDBGraphRepository().upsert(tx, entry.id, entry, force_rename=True)
     return entry.id
 
 
 @pytest.mark.asyncio
-async def test_connector_delete_ignores_a_graph_nothing_can_reach(
-        db: StateDB) -> None:
+async def test_connector_delete_ignores_a_graph_nothing_can_reach(db: StateDB) -> None:
     """Re-saving an edited graph under the same name unnames the previous
     graph row, which keeps pinning its tables. That chain is invisible end to
     end -- the Graphs list is alias-only too -- so it must not hold the
     connector open, or the fix just moves the wedge one level up.
     """
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     tables = TableService(db)
     superseded = await tables.save_table_definition(
-        project_id, _retry_definition(connector.id, 5))
+        project_id, _retry_definition(connector.id, 5)
+    )
     current = await tables.save_table_definition(
-        project_id, _retry_definition(connector.id, 4))
+        project_id, _retry_definition(connector.id, 4)
+    )
     await _graph_over(db, project_id, 'a' * 32, superseded.id, 'merchants')
     await _graph_over(db, project_id, 'b' * 32, current.id, 'merchants')
 
@@ -3975,26 +4267,26 @@ async def test_connector_delete_ignores_a_graph_nothing_can_reach(
     # left and both table rows are collected.
     graphs = GraphService(db, connectors)
     await graphs.clear_graph_alias(project_id, 'merchants')
-    assert (await connectors.delete(project_id, connector.id,
-                                    ADMIN)).id == connector.id
+    assert (await connectors.delete(project_id, connector.id, ADMIN)).id == connector.id
     assert await _all_table_rows(db, project_id) == []
 
 
 @pytest.mark.asyncio
 async def test_connector_delete_keeps_a_table_pinned_by_a_surviving_graph(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     """A stale graph sharing a table pin cannot unpin the named graph."""
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     table = await TableService(db).save_table_definition(
-        project_id, _retry_definition(connector.id, 5))
+        project_id, _retry_definition(connector.id, 5)
+    )
 
     # Giving the second graph the same alias makes the first graph stale.
     # Both nonetheless reference the same table fingerprint.
-    stale_fpid = await _graph_over(db, project_id, 'e' * 32, table.id,
-                                   'merchants')
-    reachable_fpid = await _graph_over(db, project_id, 'f' * 32, table.id,
-                                       'merchants')
+    stale_fpid = await _graph_over(db, project_id, 'e' * 32, table.id, 'merchants')
+    reachable_fpid = await _graph_over(db, project_id, 'f' * 32, table.id, 'merchants')
 
     with pytest.raises(ConnectorInUseError, match='live table'):
         await connectors.delete(project_id, connector.id, ADMIN)
@@ -4003,20 +4295,20 @@ async def test_connector_delete_keeps_a_table_pinned_by_a_surviving_graph(
         graphs = StateDBGraphRepository()
         assert await graphs.get(tx, project_id, stale_fpid) is not None
         assert await graphs.get(tx, project_id, reachable_fpid) is not None
-        assert await StateDBTableRepository().get(tx, project_id,
-                                                  table.id) is not None
+        assert await StateDBTableRepository().get(tx, project_id, table.id) is not None
 
 
 @pytest.mark.asyncio
-async def test_connector_delete_blocked_by_a_query_held_graph(
-        db: StateDB) -> None:
+async def test_connector_delete_blocked_by_a_query_held_graph(db: StateDB) -> None:
     """An unnamed graph a stored query holds is still reachable -- the SDK
     saves the graph anonymously and the query pins it -- so its tables remain
     live references."""
-    (_, project_id, _, _, connectors, _,
-     connector) = await _bound_databricks_connector(db)
+    (_, project_id, _, _, connectors, _, connector) = await _bound_databricks_connector(
+        db
+    )
     table = await TableService(db).save_table_definition(
-        project_id, _retry_definition(connector.id, 5))
+        project_id, _retry_definition(connector.id, 5)
+    )
     graph_fpid = await _graph_over(db, project_id, 'c' * 32, table.id, None)
     async with db.write_tx() as tx:
         await StateDBPQueryRepository().add_definition(
@@ -4038,180 +4330,267 @@ def _copy_driver(connectors: ConnectorService) -> SimpleNamespace:
     async def create(project_id, args, principal):
         return await _create_connector(connectors, project_id, args, principal)
 
-    return SimpleNamespace(_connector_service=connectors,
-                           create_project_connector=create)
+    return SimpleNamespace(
+        _connector_service=connectors, create_project_connector=create
+    )
 
 
-async def _copy(connectors: ConnectorService, source_project: ProjectID,
-                connector_id: ConnectorID, target_project: ProjectID,
-                principal: _Principal, **overrides):
+async def _copy(
+    connectors: ConnectorService,
+    source_project: ProjectID,
+    connector_id: ConnectorID,
+    target_project: ProjectID,
+    principal: _Principal,
+    **overrides,
+):
     return await ConnectorApiDriver.copy_project_connector(
         _copy_driver(connectors),
         source_project,
         connector_id,
-        api.CopyConnectorArgs(target_project_id=str(target_project),
-                              **overrides),
+        api.CopyConnectorArgs(target_project_id=str(target_project), **overrides),
         principal,
     )
 
 
-async def _set_project_status(db: StateDB, project_id: ProjectID,
-                              status: ProjectStatus) -> None:
+async def _set_project_status(
+    db: StateDB, project_id: ProjectID, status: ProjectStatus
+) -> None:
     repo = JsonRepository('projects', ProjectDBEntry)
     async with db.write_tx() as tx:
         row = await repo.get(tx, str(project_id))
-        await repo.upsert(tx, str(project_id),
-                          replace(row.payload, status=status))
+        await repo.upsert(tx, str(project_id), replace(row.payload, status=status))
 
 
 @pytest.mark.asyncio
 async def test_copy_connector_recreates_config_and_identity_in_target(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, identity,
-     source) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
 
-    copied = await _copy(connectors, source_project, source.id,
-                         target_project, user)
+    copied = await _copy(connectors, source_project, source.id, target_project, user)
 
     assert copied.id != source.id
     assert copied.project_id == target_project
     assert copied.identity_id == identity.id
     assert copied.name == source.name
     assert copied.config == source.config
-    assert [c.id for c in await connectors.list_for_project(
-        source_project, user)] == [source.id]
-    assert [c.id for c in await connectors.list_for_project(
-        target_project, user)] == [copied.id]
+    assert [c.id for c in await connectors.list_for_project(source_project, user)] == [
+        source.id
+    ]
+    assert [c.id for c in await connectors.list_for_project(target_project, user)] == [
+        copied.id
+    ]
 
 
 @pytest.mark.asyncio
 async def test_copy_connector_applies_name_and_description_overrides(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
 
-    copied = await _copy(connectors, source_project, source.id,
-                         target_project, user, name='renamed',
-                         description='copied')
+    copied = await _copy(
+        connectors,
+        source_project,
+        source.id,
+        target_project,
+        user,
+        name='renamed',
+        description='copied',
+    )
 
     assert (copied.name, copied.description) == ('renamed', 'copied')
 
 
 @pytest.mark.asyncio
-async def test_copy_connector_rejects_the_source_project_as_target(
-        db: StateDB) -> None:
-    (_group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+async def test_copy_connector_rejects_the_source_project_as_target(db: StateDB) -> None:
+    (
+        _group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
 
     with pytest.raises(ValueError, match='must differ'):
-        await _copy(connectors, source_project, source.id, source_project,
-                    user, name='other-name')
+        await _copy(
+            connectors,
+            source_project,
+            source.id,
+            source_project,
+            user,
+            name='other-name',
+        )
     assert len(await connectors.list_for_project(source_project, user)) == 1
 
 
 @pytest.mark.asyncio
 async def test_copy_connector_requires_identity_bound_to_target_group(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     other_group = await _create_group(db, 'other-team')
     target_project = await _create_project(db, other_group, 'target')
-    member_of_both = replace(user,
-                             kumo_group_ids=(str(group_id), str(other_group)))
+    member_of_both = replace(user, kumo_group_ids=(str(group_id), str(other_group)))
 
     with pytest.raises(IdentityForbiddenError):
-        await _copy(connectors, source_project, source.id, target_project,
-                    member_of_both)
-    assert await connectors.list_for_project(target_project,
-                                             member_of_both) == []
+        await _copy(
+            connectors, source_project, source.id, target_project, member_of_both
+        )
+    assert await connectors.list_for_project(target_project, member_of_both) == []
 
 
 @pytest.mark.asyncio
 async def test_copy_connector_rejects_archived_target(db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
     await _set_project_status(db, target_project, ProjectStatus.ARCHIVED)
 
     with pytest.raises(ProjectNotFoundError):
-        await _copy(connectors, source_project, source.id, target_project,
-                    user)
+        await _copy(connectors, source_project, source.id, target_project, user)
 
 
 @pytest.mark.asyncio
-async def test_copy_connector_rejects_target_invisible_to_caller(
-        db: StateDB) -> None:
-    (_group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+async def test_copy_connector_rejects_target_invisible_to_caller(db: StateDB) -> None:
+    (
+        _group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     other_group = await _create_group(db, 'other-team')
     hidden_project = await _create_project(db, other_group, 'hidden')
 
     with pytest.raises(ProjectNotFoundError):
-        await _copy(connectors, source_project, source.id, hidden_project,
-                    user)
+        await _copy(connectors, source_project, source.id, hidden_project, user)
 
 
 @pytest.mark.asyncio
-async def test_copy_connector_rejects_project_upload_connector(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, _identity,
-     _source) = await _bound_databricks_connector(db)
+async def test_copy_connector_rejects_project_upload_connector(db: StateDB) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        _source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
     upload_id = await connectors.register_project_upload_connector(
-        source_project, '/tmp/uploaded-datasets/source')
+        source_project, '/tmp/uploaded-datasets/source'
+    )
 
     with pytest.raises(ConnectorDoesNotExistError):
-        await _copy(connectors, source_project, upload_id, target_project,
-                    user)
+        await _copy(connectors, source_project, upload_id, target_project, user)
 
 
 @pytest.mark.asyncio
 async def test_repeated_copy_reports_that_the_connector_already_exists(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
 
-    first = await _copy(connectors, source_project, source.id,
-                        target_project, user)
+    first = await _copy(connectors, source_project, source.id, target_project, user)
     with pytest.raises(ConnectorNameConflictError, match='already exists'):
-        await _copy(connectors, source_project, source.id, target_project,
-                    user)
+        await _copy(connectors, source_project, source.id, target_project, user)
 
-    assert [c.id for c in await connectors.list_for_project(
-        target_project, user)] == [first.id]
+    assert [c.id for c in await connectors.list_for_project(target_project, user)] == [
+        first.id
+    ]
 
 
 @pytest.mark.asyncio
 async def test_copy_rejects_name_used_by_a_differently_configured_connector(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, identity,
-     source) = await _bound_databricks_connector(db)
+    db: StateDB,
+) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
     existing = await _create_connector(
-        connectors, target_project,
-        _connector_args(source.name, identity.id, 'other_schema'), user)
+        connectors,
+        target_project,
+        _connector_args(source.name, identity.id, 'other_schema'),
+        user,
+    )
 
     with pytest.raises(ConnectorNameConflictError, match='already exists'):
-        await _copy(connectors, source_project, source.id, target_project,
-                    user)
+        await _copy(connectors, source_project, source.id, target_project, user)
 
-    assert [c.id for c in await connectors.list_for_project(
-        target_project, user)] == [existing.id]
+    assert [c.id for c in await connectors.list_for_project(target_project, user)] == [
+        existing.id
+    ]
 
 
 @pytest.mark.asyncio
-async def test_copy_from_an_archived_source_project_is_allowed(
-        db: StateDB) -> None:
-    (group_id, source_project, user, _identities, connectors, _identity,
-     source) = await _bound_databricks_connector(db)
+async def test_copy_from_an_archived_source_project_is_allowed(db: StateDB) -> None:
+    (
+        group_id,
+        source_project,
+        user,
+        _identities,
+        connectors,
+        _identity,
+        source,
+    ) = await _bound_databricks_connector(db)
     target_project = await _create_project(db, group_id, 'target')
     await _set_project_status(db, source_project, ProjectStatus.ARCHIVED)
 
-    copied = await _copy(connectors, source_project, source.id,
-                         target_project, user)
+    copied = await _copy(connectors, source_project, source.id, target_project, user)
 
     assert copied.project_id == target_project
     assert copied.config == source.config

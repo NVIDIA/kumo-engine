@@ -42,14 +42,15 @@ def stage_custom_prediction_table(
     """
     if str(reference.connector_id) != source.connector_id:
         raise ValueError(
-            'Prediction source connector does not match execution reference')
+            'Prediction source connector does not match execution reference'
+        )
     connector = get_connector_from_spec(reference)
     read_only_export = getattr(connector, 'export_table_read_only', None)
     if not isinstance(connector, FileConnector) and read_only_export is None:
         connector.close()
         raise ValueError(
-            'Custom prediction source requires an object-store or warehouse '
-            'connector')
+            'Custom prediction source requires an object-store or warehouse connector'
+        )
     # Outside the try: `except Exception` below reports everything as an
     # invalid prediction table, which cannot say that this connector has no
     # way to read a query. Today only `DatabricksPredictionTableSource`
@@ -79,25 +80,25 @@ def stage_custom_prediction_table(
             # Exactly one of table/sql is set; for a query the name is only
             # what staging prefixes and errors key on.
             metrics = read_only_export(
-                source.table or 'custom_prediction_table', destination,
-                **optional)
-            if (getattr(metrics, 'num_rows', None) == 0
-                    or parquet_util.is_empty(destination)):
+                source.table or 'custom_prediction_table', destination, **optional
+            )
+            if getattr(metrics, 'num_rows', None) == 0 or parquet_util.is_empty(
+                destination
+            ):
                 raise EmptyPredictionTableError(path=_source_label(source))
             return destination
 
-        coordinate = object_store_source_for_runtime_connector(
-            connector, source.source)
+        coordinate = object_store_source_for_runtime_connector(connector, source.source)
 
         with connector.filesystem_credential_scope(coordinate):
             _, file_type = connector.get_path_and_type(coordinate)
             if file_type.casefold() != 'parquet':
                 raise ValueError('Custom prediction source must be Parquet')
-        with connector._local_source(coordinate,
-                                     transform=False) as (staged, _):
+        with connector._local_source(coordinate, transform=False) as (staged, _):
             if parquet_util.is_empty(staged.directory):
                 raise EmptyPredictionTableError(path=_source_label(source))
             from kumo.connector.source_bridge import publish_source
+
             publish_source(staged, destination)
         return destination
     except EmptyPredictionTableError:

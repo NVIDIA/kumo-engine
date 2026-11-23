@@ -8,8 +8,7 @@ from .device import withCUDA
 from .package import withPackage, withRegisteredOp
 from .data import load_df, withTestDataFrame
 from .bigquery import withBigQueryCredentials
-from .databricks import (withDatabricksCredentials,
-                         withDatabricksOauthCredentials)
+from .databricks import withDatabricksCredentials, withDatabricksOauthCredentials
 from .snowflake import setup_full_snowflake_session, withSnowflakeCredentials
 from .memory import withMemory
 from .s3 import withS3Credentials

@@ -9,13 +9,14 @@ from typing import List
 
 def format_cmd_error(cmd: str, cmd_output: subprocess.CompletedProcess) -> str:
     result: List[str] = []
-    result.append(f"Executed command `{cmd}` and got error "
-                  f"code {cmd_output.returncode}.")
+    result.append(
+        f'Executed command `{cmd}` and got error code {cmd_output.returncode}.'
+    )
     if cmd_output.stdout:
-        result.append("Standard Out:")
+        result.append('Standard Out:')
         result.append(indent(cmd_output.stdout))
     if cmd_output.stderr:
-        result.append("Standard Error:")
+        result.append('Standard Error:')
         result.append(indent(cmd_output.stderr))
     return '\n'.join(result)
 

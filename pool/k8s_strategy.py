@@ -7,6 +7,7 @@
 This module is the thin controller-facing wrapper around Grayson's Block F
 ``K8sPoolWorkerManager`` contract.
 """
+
 import dataclasses
 import hashlib
 import json
@@ -95,9 +96,9 @@ _ACTIVITY_POLLER_PROBE_TIMEOUT_SEC = 1.0
 # init_canary.EPH_CANARY_ENABLED so one env var governs both the init canary and
 # this runtime route; threaded through the constructor (not read in the routing
 # hot path).
-EPH_TIER_ENABLED = os.environ.get('POOL_INIT_EPHEMERAL_CANARY_ENABLED',
-                                  'true').strip().lower() not in ('0', 'false',
-                                                                  'no', 'off')
+EPH_TIER_ENABLED = os.environ.get(
+    'POOL_INIT_EPHEMERAL_CANARY_ENABLED', 'true'
+).strip().lower() not in ('0', 'false', 'no', 'off')
 
 WorkerInventoryProvider = Callable[[], Mapping[str, WorkerInventory]]
 WarmLocationProvider = Callable[[str], Optional[str]]
@@ -121,28 +122,22 @@ def _loki_selector(cluster: str, extra_matchers: List[str]) -> str:
     return '{' + ', '.join(matchers) + '}'
 
 
-def _build_loki_explore_url(cluster: Optional[str],
-                            extra_matchers: List[str]) -> Optional[str]:
+def _build_loki_explore_url(
+    cluster: Optional[str], extra_matchers: List[str]
+) -> Optional[str]:
     """Grafana Cloud Loki Explore deep-link for ``cluster``+matchers.
 
     Returns ``None`` for clusters outside :data:`_LOKI_EXPLORE_CLUSTERS`
     so callers omit the URL from ``debug_info``.
     """
-    if (not _GRAFANA_BASE or cluster is None
-            or cluster not in _LOKI_EXPLORE_CLUSTERS):
+    if not _GRAFANA_BASE or cluster is None or cluster not in _LOKI_EXPLORE_CLUSTERS:
         return None
     expr = _loki_selector(cluster, extra_matchers)
     left = json.dumps(
         {
             'datasource': _GRAFANA_LOKI_DATASOURCE,
-            'queries': [{
-                'refId': 'A',
-                'expr': expr
-            }],
-            'range': {
-                'from': 'now-6h',
-                'to': 'now'
-            },
+            'queries': [{'refId': 'A', 'expr': expr}],
+            'range': {'from': 'now-6h', 'to': 'now'},
         },
         separators=(',', ':'),
     )
@@ -158,6 +153,7 @@ class CapacityTier:
     pick the smallest SSD tier that satisfies snapshot size and GPU
     requirements.
     """
+
     tier_ssd_gib: int
     tier_gpu_count: int = 1
 
@@ -167,13 +163,13 @@ class CapacityTier:
 
 
 ManagerPvcSpecFactory = Callable[[int], PvcSpec]
-ManagerResourceSpecFactory = Callable[[PlacementRequest],
-                                      Optional[ResourceSpec]]
+ManagerResourceSpecFactory = Callable[[PlacementRequest], Optional[ResourceSpec]]
 PoolWorkerUIDFactory = Callable[[], str]
 
 
 class K8sPlacementContext(Protocol):
     """Controller-owned state providers consumed by the k8s strategy."""
+
     @property
     def worker_inventory(self) -> Mapping[str, WorkerInventory]:
         raise NotImplementedError
@@ -192,7 +188,8 @@ class K8sPlacementContext(Protocol):
         raise NotImplementedError
 
     def capacity_tier_for_worker(
-            self, pool_worker_uid: str) -> Optional['CapacityTier']:
+        self, pool_worker_uid: str
+    ) -> Optional['CapacityTier']:
         """Persisted worker capacity tier, available before daemon heartbeat."""
         raise NotImplementedError
 
@@ -206,8 +203,9 @@ def durable_pool_worker_uid() -> PoolWorkerUID:
 _DETERMINISTIC_EPH_UID_HEX_LEN = 16
 
 
-def deterministic_ephemeral_pool_worker_uid(snapshot_id: str,
-                                            job_id: str) -> PoolWorkerUID:
+def deterministic_ephemeral_pool_worker_uid(
+    snapshot_id: str, job_id: str
+) -> PoolWorkerUID:
     """Stable eph uid derived from ``(snapshot_id, job_id)``.
 
     The controller does not persist eph uids in ``pool_state.json``
@@ -220,10 +218,8 @@ def deterministic_ephemeral_pool_worker_uid(snapshot_id: str,
     (see :meth:`K8sPoolWorkerManager.provision_ephemeral_activity_pod`
     reclaim-always semantics for why determinism matters here).
     """
-    digest = hashlib.sha256(
-        f'{snapshot_id}|{job_id}'.encode('utf-8')).hexdigest()
-    return (f'{POOL_WORKER_UID_PREFIX_EPHNODE}'
-            f'{digest[:_DETERMINISTIC_EPH_UID_HEX_LEN]}')
+    digest = hashlib.sha256(f'{snapshot_id}|{job_id}'.encode('utf-8')).hexdigest()
+    return f'{POOL_WORKER_UID_PREFIX_EPHNODE}{digest[:_DETERMINISTIC_EPH_UID_HEX_LEN]}'
 
 
 def build_k8s_placement_strategy(
@@ -261,6 +257,7 @@ class K8sPlacementStrategy:
     routing/provisioning choices and calls into ``K8sPoolWorkerManager`` for
     the actual pod/PVC operations.
     """
+
     def __init__(
         self,
         manager: K8sPoolWorkerManager,
@@ -283,20 +280,21 @@ class K8sPlacementStrategy:
         self._warm_location = warm_location
         self._snapshot_size_bytes = snapshot_size_bytes
         self._reserved_size_bytes_for_worker = reserved_size_bytes_for_worker
-        self._configured_capacity_tiers: list[CapacityTier] = sorted(
-            capacity_tiers)
+        self._configured_capacity_tiers: list[CapacityTier] = sorted(capacity_tiers)
         self._available_capacity_tiers: list[CapacityTier] = list(
-            self._configured_capacity_tiers)
+            self._configured_capacity_tiers
+        )
         self._ssd_max_utilization = ssd_max_utilization
         self._manager_pvc_spec_factory: ManagerPvcSpecFactory = (
-            manager_pvc_spec_factory
-            or (lambda ssd_gib: PvcSpec(size_gib=ssd_gib)))
-        self._activity_resources_factory = (activity_resources_factory
-                                            or (lambda request: None))
-        self._pool_worker_uid_factory = (pool_worker_uid_factory
-                                         or durable_pool_worker_uid)
-        self._capacity_tier_provider = (capacity_tier_for_worker
-                                        or (lambda _uid: None))
+            manager_pvc_spec_factory or (lambda ssd_gib: PvcSpec(size_gib=ssd_gib))
+        )
+        self._activity_resources_factory = activity_resources_factory or (
+            lambda request: None
+        )
+        self._pool_worker_uid_factory = (
+            pool_worker_uid_factory or durable_pool_worker_uid
+        )
+        self._capacity_tier_provider = capacity_tier_for_worker or (lambda _uid: None)
         self._activity_poller_waiter = activity_poller_waiter
         # Opt-out gate for routing overflow to the ephemeral tier at runtime
         # (POOL_INIT_EPHEMERAL_CANARY_ENABLED). Enabled by default; set the flag
@@ -317,20 +315,24 @@ class K8sPlacementStrategy:
         only creation of workers in an unavailable configured tier is blocked.
         """
         available = set(available_cache_tiers)
-        unavailable = {(tier.tier_ssd_gib, tier.tier_gpu_count)
-                       for tier in self._configured_capacity_tiers} - available
+        unavailable = {
+            (tier.tier_ssd_gib, tier.tier_gpu_count)
+            for tier in self._configured_capacity_tiers
+        } - available
         self._available_capacity_tiers = [
-            tier for tier in self._configured_capacity_tiers
+            tier
+            for tier in self._configured_capacity_tiers
             if (tier.tier_ssd_gib, tier.tier_gpu_count) in available
         ]
         eph_was_enabled = self._eph_tier_enabled
-        self._eph_tier_enabled = (self._eph_tier_enabled
-                                  and ephemeral_available)
+        self._eph_tier_enabled = self._eph_tier_enabled and ephemeral_available
         if unavailable or (eph_was_enabled and not self._eph_tier_enabled):
             log.warning(
                 'Init canary restricted new placement capacity: '
                 'unavailable_cache_tiers=%s ephemeral_available=%s',
-                sorted(unavailable), self._eph_tier_enabled)
+                sorted(unavailable),
+                self._eph_tier_enabled,
+            )
 
     async def start(self) -> None:
         """Start strategy-owned background tasks (delegated to the
@@ -342,12 +344,16 @@ class K8sPlacementStrategy:
         """Cancel strategy-owned background tasks. Idempotent."""
         await self._manager.stop()
 
-    async def route(self, request: PlacementRequest,
-                    warm_location_uid: Optional[str],
-                    snapshot_size_estimate_bytes: int = 0, *,
-                    home_worker_uid: Optional[str] = None,
-                    home_gpu_in_use: int = 0,
-                    overflow_viable: bool = False) -> RouteDecision:
+    async def route(
+        self,
+        request: PlacementRequest,
+        warm_location_uid: Optional[str],
+        snapshot_size_estimate_bytes: int = 0,
+        *,
+        home_worker_uid: Optional[str] = None,
+        home_gpu_in_use: int = 0,
+        overflow_viable: bool = False,
+    ) -> RouteDecision:
         # Effective size: exact persisted size for WARM/COLD snapshots;
         # controller-computed estimate (source × multiplier + buffer) for MISSING.
         persisted_size = self._snapshot_size_bytes(request.snapshot_id)
@@ -357,9 +363,9 @@ class K8sPlacementStrategy:
             persisted_size=persisted_size,
             target_size_bytes=size_bytes,
         )
-        if (warm_location_uid is not None
-                and not self._worker_meets_durable_hint(warm_location_uid,
-                                                        request)):
+        if warm_location_uid is not None and not self._worker_meets_durable_hint(
+            warm_location_uid, request
+        ):
             log.info(
                 'Warm worker %s for snapshot %s is below min_ssd_gib=%d or '
                 'min_gpu_slots=%d; selecting another durable worker.',
@@ -379,19 +385,21 @@ class K8sPlacementStrategy:
                     snapshot_size_estimate_bytes=size_bytes,
                 )
             warm_inventory = self._worker_inventory().get(warm_location_uid)
-            warm_status = (warm_inventory.status
-                           if warm_inventory is not None else None)
+            warm_status = warm_inventory.status if warm_inventory is not None else None
             if warm_status is WorkerStatus.STALE:
                 raise HomeStaleError(
                     f'Warm worker {warm_location_uid} for snapshot '
                     f'{request.snapshot_id} is STALE; wait for the FSM to '
-                    'settle and re-route.')
+                    'settle and re-route.'
+                )
             if warm_status in (WorkerStatus.DEAD, WorkerStatus.DRAINING):
                 log.info(
                     'Warm worker %s for snapshot %s is %s; treating as no warm '
                     'location and selecting a fresh durable worker.',
-                    warm_location_uid, request.snapshot_id,
-                    warm_status.value if warm_status is not None else None)
+                    warm_location_uid,
+                    request.snapshot_id,
+                    warm_status.value if warm_status is not None else None,
+                )
             elif overflow_viable and self._eph_tier_enabled:
                 return RouteDecision(
                     path='overflow',
@@ -415,8 +423,10 @@ class K8sPlacementStrategy:
                     'ephemeral tier is disabled (POOL_INIT_EPHEMERAL_CANARY_'
                     'ENABLED off); serializing on the warm durable worker '
                     'instead of overflowing to an eph Job.',
-                    request.activity.value, request.snapshot_id,
-                    warm_location_uid)
+                    request.activity.value,
+                    request.snapshot_id,
+                    warm_location_uid,
+                )
                 return RouteDecision(
                     path='durable',
                     pool_worker_uid=warm_location_uid,
@@ -428,8 +438,11 @@ class K8sPlacementStrategy:
                 log.warning(
                     'GPU consumer %s on warm snapshot %s: worker %s lacks '
                     'activity capacity and no L2 backup exists; serializing on '
-                    'the warm durable worker.', request.activity.value,
-                    request.snapshot_id, warm_location_uid)
+                    'the warm durable worker.',
+                    request.activity.value,
+                    request.snapshot_id,
+                    warm_location_uid,
+                )
                 return RouteDecision(
                     path='durable',
                     pool_worker_uid=warm_location_uid,
@@ -471,13 +484,13 @@ class K8sPlacementStrategy:
             #     unhealthy worker — so siblings still co-locate on the single
             #     home (backlog #17) instead of herding new durable workers.
             home_inventory = self._worker_inventory().get(home_worker_uid)
-            home_status = (home_inventory.status
-                           if home_inventory is not None else None)
+            home_status = home_inventory.status if home_inventory is not None else None
             if home_status is WorkerStatus.STALE:
                 raise HomeStaleError(
                     f'Home worker {home_worker_uid} for snapshot '
                     f'{request.snapshot_id} is STALE; wait for the FSM to '
-                    'settle and re-route.')
+                    'settle and re-route.'
+                )
             # Disk gate: if the requested size or minimum physical tier no
             # longer fits the home, bypass it and continue through normal tier
             # selection. Disk-full recovery sets min_ssd_gib above the failed
@@ -485,38 +498,46 @@ class K8sPlacementStrategy:
             # No-inventory-yet homes are exempt — their capacity is unknown
             # (in-flight / cold-fanout), so siblings still co-locate.
             home_tier = self._worker_capacity_tier(home_worker_uid)
-            home_total_bytes = (home_tier.bytes if home_tier is not None else
-                                home_inventory.state.pvc_total_bytes
-                                if home_inventory is not None else 0)
+            home_total_bytes = (
+                home_tier.bytes
+                if home_tier is not None
+                else home_inventory.state.pvc_total_bytes
+                if home_inventory is not None
+                else 0
+            )
             home_usable_bytes = home_total_bytes * self._ssd_max_utilization
             home_required_bytes = size_bytes
-            if (minimum_size_bytes < size_bytes
-                    and not self._available_tier_fits(
-                        size_bytes,
-                        self._min_gpu_slots(request),
-                        request.resource_hint.min_ssd_gib,
-                    )):
+            if minimum_size_bytes < size_bytes and not self._available_tier_fits(
+                size_bytes,
+                self._min_gpu_slots(request),
+                request.resource_hint.min_ssd_gib,
+            ):
                 home_required_bytes = minimum_size_bytes
             home_too_small = (
-                (home_required_bytes > 0 and home_usable_bytes > 0
-                 and home_required_bytes > home_usable_bytes)
-                or (request.resource_hint.min_ssd_gib > 0
-                    and home_total_bytes < request.resource_hint.min_ssd_gib *
-                    (1 << 30)))
+                home_required_bytes > 0
+                and home_usable_bytes > 0
+                and home_required_bytes > home_usable_bytes
+            ) or (
+                request.resource_hint.min_ssd_gib > 0
+                and home_total_bytes < request.resource_hint.min_ssd_gib * (1 << 30)
+            )
             if home_too_small:
                 log.info(
                     'Home worker %s for snapshot %s cannot hold the '
                     'required %d bytes with min_ssd_gib=%d '
                     '(usable capacity %d); bypassing the home and '
-                    'minting/reusing a larger durable worker.', home_worker_uid,
-                    request.snapshot_id, home_required_bytes,
-                    request.resource_hint.min_ssd_gib, int(home_usable_bytes))
+                    'minting/reusing a larger durable worker.',
+                    home_worker_uid,
+                    request.snapshot_id,
+                    home_required_bytes,
+                    request.resource_hint.min_ssd_gib,
+                    int(home_usable_bytes),
+                )
             # DEAD / DRAINING home → fall through to the mint-fresh path below
             # (the home is gone / being torn down). READY or no-inventory-yet
             # (in-flight / cold-fanout) home → run the existing home logic.
             elif home_status not in (WorkerStatus.DEAD, WorkerStatus.DRAINING):
-                if self._home_can_serve(request, home_worker_uid,
-                                        home_gpu_in_use):
+                if self._home_can_serve(request, home_worker_uid, home_gpu_in_use):
                     return RouteDecision(
                         path='durable',
                         pool_worker_uid=home_worker_uid,
@@ -546,8 +567,10 @@ class K8sPlacementStrategy:
                         'an L2 backup, but the ephemeral tier is disabled '
                         '(POOL_INIT_EPHEMERAL_CANARY_ENABLED off); serializing '
                         'on home instead of overflowing to an eph Job.',
-                        request.activity.value, request.snapshot_id,
-                        home_worker_uid)
+                        request.activity.value,
+                        request.snapshot_id,
+                        home_worker_uid,
+                    )
                     return RouteDecision(
                         path='durable',
                         pool_worker_uid=home_worker_uid,
@@ -559,8 +582,10 @@ class K8sPlacementStrategy:
                     'GPU consumer %s on snapshot %s: home %s GPU-busy and no '
                     'L2 backup to overflow from; serializing on home. Caller '
                     'should ensure the snapshot exists before consuming.',
-                    request.activity.value, request.snapshot_id,
-                    home_worker_uid)
+                    request.activity.value,
+                    request.snapshot_id,
+                    home_worker_uid,
+                )
                 return RouteDecision(
                     path='durable',
                     pool_worker_uid=home_worker_uid,
@@ -572,10 +597,14 @@ class K8sPlacementStrategy:
                 log.info(
                     'Home worker %s for snapshot %s is %s; treating as no '
                     'home and minting/reusing a fresh durable worker.',
-                    home_worker_uid, request.snapshot_id, home_status)
+                    home_worker_uid,
+                    request.snapshot_id,
+                    home_status,
+                )
 
         candidate = self._best_existing_durable_candidate(
-            request, size_bytes=size_bytes)
+            request, size_bytes=size_bytes
+        )
         provisioned_new_worker = candidate is None
         if candidate is None:
             try:
@@ -591,10 +620,14 @@ class K8sPlacementStrategy:
                 # new workers while a previously created worker remains
                 # healthy. Use it if its live free space reaches the 1.5x
                 # streaming floor.
-                fallback_candidate = (self._best_existing_durable_candidate(
-                    request,
-                    size_bytes=minimum_size_bytes,
-                ) if minimum_size_bytes > 0 else None)
+                fallback_candidate = (
+                    self._best_existing_durable_candidate(
+                        request,
+                        size_bytes=minimum_size_bytes,
+                    )
+                    if minimum_size_bytes > 0
+                    else None
+                )
                 if fallback_candidate is None:
                     raise
                 candidate = fallback_candidate
@@ -610,25 +643,26 @@ class K8sPlacementStrategy:
                 size_bytes,
                 int(chosen_tier.bytes * self._ssd_max_utilization),
             )
-        using_minimum_fallback = (size_bytes > 0
-                                  and admitted_size_bytes < size_bytes)
+        using_minimum_fallback = size_bytes > 0 and admitted_size_bytes < size_bytes
         return RouteDecision(
             path='durable',
             pool_worker_uid=candidate,
             provisioned_new_worker=provisioned_new_worker,
             reason=(
-                'reuse existing durable worker' if not provisioned_new_worker
-                else 'largest available tier meets minimum ingest capacity' if
-                using_minimum_fallback else 'no durable worker with capacity'),
+                'reuse existing durable worker'
+                if not provisioned_new_worker
+                else 'largest available tier meets minimum ingest capacity'
+                if using_minimum_fallback
+                else 'no durable worker with capacity'
+            ),
             snapshot_size_estimate_bytes=admitted_size_bytes,
-            tier_ssd_gib=chosen_tier.tier_ssd_gib
-            if chosen_tier is not None else 0,
-            tier_gpu_count=chosen_tier.tier_gpu_count
-            if chosen_tier is not None else 1,
+            tier_ssd_gib=chosen_tier.tier_ssd_gib if chosen_tier is not None else 0,
+            tier_gpu_count=chosen_tier.tier_gpu_count if chosen_tier is not None else 1,
         )
 
-    async def provision(self, request: PlacementRequest,
-                        decision: RouteDecision) -> ProvisionedHandle:
+    async def provision(
+        self, request: PlacementRequest, decision: RouteDecision
+    ) -> ProvisionedHandle:
         activity = request.activity.value
 
         if decision.path == 'overflow':
@@ -636,7 +670,8 @@ class K8sPlacementStrategy:
                 raise RuntimeError(
                     'Persisted overflow placement cannot be provisioned: '
                     'ephemeral capacity is unavailable for this controller '
-                    'process.')
+                    'process.'
+                )
             activity_image = activity_image_uri(request.activity)
             size_bytes = self._required_snapshot_size(request.snapshot_id)
             # Deterministic uid keeps worker heartbeats stable for this
@@ -651,14 +686,15 @@ class K8sPlacementStrategy:
                 activity=activity,
                 image=activity_image,
                 env=activity_pod_env_vars(
-                    pool_worker_uid=pool_worker_uid, job_id=request.job_id,
+                    pool_worker_uid=pool_worker_uid,
+                    job_id=request.job_id,
                     storage_mode=PoolStorageMode.ACTIVITY_ON_EMPTYDIR,
-                    require_gpu=self._needs_gpu(request.activity)),
+                    require_gpu=self._needs_gpu(request.activity),
+                ),
                 command=POOL_ACTIVITY_COMMAND,
                 args=POOL_ACTIVITY_ARGS,
                 resources=self._activity_resources_factory(request),
-                ephemeral_storage_bytes=self._overflow_storage_bytes(
-                    size_bytes),
+                ephemeral_storage_bytes=self._overflow_storage_bytes(size_bytes),
             )
             return ProvisionedHandle(
                 kind='overflow',
@@ -668,23 +704,26 @@ class K8sPlacementStrategy:
             )
 
         if decision.pool_worker_uid is None:
-            raise RuntimeError(
-                'Durable placement requires planned pool_worker_uid.')
+            raise RuntimeError('Durable placement requires planned pool_worker_uid.')
         pool_worker_uid = decision.pool_worker_uid
         size_bytes = decision.snapshot_size_estimate_bytes
         chosen_tier = self._tier_from_decision(decision)
         if chosen_tier is None:
             chosen_tier = self._worker_capacity_tier(pool_worker_uid)
         inventory = self._worker_inventory().get(pool_worker_uid)
-        existing_worker_is_routable = (inventory is not None
-                                       and inventory.status.is_routable())
-        if (chosen_tier is None and self._available_capacity_tiers
-                != self._configured_capacity_tiers
-                and not existing_worker_is_routable):
+        existing_worker_is_routable = (
+            inventory is not None and inventory.status.is_routable()
+        )
+        if (
+            chosen_tier is None
+            and self._available_capacity_tiers != self._configured_capacity_tiers
+            and not existing_worker_is_routable
+        ):
             raise RuntimeError(
                 'Durable placement capacity tier is unknown while init-canary '
                 'has restricted cache capacity; refusing to reclaim '
-                f'non-routable worker {pool_worker_uid}.')
+                f'non-routable worker {pool_worker_uid}.'
+            )
         if chosen_tier is None:
             chosen_tier = self._choose_tier_for_snapshot(
                 size_bytes,
@@ -693,8 +732,7 @@ class K8sPlacementStrategy:
                 request.snapshot_id,
                 minimum_size_bytes=self._minimum_admitted_size_bytes(
                     request,
-                    persisted_size=self._snapshot_size_bytes(
-                        request.snapshot_id),
+                    persisted_size=self._snapshot_size_bytes(request.snapshot_id),
                     target_size_bytes=size_bytes,
                 ),
             )
@@ -709,7 +747,8 @@ class K8sPlacementStrategy:
             raise RuntimeError(
                 f'Durable cache tier {tier_key} '
                 'is unavailable for new provisioning in this controller '
-                'process.')
+                'process.'
+            )
         pvc_spec = self._manager_pvc_spec_factory(chosen_tier.tier_ssd_gib)
         pvc_spec.gpu_count = chosen_tier.tier_gpu_count
         try:
@@ -722,16 +761,19 @@ class K8sPlacementStrategy:
             if info.pool_worker_uid != pool_worker_uid:
                 raise RuntimeError(
                     'K8sPoolWorkerManager returned unexpected worker uid: '
-                    f'planned={pool_worker_uid} actual={info.pool_worker_uid}')
+                    f'planned={pool_worker_uid} actual={info.pool_worker_uid}'
+                )
             if existing_only:
                 matches_current_envelope = (
-                    await
-                    self._manager.registered_worker_matches_current_cache_tier(
-                        info, pvc_spec))
+                    await self._manager.registered_worker_matches_current_cache_tier(
+                        info, pvc_spec
+                    )
+                )
                 if not matches_current_envelope:
                     raise PoolWorkerNotReadyError(
                         f'pool worker {pool_worker_uid!r} does not match the '
-                        'current cache-tier envelope.')
+                        'current cache-tier envelope.'
+                    )
 
             if request.activity == SnapshotActivity.ENSURE_SNAPSHOT:
                 # Daemon already registered by provision_pool_worker above —
@@ -751,12 +793,15 @@ class K8sPlacementStrategy:
                 activity=activity,
                 image=activity_image_uri(request.activity),
                 env=activity_pod_env_vars(
-                    pool_worker_uid=pool_worker_uid, job_id=request.job_id,
+                    pool_worker_uid=pool_worker_uid,
+                    job_id=request.job_id,
                     storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
-                    require_gpu=request.activity in {
+                    require_gpu=request.activity
+                    in {
                         SnapshotActivity.TRAIN,
                         SnapshotActivity.PREDICT,
-                    }),
+                    },
+                ),
                 command=POOL_ACTIVITY_COMMAND,
                 args=POOL_ACTIVITY_ARGS,
                 resources=self._activity_resources_factory(request),
@@ -767,7 +812,8 @@ class K8sPlacementStrategy:
                 raise
             raise ExistingWorkerUnavailableError(
                 f'Existing worker {pool_worker_uid} in a canary-unavailable '
-                'cache tier no longer has reusable live resources.', ) from exc
+                'cache tier no longer has reusable live resources.',
+            ) from exc
 
         return ProvisionedHandle(
             kind='durable',
@@ -798,7 +844,8 @@ class K8sPlacementStrategy:
                 timeout_error = ProvisionTimeoutError(
                     f'activity Job {job_name!r} did not register a poller '
                     f'from its current pod within '
-                    f'{ACTIVITY_POLLER_READY_TIMEOUT_SEC:.0f}s')
+                    f'{ACTIVITY_POLLER_READY_TIMEOUT_SEC:.0f}s'
+                )
                 raise timeout_error from last_poller_timeout
             try:
                 await self._activity_poller_waiter(
@@ -824,13 +871,12 @@ class K8sPlacementStrategy:
                         provision_state='ready',
                         debug_info={
                             **handle.debug_info,
-                            **self._activity_debug_info(info.pod_name)
+                            **self._activity_debug_info(info.pod_name),
                         },
                     )
                 info = confirmed
 
-    def _build_debug_info(self, pod_name: str,
-                          loki_pod_matcher: str) -> Dict[str, str]:
+    def _build_debug_info(self, pod_name: str, loki_pod_matcher: str) -> Dict[str, str]:
         """Carrier for PlacementResult.debug_info.
 
         ``loki_pod_matcher`` is the LogQL label expression that pins
@@ -869,8 +915,9 @@ class K8sPlacementStrategy:
             loki_pod_matcher=f'service_name=~"{prefix}.+"',
         )
 
-    async def release(self, request: PlacementRequest,
-                      handle: Optional[ProvisionedHandle]) -> None:
+    async def release(
+        self, request: PlacementRequest, handle: Optional[ProvisionedHandle]
+    ) -> None:
         del handle
         await self._manager.delete_activity_pods(
             job_id=request.job_id,
@@ -891,7 +938,8 @@ class K8sPlacementStrategy:
         observed_uids = {worker.pool_worker_uid for worker in workers}
         registered_uids = {
             worker.pool_worker_uid
-            for worker in workers if worker.status == 'Registered'
+            for worker in workers
+            if worker.status == 'Registered'
         }
         retirement_veto_uids = self._retirement_veto_uids(workers)
         expected_uids = self._expected_pool_worker_uids(state)
@@ -909,9 +957,11 @@ class K8sPlacementStrategy:
             incompatible = {
                 uid
                 for uid, pvc in placement_state.pvcs.items()
-                if (pvc.tier_ssd_gib > 0 and pvc.tier_gpu_count > 0
-                    and (pvc.tier_ssd_gib, pvc.tier_gpu_count)
-                    not in configured_tiers)
+                if (
+                    pvc.tier_ssd_gib > 0
+                    and pvc.tier_gpu_count > 0
+                    and (pvc.tier_ssd_gib, pvc.tier_gpu_count) not in configured_tiers
+                )
             }
 
         # Toleration changes are a maintenance operation, like removing a
@@ -919,18 +969,22 @@ class K8sPlacementStrategy:
         # A rollout can expose two pod generations sharing one PVC: do not
         # retire that UID if any current-config incarnation still exists.
         current_toleration_uids = {
-            worker.pool_worker_uid for worker in workers
+            worker.pool_worker_uid
+            for worker in workers
             if worker.extra_tolerations_match
         }
         stale_toleration_uids = {
-            worker.pool_worker_uid for worker in workers
+            worker.pool_worker_uid
+            for worker in workers
             if not worker.extra_tolerations_match
         } - current_toleration_uids
         if stale_toleration_uids:
             log.warning(
                 'Retiring pool workers after extra tolerations changed: %s. '
                 'This maintenance operation deletes their activity Jobs '
-                'and cache PVCs.', sorted(stale_toleration_uids))
+                'and cache PVCs.',
+                sorted(stale_toleration_uids),
+            )
         if isinstance(placement_state, K8sPlacementState):
             # Untracked UIDs must remain in the ordinary unexpected-worker
             # path: the controller only applies incompatibility to tracked PVCs.
@@ -941,8 +995,11 @@ class K8sPlacementStrategy:
             if is_registered:
                 live_uids.add(uid)
             inv = inventory.get(uid)
-            if (inv is not None and inv.status == WorkerStatus.DEAD
-                    and uid not in retirement_veto_uids):
+            if (
+                inv is not None
+                and inv.status == WorkerStatus.DEAD
+                and uid not in retirement_veto_uids
+            ):
                 # Don't delete inline: report the uid as retired so the
                 # controller can flip it to DRAINING + scrub its
                 # lease/local/PVC state under state_lock before
@@ -958,16 +1015,16 @@ class K8sPlacementStrategy:
         # per-worker resilience that used to live here now lives in
         # delete_workers().
         unexpected: set[str] = {
-            uid
-            for uid in observed_uids if uid not in expected_uids
+            uid for uid in observed_uids if uid not in expected_uids
         }
         # A prior teardown attempt can finish after the daemon pod disappears
         # or can fail after controller state has already been scrubbed. Keep
         # retrying controller-owned DRAINING entries until delete_workers()
         # succeeds and a later reconcile confirms that K8s no longer observes
         # the worker.
-        unexpected.update(uid for uid, inv in inventory.items()
-                          if inv.status == WorkerStatus.DRAINING)
+        unexpected.update(
+            uid for uid, inv in inventory.items() if inv.status == WorkerStatus.DRAINING
+        )
         unexpected.difference_update(incompatible)
 
         return ReconcileDelta(
@@ -976,8 +1033,7 @@ class K8sPlacementStrategy:
             retired_uids=retired,
             incompatible_uids=incompatible,
             unexpected_uids=unexpected,
-            orphan_snapshots=self._orphan_snapshots_for_retired_workers(
-                state, retired),
+            orphan_snapshots=self._orphan_snapshots_for_retired_workers(state, retired),
         )
 
     async def revalidate_retired_workers(self, uids: Iterable[str]) -> set[str]:
@@ -1005,8 +1061,10 @@ class K8sPlacementStrategy:
                 status_since = worker.deletion_started_at
             else:
                 continue
-            if (status_since is None
-                    or now - status_since < POOL_WORKER_PROVISION_TIMEOUT_SEC):
+            if (
+                status_since is None
+                or now - status_since < POOL_WORKER_PROVISION_TIMEOUT_SEC
+            ):
                 vetoes.add(worker.pool_worker_uid)
         return vetoes
 
@@ -1032,7 +1090,9 @@ class K8sPlacementStrategy:
             except Exception:
                 log.exception(
                     'delete_pool_worker failed for uid=%s; will retry on '
-                    'the next reconcile tick.', uid)
+                    'the next reconcile tick.',
+                    uid,
+                )
         return deleted
 
     def _orphan_snapshots_for_retired_workers(
@@ -1044,22 +1104,25 @@ class K8sPlacementStrategy:
         return {
             local.snapshot_id: local.pool_worker_uid
             for local in state.local_copies.values()
-            if (local.pool_worker_uid in retired
-                and local.local_state != SnapshotLocalCopyState.EVICTED)
+            if (
+                local.pool_worker_uid in retired
+                and local.local_state != SnapshotLocalCopyState.EVICTED
+            )
         }
 
     def _expected_pool_worker_uids(self, state: PoolState) -> set[str]:
         return expected_pool_worker_uids(state)
 
-    def _worker_can_run_now(self, pool_worker_uid: str,
-                            request: PlacementRequest) -> bool:
+    def _worker_can_run_now(
+        self, pool_worker_uid: str, request: PlacementRequest
+    ) -> bool:
         inventory = self._worker_inventory().get(pool_worker_uid)
         if inventory is None or not inventory.status.is_routable():
             return False
         if not self._worker_meets_durable_hint(pool_worker_uid, request):
             return False
         if self._needs_gpu(request.activity):
-            return (inventory.gpu_slots_total > inventory.gpu_slots_in_use)
+            return inventory.gpu_slots_total > inventory.gpu_slots_in_use
         return True
 
     def _worker_meets_durable_hint(
@@ -1069,17 +1132,27 @@ class K8sPlacementStrategy:
     ) -> bool:
         inventory = self._worker_inventory().get(pool_worker_uid)
         tier = self._worker_capacity_tier(pool_worker_uid)
-        gpu_count = (tier.tier_gpu_count if tier is not None else
-                     inventory.gpu_slots_total if inventory is not None else 1)
+        gpu_count = (
+            tier.tier_gpu_count
+            if tier is not None
+            else inventory.gpu_slots_total
+            if inventory is not None
+            else 1
+        )
         total_bytes = (
-            tier.bytes if tier is not None else
-            inventory.state.pvc_total_bytes if inventory is not None else 0)
-        return (gpu_count >= self._min_gpu_slots(request)
-                and total_bytes >= request.resource_hint.min_ssd_gib *
-                (1 << 30))
+            tier.bytes
+            if tier is not None
+            else inventory.state.pvc_total_bytes
+            if inventory is not None
+            else 0
+        )
+        return gpu_count >= self._min_gpu_slots(
+            request
+        ) and total_bytes >= request.resource_hint.min_ssd_gib * (1 << 30)
 
-    def _home_can_serve(self, request: PlacementRequest, home_worker_uid: str,
-                        home_gpu_in_use: int) -> bool:
+    def _home_can_serve(
+        self, request: PlacementRequest, home_worker_uid: str, home_gpu_in_use: int
+    ) -> bool:
         """Whether the snapshot's already-assigned home worker can serve this
         activity — judged from in-flight leases (``home_gpu_in_use``) so it
         holds even before the home is READY (unlike ``_worker_can_run_now``,
@@ -1090,14 +1163,27 @@ class K8sPlacementStrategy:
         if not self._needs_gpu(request.activity):
             return True
         inventory = self._worker_inventory().get(home_worker_uid)
-        tier = (None if inventory is not None else
-                self._worker_capacity_tier(home_worker_uid))
-        gpu_total = (inventory.gpu_slots_total if inventory is not None else
-                     max(tier.tier_gpu_count, 1) if tier is not None else 1)
+        tier = (
+            None
+            if inventory is not None
+            else self._worker_capacity_tier(home_worker_uid)
+        )
+        gpu_total = (
+            inventory.gpu_slots_total
+            if inventory is not None
+            else max(tier.tier_gpu_count, 1)
+            if tier is not None
+            else 1
+        )
         if gpu_total < self._min_gpu_slots(request):
             return False
-        total_bytes = (inventory.state.pvc_total_bytes if inventory is not None
-                       else tier.bytes if tier is not None else 0)
+        total_bytes = (
+            inventory.state.pvc_total_bytes
+            if inventory is not None
+            else tier.bytes
+            if tier is not None
+            else 0
+        )
         if total_bytes < request.resource_hint.min_ssd_gib * (1 << 30):
             return False
         return home_gpu_in_use < gpu_total
@@ -1116,56 +1202,59 @@ class K8sPlacementStrategy:
         for live inventory so an in-flight ingest cannot promise its bytes to
         a second snapshot. The heartbeat must confirm actual free space later.
         """
-        if CapacityTier(
-                pvc.tier_ssd_gib,
-                pvc.tier_gpu_count) not in self._configured_capacity_tiers:
+        if (
+            CapacityTier(pvc.tier_ssd_gib, pvc.tier_gpu_count)
+            not in self._configured_capacity_tiers
+        ):
             # Reconcile retires removed tiers; do not wait for their capacity.
             return False
         if pvc.tier_ssd_gib < request.resource_hint.min_ssd_gib:
             return False
         if pvc.tier_gpu_count < self._min_gpu_slots(request):
             return False
-        if (self._needs_gpu(request.activity)
-                and gpu_slots_in_use >= pvc.tier_gpu_count):
+        if self._needs_gpu(request.activity) and gpu_slots_in_use >= pvc.tier_gpu_count:
             return False
         usable = int(pvc.tier_ssd_gib * (1 << 30) * self._ssd_max_utilization)
         reserved = self._reserved_size_bytes_for_worker(pvc.pool_worker_uid)
         return usable > reserved and size_bytes <= usable - reserved
 
     def _best_existing_durable_candidate(
-            self, request: PlacementRequest,
-            size_bytes: int = 0) -> Optional[PoolWorkerUID]:
+        self, request: PlacementRequest, size_bytes: int = 0
+    ) -> Optional[PoolWorkerUID]:
         best_uid: Optional[PoolWorkerUID] = None
         best_available: int = -1
-        unknown_size_min_total_bytes = (request.resource_hint.min_ssd_gib *
-                                        (1 << 30) if size_bytes <= 0 else 0)
+        unknown_size_min_total_bytes = (
+            request.resource_hint.min_ssd_gib * (1 << 30) if size_bytes <= 0 else 0
+        )
         for inventory in self._worker_inventory().values():
             if not inventory.status.is_routable():
                 continue
             if inventory.gpu_slots_total < self._min_gpu_slots(request):
                 continue
-            candidate_tier = self._capacity_tier_provider(
-                inventory.pool_worker_uid)
-            candidate_total_bytes = (candidate_tier.bytes
-                                     if candidate_tier is not None else
-                                     inventory.state.pvc_total_bytes)
-            if (candidate_total_bytes
-                    < request.resource_hint.min_ssd_gib * (1 << 30)):
+            candidate_tier = self._capacity_tier_provider(inventory.pool_worker_uid)
+            candidate_total_bytes = (
+                candidate_tier.bytes
+                if candidate_tier is not None
+                else inventory.state.pvc_total_bytes
+            )
+            if candidate_total_bytes < request.resource_hint.min_ssd_gib * (1 << 30):
                 continue
-            if (unknown_size_min_total_bytes > 0
-                    and candidate_total_bytes < unknown_size_min_total_bytes):
+            if (
+                unknown_size_min_total_bytes > 0
+                and candidate_total_bytes < unknown_size_min_total_bytes
+            ):
                 continue
-            if self._needs_gpu(
-                    request.activity) and (inventory.gpu_slots_total
-                                           <= inventory.gpu_slots_in_use):
+            if self._needs_gpu(request.activity) and (
+                inventory.gpu_slots_total <= inventory.gpu_slots_in_use
+            ):
                 continue
             # available = pvc_free − dead_zone − in_flight_reserved, where
             # dead_zone = pvc_total × (1 − utilization) is the fraction of the
             # PVC implicitly reserved for staging tables, tmp files, and OS.
-            dead_zone = int(inventory.state.pvc_total_bytes *
-                            (1 - self._ssd_max_utilization))
-            reserved = self._reserved_size_bytes_for_worker(
-                inventory.pool_worker_uid)
+            dead_zone = int(
+                inventory.state.pvc_total_bytes * (1 - self._ssd_max_utilization)
+            )
+            reserved = self._reserved_size_bytes_for_worker(inventory.pool_worker_uid)
             available = max(
                 0,
                 inventory.state.pvc_free_bytes - dead_zone - reserved,
@@ -1203,10 +1292,12 @@ class K8sPlacementStrategy:
         min_gpu_slots: int,
         min_ssd_gib: int,
     ) -> bool:
-        return any(tier.tier_gpu_count >= min_gpu_slots and tier.tier_ssd_gib >=
-                   min_ssd_gib and int(tier.bytes *
-                                       self._ssd_max_utilization) >= size_bytes
-                   for tier in self._available_capacity_tiers)
+        return any(
+            tier.tier_gpu_count >= min_gpu_slots
+            and tier.tier_ssd_gib >= min_ssd_gib
+            and int(tier.bytes * self._ssd_max_utilization) >= size_bytes
+            for tier in self._available_capacity_tiers
+        )
 
     def _validate_tier_for_request(
         self,
@@ -1218,13 +1309,13 @@ class K8sPlacementStrategy:
         """Reject stale or pinned decisions that bypass current constraints."""
         min_gpu_slots = self._min_gpu_slots(request)
         min_ssd_gib = request.resource_hint.min_ssd_gib
-        if (tier.tier_gpu_count < min_gpu_slots
-                or tier.tier_ssd_gib < min_ssd_gib):
+        if tier.tier_gpu_count < min_gpu_slots or tier.tier_ssd_gib < min_ssd_gib:
             raise DiskgraphCapacityError(
                 f'DiskGraph tier ({tier.tier_ssd_gib} GiB, '
                 f'{tier.tier_gpu_count} GPUs) does not satisfy '
                 f'min_ssd_gib={min_ssd_gib} and '
-                f'min_gpu_slots={min_gpu_slots}.')
+                f'min_gpu_slots={min_gpu_slots}.'
+            )
         persisted_size = self._snapshot_size_bytes(request.snapshot_id)
         minimum_size_bytes = self._minimum_admitted_size_bytes(
             request,
@@ -1237,7 +1328,8 @@ class K8sPlacementStrategy:
                 f'DiskGraph tier {tier.tier_ssd_gib} GiB has '
                 f'{usable_bytes / (1 << 30):.1f} GiB usable SSD, below the '
                 f'{minimum_size_bytes / (1 << 30):.1f} GiB minimum for '
-                f'snapshot {request.snapshot_id}.')
+                f'snapshot {request.snapshot_id}.'
+            )
 
     def _choose_tier_for_snapshot(
         self,
@@ -1250,19 +1342,28 @@ class K8sPlacementStrategy:
     ) -> CapacityTier:
         """Choose the preferred tier, or the largest safe fallback tier."""
         candidates = [
-            tier for tier in self._available_capacity_tiers
-            if (tier.tier_gpu_count >= min_gpu_slots
-                and tier.tier_ssd_gib >= min_ssd_gib)
+            tier
+            for tier in self._available_capacity_tiers
+            if (
+                tier.tier_gpu_count >= min_gpu_slots
+                and tier.tier_ssd_gib >= min_ssd_gib
+            )
         ]
         if not candidates:
             configured_max_ssd_gib = max(
-                (tier.tier_ssd_gib for tier in self._configured_capacity_tiers
-                 if tier.tier_gpu_count >= min_gpu_slots),
+                (
+                    tier.tier_ssd_gib
+                    for tier in self._configured_capacity_tiers
+                    if tier.tier_gpu_count >= min_gpu_slots
+                ),
                 default=0,
             )
             available_max_ssd_gib = max(
-                (tier.tier_ssd_gib for tier in self._available_capacity_tiers
-                 if tier.tier_gpu_count >= min_gpu_slots),
+                (
+                    tier.tier_ssd_gib
+                    for tier in self._available_capacity_tiers
+                    if tier.tier_gpu_count >= min_gpu_slots
+                ),
                 default=0,
             )
             raise DiskgraphCapacityError(
@@ -1271,27 +1372,30 @@ class K8sPlacementStrategy:
                 f'min_gpu_slots={min_gpu_slots} for snapshot {snapshot_id}; '
                 f'the configured maximum SSD tier is '
                 f'{configured_max_ssd_gib} GiB and the currently available '
-                f'maximum is {available_max_ssd_gib} GiB.')
+                f'maximum is {available_max_ssd_gib} GiB.'
+            )
         if size_bytes <= 0:
             return max(candidates)
         for tier in candidates:
             if int(tier.bytes * self._ssd_max_utilization) >= size_bytes:
                 return tier
         largest_candidate = max(candidates)
-        largest_usable = int(largest_candidate.bytes *
-                             self._ssd_max_utilization)
+        largest_usable = int(largest_candidate.bytes * self._ssd_max_utilization)
         if minimum_size_bytes > 0 and largest_usable >= minimum_size_bytes:
             return largest_candidate
         configured_max_usable = max(
-            (int(tier.bytes * self._ssd_max_utilization)
-             for tier in self._configured_capacity_tiers
-             if (tier.tier_gpu_count >= min_gpu_slots
-                 and tier.tier_ssd_gib >= min_ssd_gib)),
+            (
+                int(tier.bytes * self._ssd_max_utilization)
+                for tier in self._configured_capacity_tiers
+                if (
+                    tier.tier_gpu_count >= min_gpu_slots
+                    and tier.tier_ssd_gib >= min_ssd_gib
+                )
+            ),
             default=0,
         )
         available_max_usable = max(
-            (int(tier.bytes * self._ssd_max_utilization)
-             for tier in candidates),
+            (int(tier.bytes * self._ssd_max_utilization) for tier in candidates),
             default=0,
         )
         raise DiskgraphCapacityError(
@@ -1304,10 +1408,10 @@ class K8sPlacementStrategy:
             f'available maximum is {available_max_usable / (1 << 30):.1f} '
             f'GiB for '
             f'min_gpu_slots={min_gpu_slots} and '
-            f'min_ssd_gib={min_ssd_gib}.')
+            f'min_ssd_gib={min_ssd_gib}.'
+        )
 
-    def _worker_capacity_tier(self,
-                              pool_worker_uid: str) -> Optional[CapacityTier]:
+    def _worker_capacity_tier(self, pool_worker_uid: str) -> Optional[CapacityTier]:
         tier = self._capacity_tier_provider(pool_worker_uid)
         if tier is not None:
             return tier
@@ -1343,7 +1447,8 @@ class K8sPlacementStrategy:
         if size_bytes is None or size_bytes <= 0:
             raise RuntimeError(
                 'Overflow placement requires recorded snapshot size for '
-                f'snapshot={snapshot_id}.')
+                f'snapshot={snapshot_id}.'
+            )
         return size_bytes
 
     @staticmethod

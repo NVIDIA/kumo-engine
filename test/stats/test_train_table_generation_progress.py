@@ -12,6 +12,7 @@ v1) strictly validates them against the ``pd.Timestamp`` fields of
 dataclasses are nested inside the pydantic-v2 ``TrainTableGenerationProgress``
 dataclass, raising ``is_instance_of`` validation errors.
 """
+
 import json
 import os
 
@@ -153,8 +154,6 @@ def test_generation_stats_from_job_dir_temporal_node(tmp_path) -> None:
     assert progress.iteration_data is not None
     assert len(progress.iteration_data) == 2
     assert all(
-        isinstance(tf, TemporalNodeTimeFrameStats)
-        for tf in progress.iteration_data)
-    assert all(
-        isinstance(tf.min_date, pd.Timestamp)
-        for tf in progress.iteration_data)
+        isinstance(tf, TemporalNodeTimeFrameStats) for tf in progress.iteration_data
+    )
+    assert all(isinstance(tf.min_date, pd.Timestamp) for tf in progress.iteration_data)

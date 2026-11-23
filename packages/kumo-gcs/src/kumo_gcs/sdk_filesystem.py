@@ -17,9 +17,9 @@ class _RangeReadFile(AbstractBufferedFile):
         if end <= start:
             return b''
         with translated(self.path):
-            return self._blob.download_as_bytes(start=start, end=end - 1,
-                                                raw_download=True,
-                                                checksum=None)
+            return self._blob.download_as_bytes(
+                start=start, end=end - 1, raw_download=True, checksum=None
+            )
 
 
 class GCSReadFileSystem(AbstractFileSystem):
@@ -37,8 +37,7 @@ class GCSReadFileSystem(AbstractFileSystem):
         bucket, _, key = path.partition('/')
         if not bucket:
             raise ValueError('GCS source must name a bucket')
-        return self.client.bucket(bucket,
-                                  user_project=self.requester_pays_project), key
+        return self.client.bucket(bucket, user_project=self.requester_pays_project), key
 
     @staticmethod
     def _entry(bucket, blob):
@@ -57,8 +56,7 @@ class GCSReadFileSystem(AbstractFileSystem):
             if blob is not None:
                 return self._entry(bucket, blob)
             prefix = key.rstrip('/') + '/' if key else ''
-            first = next(iter(bucket.list_blobs(prefix=prefix, max_results=1)),
-                         None)
+            first = next(iter(bucket.list_blobs(prefix=prefix, max_results=1)), None)
             if not key or first is not None:
                 return {'name': path, 'size': 0, 'type': 'directory'}
         raise FileNotFoundError(path)
@@ -74,14 +72,16 @@ class GCSReadFileSystem(AbstractFileSystem):
             with translated(path):
                 listing = bucket.list_blobs(prefix=prefix, delimiter='/')
                 entries = [
-                    self._entry(bucket, blob) for blob in listing
-                    if blob.name != prefix
+                    self._entry(bucket, blob) for blob in listing if blob.name != prefix
                 ]
-                entries.extend({
-                    'name': f'{bucket.name}/{child.rstrip("/")}',
-                    'size': 0,
-                    'type': 'directory',
-                } for child in sorted(listing.prefixes))
+                entries.extend(
+                    {
+                        'name': f'{bucket.name}/{child.rstrip("/")}',
+                        'size': 0,
+                        'type': 'directory',
+                    }
+                    for child in sorted(listing.prefixes)
+                )
         return entries if detail else [entry['name'] for entry in entries]
 
     def exists(self, path, **kwargs):
@@ -97,8 +97,7 @@ class GCSReadFileSystem(AbstractFileSystem):
         except FileNotFoundError:
             return False
 
-    def _open(self, path, mode='rb', block_size=None, cache_options=None,
-              **kwargs):
+    def _open(self, path, mode='rb', block_size=None, cache_options=None, **kwargs):
         if mode != 'rb':
             raise NotImplementedError('GCS source filesystem is read-only')
         bucket, key = self._bucket_key(path)
@@ -106,5 +105,6 @@ class GCSReadFileSystem(AbstractFileSystem):
             blob = bucket.blob(key)
             # Keep all footer/sample ranges on the generation whose size we read.
             blob.reload()
-        return _RangeReadFile(self, path, blob, block_size=block_size,
-                              cache_options=cache_options)
+        return _RangeReadFile(
+            self, path, blob, block_size=block_size, cache_options=cache_options
+        )

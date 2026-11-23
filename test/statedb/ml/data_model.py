@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from test.statedb.protocol_common import CaseBuilder, MapLikeCase
-
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.types import TaskType
 from kumoapi.jobs import S3PredictionTableSource
@@ -39,8 +37,9 @@ from statedb.config.common import (
 from statedb.config.job_tag import JobTags, JobTagsMap
 from statedb.config.timestamp import get_current_timestamps
 from statedb.ml.jobs import BatchPredictionJobDBEntry
+from test.statedb.protocol_common import CaseBuilder, MapLikeCase
 
-_DEFAULT_PROJECT_ID = ProjectID("default")
+_DEFAULT_PROJECT_ID = ProjectID('default')
 
 
 def _running_training_output() -> TrainingJobOutput:
@@ -85,20 +84,21 @@ def case_training_job() -> MapLikeCase[TrainingJobID, TrainingJobDBEntry]:
     )
 
 
-def case_batch_prediction_job(
-) -> MapLikeCase[BatchPredictionJobID, BatchPredictionJobDBEntry]:
+def case_batch_prediction_job() -> MapLikeCase[
+    BatchPredictionJobID, BatchPredictionJobDBEntry
+]:
     return MapLikeCase(
         key=BatchPredictionJobID.make_random_id(),
         value=BatchPredictionJobDBEntry(
             id=BatchPredictionJobID.make_random_id(),
             project_id=_DEFAULT_PROJECT_ID,
             config=BatchPredictionJobConfig(
-                predictive_query_id=PredictiveQueryID("p"),
-                training_job_id=TrainingJobID("trainingjob-1"),
-                graph_id="graph_test",
+                predictive_query_id=PredictiveQueryID('p'),
+                training_job_id=TrainingJobID('trainingjob-1'),
+                graph_id='graph_test',
                 custom_pred_table_source=S3PredictionTableSource(
-                    connector_id="connector_00000000000000000000000000000001",
-                    source=S3RelativeSource(path="predictions.parquet"),
+                    connector_id='connector_00000000000000000000000000000001',
+                    source=S3RelativeSource(path='predictions.parquet'),
                 ),
                 task_type=TaskType.REGRESSION,
             ),
@@ -110,17 +110,18 @@ def case_batch_prediction_job(
     )
 
 
-def case_generate_train_table_job(
-) -> MapLikeCase[GenerateTrainTableJobID, GenerateTrainTableJobDBEntry]:
+def case_generate_train_table_job() -> MapLikeCase[
+    GenerateTrainTableJobID, GenerateTrainTableJobDBEntry
+]:
     return MapLikeCase(
         key=GenerateTrainTableJobID.make_random_id(),
         value=GenerateTrainTableJobDBEntry(
             id=GenerateTrainTableJobID.make_random_id(),
             project_id=_DEFAULT_PROJECT_ID,
             config=GenerateTrainTableJobConfig(
-                pquery_id=PredictiveQueryID("p"),
+                pquery_id=PredictiveQueryID('p'),
                 plan=TrainingTableGenerationPlan(),
-                graph_id="graph-test",
+                graph_id='graph-test',
             ),
             execution=_running_generate_train_table_output(),
             timestamps=get_current_timestamps(),
@@ -130,17 +131,18 @@ def case_generate_train_table_job(
     )
 
 
-def case_generate_pred_table_job(
-) -> MapLikeCase[GeneratePredictionTableJobID, GeneratePredTableJobDBEntry]:
+def case_generate_pred_table_job() -> MapLikeCase[
+    GeneratePredictionTableJobID, GeneratePredTableJobDBEntry
+]:
     return MapLikeCase(
         key=GeneratePredictionTableJobID.make_random_id(),
         value=GeneratePredTableJobDBEntry(
             id=GeneratePredictionTableJobID.make_random_id(),
             project_id=_DEFAULT_PROJECT_ID,
             config=GeneratePredTableJobConfig(
-                pquery_id=PredictiveQueryID("p"),
+                pquery_id=PredictiveQueryID('p'),
                 plan=PredictionTableGenerationPlan(),
-                graph_id="graph-test",
+                graph_id='graph-test',
             ),
             execution=_running_generate_pred_table_output(),
             timestamps=get_current_timestamps(),
@@ -154,18 +156,17 @@ def case_job_tags() -> MapLikeCase[JobType, JobTagsMap]:
     return MapLikeCase(
         key=JobType.TRAINING_JOB,
         value=JobTagsMap(
-            mapping={
-                JobID("job-1"): JobTags(timestamps=get_current_timestamps())
-            }),
+            mapping={JobID('job-1'): JobTags(timestamps=get_current_timestamps())}
+        ),
         key_type=JobType,
         value_type=JobTagsMap,
     )
 
 
 ML_PROTOCOL_CASE_BUILDERS: list[tuple[str, CaseBuilder]] = [
-    ("ml_training_job", case_training_job),
-    ("ml_batch_prediction_job", case_batch_prediction_job),
-    ("ml_generate_train_table_job", case_generate_train_table_job),
-    ("ml_generate_pred_table_job", case_generate_pred_table_job),
-    ("ml_job_tags", case_job_tags),
+    ('ml_training_job', case_training_job),
+    ('ml_batch_prediction_job', case_batch_prediction_job),
+    ('ml_generate_train_table_job', case_generate_train_table_job),
+    ('ml_generate_pred_table_job', case_generate_pred_table_job),
+    ('ml_job_tags', case_job_tags),
 ]

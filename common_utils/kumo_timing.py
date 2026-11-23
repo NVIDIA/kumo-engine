@@ -15,34 +15,34 @@ from typing import Any, Iterator
 
 log = logging.getLogger(__name__)
 
-_ENV_ENABLED = "KUMO_TIMING"
-_ENV_TIMING_FILE = "KUMO_TIMING_FILE"
-_MARKER = "KUMO_TIMING"
+_ENV_ENABLED = 'KUMO_TIMING'
+_ENV_TIMING_FILE = 'KUMO_TIMING_FILE'
+_MARKER = 'KUMO_TIMING'
 
-_REDACTED = "<redacted>"
+_REDACTED = '<redacted>'
 _SENSITIVE_KEY_PARTS = (
-    "access_key",
-    "api_key",
-    "authorization",
-    "cookie",
-    "password",
-    "private_key",
-    "secret",
-    "token",
+    'access_key',
+    'api_key',
+    'authorization',
+    'cookie',
+    'password',
+    'private_key',
+    'secret',
+    'token',
 )
 _LOCATION_KEY_PARTS = (
-    "path",
-    "uri",
-    "url",
+    'path',
+    'uri',
+    'url',
 )
 
 
 def kumo_timing_enabled() -> bool:
-    return os.environ.get(_ENV_ENABLED, "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+    return os.environ.get(_ENV_ENABLED, '').lower() in {
+        '1',
+        'true',
+        'yes',
+        'on',
     }
 
 
@@ -78,23 +78,23 @@ def _safe_fields(fields: dict[str, Any]) -> dict[str, Any]:
 
 def _base_record(name: str, **fields: Any) -> dict[str, Any]:
     record_fields = dict(fields)
-    status = record_fields.pop("status", "event")
-    elapsed_seconds = record_fields.pop("elapsed_seconds", None)
-    error_type = record_fields.pop("error_type", None)
+    status = record_fields.pop('status', 'event')
+    elapsed_seconds = record_fields.pop('elapsed_seconds', None)
+    error_type = record_fields.pop('error_type', None)
     record = {
-        "event": "kumo_timing",
-        "fields": _safe_fields(record_fields),
-        "name": name,
-        "pid": os.getpid(),
-        "process_name": multiprocessing.current_process().name,
-        "status": status,
-        "thread_id": threading.get_ident(),
-        "timestamp_utc": _timestamp_utc(),
+        'event': 'kumo_timing',
+        'fields': _safe_fields(record_fields),
+        'name': name,
+        'pid': os.getpid(),
+        'process_name': multiprocessing.current_process().name,
+        'status': status,
+        'thread_id': threading.get_ident(),
+        'timestamp_utc': _timestamp_utc(),
     }
     if elapsed_seconds is not None:
-        record["elapsed_seconds"] = elapsed_seconds
+        record['elapsed_seconds'] = elapsed_seconds
     if error_type is not None:
-        record["error_type"] = error_type
+        record['error_type'] = error_type
     return record
 
 
@@ -103,18 +103,18 @@ def _write_timing_record(record: dict[str, Any]) -> None:
     if not timing_file:
         return
     try:
-        line = json.dumps(record, sort_keys=True) + "\n"
-        with Path(timing_file).open("a", encoding="utf-8") as f:
+        line = json.dumps(record, sort_keys=True) + '\n'
+        with Path(timing_file).open('a', encoding='utf-8') as f:
             f.write(line)
     except OSError:
-        log.exception("%s failed to write timing file", _MARKER)
+        log.exception('%s failed to write timing file', _MARKER)
 
 
 def kumo_timing_event(name: str, **fields: Any) -> None:
     if not kumo_timing_enabled():
         return
     record = _base_record(name, **fields)
-    log.info("%s %s", _MARKER, json.dumps(record, sort_keys=True))
+    log.info('%s %s', _MARKER, json.dumps(record, sort_keys=True))
     _write_timing_record(record)
 
 
@@ -128,22 +128,22 @@ def kumo_timing(name: str, **fields: Any) -> Iterator[None]:
         yield
         return
     started = time.perf_counter()
-    kumo_timing_event(f"{name}.start", status="start", **fields)
+    kumo_timing_event(f'{name}.start', status='start', **fields)
     try:
         yield
     except BaseException as exc:
         kumo_timing_event(
-            f"{name}.failed",
+            f'{name}.failed',
             elapsed_seconds=round(time.perf_counter() - started, 3),
             error_type=exc.__class__.__name__,
-            status="failed",
+            status='failed',
             **fields,
         )
         raise
     else:
         kumo_timing_event(
-            f"{name}.done",
+            f'{name}.done',
             elapsed_seconds=round(time.perf_counter() - started, 3),
-            status="done",
+            status='done',
             **fields,
         )

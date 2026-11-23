@@ -13,13 +13,19 @@ from .sdk_filesystem import GCSReadFileSystem
 
 
 def source_access(
-        *, credentials: Credentials, project: str | None = None,
-        requester_pays_project: str | None = None) -> ObjectStoreAccess:
+    *,
+    credentials: Credentials,
+    project: str | None = None,
+    requester_pays_project: str | None = None,
+) -> ObjectStoreAccess:
     if credentials is None:
         raise TypeError('GCS source access requires explicit credentials.')
     project = project or requester_pays_project
-    downloader = GCSDownloader(credentials=credentials, project=project,
-                               requester_pays_project=requester_pays_project)
+    downloader = GCSDownloader(
+        credentials=credentials,
+        project=project,
+        requester_pays_project=requester_pays_project,
+    )
 
     def fetch(source: str, target: str) -> int | None:
         bucket, separator, key = source.partition('/')
@@ -39,8 +45,11 @@ def source_access(
         filesystem = PyFileSystem(
             FSSpecHandler(
                 GCSReadFileSystem(
-                    storage.Client(credentials=downloader.credentials,
-                                   project=project), requester_pays_project)))
+                    storage.Client(credentials=downloader.credentials, project=project),
+                    requester_pays_project,
+                )
+            )
+        )
     else:
         # Re-reads the token snapshot, renewed before it expires.
         filesystem = refreshing(downloader.filesystem)

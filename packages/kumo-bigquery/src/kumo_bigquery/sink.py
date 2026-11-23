@@ -20,6 +20,14 @@ from contextlib import contextmanager
 from functools import partial
 from typing import Any, Iterator, Mapping, Optional
 
+from kumo_core.sources.diagnostics import translated
+from kumo_core.sources.errors import SourceAccessDeniedError
+from kumo_core.sources.principals import IdentityRef
+from kumo_core.sources.protocol import require_mode, staged_first
+from kumo_core.sources.types import Capability, ReadMode
+from kumoapi.jobs import WriteMode
+from kumoapi.plugin import SourceConnector
+
 from kumo_bigquery import errors, staging, streaming, write
 from kumo_bigquery.session import (
     _BigQuerySessions,
@@ -28,13 +36,6 @@ from kumo_bigquery.session import (
     _target_config,
 )
 from kumo_bigquery.staging import StagingLocation
-from kumo_core.sources.diagnostics import translated
-from kumo_core.sources.errors import SourceAccessDeniedError
-from kumo_core.sources.principals import IdentityRef
-from kumo_core.sources.protocol import require_mode, staged_first
-from kumo_core.sources.types import Capability, ReadMode
-from kumoapi.jobs import WriteMode
-from kumoapi.plugin import SourceConnector
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +66,19 @@ class BigQuerySinkBackend(_BigQuerySessions):
 
     _default_hint = 'BigQuerySinkBackend(identity=identity)'
 
-    def __init__(self, identity: Optional[IdentityRef] = None, *,
-                 staging_uri: Optional[str] = None,
-                 mode: Optional[ReadMode] = None) -> None:
+    def __init__(
+        self,
+        identity: Optional[IdentityRef] = None,
+        *,
+        staging_uri: Optional[str] = None,
+        mode: Optional[ReadMode] = None,
+    ) -> None:
         if mode is ReadMode.STAGED and not staging_uri:
             raise ValueError('mode=STAGED needs a staging_uri')
         super().__init__(identity)
         self.staging_uri = staging_uri
         self.mode = mode
-        self._staging = (StagingLocation.parse(staging_uri)
-                         if staging_uri else None)
+        self._staging = StagingLocation.parse(staging_uri) if staging_uri else None
         self._staging_capability: Optional[Capability] = None
 
     def preflight_write_files(
@@ -90,12 +94,20 @@ class BigQuerySinkBackend(_BigQuerySessions):
         replace = _replace(write_mode)
         with self._translated(connector, table_name):
             client, dataset = self._dataset(connector, table_name)
-            streamed = self._transport(
-                connector, f'{dataset}.{table_name}') is ReadMode.STREAMED
+            streamed = (
+                self._transport(connector, f'{dataset}.{table_name}')
+                is ReadMode.STREAMED
+            )
             write.probe_write_access(
-                client, dataset, table_name, replace=replace,
-                create=replace and streamed, probe_stream=partial(
-                    self._probe_stream, connector) if streamed else None)
+                client,
+                dataset,
+                table_name,
+                replace=replace,
+                create=replace and streamed,
+                probe_stream=partial(self._probe_stream, connector)
+                if streamed
+                else None,
+            )
             if replace or not streamed:
                 write.require_job_access(client, _billing_project(connector))
 
@@ -130,17 +142,26 @@ class BigQuerySinkBackend(_BigQuerySessions):
             if self._transport(connector, ref) is ReadMode.STAGED:
                 assert self._staging is not None
                 write.staged_write(
-                    client, self._storage(connector),
-                    self._staging.child(
-                        f'{write.EXPORT_PREFIX}/{uuid.uuid4().hex}'), selected,
-                    ref, replace=replace, existing=existing,
-                    extra_columns=extra_columns)
+                    client,
+                    self._storage(connector),
+                    self._staging.child(f'{write.EXPORT_PREFIX}/{uuid.uuid4().hex}'),
+                    selected,
+                    ref,
+                    replace=replace,
+                    existing=existing,
+                    extra_columns=extra_columns,
+                )
             else:
                 write.streamed_write(
-                    client, _clients.write_client(self._principal(connector)),
-                    selected, ref, replace=replace, existing=existing,
+                    client,
+                    _clients.write_client(self._principal(connector)),
+                    selected,
+                    ref,
+                    replace=replace,
+                    existing=existing,
                     extra_columns=extra_columns,
-                    credentials=self._credentials(connector))
+                    credentials=self._credentials(connector),
+                )
         return ref
 
     def write_table(
@@ -156,16 +177,22 @@ class BigQuerySinkBackend(_BigQuerySessions):
         with tempfile.TemporaryDirectory(prefix='kumo-bq-frame-') as tmp:
             path = os.path.join(tmp, 'part-0.parquet')
             frame.to_parquet(path, index=False)
-            return self.write_files(connector, table_name, [path], write_mode,
-                                    project_id, export_id=export_id)
+            return self.write_files(
+                connector,
+                table_name,
+                [path],
+                write_mode,
+                project_id,
+                export_id=export_id,
+            )
 
-    def _dataset(self, connector: SourceConnector,
-                 table_name: str) -> tuple[Any, str]:
+    def _dataset(self, connector: SourceConnector, table_name: str) -> tuple[Any, str]:
         if not write.is_output_table_id(table_name):
             raise ValueError(
                 f'BigQuery output table must be an unqualified table ID of '
                 f'letters, numbers, underscores or hyphens; got '
-                f'{table_name!r}.')
+                f'{table_name!r}.'
+            )
         config = _target_config(connector)
         dataset = f'{config.project_id}.{config.dataset_id}'
         client = self._client(connector)
@@ -181,18 +208,23 @@ class BigQuerySinkBackend(_BigQuerySessions):
         try:
             streaming.probe_write_stream(
                 write_client,
-                write_client.table_path(table.project, table.dataset_id,
-                                        table.table_id))
+                write_client.table_path(
+                    table.project, table.dataset_id, table.table_id
+                ),
+            )
         except Forbidden:
             raise SourceAccessDeniedError(
                 f'This identity cannot write {ref} through the BigQuery '
                 f'Storage Write API; enable the BigQuery Storage API and '
                 f'grant bigquery.tables.updateData, or configure a GCS '
-                f'staging_uri.', table=ref) from None
+                f'staging_uri.',
+                table=ref,
+            ) from None
 
     def _storage(self, connector: SourceConnector) -> Any:
-        return _clients.storage_client(self._principal(connector),
-                                       project=_billing_project(connector))
+        return _clients.storage_client(
+            self._principal(connector), project=_billing_project(connector)
+        )
 
     def probe_staging(self, connector: SourceConnector) -> Capability:
         """As :meth:`BigQuerySourceReader.probe_staging`: answered once and
@@ -209,8 +241,7 @@ class BigQuerySinkBackend(_BigQuerySessions):
             self._staging_capability = answer
         return self._staging_capability
 
-    def _colocated(self, connector: SourceConnector,
-                   storage: Any) -> Capability:
+    def _colocated(self, connector: SourceConnector, storage: Any) -> Capability:
         assert self._staging is not None
         bucket = staging.bucket_location(storage, self._staging)
         dataset = _target_config(connector).location
@@ -218,8 +249,11 @@ class BigQuerySinkBackend(_BigQuerySessions):
             return Capability.ALLOWED
         logger.warning(
             'Staging bucket gs://%s is in %s, outside the dataset location '
-            '%s; output will not be staged there', self._staging.bucket, bucket,
-            dataset)
+            '%s; output will not be staged there',
+            self._staging.bucket,
+            bucket,
+            dataset,
+        )
         return Capability.DENIED
 
     def write_modes(self, connector: SourceConnector) -> tuple[ReadMode, ...]:
@@ -234,13 +268,16 @@ class BigQuerySinkBackend(_BigQuerySessions):
 
     @staticmethod
     @contextmanager
-    def _translated(connector: SourceConnector,
-                    table_name: str) -> Iterator[str]:
+    def _translated(connector: SourceConnector, table_name: str) -> Iterator[str]:
         config = _target_config(connector)
         ref = f'{config.project_id}.{config.dataset_id}.{table_name}'
         try:
-            with translated(f'bigquery export to {ref}', table=ref,
-                            rules=errors.rules(), summarize=errors.summary):
+            with translated(
+                f'bigquery export to {ref}',
+                table=ref,
+                rules=errors.rules(),
+                summarize=errors.summary,
+            ):
                 try:
                     yield ref
                 except OSError as error:
@@ -251,5 +288,7 @@ class BigQuerySinkBackend(_BigQuerySessions):
             raise local.__cause__ from None  # type: ignore[misc]
 
     def __repr__(self) -> str:
-        return (f'BigQuerySinkBackend(identity={self._identity!r}, '
-                f'staging_uri={self.staging_uri!r}, mode={self.mode!r})')
+        return (
+            f'BigQuerySinkBackend(identity={self._identity!r}, '
+            f'staging_uri={self.staging_uri!r}, mode={self.mode!r})'
+        )

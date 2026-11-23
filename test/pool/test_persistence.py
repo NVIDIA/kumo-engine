@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for ``pool.persistence.PoolStatePersistence``."""
+
 import asyncio
 
 import pytest
@@ -25,14 +26,14 @@ def _make_state() -> PoolState:
     return PoolState(
         placement_state=K8sPlacementState(),
         snapshots={
-            'snap-1':
-            SnapshotPlacement(worker='worker-a', state=SnapshotState.READY,
-                              size_bytes=123),
+            'snap-1': SnapshotPlacement(
+                worker='worker-a', state=SnapshotState.READY, size_bytes=123
+            ),
         },
         dataplane_backups={
-            'snap-1':
-            DataplaneBackup(snapshot_id='snap-1',
-                            dataplane_path='s3://b/snap-1'),
+            'snap-1': DataplaneBackup(
+                snapshot_id='snap-1', dataplane_path='s3://b/snap-1'
+            ),
         },
     )
 
@@ -54,8 +55,7 @@ def test_load_returns_empty_state_when_missing(tmp_path):
 
 
 def test_save_load_round_trip(tmp_path):
-    persistence = PoolStatePersistence(str(tmp_path / 'pool_state.json'),
-                                       _k8s_factory)
+    persistence = PoolStatePersistence(str(tmp_path / 'pool_state.json'), _k8s_factory)
     original = _make_state()
     asyncio.run(persistence.save(original))
     loaded = asyncio.run(persistence.load())
@@ -106,18 +106,19 @@ def test_load_rejects_invalid_json(tmp_path):
 def test_concurrent_saves_do_not_clobber(tmp_path):
     # Without the global write lock, interleaved writes could produce
     # invalid JSON and ``load`` would raise before the final assertion.
-    persistence = PoolStatePersistence(str(tmp_path / 'pool_state.json'),
-                                       _k8s_factory)
+    persistence = PoolStatePersistence(str(tmp_path / 'pool_state.json'), _k8s_factory)
 
     async def _drive() -> PoolState:
         state_a = _make_state()
         state_b = _make_state()
         state_b.dataplane_backups['snap-1'] = DataplaneBackup(
-            snapshot_id='snap-1', dataplane_path='s3://b/snap-1-updated')
-        await asyncio.gather(persistence.save(state_a),
-                             persistence.save(state_b))
+            snapshot_id='snap-1', dataplane_path='s3://b/snap-1-updated'
+        )
+        await asyncio.gather(persistence.save(state_a), persistence.save(state_b))
         return await persistence.load()
 
     loaded = asyncio.run(_drive())
     assert loaded.dataplane_backups['snap-1'].dataplane_path in (
-        's3://b/snap-1', 's3://b/snap-1-updated')
+        's3://b/snap-1',
+        's3://b/snap-1-updated',
+    )

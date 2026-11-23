@@ -42,6 +42,7 @@ class BigQueryConnector(Connector):
             instead of falling back to streaming when staging is
             unavailable. Requires `staging_uri`.
     """
+
     def __init__(
         self,
         *,
@@ -54,7 +55,7 @@ class BigQueryConnector(Connector):
         require_staged: bool = False,
     ) -> None:
         if require_staged and not staging_uri:
-            raise ValueError("require_staged needs a staging_uri")
+            raise ValueError('require_staged needs a staging_uri')
         super().__init__(identity=identity)
         self._config = BigQueryConnectorResourceConfig(
             project_id=project_id,
@@ -80,8 +81,10 @@ class BigQueryConnector(Connector):
     @cached_property
     def source_backend(self):
         BigQuerySourceBackend = import_provider(
-            "kumo_bigquery.backend", "bigquery").BigQuerySourceBackend
+            'kumo_bigquery.backend', 'bigquery'
+        ).BigQuerySourceBackend
         from kumo_core.sources.types import ReadMode
+
         return BigQuerySourceBackend(
             identity=self.identity,
             staging_uri=self.staging_uri,
@@ -90,9 +93,11 @@ class BigQueryConnector(Connector):
 
     @cached_property
     def sink_backend(self):
-        BigQuerySinkBackend = import_provider("kumo_bigquery.sink",
-                                              "bigquery").BigQuerySinkBackend
+        BigQuerySinkBackend = import_provider(
+            'kumo_bigquery.sink', 'bigquery'
+        ).BigQuerySinkBackend
         from kumo_core.sources.types import ReadMode
+
         return BigQuerySinkBackend(
             identity=self.identity,
             staging_uri=self.staging_uri,
@@ -108,5 +113,7 @@ class BigQueryConnector(Connector):
         )
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(project_id={self.project_id!r}, "
-                f"dataset_id={self.dataset_id!r})")
+        return (
+            f'{self.__class__.__name__}(project_id={self.project_id!r}, '
+            f'dataset_id={self.dataset_id!r})'
+        )

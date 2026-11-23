@@ -6,33 +6,42 @@ from __future__ import annotations
 
 import sys
 from importlib import import_module
-from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 from types import SimpleNamespace
 
 import pytest
 from kumoapi.typing import Dtype
 
-mpt = import_module(
-    'rest.backends.ml_backend.activities.materialize_prediction_task')
+from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
+
+mpt = import_module('rest.backends.ml_backend.activities.materialize_prediction_task')
 
 
-def _install_common_fakes(monkeypatch, *, task_type=None, entity_time_col=None,
-                          target_stype='numerical', query_type=None):
+def _install_common_fakes(
+    monkeypatch,
+    *,
+    task_type=None,
+    entity_time_col=None,
+    target_stype='numerical',
+    query_type=None,
+):
     from kumoapi.pquery import QueryType
+
     if query_type is None:
         query_type = QueryType.STATIC
     monkeypatch.setattr(mpt, 'open_connectors', lambda *_a, **_k: None)
-    monkeypatch.setattr(mpt, 'get_diskgraph_index_path_for_job',
-                        lambda *_a, **_k: '/tmp/index')
+    monkeypatch.setattr(
+        mpt, 'get_diskgraph_index_path_for_job', lambda *_a, **_k: '/tmp/index'
+    )
 
     if task_type is None:
         task_type = SimpleNamespace(value='node_prediction', is_link_pred=False)
 
-    entity_time = (SimpleNamespace(
-        name=entity_time_col) if entity_time_col else None)
-    entity_table = SimpleNamespace(pkey_name='customer_id',
-                                   pkey=SimpleNamespace(dtype=Dtype.string),
-                                   time_col=entity_time)
+    entity_time = SimpleNamespace(name=entity_time_col) if entity_time_col else None
+    entity_table = SimpleNamespace(
+        pkey_name='customer_id',
+        pkey=SimpleNamespace(dtype=Dtype.string),
+        time_col=entity_time,
+    )
 
     graph = SimpleNamespace(
         set_table_data_versions=lambda *_a, **_k: None,
@@ -40,23 +49,22 @@ def _install_common_fakes(monkeypatch, *, task_type=None, entity_time_col=None,
     )
     validated = SimpleNamespace(
         entity_column='Customer.customer_id',
-        target_stype=(SimpleNamespace(
-            value=target_stype) if target_stype else None),
+        target_stype=(SimpleNamespace(value=target_stype) if target_stype else None),
     )
     pquery = SimpleNamespace(
         graph=graph,
         validated_predictive_query=validated,
         get_task_type=lambda: task_type,
-        get_batch_pred_table_generator=(
-            lambda: SimpleNamespace(query_type=query_type)),
+        get_batch_pred_table_generator=(lambda: SimpleNamespace(query_type=query_type)),
     )
 
     class _Config:
         def with_credentials(self, credentials):
             return self
 
-    monkeypatch.setattr(mpt.PredictiveQueryV2, 'from_config',
-                        staticmethod(lambda *_a, **_k: pquery))
+    monkeypatch.setattr(
+        mpt.PredictiveQueryV2, 'from_config', staticmethod(lambda *_a, **_k: pquery)
+    )
     monkeypatch.setattr(
         mpt,
         'hydrate_predictive_query_for_activity',
@@ -69,8 +77,7 @@ def _job_input(config):
     return SimpleNamespace(
         id='batchpredictionjob-bp1',
         predictive_query=config,
-        graph_data_compute_input=SimpleNamespace(graph_key='graph1',
-                                                 connectors={}),
+        graph_data_compute_input=SimpleNamespace(graph_key='graph1', connectors={}),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
@@ -81,13 +88,18 @@ def test_custom_pred_activity_builds_bundle_and_does_not_ingest(monkeypatch):
     _pquery, config = _install_common_fakes(monkeypatch)
 
     build_calls = []
-    monkeypatch.setattr(mpt, '_build_ttng_custom_pred_table_artifacts',
-                        lambda **kw: build_calls.append(kw))
+    monkeypatch.setattr(
+        mpt,
+        '_build_ttng_custom_pred_table_artifacts',
+        lambda **kw: build_calls.append(kw),
+    )
 
     ingest_calls = []
     monkeypatch.setitem(
-        sys.modules, 'diskgraph',
-        SimpleNamespace(execute_tt_ingest=lambda **kw: ingest_calls.append(kw)))
+        sys.modules,
+        'diskgraph',
+        SimpleNamespace(execute_tt_ingest=lambda **kw: ingest_calls.append(kw)),
+    )
 
     mpt.build_ttng_custom_pred_table_bundle(
         job_input=_job_input(config),
@@ -107,7 +119,8 @@ def test_custom_pred_activity_builds_bundle_and_does_not_ingest(monkeypatch):
 
 
 def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """Integration: with a fake DG PREDICT builder, the real helper persists
     the bundle to ttng_persisted_pred_staging_dir and passes is_prediction
     args (no split_config)."""
@@ -120,8 +133,8 @@ def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
     from kumo.data.generic.diskgraph_staging import (
         ttng_persisted_pred_staging_dir,
     )
-    pquery, _config = _install_common_fakes(monkeypatch,
-                                            query_type=QueryType.TEMPORAL)
+
+    pquery, _config = _install_common_fakes(monkeypatch, query_type=QueryType.TEMPORAL)
 
     local_pred_table_path = str(tmp_path / 'custom' / 'pred_table')
     # Real parquet so the schema validation can read it.
@@ -134,14 +147,17 @@ def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
         partition = os.path.join(local_pred_table_path, f'shard={shard}')
         os.makedirs(partition, exist_ok=True)
         pq.write_table(
-            pa.table({
-                'ENTITY1': [customer_id],
-                'TIMESTAMP':
-                pa.array(
-                    [datetime(2026, 7, 11, shard, tzinfo=timezone.utc)],
-                    type=pa.timestamp('ms', tz='UTC'),
-                ),
-            }), os.path.join(partition, 'part-00000.parquet'))
+            pa.table(
+                {
+                    'ENTITY1': [customer_id],
+                    'TIMESTAMP': pa.array(
+                        [datetime(2026, 7, 11, shard, tzinfo=timezone.utc)],
+                        type=pa.timestamp('ms', tz='UTC'),
+                    ),
+                }
+            ),
+            os.path.join(partition, 'part-00000.parquet'),
+        )
 
     predict_calls = []
 
@@ -165,12 +181,15 @@ def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
     import diskgraph
 
     monkeypatch.setitem(
-        sys.modules, 'diskgraph',
+        sys.modules,
+        'diskgraph',
         SimpleNamespace(
             build_prediction_table_artifacts_for_existing_table=_build_predict,
             # The column contract is read off DiskGraph, so a stand-in for
             # DiskGraph has to carry the real one rather than a made-up one.
-            CUSTOM_TT_CONTRACT=diskgraph.CUSTOM_TT_CONTRACT))
+            CUSTOM_TT_CONTRACT=diskgraph.CUSTOM_TT_CONTRACT,
+        ),
+    )
 
     pred_table_path = local_pred_table_path
     durable = ttng_persisted_pred_staging_dir(pred_table_path)
@@ -188,8 +207,7 @@ def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
             expected_tt_id=expected_tt_id,
         )
 
-    monkeypatch.setattr(diskgraph_train_table, 'persist_durable_ttng_bundle',
-                        _persist)
+    monkeypatch.setattr(diskgraph_train_table, 'persist_durable_ttng_bundle', _persist)
 
     mpt._build_ttng_custom_pred_table_artifacts(
         pred_table_path=pred_table_path,
@@ -207,7 +225,7 @@ def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
     assert call['index_path'] == '/tmp/index'
     assert call['split_stats_config'] == {
         'entity_table': 'Customer',
-        'entity_pk_column': 'customer_id'
+        'entity_pk_column': 'customer_id',
     }
     assert not call['output_path'].startswith('abfss://')
     assert len(persisted) == 1
@@ -221,11 +239,12 @@ def test_custom_pred_artifacts_persists_bundle_and_calls_dg_predict(
 def test_remote_custom_pred_input_localizes_for_dg_builder(monkeypatch):
     from kumo.data.generic import diskgraph_train_table
 
-    remote = ('abfss://container@account.dfs.core.windows.net/jobs/bp1/'
-              'inputs/custom_prediction_table')
+    remote = (
+        'abfss://container@account.dfs.core.windows.net/jobs/bp1/'
+        'inputs/custom_prediction_table'
+    )
     copies = []
-    monkeypatch.setattr(diskgraph_train_table.fsutil, 'is_local',
-                        lambda _path: False)
+    monkeypatch.setattr(diskgraph_train_table.fsutil, 'is_local', lambda _path: False)
     monkeypatch.setattr(
         diskgraph_train_table.fsutil,
         'copy_tree_threaded',
@@ -233,7 +252,8 @@ def test_remote_custom_pred_input_localizes_for_dg_builder(monkeypatch):
     )
 
     with diskgraph_train_table.local_ttng_builder_input(
-            remote, 'custom_prediction_table.parquet') as localized:
+        remote, 'custom_prediction_table.parquet'
+    ) as localized:
         assert localized.endswith('/custom_prediction_table.parquet')
         assert not localized.startswith('abfss://')
 
@@ -243,6 +263,7 @@ def test_remote_custom_pred_input_localizes_for_dg_builder(monkeypatch):
 def _write_pred_parquet(path, cols):
     import pyarrow as pa
     import pyarrow.parquet as pq
+
     arrays = {c: pa.array([1, 2], pa.int64()) for c in cols}
     pq.write_table(pa.table(arrays), path)
 
@@ -250,35 +271,37 @@ def _write_pred_parquet(path, cols):
 def test_validation_rejects_target_column(monkeypatch, tmp_path):
     part = str(tmp_path / 'p.parquet')
     _write_pred_parquet(part, ['ENTITY1', 'TIMESTAMP', 'TARGET1'])
-    with pytest.raises(mpt.PredictionDataMaterializationError,
-                       match='must not carry a target'):
-        mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                               entity_pk_dtype=Dtype.int64,
-                                               is_temporal=False)
+    with pytest.raises(
+        mpt.PredictionDataMaterializationError, match='must not carry a target'
+    ):
+        mpt._validate_custom_pred_table_schema(
+            parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=False
+        )
 
 
-def test_validation_rejects_an_entity_column_by_any_other_name(
-        monkeypatch, tmp_path):
+def test_validation_rejects_an_entity_column_by_any_other_name(monkeypatch, tmp_path):
     """The graph's own primary-key column name is not an accepted spelling,
     and neither is a singular ``ENTITY``. DiskGraph looks this column up as
     ``ENTITY1``."""
     part = str(tmp_path / 'p.parquet')
     _write_pred_parquet(part, ['customer_id', 'ENTITY', 'TIMESTAMP'])
-    with pytest.raises(mpt.PredictionDataMaterializationError,
-                       match="missing 'ENTITY1'"):
-        mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                               entity_pk_dtype=Dtype.int64,
-                                               is_temporal=False)
+    with pytest.raises(
+        mpt.PredictionDataMaterializationError, match="missing 'ENTITY1'"
+    ):
+        mpt._validate_custom_pred_table_schema(
+            parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=False
+        )
 
 
 def test_validation_rejects_missing_entity_pkey(monkeypatch, tmp_path):
     part = str(tmp_path / 'p.parquet')
     _write_pred_parquet(part, ['other_col', 'TIMESTAMP'])
-    with pytest.raises(mpt.PredictionDataMaterializationError,
-                       match="missing 'ENTITY1'"):
-        mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                               entity_pk_dtype=Dtype.int64,
-                                               is_temporal=False)
+    with pytest.raises(
+        mpt.PredictionDataMaterializationError, match="missing 'ENTITY1'"
+    ):
+        mpt._validate_custom_pred_table_schema(
+            parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=False
+        )
 
 
 def test_validation_temporal_rejects_missing_timestamp(monkeypatch, tmp_path):
@@ -286,11 +309,10 @@ def test_validation_temporal_rejects_missing_timestamp(monkeypatch, tmp_path):
     rejected."""
     part = str(tmp_path / 'p.parquet')
     _write_pred_parquet(part, ['ENTITY1'])
-    with pytest.raises(mpt.PredictionDataMaterializationError,
-                       match='no TIMESTAMP'):
-        mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                               entity_pk_dtype=Dtype.int64,
-                                               is_temporal=True)
+    with pytest.raises(mpt.PredictionDataMaterializationError, match='no TIMESTAMP'):
+        mpt._validate_custom_pred_table_schema(
+            parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=True
+        )
 
 
 def test_validation_static_accepts_missing_timestamp(monkeypatch, tmp_path):
@@ -300,21 +322,22 @@ def test_validation_static_accepts_missing_timestamp(monkeypatch, tmp_path):
     part = str(tmp_path / 'p.parquet')
     _write_pred_parquet(part, ['ENTITY1'])
     # Should not raise.
-    mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                           entity_pk_dtype=Dtype.int64,
-                                           is_temporal=False)
+    mpt._validate_custom_pred_table_schema(
+        parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=False
+    )
 
 
 def test_validation_accepts_valid_table(monkeypatch, tmp_path):
     part = str(tmp_path / 'p.parquet')
     _write_pred_parquet(part, ['ENTITY1', 'TIMESTAMP'])
-    mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                           entity_pk_dtype=Dtype.int64,
-                                           is_temporal=True)
+    mpt._validate_custom_pred_table_schema(
+        parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=True
+    )
 
 
 def test_validation_rejects_an_entity_type_diskgraph_cannot_resolve(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """A boolean entity key survives ``cell_to_value`` and then resolves to no
     node, so every row is silently skipped."""
     import pyarrow as pa
@@ -322,16 +345,21 @@ def test_validation_rejects_an_entity_type_diskgraph_cannot_resolve(
 
     part = str(tmp_path / 'p.parquet')
     pq.write_table(
-        pa.table({
-            'ENTITY1': pa.array([True, False], pa.bool_()),
-            'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        }), part)
+        pa.table(
+            {
+                'ENTITY1': pa.array([True, False], pa.bool_()),
+                'TIMESTAMP': pa.array([0, 0], pa.int64()),
+            }
+        ),
+        part,
+    )
 
-    with pytest.raises(mpt.PredictionDataMaterializationError,
-                       match='An entity key is read as one of'):
-        mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                               entity_pk_dtype=Dtype.int64,
-                                               is_temporal=False)
+    with pytest.raises(
+        mpt.PredictionDataMaterializationError, match='An entity key is read as one of'
+    ):
+        mpt._validate_custom_pred_table_schema(
+            parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=False
+        )
 
 
 def test_validation_rejects_an_entity_the_graph_key_cannot_resolve(tmp_path):
@@ -344,16 +372,21 @@ def test_validation_rejects_an_entity_the_graph_key_cannot_resolve(tmp_path):
 
     part = str(tmp_path / 'p.parquet')
     pq.write_table(
-        pa.table({
-            'ENTITY1': pa.array(['a', 'b'], pa.string()),
-            'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        }), part)
+        pa.table(
+            {
+                'ENTITY1': pa.array(['a', 'b'], pa.string()),
+                'TIMESTAMP': pa.array([0, 0], pa.int64()),
+            }
+        ),
+        part,
+    )
 
-    with pytest.raises(mpt.PredictionDataMaterializationError,
-                       match='graph primary key requires'):
-        mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                               entity_pk_dtype=Dtype.int64,
-                                               is_temporal=False)
+    with pytest.raises(
+        mpt.PredictionDataMaterializationError, match='graph primary key requires'
+    ):
+        mpt._validate_custom_pred_table_schema(
+            parquet_path=part, entity_pk_dtype=Dtype.int64, is_temporal=False
+        )
 
 
 def test_validation_accepts_a_string_entity_against_a_string_key(tmp_path):
@@ -363,14 +396,18 @@ def test_validation_accepts_a_string_entity_against_a_string_key(tmp_path):
 
     part = str(tmp_path / 'p.parquet')
     pq.write_table(
-        pa.table({
-            'ENTITY1': pa.array(['a', 'b'], pa.string()),
-            'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        }), part)
+        pa.table(
+            {
+                'ENTITY1': pa.array(['a', 'b'], pa.string()),
+                'TIMESTAMP': pa.array([0, 0], pa.int64()),
+            }
+        ),
+        part,
+    )
 
-    mpt._validate_custom_pred_table_schema(parquet_path=part,
-                                           entity_pk_dtype=Dtype.string,
-                                           is_temporal=True)
+    mpt._validate_custom_pred_table_schema(
+        parquet_path=part, entity_pk_dtype=Dtype.string, is_temporal=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -382,8 +419,9 @@ def _stub_generate_prediction_config_deps(monkeypatch, *, task_type, saved):
     """Stub every collaborator of generate_prediction_config so the test only
     exercises pred-config assembly. ``saved`` collects the PredictionConfig
     that would be persisted."""
-    monkeypatch.setattr(mpt, 'get_diskgraph_index_path_for_job',
-                        lambda *_a, **_k: '/tmp/index')
+    monkeypatch.setattr(
+        mpt, 'get_diskgraph_index_path_for_job', lambda *_a, **_k: '/tmp/index'
+    )
 
     graph = SimpleNamespace(
         set_table_data_versions=lambda *_a, **_k: None,
@@ -397,8 +435,9 @@ def _stub_generate_prediction_config_deps(monkeypatch, *, task_type, saved):
         def with_credentials(self, credentials):
             return self
 
-    monkeypatch.setattr(mpt.PredictiveQueryV2, 'from_config',
-                        staticmethod(lambda *_a, **_k: pquery))
+    monkeypatch.setattr(
+        mpt.PredictiveQueryV2, 'from_config', staticmethod(lambda *_a, **_k: pquery)
+    )
     monkeypatch.setattr(
         mpt,
         'hydrate_predictive_query_for_activity',
@@ -406,8 +445,9 @@ def _stub_generate_prediction_config_deps(monkeypatch, *, task_type, saved):
     )
 
     # I/O + metadata collaborators -> no-ops / trivial returns.
-    monkeypatch.setattr(mpt, 'estimate_input_data_stats',
-                        lambda *_a, **_k: SimpleNamespace())
+    monkeypatch.setattr(
+        mpt, 'estimate_input_data_stats', lambda *_a, **_k: SimpleNamespace()
+    )
     monkeypatch.setattr(mpt, 'save_json', lambda *_a, **_k: None)
     monkeypatch.setattr(mpt, 'deploy_env', lambda *_a, **_k: 'test')
     monkeypatch.setattr(mpt, 'get_job_dir', lambda *_a, **_k: '/tmp/job')
@@ -415,8 +455,9 @@ def _stub_generate_prediction_config_deps(monkeypatch, *, task_type, saved):
     monkeypatch.setattr(mpt, 'get_persist_dir', lambda *_a, **_k: '/tmp/d')
     monkeypatch.setattr(mpt, 'return_embeddings', lambda *_a, **_k: False)
     monkeypatch.setattr(mpt, 'return_predictions', lambda *_a, **_k: True)
-    monkeypatch.setattr(mpt, '_configure_prediction_output_fields',
-                        lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        mpt, '_configure_prediction_output_fields', lambda *_a, **_k: None
+    )
 
     class _FakeHomeDirMgr:
         def __init__(self, *_a, **_k):
@@ -453,8 +494,7 @@ def _stub_generate_prediction_config_deps(monkeypatch, *, task_type, saved):
             training_job_id='trainingjob-t1',
             predictive_query=_Config(),
             config=cfg,
-            graph_data_compute_input=SimpleNamespace(graph_key='graph1',
-                                                     connectors={}),
+            graph_data_compute_input=SimpleNamespace(graph_key='graph1', connectors={}),
             graph_version_info=SimpleNamespace(graph_data_version='v1'),
         )
 
@@ -464,7 +504,8 @@ def _stub_generate_prediction_config_deps(monkeypatch, *, task_type, saved):
 def _run_generate_prediction_config(monkeypatch, *, task_type, pred_table_path):
     saved: list = []
     make_job_input = _stub_generate_prediction_config_deps(
-        monkeypatch, task_type=task_type, saved=saved)
+        monkeypatch, task_type=task_type, saved=saved
+    )
     mpt.generate_prediction_config(
         job_input=make_job_input(),
         settings=SimpleNamespace(),
@@ -479,15 +520,15 @@ def test_generate_pred_config_ttng_custom_does_not_relocate(monkeypatch):
     """TT-NG custom pred keeps pred_table_path STABLE (bundle resolved at the
     original location); no relocation happens."""
     from kumo_core.types import TaskType
+
     original = '/customer/data/my_pred_table'
     result_path = _run_generate_prediction_config(
-        monkeypatch, task_type=TaskType.BINARY_CLASSIFICATION,
-        pred_table_path=original)
+        monkeypatch, task_type=TaskType.BINARY_CLASSIFICATION, pred_table_path=original
+    )
     assert result_path == original, 'TT-NG must not relocate the pred table'
 
 
-def test_generate_pred_config_preserves_embeddings_only_request(
-        monkeypatch):
+def test_generate_pred_config_preserves_embeddings_only_request(monkeypatch):
     """The failed replay requested temporal-LP embeddings with no top-k."""
     from kumo_core.types import TaskType
 
@@ -530,17 +571,23 @@ def test_rehydration_normalizes_the_anchor_and_renames_nothing(tmp_path):
 
     source = str(tmp_path / 'in.parquet')
     pq.write_table(
-        pa.table({
-            'customer_id': pa.array([1], pa.int64()),
-            'ENTITY': pa.array([1], pa.int64()),
-            'TARGET': pa.array([1], pa.int64()),
-            'TIMESTAMP':
-            pa.array([datetime(2026, 7, 11, tzinfo=timezone.utc)],
-                     type=pa.timestamp('ms', tz='UTC')),
-        }), source)
+        pa.table(
+            {
+                'customer_id': pa.array([1], pa.int64()),
+                'ENTITY': pa.array([1], pa.int64()),
+                'TARGET': pa.array([1], pa.int64()),
+                'TIMESTAMP': pa.array(
+                    [datetime(2026, 7, 11, tzinfo=timezone.utc)],
+                    type=pa.timestamp('ms', tz='UTC'),
+                ),
+            }
+        ),
+        source,
+    )
 
     out = bridge.normalize_legacy_parquet_for_rehydration(
-        source, output_dir=str(tmp_path / 'out'), normalize_timestamp=True)
+        source, output_dir=str(tmp_path / 'out'), normalize_timestamp=True
+    )
 
     schema = pq.read_schema(out)
     assert schema.names == ['customer_id', 'ENTITY', 'TARGET', 'TIMESTAMP']

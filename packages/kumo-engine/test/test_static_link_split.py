@@ -16,26 +16,27 @@ from kumo.engine import FileConnector, Graph, PredictiveQuery, Table
 from kumo.engine.table import TableDefinition
 
 
-@pytest.mark.parametrize('split', [
-    'RandomSplit([0.6, 0.3, 0.1], seed=17)',
-    'TemporalSplit([0.6, 0.3, 0.1])',
-])
-def test_public_static_link_generation_splits_links(tmp_path, monkeypatch,
-                                                    split):
+@pytest.mark.parametrize(
+    'split',
+    [
+        'RandomSplit([0.6, 0.3, 0.1], seed=17)',
+        'TemporalSplit([0.6, 0.3, 0.1])',
+    ],
+)
+def test_public_static_link_generation_splits_links(tmp_path, monkeypatch, split):
     monkeypatch.setattr('kumo.engine._scratch._root', tmp_path / 'scratch')
     source = tmp_path / 'inputs'
     source.mkdir()
     frames = {
-        'users':
-        pa.table({'id': list(range(20))}),
-        'products':
-        pa.table({'id': list(range(20))}),
-        'orders':
-        pa.table({
-            'id': list(range(400)),
-            'user_id': [i // 20 for i in range(400)],
-            'product_id': [i % 20 for i in range(400)],
-        }),
+        'users': pa.table({'id': list(range(20))}),
+        'products': pa.table({'id': list(range(20))}),
+        'orders': pa.table(
+            {
+                'id': list(range(400)),
+                'user_id': [i // 20 for i in range(400)],
+                'product_id': [i % 20 for i in range(400)],
+            }
+        ),
     }
     connector = FileConnector(root_dir=str(source))
     tables = []
@@ -43,21 +44,27 @@ def test_public_static_link_generation_splits_links(tmp_path, monkeypatch,
         pq.write_table(frame, source / f'{name}.parquet')
         tables.append(
             Table(
-                connector, name,
+                connector,
+                name,
                 TableDefinition(
-                    source_table=connector.source_table_for(name), pkey='id',
+                    source_table=connector.source_table_for(name),
+                    pkey='id',
                     cols=[
                         Column(name=col, dtype=Dtype.int64, stype=Stype.ID)
                         for col in frame.column_names
-                    ])))
-    graph = Graph(tables, [
-        Edge('orders', 'user_id', 'users'),
-        Edge('orders', 'product_id', 'products')
-    ])
+                    ],
+                ),
+            )
+        )
+    graph = Graph(
+        tables,
+        [Edge('orders', 'user_id', 'users'), Edge('orders', 'product_id', 'products')],
+    )
     snapshot = graph.snapshot()
     query = PredictiveQuery(
-        graph=graph, query='PREDICT LIST_DISTINCT(orders.product_id) '
-        'RANK TOP 3 FOR EACH users.id')
+        graph=graph,
+        query='PREDICT LIST_DISTINCT(orders.product_id) RANK TOP 3 FOR EACH users.id',
+    )
     plan = TrainingTableGenerationPlan(split=split)
     table = query.generate_training_table(snapshot, plan=plan)
     assert plan.split == split
@@ -75,8 +82,6 @@ def test_public_static_link_generation_splits_links(tmp_path, monkeypatch,
         ]
         assert set.union(*targets) == set(range(20))
         assert sum(map(len, targets)) == 20
-        for stage, expected in [('val', targets[0]),
-                                ('test', targets[0] | targets[1])]:
+        for stage, expected in [('val', targets[0]), ('test', targets[0] | targets[1])]:
             if entity in stages[stage]:
-                assert set(
-                    stages[stage][entity]['exclude_target_keys']) == expected
+                assert set(stages[stage][entity]['exclude_target_keys']) == expected

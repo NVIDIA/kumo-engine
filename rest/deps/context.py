@@ -19,6 +19,7 @@ Usage (service side)::
     from rest.deps.context import _current_user_ctx
     self._user_ctx = _current_user_ctx.get(None)
 """
+
 import contextvars
 from typing import Optional
 
@@ -28,6 +29,6 @@ from statedb.db.auth import AuthPrincipal
 # Defaults to None so background tasks / tests without middleware see no user.
 # Typed against the AuthPrincipal protocol (which UserAuthorization satisfies)
 # so this stays a leaf module and does not depend on rest.deps.authentication.
-_current_user_ctx: contextvars.ContextVar[
-    Optional[AuthPrincipal]] = contextvars.ContextVar(
-        "_current_user_ctx", default=None)
+_current_user_ctx: contextvars.ContextVar[Optional[AuthPrincipal]] = (
+    contextvars.ContextVar('_current_user_ctx', default=None)
+)

@@ -162,13 +162,14 @@ def _azure_storage_settings(endpoint_suffix: str) -> tuple[str, str]:
         }[endpoint_suffix]
     except KeyError:
         raise ValueError(
-            f'Unsupported ADLS endpoint suffix: {endpoint_suffix}') from None
+            f'Unsupported ADLS endpoint suffix: {endpoint_suffix}'
+        ) from None
 
 
 def _ambient_azure_credential(authority: str):
-    tenant_id = os.environ.get("AZURE_TENANT_ID")
-    client_id = os.environ.get("AZURE_CLIENT_ID")
-    client_secret = os.environ.get("AZURE_CLIENT_SECRET")
+    tenant_id = os.environ.get('AZURE_TENANT_ID')
+    client_id = os.environ.get('AZURE_CLIENT_ID')
+    client_secret = os.environ.get('AZURE_CLIENT_SECRET')
     if tenant_id and client_id and client_secret:
         return ClientSecretCredential(
             tenant_id=tenant_id,
@@ -181,9 +182,11 @@ def _ambient_azure_credential(authority: str):
 
 class ADLSContext:
     """Adapt parsed ADLS URIs to the scoped, process-safe client cache."""
+
     def get_fs_client_helper(self, uri: ADLSURI) -> FileSystemClient:
-        client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                  uri.endpoint_suffix)
+        client = threadsafe_adls.data_lake_client(
+            uri.storage_account, uri.endpoint_suffix
+        )
         return client.get_file_system_client(uri.container)
 
     def get_file_client(self, uri: ADLSURI) -> DataLakeFileClient:
@@ -214,27 +217,29 @@ class ThreadsafeADLS:
     ) -> DataLakeServiceClient:
 
         audience, authority = _azure_storage_settings(endpoint_suffix)
-        logger.debug(
-            f"Creating ADLS client for storage account {storage_account}")
+        logger.debug(f'Creating ADLS client for storage account {storage_account}')
         scope = credentials_for_provider('adls')
         if scope is not None:
             credentials = scope.credentials or {}
             credential = credentials.get('credential')
             if credential is None:
                 raise RuntimeError(
-                    'Missing federated Azure credential for ADLS identity')
-            account_url = f"https://{storage_account}.{endpoint_suffix}"
-            return _create_datalake_client(account_url=account_url,
-                                           credential=credential,
-                                           audience=audience)
-        connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+                    'Missing federated Azure credential for ADLS identity'
+                )
+            account_url = f'https://{storage_account}.{endpoint_suffix}'
+            return _create_datalake_client(
+                account_url=account_url, credential=credential, audience=audience
+            )
+        connection_string = os.environ.get('AZURE_STORAGE_CONNECTION_STRING')
         if connection_string:
             return _create_datalake_client(connection_string=connection_string)
 
-        account_url = f"https://{storage_account}.{endpoint_suffix}"
+        account_url = f'https://{storage_account}.{endpoint_suffix}'
         return _create_datalake_client(
             account_url=account_url,
-            credential=_ambient_azure_credential(authority), audience=audience)
+            credential=_ambient_azure_credential(authority),
+            audience=audience,
+        )
 
     def _build_blob_client(
         self,
@@ -248,19 +253,18 @@ class ThreadsafeADLS:
             credential = (scope.credentials or {}).get('credential')
             if credential is None:
                 raise RuntimeError(
-                    'Missing federated Azure credential for ADLS identity')
+                    'Missing federated Azure credential for ADLS identity'
+                )
         else:
-            connection_string = os.environ.get(
-                "AZURE_STORAGE_CONNECTION_STRING")
+            connection_string = os.environ.get('AZURE_STORAGE_CONNECTION_STRING')
             if connection_string:
-                return BlobServiceClient.from_connection_string(
-                    connection_string)
+                return BlobServiceClient.from_connection_string(connection_string)
         if credential is None:
             credential = _ambient_azure_credential(authority)
 
         blob_suffix = _blob_endpoint_suffix(endpoint_suffix)
         return BlobServiceClient(
-            account_url=f"https://{storage_account}.{blob_suffix}",
+            account_url=f'https://{storage_account}.{blob_suffix}',
             credential=credential,
             audience=audience,
         )
@@ -278,17 +282,16 @@ class ThreadsafeADLS:
                     self._pid = os.getpid()
 
         if not storage_account:
-            storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT")
+            storage_account = os.environ.get('AZURE_STORAGE_ACCOUNT')
 
         if not storage_account:
             raise RuntimeError(
-                "No Azure Storage account provided (env: AZURE_STORAGE_ACCOUNT)"
+                'No Azure Storage account provided (env: AZURE_STORAGE_ACCOUNT)'
             )
 
         scope = credentials_for_provider('adls')
         if scope is not None:
-            key = scoped_cache_key('adls',
-                                   f'{storage_account}.{endpoint_suffix}')
+            key = scoped_cache_key('adls', f'{storage_account}.{endpoint_suffix}')
             client = scope.cache.get(key)
             if client is None:
                 client = self._build_client(storage_account, endpoint_suffix)
@@ -315,15 +318,13 @@ class ThreadsafeADLS:
             key = scoped_cache_key('adls', cache_key)
             client = scope.cache.get(key)
             if client is None:
-                client = self._build_blob_client(storage_account,
-                                                 endpoint_suffix)
+                client = self._build_blob_client(storage_account, endpoint_suffix)
                 scope.cache[key] = client
             return client
         with self._lock:
             client = self._blob_clients.get(cache_key)
             if client is None:
-                client = self._build_blob_client(storage_account,
-                                                 endpoint_suffix)
+                client = self._build_blob_client(storage_account, endpoint_suffix)
                 self._blob_clients[cache_key] = client
         return client
 
@@ -366,8 +367,9 @@ def filesize(uri: ADLSURI) -> Optional[int]:
         if 'ResourceNotFound' in str(e) or 'InvalidResourceName' in str(e):
             return None
         # For other errors, log and return None
-        logger.error("ADLS filesize failed for %s (error_type=%s)", uri,
-                     type(e).__name__)
+        logger.error(
+            'ADLS filesize failed for %s (error_type=%s)', uri, type(e).__name__
+        )
         return None
 
 
@@ -410,14 +412,13 @@ def read_binary(uri: ADLSURI, compression: bool) -> bytes:
         _check_size_match(local=data, remote=uri)
         return gzip.decompress(data) if compression else data
     except ResourceNotFoundError:
-        raise FileNotFoundError(f"not found: {uri.as_url()}") from None
+        raise FileNotFoundError(f'not found: {uri.as_url()}') from None
 
 
 @api.read_text.register
 @trace(TraceOptions(trace_params=True))
 @adls_logging_policy(allowed_exceptions=FileNotFoundError)
-def read_text(uri: ADLSURI, compression: bool,
-              encoding: Optional[str] = None) -> str:
+def read_text(uri: ADLSURI, compression: bool, encoding: Optional[str] = None) -> str:
     r = read_binary(uri, compression=compression)
     if encoding:
         return r.decode(encoding)
@@ -426,12 +427,10 @@ def read_text(uri: ADLSURI, compression: bool,
 
 @api._write_binary.register
 @retry_policy()
-@trace(TraceOptions(trace_params=["uri", "compression"]))
+@trace(TraceOptions(trace_params=['uri', 'compression']))
 @adls_logging_policy(skip_args=[1])
-def write_binary(uri: ADLSURI, data: BinaryIO, compression: bool,
-                 **kwargs) -> None:
-    body: BinaryIO = (io.BytesIO(gzip.compress(data.read()))
-                      if compression else data)
+def write_binary(uri: ADLSURI, data: BinaryIO, compression: bool, **kwargs) -> None:
+    body: BinaryIO = io.BytesIO(gzip.compress(data.read())) if compression else data
     file_client = adls_ctx.get_file_client(uri)
     body.seek(0)
     content = body.read()
@@ -445,10 +444,11 @@ def write_binary(uri: ADLSURI, data: BinaryIO, compression: bool,
 
 
 @api.write_text.register
-@trace(TraceOptions(trace_params=["uri", "compression", "encoding"]))
+@trace(TraceOptions(trace_params=['uri', 'compression', 'encoding']))
 @adls_logging_policy(skip_args=[1])
-def write_text(uri: ADLSURI, data: str, compression: bool,
-               encoding: Optional[str] = None) -> None:
+def write_text(
+    uri: ADLSURI, data: str, compression: bool, encoding: Optional[str] = None
+) -> None:
     api.write_binary(
         uri.as_url(),
         data.encode(encoding) if encoding else data.encode(),
@@ -511,12 +511,13 @@ def _check_size_match(*, local: Union[LocalURI, bytes], remote: ADLSURI):
     remote_size = filesize(remote)
     if remote_size != local_size:
         if isinstance(local, bytes):
-            err_msg = f"local bytes is {local_size} bytes, "
+            err_msg = f'local bytes is {local_size} bytes, '
         else:
-            err_msg = f"local file {local.path} is {local_size} bytes, "
+            err_msg = f'local file {local.path} is {local_size} bytes, '
         raise RuntimeError(
-            f"ADLS file size mismatch, {err_msg}"
-            f"remote file {remote.as_url()} is {remote_size} bytes")
+            f'ADLS file size mismatch, {err_msg}'
+            f'remote file {remote.as_url()} is {remote_size} bytes'
+        )
 
 
 @retry_policy()
@@ -530,7 +531,7 @@ def _upload(*, local: LocalURI, remote: ADLSURI):
         file_client.create_file()
         file_client.flush_data(0)
     else:
-        with open(local.path, "rb") as data:
+        with open(local.path, 'rb') as data:
             file_client.upload_data(data, overwrite=True, max_concurrency=4)
 
     _check_size_match(local=local, remote=remote)
@@ -541,13 +542,13 @@ def _download(*, remote: ADLSURI, local: LocalURI):
     """Download file from ADLS with streaming"""
     try:
         file_client = adls_ctx.get_file_client(remote)
-        with open(local.path, "wb") as local_f:
+        with open(local.path, 'wb') as local_f:
             download = file_client.download_file()
             download.readinto(local_f)
 
         _check_size_match(remote=remote, local=local)
     except ResourceNotFoundError:
-        raise FileNotFoundError(f"not found: {remote.as_url()}") from None
+        raise FileNotFoundError(f'not found: {remote.as_url()}') from None
 
 
 class _ADLSReadStream(io.RawIOBase):
@@ -557,6 +558,7 @@ class _ADLSReadStream(io.RawIOBase):
     io.BufferedReader wrapping and gzip decompression without downloading
     the entire file to a local temp file first.
     """
+
     def __init__(self, downloader) -> None:
         self._downloader = downloader
 
@@ -579,6 +581,7 @@ class _ADLSWriteStream(io.RawIOBase):
     to commit the file. If an error occurs during writing, flush_data() is
     skipped to avoid committing partial data.
     """
+
     def __init__(self, file_client: DataLakeFileClient) -> None:
         self._client = file_client
         self._offset = 0
@@ -593,8 +596,7 @@ class _ADLSWriteStream(io.RawIOBase):
         if not data:
             return 0
         try:
-            self._client.append_data(data, offset=self._offset,
-                                     length=len(data))
+            self._client.append_data(data, offset=self._offset, length=len(data))
             self._offset += len(data)
         except Exception:
             self._error = True
@@ -618,12 +620,13 @@ def get_binary_handle(
     compression: bool = False,
 ) -> Generator[BinaryIO, None, None]:
     with restricted_diagnostic_boundary(
-            safe_message='ADLS stream operation failed',
-            exception_types=(AzureError, OSError)):
-        if "b" not in mode:
-            mode += "b"
+        safe_message='ADLS stream operation failed',
+        exception_types=(AzureError, OSError),
+    ):
+        if 'b' not in mode:
+            mode += 'b'
 
-        if "r" in mode:
+        if 'r' in mode:
             downloader = adls_ctx.get_file_client(uri).download_file()
             stream: BinaryIO = io.BufferedReader(_ADLSReadStream(downloader))
         else:
@@ -646,11 +649,12 @@ def get_handle(
     mode: str,
     compression: bool = False,
 ) -> Generator[TextIO, None, None]:
-    with api.get_binary_handle(uri.as_url(), mode + "b",
-                               compression=compression) as handle:
+    with api.get_binary_handle(
+        uri.as_url(), mode + 'b', compression=compression
+    ) as handle:
         yield io.TextIOWrapper(
             buffer=handle,
-            encoding="utf-8",
+            encoding='utf-8',
             write_through=True,
         )
 
@@ -662,8 +666,9 @@ def get_handle(
 def exists(uri: ADLSURI) -> bool:
     """Check if ADLS path exists (file or directory)"""
     try:
-        client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                  uri.endpoint_suffix)
+        client = threadsafe_adls.data_lake_client(
+            uri.storage_account, uri.endpoint_suffix
+        )
         fs_client = client.get_file_system_client(uri.container)
 
         # Container root
@@ -697,8 +702,9 @@ def exists(uri: ADLSURI) -> bool:
 def isdir(uri: ADLSURI) -> bool:
     """Check if ADLS path is a directory"""
     try:
-        client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                  uri.endpoint_suffix)
+        client = threadsafe_adls.data_lake_client(
+            uri.storage_account, uri.endpoint_suffix
+        )
         fs_client = client.get_file_system_client(uri.container)
 
         # Container root
@@ -755,53 +761,57 @@ def copy_file(src: str, dst: str):
         if _server_side_copy(src_uri, dst_uri):
             return None
 
-    with api.get_binary_handle(src, "rb") as fsrc:
-        with api.get_binary_handle(dst, "wb") as fdst:
+    with api.get_binary_handle(src, 'rb') as fsrc:
+        with api.get_binary_handle(dst, 'wb') as fdst:
             shutil.copyfileobj(fsrc, fdst)
     assert api.filesize(src) == api.filesize(dst)
 
 
 def _server_side_copy(src_uri: ADLSURI, dst_uri: ADLSURI) -> bool:
-    client = threadsafe_adls.data_lake_client(src_uri.storage_account,
-                                              src_uri.endpoint_suffix)
+    client = threadsafe_adls.data_lake_client(
+        src_uri.storage_account, src_uri.endpoint_suffix
+    )
     src_fs = client.get_file_system_client(src_uri.container)
     src_file = src_fs.get_file_client(src_uri.path)
 
-    dst_client = threadsafe_adls.data_lake_client(dst_uri.storage_account,
-                                                  dst_uri.endpoint_suffix)
+    dst_client = threadsafe_adls.data_lake_client(
+        dst_uri.storage_account, dst_uri.endpoint_suffix
+    )
     dst_fs = dst_client.get_file_system_client(dst_uri.container)
     dst_file = dst_fs.get_file_client(dst_uri.path)
 
-    if not hasattr(dst_file, "start_copy_from_url"):
+    if not hasattr(dst_file, 'start_copy_from_url'):
         return False
 
     try:
         dst_file.start_copy_from_url(src_file.url)
     except Exception as e:
-        logger.debug("ADLS server-side copy failed to start (error_type=%s)",
-                     type(e).__name__)
+        logger.debug(
+            'ADLS server-side copy failed to start (error_type=%s)', type(e).__name__
+        )
         return False
 
     try:
         for _ in range(COPY_STATUS_POLL_MAX_ATTEMPTS):
             props = dst_file.get_file_properties()
-            copy = getattr(props, "copy", None)
-            status = getattr(copy, "status", None)
+            copy = getattr(props, 'copy', None)
+            status = getattr(copy, 'status', None)
             if status is None:
                 return True
             status = str(status).lower()
-            if status == "success":
+            if status == 'success':
                 return True
-            if status in ("failed", "aborted"):
+            if status in ('failed', 'aborted'):
                 raise RuntimeError(
-                    f"ADLS server-side copy failed: {src_uri.as_adls()} -> "
-                    f"{dst_uri.as_adls()}")
+                    f'ADLS server-side copy failed: {src_uri.as_adls()} -> '
+                    f'{dst_uri.as_adls()}'
+                )
             time.sleep(COPY_STATUS_POLL_INTERVAL_SEC)
     except Exception as e:
         logger.debug(
-            "ADLS server-side copy status check failed "
-            "(error_type=%s)",
-            type(e).__name__)
+            'ADLS server-side copy status check failed (error_type=%s)',
+            type(e).__name__,
+        )
         return False
 
     return True
@@ -820,27 +830,25 @@ def copydir(src: str, dst: str) -> None:
     """
     src_uri = ParseURI(src)
     dst_uri = ParseURI(dst)
-    assert isinstance(src_uri,
-                      ADLSURI), f"Expected ADLSURI, got {type(src_uri)}"
-    assert isinstance(dst_uri,
-                      ADLSURI), f"Expected ADLSURI, got {type(dst_uri)}"
+    assert isinstance(src_uri, ADLSURI), f'Expected ADLSURI, got {type(src_uri)}'
+    assert isinstance(dst_uri, ADLSURI), f'Expected ADLSURI, got {type(dst_uri)}'
 
     files, _ = _list_paths_recursive(src_uri)
 
     if not files:
-        logger.warning("copydir: source is empty or does not exist: %s", src)
+        logger.warning('copydir: source is empty or does not exist: %s', src)
         return
 
-    logger.debug("copydir: copying %d files from %s to %s", len(files), src,
-                 dst)
+    logger.debug('copydir: copying %d files from %s to %s', len(files), src, dst)
 
     src_base = src_uri.path.rstrip('/')
     dst_base = dst_uri.path.rstrip('/')
 
     def _copy_one(src_path: str) -> None:
-        rel = src_path[len(src_base):].lstrip(
-            '/') if src_base else src_path.lstrip('/')
-        dst_path = f"{dst_base}/{rel}" if dst_base else rel
+        rel = (
+            src_path[len(src_base) :].lstrip('/') if src_base else src_path.lstrip('/')
+        )
+        dst_path = f'{dst_base}/{rel}' if dst_base else rel
 
         file_src = ADLSURI(
             storage_account=src_uri.storage_account,
@@ -859,7 +867,7 @@ def copydir(src: str, dst: str) -> None:
     for task in tasks:
         task.result()
 
-    logger.debug("copydir: done copying %s to %s", src, dst)
+    logger.debug('copydir: done copying %s to %s', src, dst)
 
 
 @api.touch.register
@@ -896,17 +904,19 @@ def has_write_permission(uri: ADLSURI) -> bool:
     created = False
     cleanup_ok = True
     try:
-        test_uri = ADLSURI(storage_account=uri.storage_account,
-                           endpoint_suffix=uri.endpoint_suffix,
-                           container=uri.container, path=test_path,
-                           scheme=uri.scheme)
+        test_uri = ADLSURI(
+            storage_account=uri.storage_account,
+            endpoint_suffix=uri.endpoint_suffix,
+            container=uri.container,
+            path=test_path,
+            scheme=uri.scheme,
+        )
 
         test_file_client = adls_ctx.get_file_client(test_uri)
         test_file_client.create_file()
         created = True
     except Exception as error:
-        logger.warning('ADLS output write probe failed (%s)',
-                       type(error).__name__)
+        logger.warning('ADLS output write probe failed (%s)', type(error).__name__)
     finally:
         if created:
             assert test_file_client is not None
@@ -934,17 +944,17 @@ def listdir(
 
     if max_items is not None:
         if max_items < 1:
-            raise ValueError("max_items must be at least 1")
+            raise ValueError('max_items must be at least 1')
         if max_items > 1000:
-            raise ValueError("max_items must be at most 1000")
+            raise ValueError('max_items must be at most 1000')
 
     try:
         if not uri.path or uri.path in ('', '/'):
-            client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                      uri.endpoint_suffix)
+            client = threadsafe_adls.data_lake_client(
+                uri.storage_account, uri.endpoint_suffix
+            )
             fs_client = client.get_file_system_client(uri.container)
-            paths = fs_client.get_paths(path='', recursive=False,
-                                        max_results=max_items)
+            paths = fs_client.get_paths(path='', recursive=False, max_results=max_items)
         else:
             dir_client = adls_ctx.get_directory_client(uri)
             paths = dir_client.get_paths(recursive=False, max_results=max_items)
@@ -960,13 +970,12 @@ def listdir(
 
         return entries
     except ResourceNotFoundError:
-        logger.error(f"URI resource not found: {uri.path}")
+        logger.error(f'URI resource not found: {uri.path}')
         return []
 
 
 def _list_paths_recursive(uri: ADLSURI) -> tuple[list[str], list[str]]:
-    client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                              uri.endpoint_suffix)
+    client = threadsafe_adls.data_lake_client(uri.storage_account, uri.endpoint_suffix)
     fs_client = client.get_file_system_client(uri.container)
 
     if not uri.path or uri.path in ('', '/'):
@@ -984,7 +993,7 @@ def _list_paths_recursive(uri: ADLSURI) -> tuple[list[str], list[str]]:
     files: list[str] = []
     dirs: list[str] = []
     for path in paths:
-        if getattr(path, "is_directory", False):
+        if getattr(path, 'is_directory', False):
             dirs.append(path.name.rstrip('/'))
         else:
             files.append(path.name)
@@ -1002,11 +1011,11 @@ def listdir_detail(
 ) -> list[api.PathDetail]:
     try:
         if not uri.path or uri.path in ('', '/'):
-            client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                      uri.endpoint_suffix)
+            client = threadsafe_adls.data_lake_client(
+                uri.storage_account, uri.endpoint_suffix
+            )
             fs_client = client.get_file_system_client(uri.container)
-            paths = fs_client.get_paths(path='', recursive=False,
-                                        max_results=max_items)
+            paths = fs_client.get_paths(path='', recursive=False, max_results=max_items)
         else:
             dir_client = adls_ctx.get_directory_client(uri)
             paths = dir_client.get_paths(recursive=False, max_results=max_items)
@@ -1016,8 +1025,8 @@ def listdir_detail(
             full_uri = deepcopy(uri)
             full_uri.path = path.name
             entries.append(
-                api.PathDetail(path=full_uri.as_url(),
-                               is_directory=path.is_directory))
+                api.PathDetail(path=full_uri.as_url(), is_directory=path.is_directory)
+            )
 
         return entries
     except ResourceNotFoundError:
@@ -1041,15 +1050,16 @@ def makedirs(uri: ADLSURI, exist_ok: bool = False) -> None:
 
     dir_path = uri.path.rstrip('/')
     parts = [p for p in dir_path.split('/') if p]
-    current = ""
+    current = ''
     for part in parts:
-        current = f"{current}/{part}" if current else part
+        current = f'{current}/{part}' if current else part
         dir_client = adls_ctx.get_directory_client(
             ADLSURI(
                 storage_account=uri.storage_account,
                 container=uri.container,
                 path=current,
-            ))
+            )
+        )
         try:
             dir_client.create_directory()
         except ResourceExistsError:
@@ -1076,7 +1086,7 @@ def rm(
     except (ResourceNotFoundError, AzureError) as e:
         if not ignore_errors:
             raise
-        logger.debug("Ignored ADLS rm error (error_type=%s)", type(e).__name__)
+        logger.debug('Ignored ADLS rm error (error_type=%s)', type(e).__name__)
 
 
 def _rmdir(uri: ADLSURI, include: Optional[List[str]] = None) -> None:
@@ -1118,8 +1128,7 @@ def _rmdir(uri: ADLSURI, include: Optional[List[str]] = None) -> None:
             # remain before deleting this directory. If the include filter left
             # anything behind, leave the directory intact.
             if include is not None:
-                remaining = next(iter(dir_client.get_paths(recursive=False)),
-                                 None)
+                remaining = next(iter(dir_client.get_paths(recursive=False)), None)
                 if remaining is not None:
                     continue  # directory still has children — leave it alone
             dir_client.delete_directory()
@@ -1139,8 +1148,9 @@ def contains_subdir(uri: ADLSURI) -> bool:
     # empty paths. Use fs_client.get_paths() directly for container root,
     # same as listdir/listdir_detail.
     if not uri.path or uri.path in ('', '/'):
-        client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                  uri.endpoint_suffix)
+        client = threadsafe_adls.data_lake_client(
+            uri.storage_account, uri.endpoint_suffix
+        )
         fs_client = client.get_file_system_client(uri.container)
         paths = fs_client.get_paths(path='', recursive=False)
     else:
@@ -1163,7 +1173,7 @@ def get_last_modified_time(uri: ADLSURI, suffix: Optional[str] = None) -> float:
         # For directories, check for _SUCCESS file
         if isdir(uri):
             file_uri = deepcopy(uri)
-            file_uri.path = osp.join(uri.path, "_SUCCESS")
+            file_uri.path = osp.join(uri.path, '_SUCCESS')
             if exists(file_uri):
                 uri = file_uri
             else:
@@ -1190,8 +1200,9 @@ def _sas_validity_window(
 ) -> tuple[datetime.datetime, datetime.datetime]:
     validity = validity or _SAS_VALIDITY
     if validity <= datetime.timedelta(0) or validity > _SAS_MAX_VALIDITY:
-        raise ValueError('ADLS SAS validity must be greater than zero and no '
-                         'more than seven days')
+        raise ValueError(
+            'ADLS SAS validity must be greater than zero and no more than seven days'
+        )
     now = datetime.datetime.now(datetime.timezone.utc)
     return now - _SAS_CLOCK_SKEW, now + validity
 
@@ -1204,8 +1215,9 @@ def generate_directory_read_sas(
 ) -> str:
     """Create a short-lived user-delegation SAS scoped to one directory."""
     start, expiry = _sas_validity_window(validity)
-    service_client = threadsafe_adls.data_lake_client(uri.storage_account,
-                                                      uri.endpoint_suffix)
+    service_client = threadsafe_adls.data_lake_client(
+        uri.storage_account, uri.endpoint_suffix
+    )
     try:
         delegation_key = service_client.get_user_delegation_key(
             key_start_time=start,
@@ -1213,9 +1225,10 @@ def generate_directory_read_sas(
         )
     except Exception:
         raise ValueError(
-            f"Failed to obtain user delegation key for storage account "
+            f'Failed to obtain user delegation key for storage account '
             f"'{uri.storage_account}'. Ensure the identity holds the "
-            f"'Storage Blob Delegator' role.") from None
+            f"'Storage Blob Delegator' role."
+        ) from None
     return generate_directory_sas(
         account_name=uri.storage_account,
         file_system_name=uri.container,
@@ -1234,7 +1247,7 @@ def generate_directory_read_sas(
 def _blob_endpoint_suffix(dfs_suffix: str) -> str:
     if not dfs_suffix.startswith('dfs.'):
         raise ValueError(f'Invalid ADLS endpoint suffix: {dfs_suffix}')
-    return 'blob.' + dfs_suffix[len('dfs.'):]
+    return 'blob.' + dfs_suffix[len('dfs.') :]
 
 
 def _upload_state(uri: ADLSURI, num_parts: int) -> tuple[str, str]:
@@ -1249,29 +1262,35 @@ def _upload_state(uri: ADLSURI, num_parts: int) -> tuple[str, str]:
         'nonce': nonce,
         'num_parts': num_parts,
     }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(state, separators=(',', ':'),
-                   sort_keys=True).encode()).decode().rstrip('=')
+    encoded = (
+        base64.urlsafe_b64encode(
+            json.dumps(state, separators=(',', ':'), sort_keys=True).encode()
+        )
+        .decode()
+        .rstrip('=')
+    )
     return encoded, temp_path
 
 
 def _decode_upload_state(upload_id: str, uri: ADLSURI) -> dict:
     try:
         padding = '=' * (-len(upload_id) % 4)
-        state = json.loads(
-            base64.urlsafe_b64decode(upload_id + padding).decode())
+        state = json.loads(base64.urlsafe_b64decode(upload_id + padding).decode())
     except Exception:
         raise ValueError('Invalid ADLS upload id') from None
-    if (state.get('v') != 1 or state.get('uri') != uri.as_url()
-            or not isinstance(state.get('num_parts'), int)
-            or state['num_parts'] < 1):
+    if (
+        state.get('v') != 1
+        or state.get('uri') != uri.as_url()
+        or not isinstance(state.get('num_parts'), int)
+        or state['num_parts'] < 1
+    ):
         raise ValueError('ADLS upload id does not match destination')
     nonce = state.get('nonce')
-    if not isinstance(nonce, str) or re.fullmatch(r'[0-9a-f]{32}',
-                                                  nonce) is None:
+    if not isinstance(nonce, str) or re.fullmatch(r'[0-9a-f]{32}', nonce) is None:
         raise ValueError('Invalid ADLS upload id')
-    expected_temp = (f"{uri.path}.kumo-upload-{state.get('nonce')}-"
-                     f"{state.get('num_parts')}")
+    expected_temp = (
+        f'{uri.path}.kumo-upload-{state.get("nonce")}-{state.get("num_parts")}'
+    )
     if state.get('temp_path') != expected_temp:
         raise ValueError('Invalid ADLS upload id')
     return state
@@ -1319,9 +1338,11 @@ def _atomic_promote(
     bytes are exactly the completed temporary file. A retry after a successful
     rename is accepted only when the destination retains this operation id.
     """
-    if (source.storage_account != destination.storage_account
-            or source.endpoint_suffix != destination.endpoint_suffix
-            or source.container != destination.container):
+    if (
+        source.storage_account != destination.storage_account
+        or source.endpoint_suffix != destination.endpoint_suffix
+        or source.container != destination.container
+    ):
         raise ValueError('ADLS atomic promotion must remain in one filesystem')
 
     source_client = adls_ctx.get_file_client(source)
@@ -1343,26 +1364,30 @@ def _atomic_promote(
     }
     try:
         destination_properties = destination_client.get_file_properties()
-        kwargs.update({
-            'etag': destination_properties.etag,
-            'match_condition': MatchConditions.IfNotModified,
-        })
+        kwargs.update(
+            {
+                'etag': destination_properties.etag,
+                'match_condition': MatchConditions.IfNotModified,
+            }
+        )
     except ResourceNotFoundError:
-        kwargs.update({
-            'match_condition': MatchConditions.IfMissing,
-        })
+        kwargs.update(
+            {
+                'match_condition': MatchConditions.IfMissing,
+            }
+        )
 
     try:
-        source_client.rename_file(f'{destination.container}/{destination.path}',
-                                  **kwargs)
+        source_client.rename_file(
+            f'{destination.container}/{destination.path}', **kwargs
+        )
     except (ResourceExistsError, ResourceModifiedError):
         try:
             metadata = destination_client.get_file_properties().metadata or {}
         except ResourceNotFoundError:
             metadata = {}
         if metadata.get(_UPLOAD_METADATA_KEY) != operation_id:
-            raise RuntimeError(
-                'ADLS atomic promotion destination changed') from None
+            raise RuntimeError('ADLS atomic promotion destination changed') from None
 
 
 def _temporary_uri(uri: ADLSURI, operation_id: str) -> ADLSURI:
@@ -1397,8 +1422,7 @@ def _stage_atomic_file(
 
 @api.atomic_write_text.register
 @adls_logging_policy(skip_args=[1])
-def atomic_write_text(uri: ADLSURI, data: str,
-                      compression: bool = False) -> None:
+def atomic_write_text(uri: ADLSURI, data: str, compression: bool = False) -> None:
     operation_id = uuid.uuid4().hex
     temp_uri = _temporary_uri(uri, operation_id)
     file_client = adls_ctx.get_file_client(temp_uri)
@@ -1424,6 +1448,7 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
     the Azure identity (SP or managed identity) to hold the
     ``Storage Blob Delegator`` role on the storage account.
     """
+
     def __init__(self, uri: ADLSURI):
         super().__init__(uri)
 
@@ -1443,7 +1468,8 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
         start, expiry = _sas_validity_window()
 
         service_client = threadsafe_adls.data_lake_client(
-            uri.storage_account, uri.endpoint_suffix)
+            uri.storage_account, uri.endpoint_suffix
+        )
         try:
             user_delegation_key = service_client.get_user_delegation_key(
                 key_start_time=start,
@@ -1451,9 +1477,10 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
             )
         except Exception:
             raise ValueError(
-                f"Failed to obtain user delegation key for storage account "
+                f'Failed to obtain user delegation key for storage account '
                 f"'{uri.storage_account}'. Ensure the identity holds the "
-                f"'Storage Blob Delegator' role.") from None
+                f"'Storage Blob Delegator' role."
+            ) from None
 
         dir_name = posixpath.dirname(uri.path)
         file_name = posixpath.basename(uri.path)
@@ -1467,9 +1494,11 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
             start=start,
             expiry=expiry,
         )
-        return (f"https://{uri.storage_account}.{uri.endpoint_suffix}"
-                f"/{quote(uri.container, safe='')}/"
-                f"{quote(uri.path, safe='/')}?{sas_token}")
+        return (
+            f'https://{uri.storage_account}.{uri.endpoint_suffix}'
+            f'/{quote(uri.container, safe="")}/'
+            f'{quote(uri.path, safe="/")}?{sas_token}'
+        )
 
     def _create_multipart_upload(
         self,
@@ -1480,7 +1509,8 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
         state = _decode_upload_state(upload_id, uri)
         start, expiry = _sas_validity_window()
         service_client = threadsafe_adls.data_lake_client(
-            uri.storage_account, uri.endpoint_suffix)
+            uri.storage_account, uri.endpoint_suffix
+        )
         try:
             delegation_key = service_client.get_user_delegation_key(
                 key_start_time=start,
@@ -1488,9 +1518,10 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
             )
         except Exception:
             raise ValueError(
-                f"Failed to obtain user delegation key for storage account "
+                f'Failed to obtain user delegation key for storage account '
                 f"'{uri.storage_account}'. Ensure the identity holds the "
-                f"'Storage Blob Delegator' role.") from None
+                f"'Storage Blob Delegator' role."
+            ) from None
 
         sas_token = generate_blob_sas(
             account_name=uri.storage_account,
@@ -1518,7 +1549,8 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
                 f'https://{uri.storage_account}.{blob_suffix}/'
                 f'{quote(uri.container, safe="")}/'
                 f'{quote(temp_path, safe="/")}?{sas_token}&comp=block'
-                f'&blockid={quote(block_id, safe="")}')
+                f'&blockid={quote(block_id, safe="")}'
+            )
         return upload_id, block_urls
 
     @retry_policy()
@@ -1543,10 +1575,11 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
             uri.endpoint_suffix,
         ).get_blob_client(uri.container, state['temp_path'])
         final_client = adls_ctx.get_file_client(uri)
-        if (sorted(numbers) != expected or len(numbers) != len(set(numbers))):
+        if sorted(numbers) != expected or len(numbers) != len(set(numbers)):
             self._delete_staging_blob(blob_client)
             raise ValueError(
-                'ADLS multipart metadata must contain every part exactly once')
+                'ADLS multipart metadata must contain every part exactly once'
+            )
         try:
             metadata = final_client.get_file_properties().metadata or {}
         except ResourceNotFoundError:
@@ -1564,14 +1597,18 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
         else:
             committed = getattr(blocks, 'committed_blocks', None)
             uncommitted = getattr(blocks, 'uncommitted_blocks', None)
-        block_ids = [
-            _raw_block_id(state['nonce'], number) for number in expected
-        ]
+        block_ids = [_raw_block_id(state['nonce'], number) for number in expected]
         expected_ids = set(block_ids)
-        available = (_normalize_block_ids(uncommitted, expected_ids)
-                     if uncommitted is not None else None)
-        committed_ids = (_normalize_block_ids(committed, expected_ids)
-                         if committed is not None else None)
+        available = (
+            _normalize_block_ids(uncommitted, expected_ids)
+            if uncommitted is not None
+            else None
+        )
+        committed_ids = (
+            _normalize_block_ids(committed, expected_ids)
+            if committed is not None
+            else None
+        )
         if available == expected_ids:
             blob_client.commit_block_list(
                 [BlobBlock(block_id=block_id) for block_id in block_ids],
@@ -1579,8 +1616,7 @@ class ADLSPresignedHelper(api.PresignedHelper[ADLSURI]):
             )
         elif committed_ids != expected_ids:
             self._delete_staging_blob(blob_client)
-            raise ValueError(
-                'Uploaded ADLS blocks do not match multipart metadata')
+            raise ValueError('Uploaded ADLS blocks do not match multipart metadata')
         _atomic_promote(temp_uri, uri, upload_id)
 
 
@@ -1602,20 +1638,19 @@ def zip_directory(
         output_uri = ParseURI(output_path)
         if not isinstance(output_uri, ADLSURI):
             raise ValueError('ADLS ZIP output must be an ADLS path')
-        if (output_uri.storage_account != uri.storage_account
-                or output_uri.endpoint_suffix != uri.endpoint_suffix
-                or output_uri.container != uri.container):
-            raise ValueError(
-                'ADLS ZIP output must remain in the source filesystem')
+        if (
+            output_uri.storage_account != uri.storage_account
+            or output_uri.endpoint_suffix != uri.endpoint_suffix
+            or output_uri.container != uri.container
+        ):
+            raise ValueError('ADLS ZIP output must remain in the source filesystem')
     if exists(output_uri):
         return output_uri.as_url()
 
     files, _ = _list_paths_recursive(uri)
     if not recursive:
         prefix = uri.path.rstrip('/') + '/' if uri.path else ''
-        files = [
-            path for path in files if '/' not in path[len(prefix):].rstrip('/')
-        ]
+        files = [path for path in files if '/' not in path[len(prefix) :].rstrip('/')]
     if not files:
         raise ValueError(f'No files found under {uri.as_url()}')
 
@@ -1628,8 +1663,7 @@ def zip_directory(
                 for path in files:
                     file_uri = uri.model_copy(deep=True)
                     file_uri.path = path
-                    data = adls_ctx.get_file_client(
-                        file_uri).download_file().readall()
+                    data = adls_ctx.get_file_client(file_uri).download_file().readall()
                     zip_file.writestr(path, data)
             with open(zip_path, 'rb') as archive:
                 adls_ctx.get_file_client(temp_uri).upload_data(
@@ -1660,9 +1694,11 @@ def zip_files(
     source_identity = (uri.storage_account, uri.endpoint_suffix, uri.container)
     selected = []
     for path in paths:
-        if (not isinstance(path, ADLSURI)
-                or (path.storage_account, path.endpoint_suffix,
-                    path.container) != source_identity):
+        if (
+            not isinstance(path, ADLSURI)
+            or (path.storage_account, path.endpoint_suffix, path.container)
+            != source_identity
+        ):
             raise ValueError('ADLS archive inputs must use one filesystem')
         selected.append(path.path)
     if len(set(selected)) != len(selected):
@@ -1679,8 +1715,7 @@ def zip_files(
                 for path in selected:
                     file_uri = uri.model_copy(deep=True)
                     file_uri.path = path
-                    data = adls_ctx.get_file_client(
-                        file_uri).download_file().readall()
+                    data = adls_ctx.get_file_client(file_uri).download_file().readall()
                     zip_file.writestr(path, data)
             with open(zip_path, 'rb') as archive:
                 adls_ctx.get_file_client(temp_uri).upload_data(

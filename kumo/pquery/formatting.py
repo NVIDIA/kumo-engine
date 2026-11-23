@@ -29,8 +29,8 @@ def validate_query_string(
     try:
         parsed_query = PQLParser().to_parsed_predictive_query(query_string)
         validator = PredictiveQueryValidator(
-            **validator_kwargs(Graph.from_config(graph),
-                               query_string=query_string))
+            **validator_kwargs(Graph.from_config(graph), query_string=query_string)
+        )
         _, response = validator.validate_predictive_query(parsed_query)
         if not response.ok:
             return response.message()

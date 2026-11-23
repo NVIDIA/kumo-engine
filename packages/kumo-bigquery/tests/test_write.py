@@ -49,12 +49,11 @@ def _table(*fields: tuple[str, str, str]) -> bigquery.Table:
 
 
 def test_plan_canonicalises_timestamps_and_nulls(tmp_path):
-    stamps = pa.array([datetime(2026, 1, 1, tzinfo=UTC)],
-                      pa.timestamp('ns', tz='UTC'))
-    first = _write(tmp_path / 'a.parquet', ts=stamps, score=pa.array([None],
-                                                                     pa.null()))
-    second = _write(tmp_path / 'b.parquet', ts=stamps,
-                    score=pa.array([1.5], pa.float64()))
+    stamps = pa.array([datetime(2026, 1, 1, tzinfo=UTC)], pa.timestamp('ns', tz='UTC'))
+    first = _write(tmp_path / 'a.parquet', ts=stamps, score=pa.array([None], pa.null()))
+    second = _write(
+        tmp_path / 'b.parquet', ts=stamps, score=pa.array([1.5], pa.float64())
+    )
 
     schema = _target([first, second])
 
@@ -105,8 +104,7 @@ def test_bq_schema_maps_embeddings_to_repeated_float():
 
 
 def test_bq_schema_is_none_when_a_column_is_unmappable():
-    target = pa.schema([('id', pa.int64()),
-                        ('s', pa.struct([('a', pa.int64())]))])
+    target = pa.schema([('id', pa.int64()), ('s', pa.struct([('a', pa.int64())]))])
 
     assert bq_schema(target) is None
 
@@ -127,11 +125,11 @@ def test_nonempty_keeps_one_shard_when_all_are_empty(tmp_path):
 
 def test_conformed_batches_fills_missing_and_stamps_extra(tmp_path):
     path = _write(tmp_path / 'a.parquet', id=[1, 2])
-    target = pa.schema([('id', pa.int64()), ('score', pa.float64()),
-                        ('run', pa.string())])
+    target = pa.schema(
+        [('id', pa.int64()), ('score', pa.float64()), ('run', pa.string())]
+    )
 
-    table = pa.Table.from_batches(conformed_batches(path, target,
-                                                    {'run': 'r1'}))
+    table = pa.Table.from_batches(conformed_batches(path, target, {'run': 'r1'}))
 
     assert table.to_pydict() == {
         'id': [1, 2],
@@ -191,8 +189,11 @@ def _append(files, existing, extra=None):
 
 def test_append_targets_the_table_columns(tmp_path):
     path = _write(tmp_path / 'a.parquet', id=[1], emb=[[0.5]])
-    table = _table(('ID', 'INTEGER', 'NULLABLE'), ('emb', 'FLOAT', 'REPEATED'),
-                   ('spare', 'STRING', 'NULLABLE'))
+    table = _table(
+        ('ID', 'INTEGER', 'NULLABLE'),
+        ('emb', 'FLOAT', 'REPEATED'),
+        ('spare', 'STRING', 'NULLABLE'),
+    )
 
     layout = _append([path], table)
 
@@ -203,8 +204,7 @@ def test_append_targets_the_table_columns(tmp_path):
 
 def test_append_names_every_mismatched_column(tmp_path):
     path = _write(tmp_path / 'a.parquet', ENTITY=['x'], CLASS=['y'], ok=[1])
-    table = _table(('ENTITY', 'INTEGER', 'NULLABLE'),
-                   ('ok', 'INTEGER', 'NULLABLE'))
+    table = _table(('ENTITY', 'INTEGER', 'NULLABLE'), ('ok', 'INTEGER', 'NULLABLE'))
 
     with pytest.raises(OutputSchemaMismatchError) as caught:
         _append([path], table)
@@ -229,15 +229,17 @@ def test_append_rejects_float_into_integer_and_list_into_scalar(tmp_path):
     assert len(caught.value.problems) == 2
 
 
-@pytest.mark.parametrize('column, mode, expected', [
-    ('FLOAT', 'NULLABLE', pa.float64()),
-    ('NUMERIC', 'NULLABLE', pa.decimal128(38, 9)),
-    ('BIGNUMERIC', 'NULLABLE', pa.decimal256(76, 38)),
-    ('FLOAT', 'REPEATED', pa.list_(pa.float64())),
-])
+@pytest.mark.parametrize(
+    'column, mode, expected',
+    [
+        ('FLOAT', 'NULLABLE', pa.float64()),
+        ('NUMERIC', 'NULLABLE', pa.decimal128(38, 9)),
+        ('BIGNUMERIC', 'NULLABLE', pa.decimal256(76, 38)),
+        ('FLOAT', 'REPEATED', pa.list_(pa.float64())),
+    ],
+)
 def test_append_widens_integers(tmp_path, column, mode, expected):
-    path = _write(tmp_path / 'a.parquet',
-                  v=[[1]] if mode == 'REPEATED' else [1])
+    path = _write(tmp_path / 'a.parquet', v=[[1]] if mode == 'REPEATED' else [1])
 
     layout = _append([path], _table(('v', column, mode)))
 
@@ -245,10 +247,8 @@ def test_append_widens_integers(tmp_path, column, mode, expected):
 
 
 def test_append_drops_all_null_columns_that_fit_any_column(tmp_path):
-    path = _write(tmp_path / 'a.parquet', id=[1], seen=pa.array([None],
-                                                                pa.null()))
-    table = _table(('id', 'INTEGER', 'NULLABLE'),
-                   ('seen', 'DATETIME', 'NULLABLE'))
+    path = _write(tmp_path / 'a.parquet', id=[1], seen=pa.array([None], pa.null()))
+    table = _table(('id', 'INTEGER', 'NULLABLE'), ('seen', 'DATETIME', 'NULLABLE'))
 
     layout = _append([path], table)
 
@@ -258,8 +258,7 @@ def test_append_drops_all_null_columns_that_fit_any_column(tmp_path):
 
 def test_append_checks_extra_columns(tmp_path):
     path = _write(tmp_path / 'a.parquet', id=[1])
-    table = _table(('id', 'INTEGER', 'NULLABLE'),
-                   ('run', 'INTEGER', 'NULLABLE'))
+    table = _table(('id', 'INTEGER', 'NULLABLE'), ('run', 'INTEGER', 'NULLABLE'))
 
     assert _append([path], table, {'run': 7}).target.names == ['id', 'run']
     with pytest.raises(OutputSchemaMismatchError, match='run is STRING'):
@@ -268,8 +267,7 @@ def test_append_checks_extra_columns(tmp_path):
 
 def test_overwrite_ignores_the_table_columns_but_keeps_their_metadata(tmp_path):
     path = _write(tmp_path / 'a.parquet', id=['x'], kept=[1])
-    existing = _table(('id', 'INTEGER', 'NULLABLE'),
-                      ('kept', 'INTEGER', 'NULLABLE'))
+    existing = _table(('id', 'INTEGER', 'NULLABLE'), ('kept', 'INTEGER', 'NULLABLE'))
     existing.schema = [
         bigquery.SchemaField('id', 'INTEGER', description='old id'),
         bigquery.SchemaField('kept', 'INTEGER', description='kept'),
@@ -283,18 +281,21 @@ def test_overwrite_ignores_the_table_columns_but_keeps_their_metadata(tmp_path):
     ]
 
 
-@pytest.mark.parametrize('type_name, mode, expected', [
-    ('NUMERIC', 'NULLABLE', pa.decimal128(38, 9)),
-    ('DECIMAL', 'NULLABLE', pa.decimal128(38, 9)),
-    ('BIGNUMERIC', 'NULLABLE', pa.decimal256(76, 38)),
-    ('DATETIME', 'NULLABLE', pa.timestamp('us')),
-    ('TIME', 'NULLABLE', pa.time64('us')),
-    ('BYTES', 'NULLABLE', pa.binary()),
-    ('JSON', 'NULLABLE', pa.string()),
-    ('GEOGRAPHY', 'NULLABLE', pa.string()),
-    ('INT64', 'REPEATED', pa.list_(pa.int64())),
-    ('RECORD', 'NULLABLE', None),
-])
+@pytest.mark.parametrize(
+    'type_name, mode, expected',
+    [
+        ('NUMERIC', 'NULLABLE', pa.decimal128(38, 9)),
+        ('DECIMAL', 'NULLABLE', pa.decimal128(38, 9)),
+        ('BIGNUMERIC', 'NULLABLE', pa.decimal256(76, 38)),
+        ('DATETIME', 'NULLABLE', pa.timestamp('us')),
+        ('TIME', 'NULLABLE', pa.time64('us')),
+        ('BYTES', 'NULLABLE', pa.binary()),
+        ('JSON', 'NULLABLE', pa.string()),
+        ('GEOGRAPHY', 'NULLABLE', pa.string()),
+        ('INT64', 'REPEATED', pa.list_(pa.int64())),
+        ('RECORD', 'NULLABLE', None),
+    ],
+)
 def test_arrow_type_of_table_columns(type_name, mode, expected):
     field = bigquery.SchemaField('c', type_name, mode=mode)
 
@@ -320,8 +321,9 @@ def test_keep_column_metadata_needs_the_same_name_and_type():
 
 
 def test_conformed_batches_turn_null_repeated_values_into_empty_lists(tmp_path):
-    path = _write(tmp_path / 'a.parquet', emb=pa.array([None, [1.5]],
-                                                       pa.list_(pa.float64())))
+    path = _write(
+        tmp_path / 'a.parquet', emb=pa.array([None, [1.5]], pa.list_(pa.float64()))
+    )
     target = pa.schema([('emb', pa.list_(pa.float64()))])
 
     table = pa.Table.from_batches(conformed_batches(path, target))
@@ -331,8 +333,7 @@ def test_conformed_batches_turn_null_repeated_values_into_empty_lists(tmp_path):
 
 def test_bq_field_is_none_for_unmapped_types():
     assert bq_field(pa.field('a', pa.struct([('a', pa.int64())]))) is None
-    assert bq_field(pa.field('a',
-                             pa.list_(pa.struct([('a', pa.int64())])))) is None
+    assert bq_field(pa.field('a', pa.list_(pa.struct([('a', pa.int64())])))) is None
 
 
 def test_replace_follows_write_mode():
@@ -340,24 +341,29 @@ def test_replace_follows_write_mode():
     assert _replace(WriteMode.APPEND) is False
 
 
-@pytest.mark.parametrize('name, valid', [
-    ('predictions_2026-01', True),
-    ('a.b', False),
-    ('has space', False),
-    ('', False),
-    ('name\n', False),
-])
+@pytest.mark.parametrize(
+    'name, valid',
+    [
+        ('predictions_2026-01', True),
+        ('a.b', False),
+        ('has space', False),
+        ('', False),
+        ('name\n', False),
+    ],
+)
 def test_is_output_table_id(name, valid):
     assert is_output_table_id(name) is valid
 
 
 def test_write_permissions():
     assert write_permissions(replace=False) == [
-        'bigquery.tables.get', 'bigquery.tables.updateData'
+        'bigquery.tables.get',
+        'bigquery.tables.updateData',
     ]
     assert write_permissions(replace=True) == [
-        'bigquery.tables.get', 'bigquery.tables.update',
-        'bigquery.tables.updateData'
+        'bigquery.tables.get',
+        'bigquery.tables.update',
+        'bigquery.tables.updateData',
     ]
 
 

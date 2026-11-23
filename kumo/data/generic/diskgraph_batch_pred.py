@@ -38,8 +38,8 @@ def _resolve_lp_bp_layout(
 ) -> str:
     if lp_bp_layout is not None and lp_bp_layout not in LP_BP_LAYOUTS:
         raise ValueError(
-            f"lp_bp_layout must be one of {sorted(LP_BP_LAYOUTS)}, "
-            f"got {lp_bp_layout!r}")
+            f'lp_bp_layout must be one of {sorted(LP_BP_LAYOUTS)}, got {lp_bp_layout!r}'
+        )
     if list_distinct_target_is_array:
         # Array-target LP has exactly one valid layout (separate LHS/RHS); a
         # persisted/deserialized hstack must be normalized, never silently used.
@@ -59,16 +59,15 @@ def _raise_empty_prediction_table(
         elif fsutil.exists(local_path):
             fsutil.rm(local_path)
     except Exception:
-        logger.warning("Failed to clean empty prediction table output",
-                       exc_info=True)
+        logger.warning('Failed to clean empty prediction table output', exc_info=True)
 
     raise TrainingTableGenerationError(
-        "No rows to predict",
-        "Kumo found no rows that need predictions. This usually means the "
-        "column you asked Kumo to predict is already filled in for every row, "
-        "or your filters removed every row. To continue, leave the target "
-        "value blank for rows you want Kumo to fill, loosen the filters, or "
-        "provide a prediction table with the rows to score.",
+        'No rows to predict',
+        'Kumo found no rows that need predictions. This usually means the '
+        'column you asked Kumo to predict is already filled in for every row, '
+        'or your filters removed every row. To continue, leave the target '
+        'value blank for rows you want Kumo to fill, loosen the filters, or '
+        'provide a prediction table with the rows to score.',
     )
 
 
@@ -81,10 +80,9 @@ def _rename_dg_to_kumo(batch: pa.RecordBatch) -> pa.RecordBatch:
     new_names = [_DG_TO_KUMO_COL.get(n, n) for n in batch.schema.names]
     if new_names == batch.schema.names:
         return batch
-    new_schema = pa.schema([
-        batch.schema.field(i).with_name(new_names[i])
-        for i in range(len(new_names))
-    ])
+    new_schema = pa.schema(
+        [batch.schema.field(i).with_name(new_names[i]) for i in range(len(new_names))]
+    )
     return pa.RecordBatch.from_arrays(batch.columns, schema=new_schema)
 
 
@@ -120,15 +118,18 @@ def _postprocess_bp_batch(
         # Drop TIMESTAMP only for static array-target LP ("modern LP", GE
         # final_cols = {ENTITY, TARGET}). Static node-pred keeps it; static
         # legacy LP names it PSEUDO_TIMESTAMP so won't match here.
-        is_static_lp_modern = (query_type and query_type.name == "STATIC"
-                               and task_type and task_type.is_link_pred
-                               and list_distinct_target_is_array)
+        is_static_lp_modern = (
+            query_type
+            and query_type.name == 'STATIC'
+            and task_type
+            and task_type.is_link_pred
+            and list_distinct_target_is_array
+        )
         if is_static_lp_modern and 'TIMESTAMP' in batch.schema.names:
             batch = batch.drop_columns(['TIMESTAMP'])
 
-    arange_array = pa.array(range(total_rows, total_rows + num_rows),
-                            type=pa.int64())
-    return batch.append_column("arange", arange_array)
+    arange_array = pa.array(range(total_rows, total_rows + num_rows), type=pa.int64())
+    return batch.append_column('arange', arange_array)
 
 
 def _write_serving_pred_parquet_from_bundle(
@@ -153,12 +154,12 @@ def _write_serving_pred_parquet_from_bundle(
     bundle, so ``is_rhs`` never applies here."""
     from diskgraph import read_tt_parquet_batches
 
-    output_path = osp.join(output_root, "part-00000.parquet")
+    output_path = osp.join(output_root, 'part-00000.parquet')
     is_remote = not fsutil.is_local(output_path)
     tmp_dir = None
     if is_remote:
         tmp_dir = tempfile.mkdtemp(prefix='diskgraph_bp_serving_')
-        local_path = osp.join(tmp_dir, "part-00000.parquet")
+        local_path = osp.join(tmp_dir, 'part-00000.parquet')
     else:
         local_path = output_path
         fsutil.makedirs(output_root, exist_ok=True)
@@ -176,8 +177,9 @@ def _write_serving_pred_parquet_from_bundle(
                 is_rhs=False,
             )
             if writer is None:
-                writer = pq.ParquetWriter(local_path, batch.schema,
-                                          compression='snappy')
+                writer = pq.ParquetWriter(
+                    local_path, batch.schema, compression='snappy'
+                )
             writer.write_batch(batch)
             total_rows += batch.num_rows
     finally:
@@ -225,25 +227,50 @@ def generate_batch_pred_table_via_diskgraph_ttng(
 
     if task_type == core_types.TaskType.FORECASTING:
         return _execute_forecasting_ttng(
-            compiler, query, task_type, timestamps, lag_timesteps,
-            forecast_length, use_yoy_labels, index_path, output_root,
+            compiler,
+            query,
+            task_type,
+            timestamps,
+            lag_timesteps,
+            forecast_length,
+            use_yoy_labels,
+            index_path,
+            output_root,
             input_timestamp_unit=input_timestamp_unit,
-            target_stype=target_stype, entity_time_col=entity_time_col,
-            job_id=job_id)
+            target_stype=target_stype,
+            entity_time_col=entity_time_col,
+            job_id=job_id,
+        )
 
     if task_type.is_link_pred:
         return _execute_link_prediction_ttng(
-            query, graph, task_type, timestamps, list_distinct_target_is_array,
-            lp_bp_layout, index_path, input_timestamp_unit=input_timestamp_unit,
-            target_stype=target_stype, entity_time_col=entity_time_col,
-            job_id=job_id, output_root=output_root)
+            query,
+            graph,
+            task_type,
+            timestamps,
+            list_distinct_target_is_array,
+            lp_bp_layout,
+            index_path,
+            input_timestamp_unit=input_timestamp_unit,
+            target_stype=target_stype,
+            entity_time_col=entity_time_col,
+            job_id=job_id,
+            output_root=output_root,
+        )
 
     # Default: Node Prediction
     return _execute_node_prediction_ttng(
-        query, task_type, timestamps, index_path,
-        input_timestamp_unit=input_timestamp_unit, target_stype=target_stype,
-        entity_time_col=entity_time_col, graph=graph, job_id=job_id,
-        output_root=output_root)
+        query,
+        task_type,
+        timestamps,
+        index_path,
+        input_timestamp_unit=input_timestamp_unit,
+        target_stype=target_stype,
+        entity_time_col=entity_time_col,
+        graph=graph,
+        job_id=job_id,
+        output_root=output_root,
+    )
 
 
 def _execute_node_prediction_ttng(
@@ -262,9 +289,10 @@ def _execute_node_prediction_ttng(
     materialize ingests it directly."""
     if not job_id:
         raise RuntimeError(
-            "TT-NG node-prediction batch prediction requires job_id to name "
-            "the kept predict staging dir (one-gen handoff to materialize); "
-            f"got {job_id!r}.")
+            'TT-NG node-prediction batch prediction requires job_id to name '
+            'the kept predict staging dir (one-gen handoff to materialize); '
+            f'got {job_id!r}.'
+        )
 
     # Node-pred: no lp_resolution; tt-ingest synthesizes ENTITY1 -> entity_node_id.
     plan_json = build_ttng_predict_plan(
@@ -279,12 +307,15 @@ def _execute_node_prediction_ttng(
         entity_time_col=entity_time_col,
     )
 
-    return _gen_kept_staging_ttng(plan_json, index_path,
-                                  tt_id=predict_staging_tt_id(job_id),
-                                  output_root=output_root,
-                                  query_type=query.query_type,
-                                  task_type=task_type,
-                                  list_distinct_target_is_array=False)
+    return _gen_kept_staging_ttng(
+        plan_json,
+        index_path,
+        tt_id=predict_staging_tt_id(job_id),
+        output_root=output_root,
+        query_type=query.query_type,
+        task_type=task_type,
+        list_distinct_target_is_array=False,
+    )
 
 
 def _execute_forecasting_ttng(
@@ -305,13 +336,15 @@ def _execute_forecasting_ttng(
     """TT-NG forecasting predict into the kept staging dir for materialize."""
     if not job_id:
         raise RuntimeError(
-            "TT-NG forecasting batch prediction requires job_id to name the "
-            "kept predict staging dir (one-gen handoff to materialize); got "
-            f"{job_id!r}.")
+            'TT-NG forecasting batch prediction requires job_id to name the '
+            'kept predict staging dir (one-gen handoff to materialize); got '
+            f'{job_id!r}.'
+        )
 
     # Rebuild the anchor pd.Timestamp in its own unit so non-nanos callers
     # don't anchor to 1970.
     from diskgraph import TimeUnit
+
     _pd_unit = {
         TimeUnit.Nanoseconds: 'ns',
         TimeUnit.Microseconds: 'us',
@@ -343,12 +376,15 @@ def _execute_forecasting_ttng(
         yoy_offsets_secs=yoy_offsets_secs,
     )
 
-    return _gen_kept_staging_ttng(plan_json, index_path,
-                                  tt_id=predict_staging_tt_id(job_id),
-                                  output_root=output_root,
-                                  query_type=query.query_type,
-                                  task_type=task_type,
-                                  list_distinct_target_is_array=False)
+    return _gen_kept_staging_ttng(
+        plan_json,
+        index_path,
+        tt_id=predict_staging_tt_id(job_id),
+        output_root=output_root,
+        query_type=query.query_type,
+        task_type=task_type,
+        list_distinct_target_is_array=False,
+    )
 
 
 def _execute_link_prediction_ttng(
@@ -374,22 +410,22 @@ def _execute_link_prediction_ttng(
         list_distinct_target_is_array,
         lp_bp_layout,
     )
-    uses_separate_lhs_rhs = (
-        resolved_lp_bp_layout == LP_BP_LAYOUT_SEPARATE_LHS_RHS)
+    uses_separate_lhs_rhs = resolved_lp_bp_layout == LP_BP_LAYOUT_SEPARATE_LHS_RHS
     if not uses_separate_lhs_rhs:
         raise NotImplementedError(
-            "TT-NG link-prediction batch prediction requires the separate "
-            "LHS/RHS (FK-free / array-target) layout; the legacy HStack "
-            "cross-product layout is not supported on TT-NG. Enable array "
-            "targets (ALLOW_ARRAY_TARGETS / list_distinct_target_is_array), or "
-            f"use the non-TT-NG path. Got lp_bp_layout={resolved_lp_bp_layout!r}."
+            'TT-NG link-prediction batch prediction requires the separate '
+            'LHS/RHS (FK-free / array-target) layout; the legacy HStack '
+            'cross-product layout is not supported on TT-NG. Enable array '
+            'targets (ALLOW_ARRAY_TARGETS / list_distinct_target_is_array), or '
+            f'use the non-TT-NG path. Got lp_bp_layout={resolved_lp_bp_layout!r}.'
         )
 
     if not job_id:
         raise RuntimeError(
-            "TT-NG LP batch prediction requires job_id to name the kept "
-            "predict staging dir (one-gen handoff to materialize); got "
-            f"{job_id!r}.")
+            'TT-NG LP batch prediction requires job_id to name the kept '
+            'predict staging dir (one-gen handoff to materialize); got '
+            f'{job_id!r}.'
+        )
 
     lhs_plan = build_ttng_predict_plan(
         original_query,
@@ -404,10 +440,14 @@ def _execute_link_prediction_ttng(
     )
 
     return _gen_kept_staging_ttng(
-        lhs_plan, index_path, tt_id=predict_staging_tt_id(job_id),
-        output_root=output_root, query_type=original_query.query_type,
+        lhs_plan,
+        index_path,
+        tt_id=predict_staging_tt_id(job_id),
+        output_root=output_root,
+        query_type=original_query.query_type,
         task_type=task_type,
-        list_distinct_target_is_array=(list_distinct_target_is_array))
+        list_distinct_target_is_array=(list_distinct_target_is_array),
+    )
 
 
 def _gen_kept_staging_ttng(
@@ -450,16 +490,21 @@ def _gen_kept_staging_ttng(
         if not fsutil.exists(bundle_tt_parquet):
             raise RuntimeError(
                 'TT-NG predict: execute_tt_gen produced no staging parquet to '
-                f'persist durably; expected {bundle_tt_parquet!r}')
+                f'persist durably; expected {bundle_tt_parquet!r}'
+            )
         durable_staging = ttng_persisted_pred_staging_dir(output_root)
         # Copy the whole bundle (ingest reads tt_ingest_spec.json / manifest.json
         # / stats alongside tt.parquet); it embeds no absolute paths.
         from kumo.data.generic import diskgraph_train_table
+
         diskgraph_train_table.persist_durable_ttng_bundle(
-            ephemeral_staging, durable_staging)
+            ephemeral_staging, durable_staging
+        )
         logger.info(
             'TT-NG predict: persisted durable gen→ingest staging %s -> %s',
-            ephemeral_staging, durable_staging)
+            ephemeral_staging,
+            durable_staging,
+        )
 
         # Materialize the customer-facing serving pred table beside the bundle so
         # the public /table_data endpoint returns a readable parquet path (the
@@ -471,8 +516,11 @@ def _gen_kept_staging_ttng(
             task_type=task_type,
             list_distinct_target_is_array=list_distinct_target_is_array,
         )
-        logger.info('TT-NG predict: wrote serving pred table (%d rows) at %s',
-                    serving_rows, output_root)
+        logger.info(
+            'TT-NG predict: wrote serving pred table (%d rows) at %s',
+            serving_rows,
+            output_root,
+        )
 
     return total_rows, 1
 
@@ -495,16 +543,16 @@ def _stream_to_parquet_ttng(
 
     # Write a file inside a directory output path.
     if output_path.endswith('/'):
-        output_path = osp.join(output_path, "part-00000.parquet")
+        output_path = osp.join(output_path, 'part-00000.parquet')
     elif not output_path.endswith('.parquet'):
-        output_path = osp.join(output_path, "part-00000.parquet")
+        output_path = osp.join(output_path, 'part-00000.parquet')
 
     # ParquetWriter is local-only: write to a temp file then copy when remote.
     is_remote = not fsutil.is_local(output_path)
     tmp_dir = None
     if is_remote:
         tmp_dir = tempfile.mkdtemp(prefix='diskgraph_bp_')
-        local_path = osp.join(tmp_dir, "part-00000.parquet")
+        local_path = osp.join(tmp_dir, 'part-00000.parquet')
     else:
         local_path = output_path
         fsutil.makedirs(osp.dirname(output_path), exist_ok=True)
@@ -524,10 +572,12 @@ def _stream_to_parquet_ttng(
             new_names = [_DG_TO_KUMO_COL.get(n, n) for n in batch.schema.names]
             if new_names == batch.schema.names:
                 return batch
-            new_schema = pa.schema([
-                batch.schema.field(i).with_name(new_names[i])
-                for i in range(len(new_names))
-            ])
+            new_schema = pa.schema(
+                [
+                    batch.schema.field(i).with_name(new_names[i])
+                    for i in range(len(new_names))
+                ]
+            )
             return pa.RecordBatch.from_arrays(batch.columns, schema=new_schema)
 
         # 3rd arg is a tt_id, not a path — artifacts go to train_tables/<tt_id>/
@@ -541,8 +591,7 @@ def _stream_to_parquet_ttng(
             if is_rhs:
                 if 'ENTITY' in batch.schema.names:
                     idx = batch.schema.get_field_index('ENTITY')
-                    batch = batch.set_column(idx, 'TARGET',
-                                             batch.column('ENTITY'))
+                    batch = batch.set_column(idx, 'TARGET', batch.column('ENTITY'))
             else:
                 # Drop TARGET for Node/Ranking/Forecasting or modern-LP LHS.
                 should_drop_target = False
@@ -561,21 +610,26 @@ def _stream_to_parquet_ttng(
                 # Drop TIMESTAMP only for static array-target LP ("modern LP",
                 # GE final_cols = {ENTITY, TARGET}). Static node-pred keeps it;
                 # static legacy LP names it PSEUDO_TIMESTAMP so won't match here.
-                is_static_lp_modern = (query_type
-                                       and query_type.name == "STATIC"
-                                       and task_type and task_type.is_link_pred
-                                       and list_distinct_target_is_array)
-                if (is_static_lp_modern and 'TIMESTAMP' in batch.schema.names):
+                is_static_lp_modern = (
+                    query_type
+                    and query_type.name == 'STATIC'
+                    and task_type
+                    and task_type.is_link_pred
+                    and list_distinct_target_is_array
+                )
+                if is_static_lp_modern and 'TIMESTAMP' in batch.schema.names:
                     batch = batch.drop_columns(['TIMESTAMP'])
 
             # Inject arange
-            arange_array = pa.array(range(total_rows, total_rows + num_rows),
-                                    type=pa.int64())
-            batch = batch.append_column("arange", arange_array)
+            arange_array = pa.array(
+                range(total_rows, total_rows + num_rows), type=pa.int64()
+            )
+            batch = batch.append_column('arange', arange_array)
 
             if writer is None:
-                writer = pq.ParquetWriter(local_path, batch.schema,
-                                          compression='snappy')
+                writer = pq.ParquetWriter(
+                    local_path, batch.schema, compression='snappy'
+                )
 
             writer.write_batch(batch)
             total_rows += num_rows
@@ -631,8 +685,7 @@ def build_ttng_predict_plan(
 
     if is_link_pred:
         if not list_distinct_target_is_array:
-            raise RuntimeError(
-                'TT-NG LP predict requires array-target resolution')
+            raise RuntimeError('TT-NG LP predict requires array-target resolution')
         # Array-target resolution is the ONLY LP mode DG (tt-ng) supports; under
         # TT-NG ``allow_array_targets()`` is always True, so this flag arrives
         # True from config and the predict plan gets FK-free ENTITY1 resolution.
@@ -646,7 +699,7 @@ def build_ttng_predict_plan(
             is_prediction=True,
             target_stype=target_stype,
             entity_time_col=entity_time_col,
-            lp_prediction_mode="LHS",
+            lp_prediction_mode='LHS',
             list_distinct_target_is_array=list_distinct_target_is_array,
         )
         # Entity-only resolution (ENTITY1 -> entity_node_id);

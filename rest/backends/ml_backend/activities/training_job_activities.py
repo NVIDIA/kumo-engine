@@ -74,6 +74,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class PollJobResult:
     """Result of polling a training job's state."""
+
     state: JobState
     err_msg: Optional[str] = None
     stacktrace: Optional[str] = None
@@ -83,30 +84,36 @@ class PollJobResult:
 class TrainingJobActivities:
     @activity.defn(name='log_failed_training_job')
     def log_failed_job(
-            self, job_id: TrainingJobID, job_config_path: str,
-            warning_msg: Optional[str] = None) -> Optional[PollJobResult]:
-        log.error(f"Job `{job_id}` failed. Reproduce cmd: "
-                  f"./bin/kumo-auto --json {job_config_path}")
+        self,
+        job_id: TrainingJobID,
+        job_config_path: str,
+        warning_msg: Optional[str] = None,
+    ) -> Optional[PollJobResult]:
+        log.error(
+            f'Job `{job_id}` failed. Reproduce cmd: '
+            f'./bin/kumo-auto --json {job_config_path}'
+        )
         # kumo-auto saves its curated message, traceback and warnings in the
         # home dir. The pool deletes the pod and its log on release.
         try:
             home_dir = JobConfig.load(job_config_path).home_dir
             status = TrainStatus.load(home_dir)
         except Exception:
-            log.warning(f"Could not load the train status of job `{job_id}`",
-                        exc_info=True)
+            log.warning(
+                f'Could not load the train status of job `{job_id}`', exc_info=True
+            )
             return None
         if status.stacktrace:
-            log.warning(f"Job `{job_id}` traceback:\n{status.stacktrace}")
+            log.warning(f'Job `{job_id}` traceback:\n{status.stacktrace}')
         # Save warnings even for failed jobs (e.g., batch size reduction before failure)
         warning_msg = warning_msg or status.warning_msg
         if warning_msg:
             _save_training_warning(home_dir, job_id, warning_msg)
-        return PollJobResult(JobState.FAILED, status.error_msg,
-                             status.stacktrace)
+        return PollJobResult(JobState.FAILED, status.error_msg, status.stacktrace)
 
     @connector_activity_registry.connector_authorized_activity(
-        name='postprocess_training_job_output')
+        name='postprocess_training_job_output'
+    )
     @auto_heartbeater
     def postprocess_job_output(
         self,
@@ -118,7 +125,8 @@ class TrainingJobActivities:
         job_config = JobConfig.load(job_config_path)
         home_dir_mgr = HomeDirManager(job_config.home_dir)
         best_trainer_cfg_path = home_dir_mgr.best_trainer_config_path(
-            job_config.task_name)
+            job_config.task_name
+        )
         if not fsutil.exists(best_trainer_cfg_path):
             self.log_failed_job(job_id, job_config_path)
             raise BestTrainerCfgFileMissingError(non_retryable=True)
@@ -129,7 +137,7 @@ class TrainingJobActivities:
 
         best_train_dir = home_dir_mgr.get_best_trainer_dir(job_config.task_name)
         task = load_job_task(job_config)
-        with kumo_timing("training_postprocess.load_best_trainer_first"):
+        with kumo_timing('training_postprocess.load_best_trainer_first'):
             best_trainer = Trainer.load(
                 task.to_task_config(),
                 best_train_dir,
@@ -137,19 +145,19 @@ class TrainingJobActivities:
             )
         automl_cfg = load_job_automl_config(job_config)
         assert isinstance(automl_cfg, ModelPlan)
-        with kumo_timing("training_postprocess.load_metrics"):
-            trainer_metrics, confusion_matrix = (
-                _load_metrics_and_confusion_matrix(
-                    best_trainer,
-                    task.train_table.target_col_name,
-                    automl_cfg,
-                    job_id,
-                ))
+        with kumo_timing('training_postprocess.load_metrics'):
+            trainer_metrics, confusion_matrix = _load_metrics_and_confusion_matrix(
+                best_trainer,
+                task.train_table.target_col_name,
+                automl_cfg,
+                job_id,
+            )
 
-        explain_dir = osp.join(best_trainer.log_dir,
-                               osp.basename(best_trainer.explain_dir("test")))
+        explain_dir = osp.join(
+            best_trainer.log_dir, osp.basename(best_trainer.explain_dir('test'))
+        )
 
-        with kumo_timing("training_postprocess.column_contrib"):
+        with kumo_timing('training_postprocess.column_contrib'):
             column_contrib = ColumnContributionSummary.from_trainer(explain_dir)
 
         # TT-NG never loads the training table's in-memory ``.data``: the
@@ -170,15 +178,16 @@ class TrainingJobActivities:
         prediction_horizons = None
         split_sizes = _split_sizes_from_ttng_split_info(split_info)
 
-        with kumo_timing("training_postprocess.load_best_trainer_second"):
+        with kumo_timing('training_postprocess.load_best_trainer_second'):
             best_trainer = Trainer.load(
                 task.to_task_config(),
                 best_train_dir,
                 version=None,
             )
-        with kumo_timing("training_postprocess.generate_outputs"):
-            _generate_outputs_for_best_trainer(best_trainer.log_dir,
-                                               job_config.home_dir, job_id)
+        with kumo_timing('training_postprocess.generate_outputs'):
+            _generate_outputs_for_best_trainer(
+                best_trainer.log_dir, job_config.home_dir, job_id
+            )
 
         log_dir = home_dir_mgr.automl_dir(job_config.task_name)
         automl_cfg = load_job_automl_config(job_config)
@@ -198,12 +207,18 @@ class TrainingJobActivities:
         if warning_msg:
             _save_training_warning(job_config.home_dir, job_id, warning_msg)
 
-        with kumo_timing("training_postprocess.build_job_results"):
-            return self._build_job_output(job_id, best_train_dir,
-                                          trainer_metrics, reporter,
-                                          column_contrib, time_periods,
-                                          prediction_horizons, confusion_matrix,
-                                          split_sizes)
+        with kumo_timing('training_postprocess.build_job_results'):
+            return self._build_job_output(
+                job_id,
+                best_train_dir,
+                trainer_metrics,
+                reporter,
+                column_contrib,
+                time_periods,
+                prediction_horizons,
+                confusion_matrix,
+                split_sizes,
+            )
 
     def _build_job_output(
         self,
@@ -217,7 +232,7 @@ class TrainingJobActivities:
         confusion_matrix: Optional[BinaryConfusionMatrix],
         split_sizes: SplitSizes,
     ) -> TrainingJobOutput:
-        log.debug("Building the results for job: %s", job_id)
+        log.debug('Building the results for job: %s', job_id)
         output = _make_done_job_output(
             metrics=metrics,
             reporter=reporter,
@@ -233,8 +248,9 @@ class TrainingJobActivities:
         # small enough to flow through the Temporal payload to the
         # save_training_job_output activity (which re-resolves the path).
         if output.results:
-            test_explain_path = osp.join(trainer_dir,
-                                         TRAINING_JOB_TEST_EXPLAIN_FILENAME)
+            test_explain_path = osp.join(
+                trainer_dir, TRAINING_JOB_TEST_EXPLAIN_FILENAME
+            )
             output.results.save_test_explain_to_remote(test_explain_path)
 
         return output
@@ -255,8 +271,7 @@ def _make_done_job_output(
 
     job_progress = reporter.get_training_job_progress()
     if job_progress is None:
-        log.warning("Training progress not available for job at %s",
-                    reporter._log_dir)
+        log.warning('Training progress not available for job at %s', reporter._log_dir)
         training_time = 0
         total_iterations = 0
     else:
@@ -298,15 +313,17 @@ def _make_done_job_output(
     )
 
 
-def _save_training_warning(home_dir: str, job_id: TrainingJobID,
-                           warning_msg: str) -> None:
+def _save_training_warning(
+    home_dir: str, job_id: TrainingJobID, warning_msg: str
+) -> None:
     """Save a training warning to the ValidationResponse file."""
     validation_response = ValidationResponse.load_or_create(home_dir, job_id)
     validation_response.warnings.append(
         ValidationWarning(
-            title="Training Warning",
+            title='Training Warning',
             message=warning_msg,
-        ))
+        )
+    )
     validation_response.save(home_dir, job_id)
 
 
@@ -334,14 +351,16 @@ def _load_ttng_published_metadata(
     if not bundle_dir:
         raise RuntimeError(
             'TT-NG training postprocess requires the materialized task-dataset '
-            'bundle metadata, but no bundle path was resolved.')
+            'bundle metadata, but no bundle path was resolved.'
+        )
 
     def _read_dict(filename: str) -> dict:
         path = osp.join(bundle_dir, filename)
         if not fsutil.exists(path):
             raise RuntimeError(
                 f'TT-NG task-dataset bundle is missing {filename!r} at '
-                f'{path!r}; rematerialize the published ingest extension.')
+                f'{path!r}; rematerialize the published ingest extension.'
+            )
         try:
             payload = json.loads(fsutil.read_text(path))
         except (OSError, ValueError) as ex:
@@ -352,14 +371,14 @@ def _load_ttng_published_metadata(
         if not isinstance(payload, dict):
             raise RuntimeError(
                 f'TT-NG task-dataset bundle has malformed {filename!r} at '
-                f'{path!r}; rematerialize the published ingest extension.')
+                f'{path!r}; rematerialize the published ingest extension.'
+            )
         return payload
 
     return _read_dict('stats.json'), _read_dict('split_info.json')
 
 
-def _time_periods_from_ttng_stats(
-        stats: dict) -> Dict[TrainingStage, TimePeriod]:
+def _time_periods_from_ttng_stats(stats: dict) -> Dict[TrainingStage, TimePeriod]:
     """Derive per-stage time bounds from published TT-NG ``stats.json``.
 
     Groups ``stats.payload.split_payload.artifacts_v3.timestamp_stage_assignments``
@@ -369,8 +388,14 @@ def _time_periods_from_ttng_stats(
     on the manifest directly so this re-projection can go.
     """
     from datetime import timezone
-    assignments = (stats.get('payload', {}).get('split_payload', {}).get(
-        'artifacts_v3', {}).get('timestamp_stage_assignments') or [])
+
+    assignments = (
+        stats.get('payload', {})
+        .get('split_payload', {})
+        .get('artifacts_v3', {})
+        .get('timestamp_stage_assignments')
+        or []
+    )
     if not assignments:
         return {}
     stage_map = {
@@ -434,15 +459,16 @@ def _get_confusion(
     return get_confusion_matrix(target, prob, thresholds)
 
 
-def _generate_outputs_for_best_trainer(log_dir: str, home_dir: str,
-                                       job_id: JobID) -> None:
+def _generate_outputs_for_best_trainer(
+    log_dir: str, home_dir: str, job_id: JobID
+) -> None:
     """Generates outputs (eg. regression histogram) from the log_dir of the
     best trainer, to home_dir/outputs, so that the REST API can display
     them on the UI more easily. This also may apply some transformations to
     standardize the data structures, as these data structures should remain
     backwards-compatible across code versions.
     """
-    log.debug("Copying outputs for the best trainer: %s", job_id)
+    log.debug('Copying outputs for the best trainer: %s', job_id)
     # In theory, it is possible for copying to unexpectedly fail if the k8s
     # trainer is running old (incompatible) version of code, so we catch
     # and log exceptions.
@@ -450,9 +476,12 @@ def _generate_outputs_for_best_trainer(log_dir: str, home_dir: str,
         generate_regression_histogram(log_dir, home_dir)
     except Exception:
         log.exception(
-            "Failed to copy regression histogram for "
-            "job_id=%s best_trainer.log_dir=%s home_dir=%s", job_id, log_dir,
-            home_dir)
+            'Failed to copy regression histogram for '
+            'job_id=%s best_trainer.log_dir=%s home_dir=%s',
+            job_id,
+            log_dir,
+            home_dir,
+        )
 
     # TODO(zack): confusion matrix should be moved here, rather than being
     # stored in the db and returned as a temporal RPC response, since it
@@ -466,25 +495,33 @@ def generate_regression_histogram(log_dir: str, home_dir: str) -> None:
 
     val_stats = load_json(
         EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.VAL),
-        TargetHistogramAndStatsPair, default=None, raise_on_missing=False)
+        TargetHistogramAndStatsPair,
+        default=None,
+        raise_on_missing=False,
+    )
     if val_stats is not None:
         stats.label_distribution.val_table_stats = val_stats.label
-        stats.prediction_distribution.val_table_stats = (val_stats.prediction)
+        stats.prediction_distribution.val_table_stats = val_stats.prediction
 
     test_stats = load_json(
         EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.TEST),
-        TargetHistogramAndStatsPair, default=None, raise_on_missing=False)
+        TargetHistogramAndStatsPair,
+        default=None,
+        raise_on_missing=False,
+    )
     if test_stats is not None:
         stats.label_distribution.test_table_stats = test_stats.label
-        stats.prediction_distribution.test_table_stats = (test_stats.prediction)
+        stats.prediction_distribution.test_table_stats = test_stats.prediction
 
     train_stats = load_json(
         EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.TRAIN),
-        TargetHistogramAndStatsPair, default=None, raise_on_missing=False)
+        TargetHistogramAndStatsPair,
+        default=None,
+        raise_on_missing=False,
+    )
     if train_stats is not None:
         stats.label_distribution.train_table_stats = train_stats.label
-        stats.prediction_distribution.train_table_stats = (
-            train_stats.prediction)
+        stats.prediction_distribution.train_table_stats = train_stats.prediction
 
     mgr = HomeDirManager(home_dir)
     save_json(stats, mgr.all_target_regression_stats)
@@ -513,7 +550,7 @@ def _load_metrics_and_confusion_matrix(
     """
     metrics: Dict[str, float] = {}
 
-    log.debug("Getting validation result for the best trainer: %s", job_id)
+    log.debug('Getting validation result for the best trainer: %s', job_id)
     val_results_path = EvalOutput.get_output_path(
         trainer.log_dir,
         TrainingStage.VAL,
@@ -522,8 +559,8 @@ def _load_metrics_and_confusion_matrix(
         val_results = EvalOutput.load(val_results_path)
     except Exception as ex:
         msg = (
-            "Unable to fetch evaluation metrics on the validation dataset. "
-            "Training may have failed before evaluation completed; check training logs."
+            'Unable to fetch evaluation metrics on the validation dataset. '
+            'Training may have failed before evaluation completed; check training logs.'
         )
         raise TrainingJobOutputError(
             message=msg,
@@ -532,7 +569,7 @@ def _load_metrics_and_confusion_matrix(
         ) from ex
     metrics.update(val_results.metrics)
 
-    log.debug("Getting test result for the best trainer: %s ", job_id)
+    log.debug('Getting test result for the best trainer: %s ', job_id)
     test_results_path = EvalOutput.get_output_path(
         trainer.log_dir,
         TrainingStage.TEST,
@@ -545,7 +582,7 @@ def _load_metrics_and_confusion_matrix(
         log.exception(e)
 
     if automl_cfg.training_job.refit_trainval:
-        log.debug("Getting refit result for the best trainer: %s", job_id)
+        log.debug('Getting refit result for the best trainer: %s', job_id)
         orig_fit_mode = trainer.fit_mode
         trainer.fit_mode = FitMode.refit_trainval
         refit_results_path = EvalOutput.get_output_path(
@@ -555,14 +592,16 @@ def _load_metrics_and_confusion_matrix(
         trainer.fit_mode = orig_fit_mode
         try:
             refit_results = EvalOutput.load(refit_results_path)
-            metrics.update({
-                key.replace('test_', 'test_refit_'): value
-                for key, value in refit_results.metrics.items()
-            })
+            metrics.update(
+                {
+                    key.replace('test_', 'test_refit_'): value
+                    for key, value in refit_results.metrics.items()
+                }
+            )
         except Exception as e:
             log.exception(e)
 
-    log.debug("Getting training eval metrics for the best trainer: %s", job_id)
+    log.debug('Getting training eval metrics for the best trainer: %s', job_id)
     train_results = _with_train_prefix(trainer.get_train_results())
     metrics.update(train_results)
 
@@ -585,8 +624,8 @@ def _with_train_prefix(results: Dict[str, float]) -> Dict[str, float]:
 # This is an expensive operation that loads data from s3
 @lru_cache(maxsize=None)
 def _get_metrics(
-        job_config_path: str, best_train_dir: str,
-        job_id: JobID) -> Tuple[List[Metric], Optional[TestEvalResults]]:
+    job_config_path: str, best_train_dir: str, job_id: JobID
+) -> Tuple[List[Metric], Optional[TestEvalResults]]:
     job_config: JobConfig = JobConfig.load(job_config_path)
     task: Task = load_job_task(job_config)
     best_trainer = Trainer.load(
@@ -619,17 +658,18 @@ def load_job_results(
     job_id: str,
 ) -> Tuple[TrainingJobInputJSON, Optional[TrainingJobResults]]:
     # Configuration
-    log.debug("Loading configs: %s", job_id)
+    log.debug('Loading configs: %s', job_id)
     job_config: JobConfig = JobConfig.load(job_config_path)
     home_dir_mgr = HomeDirManager(job_config.home_dir)
 
     # Get input
     # Could not parse to TrainingJobInput due to validator error
     job_input: TrainingJobInputJSON = load_json(
-        home_dir_mgr.training_job_input_file, Dict)
+        home_dir_mgr.training_job_input_file, Dict
+    )
 
     # Load progress
-    log.debug("Loading progress: %s", job_id)
+    log.debug('Loading progress: %s', job_id)
     log_dir = home_dir_mgr.automl_dir(job_config.task_name)
     automl_cfg = load_job_automl_config(job_config)
     assert isinstance(automl_cfg, ModelPlan)
@@ -643,25 +683,25 @@ def load_job_results(
 
     job_progress = reporter.get_training_job_progress()
     if job_progress is None:
-        log.warning("Training progress not available for job %s", job_id)
+        log.warning('Training progress not available for job %s', job_id)
         return job_input, None
 
     training_time = job_progress.elapsed_time.seconds
     total_iterations = job_progress.iterations_completed
 
     # Load metrics
-    log.debug("Loading trainer: %s", job_id)
+    log.debug('Loading trainer: %s', job_id)
     try:
         best_train_dir = home_dir_mgr.get_best_trainer_dir(job_config.task_name)
     except RuntimeError:
-        log.warning("Best trainer not available for job %s", job_id)
+        log.warning('Best trainer not available for job %s', job_id)
         return job_input, None
 
-    metric_list, test_eval = _get_metrics(job_config_path, best_train_dir,
-                                          job_id)
+    metric_list, test_eval = _get_metrics(job_config_path, best_train_dir, job_id)
 
-    test_explain_file_path = osp.join(best_train_dir,
-                                      TRAINING_JOB_TEST_EXPLAIN_FILENAME)
+    test_explain_file_path = osp.join(
+        best_train_dir, TRAINING_JOB_TEST_EXPLAIN_FILENAME
+    )
 
     results = TrainingJobResults(
         total_training_time_sec=training_time,

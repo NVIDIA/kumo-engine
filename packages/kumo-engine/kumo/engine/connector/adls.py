@@ -33,8 +33,10 @@ class ADLSConnector(Connector):
             ``abfss://curated@companylake.dfs.core.windows.net/orders/``.
         identity: An ADLS workload identity; None selects ambient credentials.
     """
-    def __init__(self, *, root_dir: Optional[str] = None,
-                 identity: Optional[ADLSIdentity] = None) -> None:
+
+    def __init__(
+        self, *, root_dir: Optional[str] = None, identity: Optional[ADLSIdentity] = None
+    ) -> None:
         super().__init__(identity=identity)
         if root_dir is None:
             target = ADLSAnyURIConnectorTarget()
@@ -43,8 +45,11 @@ class ADLSConnector(Connector):
             filesystem, host = parsed.netloc.split('@', 1)
             storage_account, suffix = host.split('.', 1)
             target = ADLSRootedConnectorTarget(
-                storage_account=storage_account, filesystem=filesystem,
-                prefix=unquote(parsed.path).strip('/'), endpoint_suffix=suffix)
+                storage_account=storage_account,
+                filesystem=filesystem,
+                prefix=unquote(parsed.path).strip('/'),
+                endpoint_suffix=suffix,
+            )
         self._config = ADLSConnectorResourceConfig(target=target)
         self.target = target
         self.any_uri = isinstance(target, ADLSAnyURIConnectorTarget)
@@ -72,10 +77,10 @@ class ADLSConnector(Connector):
         return backend(identity=self.identity)
 
     def source_table_for(self, table_name: str):
-        return self.source_backend.get_table_config(self,
-                                                    table_name).source_table
+        return self.source_backend.get_table_config(self, table_name).source_table
 
     def __repr__(self) -> str:
         return (
             f'{type(self).__name__}(storage_account={self.storage_account!r}, '
-            f'filesystem={self.filesystem!r}, prefix={self.prefix!r})')
+            f'filesystem={self.filesystem!r}, prefix={self.prefix!r})'
+        )

@@ -35,8 +35,7 @@ from statedb.config.common import (
 from statedb.utils.errors import PredictiveQueryDoesNotExistError
 
 
-def _internal_pquery_from_public(
-        resource: api.PQueryResource) -> PQueryResource:
+def _internal_pquery_from_public(resource: api.PQueryResource) -> PQueryResource:
     r"""Build the internal DTO from the complete public field allowlist."""
     return PQueryResource(
         query_string=resource.query_string,
@@ -46,8 +45,7 @@ def _internal_pquery_from_public(
     )
 
 
-def _public_pquery_from_internal(
-        resource: PQueryResource) -> api.PQueryResource:
+def _public_pquery_from_internal(resource: PQueryResource) -> api.PQueryResource:
     r"""Project an internal PQuery onto the exact public response fields."""
     return api.PQueryResource(
         query_string=resource.query_string,
@@ -68,8 +66,8 @@ class PQueryRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/predictive_queries",
-            tags=["API v1 (Under Development): Predictive Queries"],
+            prefix='/predictive_queries',
+            tags=['API v1 (Under Development): Predictive Queries'],
             dependencies=[Depends(api_key_auth)],
         )
 
@@ -81,105 +79,100 @@ class PQueryRouter:
         #   updating amounts to updating a template.
         _create_responses: Dict[Union[int, str], Dict[str, Any]] = {
             HTTPStatus.BAD_REQUEST: {
-                'description':
-                "Cannot create a new predictive query as the query name "
-                "already exists."
+                'description': 'Cannot create a new predictive query as the query name '
+                'already exists.'
             },
             HTTPStatus.UNPROCESSABLE_ENTITY: {
-                'description':
-                "The predictive query definition is invalid, including when "
-                "a required physical source is missing or unavailable."
+                'description': 'The predictive query definition is invalid, including when '
+                'a required physical source is missing or unavailable.'
             },
         }
         self.router.add_api_route(
-            "",
+            '',
             self.create_pquery,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a new predictive query with its full definition.",
+            summary='Create a new predictive query with its full definition.',
             responses=_create_responses,
         )
         self.router.add_api_route(
-            "/",
+            '/',
             self.create_pquery,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a new predictive query with its full definition.",
+            summary='Create a new predictive query with its full definition.',
             responses=_create_responses,
             include_in_schema=False,
         )
 
         # Read: either from a name or an FPID
         self.router.add_api_route(
-            "/{pquery_id}",
+            '/{pquery_id}',
             self.get_pquery,
             response_model=api.PQueryResource,
             methods=['GET'],
-            summary="Get a predictive query with its full definition.",
+            summary='Get a predictive query with its full definition.',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the predictive query with the given name."
+                    'description': 'Unable to find the predictive query with the given name.'
                 }
             },
         )
 
         # Delete: by name only
         self.router.add_api_route(
-            "/{pquery_id}",
+            '/{pquery_id}',
             self.delete_pquery,
             response_model=EmptyResponse,
             methods=['DELETE'],
-            summary="Delete a predictive query.",
+            summary='Delete a predictive query.',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the predictive query with the given name."
+                    'description': 'Unable to find the predictive query with the given name.'
                 }
             },
         )
 
         # List: all named predictive queries (templates)
         self.router.add_api_route(
-            "",
+            '',
             self.list_pqueries,
             response_model=List[api.PQueryResource],
             methods=['GET'],
-            summary="List predictive queries matching a name pattern.",
+            summary='List predictive queries matching a name pattern.',
         )
         self.router.add_api_route(
-            "/",
+            '/',
             self.list_pqueries,
             response_model=List[api.PQueryResource],
             methods=['GET'],
-            summary="List predictive queries matching a name pattern.",
+            summary='List predictive queries matching a name pattern.',
             include_in_schema=False,
         )
 
         # Utilities ###########################################################
 
         self.router.add_api_route(
-            "/validate",
+            '/validate',
             self.validate_pquery,
             methods=['POST'],
-            summary="Validates this predictive query.",
+            summary='Validates this predictive query.',
         )
 
         self.router.add_api_route(
-            "/infer_task_type",
+            '/infer_task_type',
             self.infer_task_type,
             response_model=Tuple[TaskType, str],
             methods=['POST'],
-            summary="Returns the task type of this predictive query.",
+            summary='Returns the task type of this predictive query.',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description': "Unable to find the graph with the given id."
+                    'description': 'Unable to find the graph with the given id.'
                 },
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description':
-                    "The predictive query is semantically invalid for the "
-                    "given graph."
-                }
+                    'description': 'The predictive query is semantically invalid for the '
+                    'given graph.'
+                },
             },
         )
 
@@ -188,11 +181,10 @@ class PQueryRouter:
             self.get_default_model_plan,
             response_model=plan_api.ModelPlanInfo,
             methods=['POST'],
-            summary="Suggest default model plan for this predictive query.",
+            summary='Suggest default model plan for this predictive query.',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the predictive query with the given name."
+                    'description': 'Unable to find the predictive query with the given name.'
                 }
             },
         )
@@ -202,12 +194,12 @@ class PQueryRouter:
             self.get_default_train_table_generation_plan,
             response_model=plan_api.TrainingTableGenerationPlan,
             methods=['POST'],
-            summary=('Suggest default train-table generation plan for '
-                     'this predictive query.'),
+            summary=(
+                'Suggest default train-table generation plan for this predictive query.'
+            ),
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the predictive query with the given name."
+                    'description': 'Unable to find the predictive query with the given name.'
                 }
             },
         )
@@ -218,8 +210,8 @@ class PQueryRouter:
         project_id: str,
         # Internal testing only.
         dialect: Annotated[
-            QueryDialect,
-            Query(include_in_schema=False)] = QueryDialect.PQLANG_V2,
+            QueryDialect, Query(include_in_schema=False)
+        ] = QueryDialect.PQLANG_V2,
     ) -> IDResponse:
         with wrap_driver_errors({KeyError: HTTPStatus.BAD_REQUEST}):
             pq_res = _internal_pquery_from_public(pquery_resource)
@@ -238,16 +230,19 @@ class PQueryRouter:
             try:
                 pquery_id = PredictiveQueryID.from_public(pquery_id)
             except BaseException as e:
-                raise ValueError(f'Predictive query resource id is malformed '
-                                 f': {pquery_id}') from e
+                raise ValueError(
+                    f'Predictive query resource id is malformed : {pquery_id}'
+                ) from e
 
         with (
-                wrap_driver_errors(
-                    {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}),
-                wrap_validation_exceptions(PredictiveQueryDoesNotExistError),
+            wrap_driver_errors(
+                {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+            ),
+            wrap_validation_exceptions(PredictiveQueryDoesNotExistError),
         ):
             resource = await self._driver.get_predictive_query_v2(
-                pquery_id, ProjectID(project_id))
+                pquery_id, ProjectID(project_id)
+            )
             return _public_pquery_from_internal(resource)
 
     async def list_pqueries(
@@ -259,25 +254,27 @@ class PQueryRouter:
             driver = self._driver
             name_pattern = name_pattern or '.*'
             resources = await driver.list_predictive_queries_v2(
-                ProjectID(project_id), name_pattern)
-            return [
-                _public_pquery_from_internal(resource) for resource in resources
-            ]
+                ProjectID(project_id), name_pattern
+            )
+            return [_public_pquery_from_internal(resource) for resource in resources]
 
     async def delete_pquery(
-            self,
-            pquery_id: PredictiveQueryID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        pquery_id: PredictiveQueryID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EmptyResponse:
         if PredictiveQueryID.has_fpid(pquery_id):
             raise HTTPException(
                 HTTPStatus.FORBIDDEN,
-                'Not allowed to delete a frozen unnamed pquery definition.')
+                'Not allowed to delete a frozen unnamed pquery definition.',
+            )
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
-            await self._driver.delete_predictive_query(ctx, pquery_id,
-                                                       ProjectID(project_id))
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
+            await self._driver.delete_predictive_query(
+                ctx, pquery_id, ProjectID(project_id)
+            )
         return EmptyResponse()
 
     async def get_default_model_plan(
@@ -286,14 +283,14 @@ class PQueryRouter:
         project_id: str,
         # Internal testing only.
         dialect: Annotated[
-            QueryDialect,
-            Query(include_in_schema=False)] = QueryDialect.PQLANG_V2,
+            QueryDialect, Query(include_in_schema=False)
+        ] = QueryDialect.PQLANG_V2,
     ) -> plan_api.ModelPlanInfo:
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
             has_weight_col = False
-            if hasattr(request,
-                       'train_table_spec') and request.train_table_spec:
+            if hasattr(request, 'train_table_spec') and request.train_table_spec:
                 has_weight_col = request.train_table_spec.weight_col is not None  # noqa: E501
             plan_info = await self._driver.get_pquery_default_model_plan(
                 request.query_string,
@@ -316,19 +313,24 @@ class PQueryRouter:
         project_id: str,
         # Internal testing only.
         dialect: Annotated[
-            QueryDialect,
-            Query(include_in_schema=False)] = QueryDialect.PQLANG_V2,
+            QueryDialect, Query(include_in_schema=False)
+        ] = QueryDialect.PQLANG_V2,
     ) -> plan_api.TrainingTableGenerationPlan:
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
             plan_info = await self._driver.get_pquery_default_model_plan(
-                request.query_string, GraphIDv2.from_public(request.graph_id),
-                request.run_mode, ProjectID(project_id))
+                request.query_string,
+                GraphIDv2.from_public(request.graph_id),
+                request.run_mode,
+                ProjectID(project_id),
+            )
 
         # Same as `get_default_model_plan`:
         return from_json(
             to_json(plan_info.model_plan.training_table_generation),
-            plan_api.TrainingTableGenerationPlan)
+            plan_api.TrainingTableGenerationPlan,
+        )
 
     # Utilities ###############################################################
 
@@ -360,8 +362,8 @@ class PQueryRouter:
         project_id: str,
         # Internal testing only.
         dialect: Annotated[
-            QueryDialect,
-            Query(include_in_schema=False)] = QueryDialect.PQLANG_V2,
+            QueryDialect, Query(include_in_schema=False)
+        ] = QueryDialect.PQLANG_V2,
     ) -> ValidationResponse:
         """Return semantic validation results for a predictive query.
 

@@ -49,13 +49,12 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
-from kumo_core.model_plan import ModelPlanValueError
-from kumo_core.model_plan import \
-    TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan import (
+    ModelPlanValueError,
     inferred_or_missing_type_to_none,
     unsupported_entity_candidate_errors,
 )
+from kumo_core.model_plan import TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
@@ -107,8 +106,7 @@ class PredictiveQuery:
     query: str
 
     @classmethod
-    def _from_snapshot(cls, snapshot: GraphSnapshot,
-                       query: str) -> 'PredictiveQuery':
+    def _from_snapshot(cls, snapshot: GraphSnapshot, query: str) -> 'PredictiveQuery':
         return cls(graph=snapshot, query=query)
 
     @cached_property
@@ -152,9 +150,10 @@ class PredictiveQuery:
             graph_key = self.graph.id
         if snapshot._graph_key != graph_key:
             raise ValueError(
-                f"snapshot {snapshot.id!r} was not materialized from "
+                f'snapshot {snapshot.id!r} was not materialized from '
                 f"this query's graph (id {graph_key!r}) -- pass a "
-                "snapshot of that graph.")
+                'snapshot of that graph.'
+            )
 
     def validate(self, verbose: bool = True) -> ValidationResponse:
         r"""Return validation warnings and information for a valid query.
@@ -170,7 +169,7 @@ class PredictiveQuery:
         response = deepcopy(self._parsed.validation_response)
         if verbose:
             if response.empty():
-                logger.info("Query %s is configured correctly.", self.query)
+                logger.info('Query %s is configured correctly.', self.query)
             else:
                 logger.warning(response.message())
         return response
@@ -219,11 +218,12 @@ class PredictiveQuery:
         parsed = self._parsed
         plan = CoreModelPlan.from_default(
             **self._model_plan_validation_facts(run_mode),
-            has_train_table_weight_col=(train_table_spec is not None
-                                        and train_table_spec.weight_col
-                                        is not None),
-            forecast_length=(parsed.forecast_length
-                             if parsed.task_type == "forecasting" else None),
+            has_train_table_weight_col=(
+                train_table_spec is not None and train_table_spec.weight_col is not None
+            ),
+            forecast_length=(
+                parsed.forecast_length if parsed.task_type == 'forecasting' else None
+            ),
             top_k=parsed.query.top_k,
         )
         return public_model_plan_from_internal(plan)
@@ -256,12 +256,16 @@ class PredictiveQuery:
             if plan is not None and getattr(plan, name) is not None:
                 raise ValueError(
                     f"'{name}' is not supported by native training-table "
-                    "generation; use TrainingTable.from_source_table() to "
-                    "train on existing labeled rows.")
+                    'generation; use TrainingTable.from_source_table() to '
+                    'train on existing labeled rows.'
+                )
         from kumo_core.io.json import from_json_dict
 
-        options = (CoreGenerationPlan() if plan is None else from_json_dict(
-            to_json_dict(plan), CoreGenerationPlan))
+        options = (
+            CoreGenerationPlan()
+            if plan is None
+            else from_json_dict(to_json_dict(plan), CoreGenerationPlan)
+        )
         value = inferred_or_missing_type_to_none(options.split)
         if value is not None:
             split = resolve_query_split(self._parsed, value)
@@ -280,35 +284,37 @@ class PredictiveQuery:
             has_train_table_weight_col=False,
         )
         for warning in warnings:
-            logger.warning(f"{warning.title}: {warning.message}")
+            logger.warning(f'{warning.title}: {warning.message}')
         if errors:
             raise ModelPlanValueError(errors)
 
         started = start()
         run_dir = train_table_scratch_dir(new_run_id())
         run_dir.mkdir(parents=True, exist_ok=True)
-        workflow, task_plan, generated = self._generate(
-            snapshot, options, run_dir)
+        workflow, task_plan, generated = self._generate(snapshot, options, run_dir)
 
         generation_plan = options
         if workflow.query.query_type == 'temporal':
             offset = workflow.query.query.get_combined_date_offset_range()
             timeframe_step = inferred_or_missing_type_to_none(
-                generation_plan.timeframe_step)
+                generation_plan.timeframe_step
+            )
             generation_plan = replace(
                 generation_plan,
-                timeframe_step=(int(timeframe_step) if timeframe_step
-                                is not None else int(offset.end) -
-                                int(offset.start or 0)),
+                timeframe_step=(
+                    int(timeframe_step)
+                    if timeframe_step is not None
+                    else int(offset.end) - int(offset.start or 0)
+                ),
             )
         if workflow.query.task_type == 'forecasting':
             generation_plan = replace(
                 generation_plan,
                 forecast_length=workflow.query.forecast_length,
                 lag_timesteps=task_plan.train_table.lag_timesteps,
-                year_over_year=('yoy_offsets_secs'
-                                in (task_plan.train_table.compiler_options
-                                    or {})),
+                year_over_year=(
+                    'yoy_offsets_secs' in (task_plan.train_table.compiler_options or {})
+                ),
             )
 
         table = TrainingTable(
@@ -319,13 +325,20 @@ class PredictiveQuery:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        return finish_generated(table, snapshot, task_plan.train_table,
-                                mlops, started=started)
+        return finish_generated(
+            table, snapshot, task_plan.train_table, mlops, started=started
+        )
 
-    def _generate(self, snapshot: GraphSnapshot, options: CoreGenerationPlan,
-                  run_dir: Path, *, timestamps: tuple[int, ...] = (),
-                  validate_targets: bool = True,
-                  purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING) -> tuple:
+    def _generate(
+        self,
+        snapshot: GraphSnapshot,
+        options: CoreGenerationPlan,
+        run_dir: Path,
+        *,
+        timestamps: tuple[int, ...] = (),
+        validate_targets: bool = True,
+        purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
+    ) -> tuple:
         workflow = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=self.query,
@@ -341,13 +354,21 @@ class PredictiveQuery:
         )
         with no_encoder_inference_warnings():
             task_plan = build_training_task_plan(workflow, purpose=purpose)
-        return workflow, task_plan, generate_train_table(
-            task_plan.train_table, validate_targets=validate_targets)
+        return (
+            workflow,
+            task_plan,
+            generate_train_table(
+                task_plan.train_table, validate_targets=validate_targets
+            ),
+        )
 
     @contextmanager
     def _label_parts(
-            self, snapshot: GraphSnapshot, timestamps: tuple[int, ...],
-            plan: Optional[TrainingTableGenerationPlan]) -> Iterator[list]:
+        self,
+        snapshot: GraphSnapshot,
+        timestamps: tuple[int, ...],
+        plan: Optional[TrainingTableGenerationPlan],
+    ) -> Iterator[list]:
         import shutil
 
         from kumo_core.io.json import from_json_dict
@@ -355,20 +376,26 @@ class PredictiveQuery:
         # The fit's split ranges do not cover later evaluation anchors.
         options = CoreGenerationPlan()
         if plan is not None:
-            options = replace(from_json_dict(to_json_dict(plan),
-                                             CoreGenerationPlan),
-                              split=options.split)
+            options = replace(
+                from_json_dict(to_json_dict(plan), CoreGenerationPlan),
+                split=options.split,
+            )
         run_dir = train_table_scratch_dir(new_run_id())
         run_dir.mkdir(parents=True, exist_ok=True)
         staging = None
         try:
-            _, _, generated = self._generate(snapshot, options, run_dir,
-                                             timestamps=timestamps,
-                                             validate_targets=False,
-                                             purpose=TaskPlanPurpose.LABELS)
+            _, _, generated = self._generate(
+                snapshot,
+                options,
+                run_dir,
+                timestamps=timestamps,
+                validate_targets=False,
+                purpose=TaskPlanPurpose.LABELS,
+            )
             staging = Path(generated.staging_dir)
-            yield sorted(str(part) for part in Path(
-                generated.train_table_path).glob('*.parquet'))
+            yield sorted(
+                str(part) for part in Path(generated.train_table_path).glob('*.parquet')
+            )
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)

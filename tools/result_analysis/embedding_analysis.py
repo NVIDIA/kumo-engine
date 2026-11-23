@@ -43,14 +43,14 @@ def l2_norm(x):
     return float(np.linalg.norm(x))
 
 
-def cosine_comparison(df1_embeds: DataFrame,
-                      df2_embeds: DataFrame) -> DataFrame:
+def cosine_comparison(df1_embeds: DataFrame, df2_embeds: DataFrame) -> DataFrame:
     e1_df = df1_embeds.select('ID', F.col('EMBEDDING').alias('EMBEDDING_1'))
     e2_df = df2_embeds.select('ID', F.col('EMBEDDING').alias('EMBEDDING_2'))
     joined_df = e1_df.join(e2_df, 'ID')
     joined_df.show()
     result_df = joined_df.withColumn(
-        'cosine', cosine_similarity('EMBEDDING_1', 'EMBEDDING_2'))
+        'cosine', cosine_similarity('EMBEDDING_1', 'EMBEDDING_2')
+    )
     result_df.show()
     return result_df
 
@@ -60,6 +60,5 @@ def l2_comparison(df1_embeds: DataFrame, df2_embeds: DataFrame) -> DataFrame:
     e2_df = df2_embeds.select('ID', F.col('EMBEDDING').alias('EMBEDDING_2'))
     joined_df = e1_df.join(e2_df, 'ID')
     joined_df.show()
-    result_df = joined_df.withColumn('l2',
-                                     l2_distance('EMBEDDING_1', 'EMBEDDING_2'))
+    result_df = joined_df.withColumn('l2', l2_distance('EMBEDDING_1', 'EMBEDDING_2'))
     return result_df

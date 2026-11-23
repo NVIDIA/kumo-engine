@@ -13,13 +13,16 @@ from kumo_core.sources.identity import (
     hour_version,
 )
 from kumo_core.sources.sql import resolve_snowflake_identifier
+
 from kumo_snowflake.sql import placeholder, quote_identifier
 
-VIEW_TYPES = frozenset({"VIEW", "MATERIALIZED VIEW"})
+VIEW_TYPES = frozenset({'VIEW', 'MATERIALIZED VIEW'})
 
-ALTERED_QUERY = ("select TABLE_NAME, LAST_ALTERED from {database}"
-                 ".INFORMATION_SCHEMA.TABLES "
-                 "where TABLE_SCHEMA = {mark} and TABLE_NAME = {mark}")
+ALTERED_QUERY = (
+    'select TABLE_NAME, LAST_ALTERED from {database}'
+    '.INFORMATION_SCHEMA.TABLES '
+    'where TABLE_SCHEMA = {mark} and TABLE_NAME = {mark}'
+)
 
 
 def resolved_table_name(
@@ -51,29 +54,32 @@ def resolved_table_name(
         candidates.append(folded)
 
     mark = placeholder(cursor)
-    marks = ", ".join(mark for _ in candidates)
+    marks = ', '.join(mark for _ in candidates)
     cursor.execute(
-        ("select TABLE_NAME from "
-         f"{quote_identifier(database)}.INFORMATION_SCHEMA.TABLES "
-         f"where TABLE_SCHEMA = {mark} and TABLE_NAME in ({marks})"),
+        (
+            'select TABLE_NAME from '
+            f'{quote_identifier(database)}.INFORMATION_SCHEMA.TABLES '
+            f'where TABLE_SCHEMA = {mark} and TABLE_NAME in ({marks})'
+        ),
         (schema, *candidates),
     )
     found = {str(row[0]) for row in cursor.fetchall()}
     for candidate in candidates:
         if candidate in found:
             return candidate
-    raise SourceNotFoundError(f"snowflake has no {schema}.{table} to read",
-                              table=table)
+    raise SourceNotFoundError(f'snowflake has no {schema}.{table} to read', table=table)
 
 
 def is_view(cursor: Any, *, database: str, schema: str, table: str) -> bool:
     """Materialized views are absent from ``INFORMATION_SCHEMA.VIEWS``, so
     the type is read from the table listing that carries both kinds."""
     from kumo_snowflake.catalog import table_type
+
     kind = table_type(cursor, database=database, schema=schema, table=table)
     if kind is None:
-        raise SourceNotFoundError(f"snowflake has no {schema}.{table} to stamp",
-                                  table=table)
+        raise SourceNotFoundError(
+            f'snowflake has no {schema}.{table} to stamp', table=table
+        )
     return kind in VIEW_TYPES
 
 
@@ -91,28 +97,31 @@ def data_version(
     reads as local time.
     """
     import pandas as pd
+
     if is_view(cursor, database=database, schema=schema, table=table):
         return hour_version()
     cursor.execute(
-        ALTERED_QUERY.format(database=quote_identifier(database),
-                             mark=placeholder(cursor)), (schema, table))
+        ALTERED_QUERY.format(
+            database=quote_identifier(database), mark=placeholder(cursor)
+        ),
+        (schema, table),
+    )
     altered = {str(row[0]): row[1] for row in cursor.fetchall()}
     if table not in altered:
         return hour_version()
-    return SourceVersion(epoch_second(pd.to_datetime(altered[table])),
-                         "timestamp")
+    return SourceVersion(epoch_second(pd.to_datetime(altered[table])), 'timestamp')
 
 
 class MissingColumnTypesError(PermanentSourceError):
     def __init__(self, columns: Iterable[str]) -> None:
         self.columns = tuple(sorted(columns))
         super().__init__(
-            f"snowflake reported no type for {list(self.columns)}, whose "
-            f"timezone semantics decide how they must be cast")
+            f'snowflake reported no type for {list(self.columns)}, whose '
+            f'timezone semantics decide how they must be cast'
+        )
 
 
-def column_types(cursor: Any, source: str,
-                 columns: Iterable[str]) -> Mapping[str, str]:
+def column_types(cursor: Any, source: str, columns: Iterable[str]) -> Mapping[str, str]:
     """``describe`` compiles without executing, so the types are free. A name
     is matched case-insensitively only where that is unambiguous, since two
     quoted identifiers may differ by case alone.
@@ -122,13 +131,10 @@ def column_types(cursor: Any, source: str,
     wanted = set(columns)
     if not wanted:
         return {}
-    metadata = cursor.describe(f"SELECT * FROM {source}")
+    metadata = cursor.describe(f'SELECT * FROM {source}')
     if metadata is None:
         metadata = cursor.description
-    declared = {
-        column.name: FIELD_ID_TO_NAME[column.type_code]
-        for column in metadata
-    }
+    declared = {column.name: FIELD_ID_TO_NAME[column.type_code] for column in metadata}
     folded: dict[str, list[str]] = {}
     for name, type_name in declared.items():
         folded.setdefault(name.upper(), []).append(type_name)

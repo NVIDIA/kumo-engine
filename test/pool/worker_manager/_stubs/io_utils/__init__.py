@@ -9,7 +9,8 @@ integration tests we only need the two symbols K8sPoolWorkerManager
 imports — kumo_dataclass + logging.getLogger — so we provide minimal
 stdlib-backed equivalents and skip the dep tree.
 """
+
 from . import logging
 from .dataclasses import kumo_dataclass
 
-__all__ = ["kumo_dataclass", "logging"]
+__all__ = ['kumo_dataclass', 'logging']

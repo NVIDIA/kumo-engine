@@ -40,7 +40,8 @@ def canonical_uri(path: str) -> str:
     """Serialize an account-qualified file or directory path."""
     authority, _, key = path.partition('/')
     return normalize_adls_root_uri(
-        f'abfss://{authority}/{quote(key, safe="/-._~!$&()*+,;=:@")}')
+        f'abfss://{authority}/{quote(key, safe="/-._~!$&()*+,;=:@")}'
+    )
 
 
 class ADLSSessions(ObjectStoreSessions):
@@ -59,19 +60,20 @@ class ADLSSessions(ObjectStoreSessions):
         target = self._target_config(connector).target
         if not isinstance(target, self.rooted):
             return None
-        authority = (f'{target.filesystem}@{target.storage_account}.'
-                     f'{target.endpoint_suffix}')
+        authority = (
+            f'{target.filesystem}@{target.storage_account}.{target.endpoint_suffix}'
+        )
         return ObjectStoreRoot(authority, target.prefix)
 
     @staticmethod
     def _contained_key(root, uri, *, purpose, directory=False):
-        normalize = (normalize_adls_root_uri if directory else
-                     normalize_adls_source_uri)
+        normalize = normalize_adls_root_uri if directory else normalize_adls_source_uri
         parsed = urlsplit(normalize(uri))
         key = unquote(parsed.path).lstrip('/')
         prefix = root.prefix.rstrip('/')
-        outside_prefix = (bool(prefix) and key != prefix
-                          and not key.startswith(prefix + '/'))
+        outside_prefix = (
+            bool(prefix) and key != prefix and not key.startswith(prefix + '/')
+        )
         if parsed.netloc != root.bucket or outside_prefix:
             raise ValueError(f'ADLS {purpose} is outside the connector root')
         return key
@@ -80,15 +82,14 @@ class ADLSSessions(ObjectStoreSessions):
         if '://' in coordinate:
             key = self._contained_key(root, coordinate, purpose=purpose)
             prefix = root.prefix.rstrip('/')
-            coordinate = key[len(prefix):].lstrip('/') if prefix else key
+            coordinate = key[len(prefix) :].lstrip('/') if prefix else key
         return normalize_adls_source_relative_path(coordinate)
 
     def _placement(self, connector, table_name):
         root = self._root_for(connector)
         if root is None:
             return super()._placement(connector, table_name)
-        table_name = self._relative_coordinate(root, table_name,
-                                               purpose='source')
+        table_name = self._relative_coordinate(root, table_name, purpose='source')
         return root.bucket, root.path, table_name, None
 
     def _source_access(self, connector, bucket, region):
@@ -100,10 +101,13 @@ class ADLSSessions(ObjectStoreSessions):
 
     def _over(self, connector, bucket, root, region):
         access = self._source_access(connector, bucket, region)
-        return ADLSSourceReader(access.filesystem, root=root,
-                                source_type=ConnectorType.ADLS,
-                                fetch=access.fetch,
-                                object_identity=access.object_identity)
+        return ADLSSourceReader(
+            access.filesystem,
+            root=root,
+            source_type=ConnectorType.ADLS,
+            fetch=access.fetch,
+            object_identity=access.object_identity,
+        )
 
     def _filesystem(self, connector, bucket, region):
         return self._source_access(connector, bucket, region).filesystem
@@ -115,10 +119,12 @@ class ADLSSessions(ObjectStoreSessions):
         if coordinate in ('', '.', '/'):
             raise ValueError(
                 'ADLS artifact directories require the full root URI or a '
-                'nonempty child path')
+                'nonempty child path'
+            )
         if '://' in coordinate:
-            key = self._contained_key(root, coordinate,
-                                      purpose='destination', directory=True)
+            key = self._contained_key(
+                root, coordinate, purpose='destination', directory=True
+            )
             if key.rstrip('/') == root.prefix:
                 return root.bucket, root.path, root.region
         return self._resolved(connector, coordinate)
@@ -126,10 +132,8 @@ class ADLSSessions(ObjectStoreSessions):
     def _resolved(self, connector, coordinate):
         root = self._root_for(connector)
         if root is None:
-            raise NotImplementedError(
-                'Rootless ADLS connectors are source-only')
-        relative = self._relative_coordinate(root, coordinate,
-                                             purpose='destination')
+            raise NotImplementedError('Rootless ADLS connectors are source-only')
+        relative = self._relative_coordinate(root, coordinate, purpose='destination')
         key = '/'.join(part for part in (root.prefix, relative) if part)
         return root.bucket, f'{root.bucket}/{key}', None
 
@@ -140,9 +144,12 @@ class ADLSSourceBackend(ADLSSessions, ObjectStoreSourceBackend):
     uri_source = ADLSURISource
     source_table = ADLSSourceTable
 
-    def __init__(self, identity: Optional[IdentityRef] = None,
-                 storage_namespace: Optional[str] = None,
-                 mode: Optional[ReadMode] = None):
+    def __init__(
+        self,
+        identity: Optional[IdentityRef] = None,
+        storage_namespace: Optional[str] = None,
+        mode: Optional[ReadMode] = None,
+    ):
         super().__init__(identity, storage_namespace)
         self.mode = mode
 

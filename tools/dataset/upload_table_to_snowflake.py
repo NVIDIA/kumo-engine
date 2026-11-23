@@ -39,6 +39,7 @@ from kumo.connector.snowflake_connector import SnowflakeConnector
 
 try:
     from tqdm import tqdm
+
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
@@ -55,37 +56,50 @@ class SnowflakePath:
     table: str
 
 
-def make_connector(database: str, schema: str, account: str,
-                   warehouse: str) -> SnowflakeConnector:
-    secrets = get_secrets(f"{account.lower()}.snowflakecomputing.com")
-    username = secrets.get("user", "kumo")
-    password = secrets.get("password")
+def make_connector(
+    database: str, schema: str, account: str, warehouse: str
+) -> SnowflakeConnector:
+    secrets = get_secrets(f'{account.lower()}.snowflakecomputing.com')
+    username = secrets.get('user', 'kumo')
+    password = secrets.get('password')
 
-    conn = SnowflakeConnector(name="fake_name", account=account.lower(),
-                              warehouse=warehouse, database=database,
-                              schema_name=schema)
+    conn = SnowflakeConnector(
+        name='fake_name',
+        account=account.lower(),
+        warehouse=warehouse,
+        database=database,
+        schema_name=schema,
+    )
 
-    conn.open({"user": username, "password": password})
+    conn.open({'user': username, 'password': password})
     return conn
 
 
 def parse_snowflake_path(snowflake_path: str) -> SnowflakePath:
     parts = snowflake_path.split('.', maxsplit=2)
-    if len(parts) != 3 or len(parts[0]) == 0 or len(parts[1]) == 0 or len(
-            parts[2]) == 0:
-        print(f"Snowflake path must be of the form <DB>.<SCHEMA>.<TABLE> "
-              f"but got '{snowflake_path}'")
+    if (
+        len(parts) != 3
+        or len(parts[0]) == 0
+        or len(parts[1]) == 0
+        or len(parts[2]) == 0
+    ):
+        print(
+            f'Snowflake path must be of the form <DB>.<SCHEMA>.<TABLE> '
+            f"but got '{snowflake_path}'"
+        )
         exit(1)
     return SnowflakePath(parts[0], parts[1], parts[2])
 
 
-def confirm_table_not_exists(connector: SnowflakeConnector, table: str,
-                             append: bool) -> None:
+def confirm_table_not_exists(
+    connector: SnowflakeConnector, table: str, append: bool
+) -> None:
     if connector.table_exists(table) and not append:
         raise ValueError(
             f"Snowflake table with name '{table}' already exists. "
-            f"Please delete the table, or pass in the `--append` flag to "
-            f"append to the existing table.")
+            f'Please delete the table, or pass in the `--append` flag to '
+            f'append to the existing table.'
+        )
 
 
 def confirm_s3_exists(path: str) -> None:
@@ -94,8 +108,7 @@ def confirm_s3_exists(path: str) -> None:
         exit(1)
 
 
-def estimate_total_batches(s3_path: str,
-                           target_bytes_per_batch: int = 2 << 20) -> int:
+def estimate_total_batches(s3_path: str, target_bytes_per_batch: int = 2 << 20) -> int:
     """Estimate the total number of batches based on parquet metadata."""
     try:
         metadata = parquet_util.get_parquet_metadata(s3_path)
@@ -121,14 +134,15 @@ def estimate_total_batches(s3_path: str,
         return 0
 
 
-def run(s3_path: str, snowflake_path: str, append: bool, account: str,
-        warehouse: str) -> None:
+def run(
+    s3_path: str, snowflake_path: str, append: bool, account: str, warehouse: str
+) -> None:
     dest = parse_snowflake_path(snowflake_path)
     connector = make_connector(dest.db, dest.schema, account, warehouse)
     confirm_table_not_exists(connector, dest.table, append)
     confirm_s3_exists(s3_path)
 
-    print(f"Downloading {s3_path}...")
+    print(f'Downloading {s3_path}...')
 
     # Estimate total batches for progress bar
     total_batches = estimate_total_batches(s3_path) if TQDM_AVAILABLE else 0
@@ -138,44 +152,49 @@ def run(s3_path: str, snowflake_path: str, append: bool, account: str,
 
     # Wrap with tqdm if available and we can estimate batches
     if TQDM_AVAILABLE and total_batches > 0:
-        batches = tqdm(batches, desc="[Estimated] Uploading batches",
-                       unit="batch", total=total_batches)
+        batches = tqdm(
+            batches,
+            desc='[Estimated] Uploading batches',
+            unit='batch',
+            total=total_batches,
+        )
     elif TQDM_AVAILABLE:
-        batches = tqdm(batches, desc="Uploading batches", unit="batch")
+        batches = tqdm(batches, desc='Uploading batches', unit='batch')
 
     for shard in batches:
         if not TQDM_AVAILABLE:
-            print(f"Writing part {shard.batch_number}")
+            print(f'Writing part {shard.batch_number}')
 
         connector.write_pandas(dest.table, shard.df)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "S3_PATH",
-        help=("a single parquet file, or a directory containing "
-              "multiple parquet files in the same dataset."),
+        'S3_PATH',
+        help=(
+            'a single parquet file, or a directory containing '
+            'multiple parquet files in the same dataset.'
+        ),
     )
     parser.add_argument(
-        "SNOWFLAKE_PATH",
-        help=("the <DB>.<SCHEMA>.<TABLE_NAME> where "
-              "the table should be uploaded"),
+        'SNOWFLAKE_PATH',
+        help=('the <DB>.<SCHEMA>.<TABLE_NAME> where the table should be uploaded'),
     )
     parser.add_argument(
-        '--append', action='store_true',
-        help=('Append to the table, if it already '
-              'exists in Snowflake.'))
+        '--append',
+        action='store_true',
+        help=('Append to the table, if it already exists in Snowflake.'),
+    )
     parser.add_argument(
         '--account',
-        default="xva19026",
+        default='xva19026',
         help=('the account name of the snowflake account'),
     )
     parser.add_argument(
         '--warehouse',
-        default="WH_XS",
+        default='WH_XS',
         help=('the warehouse name of the snowflake account'),
     )
     args = parser.parse_args()
-    run(args.S3_PATH, args.SNOWFLAKE_PATH, args.append, args.account,
-        args.warehouse)
+    run(args.S3_PATH, args.SNOWFLAKE_PATH, args.append, args.account, args.warehouse)

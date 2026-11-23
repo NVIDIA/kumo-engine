@@ -43,8 +43,8 @@ _GROUP_ERRORS = {
 
 class GroupsRouter:
     """Administrator API for native teams and their membership sources."""
-    def __init__(self, auth: Authentication,
-                 groups_driver: GroupsDriver) -> None:
+
+    def __init__(self, auth: Authentication, groups_driver: GroupsDriver) -> None:
         self._driver = groups_driver
         admin_only = [Depends(auth.require_customer_admin)]
         self.router = APIRouter(
@@ -61,58 +61,91 @@ class GroupsRouter:
             ],
         )
 
-        self.router.add_api_route('', self.create_group, methods=['POST'],
-                                  status_code=HTTPStatus.CREATED,
-                                  response_model=KumoGroupDBEntry,
-                                  dependencies=admin_only)
-        self.router.add_api_route('', self.list_groups, methods=['GET'],
-                                  response_model=list[KumoGroupDBEntry])
-        self.router.add_api_route('/by-slug/{slug}', self.get_group_by_slug,
-                                  methods=['GET'],
-                                  response_model=KumoGroupDBEntry,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}', self.get_group,
-                                  methods=['GET'],
-                                  response_model=AdminGroupDetailResponse,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}', self.update_group,
-                                  methods=['PATCH'],
-                                  response_model=KumoGroupDBEntry,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}', self.delete_group,
-                                  methods=['DELETE'],
-                                  status_code=HTTPStatus.NO_CONTENT,
-                                  dependencies=admin_only)
-
-        self.router.add_api_route('/{group_id}/members', self.list_members,
-                                  methods=['GET'],
-                                  response_model=list[GroupMemberEntry],
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}/members', self.add_member,
-                                  methods=['POST'],
-                                  status_code=HTTPStatus.CREATED,
-                                  response_model=GroupMemberEntry,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}/members/{principal_id}',
-                                  self.remove_member, methods=['DELETE'],
-                                  status_code=HTTPStatus.NO_CONTENT,
-                                  dependencies=admin_only)
+        self.router.add_api_route(
+            '',
+            self.create_group,
+            methods=['POST'],
+            status_code=HTTPStatus.CREATED,
+            response_model=KumoGroupDBEntry,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '', self.list_groups, methods=['GET'], response_model=list[KumoGroupDBEntry]
+        )
+        self.router.add_api_route(
+            '/by-slug/{slug}',
+            self.get_group_by_slug,
+            methods=['GET'],
+            response_model=KumoGroupDBEntry,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}',
+            self.get_group,
+            methods=['GET'],
+            response_model=AdminGroupDetailResponse,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}',
+            self.update_group,
+            methods=['PATCH'],
+            response_model=KumoGroupDBEntry,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}',
+            self.delete_group,
+            methods=['DELETE'],
+            status_code=HTTPStatus.NO_CONTENT,
+            dependencies=admin_only,
+        )
 
         self.router.add_api_route(
-            '/{group_id}/external-mappings', self.list_external_mappings,
-            methods=['GET'], response_model=list[ExternalGroupMappingResponse],
-            dependencies=admin_only)
-        self.router.add_api_route('/{group_id}/external-mappings',
-                                  self.create_external_mapping,
-                                  methods=['POST'
-                                           ], status_code=HTTPStatus.CREATED,
-                                  response_model=ExternalGroupMappingResponse,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}/external-mappings/{mapping_id}',
-                                  self.delete_external_mapping,
-                                  methods=['DELETE'],
-                                  status_code=HTTPStatus.NO_CONTENT,
-                                  dependencies=admin_only)
+            '/{group_id}/members',
+            self.list_members,
+            methods=['GET'],
+            response_model=list[GroupMemberEntry],
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}/members',
+            self.add_member,
+            methods=['POST'],
+            status_code=HTTPStatus.CREATED,
+            response_model=GroupMemberEntry,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}/members/{principal_id}',
+            self.remove_member,
+            methods=['DELETE'],
+            status_code=HTTPStatus.NO_CONTENT,
+            dependencies=admin_only,
+        )
+
+        self.router.add_api_route(
+            '/{group_id}/external-mappings',
+            self.list_external_mappings,
+            methods=['GET'],
+            response_model=list[ExternalGroupMappingResponse],
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}/external-mappings',
+            self.create_external_mapping,
+            methods=['POST'],
+            status_code=HTTPStatus.CREATED,
+            response_model=ExternalGroupMappingResponse,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}/external-mappings/{mapping_id}',
+            self.delete_external_mapping,
+            methods=['DELETE'],
+            status_code=HTTPStatus.NO_CONTENT,
+            dependencies=admin_only,
+        )
         self.v1_router.add_api_route(
             '/{group_id}/members',
             self.replace_members,
@@ -126,46 +159,58 @@ class GroupsRouter:
             response_model=ReplaceExternalGroupMappingsResponse,
         )
 
-        self.router.add_api_route('/{group_id}/all-authenticated-users',
-                                  self.get_all_authenticated_users,
-                                  methods=['GET'], response_model=bool,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}/all-authenticated-users',
-                                  self.enable_all_authenticated_users,
-                                  methods=['PUT'],
-                                  status_code=HTTPStatus.NO_CONTENT,
-                                  dependencies=admin_only)
-        self.router.add_api_route('/{group_id}/all-authenticated-users',
-                                  self.disable_all_authenticated_users,
-                                  methods=['DELETE'],
-                                  status_code=HTTPStatus.NO_CONTENT,
-                                  dependencies=admin_only)
+        self.router.add_api_route(
+            '/{group_id}/all-authenticated-users',
+            self.get_all_authenticated_users,
+            methods=['GET'],
+            response_model=bool,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}/all-authenticated-users',
+            self.enable_all_authenticated_users,
+            methods=['PUT'],
+            status_code=HTTPStatus.NO_CONTENT,
+            dependencies=admin_only,
+        )
+        self.router.add_api_route(
+            '/{group_id}/all-authenticated-users',
+            self.disable_all_authenticated_users,
+            methods=['DELETE'],
+            status_code=HTTPStatus.NO_CONTENT,
+            dependencies=admin_only,
+        )
 
-        self.router.add_api_route('/{group_id}/projects', self.create_project,
-                                  methods=['POST'],
-                                  status_code=HTTPStatus.CREATED,
-                                  response_model=ProjectDBEntry)
-        self.router.add_api_route('/{group_id}/projects', self.list_projects,
-                                  methods=['GET'],
-                                  response_model=list[ProjectDBEntry])
+        self.router.add_api_route(
+            '/{group_id}/projects',
+            self.create_project,
+            methods=['POST'],
+            status_code=HTTPStatus.CREATED,
+            response_model=ProjectDBEntry,
+        )
+        self.router.add_api_route(
+            '/{group_id}/projects',
+            self.list_projects,
+            methods=['GET'],
+            response_model=list[ProjectDBEntry],
+        )
 
     async def create_group(
         self,
         request: CreateKumoGroupRequest,
     ) -> KumoGroupDBEntry:
-        with wrap_driver_errors({
-                **_GROUP_ERRORS, ValueError:
-                HTTPStatus.UNPROCESSABLE_ENTITY
-        }):
+        with wrap_driver_errors(
+            {**_GROUP_ERRORS, ValueError: HTTPStatus.UNPROCESSABLE_ENTITY}
+        ):
             result = await self._driver._create_kumo_groups([request])
             return await self._driver._get_kumo_group(result[0].id)
 
     async def list_groups(self, request: Request) -> list[KumoGroupDBEntry]:
         return await self._driver.list_visible_groups(
-            get_user_authorization_from_request(request))
+            get_user_authorization_from_request(request)
+        )
 
-    async def get_group(self,
-                        group_id: GroupID) -> AdminGroupDetailResponse:
+    async def get_group(self, group_id: GroupID) -> AdminGroupDetailResponse:
         with wrap_driver_errors(_GROUP_ERRORS):
             return await self._driver.get_admin_group_detail(group_id)
 
@@ -178,18 +223,17 @@ class GroupsRouter:
         group_id: GroupID,
         request: UpdateKumoGroupRequest,
     ) -> KumoGroupDBEntry:
-        with wrap_driver_errors({
-                **_GROUP_ERRORS, ValueError:
-                HTTPStatus.BAD_REQUEST
-        }):
+        with wrap_driver_errors({**_GROUP_ERRORS, ValueError: HTTPStatus.BAD_REQUEST}):
             return await self._driver._update_kumo_group(
-                group_id, display_name=request.display_name,
-                description=request.description)
+                group_id,
+                display_name=request.display_name,
+                description=request.description,
+            )
 
     async def delete_group(self, group_id: GroupID) -> Response:
-        with wrap_driver_errors({
-                **_GROUP_ERRORS, ValueError: HTTPStatus.UNPROCESSABLE_ENTITY
-        }):
+        with wrap_driver_errors(
+            {**_GROUP_ERRORS, ValueError: HTTPStatus.UNPROCESSABLE_ENTITY}
+        ):
             await self._driver._delete_kumo_group(str(group_id))
         return Response(status_code=HTTPStatus.NO_CONTENT)
 
@@ -202,15 +246,16 @@ class GroupsRouter:
         group_id: GroupID,
         request: AddGroupMemberRequest,
     ) -> GroupMemberEntry:
-        with wrap_driver_errors({
+        with wrap_driver_errors(
+            {
                 **_GROUP_ERRORS,
                 GroupInputError: HTTPStatus.BAD_REQUEST,
                 GroupRelationConflictError: HTTPStatus.CONFLICT,
-        }):
+            }
+        ):
             return await self._driver.add_member(group_id, request)
 
-    async def remove_member(self, group_id: GroupID,
-                            principal_id: str) -> Response:
+    async def remove_member(self, group_id: GroupID, principal_id: str) -> Response:
         with wrap_driver_errors(_GROUP_ERRORS):
             await self._driver.remove_member(group_id, principal_id)
         return Response(status_code=HTTPStatus.NO_CONTENT)
@@ -220,11 +265,13 @@ class GroupsRouter:
         group_id: GroupID,
         request: ReplaceGroupMembersRequest,
     ) -> ReplaceGroupMembersResponse:
-        with wrap_driver_errors({
+        with wrap_driver_errors(
+            {
                 **_GROUP_ERRORS,
                 GroupInputError: HTTPStatus.BAD_REQUEST,
                 GroupRelationConflictError: HTTPStatus.CONFLICT,
-        }):
+            }
+        ):
             return await self._driver.replace_members(group_id, request)
 
     async def list_external_mappings(
@@ -239,11 +286,13 @@ class GroupsRouter:
         group_id: GroupID,
         request: CreateExternalGroupMappingRequest,
     ) -> ExternalGroupMappingResponse:
-        with wrap_driver_errors({
+        with wrap_driver_errors(
+            {
                 **_GROUP_ERRORS,
                 GroupInputError: HTTPStatus.BAD_REQUEST,
                 GroupRelationConflictError: HTTPStatus.CONFLICT,
-        }):
+            }
+        ):
             return await self._driver.create_external_mapping(group_id, request)
 
     async def delete_external_mapping(
@@ -260,13 +309,14 @@ class GroupsRouter:
         group_id: GroupID,
         request: ReplaceExternalGroupMappingsRequest,
     ) -> ReplaceExternalGroupMappingsResponse:
-        with wrap_driver_errors({
+        with wrap_driver_errors(
+            {
                 **_GROUP_ERRORS,
                 GroupInputError: HTTPStatus.BAD_REQUEST,
                 GroupRelationConflictError: HTTPStatus.CONFLICT,
-        }):
-            return await self._driver.replace_external_mappings(
-                group_id, request)
+            }
+        ):
+            return await self._driver.replace_external_mappings(group_id, request)
 
     async def enable_all_authenticated_users(
         self,
@@ -296,9 +346,7 @@ class GroupsRouter:
         group_id: GroupID,
         request: CreateProjectInGroupRequest,
     ) -> ProjectDBEntry:
-        with wrap_driver_errors({
-                **_GROUP_ERRORS, ValueError: HTTPStatus.CONFLICT
-        }):
+        with wrap_driver_errors({**_GROUP_ERRORS, ValueError: HTTPStatus.CONFLICT}):
             return await self._driver.create_project_in_group(group_id, request)
 
     async def list_projects(

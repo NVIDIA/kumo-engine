@@ -65,14 +65,19 @@ def _stats(path='/internal/predictions'):
 
 
 def _named_output(index, mode, *, stage=True):
-    stage_config = (DatabricksManagedVolumeStage(
-        path=('/Volumes/catalog/schema/_kumo_staging/'
-              f'artifact-export/output-{index}'),
-        files=[
-            '/Volumes/catalog/schema/_kumo_staging/'
-            f'artifact-export/output-{index}/part.parquet'
-        ],
-    ) if stage else None)
+    stage_config = (
+        DatabricksManagedVolumeStage(
+            path=(
+                f'/Volumes/catalog/schema/_kumo_staging/artifact-export/output-{index}'
+            ),
+            files=[
+                '/Volumes/catalog/schema/_kumo_staging/'
+                f'artifact-export/output-{index}/part.parquet'
+            ],
+        )
+        if stage
+        else None
+    )
     return NamedOutputConfig(
         connector=_reference(index),
         out_table=ArtifactOutTable(
@@ -96,13 +101,17 @@ def test_disposable_converter_protocol_contains_only_safe_paths() -> None:
     future.result.return_value = None
 
     with patch(
-            'rest.backends.ml_backend.activities.parquet_io_activities.'
-            'HealingProcessPoolExecutor', return_value=executor) as factory:
+        'rest.backends.ml_backend.activities.parquet_io_activities.'
+        'HealingProcessPoolExecutor',
+        return_value=executor,
+    ) as factory:
         with _DisposableCSVConverter() as converter:
-            converter('/internal/artifact/part-000.parquet',
-                      '/tmp/private-stage/part-000.csv')
-            converter('/internal/artifact/part-001.parquet',
-                      '/tmp/private-stage/part-001.csv')
+            converter(
+                '/internal/artifact/part-000.parquet', '/tmp/private-stage/part-000.csv'
+            )
+            converter(
+                '/internal/artifact/part-001.parquet', '/tmp/private-stage/part-001.csv'
+            )
 
     factory.assert_called_once_with(1)
     assert executor.submit.call_args_list == [
@@ -126,22 +135,29 @@ def test_disposable_converter_kills_child_on_cancellation() -> None:
     future.result.side_effect = TimeoutError
 
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'HealingProcessPoolExecutor', return_value=executor),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'activity.in_activity', return_value=True),
-            patch('rest.backends.ml_backend.activities.parquet_io_activities.'
-                  'activity.heartbeat') as heartbeat,
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'activity.is_cancelled', return_value=True),
-            pytest.raises(CancelledError, match='CSV export cancelled'),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'HealingProcessPoolExecutor',
+            return_value=executor,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'activity.in_activity',
+            return_value=True,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'activity.heartbeat'
+        ) as heartbeat,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'activity.is_cancelled',
+            return_value=True,
+        ),
+        pytest.raises(CancelledError, match='CSV export cancelled'),
     ):
         with _DisposableCSVConverter() as converter:
-            converter('/internal/artifact/part.parquet',
-                      '/tmp/private-stage/part.csv')
+            converter('/internal/artifact/part.parquet', '/tmp/private-stage/part.csv')
 
     future.result.assert_called_once_with(timeout=1.0)
     heartbeat.assert_called_once_with()
@@ -153,40 +169,40 @@ def test_disposable_converter_kills_child_on_conversion_error() -> None:
     executor.submit.return_value.result.side_effect = RuntimeError('failed')
 
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'HealingProcessPoolExecutor', return_value=executor),
-            pytest.raises(RuntimeError, match='failed'),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'HealingProcessPoolExecutor',
+            return_value=executor,
+        ),
+        pytest.raises(RuntimeError, match='failed'),
     ):
         with _DisposableCSVConverter() as converter:
-            converter('/internal/artifact/part.parquet',
-                      '/tmp/private-stage/part.csv')
+            converter('/internal/artifact/part.parquet', '/tmp/private-stage/part.csv')
 
     executor.terminate.assert_called_once_with()
 
 
-def test_real_disposable_converter_preserves_csv_and_reaps_child(
-        tmp_path) -> None:
+def test_real_disposable_converter_preserves_csv_and_reaps_child(tmp_path) -> None:
     """Exercise repeated Pandas/PyArrow work in one disposable process."""
     input_path = tmp_path / 'input.parquet'
-    expected = pd.DataFrame({
-        'id': range(2048),
-        'embedding': [[1, 2, 3]] * 2048,
-    })
+    expected = pd.DataFrame(
+        {
+            'id': range(2048),
+            'embedding': [[1, 2, 3]] * 2048,
+        }
+    )
     expected.to_parquet(input_path, index=False)
     expected['embedding'] = '1 2 3'
 
-    existing_children = {
-        child.pid
-        for child in multiprocessing.active_children()
-    }
+    existing_children = {child.pid for child in multiprocessing.active_children()}
     output_paths = [tmp_path / f'output-{index}.csv' for index in range(4)]
     with _DisposableCSVConverter() as converter:
         for output_path in output_paths:
             converter(os.fspath(input_path), os.fspath(output_path))
 
     leaked_children = [
-        child for child in multiprocessing.active_children()
+        child
+        for child in multiprocessing.active_children()
         if child.pid not in existing_children
     ]
     assert leaked_children == []
@@ -198,16 +214,14 @@ def test_real_disposable_converter_preserves_csv_and_reaps_child(
 def test_bp_s3_artifact_is_copied_directly_under_customer_scope() -> None:
     project_id = ProjectID('project_' + 'a' * 32)
     connector_id = ConnectorID('connector_' + 'b' * 32)
-    reference = ConnectorExecutionRef(project_id=project_id,
-                                      connector_id=connector_id)
+    reference = ConnectorExecutionRef(project_id=project_id, connector_id=connector_id)
     output = FileOutputConfig(
         connector=reference,
         output_path='s3://customer-output/predictions/',
     )
     input = ArtifactExportInput(
         artifact_paths={
-            PredictionArtifactType.PREDICTIONS:
-            's3://internal-artifacts/predictions/'
+            PredictionArtifactType.PREDICTIONS: 's3://internal-artifacts/predictions/'
         },
         output_config={PredictionArtifactType.PREDICTIONS: [output]},
     )
@@ -231,69 +245,76 @@ def test_bp_s3_artifact_is_copied_directly_under_customer_scope() -> None:
             's3://internal-artifacts/predictions/part-000.parquet',
             's3://internal-artifacts/predictions/part-001.parquet',
         ]
-        return OutputStats(size_bytes=1,
-                           display_path='s3://customer-output/predictions/')
+        return OutputStats(
+            size_bytes=1, display_path='s3://customer-output/predictions/'
+        )
 
     converter = Mock()
     converter.__enter__ = Mock(return_value=Mock())
     converter.__exit__ = Mock(return_value=False)
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'get_connector_from_spec', return_value=connector),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'resolve_file_output_path',
-                return_value='s3://customer-output/predictions/'),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                '_resolve_selected_prediction_artifacts',
-                return_value=(
-                    {
-                        PredictionArtifactType.PREDICTIONS:
-                        's3://internal-artifacts/predictions/'
-                    },
-                    {
-                        PredictionArtifactType.PREDICTIONS: [
-                            's3://internal-artifacts/predictions/'
-                            'part-000.parquet',
-                            's3://internal-artifacts/predictions/'
-                            'part-001.parquet',
-                        ]
-                    },
-                    None,
-                )),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'fsutil.copy',
-                side_effect=AssertionError('BP output must not be staged')),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'fsutil.copy_file',
-                side_effect=AssertionError('BP parts must not be staged')),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'tempfile.TemporaryDirectory',
-                side_effect=AssertionError('BP output must not allocate a '
-                                           'whole-artifact staging root')),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'write_artifact_to_s3', side_effect=write_customer),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                '_DisposableCSVConverter', return_value=converter),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'parquet_util.get_parquet_metadata',
-                side_effect=AssertionError(
-                    'export must reuse initial artifact metadata'),
-            ) as read_metadata,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'get_connector_from_spec',
+            return_value=connector,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'resolve_file_output_path',
+            return_value='s3://customer-output/predictions/',
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            '_resolve_selected_prediction_artifacts',
+            return_value=(
+                {
+                    PredictionArtifactType.PREDICTIONS: 's3://internal-artifacts/predictions/'
+                },
+                {
+                    PredictionArtifactType.PREDICTIONS: [
+                        's3://internal-artifacts/predictions/part-000.parquet',
+                        's3://internal-artifacts/predictions/part-001.parquet',
+                    ]
+                },
+                None,
+            ),
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.fsutil.copy',
+            side_effect=AssertionError('BP output must not be staged'),
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'fsutil.copy_file',
+            side_effect=AssertionError('BP parts must not be staged'),
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'tempfile.TemporaryDirectory',
+            side_effect=AssertionError(
+                'BP output must not allocate a whole-artifact staging root'
+            ),
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'write_artifact_to_s3',
+            side_effect=write_customer,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            '_DisposableCSVConverter',
+            return_value=converter,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'parquet_util.get_parquet_metadata',
+            side_effect=AssertionError('export must reuse initial artifact metadata'),
+        ) as read_metadata,
     ):
         result = _write_artifacts_to_customer(
             input,
             artifact_stats={
-                PredictionArtifactType.PREDICTIONS:
-                OutputArtifactStats(
+                PredictionArtifactType.PREDICTIONS: OutputArtifactStats(
                     artifact_type=PredictionArtifactType.PREDICTIONS,
                     num_rows=1,
                     num_cols=2,
@@ -324,7 +345,8 @@ def test_legacy_training_table_export_retains_remote_staging() -> None:
     )
     connector = Mock(spec=FileConnector)
     connector.filesystem_credential_scope.return_value = contextmanager(
-        lambda: (yield))()
+        lambda: (yield)
+    )()
 
     def write_customer(source_path, *_args, **_kwargs):
         assert os.path.isabs(source_path)
@@ -335,39 +357,43 @@ def test_legacy_training_table_export_retains_remote_staging() -> None:
         )
 
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'get_connector_from_spec', return_value=connector),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'resolve_file_output_path',
-                return_value='s3://customer-output/training-table/'),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'fsutil.is_local', return_value=False),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'fsutil.copy') as copy_internal,
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'write_artifact_to_s3', side_effect=write_customer),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'parquet_util.get_parquet_metadata',
-                side_effect=AssertionError(
-                    'export must reuse initial artifact metadata')),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'get_connector_from_spec',
+            return_value=connector,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'resolve_file_output_path',
+            return_value='s3://customer-output/training-table/',
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.fsutil.is_local',
+            return_value=False,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.fsutil.copy'
+        ) as copy_internal,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'write_artifact_to_s3',
+            side_effect=write_customer,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'parquet_util.get_parquet_metadata',
+            side_effect=AssertionError('export must reuse initial artifact metadata'),
+        ),
     ):
         result = _write_artifacts_to_customer(
             input,
             artifact_stats={
-                artifact_type:
-                OutputArtifactStats(
+                artifact_type: OutputArtifactStats(
                     artifact_type=artifact_type,
                     num_rows=1,
                     num_cols=2,
                     size_bytes=8,
-                    output_path=(
-                        's3://internal-artifacts/training-table.parquet'),
+                    output_path=('s3://internal-artifacts/training-table.parquet'),
                 )
             },
             resolved_connectors={artifact_type: [Mock()]},
@@ -380,7 +406,8 @@ def test_legacy_training_table_export_retains_remote_staging() -> None:
 
 @pytest.mark.parametrize('second_mode', [WriteMode.OVERWRITE, WriteMode.APPEND])
 def test_later_fanout_failure_preserves_completed_write_and_closes_connectors(
-        second_mode) -> None:
+    second_mode,
+) -> None:
     outputs = [
         _named_output(index, mode)
         for index, mode in enumerate([WriteMode.OVERWRITE, second_mode])
@@ -389,26 +416,27 @@ def test_later_fanout_failure_preserves_completed_write_and_closes_connectors(
     committed = OutputStats(size_bytes=240, display_path='predictions_0')
 
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'get_connector_from_spec',
-                side_effect=connectors,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'get_connector_from_spec',
+            side_effect=connectors,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'write_artifact_to_databricks',
+            side_effect=[
+                committed,
+                ConnectorError('second destination failed'),
+            ],
+        ) as write,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'parquet_io_semaphore.acquire',
+            side_effect=AssertionError(
+                'warehouse loads must not take the parquet IO slot'
             ),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'write_artifact_to_databricks',
-                side_effect=[
-                    committed,
-                    ConnectorError('second destination failed'),
-                ],
-            ) as write,
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'parquet_io_semaphore.acquire',
-                side_effect=AssertionError(
-                    'warehouse loads must not take the parquet IO slot'),
-            ),
-            pytest.raises(ConnectorError, match='second destination failed'),
+        ),
+        pytest.raises(ConnectorError, match='second destination failed'),
     ):
         _write_artifacts_to_customer(
             _input(outputs),
@@ -421,24 +449,24 @@ def test_later_fanout_failure_preserves_completed_write_and_closes_connectors(
         connector.close.assert_called_once_with()
 
 
-def test_databricks_export_rejects_internal_artifact_without_direct_stage(
-) -> None:
+def test_databricks_export_rejects_internal_artifact_without_direct_stage() -> None:
     path = 's3://internal-artifacts/predictions/'
     connector = Mock(spec=DatabricksConnector)
 
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'get_connector_from_spec',
-                return_value=connector,
-            ),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'write_artifact_to_databricks', ) as write,
-            pytest.raises(
-                ArtifactExportError,
-                match='producer-uploaded Unity Catalog volume',
-            ) as exc_info,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'get_connector_from_spec',
+            return_value=connector,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            'write_artifact_to_databricks',
+        ) as write,
+        pytest.raises(
+            ArtifactExportError,
+            match='producer-uploaded Unity Catalog volume',
+        ) as exc_info,
     ):
         _write_artifacts_to_customer(
             _input(
@@ -471,29 +499,29 @@ async def test_fanout_retry_policy_is_safe_for_every_destination(
         for index, mode in enumerate(write_modes)
     ]
     stats = _stats()
-    execute = AsyncMock(side_effect=[
-        {
-            _ARTIFACT: stats
-        },
-        [stats],
-    ])
+    execute = AsyncMock(
+        side_effect=[
+            {_ARTIFACT: stats},
+            [stats],
+        ]
+    )
 
     with patch(
-            'rest.backends.ml_backend.workflows.artifact_export_workflow.'
-            'workflow.execute_activity',
-            new=execute,
+        'rest.backends.ml_backend.workflows.artifact_export_workflow.'
+        'workflow.execute_activity',
+        new=execute,
     ):
         assert await ArtifactExportWorkflow()._run(_input(outputs)) == [stats]
 
     export_call = execute.call_args_list[1]
-    assert export_call.kwargs['retry_policy'].maximum_attempts == (
-        expected_attempts)
+    assert export_call.kwargs['retry_policy'].maximum_attempts == (expected_attempts)
     one_attempt_timeout = timedelta(
         hours=2,
         seconds=(stats.size_bytes * len(outputs) / (2 << 20)),
     )
     assert export_call.kwargs['schedule_to_close_timeout'] == (
-        one_attempt_timeout * (3 if expected_attempts == 3 else 1))
+        one_attempt_timeout * (3 if expected_attempts == 3 else 1)
+    )
 
 
 @pytest.mark.asyncio
@@ -508,15 +536,13 @@ async def test_fanout_retry_policy_is_safe_for_every_destination(
         ],
     ],
 )
-async def test_local_download_returns_stats_for_every_artifact(
-        artifact_types) -> None:
+async def test_local_download_returns_stats_for_every_artifact(artifact_types) -> None:
     artifact_paths = {
         artifact_type: f'/internal/{artifact_type.value.lower()}'
         for artifact_type in artifact_types
     }
     stats = {
-        artifact_type:
-        OutputArtifactStats(
+        artifact_type: OutputArtifactStats(
             artifact_type=artifact_type,
             num_rows=10,
             num_cols=3,
@@ -532,8 +558,10 @@ async def test_local_download_returns_stats_for_every_artifact(
     )
 
     with patch(
-            'rest.backends.ml_backend.workflows.artifact_export_workflow.'
-            'workflow.execute_activity', new=execute):
+        'rest.backends.ml_backend.workflows.artifact_export_workflow.'
+        'workflow.execute_activity',
+        new=execute,
+    ):
         output = await ArtifactExportWorkflow()._run(input)
 
     assert [item.artifact_type for item in output] == artifact_types
@@ -579,8 +607,10 @@ async def test_embeddings_only_export_never_opens_predictions() -> None:
         output_config={},
     )
     with patch(
-            'rest.backends.ml_backend.workflows.artifact_export_workflow.'
-            'workflow.execute_activity', new=execute_activity):
+        'rest.backends.ml_backend.workflows.artifact_export_workflow.'
+        'workflow.execute_activity',
+        new=execute_activity,
+    ):
         output = await ArtifactExportWorkflow()._run(input)
 
     assert len(calls) == 2

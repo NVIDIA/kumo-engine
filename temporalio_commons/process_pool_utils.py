@@ -36,7 +36,7 @@ from temporalio_commons.heartbeat_utils import ActivityFn, auto_heartbeater
 log = logging.getLogger(__name__)
 
 _DISKGRAPH_SUBPROCESS_ENV = '_KUMO_DISKGRAPH_SUBPROCESS'
-_TEST_DYNAMIC_ENV_VARS = ('DEPLOY_ENV_CONFIG_JSON', )
+_TEST_DYNAMIC_ENV_VARS = ('DEPLOY_ENV_CONFIG_JSON',)
 _PROCESS_MODULE_IMPORT_STARTED = time.monotonic()
 
 
@@ -51,9 +51,12 @@ def _future_exception_type(future: Any) -> Optional[str]:
 # Aligned with the Temporal worker health check `start_period` so a slow warm-up
 # on a CPU-constrained host cannot delay the worker from polling past its first
 # health probe.
-_WARM_UP_TIMEOUT_SECONDS = EnvVar('PROCESS_POOL_WARM_UP_TIMEOUT_SECONDS',
-                                  type=float, required=False,
-                                  default_value=30.0)
+_WARM_UP_TIMEOUT_SECONDS = EnvVar(
+    'PROCESS_POOL_WARM_UP_TIMEOUT_SECONDS',
+    type=float,
+    required=False,
+    default_value=30.0,
+)
 
 
 def _process_pool_warmup_noop(delay_seconds: float = 0.05):
@@ -79,55 +82,60 @@ def _apply_child_env_vars(env_vars: Mapping[str, Optional[Any]]) -> None:
             os.environ.pop(env_var_name, None)
 
 
-def _init_spawned_process(deploy_stage: DeployStage,
-                          env_vars: Mapping[str, Optional[Any]]):
+def _init_spawned_process(
+    deploy_stage: DeployStage, env_vars: Mapping[str, Optional[Any]]
+):
     init_started = time.monotonic()
     # Initialize logging based on deploy mode in spawned executor process.
     # TODO(siyang): show processId in logging
     if deploy_stage == DeployStage.PROD:
-        logging.initialize_logging(mode=logging.LoggingMode.DEVELOPMENT,
-                                   log_to_file=False, log_process_id=True)
+        logging.initialize_logging(
+            mode=logging.LoggingMode.DEVELOPMENT, log_to_file=False, log_process_id=True
+        )
     else:
         # TODO(siyang): Bump logging level for STAGING once things stabilize.
-        logging.initialize_logging(logging.LoggingMode.DEBUG, log_to_file=False,
-                                   log_process_id=True)
+        logging.initialize_logging(
+            logging.LoggingMode.DEBUG, log_to_file=False, log_process_id=True
+        )
 
     # Temporal workers may not get snowflake credentials from the environment
     from kumo.graph.graph import Connector
+
     Connector.disable_interactive_input()
 
     # Set environ variables
     log.info('Set env variables in child worker process: %s', env_vars)
     _apply_child_env_vars(env_vars)
     kumo_timing_event(
-        "process_pool.child_initialized",
+        'process_pool.child_initialized',
         elapsed_since_module_import_seconds=round(
-            time.monotonic() - _PROCESS_MODULE_IMPORT_STARTED, 6),
+            time.monotonic() - _PROCESS_MODULE_IMPORT_STARTED, 6
+        ),
         initializer_seconds=round(time.monotonic() - init_started, 6),
         pid=os.getpid(),
     )
 
     # Log deploy config for debugging config propagation to child processes.
     from service_framework.deploy_env_config import deploy_env
+
     log.info('Child process deploy_env: %s', deploy_env())
 
 
 PROCESS_POOL_COMPATIBLE_ATTR = '__process_pool_compatible_activity'
 
 in_process_pool_activity: ContextVar[bool] = ContextVar(
-    'in_process_pool_activity', default=False)
+    'in_process_pool_activity', default=False
+)
 
 
 @overload
-def process_pool_activity_defn(fn: ActivityFn) -> ActivityFn:
-    ...
+def process_pool_activity_defn(fn: ActivityFn) -> ActivityFn: ...
 
 
 @overload
 def process_pool_activity_defn(
     *, heartbeat_interval: Optional[timedelta] = None
-) -> Callable[[ActivityFn], ActivityFn]:
-    ...
+) -> Callable[[ActivityFn], ActivityFn]: ...
 
 
 def process_pool_activity_defn(
@@ -151,6 +159,7 @@ def process_pool_activity_defn(
     ``PublicException``, which is converted to a retryable
     ``ApplicationError`` that keeps its public-safe message.
     """
+
     def _decorator(fn: ActivityFn) -> ActivityFn:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
@@ -158,8 +167,11 @@ def process_pool_activity_defn(
             try:
                 return fn(*args, **kwargs)
             except BaseException as ex:
-                platform_exception = (None if isinstance(ex, PublicException)
-                                      else as_platform_public_exception(ex))
+                platform_exception = (
+                    None
+                    if isinstance(ex, PublicException)
+                    else as_platform_public_exception(ex)
+                )
                 if platform_exception is not None:
                     raise platform_exception from None
                 # TODO(siyang): Maybe allow caller to specify additional error
@@ -180,7 +192,9 @@ def process_pool_activity_defn(
                     if error_utils.is_retryable_cluster_error(ex):
                         log.warning(
                             'Dead cluster error detected, converting to '
-                            'retryable ApplicationError: %s', ex)
+                            'retryable ApplicationError: %s',
+                            ex,
+                        )
                         # The PublicException message is public-safe by
                         # contract; the raw traceback is not (its frames can
                         # carry non-public cause text), so it stays out of
@@ -192,20 +206,20 @@ def process_pool_activity_defn(
                         ) from None
                     raise
 
-                allowed_picklable_errors = (CancelledError, )
+                allowed_picklable_errors = (CancelledError,)
                 if isinstance(ex, allowed_picklable_errors):
                     raise
 
                 log.warning(f'Convert {type(ex)} to ApplicationError.')
                 activity_name = activity.info().activity_type
                 cause = ex.__cause__
-                cause_type = (type(cause).__name__ if cause is not None
-                              and not isinstance(cause, _RemoteTraceback) else
-                              'none')
-                message_is_visible = exception_message_should_be_logged_at_error(
-                    ex)
-                has_restricted_detail = exception_chain_contains_restricted_detail(
-                    ex)
+                cause_type = (
+                    type(cause).__name__
+                    if cause is not None and not isinstance(cause, _RemoteTraceback)
+                    else 'none'
+                )
+                message_is_visible = exception_message_should_be_logged_at_error(ex)
+                has_restricted_detail = exception_chain_contains_restricted_detail(ex)
                 if message_is_visible:
                     if has_restricted_detail:
                         log.error(
@@ -231,8 +245,11 @@ def process_pool_activity_defn(
                         activity_name,
                         type(ex).__name__,
                         cause_type,
-                        (f', detail={safe_message}'
-                         if safe_message is not None else ''),
+                        (
+                            f', detail={safe_message}'
+                            if safe_message is not None
+                            else ''
+                        ),
                     )
                 if has_restricted_detail:
                     log.debug(
@@ -247,8 +264,10 @@ def process_pool_activity_defn(
                 # (see KumoActivityInboundInterceptor). Type names alone
                 # survive for diagnosis; a boundary that wants user-facing
                 # text must raise PublicException instead (#30109).
-                message = (f'Activity {activity_name} failed due to an '
-                           f'unexpected {type(ex).__name__} error.')
+                message = (
+                    f'Activity {activity_name} failed due to an '
+                    f'unexpected {type(ex).__name__} error.'
+                )
                 # Name the cause type only; skip _RemoteTraceback
                 # (multiprocessing internal wrapper).
                 if cause and not isinstance(cause, _RemoteTraceback):
@@ -265,8 +284,9 @@ def process_pool_activity_defn(
         # Make sure all process-pool executed activites use auto_heartbeater
         # to start a background thread to report heartbeat and handle
         # cancellation.
-        with_auto_heartbeater = auto_heartbeater(
-            heartbeat_interval=heartbeat_interval)(wrapper)
+        with_auto_heartbeater = auto_heartbeater(heartbeat_interval=heartbeat_interval)(
+            wrapper
+        )
         return activity.defn(with_auto_heartbeater)  # type: ignore
 
     if fn is not None:
@@ -320,15 +340,16 @@ class HealingProcessPoolExecutor(ProcessPoolExecutor):
             )
             return
 
-        log.info('Recreating test process pool with updated env vars: %s',
-                 _TEST_DYNAMIC_ENV_VARS)
+        log.info(
+            'Recreating test process pool with updated env vars: %s',
+            _TEST_DYNAMIC_ENV_VARS,
+        )
         self._pool.shutdown(wait=True, cancel_futures=False)
         self._env_vars = env_vars
         self._pool = self._create_pool()
 
     def map(self, fn, *iterables, timeout=None, chunksize=1):
-        return self._pool.map(fn, *iterables, timeout=timeout,
-                              chunksize=chunksize)
+        return self._pool.map(fn, *iterables, timeout=timeout, chunksize=chunksize)
 
     def shutdown(self, wait=True, *, cancel_futures=False):
         return self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
@@ -360,11 +381,14 @@ class HealingProcessPoolExecutor(ProcessPoolExecutor):
                 log.warning(
                     'Process pool warm_up exceeded %.1fs budget after warming '
                     '%d/%d child(ren); remaining children will initialize '
-                    'lazily on first use.', timeout, len(pids),
-                    self._max_workers)
+                    'lazily on first use.',
+                    timeout,
+                    len(pids),
+                    self._max_workers,
+                )
                 break
         kumo_timing_event(
-            "process_pool.warm_up.done",
+            'process_pool.warm_up.done',
             elapsed_seconds=round(time.monotonic() - started, 6),
             max_workers=self._max_workers,
             child_pid_count=len(set(pids)),
@@ -385,44 +409,53 @@ class HealingProcessPoolExecutor(ProcessPoolExecutor):
             log.warning(
                 f'All {self._max_workers} worker processes are busy, '
                 f'queue count: {self._pool._queue_count}, '
-                f'pending work items: {len(self._pool._pending_work_items)}.')
+                f'pending work items: {len(self._pool._pending_work_items)}.'
+            )
             if activity.in_activity():
                 log.warning(
                     'Activity will not heartbeat while waiting for the next '
-                    f'available worker process: {activity.info()}')
+                    f'available worker process: {activity.info()}'
+                )
         try:
             submit_started = time.monotonic()
-            fn_name = getattr(fn, "__name__", fn.__class__.__name__)
-            kumo_timing_event("process_pool.submit.start", fn_name=fn_name)
+            fn_name = getattr(fn, '__name__', fn.__class__.__name__)
+            kumo_timing_event('process_pool.submit.start', fn_name=fn_name)
             future = self._pool.submit(fn, *args, **kwargs)  # type: ignore
-            future.add_done_callback(lambda completed: kumo_timing_event(
-                "process_pool.submit.done",
-                elapsed_seconds=round(time.monotonic() - submit_started, 6),
-                fn_name=fn_name,
-                cancelled=completed.cancelled(),
-                exception_type=_future_exception_type(completed),
-            ))
+            future.add_done_callback(
+                lambda completed: kumo_timing_event(
+                    'process_pool.submit.done',
+                    elapsed_seconds=round(time.monotonic() - submit_started, 6),
+                    fn_name=fn_name,
+                    cancelled=completed.cancelled(),
+                    exception_type=_future_exception_type(completed),
+                )
+            )
             return future
         except BrokenProcessPool as ex:
-            log.error("Process pool is unusable due to %s, restarting...\n%s",
-                      ex, traceback.format_exc())
+            log.error(
+                'Process pool is unusable due to %s, restarting...\n%s',
+                ex,
+                traceback.format_exc(),
+            )
             # No wait for shutting down broken process pool. In certain case
             # of OOM killed child process, shutdown(wait=True) might hang
             # indefinitely and therefore freeze the entire worker.
             self._pool.shutdown(wait=False)
             self._pool = self._create_pool()
-            log.warning("New process pool created, re-submitting task.")
+            log.warning('New process pool created, re-submitting task.')
             submit_started = time.monotonic()
-            fn_name = getattr(fn, "__name__", fn.__class__.__name__)
+            fn_name = getattr(fn, '__name__', fn.__class__.__name__)
             future = self._pool.submit(fn, *args, **kwargs)  # type: ignore
-            future.add_done_callback(lambda completed: kumo_timing_event(
-                "process_pool.submit.done",
-                elapsed_seconds=round(time.monotonic() - submit_started, 6),
-                fn_name=fn_name,
-                restarted_pool=True,
-                cancelled=completed.cancelled(),
-                exception_type=_future_exception_type(completed),
-            ))
+            future.add_done_callback(
+                lambda completed: kumo_timing_event(
+                    'process_pool.submit.done',
+                    elapsed_seconds=round(time.monotonic() - submit_started, 6),
+                    fn_name=fn_name,
+                    restarted_pool=True,
+                    cancelled=completed.cancelled(),
+                    exception_type=_future_exception_type(completed),
+                )
+            )
             return future
 
 
@@ -465,8 +498,9 @@ def _get_async_caller_loop() -> Optional[AbstractEventLoop]:
     return getattr(_thread_local, 'async_caller_loop', None)
 
 
-def run_with_async_caller_loop(loop: AbstractEventLoop, fn: Callable, *args:
-                               Any, **kwargs: Any) -> Any:
+def run_with_async_caller_loop(
+    loop: AbstractEventLoop, fn: Callable, *args: Any, **kwargs: Any
+) -> Any:
     """Run ``fn(*args, **kwargs)`` with ``loop`` stamped on this thread's
     ``threading.local``, then clear the stamp on exit. Use as the target
     of ``asyncio.to_thread`` from an async ``@activity.defn`` to make
@@ -514,7 +548,8 @@ def _run_in_diskgraph_subprocess(fn, *args, **kwargs):
                         activity.heartbeat()
                     if activity.is_cancelled():
                         raise CancelledError(
-                            f'{fn.__name__} cancelled via diskgraph_subprocess')
+                            f'{fn.__name__} cancelled via diskgraph_subprocess'
+                        )
     finally:
         log.info('Terminating diskgraph subprocess for %s.', fn.__name__)
         executor.terminate()
@@ -532,6 +567,7 @@ def diskgraph_subprocess(fn):
     the ``_KUMO_DISKGRAPH_SUBPROCESS`` env var), the original function is
     invoked directly — avoiding infinite recursion from pickle round-tripping.
     """
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         if os.environ.get(_DISKGRAPH_SUBPROCESS_ENV):

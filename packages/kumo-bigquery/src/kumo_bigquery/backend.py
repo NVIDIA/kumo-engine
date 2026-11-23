@@ -17,18 +17,6 @@ because that name is already the platform reader's.
 import logging
 from typing import Any, List, Mapping, Optional
 
-from kumo_bigquery.session import (
-    _BigQuerySessions,
-    _billing_project,
-    _clients,
-    _name,
-    _qualified,
-    _rows,
-    _target_config,
-)
-from kumo_bigquery.source import BigQuerySourceReader
-from kumo_bigquery.sql import QueryPlan, sample_request, table_names
-from kumo_bigquery.types import dtype_for, schema_columns
 from kumo_core.sources.backend import (
     ingest_result,
     sampled_table,
@@ -49,6 +37,19 @@ from kumoapi.source_table import (
     SourceTableListResponse,
 )
 from kumoapi.typing import Dtype
+
+from kumo_bigquery.session import (
+    _BigQuerySessions,
+    _billing_project,
+    _clients,
+    _name,
+    _qualified,
+    _rows,
+    _target_config,
+)
+from kumo_bigquery.source import BigQuerySourceReader
+from kumo_bigquery.sql import QueryPlan, sample_request, table_names
+from kumo_bigquery.types import dtype_for, schema_columns
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,10 @@ class BigQuerySourceBackend(_BigQuerySessions):
 
     source_type = DataSourceType.BIGQUERY
 
-    _default_hint = ('LocalBackend(sources={DataSourceType.BIGQUERY: '
-                     'BigQuerySourceBackend(identity=identity)})')
+    _default_hint = (
+        'LocalBackend(sources={DataSourceType.BIGQUERY: '
+        'BigQuerySourceBackend(identity=identity)})'
+    )
 
     def __init__(
         self,
@@ -116,7 +119,8 @@ class BigQuerySourceBackend(_BigQuerySessions):
         config = _target_config(connector)
         dataset = f'{config.project_id}.{config.dataset_id}'
         return SourceTableListResponse(
-            table_names=table_names(self._client(connector), dataset))
+            table_names=table_names(self._client(connector), dataset)
+        )
 
     def get_table_config(
         self,
@@ -126,12 +130,14 @@ class BigQuerySourceBackend(_BigQuerySessions):
     ) -> SourceTableConfigResponse:
         del project_id
         self._table(connector, table_name)  # 404s if it does not exist
-        return SourceTableConfigResponse(source_table=BigQuerySourceTable(
-            bigquery_connector_id=connector.id,
-            table_name=table_name,
-            project_id=_target_config(connector).project_id,
-            dataset_id=_target_config(connector).dataset_id,
-        ))
+        return SourceTableConfigResponse(
+            source_table=BigQuerySourceTable(
+                bigquery_connector_id=connector.id,
+                table_name=table_name,
+                project_id=_target_config(connector).project_id,
+                dataset_id=_target_config(connector).dataset_id,
+            )
+        )
 
     def get_columns(
         self,
@@ -143,8 +149,7 @@ class BigQuerySourceBackend(_BigQuerySessions):
         del project_id
         return SourceTableDataResponse(
             table_name=table_name,
-            cols=self._columns(connector, table_name,
-                               self._embeddable(connector, sql)),
+            cols=self._columns(connector, table_name, self._embeddable(connector, sql)),
         )
 
     def get_sample(
@@ -168,6 +173,7 @@ class BigQuerySourceBackend(_BigQuerySessions):
             sample_over_budget,
             sample_timeout,
         )
+
         query = self._embeddable(connector, sql)
         if query is None:
             return self._table_sample(connector, table_name, sample_rows)
@@ -179,29 +185,37 @@ class BigQuerySourceBackend(_BigQuerySessions):
                 'Not sampling the Custom SQL query for %s: running it would '
                 'scan %s, and a LIMIT does not reduce a BigQuery scan. '
                 'Semantic types fall back to the data type alone; add a '
-                'filter, or declare the columns.', table_name,
-                'an amount BigQuery would not estimate' if scanned is None else
-                f'~{scanned} bytes, over the {SQL_SAMPLE_MAX_SCAN_BYTES} '
-                f'budget')
+                'filter, or declare the columns.',
+                table_name,
+                'an amount BigQuery would not estimate'
+                if scanned is None
+                else f'~{scanned} bytes, over the {SQL_SAMPLE_MAX_SCAN_BYTES} budget',
+            )
             return SourceTableDataResponse(table_name=table_name, cols=columns)
         # The estimate above is advisory, so the sample also carries a
         # ceiling BigQuery enforces itself.
         config = _target_config(connector)
         statement, job_config = sample_request(
-            query, sample_rows, project=config.project_id,
+            query,
+            sample_rows,
+            project=config.project_id,
             dataset=config.dataset_id,
             max_bytes_billed=SQL_SAMPLE_MAX_SCAN_BYTES,
-            job_timeout_ms=_milliseconds(sample_timeout(timeout, query)))
+            job_timeout_ms=_milliseconds(sample_timeout(timeout, query)),
+        )
         rows = _rows(self._client(connector), statement, job_config)
         return sampled_table(table_name, columns, rows)
 
-    def _table_sample(self, connector: SourceConnector, table_name: str,
-                      sample_rows: int) -> SourceTableDataResponse:
+    def _table_sample(
+        self, connector: SourceConnector, table_name: str, sample_rows: int
+    ) -> SourceTableDataResponse:
         from kumo_core.custom_sql import sample_select
+
         columns = self._columns(connector, table_name)
         rows = _rows(
             self._client(connector),
-            sample_select(_qualified(connector, table_name), sample_rows))
+            sample_select(_qualified(connector, table_name), sample_rows),
+        )
         return sampled_table(table_name, columns, rows)
 
     def get_download_urls(
@@ -211,9 +225,10 @@ class BigQuerySourceBackend(_BigQuerySessions):
         project_id: Optional[str] = None,
     ) -> List[str]:
         raise NotImplementedError(
-            "BigQuery tables have no download URL; they are read through a "
-            "client. Custom prediction tables must come from an object-store "
-            "or Databricks connector.")
+            'BigQuery tables have no download URL; they are read through a '
+            'client. Custom prediction tables must come from an object-store '
+            'or Databricks connector.'
+        )
 
     def get_data_version(
         self,
@@ -256,14 +271,20 @@ class BigQuerySourceBackend(_BigQuerySessions):
         destination = staging_dir(dest_dir, table_name)
         query = self._embeddable(connector, sql)
         staged = read_table(
-            self._reader(connector), table_name, str(destination),
+            self._reader(connector),
+            table_name,
+            str(destination),
             columns=self._declared(connector, table_name, dtypes, query),
-            mode=self.mode, sql=query, version=data_version)
+            mode=self.mode,
+            sql=query,
+            version=data_version,
+        )
         if not staged.num_rows:
             raise PermanentSourceError(
                 f'Reading {table_name} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
-                f'to infer an encoding.')
+                f'to infer an encoding.'
+            )
 
         return ingest_result(staged)
 
@@ -275,9 +296,9 @@ class BigQuerySourceBackend(_BigQuerySessions):
         sql: Optional[str] = None,
     ) -> Mapping[str, Dtype]:
         catalog = self._columns(connector, table_name, sql)
-        return select_columns(table_name,
-                              {column.name: column.dtype
-                               for column in catalog}, dtypes)
+        return select_columns(
+            table_name, {column.name: column.dtype for column in catalog}, dtypes
+        )
 
     def _reader(self, connector: SourceConnector) -> BigQuerySourceReader:
         r"""Built per call: the reader is a thin wrapper and cheap to build,
@@ -286,8 +307,11 @@ class BigQuerySourceBackend(_BigQuerySessions):
         principal = self._principal(connector)
         credentials = self._credentials(connector)
         billing = _billing_project(connector)
-        storage = (_clients.storage_client(principal, project=billing)
-                   if self.staging_uri is not None else None)
+        storage = (
+            _clients.storage_client(principal, project=billing)
+            if self.staging_uri is not None
+            else None
+        )
         return BigQuerySourceReader(
             self._client(connector),
             project=_target_config(connector).project_id,
@@ -306,17 +330,19 @@ class BigQuerySourceBackend(_BigQuerySessions):
         by a ``404``, so this has to raise the same shape.
         """
         from google.api_core.exceptions import NotFound
+
         try:
-            return self._client(connector).get_table(
-                _name(connector, table_name))
+            return self._client(connector).get_table(_name(connector, table_name))
         except NotFound as error:
             config = _target_config(connector)
             raise SourceNotFoundError(
                 f'Invalid table {table_name}: it does not exist in '
-                f'{config.project_id}.{config.dataset_id}.') from error
+                f'{config.project_id}.{config.dataset_id}.'
+            ) from error
 
-    def _embeddable(self, connector: SourceConnector,
-                    sql: Optional[str]) -> Optional[str]:
+    def _embeddable(
+        self, connector: SourceConnector, sql: Optional[str]
+    ) -> Optional[str]:
         r"""The only form of a query this reader ever sends: the caller's text
         with its trailing terminator and comment removed, so it stands in
         subquery position.
@@ -325,30 +351,37 @@ class BigQuerySourceBackend(_BigQuerySessions):
             return None
         from kumo_core.custom_sql import gate_custom_sql, subquery_safe_sql
         from kumo_core.types import ConnectorType
-        gate_custom_sql(sql, ConnectorType.BIGQUERY,
-                        _target_config(connector))
+
+        gate_custom_sql(sql, ConnectorType.BIGQUERY, _target_config(connector))
         return subquery_safe_sql(sql, ConnectorType.BIGQUERY)
 
     def _plan(self, connector: SourceConnector, sql: str) -> QueryPlan:
         from kumo_bigquery.sql import query_plan
-        return query_plan(self._client(connector), sql,
-                          project=_target_config(connector).project_id,
-                          dataset=_target_config(connector).dataset_id)
+
+        return query_plan(
+            self._client(connector),
+            sql,
+            project=_target_config(connector).project_id,
+            dataset=_target_config(connector).dataset_id,
+        )
 
     def _described(self, plan: QueryPlan) -> List[SourceColumn]:
         return source_columns(schema_columns(plan.schema))
 
-    def _columns(self, connector: SourceConnector, table_name: str,
-                 sql: Optional[str] = None) -> List[SourceColumn]:
+    def _columns(
+        self, connector: SourceConnector, table_name: str, sql: Optional[str] = None
+    ) -> List[SourceColumn]:
         if sql is not None:
             return self._described(self._plan(connector, sql))
-        return source_columns(
-            schema_columns(self._table(connector, table_name).schema))
+        return source_columns(schema_columns(self._table(connector, table_name).schema))
 
     @staticmethod
-    def dtype_for(field_type: str, mode: Optional[str] = None,
-                  precision: Optional[int] = None,
-                  scale: Optional[int] = None) -> Dtype:
+    def dtype_for(
+        field_type: str,
+        mode: Optional[str] = None,
+        precision: Optional[int] = None,
+        scale: Optional[int] = None,
+    ) -> Dtype:
         return dtype_for(field_type, mode, precision, scale)
 
     def __repr__(self) -> str:

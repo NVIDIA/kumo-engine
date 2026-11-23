@@ -130,7 +130,9 @@ from statedb.ml.jobs import BatchPredictionJobDBEntry
 
 # isort: off
 from statedb.rest.rest_api_db_entries import (
-    DeprecatedAdvancedAutoTrainerOptions, )
+    DeprecatedAdvancedAutoTrainerOptions,
+)
+
 # isort: on
 from temporalio_commons import TemporalClient, WFError, is_cancelled_exception
 from temporalio_commons.error_utils import wf_failure_to_temporal_trace
@@ -159,14 +161,15 @@ class MLJobBackend:
     """
     Backend service to perform Training and Batch Prediction operations.
     """
+
     def __init__(
-            self,
-            settings: MLBackendSettings,
-            temporal_client: TemporalClient,
-            state_db: Optional[StateDB] = None,
-            now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        self,
+        settings: MLBackendSettings,
+        temporal_client: TemporalClient,
+        state_db: Optional[StateDB] = None,
+        now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
-        log.info(f"Initializing MLBackend with {settings}")
+        log.info(f'Initializing MLBackend with {settings}')
         self._settings = settings
         self._ml_job_settings = settings.ml_job_settings
         self._now_fn = now_fn
@@ -188,16 +191,16 @@ class MLJobBackend:
         self._state_db = state_db
         self._ml_job_service = MLJobService(state_db)
         # DB-backed admission queue (replaces the AutoRPC MLJobQueueManager).
-        self._job_queue = StateDbJobQueue(state_db,
-                                          self._settings.job_queue_settings)
+        self._job_queue = StateDbJobQueue(state_db, self._settings.job_queue_settings)
         self._job_output_store._configure_ml_job_service(self._ml_job_service)
 
     def _require_ml_job_service(self) -> MLJobService:
-        ml_job_service = getattr(self, "_ml_job_service", None)
+        ml_job_service = getattr(self, '_ml_job_service', None)
         if ml_job_service is None:
             raise RuntimeError(
-                "MLJobService is not configured for MLJobBackend. "
-                "Call start() before accessing ML job metadata.")
+                'MLJobService is not configured for MLJobBackend. '
+                'Call start() before accessing ML job metadata.'
+            )
         return ml_job_service
 
     async def get_default_ml_job_settings(self) -> MLJobSettings:
@@ -211,9 +214,10 @@ class MLJobBackend:
     async def start(self, read_only: bool = False):
         if self._state_db is None:
             raise RuntimeError(
-                "MLJobBackend.start() requires a configured StateDB; pass "
-                "state_db to the constructor or call _configure_state_db() "
-                "first.")
+                'MLJobBackend.start() requires a configured StateDB; pass '
+                'state_db to the constructor or call _configure_state_db() '
+                'first.'
+            )
         await self._temporal_client.init()
         await self._configure_state_db_services()
 
@@ -262,32 +266,34 @@ class MLJobBackend:
             open_jobs = await service.list_open_parent_jobs()
         except Exception:
             log.exception(
-                "Lost-workflow reconciliation: failed to list open jobs; "
-                "skipping sweep")
+                'Lost-workflow reconciliation: failed to list open jobs; skipping sweep'
+            )
             return
 
         for job in open_jobs:
             job_id = job.id
             try:
                 wf_desc = await self._temporal_client.get_workflow_desc(
-                    _job_workflow_id(job_id))
+                    _job_workflow_id(job_id)
+                )
                 if wf_desc is not None:
                     continue  # workflow still exists; leave it alone
                 log.warning(
-                    "Lost-workflow reconciliation: workflow for %s not found; "
-                    "marking failed and releasing its queue slot", job_id)
+                    'Lost-workflow reconciliation: workflow for %s not found; '
+                    'marking failed and releasing its queue slot',
+                    job_id,
+                )
                 await service.mark_workflow_not_found(job_id, self._now_fn())
                 await self._job_queue.release_job(job_id)
             except Exception:
                 log.exception(
-                    "Lost-workflow reconciliation: error reconciling %s; "
-                    "skipping", job_id)
+                    'Lost-workflow reconciliation: error reconciling %s; skipping',
+                    job_id,
+                )
 
     # =============== Training =============== #
-    async def _get_job_if_exists_generic(self,
-                                         id: JobID) -> Optional[MLJobDBEntry]:
-        return await self._require_ml_job_service().get_job_if_exists_generic(id
-                                                                              )
+    async def _get_job_if_exists_generic(self, id: JobID) -> Optional[MLJobDBEntry]:
+        return await self._require_ml_job_service().get_job_if_exists_generic(id)
 
     async def _submit_created_job(
         self,
@@ -326,23 +332,27 @@ class MLJobBackend:
         """
         # Must have a model plan containing train-table-generation plan.
         self._require_connector_references_in_project(
-            graph_data_compute_input.connectors.values(), project_id)
+            graph_data_compute_input.connectors.values(), project_id
+        )
         model_plan = training_spec.advanced_options
         assert isinstance(model_plan, ModelPlan)
         # Make sure to apply ModelPlan as override to PQ config.
         to_predictive_query_kwargs(model_plan).apply_overrides(
-            training_spec.predictive_query)
+            training_spec.predictive_query
+        )
         plan = model_plan.training_table_generation
         ml_job_settings = self._ml_job_settings
-        graph_data_version = (None if not graph_version_info else
-                              graph_version_info.graph_data_version)
+        graph_data_version = (
+            None if not graph_version_info else graph_version_info.graph_data_version
+        )
         # A registering job reads a customer connector, so its reference is
         # admitted with the job -- under the same transaction the training
         # path admits one in, rather than left to fail mid-read.
         custom_train_table = getattr(training_spec, 'custom_train_table', None)
         if custom_train_table is not None:
             self._require_connector_references_in_project(
-                [custom_train_table.connector_spec], project_id)
+                [custom_train_table.connector_spec], project_id
+            )
 
         # On the config, so it is written into the job row. The SDK
         # reconstructs a `TrainingTable` from a job ID alone and asks the job
@@ -386,8 +396,9 @@ class MLJobBackend:
         )
 
         if ml_job_settings.use_fake_job_backend:
-            await self._persist_job_fake_backend(gen_train_table_job_id,
-                                                 job_input, ml_job_settings)
+            await self._persist_job_fake_backend(
+                gen_train_table_job_id, job_input, ml_job_settings
+            )
             return gen_train_table_job_id
 
         client = await self._temporal_client.get()
@@ -416,7 +427,8 @@ class MLJobBackend:
         if existing_value != requested_value:
             raise ValueError(
                 f'Training job id={training_job_id} already exists for a '
-                f'different {field_description}.')
+                f'different {field_description}.'
+            )
 
     async def _validate_idempotent_training_replay_with_service(
         self,
@@ -433,52 +445,78 @@ class MLJobBackend:
     ) -> GenerateTrainTableJobID:
         assert self._ml_job_service is not None
         replay_checks = [
-            (existing_training_job.pquery_def_fpid, pquery_def_fpid,
-             'predictive query definition'),
-            (existing_training_job.graph_data_version, graph_data_version,
-             'graph data version'),
-            (existing_training_job.warm_start_job_id, warm_start_job_id,
-             'warm-start job'),
+            (
+                existing_training_job.pquery_def_fpid,
+                pquery_def_fpid,
+                'predictive query definition',
+            ),
+            (
+                existing_training_job.graph_data_version,
+                graph_data_version,
+                'graph data version',
+            ),
+            (
+                existing_training_job.warm_start_job_id,
+                warm_start_job_id,
+                'warm-start job',
+            ),
             (existing_training_job.project_id, project_id, 'project'),
         ]
         for existing_value, requested_value, field_description in replay_checks:
             self._raise_if_training_replay_value_changed(
-                training_job_id, existing_value, requested_value,
-                field_description)
+                training_job_id, existing_value, requested_value, field_description
+            )
 
         if existing_training_job.generate_train_table_job_id is None:
             raise ValueError(
                 f'Training job id={training_job_id} already exists without '
-                'a generate-train-table job id.')
+                'a generate-train-table job id.'
+            )
 
         existing_gen_train_table_job_id = GenerateTrainTableJobID(
-            existing_training_job.generate_train_table_job_id)
+            existing_training_job.generate_train_table_job_id
+        )
         existing_gen_train_table_job = (
             await self._ml_job_service.get_generate_train_table_job(
                 existing_gen_train_table_job_id,
                 project_ids={project_id},
-            ))
+            )
+        )
         if existing_gen_train_table_job is None:
             raise KeyError(
                 'Generate-Train-Table Job with id '
-                f'{existing_gen_train_table_job_id} not found in database')
+                f'{existing_gen_train_table_job_id} not found in database'
+            )
 
         generate_train_table_replay_checks = [
-            (existing_gen_train_table_job.config.pquery_id,
-             training_spec.predictive_query_id, 'predictive query'),
-            (existing_gen_train_table_job.config.graph_id,
-             to_graph_id(graph_data_compute_input.graph_key), 'graph'),
+            (
+                existing_gen_train_table_job.config.pquery_id,
+                training_spec.predictive_query_id,
+                'predictive query',
+            ),
+            (
+                existing_gen_train_table_job.config.graph_id,
+                to_graph_id(graph_data_compute_input.graph_key),
+                'graph',
+            ),
         ]
         if gen_train_table_job_id is not None:
             generate_train_table_replay_checks.append(
-                (existing_gen_train_table_job_id, gen_train_table_job_id,
-                 'generate-train-table job'))
+                (
+                    existing_gen_train_table_job_id,
+                    gen_train_table_job_id,
+                    'generate-train-table job',
+                )
+            )
 
-        for existing_value, requested_value, field_description in (
-                generate_train_table_replay_checks):
+        for (
+            existing_value,
+            requested_value,
+            field_description,
+        ) in generate_train_table_replay_checks:
             self._raise_if_training_replay_value_changed(
-                training_job_id, existing_value, requested_value,
-                field_description)
+                training_job_id, existing_value, requested_value, field_description
+            )
 
         return existing_gen_train_table_job_id
 
@@ -488,14 +526,14 @@ class MLJobBackend:
         project_id: ProjectID,
     ) -> None:
         if not project_id:
-            raise ValueError("project_id is required")
+            raise ValueError('project_id is required')
         for reference in references:
             if not isinstance(reference, ConnectorExecutionRef):
-                raise TypeError(
-                    "Job inputs must contain ConnectorExecutionRef values")
+                raise TypeError('Job inputs must contain ConnectorExecutionRef values')
             if reference.project_id != project_id:
                 raise ValueError(
-                    "A job cannot reference a connector from another project")
+                    'A job cannot reference a connector from another project'
+                )
 
     async def start_training(
         self,
@@ -515,31 +553,35 @@ class MLJobBackend:
         """Start a training workflow."""
         service = self._require_ml_job_service()
         self._require_connector_references_in_project(
-            graph_data_compute_input.connectors.values(), project_id)
+            graph_data_compute_input.connectors.values(), project_id
+        )
         advanced_options = training_spec.advanced_options
-        graph_data_version = (None if not graph_version_info else
-                              graph_version_info.graph_data_version)
-        existing_training_job = (await service.get_training_job(reserved_job_id)
-                                 if reserved_job_id is not None else None)
+        graph_data_version = (
+            None if not graph_version_info else graph_version_info.graph_data_version
+        )
+        existing_training_job = (
+            await service.get_training_job(reserved_job_id)
+            if reserved_job_id is not None
+            else None
+        )
 
         if existing_training_job is None:
             created_child = gen_train_table_job_id is None
-            training_job_id, gen_train_table_job_id = (
-                await service.create_training_job(
-                    pquery_id=training_spec.predictive_query_id,
-                    pquery_def_fpid=pquery_def_fpid,
-                    graph_id=to_graph_id(graph_data_compute_input.graph_key),
-                    now=self._now_fn(),
-                    advanced_options=advanced_options,
-                    graph_data_version=graph_data_version,
-                    generate_train_table_job_id=gen_train_table_job_id,
-                    job_source=job_source,
-                    custom_train_table=training_spec.custom_train_table,
-                    warm_start_job_id=warm_start_job_id,
-                    user_info=user_info,
-                    reserved_job_id=reserved_job_id,
-                    project_id=project_id,
-                ))
+            training_job_id, gen_train_table_job_id = await service.create_training_job(
+                pquery_id=training_spec.predictive_query_id,
+                pquery_def_fpid=pquery_def_fpid,
+                graph_id=to_graph_id(graph_data_compute_input.graph_key),
+                now=self._now_fn(),
+                advanced_options=advanced_options,
+                graph_data_version=graph_data_version,
+                generate_train_table_job_id=gen_train_table_job_id,
+                job_source=job_source,
+                custom_train_table=training_spec.custom_train_table,
+                warm_start_job_id=warm_start_job_id,
+                user_info=user_info,
+                reserved_job_id=reserved_job_id,
+                project_id=project_id,
+            )
             await self._submit_created_job(
                 training_job_id,
                 delete_created_child=created_child,
@@ -548,8 +590,8 @@ class MLJobBackend:
             assert reserved_job_id is not None
             if existing_training_job.project_id != project_id:
                 raise ValueError(
-                    f"Training job id={reserved_job_id} belongs to a "
-                    "different project.")
+                    f'Training job id={reserved_job_id} belongs to a different project.'
+                )
             training_job_id = reserved_job_id
             gen_train_table_job_id = await (
                 self._validate_idempotent_training_replay_with_service(
@@ -562,23 +604,27 @@ class MLJobBackend:
                     gen_train_table_job_id=gen_train_table_job_id,
                     warm_start_job_id=warm_start_job_id,
                     project_id=project_id,
-                ))
+                )
+            )
             log.info(
                 'Reusing existing training job %s for idempotent '
-                'start_training replay.', training_job_id)
+                'start_training replay.',
+                training_job_id,
+            )
 
         home_dir = await self.get_job_home_dir(training_job_id)
         await HomeDirManager(home_dir).touch_init_file.coroutine()
         ml_job_settings = ml_job_settings or self._ml_job_settings
 
         if isinstance(advanced_options, ModelPlan):
-            gen_train_table_job = (await service.get_generate_train_table_job(
-                gen_train_table_job_id, project_ids={project_id}))
+            gen_train_table_job = await service.get_generate_train_table_job(
+                gen_train_table_job_id, project_ids={project_id}
+            )
             assert gen_train_table_job is not None
-            advanced_options.training_table_generation = (
-                gen_train_table_job.config.plan)
+            advanced_options.training_table_generation = gen_train_table_job.config.plan
             to_predictive_query_kwargs(advanced_options).apply_overrides(
-                training_spec.predictive_query)
+                training_spec.predictive_query
+            )
         training_job_input = TrainingJobInput(
             id=training_job_id,
             graph_data_compute_input=graph_data_compute_input,
@@ -591,9 +637,9 @@ class MLJobBackend:
 
         if ml_job_settings.use_fake_job_backend:
             if existing_training_job is None:
-                await self._persist_job_fake_backend(training_job_id,
-                                                     training_job_input,
-                                                     ml_job_settings)
+                await self._persist_job_fake_backend(
+                    training_job_id, training_job_input, ml_job_settings
+                )
             return training_job_id
 
         client = await self._temporal_client.get()
@@ -612,8 +658,10 @@ class MLJobBackend:
         except WorkflowAlreadyStartedError:
             log.info(
                 'Training workflow %s for job %s already exists; '
-                'treating start_training as an idempotent replay.', wf_id,
-                training_job_id)
+                'treating start_training as an idempotent replay.',
+                wf_id,
+                training_job_id,
+            )
 
         return training_job_id
 
@@ -699,8 +747,11 @@ class MLJobBackend:
         """
         _current_user_ctx.set(ctx.user_authorization)
         service = self._require_ml_job_service()
-        project_ids = ({project_id} if project_id is not None else
-                       visible_project_ids_or_none(ctx.user_authorization))
+        project_ids = (
+            {project_id}
+            if project_id is not None
+            else visible_project_ids_or_none(ctx.user_authorization)
+        )
         jobs_by_id = {
             job.id: job
             for job in await service.list_training_job_rows(
@@ -723,8 +774,7 @@ class MLJobBackend:
         job_id: GenerateTrainTableJobID,
     ) -> GenerateTrainTableResult:
         service = self._require_ml_job_service()
-        job = await service.get_generate_train_table_job(
-            job_id, project_ids=None)
+        job = await service.get_generate_train_table_job(job_id, project_ids=None)
         if job is None:
             raise KeyError(f'Job with id {job_id} not found in database')
         return self._generate_train_table_result_from_job(job_id, job)
@@ -736,19 +786,20 @@ class MLJobBackend:
     ) -> GenerateTrainTableResult:
         if job.execution.status != JobStatus.DONE:
             raise ValueError(
-                f"Unable to get GenerateTrainTableJob result because the "
-                f"job status is: {job.execution.status}")
+                f'Unable to get GenerateTrainTableJob result because the '
+                f'job status is: {job.execution.status}'
+            )
         validation = job.execution.validation or ValidationResponse()
         if not validation.ok:
             raise ValueError(
-                f"GenerateTrainTableJob id={job_id} has failed validation, "
-                f"details: {validation}")
+                f'GenerateTrainTableJob id={job_id} has failed validation, '
+                f'details: {validation}'
+            )
         assert job.execution.train_table_path is not None
         assert job.execution.train_table_materialization_path is not None
         return GenerateTrainTableResult(
             train_table_path=job.execution.train_table_path,
-            train_table_materialization_path=job.execution.
-            train_table_materialization_path,
+            train_table_materialization_path=job.execution.train_table_materialization_path,
             validation=validation,
             train_table_home_dir=job.execution.train_table_home_dir,
         )
@@ -770,16 +821,17 @@ class MLJobBackend:
     ) -> GeneratePredTableResult:
         if job.execution.status != JobStatus.DONE:
             raise ValueError(
-                f"Unable to get GeneratePredictionTableJob result because the "
-                f"job status is: {job.execution.status}")
+                f'Unable to get GeneratePredictionTableJob result because the '
+                f'job status is: {job.execution.status}'
+            )
         validation = job.execution.validation or ValidationResponse()
         if not validation.ok:
             raise ValueError(
-                f"GeneratePredictionTableJob id={job_id} failed validation, "
-                f"details: {validation}")
+                f'GeneratePredictionTableJob id={job_id} failed validation, '
+                f'details: {validation}'
+            )
         assert job.execution.pred_table_path
-        return GeneratePredTableResult(job.execution.pred_table_path,
-                                       validation)
+        return GeneratePredTableResult(job.execution.pred_table_path, validation)
 
     async def get_generate_pred_table_jobs(
         self,
@@ -793,12 +845,11 @@ class MLJobBackend:
     ) -> List[api.GeneratePredictionTableJobResource]:
         service = self._require_ml_job_service()
         job_entries = await service.get_generate_pred_table_jobs(
-            job_ids, project_ids=project_ids)
+            job_ids, project_ids=project_ids
+        )
         # Filter by status, if specified.
         if status:
-            job_entries = [
-                job for job in job_entries if job.execution.status == status
-            ]
+            job_entries = [job for job in job_entries if job.execution.status == status]
         # Sort job entries
         job_entries = sorted(job_entries, key=lambda entry: entry.timestamps)
         # Apply limit to keep the most recent N entries
@@ -810,21 +861,21 @@ class MLJobBackend:
             entry: GeneratePredTableJobDBEntry,
         ) -> api.GeneratePredictionTableJobResource:
             graph_id = to_graph_id(entry.config.graph_id)
-            if isinstance(graph_id,
-                          GraphIDv2) and entry.config.graph_data_version:
+            if isinstance(graph_id, GraphIDv2) and entry.config.graph_data_version:
                 _, graph_fpid = GraphIDv2.parse(graph_id)
                 assert graph_fpid
                 graph_snapshot_id = DataSnapshot.GRAPH.format_id(
-                    graph_fpid, entry.config.graph_data_version)
+                    graph_fpid, entry.config.graph_data_version
+                )
             else:
                 graph_snapshot_id = None
             if entry.config.pquery_def_fpid:
-                pquery_id = PredictiveQueryID.public(
-                    entry.config.pquery_def_fpid)
+                pquery_id = PredictiveQueryID.public(entry.config.pquery_def_fpid)
             else:
                 pquery_id = entry.config.pquery_id
-            tracking_url = (f'{get_base_kumo_url()}'
-                            f'/predictions/predictiontable/{entry.id}')
+            tracking_url = (
+                f'{get_base_kumo_url()}/predictions/predictiontable/{entry.id}'
+            )
             return api.GeneratePredictionTableJobResource(
                 job_id=entry.id,
                 config=api.GeneratePredictionTableRequest(
@@ -836,17 +887,23 @@ class MLJobBackend:
                 job_status_report=api.JobStatusReport(
                     status=api.JobStatus(entry.execution.status),
                     tracking_url=tracking_url,
-                    start_time=(entry.execution.start_time
-                                or entry.timestamps.created_at),
-                    end_time=(entry.execution.last_updated_at
-                              if entry.execution.status.is_terminal else None),
+                    start_time=(
+                        entry.execution.start_time or entry.timestamps.created_at
+                    ),
+                    end_time=(
+                        entry.execution.last_updated_at
+                        if entry.execution.status.is_terminal
+                        else None
+                    ),
                     event_log=[entry.execution.log],
                 ),
                 created_at=entry.timestamps.created_at,
-                source=(json.from_json(
-                    json.to_json(entry.source or JobSource.UNKNOWN),
-                    common_api.JobSource,
-                )),
+                source=(
+                    json.from_json(
+                        json.to_json(entry.source or JobSource.UNKNOWN),
+                        common_api.JobSource,
+                    )
+                ),
                 tags={},  # to be filled by REST
                 user=entry.user,
                 project_id=entry.project_id,
@@ -866,12 +923,11 @@ class MLJobBackend:
     ) -> List[api.GenerateTrainTableJobResource]:
         service = self._require_ml_job_service()
         job_entries = await service.get_generate_train_table_jobs(
-            job_ids, project_ids=project_ids)
+            job_ids, project_ids=project_ids
+        )
         # Filter by status, if specified.
         if status:
-            job_entries = [
-                job for job in job_entries if job.execution.status == status
-            ]
+            job_entries = [job for job in job_entries if job.execution.status == status]
         # Sort job entries
         job_entries = sorted(job_entries, key=lambda entry: entry.timestamps)
         # Apply limit to keep the last N entries
@@ -888,23 +944,21 @@ class MLJobBackend:
             if isinstance(graph_id, GraphIDv2) and graph_ver:
                 _, fpid = GraphIDv2.parse(graph_id)
                 assert fpid
-                graph_snapshot_id = DataSnapshot.GRAPH.format_id(
-                    fpid, graph_ver)
+                graph_snapshot_id = DataSnapshot.GRAPH.format_id(fpid, graph_ver)
             if entry.config.pquery_def_fpid:
-                pquery_id = PredictiveQueryID.public(
-                    entry.config.pquery_def_fpid)
+                pquery_id = PredictiveQueryID.public(entry.config.pquery_def_fpid)
             else:
                 pquery_id = entry.config.pquery_id
-            tracking_url = (f'{get_base_kumo_url()}'
-                            f'/models/trainingtable/{entry.id}')
+            tracking_url = f'{get_base_kumo_url()}/models/trainingtable/{entry.id}'
             return api.GenerateTrainTableJobResource(
                 job_id=entry.id,
                 config=api.GenerateTrainTableRequest(
                     {},
                     pquery_id=pquery_id,
                     graph_snapshot_id=graph_snapshot_id,
-                    plan=json.from_json(json.to_json(entry.config.plan),
-                                        api.TrainingTableGenerationPlan),
+                    plan=json.from_json(
+                        json.to_json(entry.config.plan), api.TrainingTableGenerationPlan
+                    ),
                     custom_train_table=entry.config.custom_train_table,
                 ),
                 # Reported separately from the spec so the SDK can tell a job
@@ -914,18 +968,24 @@ class MLJobBackend:
                 job_status_report=api.JobStatusReport(
                     status=api.JobStatus(entry.execution.status),
                     tracking_url=tracking_url,
-                    start_time=(entry.execution.start_time
-                                or entry.timestamps.created_at),
-                    end_time=(entry.execution.last_updated_at
-                              if entry.execution.status.is_terminal else None),
+                    start_time=(
+                        entry.execution.start_time or entry.timestamps.created_at
+                    ),
+                    end_time=(
+                        entry.execution.last_updated_at
+                        if entry.execution.status.is_terminal
+                        else None
+                    ),
                     event_log=[entry.execution.log],
                     validation_response=entry.execution.validation,
                 ),
                 created_at=entry.timestamps.created_at,
-                source=(json.from_json(
-                    json.to_json(entry.source or JobSource.UNKNOWN),
-                    common_api.JobSource,
-                )),
+                source=(
+                    json.from_json(
+                        json.to_json(entry.source or JobSource.UNKNOWN),
+                        common_api.JobSource,
+                    )
+                ),
                 tags={},  # to be filled by REST
                 user=entry.user,
                 project_id=entry.project_id,
@@ -957,14 +1017,17 @@ class MLJobBackend:
             return None
         gen_tt_id = GenerateTrainTableJobID(entry.generate_train_table_job_id)
         gen_tt_entry = await service.get_generate_train_table_job(
-            gen_tt_id, project_ids={ProjectID(entry.project_id)})
+            gen_tt_id, project_ids={ProjectID(entry.project_id)}
+        )
         if gen_tt_entry is None:
             raise ValidationException(
-                title="Internal Data Error",
-                message=(f"Training table generation job {gen_tt_id} "
-                         f"is missing from database but was referenced by "
-                         f"training job {training_job_id}. "
-                         f"Please contact Kumo support."),
+                title='Internal Data Error',
+                message=(
+                    f'Training table generation job {gen_tt_id} '
+                    f'is missing from database but was referenced by '
+                    f'training job {training_job_id}. '
+                    f'Please contact Kumo support.'
+                ),
             )
         return gen_tt_entry
 
@@ -977,18 +1040,19 @@ class MLJobBackend:
         This provides access to forecasting params when a generate-train-table
         job ID is unavailable (e.g., SDK path using pre-generated train tables).
         """
-        return await (self._require_ml_job_service().
-                      get_training_job_training_table_plan(training_job_id))
+        return await (
+            self._require_ml_job_service().get_training_job_training_table_plan(
+                training_job_id
+            )
+        )
 
     async def _get_generate_table_job_entry(
         self,
         job_id: Union[GenerateTrainTableJobID, GeneratePredictionTableJobID],
-    ) -> Optional[Union[GenerateTrainTableJobDBEntry,
-                        GeneratePredTableJobDBEntry]]:
+    ) -> Optional[Union[GenerateTrainTableJobDBEntry, GeneratePredTableJobDBEntry]]:
         service = self._require_ml_job_service()
         if isinstance(job_id, GenerateTrainTableJobID):
-            return await service.get_generate_train_table_job(
-                job_id, project_ids=None)
+            return await service.get_generate_train_table_job(job_id, project_ids=None)
         return await service.get_generate_pred_table_job(job_id)
 
     async def get_generate_train_table_job_path(
@@ -1013,18 +1077,15 @@ class MLJobBackend:
         """
         job_entry = await self._get_generate_table_job_entry(job_id)
         if job_entry is None:
-            raise ValueError(f'Generate train table entry for {job_id}' +
-                             ' not found.')
+            raise ValueError(f'Generate train table entry for {job_id}' + ' not found.')
         if not job_entry.execution.train_table_path:
-            raise ValueError(f'Generate train table path for {job_id}' +
-                             ' not found.')
+            raise ValueError(f'Generate train table path for {job_id}' + ' not found.')
         return job_entry.execution.train_table_path
 
     async def get_generate_table_job_execution(
         self,
         job_id: Union[GenerateTrainTableJobID, GeneratePredictionTableJobID],
-    ) -> Optional[Union[GenerateTrainTableJobOutput,
-                        GeneratePredTableJobOutput]]:
+    ) -> Optional[Union[GenerateTrainTableJobOutput, GeneratePredTableJobOutput]]:
         """
         Get the execution details for a GenerateTrainTable or
         GeneratePrediction job.
@@ -1043,14 +1104,16 @@ class MLJobBackend:
         job_entry = await self._get_generate_table_job_entry(job_id)
         return None if job_entry is None else job_entry.execution
 
-    async def override_model(self, training_job_id: TrainingJobID,
-                             overrides: TrainDirOverrides) -> None:
+    async def override_model(
+        self, training_job_id: TrainingJobID, overrides: TrainDirOverrides
+    ) -> None:
         home_dir = await self.get_job_home_dir(training_job_id)
 
         if not fsutil.exists(home_dir):
             raise RuntimeError(
                 f"Job dir '{home_dir}' does not exist. Please check if the "
-                f"training job ID is correct.")
+                f'training job ID is correct.'
+            )
 
         overrides.validate()
 
@@ -1060,11 +1123,14 @@ class MLJobBackend:
         service = self._require_ml_job_service()
         job = await service.get_training_job(training_job_id)
         if job is None:
-            raise RuntimeError(
-                f"Job '{training_job_id}' does not exist in StateDB")
-        job.execution.results = TrainingJobResults(test_explain=TestExplanation(
-            contribution_summary=ColumnContributionSummary(
-                global_column_contributions=[])))
+            raise RuntimeError(f"Job '{training_job_id}' does not exist in StateDB")
+        job.execution.results = TrainingJobResults(
+            test_explain=TestExplanation(
+                contribution_summary=ColumnContributionSummary(
+                    global_column_contributions=[]
+                )
+            )
+        )
         job.execution.status = JobStatus.DONE
         await service.modify_job_if_open_generic(job)
 
@@ -1106,15 +1172,19 @@ class MLJobBackend:
         assert job_input.id == job_input.generate_pred_table_job_id
         assert job_input.config.pquery_def_fpid
         self._require_connector_references_in_project(
-            job_input.graph_data_compute_input.connectors.values(), project_id)
+            job_input.graph_data_compute_input.connectors.values(), project_id
+        )
         self._require_connector_references_in_project(
-            job_input.output_connectors.values(), project_id)
+            job_input.output_connectors.values(), project_id
+        )
         if job_input.custom_pred_table_connector is not None:
             self._require_connector_references_in_project(
-                [job_input.custom_pred_table_connector], project_id)
+                [job_input.custom_pred_table_connector], project_id
+            )
         ml_job_settings = self._ml_job_settings
-        graph_data_version = (None if not graph_version_info else
-                              graph_version_info.graph_data_version)
+        graph_data_version = (
+            None if not graph_version_info else graph_version_info.graph_data_version
+        )
         expected_config = GeneratePredTableJobConfig(
             job_input.predictive_query_id,
             job_input.config.pred_table_generation_plan,
@@ -1126,8 +1196,7 @@ class MLJobBackend:
         requested_job_id = GeneratePredictionTableJobID(job_input.id)
 
         service = self._require_ml_job_service()
-        existing_job = await service.get_generate_pred_table_job(
-            requested_job_id)
+        existing_job = await service.get_generate_pred_table_job(requested_job_id)
         if existing_job is None:
             job_id = await service.create_generate_pred_table_job(
                 config=expected_config,
@@ -1141,16 +1210,19 @@ class MLJobBackend:
         else:
             if existing_job.project_id != project_id:
                 raise ValueError(
-                    f'Job id={requested_job_id} belongs to a different '
-                    'project.')
+                    f'Job id={requested_job_id} belongs to a different project.'
+                )
             if existing_job.config != expected_config:
                 raise ValueError(
                     f'Job id={requested_job_id} already exists with '
-                    'different configuration.')
+                    'different configuration.'
+                )
             job_id = requested_job_id
             log.info(
                 'Reusing existing generate-pred-table job %s for '
-                'idempotent start_generate_pred_table replay.', job_id)
+                'idempotent start_generate_pred_table replay.',
+                job_id,
+            )
         assert job_id == job_input.generate_pred_table_job_id
         assert isinstance(job_id, GeneratePredictionTableJobID)
 
@@ -1159,8 +1231,7 @@ class MLJobBackend:
 
         if ml_job_settings.use_fake_job_backend:
             if existing_job is None:
-                await self._persist_job_fake_backend(job_id, job_input,
-                                                     ml_job_settings)
+                await self._persist_job_fake_backend(job_id, job_input, ml_job_settings)
             return job_id
 
         home_dir = get_job_dir(
@@ -1186,7 +1257,10 @@ class MLJobBackend:
             log.info(
                 'Generate-pred-table workflow %s for job %s already '
                 'exists; treating start_generate_pred_table as an '
-                'idempotent replay.', job_id.wf_id, job_id)
+                'idempotent replay.',
+                job_id.wf_id,
+                job_id,
+            )
 
         return job_id
 
@@ -1197,36 +1271,41 @@ class MLJobBackend:
         project_id: ProjectID,
         job_source: Optional[JobSource] = None,
         user: Optional[str] = None,
-        description: str = "",
-        batch_prediction_workflow_id: Optional[
-            BatchPredictionWorkflowID] = None,
+        description: str = '',
+        batch_prediction_workflow_id: Optional[BatchPredictionWorkflowID] = None,
     ):
         # `job_input.graph_data_compute_input` is resolved at launch time and
         # threaded through to BatchPredictionParentWorkflow -> materialization,
         # so gen-pred-table and materialize agree on the diskgraph graph key.
         job_id = job_input.id
         self._require_connector_references_in_project(
-            job_input.graph_data_compute_input.connectors.values(), project_id)
+            job_input.graph_data_compute_input.connectors.values(), project_id
+        )
         self._require_connector_references_in_project(
-            job_input.output_connectors.values(), project_id)
+            job_input.output_connectors.values(), project_id
+        )
         ml_job_settings = deepcopy(self._ml_job_settings)
 
         # Check "OneOf" precondition.
         assert bool(job_input.config.custom_pred_table_source) ^ bool(
-            job_input.config.generate_pred_table_job_id)
+            job_input.config.generate_pred_table_job_id
+        )
         if job_input.config.custom_pred_table_source is not None:
             reference = job_input.custom_pred_table_connector
-            if (reference is None or str(reference.connector_id)
-                    != job_input.config.custom_pred_table_source.connector_id):
+            if (
+                reference is None
+                or str(reference.connector_id)
+                != job_input.config.custom_pred_table_source.connector_id
+            ):
                 raise ValueError(
                     'Custom prediction source must match its connector '
-                    'execution reference')
+                    'execution reference'
+                )
         else:
             assert job_input.generate_pred_table_job_id
 
         service = self._require_ml_job_service()
-        assert not await service.get_batch_prediction_jobs([job_id],
-                                                           project_ids=None)
+        assert not await service.get_batch_prediction_jobs([job_id], project_ids=None)
         _, created_child = await service.create_batch_prediction_job(
             id=job_id,
             now=self._now_fn(),
@@ -1242,8 +1321,7 @@ class MLJobBackend:
             delete_created_child=created_child,
         )
         if ml_job_settings.use_fake_job_backend:
-            await self._persist_job_fake_backend(job_id, job_input,
-                                                 ml_job_settings)
+            await self._persist_job_fake_backend(job_id, job_input, ml_job_settings)
             return
 
         client = await self._temporal_client.get()
@@ -1307,21 +1385,20 @@ class MLJobBackend:
             )
         }
         results = {
-            id:
-            self._batch_prediction_job_output_from_entry(
-                ctx, id, job_entries_by_id.get(id))
+            id: self._batch_prediction_job_output_from_entry(
+                ctx, id, job_entries_by_id.get(id)
+            )
             for id in ids
         }
         # Filter by job_status, if specified.
         if job_status:
-            results = {
-                k: v
-                for k, v in results.items() if v.status == job_status
-            }
+            results = {k: v for k, v in results.items() if v.status == job_status}
         # Sort by job start_time (chronologically) and keep most recent N jobs.
         # Jobs that never started have no start_time and go last.
-        started = sorted((e for e in results.items() if e[1].start_time),
-                         key=lambda e: e[1].start_time)
+        started = sorted(
+            (e for e in results.items() if e[1].start_time),
+            key=lambda e: e[1].start_time,
+        )
         queued = [e for e in results.items() if not e[1].start_time]
         sorted_jobs = started + queued
         if limit:
@@ -1334,11 +1411,12 @@ class MLJobBackend:
         workflow_id: BatchPredictionWorkflowID | str | None,
     ) -> List[BatchPredictionJobDBEntry]:
         _current_user_ctx.set(ctx.user_authorization)
-        return await (self._require_ml_job_service(
-        ).list_batch_prediction_rows_by_workflow_id(
-            workflow_id,
-            project_ids=visible_project_ids_or_none(ctx.user_authorization),
-        ))
+        return await (
+            self._require_ml_job_service().list_batch_prediction_rows_by_workflow_id(
+                workflow_id,
+                project_ids=visible_project_ids_or_none(ctx.user_authorization),
+            )
+        )
 
     async def get_running_batch_prediction_job_ids(
         self,
@@ -1347,11 +1425,13 @@ class MLJobBackend:
     ) -> List[BatchPredictionJobID]:
         return await (
             self._require_ml_job_service().get_running_batch_prediction_job_ids(
-                project_ids=project_ids))
+                project_ids=project_ids
+            )
+        )
 
-    async def delete_batch_prediction(self, ctx: RequestContext,
-                                      id: BatchPredictionJobID,
-                                      force: bool = False) -> bool:
+    async def delete_batch_prediction(
+        self, ctx: RequestContext, id: BatchPredictionJobID, force: bool = False
+    ) -> bool:
         _current_user_ctx.set(ctx.user_authorization)
         service = self._require_ml_job_service()
         job_entries = await service.get_batch_prediction_jobs(
@@ -1402,14 +1482,12 @@ class MLJobBackend:
         deletable_ids = set()
         for id in ids:
             job = self._batch_prediction_job_output_from_entry(
-                ctx, id, job_entries_by_id.get(id))
+                ctx, id, job_entries_by_id.get(id)
+            )
             if job.status.is_submitted and not force:
                 continue
             deletable_ids.add(id)
-        home_dirs = {
-            id: await self.get_job_home_dir(id)
-            for id in deletable_ids
-        }
+        home_dirs = {id: await self.get_job_home_dir(id) for id in deletable_ids}
         successfully_deleted = await service.delete_batch_prediction_jobs(
             deletable_ids,
             force=force,
@@ -1418,12 +1496,16 @@ class MLJobBackend:
             # Release job resource slot by removing it from queue manager
             await self._job_queue.release_job(id)
         await asyncio.gather(
-            *(self._delete_internal_job_home_best_effort(id, home_dirs[id])
-              for id in successfully_deleted))
+            *(
+                self._delete_internal_job_home_best_effort(id, home_dirs[id])
+                for id in successfully_deleted
+            )
+        )
         return successfully_deleted
 
-    async def delete_training_job(self, ctx: RequestContext, id: TrainingJobID,
-                                  force: bool = False) -> bool:
+    async def delete_training_job(
+        self, ctx: RequestContext, id: TrainingJobID, force: bool = False
+    ) -> bool:
         _current_user_ctx.set(ctx.user_authorization)
         service = self._require_ml_job_service()
         rows = await service.list_training_job_rows(
@@ -1458,11 +1540,11 @@ class MLJobBackend:
         wf_desc = await wf_handle.describe()
         if wf_desc.status == WorkflowExecutionStatus.RUNNING:
             await wf_handle.signal(
-                signal='cancel_wf',
-                arg=f'Job {job_id} was requested to be canceled.')
+                signal='cancel_wf', arg=f'Job {job_id} was requested to be canceled.'
+            )
             log.warning(
-                "Workflow %s still running after cancellation was requested, "
-                "send a direct cancel_wf signal now.",
+                'Workflow %s still running after cancellation was requested, '
+                'send a direct cancel_wf signal now.',
                 wf_id,
             )
 
@@ -1493,7 +1575,7 @@ class MLJobBackend:
             parent_job = await self._get_job_if_exists_generic(parent_id)
             if parent_job is not None:
                 log.info(
-                    "Cancelling parent job %s because child job %s was cancelled",
+                    'Cancelling parent job %s because child job %s was cancelled',
                     parent_id,
                     child_id,
                 )
@@ -1528,18 +1610,19 @@ class MLJobBackend:
     async def cancel_training_job(self, id: TrainingJobID) -> bool:
         return await self._cancel_job_generic(id)
 
-    async def cancel_batch_prediction_job(self,
-                                          id: BatchPredictionJobID) -> bool:
+    async def cancel_batch_prediction_job(self, id: BatchPredictionJobID) -> bool:
         return await self._cancel_job_generic(id)
 
     async def cancel_generate_train_table_job(
-            self, id: GenerateTrainTableJobID) -> bool:
+        self, id: GenerateTrainTableJobID
+    ) -> bool:
         is_cancelled = await self._cancel_job_generic(id)
         await self._get_and_cancel_parent_job(id)
         return is_cancelled
 
     async def cancel_generate_pred_table_job(
-            self, id: GeneratePredictionTableJobID) -> bool:
+        self, id: GeneratePredictionTableJobID
+    ) -> bool:
         is_cancelled = await self._cancel_job_generic(id)
         await self._get_and_cancel_parent_job(id)
         return is_cancelled
@@ -1555,7 +1638,8 @@ class MLJobBackend:
         return await asyncio.to_thread(get_many_materialization_info, id)
 
     async def get_mlops_jobs_and_db_stats(
-            self, query: MLOpsQueryConfig) -> Optional[MLOpsStats]:
+        self, query: MLOpsQueryConfig
+    ) -> Optional[MLOpsStats]:
         r"""Runs the db querying step of an MLOps query to (1) get the ml
         backend job db entries that satisfy the query
         (MLOpsQueryConfig.job_query) and (2) collect any stats in the stats
@@ -1576,8 +1660,7 @@ class MLJobBackend:
                 train jobs were retrieved, so they need to be populated.
         """
         ml_job_service = self._require_ml_job_service()
-        job_models = await ml_job_service.select_jobs(
-            query.job_query.job_filters)
+        job_models = await ml_job_service.select_jobs(query.job_query.job_filters)
 
         # return the response with the stats that are in the db (MLOpsLogic
         # will request remaining stats from elsewhere)
@@ -1588,25 +1671,18 @@ class MLJobBackend:
         # filter for stat types that can be answered by the db here -
         # map stat types to attributions of JobModel class
         stats_to_db_col = {
-            MLOpsStatType.TABLE_STATS:
-            'input_data_stats',
-            MLOpsStatType.START_TIME:
-            'start_time',
-            MLOpsStatType.END_TIME:
-            'end_time',
-            MLOpsStatType.PREDICTION_VERSION:
-            'kumo_version',
+            MLOpsStatType.TABLE_STATS: 'input_data_stats',
+            MLOpsStatType.START_TIME: 'start_time',
+            MLOpsStatType.END_TIME: 'end_time',
+            MLOpsStatType.PREDICTION_VERSION: 'kumo_version',
             # this will be overridden for BP jobs:
-            MLOpsStatType.TRAINING_VERSION:
-            'kumo_version',
+            MLOpsStatType.TRAINING_VERSION: 'kumo_version',
             # only set for BP versions:
-            MLOpsStatType.TRAINED_JOB_ID:
-            "trained_job_id",
+            MLOpsStatType.TRAINED_JOB_ID: 'trained_job_id',
         }
 
         db_stats_requested = [
-            stat for stat in query.stat_query.stat_request
-            if stat in stats_to_db_col
+            stat for stat in query.stat_query.stat_request if stat in stats_to_db_col
         ]
         train_jobs_for_bps = {}
         for job in job_models:
@@ -1616,35 +1692,39 @@ class MLJobBackend:
                 train_jobs_for_bps[job.job_id] = job.trained_job_id
                 for stat in db_stats_requested:
                     if stat != MLOpsStatType.TRAINING_VERSION:
-                        bp_stats[job.job_id][stat] = getattr(
-                            job, stats_to_db_col[stat])
+                        bp_stats[job.job_id][stat] = getattr(job, stats_to_db_col[stat])
             if job.job_type == JobType.TRAINING_JOB:
                 # put all train jobs in train_stats, even if no db stats added
                 train_stats[job.job_id] = {}
                 for stat in db_stats_requested:
                     if stat != MLOpsStatType.PREDICTION_VERSION:
                         train_stats[job.job_id][stat] = getattr(
-                            job, stats_to_db_col[stat])
+                            job, stats_to_db_col[stat]
+                        )
 
         # if we need training versions for bp jobs, need to query db again
         # to get the corresponding training job entries. This gathers all
         # training jobs we need and then looks them up as one query to
         # reduce overhead with db usage
-        if (MLOpsStatType.TRAINING_VERSION in query.stat_query.stat_request
-                and len(train_jobs_for_bps.keys())) > 0:
+        if (
+            MLOpsStatType.TRAINING_VERSION in query.stat_query.stat_request
+            and len(train_jobs_for_bps.keys())
+        ) > 0:
             train_job_dict = await ml_job_service.get_multi_train_jobs(
-                list(train_jobs_for_bps.values()))
+                list(train_jobs_for_bps.values())
+            )
             for bp_id in bp_stats.keys():
                 train_id = train_jobs_for_bps[bp_id]
                 if train_id in train_job_dict.keys():
-                    bp_stats[bp_id][
-                        MLOpsStatType.TRAINING_VERSION] = train_job_dict[
-                            train_id].kumo_version
+                    bp_stats[bp_id][MLOpsStatType.TRAINING_VERSION] = train_job_dict[
+                        train_id
+                    ].kumo_version
                 else:
                     bp_stats[bp_id][MLOpsStatType.TRAINING_VERSION] = None
 
-        return MLOpsStats(job_status_dict=job_status_dict,
-                          train_stats=train_stats, bp_stats=bp_stats)
+        return MLOpsStats(
+            job_status_dict=job_status_dict, train_stats=train_stats, bp_stats=bp_stats
+        )
 
     async def get_all_ml_jobs(
         self,
@@ -1672,17 +1752,23 @@ class MLJobBackend:
         only_status_job_ids: Optional[Set[JobID]] = None,
         project_id: Optional[ProjectID] = None,
         prefetched_jobs: Optional[Dict[JobID, MLJobDBEntry]] = None,
-    ) -> Dict[Union[TrainingJobID, BatchPredictionJobID,
-                    GenerateTrainTableJobID, GeneratePredictionTableJobID],
-              Union[JobStatus, GenericJob]]:
+    ) -> Dict[
+        Union[
+            TrainingJobID,
+            BatchPredictionJobID,
+            GenerateTrainTableJobID,
+            GeneratePredictionTableJobID,
+        ],
+        Union[JobStatus, GenericJob],
+    ]:
         async def _get_generic_or_status_from_db(
             job_id: JobID, jobs
         ) -> Union[
-                TrainingJobDBEntry,
-                BatchPredictionJobDBEntry,
-                GenerateTrainTableJobDBEntry,
-                GeneratePredTableJobDBEntry,
-                None,
+            TrainingJobDBEntry,
+            BatchPredictionJobDBEntry,
+            GenerateTrainTableJobDBEntry,
+            GeneratePredTableJobDBEntry,
+            None,
         ]:
             """
             Function to get a generic job from job id. If the generic job
@@ -1710,8 +1796,10 @@ class MLJobBackend:
                     jobs[job.id] = job.to_generic(ctx)
                 return job
             else:
-                log.warning(f'Generic job for {id} is None and cannot' +
-                            ' return anything because the job does not exist.')
+                log.warning(
+                    f'Generic job for {id} is None and cannot'
+                    + ' return anything because the job does not exist.'
+                )
 
         bulk_status_ids: Set[JobID] = set()
         bulk_statuses: Dict[JobID, JobStatus] = {}
@@ -1723,49 +1811,45 @@ class MLJobBackend:
                 job = prefetched_jobs.get(job_id)
                 if job is None or job_id not in only_status_job_ids:
                     continue
-                if project_id is not None and getattr(job, 'project_id',
-                                                      None) != project_id:
+                if (
+                    project_id is not None
+                    and getattr(job, 'project_id', None) != project_id
+                ):
                     continue
                 bulk_status_ids.add(job_id)
 
             if bulk_status_ids:
-                bulk_statuses = await service.get_job_statuses_by_ids(
-                    bulk_status_ids)
+                bulk_statuses = await service.get_job_statuses_by_ids(bulk_status_ids)
 
         jobs = {}
         for id in ids:
             job = await _get_generic_or_status_from_db(id, jobs)
 
             # make sure to fetch child training table jobs
-            if isinstance(
-                    job,
-                    TrainingJobDBEntry) and job.generate_train_table_job_id:
+            if isinstance(job, TrainingJobDBEntry) and job.generate_train_table_job_id:
                 training_table_job_id = JobID(job.generate_train_table_job_id)
                 if training_table_job_id not in jobs:
-                    await _get_generic_or_status_from_db(
-                        training_table_job_id, jobs)
+                    await _get_generic_or_status_from_db(training_table_job_id, jobs)
 
             # make sure to fetch child prediction table jobs
             if isinstance(job, BatchPredictionJobDBEntry):
                 if job.config and job.config.generate_pred_table_job_id:
                     pred_table_job_id = job.config.generate_pred_table_job_id
                     if pred_table_job_id not in ids:
-                        await _get_generic_or_status_from_db(
-                            pred_table_job_id, jobs)
+                        await _get_generic_or_status_from_db(pred_table_job_id, jobs)
 
         return jobs
 
     async def _get_generic_job(
         self, id: JobID
     ) -> Union[
-            TrainingJobDBEntry,
-            BatchPredictionJobDBEntry,
-            GenerateTrainTableJobDBEntry,
-            GeneratePredTableJobDBEntry,
-            None,
+        TrainingJobDBEntry,
+        BatchPredictionJobDBEntry,
+        GenerateTrainTableJobDBEntry,
+        GeneratePredTableJobDBEntry,
+        None,
     ]:
-        return await self._require_ml_job_service().get_job_if_exists_generic(id
-                                                                              )
+        return await self._require_ml_job_service().get_job_if_exists_generic(id)
 
     @blocking_method()
     def _delete_internal_job_home(self, home_dir: str) -> None:
@@ -1805,8 +1889,7 @@ class MLJobBackend:
 
         if self._settings.ml_job_settings.use_fake_job_backend:
             execution = self._make_fake_training_job(job).execution
-            if isinstance(job.advanced_options,
-                          DeprecatedAdvancedAutoTrainerOptions):
+            if isinstance(job.advanced_options, DeprecatedAdvancedAutoTrainerOptions):
                 advanced_options = None
             else:
                 advanced_options = job.advanced_options
@@ -1822,8 +1905,7 @@ class MLJobBackend:
                 user=job.user,
             )
 
-        if isinstance(job.advanced_options,
-                      DeprecatedAdvancedAutoTrainerOptions):
+        if isinstance(job.advanced_options, DeprecatedAdvancedAutoTrainerOptions):
             advanced_options = None
         else:
             advanced_options = job.advanced_options
@@ -1866,7 +1948,8 @@ class MLJobBackend:
         job: Optional[BatchPredictionJobDBEntry],
     ) -> BatchPredictionJobOutput:
         if not self._state_service_job_visible_or_raise(
-                None if job is None else job.project_id):
+            None if job is None else job.project_id
+        ):
             return BatchPredictionJobOutput.missing_from_ml_db(id)
         if job is not None:
             job.execution.remove_employee_only_fields()
@@ -1885,7 +1968,7 @@ class MLJobBackend:
     ) -> bool:
         if self._state_service_job_visible(project_id):
             return True
-        raise ValueError("Project access denied")
+        raise ValueError('Project access denied')
 
     def _state_service_job_visible(
         self,
@@ -1901,7 +1984,8 @@ class MLJobBackend:
         return False
 
     def _make_fake_batch_prediction_job(
-            self, job: BatchPredictionJobDBEntry) -> BatchPredictionJobOutput:
+        self, job: BatchPredictionJobDBEntry
+    ) -> BatchPredictionJobOutput:
         # Fake backend (unit tests): no worker advances status, so a
         # still-submitted job is presented as RUNNING/"Not Started". Terminal
         # state (DONE/FAILED) is written explicitly via mock_bp_job_complete and
@@ -1931,7 +2015,8 @@ class MLJobBackend:
             ),
         )
         await self._require_ml_job_service().save_batch_prediction_job_output(
-            id, output)
+            id, output
+        )
 
     async def mock_training_job_complete(self, id: TrainingJobID) -> None:
         """For use in unit tests, to mark a fake training job DONE."""
@@ -1945,19 +2030,20 @@ class MLJobBackend:
                 total_training_time_sec=MOCK_TRAINING_TIME_SEC,
                 total_iterations=MOCK_TRAINING_TIME_SEC,
                 test_explain=MOCK_CONTRIBUTION,
-            ).with_metrics([
-                Metric("test_rmse", 0.4665),
-                Metric("test_mae", 0.643),
-                Metric("test_rmsle", 0.73),
-                Metric("test_mape", 0.2231),
-            ]),
+            ).with_metrics(
+                [
+                    Metric('test_rmse', 0.4665),
+                    Metric('test_mae', 0.643),
+                    Metric('test_rmsle', 0.73),
+                    Metric('test_mape', 0.2231),
+                ]
+            ),
         )
-        await self._require_ml_job_service().save_training_job_output(
-            id, output)
+        await self._require_ml_job_service().save_training_job_output(id, output)
 
     async def get_encoders_for_job(
-            self, ctx: RequestContext,
-            id: TrainingJobID) -> Optional[Dict[str, str]]:
+        self, ctx: RequestContext, id: TrainingJobID
+    ) -> Optional[Dict[str, str]]:
         """
         Gets encoders used for a query by reading the task config and
         parsing the encoders from it
@@ -1979,9 +2065,9 @@ class MLJobBackend:
         task_config_path = home_dir_manager.task_config_path()
         if task_config_path is None:
             return None
-        task_config = await json.load_json_async(task_config_path, TaskConfig,
-                                                 default=None,
-                                                 raise_on_missing=False)
+        task_config = await json.load_json_async(
+            task_config_path, TaskConfig, default=None, raise_on_missing=False
+        )
         if task_config is None:
             log.debug('Task config is not yet available')
             return None
@@ -1994,9 +2080,11 @@ class MLJobBackend:
                     raise ValueError(
                         'Error in getting encoders for query. '
                         f'Encoder is missing for column {col.name}. '
-                        'Please contact Kumo for assistance.')
-                encoders[f"{table.name}.{col.name}"] = (
-                    construct_object_string_from_config(col.encoder))
+                        'Please contact Kumo for assistance.'
+                    )
+                encoders[f'{table.name}.{col.name}'] = (
+                    construct_object_string_from_config(col.encoder)
+                )
 
         return encoders
 
@@ -2005,9 +2093,15 @@ class MLJobBackend:
         ctx: RequestContext,
         only_status_job_ids: Optional[Set[JobID]] = None,
         project_id: Optional[ProjectID] = None,
-    ) -> Dict[Union[TrainingJobID, BatchPredictionJobID,
-                    GenerateTrainTableJobID, GeneratePredictionTableJobID],
-              Union[JobStatus, GenericJob]]:
+    ) -> Dict[
+        Union[
+            TrainingJobID,
+            BatchPredictionJobID,
+            GenerateTrainTableJobID,
+            GeneratePredictionTableJobID,
+        ],
+        Union[JobStatus, GenericJob],
+    ]:
         """
         Function that 1. fetches all the job IDs for jobs that are currently
         either queued or running and 2. fetches the generic job or job status
@@ -2020,8 +2114,7 @@ class MLJobBackend:
         job_entries = {}
 
         # Get job ids for jobs that are currently running or queued.
-        open_parent_jobs = await (
-            self._require_ml_job_service().list_open_parent_jobs())
+        open_parent_jobs = await self._require_ml_job_service().list_open_parent_jobs()
         prefetched_jobs = {job.id: job for job in open_parent_jobs}
         current_jobs = set(prefetched_jobs.keys())
 
@@ -2052,15 +2145,15 @@ class MLJobBackend:
             self._require_ml_job_service(),
         )
         await asyncio.get_running_loop().run_in_executor(
-            None, persist_job_inputs, job_input, ml_job_settings)
+            None, persist_job_inputs, job_input, ml_job_settings
+        )
 
     async def list_job_tags(
         self,
         job_type: JobType,
         tag_filters: Mapping[str, str],
     ) -> Dict[JobID, JobTags]:
-        return await self._require_ml_job_service().list_job_tags(
-            job_type, tag_filters)
+        return await self._require_ml_job_service().list_job_tags(job_type, tag_filters)
 
     async def list_project_job_tags(
         self,
@@ -2071,8 +2164,9 @@ class MLJobBackend:
         """Return tags only for jobs owned by the exact project."""
         service = self._require_ml_job_service()
         tags = await service.list_job_tags(job_type, tag_filters)
-        jobs = await asyncio.gather(*(service.get_job_if_exists_generic(job_id)
-                                      for job_id in tags))
+        jobs = await asyncio.gather(
+            *(service.get_job_if_exists_generic(job_id) for job_id in tags)
+        )
         return {
             job_id: job_tags
             for (job_id, job_tags), job in zip(tags.items(), jobs)
@@ -2084,8 +2178,7 @@ class MLJobBackend:
         job_type: JobType,
         job_id: JobID,
     ) -> Optional[JobTags]:
-        return await self._require_ml_job_service().get_job_tags(
-            job_type, job_id)
+        return await self._require_ml_job_service().get_job_tags(job_type, job_id)
 
     async def get_job_tags(
         self,
@@ -2094,7 +2187,7 @@ class MLJobBackend:
     ) -> JobTags:
         job_tags = await self.get_job_tags_if_exists(job_type, job_id)
         if job_tags is None:
-            raise KeyError(f"{job_type} id={job_id} is not found in DB")
+            raise KeyError(f'{job_type} id={job_id} is not found in DB')
         return job_tags
 
     async def apply_job_tags(
@@ -2104,7 +2197,8 @@ class MLJobBackend:
         tags: Dict[JobTagKey, JobTagValue],
     ):
         return await self._require_ml_job_service().apply_job_tags(
-            job_type, job_id, tags)
+            job_type, job_id, tags
+        )
 
     async def update_job_tags(
         self,
@@ -2121,7 +2215,7 @@ class MLJobBackend:
         """
         job = await self._get_job_if_exists_generic(job_id)
         if job is None or job.project_id != project_id:
-            raise KeyError(f"{job_type} id={job_id} is not found in DB")
+            raise KeyError(f'{job_type} id={job_id} is not found in DB')
         return await self.apply_job_tags(job_type, job_id, tags)
 
     async def delete_job_tag(
@@ -2134,9 +2228,10 @@ class MLJobBackend:
     ) -> bool:
         job = await self._get_job_if_exists_generic(job_id)
         if job is None or job.project_id != project_id:
-            raise KeyError(f"{job_type} id={job_id} is not found in DB")
+            raise KeyError(f'{job_type} id={job_id} is not found in DB')
         return await self._require_ml_job_service().delete_job_tag(
-            job_type, job_id, tag)
+            job_type, job_id, tag
+        )
 
     async def archive_job(
         self,
@@ -2155,8 +2250,7 @@ class MLJobBackend:
             project_id=project_id,
         )
 
-    async def get_job_validation_response(self,
-                                          job_id: JobID) -> ValidationResponse:
+    async def get_job_validation_response(self, job_id: JobID) -> ValidationResponse:
         return await get_validation_response(self._ml_job_settings, job_id)
 
 
@@ -2182,14 +2276,15 @@ def _job_workflow_id(job_id: JobID) -> str:
 
 
 def _job_cancelled_message(
-        wf_error: WorkflowFailureError,
-        wf_description: WorkflowExecutionDescription) -> Optional[str]:
+    wf_error: WorkflowFailureError, wf_description: WorkflowExecutionDescription
+) -> Optional[str]:
     if wf_description.status == WorkflowExecutionStatus.TERMINATED:
         return f'Job has been terminated: {wf_error.cause}'
 
     if wf_description.status == WorkflowExecutionStatus.CANCELED or (
-            wf_description.status == WorkflowExecutionStatus.FAILED
-            and is_cancelled_exception(wf_error.cause)):
+        wf_description.status == WorkflowExecutionStatus.FAILED
+        and is_cancelled_exception(wf_error.cause)
+    ):
         return 'Job has been cancelled by user'
 
     return None
@@ -2211,12 +2306,16 @@ def _wf_failure_to_log_msg(id: JobID, err: WFError) -> str:
     log_msg = f'{job_type} {id} workflow failed, cause: {err.cause}\n'
     if isinstance(err.cause, ChildWorkflowError):
         err = err.cause
-        log_msg += (f'Child workflow {err.workflow_id} {err.run_id} '
-                    f'failed, cause: {err.cause}\n')
+        log_msg += (
+            f'Child workflow {err.workflow_id} {err.run_id} '
+            f'failed, cause: {err.cause}\n'
+        )
         if isinstance(err.cause, ActivityError):
             err = err.cause
-            log_msg += (f"Activity {err.activity_type} in worker "
-                        f'{err.identity} failed, cause: {err.cause}\n')
+            log_msg += (
+                f'Activity {err.activity_type} in worker '
+                f'{err.identity} failed, cause: {err.cause}\n'
+            )
     return log_msg
 
 
@@ -2238,14 +2337,16 @@ def _update_execution_upon_wf_error(
     # Check if workflow already set failure_info (using extract_failure_info())
     # If so, preserve it instead of overwriting with generic Temporal error
     workflow_set_failure_info = execution.failure_info is not None and (
-        execution.failure_info.message or execution.failure_info.stacktrace)
+        execution.failure_info.message or execution.failure_info.stacktrace
+    )
 
     if execution.status.is_submitted:
         cancel_msg = _job_cancelled_message(wf_error, wf_description)
         if cancel_msg:
             execution.status = JobStatus.CANCELLED
             execution.log = JobEventLogEntry.cancelled(
-                ts_now, f'{job_type} is cancelled: {cancel_msg}')
+                ts_now, f'{job_type} is cancelled: {cancel_msg}'
+            )
         else:
             execution.status = JobStatus.FAILED
 
@@ -2255,7 +2356,7 @@ def _update_execution_upon_wf_error(
 
                 # For internal logging, include Temporal error details
                 log_message = failure_info.message or (
-                    f"{job_type} failed: {wf_failure_to_temporal_trace(wf_error)}"
+                    f'{job_type} failed: {wf_failure_to_temporal_trace(wf_error)}'
                 )
 
                 # Never store an empty user-facing message on a FAILED
@@ -2270,8 +2371,9 @@ def _update_execution_upon_wf_error(
                 execution.failure_info = failure_info
             else:
                 assert execution.failure_info is not None  # Type narrowing
-                log_message = (execution.failure_info.message
-                               or _job_failed_message(job_type))
+                log_message = execution.failure_info.message or _job_failed_message(
+                    job_type
+                )
                 execution.log = JobEventLogEntry.failed(ts_now, log_message)
 
     execution.workflow_end_state = wf_description.status

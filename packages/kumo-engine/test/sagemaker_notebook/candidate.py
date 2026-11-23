@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Use the shared wheel identity for SageMaker's private runtime manifest."""
+
 import os
 import sys
 from pathlib import Path

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Check authored Kumo links in the real bundle layout, without live services."""
+
 import importlib.util
 import shutil
 import subprocess
@@ -12,7 +13,8 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location(
-    'repository_docs', ROOT / 'scripts/docs/check_repository_docs.py')
+    'repository_docs', ROOT / 'scripts/docs/check_repository_docs.py'
+)
 docs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(docs)
 
@@ -30,8 +32,14 @@ class BundleDocsTest(unittest.TestCase):
             ca.parent.mkdir(parents=True, exist_ok=True)
             ca.write_text('Documentation layout fixture only.\n')
             result = subprocess.run(
-                ['bash', str(helm / 'kumo-stack/build-bundle.sh'),
-                 str(root / 'output')], capture_output=True, text=True)
+                [
+                    'bash',
+                    str(helm / 'kumo-stack/build-bundle.sh'),
+                    str(root / 'output'),
+                ],
+                capture_output=True,
+                text=True,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             bundle = root / 'output/kumo-stack'
             files = [bundle / 'README.md', *sorted((bundle / 'docs').glob('*.md'))]

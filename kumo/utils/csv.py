@@ -20,7 +20,7 @@ from io_utils import fsutil, logging
 
 logger = logging.getLogger(__name__)
 
-_ERR_MSG = "Could not auto-detect a delimiter"
+_ERR_MSG = 'Could not auto-detect a delimiter'
 
 
 def save_csv(cfg: Any, path: str, overwrite: bool = False):
@@ -60,9 +60,11 @@ def detect_csv_sep(path: str) -> str:
 
     delimiter, reason = separator_with_reason(text)
     if reason == UNSNIFFABLE:
-        logger.warning(f'No separator found when loading {path}, likely '
-                       f'because the table contains only a single column '
-                       f'defaulting to ","')
+        logger.warning(
+            f'No separator found when loading {path}, likely '
+            f'because the table contains only a single column '
+            f'defaulting to ","'
+        )
     elif reason == DENIED and delimiter is not None:
         logger.warning('Found a delimiter in the deny list. Default to ","')
     if delimiter is None:

@@ -16,6 +16,7 @@ their event sites.
 ``pool.controller_main`` starts the ``prometheus_client`` HTTP exposition
 endpoint at boot (see block C3).
 """
+
 import functools
 from contextlib import contextmanager
 from typing import Awaitable, Callable, Iterator, Mapping, Tuple, TypeVar
@@ -150,45 +151,47 @@ def update_state_gauges(
     by_snapshot_state = {s: 0 for s in SnapshotState}
     for placement in state.snapshots.values():
         by_snapshot_state[placement.state] = (
-            by_snapshot_state.get(placement.state, 0) + 1)
+            by_snapshot_state.get(placement.state, 0) + 1
+        )
     for snapshot_state, count in by_snapshot_state.items():
         POOL_SNAPSHOTS.labels(state=snapshot_state.value).set(count)
 
     by_local_state = {s: 0 for s in SnapshotLocalCopyState}
     for local in state.local_copies.values():
-        by_local_state[local.local_state] = (
-            by_local_state.get(local.local_state, 0) + 1)
+        by_local_state[local.local_state] = by_local_state.get(local.local_state, 0) + 1
     for local_state, count in by_local_state.items():
         POOL_LOCAL_COPIES.labels(state=local_state.value).set(count)
 
     by_worker_status = {s: 0 for s in WorkerStatus}
     for worker in worker_inventory.values():
-        by_worker_status[worker.status] = (
-            by_worker_status.get(worker.status, 0) + 1)
+        by_worker_status[worker.status] = by_worker_status.get(worker.status, 0) + 1
     for worker_status, count in by_worker_status.items():
         POOL_WORKERS.labels(status=worker_status.value).set(count)
 
-    open_leases = sum(
-        len(placement.leases) for placement in state.snapshots.values())
+    open_leases = sum(len(placement.leases) for placement in state.snapshots.values())
     POOL_ACTIVE_LEASES.set(open_leases)
     POOL_DATAPLANE_BACKUPS.set(len(state.dataplane_backups))
 
     # Per-worker SSD/GPU capacity. Workers are ephemeral, so clear stale
     # per-uid series and re-set from the current inventory rather than leaving
     # a departed worker's series frozen.
-    for gauge in (POOL_WORKER_SSD_TOTAL_BYTES, POOL_WORKER_SSD_USED_BYTES,
-                  POOL_WORKER_GPU_SLOTS_TOTAL, POOL_WORKER_GPU_SLOTS_IN_USE):
+    for gauge in (
+        POOL_WORKER_SSD_TOTAL_BYTES,
+        POOL_WORKER_SSD_USED_BYTES,
+        POOL_WORKER_GPU_SLOTS_TOTAL,
+        POOL_WORKER_GPU_SLOTS_IN_USE,
+    ):
         gauge.clear()
     for uid, worker in worker_inventory.items():
         st = worker.state
-        POOL_WORKER_SSD_TOTAL_BYTES.labels(pool_worker_uid=uid).set(
-            st.ssd_total_bytes)
-        POOL_WORKER_SSD_USED_BYTES.labels(pool_worker_uid=uid).set(
-            st.ssd_used_bytes)
+        POOL_WORKER_SSD_TOTAL_BYTES.labels(pool_worker_uid=uid).set(st.ssd_total_bytes)
+        POOL_WORKER_SSD_USED_BYTES.labels(pool_worker_uid=uid).set(st.ssd_used_bytes)
         POOL_WORKER_GPU_SLOTS_TOTAL.labels(pool_worker_uid=uid).set(
-            worker.gpu_slots_total)
+            worker.gpu_slots_total
+        )
         POOL_WORKER_GPU_SLOTS_IN_USE.labels(pool_worker_uid=uid).set(
-            worker.gpu_slots_in_use)
+            worker.gpu_slots_in_use
+        )
 
     # In-flight (leased) activities by placement target + type, from the
     # controller's own lease bookkeeping (one open lease == one in-flight
@@ -211,8 +214,9 @@ def update_state_gauges(
             key = (worker, activity.value)
             by_worker_activity[key] = by_worker_activity.get(key, 0) + 1
     for (worker, activity_type), count in by_worker_activity.items():
-        POOL_ACTIVE_ACTIVITIES.labels(pool_worker_uid=worker,
-                                      activity=activity_type).set(count)
+        POOL_ACTIVE_ACTIVITIES.labels(
+            pool_worker_uid=worker, activity=activity_type
+        ).set(count)
 
     by_route: dict[str, int] = {'durable': 0, 'overflow': 0}
     for placement in state.snapshots.values():
@@ -246,8 +250,10 @@ def count_rpc_errors(
 
     Applied *below* ``@rpc_handler`` so auto_rpc sees a signature-preserving
     wrapper (``functools.wraps``)."""
+
     def decorator(
-        func: Callable[..., Awaitable[_T]], ) -> Callable[..., Awaitable[_T]]:
+        func: Callable[..., Awaitable[_T]],
+    ) -> Callable[..., Awaitable[_T]]:
         @functools.wraps(func)
         async def wrapper(self, *args, **kwargs) -> _T:
             try:
@@ -271,6 +277,7 @@ def observe_place_snapshot(
     ``pool_placement_duration_seconds{result=...}`` (result = the returned
     ``PlacementStatus`` value, or ``error``) and count errors. Uses
     ``self._time`` so test clocks drive the histogram deterministically."""
+
     @functools.wraps(func)
     async def wrapper(self, *args, **kwargs) -> PlacementResult:
         start = self._time()

@@ -57,14 +57,21 @@ class ArtifactDuplicateRunningWorkflow:
 def _artifact_driver(*, dispatch_sealed=False, created_at=None):
     connectors = SimpleNamespace(
         require_project_access=AsyncMock(),
-        get_for_project=AsyncMock(return_value=SimpleNamespace(
-            config=data_source_api.S3ConnectorResourceConfig(
-                target=data_source_api.S3RootedConnectorTarget(
-                    bucket='customer-output')))),
-        execution_ref_for_project=AsyncMock(return_value=ConnectorExecutionRef(
-            project_id=PROJECT_ID,
-            connector_id=CONNECTOR_ID,
-        )),
+        get_for_project=AsyncMock(
+            return_value=SimpleNamespace(
+                config=data_source_api.S3ConnectorResourceConfig(
+                    target=data_source_api.S3RootedConnectorTarget(
+                        bucket='customer-output'
+                    )
+                )
+            )
+        ),
+        execution_ref_for_project=AsyncMock(
+            return_value=ConnectorExecutionRef(
+                project_id=PROJECT_ID,
+                connector_id=CONNECTOR_ID,
+            )
+        ),
     )
     timestamps = get_current_timestamps()
     if created_at is not None:
@@ -77,24 +84,29 @@ def _artifact_driver(*, dispatch_sealed=False, created_at=None):
         timestamps=timestamps,
     )
 
-    first_entry = (entry if dispatch_sealed or created_at is not None else None)
+    first_entry = entry if dispatch_sealed or created_at is not None else None
     artifact_exports = SimpleNamespace(
-        get=AsyncMock(side_effect=chain((first_entry, ), repeat(entry))),
+        get=AsyncMock(side_effect=chain((first_entry,), repeat(entry))),
         create=AsyncMock(
-            return_value=(entry, not dispatch_sealed and created_at is None)),
+            return_value=(entry, not dispatch_sealed and created_at is None)
+        ),
         seal_dispatch=AsyncMock(return_value=entry),
         request_cancel=AsyncMock(return_value=entry),
         get_for_project=AsyncMock(return_value=entry),
     )
-    ml_jobs = SimpleNamespace(get_job_if_exists_generic=AsyncMock(
-        return_value=SimpleNamespace(project_id=PROJECT_ID)))
+    ml_jobs = SimpleNamespace(
+        get_job_if_exists_generic=AsyncMock(
+            return_value=SimpleNamespace(project_id=PROJECT_ID)
+        )
+    )
     driver = ArtifactApiDriver(MagicMock(), MagicMock())
     driver._configure_state_services(
         SimpleNamespace(
             connectors=connectors,
             artifact_exports=artifact_exports,
             ml_jobs=ml_jobs,
-        ))
+        )
+    )
     output = S3PredictionOutput(
         artifact_type=PredictionArtifactType.PREDICTIONS,
         connector_id=str(CONNECTOR_ID),
@@ -113,10 +125,14 @@ def _request_context(
     cancel=None,
 ) -> Iterator[None]:
     patches = [
-        patch('rest.driver.artifact_api_driver._artifact_export_job_id',
-              return_value=WORKFLOW_ID),
-        patch('rest.driver.artifact_api_driver._current_user_ctx',
-              new=SimpleNamespace(get=lambda: principal)),
+        patch(
+            'rest.driver.artifact_api_driver._artifact_export_job_id',
+            return_value=WORKFLOW_ID,
+        ),
+        patch(
+            'rest.driver.artifact_api_driver._current_user_ctx',
+            new=SimpleNamespace(get=lambda: principal),
+        ),
     ]
     for method, replacement in (
         ('create_artifact_export_job', dispatch),
@@ -132,8 +148,9 @@ def _request_context(
 
 
 async def _create_job(driver, output) -> str:
-    return await driver.create_artifact_export_job('bp-job', output, PROJECT_ID,
-                                                   REQUEST_ID)
+    return await driver.create_artifact_export_job(
+        'bp-job', output, PROJECT_ID, REQUEST_ID
+    )
 
 
 @pytest.mark.asyncio
@@ -146,12 +163,12 @@ async def test_same_request_dispatches_once_and_sets_dispatch_seal() -> None:
     assert result == str(WORKFLOW_ID)
     dispatch.assert_awaited_once()
     artifact_exports.seal_dispatch.assert_awaited_once_with(
-        WORKFLOW_ID, project_id=PROJECT_ID)
+        WORKFLOW_ID, project_id=PROJECT_ID
+    )
 
 
 @pytest.mark.asyncio
-async def test_conflicting_request_is_rejected_before_connector_resolution(
-) -> None:
+async def test_conflicting_request_is_rejected_before_connector_resolution() -> None:
     driver, artifact_exports, output, principal = _artifact_driver()
     artifact_exports.get.side_effect = None
     artifact_exports.get.return_value = SimpleNamespace()
@@ -171,8 +188,9 @@ def test_workflow_history_has_no_artifact_lifecycle_reference() -> None:
 @pytest.mark.asyncio
 async def test_invalid_new_request_does_not_create_idempotency_row() -> None:
     driver, artifact_exports, output, principal = _artifact_driver()
-    driver._required_state_services.connectors.get_for_project.side_effect = (
-        ValueError('invalid connector'))
+    driver._required_state_services.connectors.get_for_project.side_effect = ValueError(
+        'invalid connector'
+    )
     with _request_context(principal):
         with pytest.raises(ValueError, match='invalid connector'):
             await _create_job(driver, output)
@@ -184,15 +202,18 @@ async def test_posthoc_databricks_export_is_rejected_before_dispatch() -> None:
     driver, artifact_exports, _, principal = _artifact_driver()
     connector_service = driver._required_state_services.connectors
     connector_service.get_for_project.return_value = SimpleNamespace(
-        config=SimpleNamespace(type=data_source_api.ConnectorType.DATABRICKS))
+        config=SimpleNamespace(type=data_source_api.ConnectorType.DATABRICKS)
+    )
     output = DatabricksPredictionOutput(
         artifact_type=PredictionArtifactType.PREDICTIONS,
         connector_id=str(CONNECTOR_ID),
         table_name='schema.predictions',
     )
 
-    with _request_context(principal), pytest.raises(
-            ValueError, match='Post-hoc Databricks'):
+    with (
+        _request_context(principal),
+        pytest.raises(ValueError, match='Post-hoc Databricks'),
+    ):
         await _create_job(driver, output)
 
     artifact_exports.create.assert_not_awaited()
@@ -204,8 +225,12 @@ async def test_posthoc_databricks_export_is_rejected_before_dispatch() -> None:
     ('dispatch_sealed', 'age', 'status', 'expect_seal'),
     [
         (True, None, None, False),
-        (False, _ARTIFACT_UNSEALED_DISPATCH_WINDOW + timedelta(seconds=1),
-         JobStatus.MISSING, True),
+        (
+            False,
+            _ARTIFACT_UNSEALED_DISPATCH_WINDOW + timedelta(seconds=1),
+            JobStatus.MISSING,
+            True,
+        ),
         (False, timedelta(), JobStatus.RUNNING, True),
     ],
     ids=('sealed-history', 'expired-unsealed', 'accepted-unsealed'),
@@ -218,11 +243,11 @@ async def test_existing_request_is_closed_without_redispatch(
 ) -> None:
     created_at = now_utc() - age if age is not None else None
     driver, artifact_exports, output, principal = _artifact_driver(
-        dispatch_sealed=dispatch_sealed, created_at=created_at)
+        dispatch_sealed=dispatch_sealed, created_at=created_at
+    )
     connector_service = driver._required_state_services.connectors
     dispatch = AsyncMock()
-    temporal_status = (AsyncMock(
-        return_value=status) if status is not None else None)
+    temporal_status = AsyncMock(return_value=status) if status is not None else None
     with _request_context(principal, dispatch=dispatch, status=temporal_status):
         assert await _create_job(driver, output) == str(WORKFLOW_ID)
     dispatch.assert_not_awaited()
@@ -232,11 +257,11 @@ async def test_existing_request_is_closed_without_redispatch(
 
 
 @pytest.mark.asyncio
-async def test_seal_write_failure_recovers_by_describing_accepted_start(
-) -> None:
+async def test_seal_write_failure_recovers_by_describing_accepted_start() -> None:
     driver, artifact_exports, output, principal = _artifact_driver()
     artifact_exports.seal_dispatch.side_effect = [
-        RuntimeError('db failed'), artifact_exports.create.return_value[0]
+        RuntimeError('db failed'),
+        artifact_exports.create.return_value[0],
     ]
     dispatch = AsyncMock(return_value=WORKFLOW_ID)
     status = AsyncMock(return_value=JobStatus.RUNNING)
@@ -250,8 +275,7 @@ async def test_seal_write_failure_recovers_by_describing_accepted_start(
 @pytest.mark.asyncio
 async def test_ambiguous_accepted_start_retries_same_id_then_seals() -> None:
     driver, artifact_exports, output, principal = _artifact_driver()
-    dispatch = AsyncMock(
-        side_effect=[RuntimeError('transport ambiguous'), WORKFLOW_ID])
+    dispatch = AsyncMock(side_effect=[RuntimeError('transport ambiguous'), WORKFLOW_ID])
     status = AsyncMock(return_value=JobStatus.MISSING)
     with _request_context(principal, dispatch=dispatch, status=status):
         with pytest.raises(RuntimeError, match='transport ambiguous'):
@@ -296,8 +320,7 @@ async def test_post_start_seal_honors_cancellation_state(
     sealed_entry.cancel_requested = cancel_requested
     artifact_exports.seal_dispatch.return_value = sealed_entry
     dispatch = AsyncMock(return_value=WORKFLOW_ID)
-    cancel = AsyncMock(side_effect=cancel_error,
-                       return_value=JobStatus.CANCELLED)
+    cancel = AsyncMock(side_effect=cancel_error, return_value=JobStatus.CANCELLED)
     with _request_context(principal, dispatch=dispatch, cancel=cancel):
         assert await _create_job(driver, output) == str(WORKFLOW_ID)
     dispatch.assert_awaited_once()
@@ -357,20 +380,25 @@ async def test_concurrent_identical_creates_leave_temporal_workflow_running(
 
 
 @pytest.mark.asyncio
-async def test_status_and_cancel_are_temporal_authoritative_after_project_gate(
-) -> None:
+async def test_status_and_cancel_are_temporal_authoritative_after_project_gate() -> (
+    None
+):
     driver, artifact_exports, _, principal = _artifact_driver()
     temporal_status = AsyncMock(return_value=JobStatus.MISSING)
     temporal_cancel = AsyncMock(return_value=JobStatus.MISSING)
-    with _request_context(principal, status=temporal_status,
-                          cancel=temporal_cancel):
-        assert await driver.get_artifact_export_job_status(
-            str(WORKFLOW_ID), PROJECT_ID) == JobStatus.MISSING
-        assert await driver.cancel_artifact_export_job(
-            str(WORKFLOW_ID), PROJECT_ID) == JobStatus.MISSING
+    with _request_context(principal, status=temporal_status, cancel=temporal_cancel):
+        assert (
+            await driver.get_artifact_export_job_status(str(WORKFLOW_ID), PROJECT_ID)
+            == JobStatus.MISSING
+        )
+        assert (
+            await driver.cancel_artifact_export_job(str(WORKFLOW_ID), PROJECT_ID)
+            == JobStatus.MISSING
+        )
     assert artifact_exports.get_for_project.await_count == 2
     artifact_exports.request_cancel.assert_awaited_once_with(
-        WORKFLOW_ID, project_id=PROJECT_ID)
+        WORKFLOW_ID, project_id=PROJECT_ID
+    )
 
 
 @pytest.mark.asyncio
@@ -388,8 +416,10 @@ async def test_cancel_missing_seals_before_later_retry() -> None:
     dispatch = AsyncMock()
     cancel = AsyncMock(return_value=JobStatus.MISSING)
     with _request_context(principal, dispatch=dispatch, cancel=cancel):
-        assert await driver.cancel_artifact_export_job(
-            str(WORKFLOW_ID), PROJECT_ID) == JobStatus.MISSING
+        assert (
+            await driver.cancel_artifact_export_job(str(WORKFLOW_ID), PROJECT_ID)
+            == JobStatus.MISSING
+        )
         artifact_exports.get.side_effect = None
         artifact_exports.get.return_value = entry
         assert await _create_job(driver, output) == str(WORKFLOW_ID)
@@ -400,10 +430,10 @@ async def test_cancel_missing_seals_before_later_retry() -> None:
 async def test_project_isolation_blocks_status_before_temporal() -> None:
     driver, artifact_exports, _, principal = _artifact_driver()
     artifact_exports.get_for_project.side_effect = ArtifactExportJobNotFoundError(
-        'not found')
+        'not found'
+    )
     temporal_status = AsyncMock()
     with _request_context(principal, status=temporal_status):
         with pytest.raises(ArtifactExportJobNotFoundError):
-            await driver.get_artifact_export_job_status(str(WORKFLOW_ID),
-                                                        PROJECT_ID)
+            await driver.get_artifact_export_job_status(str(WORKFLOW_ID), PROJECT_ID)
     temporal_status.assert_not_awaited()

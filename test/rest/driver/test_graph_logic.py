@@ -48,21 +48,22 @@ from statedb.config.common import (
 from statedb.config.timestamp import ResourceTimestamps
 from statedb.utils.errors import GraphDefinitionAlreadyExists
 
-_TEST_PROJECT_ID = ProjectID("project_" + "1" * 32)
-_TEST_CONNECTOR_ID = ConnectorID("connector_" + "1" * 32)
+_TEST_PROJECT_ID = ProjectID('project_' + '1' * 32)
+_TEST_CONNECTOR_ID = ConnectorID('connector_' + '1' * 32)
 
 
-def test_partial_activity_graph_build_closes_every_created_connector(
-        monkeypatch):
+def test_partial_activity_graph_build_closes_every_created_connector(monkeypatch):
     from rest.driver import graph_logic
+
     first = MagicMock()
     second = MagicMock()
     connectors = iter([first, second])
     graph = MagicMock()
     graph.connect.side_effect = [None, RuntimeError('connect failed')]
     monkeypatch.setattr(graph_logic, 'Graph', lambda _name: graph)
-    monkeypatch.setattr(graph_logic, 'get_connector_from_spec',
-                        lambda _spec: next(connectors))
+    monkeypatch.setattr(
+        graph_logic, 'get_connector_from_spec', lambda _spec: next(connectors)
+    )
     specs = [
         SimpleNamespace(connector_id='first'),
         SimpleNamespace(connector_id='second'),
@@ -70,7 +71,8 @@ def test_partial_activity_graph_build_closes_every_created_connector(
 
     with pytest.raises(RuntimeError, match='connect failed'):
         graph_logic._build_graph_from_definition_with_specs(
-            SimpleNamespace(), 'graph', specs)
+            SimpleNamespace(), 'graph', specs
+        )
 
     first.close.assert_called_once_with()
     second.close.assert_called_once_with()
@@ -116,8 +118,7 @@ class _StateGraphService:
 
     async def list_named_graphs(self, project_id):
         self.list_calls.append(project_id)
-        return ([self.entry]
-                if self.entry is not None and self.entry.alias else [])
+        return [self.entry] if self.entry is not None and self.entry.alias else []
 
     async def decrement_or_delete_graph_definition(self, project_id, fpid):
         self.delete_calls.append((project_id, fpid))
@@ -133,19 +134,21 @@ class _StateGraphService:
         *,
         alias=None,
         force_rename=False,
-        created_by_name="",
+        created_by_name='',
     ):
-        self.save_calls.append({
-            "project_id": project_id,
-            "graph_definition": graph_definition,
-            "alias": alias,
-            "force_rename": force_rename,
-            "created_by_name": created_by_name,
-        })
+        self.save_calls.append(
+            {
+                'project_id': project_id,
+                'graph_definition': graph_definition,
+                'alias': alias,
+                'force_rename': force_rename,
+                'created_by_name': created_by_name,
+            }
+        )
         if self.entry is not None and self.entry.id == graph_definition.fpid:
             if self.entry.alias and alias and self.entry.alias != alias:
                 if not force_rename:
-                    raise GraphDefinitionAlreadyExists("duplicate graph")
+                    raise GraphDefinitionAlreadyExists('duplicate graph')
             return self.entry
         return self.entry
 
@@ -168,7 +171,8 @@ class _StatePQueryService:
         self.get_definitions_by_ids_calls.append(pquery_ids)
         return {
             pquery_id: SimpleNamespace(graph_fpid=self.graph_fpid)
-            for pquery_id in pquery_ids if pquery_id == self.pquery_id
+            for pquery_id in pquery_ids
+            if pquery_id == self.pquery_id
         }
 
 
@@ -185,7 +189,7 @@ def _create_state_graph_entry(graph_def: GraphDefinition) -> GraphDBEntryV2:
             for table_name, table_def in graph_def.tables.items()
         },
         col_groups=graph_def.col_groups,
-        alias="state_graph",
+        alias='state_graph',
     )
 
 
@@ -204,36 +208,36 @@ def _create_state_services_for_graph(
 
 
 def _create_state_services_for_connectors(
-    connector_specs: Dict[ConnectorID, ConnectorSpec], ):
+    connector_specs: Dict[ConnectorID, ConnectorSpec],
+):
     def connector_ids_for_graph(_graph_def):
         return set(connector_specs)
 
     async def config_for_project(_principal, _project_id, connector_id):
         return connector_specs[connector_id]
 
-    return SimpleNamespace(connectors=SimpleNamespace(
-        connector_ids_for_graph=connector_ids_for_graph,
-        config_for_project=config_for_project,
-    ))
+    return SimpleNamespace(
+        connectors=SimpleNamespace(
+            connector_ids_for_graph=connector_ids_for_graph,
+            config_for_project=config_for_project,
+        )
+    )
 
 
 def _create_minimal_graph_definition() -> GraphDefinition:
     table_def = TableDefinition(
         source_table=S3SourceTable(
             connector_id=_TEST_CONNECTOR_ID,
-            source={
-                'mode': 'relative',
-                'path': "customers.parquet"
-            },
+            source={'mode': 'relative', 'path': 'customers.parquet'},
             file_type=FileType.PARQUET,
         ),
         cols=[
-            Column(name="customer_id", stype=Stype.ID, dtype=Dtype.string),
+            Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string),
         ],
-        pkey="customer_id",
+        pkey='customer_id',
     )
     return GraphDefinition(
-        tables={"customers": table_def},
+        tables={'customers': table_def},
         col_groups=[],
     )
 
@@ -245,10 +249,7 @@ def test_v2_foreign_keys_keep_hosted_order_and_destination_context():
         return TableDefinition(
             source_table=S3SourceTable(
                 connector_id=_TEST_CONNECTOR_ID,
-                source={
-                    'mode': 'relative',
-                    'path': f'{name}.parquet'
-                },
+                source={'mode': 'relative', 'path': f'{name}.parquet'},
                 file_type=FileType.PARQUET,
             ),
             cols=[Column(column, Stype.ID, Dtype.string) for column in columns],
@@ -260,16 +261,19 @@ def test_v2_foreign_keys_keep_hosted_order_and_destination_context():
         'events': table('events', ('z_user_id', 'a_user_id')),
     }
     groups = [
-        ColumnKeyGroup((
-            ColumnKey('events', 'z_user_id'),
-            ColumnKey('users', 'legacy_id'),
-            ColumnKey('users', 'id'),
-            ColumnKey('events', 'a_user_id'),
-        ))
+        ColumnKeyGroup(
+            (
+                ColumnKey('events', 'z_user_id'),
+                ColumnKey('users', 'legacy_id'),
+                ColumnKey('users', 'id'),
+                ColumnKey('events', 'a_user_id'),
+            )
+        )
     ]
 
-    links = graph_logic._make_fkeys_v2(graph_logic._make_col_index_v2(tables),
-                                       groups, tables)
+    links = graph_logic._make_fkeys_v2(
+        graph_logic._make_col_index_v2(tables), groups, tables
+    )
 
     assert links['users'] == []
     assert [link.name for link in links['events']] == [
@@ -278,8 +282,7 @@ def test_v2_foreign_keys_keep_hosted_order_and_destination_context():
     ]
     assert all(link.dst_table_name == 'users' for link in links['events'])
     assert all(link.dst_key == 'id' for link in links['events'])
-    assert all(link.dst_data_source == _TEST_CONNECTOR_ID
-               for link in links['events'])
+    assert all(link.dst_data_source == _TEST_CONNECTOR_ID for link in links['events'])
 
 
 def test_sdk_edge_export_uses_graph_aliases_and_shared_resolution():
@@ -291,25 +294,24 @@ def test_sdk_edge_export_uses_graph_aliases_and_shared_resolution():
             table_fpid=FPID('1' * 32),
             table_alias_in_graph=graph_alias,
             table_config={
-                'cols':
-                [Column(column, Stype.ID, Dtype.string) for column in columns],
-                'pkey':
-                pkey,
-                'table_name':
-                source_name,
+                'cols': [Column(column, Stype.ID, Dtype.string) for column in columns],
+                'pkey': pkey,
+                'table_name': source_name,
             },
         )
 
     tables = [
         table('warehouse_users', 'users', ('id', 'legacy_id'), 'id'),
-        table('warehouse_events', 'events', ('user_id', )),
+        table('warehouse_events', 'events', ('user_id',)),
     ]
     groups = [
-        ColumnKeyGroup((
-            ColumnKey('users', 'id'),
-            ColumnKey('users', 'legacy_id'),
-            ColumnKey('events', 'user_id'),
-        ))
+        ColumnKeyGroup(
+            (
+                ColumnKey('users', 'id'),
+                ColumnKey('users', 'legacy_id'),
+                ColumnKey('events', 'user_id'),
+            )
+        )
     ]
 
     assert get_edge_configs_for_sdk(groups, tables) == [
@@ -342,22 +344,20 @@ def test_fixture_export_preserves_column_group_fingerprint(monkeypatch):
     )
 
     def table_definition(table, _connector_id, _connector_config):
-        columns = ('id', ) if table is users else ('user_id', )
+        columns = ('id',) if table is users else ('user_id',)
         return TableDefinition(
             source_table=S3SourceTable(
                 connector_id=_TEST_CONNECTOR_ID,
-                source={
-                    'mode': 'relative',
-                    'path': f'{table.table_name}.parquet'
-                },
+                source={'mode': 'relative', 'path': f'{table.table_name}.parquet'},
                 file_type=FileType.PARQUET,
             ),
             cols=[Column(column, Stype.ID, Dtype.string) for column in columns],
             pkey='id' if table is users else None,
         )
 
-    monkeypatch.setattr(graph_utils, '_table_config_to_table_definition',
-                        table_definition)
+    monkeypatch.setattr(
+        graph_utils, '_table_config_to_table_definition', table_definition
+    )
     graph = graph_utils.export_kumo_graph_to_fixture(
         GraphConfig(name='graph', tables=[users, events]),
         {
@@ -369,24 +369,23 @@ def test_fixture_export_preserves_column_group_fingerprint(monkeypatch):
     )
 
     assert len(graph.col_groups) == 1
-    assert [(str(column.table_name), column.col_name)
-            for column in graph.col_groups[0].columns] == [
-                ('events', 'user_id'),
-                ('users', 'id'),
-            ]
+    assert [
+        (str(column.table_name), column.col_name)
+        for column in graph.col_groups[0].columns
+    ] == [
+        ('events', 'user_id'),
+        ('users', 'id'),
+    ]
     assert graph.col_groups[0].fpid == FPID('105e6af6f7cbcd4d5fa3d0db26b985c8')
 
 
 def _create_infer_links_graph_definition(source_scheme: str) -> GraphDefinition:
     def source_table(table_name: str):
-        source_name = f"hnm_tiny/{table_name}.parquet"
-        if source_scheme == "s3":
+        source_name = f'hnm_tiny/{table_name}.parquet'
+        if source_scheme == 's3':
             return S3SourceTable(
                 connector_id=_TEST_CONNECTOR_ID,
-                source={
-                    'mode': 'relative',
-                    'path': source_name
-                },
+                source={'mode': 'relative', 'path': source_name},
                 file_type=FileType.PARQUET,
             )
         return GCSSourceTable(
@@ -397,42 +396,36 @@ def _create_infer_links_graph_definition(source_scheme: str) -> GraphDefinition:
 
     return GraphDefinition(
         tables={
-            "transactions":
-            TableDefinition(
+            'transactions': TableDefinition(
                 cols=[
-                    Column(name="t_dat", stype=Stype.timestamp,
-                           dtype=Dtype.time),
-                    Column(name="customer_id", stype=Stype.ID,
-                           dtype=Dtype.string),
-                    Column(name="article_id", stype=Stype.ID,
-                           dtype=Dtype.string),
-                    Column(name="price", stype=Stype.numerical,
-                           dtype=Dtype.float),
+                    Column(name='t_dat', stype=Stype.timestamp, dtype=Dtype.time),
+                    Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string),
+                    Column(name='article_id', stype=Stype.ID, dtype=Dtype.string),
+                    Column(name='price', stype=Stype.numerical, dtype=Dtype.float),
                 ],
-                source_table=source_table("transactions"),
+                source_table=source_table('transactions'),
                 pkey=None,
-                time_col="t_dat",
+                time_col='t_dat',
             ),
-            "customers":
-            TableDefinition(
+            'customers': TableDefinition(
                 cols=[
-                    Column(name="customer_id", stype=Stype.ID,
-                           dtype=Dtype.string),
-                    Column(name="age", stype=Stype.numerical, dtype=Dtype.int),
+                    Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string),
+                    Column(name='age', stype=Stype.numerical, dtype=Dtype.int),
                 ],
-                source_table=source_table("customers"),
-                pkey="customer_id",
+                source_table=source_table('customers'),
+                pkey='customer_id',
             ),
-            "articles":
-            TableDefinition(
+            'articles': TableDefinition(
                 cols=[
-                    Column(name="article_id", stype=Stype.ID,
-                           dtype=Dtype.string),
-                    Column(name="product_type_name", stype=Stype.categorical,
-                           dtype=Dtype.string),
+                    Column(name='article_id', stype=Stype.ID, dtype=Dtype.string),
+                    Column(
+                        name='product_type_name',
+                        stype=Stype.categorical,
+                        dtype=Dtype.string,
+                    ),
                 ],
-                source_table=source_table("articles"),
-                pkey="article_id",
+                source_table=source_table('articles'),
+                pkey='article_id',
             ),
         },
         col_groups=[],
@@ -441,8 +434,9 @@ def _create_infer_links_graph_definition(source_scheme: str) -> GraphDefinition:
 
 def _num_rows_stat(val: Any) -> Dict[TableStatType, StatsConfig]:
     return {
-        TableStatType.NUM_ROWS:
-        StatsConfig(value=val, approx=False, data_version="none")
+        TableStatType.NUM_ROWS: StatsConfig(
+            value=val, approx=False, data_version='none'
+        )
     }
 
 
@@ -457,7 +451,7 @@ def test_sum_num_rows_not_computed():
 
 def test_sum_num_rows_invalid_stat():
     stats = [
-        ExactStats(table_stats=_num_rows_stat("pie"), col_stats={}),
+        ExactStats(table_stats=_num_rows_stat('pie'), col_stats={}),
         ExactStats(table_stats={}, col_stats={}),
         ExactStats(table_stats=_num_rows_stat(11.5), col_stats={}),
     ]
@@ -476,18 +470,18 @@ def test_sum_num_rows_correct_stats():
 
 
 @pytest.mark.asyncio
-async def test_create_full_graph_def_v2_raises_definition_exists_on_alias_conflict(
-):
-    graph_fpid = "a" * 32
+async def test_create_full_graph_def_v2_raises_definition_exists_on_alias_conflict():
+    graph_fpid = 'a' * 32
     # ``_tables`` is empty: the Custom SQL connector_type canonicalization that
     # runs before persistence is a no-op for a graph with no SQL tables, so this
     # alias-conflict path never touches the connector service.
     graph_def = SimpleNamespace(fpid=graph_fpid, _tables=lambda: {})
-    graph_entry = SimpleNamespace(id=graph_fpid, alias="old_name")
+    graph_entry = SimpleNamespace(id=graph_fpid, alias='old_name')
     graph_service = _StateGraphService(graph_entry, graph_def)
     db = MagicMock()
     db.get_graph_v2_if_exists.side_effect = AssertionError(
-        "StateDB path should not read legacy graph storage")
+        'StateDB path should not read legacy graph storage'
+    )
     graph_logic = GraphLogic(
         data_backend_ctx=AsyncMock(),
         state_services=SimpleNamespace(graphs=graph_service),
@@ -497,33 +491,38 @@ async def test_create_full_graph_def_v2_raises_definition_exists_on_alias_confli
     with pytest.raises(GraphDefinitionAlreadyExists):
         await graph_logic.create_full_graph_def_v2(
             graph_def,
-            alias="new_name",
+            alias='new_name',
             force_rename=False,
         )
     db.get_graph_v2_if_exists.assert_not_called()
 
 
-def _sql_graph_definition(
-        claimed_connector_type: str | None = None) -> GraphDefinition:
+def _sql_graph_definition(claimed_connector_type: str | None = None) -> GraphDefinition:
     # ``connector_type`` is server-owned; a client sends it unset. Tests may pass
     # a stale/incorrect value to prove the server derives + overrides it.
     sql_def = TableDefinition(
         source_table=CustomSQLSourceTable(
             connector_id=_TEST_CONNECTOR_ID,
             connector_type=claimed_connector_type,
-            sql="SELECT customer_id FROM customers",
-            table="custom_sql_provisional",
+            sql='SELECT customer_id FROM customers',
+            table='custom_sql_provisional',
         ),
-        cols=[Column(name="customer_id", stype=Stype.ID, dtype=Dtype.string)],
-        pkey="customer_id",
+        cols=[Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string)],
+        pkey='customer_id',
     )
-    return GraphDefinition(tables={"sql_table": sql_def}, col_groups=[])
+    return GraphDefinition(tables={'sql_table': sql_def}, col_groups=[])
 
 
 def _state_services_with_connector_type(connector_type: str) -> SimpleNamespace:
-    return SimpleNamespace(connectors=SimpleNamespace(get_for_project=AsyncMock(
-        return_value=SimpleNamespace(config=SimpleNamespace(
-            type=SimpleNamespace(value=connector_type))))))
+    return SimpleNamespace(
+        connectors=SimpleNamespace(
+            get_for_project=AsyncMock(
+                return_value=SimpleNamespace(
+                    config=SimpleNamespace(type=SimpleNamespace(value=connector_type))
+                )
+            )
+        )
+    )
 
 
 def test_add_tables_to_graph_v2_marks_custom_sql_tables_is_sql():
@@ -535,59 +534,51 @@ def test_add_tables_to_graph_v2_marks_custom_sql_tables_is_sql():
     carries only the boolean marker -- never the SQL text -- and it survives a
     ``Table.from_config`` round-trip (what the activity does before
     ``graph.config()``)."""
-    from test.graph.test_custom_sql_infer import _FakeSQLConnector
-
     from kumo.graph import Graph, Table
     from rest.driver import graph_logic
+    from test.graph.test_custom_sql_infer import _FakeSQLConnector
 
-    sql = "SELECT customer_id FROM customers"
+    sql = 'SELECT customer_id FROM customers'
     tables = {
-        "sql_table":
-        TableDefinition(
+        'sql_table': TableDefinition(
             source_table=CustomSQLSourceTable(
                 connector_id=_TEST_CONNECTOR_ID,
-                connector_type="snowflake",
+                connector_type='snowflake',
                 sql=sql,
-                table="custom_sql_provisional",
+                table='custom_sql_provisional',
             ),
-            cols=[
-                Column(name="customer_id", stype=Stype.ID, dtype=Dtype.string)
-            ],
-            pkey="customer_id",
+            cols=[Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string)],
+            pkey='customer_id',
         ),
-        "phys_table":
-        TableDefinition(
+        'phys_table': TableDefinition(
             source_table=S3SourceTable(
                 connector_id=_TEST_CONNECTOR_ID,
-                source={
-                    'mode': 'relative',
-                    'path': "customers.parquet"
-                },
+                source={'mode': 'relative', 'path': 'customers.parquet'},
                 file_type=FileType.PARQUET,
             ),
-            cols=[
-                Column(name="account_id", stype=Stype.ID, dtype=Dtype.string)
-            ],
-            pkey="account_id",
+            cols=[Column(name='account_id', stype=Stype.ID, dtype=Dtype.string)],
+            pkey='account_id',
         ),
     }
 
-    graph = Graph("NA")
+    graph = Graph('NA')
     graph.connect(
-        _FakeSQLConnector(str(_TEST_CONNECTOR_ID), query_cols=[],
-                          sample_df=pd.DataFrame()))
+        _FakeSQLConnector(
+            str(_TEST_CONNECTOR_ID), query_cols=[], sample_df=pd.DataFrame()
+        )
+    )
     graph_logic._add_tables_to_graph_v2(graph, tables, col_groups=[])
 
-    sql_table = graph.table("sql_table")
+    sql_table = graph.table('sql_table')
     assert sql_table.is_sql is True
-    assert graph.table("phys_table").is_sql is False
+    assert graph.table('phys_table').is_sql is False
 
     # Serialization carries only the boolean marker (no raw SQL) and survives a
     # Table.from_config round-trip -- exactly the activity's rebuild before
     # graph.config() resolves data_version.
     sql_config = sql_table.config()
     assert sql_config.is_sql is True
-    assert not hasattr(sql_config, "custom_sql")
+    assert not hasattr(sql_config, 'custom_sql')
     assert Table.from_config(sql_config).is_sql is True
 
 
@@ -605,37 +596,29 @@ def test_make_graph_config_from_compute_input_sets_is_sql_marker():
 
     graph_def = GraphDefinition(
         tables={
-            "sql_table":
-            _sql_graph_definition("snowflake").tables["sql_table"],
-            "phys_table":
-            TableDefinition(
+            'sql_table': _sql_graph_definition('snowflake').tables['sql_table'],
+            'phys_table': TableDefinition(
                 source_table=S3SourceTable(
                     connector_id=_TEST_CONNECTOR_ID,
-                    source={
-                        'mode': 'relative',
-                        'path': "customers.parquet"
-                    },
+                    source={'mode': 'relative', 'path': 'customers.parquet'},
                     file_type=FileType.PARQUET,
                 ),
-                cols=[
-                    Column(name="account_id", stype=Stype.ID,
-                           dtype=Dtype.string)
-                ],
-                pkey="account_id",
+                cols=[Column(name='account_id', stype=Stype.ID, dtype=Dtype.string)],
+                pkey='account_id',
             ),
         },
         col_groups=[],
     )
-    graph_input = SimpleNamespace(graph_definition=graph_def,
-                                  graph_display_name="NA")
+    graph_input = SimpleNamespace(graph_definition=graph_def, graph_display_name='NA')
 
     config = graph_config_activity.make_graph_config_from_compute_input(
-        graph_input, connector_configs={})
+        graph_input, connector_configs={}
+    )
     by_name = {t.table_name: t for t in config.tables}
-    assert by_name["sql_table"].is_sql is True
-    assert by_name["phys_table"].is_sql is False
+    assert by_name['sql_table'].is_sql is True
+    assert by_name['phys_table'].is_sql is False
     # The raw SQL text is never serialized into the config.
-    assert not hasattr(by_name["sql_table"], "custom_sql")
+    assert not hasattr(by_name['sql_table'], 'custom_sql')
 
 
 @pytest.mark.asyncio
@@ -645,11 +628,12 @@ async def test_canonicalize_graph_custom_sql_tables_ignores_client_type():
     ``GraphLogic.create_full_graph_def_v2``) derives it from the resolved
     connector and overrides any value on the embedded def, so a stale/incorrect
     client-supplied type can never be persisted."""
-    graph = _sql_graph_definition("bigquery")  # stale/incorrect client value
-    state_services = _state_services_with_connector_type("snowflake")
-    result = await canonicalize_graph_custom_sql_tables(graph, _TEST_PROJECT_ID,
-                                                        state_services, None)
-    src = result._tables()["sql_table"].source_table
+    graph = _sql_graph_definition('bigquery')  # stale/incorrect client value
+    state_services = _state_services_with_connector_type('snowflake')
+    result = await canonicalize_graph_custom_sql_tables(
+        graph, _TEST_PROJECT_ID, state_services, None
+    )
+    src = result._tables()['sql_table'].source_table
     assert src.connector_type == ConnectorType.SNOWFLAKE
 
 
@@ -659,12 +643,13 @@ async def test_canonicalize_graph_custom_sql_tables_stamps_resolved_type():
     the server-derived warehouse type and its provisional synthetic name is
     canonicalized from the normalized SQL."""
     graph = _sql_graph_definition()
-    state_services = _state_services_with_connector_type("snowflake")
-    result = await canonicalize_graph_custom_sql_tables(graph, _TEST_PROJECT_ID,
-                                                        state_services, None)
-    src = result._tables()["sql_table"].source_table
+    state_services = _state_services_with_connector_type('snowflake')
+    result = await canonicalize_graph_custom_sql_tables(
+        graph, _TEST_PROJECT_ID, state_services, None
+    )
+    src = result._tables()['sql_table'].source_table
     assert src.connector_type == ConnectorType.SNOWFLAKE
-    assert src.table != "custom_sql_provisional"
+    assert src.table != 'custom_sql_provisional'
 
 
 @pytest.mark.asyncio
@@ -674,7 +659,8 @@ async def test_canonicalize_graph_custom_sql_tables_noop_without_sql():
     graph = _create_minimal_graph_definition()
     connectors = SimpleNamespace(get_for_project=AsyncMock())
     result = await canonicalize_graph_custom_sql_tables(
-        graph, _TEST_PROJECT_ID, SimpleNamespace(connectors=connectors), None)
+        graph, _TEST_PROJECT_ID, SimpleNamespace(connectors=connectors), None
+    )
     assert result is graph
     connectors.get_for_project.assert_not_awaited()
 
@@ -682,14 +668,15 @@ async def test_canonicalize_graph_custom_sql_tables_noop_without_sql():
 @pytest.mark.asyncio
 async def test_get_graph_def_resolves_pquery_only_id_with_state_services():
     graph_definition = _create_minimal_graph_definition()
-    pquery_id = PredictiveQueryID("state_query")
+    pquery_id = PredictiveQueryID('state_query')
     state_services = _create_state_services_for_graph(
         graph_definition,
         pquery_id,
     )
     db = MagicMock()
     db.get_graph_v2_if_exists.side_effect = AssertionError(
-        "StateDB path should not read legacy graph storage")
+        'StateDB path should not read legacy graph storage'
+    )
     graph_logic = GraphLogic(
         data_backend_ctx=AsyncMock(),
         state_services=state_services,
@@ -709,7 +696,7 @@ async def test_get_graph_def_resolves_pquery_only_id_with_state_services():
 @pytest.mark.asyncio
 async def test_async_state_graph_helpers_do_not_use_sync_bridge(monkeypatch):
     graph_definition = _create_minimal_graph_definition()
-    pquery_id = PredictiveQueryID("state_query")
+    pquery_id = PredictiveQueryID('state_query')
     state_services = _create_state_services_for_graph(
         graph_definition,
         pquery_id,
@@ -722,9 +709,9 @@ async def test_async_state_graph_helpers_do_not_use_sync_bridge(monkeypatch):
 
     def fail_sync_bridge(coro):
         coro.close()
-        raise AssertionError("async graph helper used sync bridge")
+        raise AssertionError('async graph helper used sync bridge')
 
-    monkeypatch.setattr(graph_logic, "_run_state_service", fail_sync_bridge)
+    monkeypatch.setattr(graph_logic, '_run_state_service', fail_sync_bridge)
 
     graph_id = GraphIDv2.compose(pquery_id)
 
@@ -733,33 +720,37 @@ async def test_async_state_graph_helpers_do_not_use_sync_bridge(monkeypatch):
     assert await graph_logic.async_exists(graph_id)
 
     canonical_entry = await graph_logic.async_get_graph_entry(graph_id)
-    assert canonical_entry.display_name == "state_graph"
+    assert canonical_entry.display_name == 'state_graph'
 
     entries = await graph_logic.async_get_many_graph_entries([graph_id])
     assert entries == [canonical_entry]
 
     graph_names = await graph_logic.async_list_graph_names_v2()
-    assert [graph.name for graph in graph_names] == ["state_graph"]
+    assert [graph.name for graph in graph_names] == ['state_graph']
 
     assert await graph_logic.async_delete_full_graph_def_v2(graph_id)
-    assert state_services.graphs.delete_calls == [(_TEST_PROJECT_ID,
-                                                   graph_definition.fpid)]
+    assert state_services.graphs.delete_calls == [
+        (_TEST_PROJECT_ID, graph_definition.fpid)
+    ]
 
 
 @pytest.mark.asyncio
 async def test_infer_links():
-    graph_def = _create_infer_links_graph_definition("s3")
+    graph_def = _create_infer_links_graph_definition('s3')
 
-    state_services = _create_state_services_for_connectors({
-        _TEST_CONNECTOR_ID:
-        ConnectorSpec(
-            connector_id=_TEST_CONNECTOR_ID,
-            connector_config=FileConnectorResourceConfig(
-                str(_TEST_CONNECTOR_ID),
-                "s3://kumo-public-datasets/hnm_tiny/",
-            ).as_connector().config(),
-        )
-    })
+    state_services = _create_state_services_for_connectors(
+        {
+            _TEST_CONNECTOR_ID: ConnectorSpec(
+                connector_id=_TEST_CONNECTOR_ID,
+                connector_config=FileConnectorResourceConfig(
+                    str(_TEST_CONNECTOR_ID),
+                    's3://kumo-public-datasets/hnm_tiny/',
+                )
+                .as_connector()
+                .config(),
+            )
+        }
+    )
     graph_logic = GraphLogic(
         data_backend_ctx=AsyncMock(),
         state_services=state_services,
@@ -782,18 +773,21 @@ async def test_infer_links():
 @pytest.mark.asyncio
 async def test_infer_links_with_gcs_source_table():
     """Test that infer_links works with GCS source tables."""
-    graph_def = _create_infer_links_graph_definition("gs")
+    graph_def = _create_infer_links_graph_definition('gs')
 
-    state_services = _create_state_services_for_connectors({
-        _TEST_CONNECTOR_ID:
-        ConnectorSpec(
-            connector_id=_TEST_CONNECTOR_ID,
-            connector_config=FileConnectorResourceConfig(
-                str(_TEST_CONNECTOR_ID),
-                "gs://kumo-public-datasets/hnm_tiny/",
-            ).as_connector().config(),
-        )
-    })
+    state_services = _create_state_services_for_connectors(
+        {
+            _TEST_CONNECTOR_ID: ConnectorSpec(
+                connector_id=_TEST_CONNECTOR_ID,
+                connector_config=FileConnectorResourceConfig(
+                    str(_TEST_CONNECTOR_ID),
+                    'gs://kumo-public-datasets/hnm_tiny/',
+                )
+                .as_connector()
+                .config(),
+            )
+        }
+    )
     graph_logic = GraphLogic(
         data_backend_ctx=AsyncMock(),
         state_services=state_services,

@@ -36,13 +36,16 @@ def _gcs_session_for(principal: Principal) -> GCSSession:
     config = principal.config
     if not isinstance(config, GCSIdentityConfig):
         raise ValueError(
-            f"Identity {principal.name!r} is a {config.type.value} "
-            f"identity, so it cannot sign for GCS.")
+            f'Identity {principal.name!r} is a {config.type.value} '
+            f'identity, so it cannot sign for GCS.'
+        )
     if isinstance(config.authentication, GoogleAmbientAuthentication):
         return None
     from .auth import google_credentials
-    return google_credentials(principal.name, config.authentication,
-                              principal.credentials, scope=_GCS_SCOPE)
+
+    return google_credentials(
+        principal.name, config.authentication, principal.credentials, scope=_GCS_SCOPE
+    )
 
 
 def _live_token(session: GCSSession) -> Tuple[str, Any]:
@@ -55,19 +58,21 @@ def _live_token(session: GCSSession) -> Tuple[str, Any]:
         refresh = getattr(session, 'refresh', None)
         if not callable(refresh):
             raise TypeError(
-                f"The GCS credential has expired and cannot refresh itself: "
+                f'The GCS credential has expired and cannot refresh itself: '
                 f"{type(session).__name__!r} has no 'refresh'. Create the "
-                f"identity with a GCSIdentityConfig whose authentication "
-                f"google-auth can refresh, or bind a "
-                f"'pyarrow.fs.GcsFileSystem' built to refresh on its own.")
+                f'identity with a GCSIdentityConfig whose authentication '
+                f'google-auth can refresh, or bind a '
+                f"'pyarrow.fs.GcsFileSystem' built to refresh on its own."
+            )
         try:
             from google.auth.transport.requests import Request
         except ImportError as error:  # pragma: no cover - environment
             raise ImportError(
-                "Refreshing an expired GCS access token needs "
+                'Refreshing an expired GCS access token needs '
                 "'google-auth[requests]', which is not installed. Install it, "
-                "or use a GCS identity whose credential arrives already "
-                "refreshed.") from error
+                'or use a GCS identity whose credential arrives already '
+                'refreshed.'
+            ) from error
         refresh(Request())
     token = getattr(session, 'token', None)
     expiry = getattr(session, 'expiry', None)
@@ -76,6 +81,7 @@ def _live_token(session: GCSSession) -> Tuple[str, Any]:
             f"A GCS session must be a 'pyarrow.fs.GcsFileSystem' or a "
             f"refreshed google.auth credential carrying 'token' and "
             f"'expiry'; got {type(session).__name__!r}. Leaving the identity "
-            f"unset is also supported: the reader then signs with "
-            f"Application Default Credentials.")
+            f'unset is also supported: the reader then signs with '
+            f'Application Default Credentials.'
+        )
     return token, expiry

@@ -49,14 +49,18 @@ def get_data_dict(
     stage: TrainingStage,
 ) -> dict[str, Any]:
     r"""Get the datamodule input data in dictionary."""
-    input_type, input_nodes, input_time, input_id = (datamodule.stage_inputs(
-        stage.value))
-    return dict(input_type=input_type, input_nodes=input_nodes,
-                input_time=input_time, input_id=input_id)
+    input_type, input_nodes, input_time, input_id = datamodule.stage_inputs(stage.value)
+    return dict(
+        input_type=input_type,
+        input_nodes=input_nodes,
+        input_time=input_time,
+        input_id=input_id,
+    )
 
 
-def get_eval_dataloader(datamodule: DiskgraphLightningDataModule,
-                        stage: TrainingStage, seed_nodes: Tensor) -> DataLoader:
+def get_eval_dataloader(
+    datamodule: DiskgraphLightningDataModule, stage: TrainingStage, seed_nodes: Tensor
+) -> DataLoader:
     """Get evaluation dataloader for entity-level XAI.
 
     Args:

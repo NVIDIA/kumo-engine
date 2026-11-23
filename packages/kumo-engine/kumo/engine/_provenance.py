@@ -17,6 +17,7 @@ def _build_commit(version: str) -> Optional[str]:
     if '+' in version:
         return version.split('+', 1)[1]
     from kumo.engine import _version
+
     stamped = getattr(_version, 'BUILD_COMMIT', None)
     if stamped:
         return stamped
@@ -25,8 +26,12 @@ def _build_commit(version: str) -> Optional[str]:
         return None
     command = ['git', '-C', str(root), 'rev-parse', '--short=12', 'HEAD']
     try:
-        return subprocess.run(command, capture_output=True, text=True,
-                              check=True, timeout=10).stdout.strip() or None
+        return (
+            subprocess.run(
+                command, capture_output=True, text=True, check=True, timeout=10
+            ).stdout.strip()
+            or None
+        )
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -34,6 +39,7 @@ def _build_commit(version: str) -> Optional[str]:
 def _diskgraph() -> Any:
     try:
         import diskgraph
+
         return diskgraph
     except ImportError:
         return None
@@ -59,8 +65,7 @@ def environment() -> Environment:
     )
 
 
-def source_location(connector: Any, table_name: str,
-                    sql: Optional[str] = None) -> str:
+def source_location(connector: Any, table_name: str, sql: Optional[str] = None) -> str:
     if sql is not None:
         return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
     locate = getattr(connector.source_backend, 'table_location', None)
@@ -72,9 +77,14 @@ def _connector_kind(connector: Any) -> str:
     return str(getattr(kind, 'value', kind))
 
 
-def source_table(connector: Any, table_name: str, sql: Optional[str],
-                 version: Any, *,
-                 record_sources: bool = True) -> SourceTableEntry:
+def source_table(
+    connector: Any,
+    table_name: str,
+    sql: Optional[str],
+    version: Any,
+    *,
+    record_sources: bool = True,
+) -> SourceTableEntry:
     from kumo_core.sources.identity import version_kind
 
     entry: Dict[str, Any] = {'connector': None, 'location': None}
@@ -86,25 +96,29 @@ def source_table(connector: Any, table_name: str, sql: Optional[str],
         else:
             entry['location'] = table_name
             entry['location_fingerprint'] = _location_fingerprint(
-                entry['connector'], connector, table_name)
+                entry['connector'], connector, table_name
+            )
         if sql is not None:
             _record_sql(entry, connector, sql, record_sources)
     except Exception as error:
-        warnings.warn(f"Could not record a source table's location: {error}",
-                      UserWarning, stacklevel=3)
+        warnings.warn(
+            f"Could not record a source table's location: {error}",
+            UserWarning,
+            stacklevel=3,
+        )
     return SourceTableEntry(
         version=None if version is None else str(version),
         version_kind=version_kind(version),
-        dependencies=None if dependencies is None else {
-            name: str(value)
-            for name, value in dependencies.items()
-        },
+        dependencies=None
+        if dependencies is None
+        else {name: str(value) for name, value in dependencies.items()},
         **entry,
     )
 
 
-def stored_table(connector: Any, location: str, version: Any, *,
-                 record_sources: bool = True) -> SourceTableEntry:
+def stored_table(
+    connector: Any, location: str, version: Any, *, record_sources: bool = True
+) -> SourceTableEntry:
     from kumo_core.sources.identity import version_kind
 
     kind = _connector_kind(connector)
@@ -112,14 +126,16 @@ def stored_table(connector: Any, location: str, version: Any, *,
     if not record_sources:
         fingerprint = hashlib.sha256(f'{kind}:{location}'.encode()).hexdigest()
         location = location.rstrip('/').rsplit('/', 1)[-1]
-    return SourceTableEntry(connector=kind, location=location,
-                            location_fingerprint=fingerprint,
-                            version=str(version),
-                            version_kind=version_kind(version))
+    return SourceTableEntry(
+        connector=kind,
+        location=location,
+        location_fingerprint=fingerprint,
+        version=str(version),
+        version_kind=version_kind(version),
+    )
 
 
-def _location_fingerprint(kind: str, connector: Any,
-                          table_name: str) -> Optional[str]:
+def _location_fingerprint(kind: str, connector: Any, table_name: str) -> Optional[str]:
     try:
         location = source_location(connector, table_name, None)
     except Exception:
@@ -127,8 +143,9 @@ def _location_fingerprint(kind: str, connector: Any,
     return hashlib.sha256(f'{kind}:{location}'.encode()).hexdigest()
 
 
-def _record_sql(entry: Dict[str, Any], connector: Any, sql: str,
-                record_sources: bool) -> None:
+def _record_sql(
+    entry: Dict[str, Any], connector: Any, sql: str, record_sources: bool
+) -> None:
     from kumo_core.custom_sql import (
         CUSTOM_SQL_NAMESPACE_ATTRS,
         custom_sql_synthetic_name,
@@ -141,6 +158,5 @@ def _record_sql(entry: Dict[str, Any], connector: Any, sql: str,
         entry['sql'] = sql
         entry['dialect'] = entry['connector'].lower()
         entry['namespace'] = [
-            getattr(connector.config, attr)
-            for attr in CUSTOM_SQL_NAMESPACE_ATTRS[kind]
+            getattr(connector.config, attr) for attr in CUSTOM_SQL_NAMESPACE_ATTRS[kind]
         ]

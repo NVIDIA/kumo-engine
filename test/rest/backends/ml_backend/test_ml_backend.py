@@ -103,7 +103,7 @@ _PROJECT_ID = ProjectID.generate()
 _CONNECTOR_ID = ConnectorID.generate()
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True, scope='session')
 def setup_rest_test_session():
     yield
 
@@ -118,32 +118,37 @@ def auto_cleanup_per_func():
     [
         (UserAuthorization.proxied(), False),
         (UserAuthorization.disabled(), True),
-        (UserAuthorization(
-            user_id=UserID('user'),
-            access_token='token',
-            permissions=(),
-        ), False),
+        (
+            UserAuthorization(
+                user_id=UserID('user'),
+                access_token='token',
+                permissions=(),
+            ),
+            False,
+        ),
     ],
     ids=('proxied', 'auth-disabled', 'unassigned'),
 )
 def test_state_service_job_visibility_uses_explicit_principal(
-        principal, visible) -> None:
+    principal, visible
+) -> None:
     token = _current_user_ctx.set(principal)
     try:
-        assert MLJobBackend._state_service_job_visible(
-            object(),
-            ProjectID('project_' + 'a' * 32),
-        ) is visible
+        assert (
+            MLJobBackend._state_service_job_visible(
+                object(),
+                ProjectID('project_' + 'a' * 32),
+            )
+            is visible
+        )
     finally:
         _current_user_ctx.reset(token)
 
 
 def _make_graph_config() -> GraphConfig:
     return GraphConfig(
-        name="graph",
-        data_source_dict={
-            str(_CONNECTOR_ID): ConnectorConfig(name=str(_CONNECTOR_ID))
-        },
+        name='graph',
+        data_source_dict={str(_CONNECTOR_ID): ConnectorConfig(name=str(_CONNECTOR_ID))},
         tables=[
             TableConfig(
                 table_name='ACCOUNT',
@@ -151,13 +156,13 @@ def _make_graph_config() -> GraphConfig:
                 data_source=str(_CONNECTOR_ID),
                 cols=[
                     ColumnConfig(
-                        name="K_SYMBOL",
+                        name='K_SYMBOL',
                         dtype=Dtype.string,
                         stype=Stype.categorical,
                     ),
                 ],
                 pkey=PrimaryKeyConfig(
-                    name="ACCOUNT_ID",
+                    name='ACCOUNT_ID',
                     dtype=Dtype.string,
                     stype=Stype.ID,
                 ),
@@ -167,7 +172,8 @@ def _make_graph_config() -> GraphConfig:
 
 
 def _make_graph_data_compute_input(
-    project_id: ProjectID = _PROJECT_ID, ) -> GraphDataComputeInput:
+    project_id: ProjectID = _PROJECT_ID,
+) -> GraphDataComputeInput:
     """Build a v2 ``GraphDataComputeInput`` directly.
 
     Constructs the v2 ``TableDefinition`` shape natively instead of going
@@ -188,23 +194,19 @@ def _make_graph_data_compute_input(
 
     table_def = TableDefinition(
         cols=[
-            Column(name='K_SYMBOL', stype=Stype.categorical,
-                   dtype=Dtype.string),
+            Column(name='K_SYMBOL', stype=Stype.categorical, dtype=Dtype.string),
         ],
         source_table=S3SourceTable(
             connector_id=str(connector_id),
-            source={
-                'mode': 'relative',
-                'path': 'ACCOUNT'
-            },
+            source={'mode': 'relative', 'path': 'ACCOUNT'},
             file_type=source_table_api.FileType.PARQUET,
             data_source_type=DataSourceType.S3,
         ),
         pkey='ACCOUNT_ID',
     )
-    table_id = TableIDv2.compose(pquery_id=None,
-                                 table_name=TableName('ACCOUNT'),
-                                 fpid=table_def.fpid)
+    table_id = TableIDv2.compose(
+        pquery_id=None, table_name=TableName('ACCOUNT'), fpid=table_def.fpid
+    )
 
     connector_ref = ConnectorExecutionRef(
         connector_id=connector_id,
@@ -212,6 +214,7 @@ def _make_graph_data_compute_input(
     )
 
     from rest.config.graph_v2 import GraphDefinition
+
     graph_definition = GraphDefinition(
         tables={TableName('ACCOUNT'): table_def},
         col_groups=[],
@@ -227,30 +230,28 @@ def _make_graph_data_compute_input(
     )
 
 
-def _make_predictive_query(
-) -> Tuple[PredictiveQueryID, PredictiveQueryV2Config]:
-    pq_name = "testq"
+def _make_predictive_query() -> Tuple[PredictiveQueryID, PredictiveQueryV2Config]:
+    pq_name = 'testq'
     pq_id = PredictiveQueryID(pq_name)
     graph = _make_graph_config()
 
     pq_config = PredictiveQueryConfigBase(
         graph=graph,
         name=pq_name,
-        entity="ACCOUNT.ACCOUNT_ID",
-        target="ACCOUNT.K_SYMBOL",
-        query_string="PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID",
+        entity='ACCOUNT.ACCOUNT_ID',
+        target='ACCOUNT.K_SYMBOL',
+        query_string='PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID',
     ).to_predictive_query_v2_config()
     return pq_id, pq_config
 
 
-def _make_training_spec(
-        advanced_options: Optional[ModelPlan] = None) -> TrainingSpec:
+def _make_training_spec(advanced_options: Optional[ModelPlan] = None) -> TrainingSpec:
     pq_id, pq = _make_predictive_query()
     return TrainingSpec(
         predictive_query=pq,
         advanced_options=advanced_options or ModelPlan(),
         predictive_query_id=pq_id,
-        graph_id=GraphIDv1("graph"),
+        graph_id=GraphIDv1('graph'),
         split=pq.split,
     )
 
@@ -287,13 +288,14 @@ def _make_batch_pred_input(
                 S3PredictionOutput(
                     storage_type=PredictionStorageType.S3,
                     artifact_type=PredictionArtifactType.PREDICTIONS,
-                    file_path="predictions/",
+                    file_path='predictions/',
                     connector_id=str(output_connector_id),
                 )
             ],
             graph_id=training_spec.graph_id,
             generate_pred_table_job_id=(
-                GeneratePredictionTableJobID.as_child_of(bp_job_id)),
+                GeneratePredictionTableJobID.as_child_of(bp_job_id)
+            ),
             pquery_def_fpid=None,
         ),
     )
@@ -311,7 +313,8 @@ class _TestS3WorkloadExchanger:
 
 
 async def _provision_batch_output_connector(
-    state_services: StateServices, ) -> tuple[ProjectID, ConnectorID]:
+    state_services: StateServices,
+) -> tuple[ProjectID, ConnectorID]:
     """Create a valid project-owned S3 output connector for an ML job."""
     group, project = await state_services.groups.ensure_default_resources()
     suffix = str(ConnectorID.generate()).removeprefix('connector_')
@@ -335,9 +338,9 @@ async def _provision_batch_output_connector(
             config=data_source_api.S3IdentityConfig(
                 authentication=data_source_api.S3AssumeRoleAuthentication(
                     partition='aws',
-                    role_arn=(
-                        f'arn:aws:iam::123456789012:role/ml-output-{suffix}'),
-                ), ),
+                    role_arn=(f'arn:aws:iam::123456789012:role/ml-output-{suffix}'),
+                ),
+            ),
         ),
         principal,
     )
@@ -354,13 +357,13 @@ async def _provision_batch_output_connector(
                 bucket='kumo-test-batch-output',
                 prefix='predictions',
                 region='us-west-2',
-            ), ),
+            ),
+        ),
     )
-    authorizations = await connectors.authorize_create(project.id, args,
-                                                       principal)
-    connector = await connectors.create_from_activity(project.id, args,
-                                                      principal.user_id,
-                                                      set(authorizations))
+    authorizations = await connectors.authorize_create(project.id, args, principal)
+    connector = await connectors.create_from_activity(
+        project.id, args, principal.user_id, set(authorizations)
+    )
     return project.id, ConnectorID(connector.id)
 
 
@@ -368,9 +371,9 @@ def test_training_job_input_persists_only_connector_execution_refs() -> None:
     training_spec = _make_training_spec()
     graph_input = _make_graph_data_compute_input()
     connector_id = next(iter(graph_input.connectors))
-    training_spec.predictive_query.graph.data_source_dict[str(
-        connector_id)] = ConnectorConfig(
-            name='resolved-config-must-not-enter-history')
+    training_spec.predictive_query.graph.data_source_dict[str(connector_id)] = (
+        ConnectorConfig(name='resolved-config-must-not-enter-history')
+    )
 
     job_input = TrainingJobInput(
         id=TrainingJobID.make_random_id(),
@@ -384,14 +387,15 @@ def test_training_job_input_persists_only_connector_execution_refs() -> None:
     assert not hasattr(job_input.spec, 'credentials')
     assert job_input.spec.predictive_query.graph.data_source_dict == {}
     assert b'credentials' not in payload.data.lower()
-    assert (b'resolved-config-must-not-enter-history' not in payload.data)
+    assert b'resolved-config-must-not-enter-history' not in payload.data
     assert list(job_input.graph_data_compute_input.connectors.values()) == [
         graph_input.connectors[connector_id]
     ]
 
 
 def test_batch_job_input_persists_graph_and_output_connector_refs(
-    tmp_path: pathlib.Path, ) -> None:
+    tmp_path: pathlib.Path,
+) -> None:
     job_input = _make_batch_pred_input(
         tmp_path,
         TrainingJobID.make_random_id(),
@@ -402,10 +406,12 @@ def test_batch_job_input_persists_graph_and_output_connector_refs(
     assert job_input.predictive_query.graph.data_source_dict == {}
     assert all(
         isinstance(value, ConnectorExecutionRef)
-        for value in job_input.graph_data_compute_input.connectors.values())
+        for value in job_input.graph_data_compute_input.connectors.values()
+    )
     assert all(
         isinstance(value, ConnectorExecutionRef)
-        for value in job_input.output_connectors.values())
+        for value in job_input.output_connectors.values()
+    )
     assert b'credentials' not in payload.data.lower()
 
 
@@ -430,13 +436,13 @@ def test_pool_target_table_job_shapes_use_authorized_activity_hydration(
             spec=training_spec,
             start_time=datetime.now(),
             generate_train_table_job_id=(
-                GenerateTrainTableJobID.as_child_of(training_id)),
+                GenerateTrainTableJobID.as_child_of(training_id)
+            ),
             graph_data_compute_input=_make_graph_data_compute_input(),
         )
 
         def invoke():
-            return generate_target_table.generate_training_table(
-                job_input, MagicMock())
+            return generate_target_table.generate_training_table(job_input, MagicMock())
     else:
         job_input = _make_batch_pred_input(
             tmp_path,
@@ -455,7 +461,8 @@ def test_pool_target_table_job_shapes_use_authorized_activity_hydration(
     assert b'credentials' not in payload.data.lower()
     assert all(
         isinstance(reference, ConnectorExecutionRef)
-        for reference in job_input.graph_data_compute_input.connectors.values())
+        for reference in job_input.graph_data_compute_input.connectors.values()
+    )
 
     observed_references = None
 
@@ -464,19 +471,29 @@ def test_pool_target_table_job_shapes_use_authorized_activity_hydration(
         observed_references = references
         raise _AuthorizedHydrationReached
 
-    monkeypatch.setattr(generate_target_table,
-                        'hydrate_predictive_query_for_activity',
-                        stop_at_authorized_hydration)
-    monkeypatch.setattr(generate_target_table,
-                        'get_diskgraph_index_path_for_job',
-                        lambda _job: '/tmp/index')
-    monkeypatch.setattr(generate_target_table,
-                        'save_job_storage_path_to_state_db',
-                        lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(generate_target_table, 'get_job_base_dir',
-                        lambda: str(tmp_path))
-    monkeypatch.setattr(generate_target_table, 'get_job_dir',
-                        lambda _root, _job_id: str(tmp_path / 'training-job'))
+    monkeypatch.setattr(
+        generate_target_table,
+        'hydrate_predictive_query_for_activity',
+        stop_at_authorized_hydration,
+    )
+    monkeypatch.setattr(
+        generate_target_table,
+        'get_diskgraph_index_path_for_job',
+        lambda _job: '/tmp/index',
+    )
+    monkeypatch.setattr(
+        generate_target_table,
+        'save_job_storage_path_to_state_db',
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        generate_target_table, 'get_job_base_dir', lambda: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        generate_target_table,
+        'get_job_dir',
+        lambda _root, _job_id: str(tmp_path / 'training-job'),
+    )
 
     with pytest.raises(_AuthorizedHydrationReached):
         invoke()
@@ -484,25 +501,28 @@ def test_pool_target_table_job_shapes_use_authorized_activity_hydration(
 
 
 @pytest.mark.asyncio
-async def test_get_running_job_ids(ml_backend: MLJobBackend,
-                                   tmp_path: pathlib.Path,
-                                   state_services: StateServices):
+async def test_get_running_job_ids(
+    ml_backend: MLJobBackend, tmp_path: pathlib.Path, state_services: StateServices
+):
     ml_job_service = ml_backend._require_ml_job_service()
     project_id, output_connector_id = await _provision_batch_output_connector(
-        state_services)
+        state_services
+    )
     training_spec = _make_training_spec()
     graph_data_compute_input = _make_graph_data_compute_input(project_id)
 
     training_id = await ml_backend.start_training(
-        pquery_def_fpid=None, graph_data_compute_input=graph_data_compute_input,
-        training_spec=training_spec, project_id=project_id)
+        pquery_def_fpid=None,
+        graph_data_compute_input=graph_data_compute_input,
+        training_spec=training_spec,
+        project_id=project_id,
+    )
 
     # since job ids are randomized if its in the db it was added successfully
     db_job = (await ml_job_service.select_jobs({'job_id': str(training_id)}))[0]
     assert db_job
     assert db_job.pquery_id == 'testq'
-    assert (db_job.pquery_str ==
-            'PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID')
+    assert db_job.pquery_str == 'PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID'
     assert not db_job.generator_advanced_options
     await ml_backend.mock_training_job_complete(training_id)
     bp_input = _make_batch_pred_input(
@@ -520,14 +540,12 @@ async def test_get_running_job_ids(ml_backend: MLJobBackend,
     assert not db_job.bp_filters
     assert db_job.trained_job_id == str(training_id)
 
-    ids = await ml_backend.get_running_batch_prediction_job_ids(project_ids=None
-                                                                )
+    ids = await ml_backend.get_running_batch_prediction_job_ids(project_ids=None)
     assert len(ids) == 1
     assert ids[0] == bp_input.id
 
     await ml_backend.mock_bp_job_complete(bp_input.id)
-    ids = await ml_backend.get_running_batch_prediction_job_ids(project_ids=None
-                                                                )
+    ids = await ml_backend.get_running_batch_prediction_job_ids(project_ids=None)
     assert len(ids) == 0
 
 
@@ -540,7 +558,8 @@ async def test_rejected_batch_prediction_does_not_poison_queue(
     reuse_child: bool,
 ) -> None:
     project_id, output_connector_id = await _provision_batch_output_connector(
-        state_services)
+        state_services
+    )
     training_spec = _make_training_spec()
     job_input = _make_batch_pred_input(
         tmp_path,
@@ -550,8 +569,8 @@ async def test_rejected_batch_prediction_does_not_poison_queue(
         output_connector_id=output_connector_id,
     )
     job_input.config.num_parallel_workers_limit = (
-        ml_backend._settings.job_queue_settings.max_concurrent_gpu_worker_slots
-        + 1)
+        ml_backend._settings.job_queue_settings.max_concurrent_gpu_worker_slots + 1
+    )
     child_id = job_input.generate_pred_table_job_id
     assert child_id is not None
     service = ml_backend._require_ml_job_service()
@@ -567,15 +586,16 @@ async def test_rejected_batch_prediction_does_not_poison_queue(
             project_id=project_id,
         )
 
-    with pytest.raises(JobConcurrencyLimitError, match="requires"):
+    with pytest.raises(JobConcurrencyLimitError, match='requires'):
         await ml_backend.start_batch_prediction(
             job_input,
             project_id=project_id,
         )
 
     assert await service.get_job_if_exists_generic(job_input.id) is None
-    assert ((await service.get_job_if_exists_generic(child_id)
-             is not None) == reuse_child)
+    assert (
+        await service.get_job_if_exists_generic(child_id) is not None
+    ) == reuse_child
     queue_status = await ml_backend._job_queue.report_status()
     assert job_input.id not in queue_status.queued_jobs
 
@@ -597,16 +617,19 @@ async def test_rejected_batch_prediction_does_not_poison_queue(
 
 @pytest.mark.asyncio
 async def test_start_training_with_reserved_job_id_is_idempotent(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     training_spec = _make_training_spec()
     graph_data_compute_input = _make_graph_data_compute_input()
     reserved_job_id = TrainingJobID.make_random_id()
     ml_job_service = ml_backend._require_ml_job_service()
 
-    training_ids_before = set(await ml_job_service.list_job_ids_by_type(
-        JobType.TRAINING_JOB))
-    train_table_ids_before = set(await ml_job_service.list_job_ids_by_type(
-        JobType.GENERATE_TRAIN_TABLE_JOB))
+    training_ids_before = set(
+        await ml_job_service.list_job_ids_by_type(JobType.TRAINING_JOB)
+    )
+    train_table_ids_before = set(
+        await ml_job_service.list_job_ids_by_type(JobType.GENERATE_TRAIN_TABLE_JOB)
+    )
 
     first_id = await ml_backend.start_training(
         pquery_def_fpid=None,
@@ -626,11 +649,10 @@ async def test_start_training_with_reserved_job_id_is_idempotent(
     assert first_id == reserved_job_id
     assert second_id == reserved_job_id
 
-    training_ids = set(await
-                       ml_job_service.list_job_ids_by_type(JobType.TRAINING_JOB
-                                                           ))
-    train_table_ids = set(await ml_job_service.list_job_ids_by_type(
-        JobType.GENERATE_TRAIN_TABLE_JOB))
+    training_ids = set(await ml_job_service.list_job_ids_by_type(JobType.TRAINING_JOB))
+    train_table_ids = set(
+        await ml_job_service.list_job_ids_by_type(JobType.GENERATE_TRAIN_TABLE_JOB)
+    )
     assert training_ids - training_ids_before == {reserved_job_id}
     assert train_table_ids - train_table_ids_before == {
         GenerateTrainTableJobID.as_child_of(reserved_job_id)
@@ -639,11 +661,12 @@ async def test_start_training_with_reserved_job_id_is_idempotent(
 
 @pytest.mark.asyncio
 async def test_start_training_rejects_cross_project_connector_reference(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     other_project = ProjectID.generate()
     graph_input = _make_graph_data_compute_input(other_project)
 
-    with pytest.raises(ValueError, match="another project"):
+    with pytest.raises(ValueError, match='another project'):
         await ml_backend.start_training(
             pquery_def_fpid=None,
             graph_data_compute_input=graph_input,
@@ -654,7 +677,8 @@ async def test_start_training_rejects_cross_project_connector_reference(
 
 @pytest.mark.asyncio
 async def test_training_idempotent_replay_cannot_change_project(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     reserved_job_id = TrainingJobID.make_random_id()
     training_spec = _make_training_spec()
     await ml_backend.start_training(
@@ -666,11 +690,10 @@ async def test_training_idempotent_replay_cannot_change_project(
     )
 
     other_project = ProjectID.generate()
-    with pytest.raises(ValueError, match="different project"):
+    with pytest.raises(ValueError, match='different project'):
         await ml_backend.start_training(
             pquery_def_fpid=None,
-            graph_data_compute_input=_make_graph_data_compute_input(
-                other_project),
+            graph_data_compute_input=_make_graph_data_compute_input(other_project),
             training_spec=training_spec,
             project_id=other_project,
             reserved_job_id=reserved_job_id,
@@ -683,28 +706,29 @@ async def test_batch_prediction_rejects_cross_project_output_reference(
     tmp_path: pathlib.Path,
 ):
     training_spec = _make_training_spec()
-    job_input = _make_batch_pred_input(tmp_path, TrainingJobID.make_random_id(),
-                                       training_spec)
+    job_input = _make_batch_pred_input(
+        tmp_path, TrainingJobID.make_random_id(), training_spec
+    )
     connector_id = next(iter(job_input.output_connectors))
     job_input.output_connectors[connector_id] = ConnectorExecutionRef(
         connector_id=connector_id,
         project_id=ProjectID.generate(),
     )
 
-    with pytest.raises(ValueError, match="another project"):
+    with pytest.raises(ValueError, match='another project'):
         await ml_backend.start_batch_prediction(
             job_input,
             project_id=_PROJECT_ID,
         )
 
 
-def _with_custom_prediction_source(job_input: BatchPredictionJobInput,
-                                   source_connector_id: ConnectorID,
-                                   reference: Any) -> BatchPredictionJobInput:
+def _with_custom_prediction_source(
+    job_input: BatchPredictionJobInput, source_connector_id: ConnectorID, reference: Any
+) -> BatchPredictionJobInput:
     job_input.config.generate_pred_table_job_id = None
     job_input.config.custom_pred_table_source = S3PredictionTableSource(
         connector_id=str(source_connector_id),
-        source=S3RelativeSource(path="prediction/input.parquet"),
+        source=S3RelativeSource(path='prediction/input.parquet'),
     )
     job_input.custom_pred_table_connector = reference
     return job_input
@@ -726,7 +750,8 @@ def _with_custom_prediction_source(job_input: BatchPredictionJobInput,
     ],
 )
 def test_batch_prediction_input_rejects_tampered_connector_refs(
-        tmp_path, tamper, error_type, message):
+    tmp_path, tamper, error_type, message
+):
     job_input = _make_batch_pred_input(
         tmp_path,
         TrainingJobID.make_random_id(),
@@ -737,22 +762,22 @@ def test_batch_prediction_input_rejects_tampered_connector_refs(
     if tamper == 'extra-output':
         extra_id = ConnectorID.generate()
         job_input.output_connectors[extra_id] = ConnectorExecutionRef(
-            connector_id=extra_id, project_id=job_input.project_id)
+            connector_id=extra_id, project_id=job_input.project_id
+        )
     elif tamper == 'graph-project':
-        job_input.graph_data_compute_input.connectors[graph_id] = (
-            ConnectorExecutionRef(connector_id=graph_id,
-                                  project_id=ProjectID.generate()))
+        job_input.graph_data_compute_input.connectors[graph_id] = ConnectorExecutionRef(
+            connector_id=graph_id, project_id=ProjectID.generate()
+        )
     elif tamper == 'output-key':
         job_input.output_connectors[output_id] = ConnectorExecutionRef(
-            connector_id=ConnectorID.generate(),
-            project_id=job_input.project_id)
+            connector_id=ConnectorID.generate(), project_id=job_input.project_id
+        )
     elif tamper == 'graph-key':
-        job_input.graph_data_compute_input.connectors[graph_id] = (
-            ConnectorExecutionRef(connector_id=ConnectorID.generate(),
-                                  project_id=job_input.project_id))
+        job_input.graph_data_compute_input.connectors[graph_id] = ConnectorExecutionRef(
+            connector_id=ConnectorID.generate(), project_id=job_input.project_id
+        )
     elif tamper == 'graph-type':
-        job_input.graph_data_compute_input.connectors[graph_id] = cast(
-            Any, object())
+        job_input.graph_data_compute_input.connectors[graph_id] = cast(Any, object())
     elif tamper == 'output-type':
         job_input.output_connectors[output_id] = cast(Any, object())
     elif tamper == 'missing-output':
@@ -760,14 +785,13 @@ def test_batch_prediction_input_rejects_tampered_connector_refs(
     else:
         source_id = ConnectorID.generate()
         reference = {
-            'custom-id':
-            ConnectorExecutionRef(connector_id=ConnectorID.generate(),
-                                  project_id=job_input.project_id),
-            'custom-project':
-            ConnectorExecutionRef(connector_id=source_id,
-                                  project_id=ProjectID.generate()),
-            'missing-custom-ref':
-            None,
+            'custom-id': ConnectorExecutionRef(
+                connector_id=ConnectorID.generate(), project_id=job_input.project_id
+            ),
+            'custom-project': ConnectorExecutionRef(
+                connector_id=source_id, project_id=ProjectID.generate()
+            ),
+            'missing-custom-ref': None,
         }[tamper]
         _with_custom_prediction_source(job_input, source_id, reference)
 
@@ -783,8 +807,7 @@ async def test_start_generate_pred_table_with_reserved_job_id_is_idempotent(
     training_spec = _make_training_spec()
     training_id = TrainingJobID.make_random_id()
     first_input = _make_batch_pred_input(tmp_path, training_id, training_spec)
-    first_input.config.pquery_def_fpid = FPID(
-        "0123456789abcdef0123456789abcdef")
+    first_input.config.pquery_def_fpid = FPID('0123456789abcdef0123456789abcdef')
     gen_pred_job_id = first_input.generate_pred_table_job_id
     assert gen_pred_job_id
     first_input.id = BatchPredictionJobID(gen_pred_job_id)
@@ -795,36 +818,38 @@ async def test_start_generate_pred_table_with_reserved_job_id_is_idempotent(
     second_input.config.pquery_def_fpid = first_input.config.pquery_def_fpid
     ml_job_service = ml_backend._require_ml_job_service()
 
-    assert await ml_job_service.get_generate_pred_table_job(gen_pred_job_id
-                                                            ) is None
+    assert await ml_job_service.get_generate_pred_table_job(gen_pred_job_id) is None
 
     first_id = await ml_backend.start_generate_pred_table(
-        first_input, project_id=_PROJECT_ID)
-    first_entry = await ml_job_service.get_generate_pred_table_job(
-        gen_pred_job_id)
+        first_input, project_id=_PROJECT_ID
+    )
+    first_entry = await ml_job_service.get_generate_pred_table_job(gen_pred_job_id)
     assert first_entry is not None
 
     second_id = await ml_backend.start_generate_pred_table(
-        second_input, project_id=_PROJECT_ID)
+        second_input, project_id=_PROJECT_ID
+    )
 
     assert first_id == gen_pred_job_id
     assert second_id == gen_pred_job_id
 
-    second_entry = await ml_job_service.get_generate_pred_table_job(
-        gen_pred_job_id)
+    second_entry = await ml_job_service.get_generate_pred_table_job(gen_pred_job_id)
     assert second_entry is not None
     assert second_entry.timestamps.created_at == first_entry.timestamps.created_at
 
 
 @pytest.mark.asyncio
-async def test_ml_db_entries(ml_backend: MLJobBackend, tmp_path: pathlib.Path,
-                             state_services: StateServices):
+async def test_ml_db_entries(
+    ml_backend: MLJobBackend, tmp_path: pathlib.Path, state_services: StateServices
+):
     ml_job_service = ml_backend._require_ml_job_service()
     project_id, output_connector_id = await _provision_batch_output_connector(
-        state_services)
+        state_services
+    )
     advanced_options = ModelPlan(
         training_job=TrainingJobPlan(num_experiments=3),  # type: ignore
-        optimization=OptimizationPlan(max_steps_per_epoch=3))  # type: ignore
+        optimization=OptimizationPlan(max_steps_per_epoch=3),
+    )  # type: ignore
     training_spec = _make_training_spec(advanced_options)
 
     # add pquery advanced options and autotrainer to check that only
@@ -834,17 +859,20 @@ async def test_ml_db_entries(ml_backend: MLJobBackend, tmp_path: pathlib.Path,
     graph_data_compute_input = _make_graph_data_compute_input(project_id)
 
     training_id = await ml_backend.start_training(
-        pquery_def_fpid=None, graph_data_compute_input=graph_data_compute_input,
-        training_spec=training_spec, project_id=project_id)
+        pquery_def_fpid=None,
+        graph_data_compute_input=graph_data_compute_input,
+        training_spec=training_spec,
+        project_id=project_id,
+    )
 
     # since job ids are randomized if its in the db it was added successfully
     db_job = (await ml_job_service.select_jobs({'job_id': str(training_id)}))[0]
     assert db_job
     assert db_job.pquery_id == 'testq'
-    assert (db_job.pquery_str ==
-            'PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID')
-    assert (db_job.generator_advanced_options ==
-            'forecast_length: 1\ntimeframe_step: 10\n')
+    assert db_job.pquery_str == 'PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID'
+    assert (
+        db_job.generator_advanced_options == 'forecast_length: 1\ntimeframe_step: 10\n'
+    )
 
     await ml_backend.mock_training_job_complete(training_id)
     bp_input = _make_batch_pred_input(
@@ -857,51 +885,54 @@ async def test_ml_db_entries(ml_backend: MLJobBackend, tmp_path: pathlib.Path,
 
     # add a BP filter to make sure it is stored in the db
     bp_input.config.filter_override_args = FilterOverrideArgs(
-        entity_filter_override='ACCOUNT.ACCOUNT_ID < 500')
+        entity_filter_override='ACCOUNT.ACCOUNT_ID < 500'
+    )
     await ml_backend.start_batch_prediction(bp_input, project_id=project_id)
 
     db_job = (await ml_job_service.select_jobs({'job_id': str(bp_input.id)}))[0]
     assert db_job
     assert db_job.pquery_id == 'testq'
-    assert (db_job.bp_filters ==
-            'entity_filter_override: ACCOUNT.ACCOUNT_ID < 500\n')
+    assert db_job.bp_filters == 'entity_filter_override: ACCOUNT.ACCOUNT_ID < 500\n'
     assert db_job.trained_job_id == str(training_id)
-    assert (db_job.pquery_str ==
-            'PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID')
+    assert db_job.pquery_str == 'PREDICT ACCOUNT.K_SYMBOL FOR EACH ACCOUNT.ACCOUNT_ID'
 
 
 @pytest.mark.asyncio
-async def test_override_model(ml_backend: MLJobBackend, tmp_path: pathlib.Path,
-                              ctx: RequestContext):
+async def test_override_model(
+    ml_backend: MLJobBackend, tmp_path: pathlib.Path, ctx: RequestContext
+):
     training_spec = _make_training_spec()
     graph_data_compute_input = _make_graph_data_compute_input()
     training_id = await ml_backend.start_training(
-        pquery_def_fpid=None, graph_data_compute_input=graph_data_compute_input,
-        training_spec=training_spec, project_id=_PROJECT_ID)
+        pquery_def_fpid=None,
+        graph_data_compute_input=graph_data_compute_input,
+        training_spec=training_spec,
+        project_id=_PROJECT_ID,
+    )
 
     # TODO(kiriti): Assert that the sqlite update was successful
 
     invalid_overrides = TrainDirOverrides(
-        str(tmp_path / "missing-train-dir"),
-        str(tmp_path / "missing-inference-dir"),
+        str(tmp_path / 'missing-train-dir'),
+        str(tmp_path / 'missing-inference-dir'),
     )
     valid_overrides = TrainDirOverrides(str(tmp_path), str(tmp_path))
 
     # Test invalid training job ID
-    with pytest.raises(RuntimeError, match="does not exist"):
-        await ml_backend.override_model(TrainingJobID("invalidID"),
-                                        valid_overrides)
+    with pytest.raises(RuntimeError, match='does not exist'):
+        await ml_backend.override_model(TrainingJobID('invalidID'), valid_overrides)
 
     # Test invalid TrainDirOverrides
-    with pytest.raises(ValueError, match="override path does not exist"):
+    with pytest.raises(ValueError, match='override path does not exist'):
         await ml_backend.override_model(training_id, invalid_overrides)
 
     # Test valid TrainDirOverrides
     await ml_backend.override_model(training_id, valid_overrides)
     assert fsutil.exists(
         HomeDirManager(
-            await
-            ml_backend.get_job_home_dir(training_id)).train_dir_overrides_file)
+            await ml_backend.get_job_home_dir(training_id)
+        ).train_dir_overrides_file
+    )
     job = await ml_backend.get_training_job(ctx, training_id)
     assert job is not None
     assert job.execution.status == JobStatus.DONE
@@ -909,8 +940,7 @@ async def test_override_model(ml_backend: MLJobBackend, tmp_path: pathlib.Path,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('job_kind', ['batch-prediction', 'training'])
-async def test_sanitize_job_output_stacktraces(ml_backend: MLJobBackend,
-                                               job_kind: str):
+async def test_sanitize_job_output_stacktraces(ml_backend: MLJobBackend, job_kind: str):
     ml_job_service = ml_backend._require_ml_job_service()
     if job_kind == 'batch-prediction':
         id = BatchPredictionJobID.make_random_id()
@@ -922,19 +952,19 @@ async def test_sanitize_job_output_stacktraces(ml_backend: MLJobBackend,
                 TrainingJobID.make_random_id(),
                 TaskType.REGRESSION,
                 generate_pred_table_job_id=(
-                    GeneratePredictionTableJobID.as_child_of(id)),
+                    GeneratePredictionTableJobID.as_child_of(id)
+                ),
                 graph_id=GraphIDv1('test_graph'),
             ),
             project_id=_PROJECT_ID,
         )
-        entry = (await
-                 ml_job_service.get_batch_prediction_jobs([id],
-                                                          project_ids=None))[0]
+        entry = (
+            await ml_job_service.get_batch_prediction_jobs([id], project_ids=None)
+        )[0]
         entry.execution = BatchPredictionJobOutput(
             status=JobStatus.FAILED,
             log=JobEventLogEntry.failed(),
-            failure_info=JobFailureInfo(message='message',
-                                        stacktrace='stacktrace'),
+            failure_info=JobFailureInfo(message='message', stacktrace='stacktrace'),
         )
     else:
         id, _ = await ml_job_service.create_training_job(
@@ -950,26 +980,30 @@ async def test_sanitize_job_output_stacktraces(ml_backend: MLJobBackend,
         entry.execution = TrainingJobOutput(
             status=JobStatus.FAILED,
             log=JobEventLogEntry.failed(),
-            failure_info=JobFailureInfo(message='message',
-                                        stacktrace='stacktrace'),
+            failure_info=JobFailureInfo(message='message', stacktrace='stacktrace'),
         )
     await ml_job_service.modify_job_if_open_generic(entry)
 
     def stacktrace(job) -> str:
-        failure = (job.failure_info if job_kind == 'batch-prediction' else
-                   job.execution.failure_info)
+        failure = (
+            job.failure_info
+            if job_kind == 'batch-prediction'
+            else job.execution.failure_info
+        )
         assert failure is not None
         return failure.stacktrace
 
     get_one = cast(
         Any,
         ml_backend.get_batch_prediction_job
-        if job_kind == 'batch-prediction' else ml_backend.get_training_job,
+        if job_kind == 'batch-prediction'
+        else ml_backend.get_training_job,
     )
     get_many = cast(
         Any,
         ml_backend.get_batch_prediction_jobs
-        if job_kind == 'batch-prediction' else ml_backend.get_training_jobs,
+        if job_kind == 'batch-prediction'
+        else ml_backend.get_training_jobs,
     )
     user_ctx = fake_admin_request_context()
     user_job = await get_one(user_ctx, id)
@@ -984,8 +1018,7 @@ async def test_sanitize_job_output_stacktraces(ml_backend: MLJobBackend,
 
 
 @pytest.mark.asyncio
-async def test_batch_prediction_jobs_list_queued_jobs_last(
-        ml_backend: MLJobBackend):
+async def test_batch_prediction_jobs_list_queued_jobs_last(ml_backend: MLJobBackend):
     ml_job_service = ml_backend._require_ml_job_service()
     ids = []
     for status in [JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.RUNNING]:
@@ -998,14 +1031,15 @@ async def test_batch_prediction_jobs_list_queued_jobs_last(
                 TrainingJobID.make_random_id(),
                 TaskType.REGRESSION,
                 generate_pred_table_job_id=(
-                    GeneratePredictionTableJobID.as_child_of(id)),
+                    GeneratePredictionTableJobID.as_child_of(id)
+                ),
                 graph_id=GraphIDv1('test_graph'),
             ),
             project_id=_PROJECT_ID,
         )
-        entry = (await
-                 ml_job_service.get_batch_prediction_jobs([id],
-                                                          project_ids=None))[0]
+        entry = (
+            await ml_job_service.get_batch_prediction_jobs([id], project_ids=None)
+        )[0]
         entry.execution = BatchPredictionJobOutput(
             status=status,
             log=JobEventLogEntry.not_started(),
@@ -1015,7 +1049,8 @@ async def test_batch_prediction_jobs_list_queued_jobs_last(
         ids.append(id)
 
     jobs = await ml_backend.get_batch_prediction_jobs(
-        fake_admin_request_context(), set(ids))
+        fake_admin_request_context(), set(ids)
+    )
 
     assert list(jobs) == [ids[0], ids[2], ids[1]]
 
@@ -1043,8 +1078,7 @@ async def test_training_responses_preserve_execution_start_time(
     ctx = fake_admin_request_context()
     token = _current_user_ctx.set(ctx.user_authorization)
     try:
-        response = ml_backend._training_job_response_from_entry(
-            ctx, job_id, job)
+        response = ml_backend._training_job_response_from_entry(ctx, job_id, job)
         assert response is not None
         assert response.execution.start_time == expected_start_time
         assert job.to_generic(ctx).metadata.start_time == expected_start_time
@@ -1054,7 +1088,8 @@ async def test_training_responses_preserve_execution_start_time(
 
 @pytest.mark.asyncio
 async def test_write_time_invariant_gate_training_done_without_results(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     """A DONE training job missing ``results`` must not be persisted.
 
     Restores the pydantic-v1 write-time guard that the v2 migration
@@ -1079,14 +1114,14 @@ async def test_write_time_invariant_gate_training_done_without_results(
     )
 
     # (a) typed terminal-output persist path raises.
-    with pytest.raises(JobInvariantViolationError, match="results"):
+    with pytest.raises(JobInvariantViolationError, match='results'):
         await ml_job_service.save_training_job_output(id, broken)
 
     # (a') generic persist chokepoint raises too.
     entry = await ml_job_service.get_training_job(id)
     assert entry is not None
     entry.execution = broken
-    with pytest.raises(JobInvariantViolationError, match="results"):
+    with pytest.raises(JobInvariantViolationError, match='results'):
         await ml_job_service.modify_job_if_open_generic(entry)
 
     # The broken record never persisted: the job is still non-terminal.
@@ -1098,8 +1133,7 @@ async def test_write_time_invariant_gate_training_done_without_results(
     valid = TrainingJobOutput(
         status=JobStatus.DONE,
         log=JobEventLogEntry.done(),
-        results=TrainingJobResults(total_training_time_sec=1,
-                                   total_iterations=1),
+        results=TrainingJobResults(total_training_time_sec=1, total_iterations=1),
     )
     await ml_job_service.save_training_job_output(id, valid)
     entry = await ml_job_service.get_training_job(id)
@@ -1110,7 +1144,8 @@ async def test_write_time_invariant_gate_training_done_without_results(
 
 @pytest.mark.asyncio
 async def test_write_time_invariant_gate_bp_failed_without_failure_info(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     """A FAILED batch-prediction job missing ``failure_info`` must not persist.
 
     Exercises the batch-prediction branch of ``_save_job_entry_if_open``
@@ -1122,36 +1157,32 @@ async def test_write_time_invariant_gate_bp_failed_without_failure_info(
         id=id,
         now=now_utc(),
         config=BatchPredictionJobConfig(
-            PredictiveQueryID('some_pquery'), TrainingJobID.make_random_id(),
-            TaskType.REGRESSION, generate_pred_table_job_id=(
-                GeneratePredictionTableJobID.as_child_of(id)),
-            graph_id=GraphIDv1('test_graph')),
+            PredictiveQueryID('some_pquery'),
+            TrainingJobID.make_random_id(),
+            TaskType.REGRESSION,
+            generate_pred_table_job_id=(GeneratePredictionTableJobID.as_child_of(id)),
+            graph_id=GraphIDv1('test_graph'),
+        ),
         project_id=_PROJECT_ID,
     )
-    entry = (await
-             ml_job_service.get_batch_prediction_jobs([id],
-                                                      project_ids=None))[0]
+    entry = (await ml_job_service.get_batch_prediction_jobs([id], project_ids=None))[0]
     entry.execution = BatchPredictionJobOutput(
         status=JobStatus.FAILED,
         log=JobEventLogEntry.failed(),
         failure_info=None,  # <- invariant violation for a FAILED job
     )
-    with pytest.raises(JobInvariantViolationError, match="failure_info"):
+    with pytest.raises(JobInvariantViolationError, match='failure_info'):
         await ml_job_service.modify_job_if_open_generic(entry)
 
     # A valid FAILED job (failure_info present) persists.
-    entry = (await
-             ml_job_service.get_batch_prediction_jobs([id],
-                                                      project_ids=None))[0]
+    entry = (await ml_job_service.get_batch_prediction_jobs([id], project_ids=None))[0]
     entry.execution = BatchPredictionJobOutput(
         status=JobStatus.FAILED,
         log=JobEventLogEntry.failed(),
-        failure_info=JobFailureInfo(message="boom", stacktrace=""),
+        failure_info=JobFailureInfo(message='boom', stacktrace=''),
     )
     await ml_job_service.modify_job_if_open_generic(entry)
-    entry = (await
-             ml_job_service.get_batch_prediction_jobs([id],
-                                                      project_ids=None))[0]
+    entry = (await ml_job_service.get_batch_prediction_jobs([id], project_ids=None))[0]
     assert entry.execution.status == JobStatus.FAILED
     assert entry.execution.failure_info is not None
 
@@ -1190,12 +1221,15 @@ async def test_mlops_query(
     state_services: StateServices,
 ):
     project_id, output_connector_id = await _provision_batch_output_connector(
-        state_services)
+        state_services
+    )
     # start some jobs to have db entries
-    advanced_options = ModelPlan.from_default(TaskType.REGRESSION,
-                                              QueryType.TEMPORAL,
-                                              has_train_table_time_col=True,
-                                              run_mode=RunMode.DEBUG)
+    advanced_options = ModelPlan.from_default(
+        TaskType.REGRESSION,
+        QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.DEBUG,
+    )
     training_spec = _make_training_spec(advanced_options)
 
     # add pquery advanced options and autotrainer to check that only
@@ -1205,8 +1239,11 @@ async def test_mlops_query(
     graph_data_compute_input = _make_graph_data_compute_input(project_id)
 
     training_id = await ml_backend.start_training(
-        pquery_def_fpid=None, graph_data_compute_input=graph_data_compute_input,
-        training_spec=training_spec, project_id=project_id)
+        pquery_def_fpid=None,
+        graph_data_compute_input=graph_data_compute_input,
+        training_spec=training_spec,
+        project_id=project_id,
+    )
 
     await ml_backend.mock_training_job_complete(training_id)
     bp_input = _make_batch_pred_input(
@@ -1231,15 +1268,18 @@ async def test_mlops_query(
 
     # assemble and execute test queries
     job_query = JobRegistryQuery(
-        job_filters={'job_type': JobType.BATCH_PREDICTION_JOB.value})
-    stat_query = MLOpsStatsQuery(stat_request=[
-        MLOpsStatType.PREDICTION_COUNT,
-        MLOpsStatType.START_TIME,
-        MLOpsStatType.TRAINING_VERSION,
-        MLOpsStatType.TABLE_STATS,
-        MLOpsStatType.TRAINED_JOB_ID,
-        MLOpsStatType.COL_PSI_SCORES,
-    ])
+        job_filters={'job_type': JobType.BATCH_PREDICTION_JOB.value}
+    )
+    stat_query = MLOpsStatsQuery(
+        stat_request=[
+            MLOpsStatType.PREDICTION_COUNT,
+            MLOpsStatType.START_TIME,
+            MLOpsStatType.TRAINING_VERSION,
+            MLOpsStatType.TABLE_STATS,
+            MLOpsStatType.TRAINED_JOB_ID,
+            MLOpsStatType.COL_PSI_SCORES,
+        ]
+    )
     query = MLOpsQueryConfig(job_query=job_query, stat_query=stat_query)
     stats = await ml_backend.get_mlops_jobs_and_db_stats(query)
 
@@ -1247,14 +1287,12 @@ async def test_mlops_query(
     assert training_id not in stats.train_stats.keys()
     assert bp_input.id in stats.bp_stats.keys()
     assert bp_input_2.id in stats.bp_stats.keys()
-    assert (stats.bp_stats[bp_input_2.id][MLOpsStatType.TRAINED_JOB_ID] ==
-            training_id)
+    assert stats.bp_stats[bp_input_2.id][MLOpsStatType.TRAINED_JOB_ID] == training_id
 
     # test query with invalid filter dropped
-    job_query = JobRegistryQuery(job_filters={
-        'job_type': JobType.BATCH_PREDICTION_JOB.value,
-        'fake_col': 'xyz'
-    })
+    job_query = JobRegistryQuery(
+        job_filters={'job_type': JobType.BATCH_PREDICTION_JOB.value, 'fake_col': 'xyz'}
+    )
 
     query = MLOpsQueryConfig(job_query=job_query, stat_query=stat_query)
     stats2 = await ml_backend.get_mlops_jobs_and_db_stats(query)
@@ -1308,7 +1346,8 @@ async def test_validation_failure_early_return_surfaces_real_error(
         ),
     }[job_kind]
     validation_response = ValidationResponse(
-        errors=[ValidationError(title, detail)], warnings=[], info_items=[])
+        errors=[ValidationError(title, detail)], warnings=[], info_items=[]
+    )
 
     if job_kind == 'batch-prediction':
         id = BatchPredictionJobID.make_random_id()
@@ -1320,7 +1359,8 @@ async def test_validation_failure_early_return_surfaces_real_error(
                 TrainingJobID.make_random_id(),
                 TaskType.REGRESSION,
                 generate_pred_table_job_id=(
-                    GeneratePredictionTableJobID.as_child_of(id)),
+                    GeneratePredictionTableJobID.as_child_of(id)
+                ),
                 graph_id=GraphIDv1('test_graph'),
             ),
             project_id=_PROJECT_ID,
@@ -1329,9 +1369,9 @@ async def test_validation_failure_early_return_surfaces_real_error(
             validation=validation_response,
             workflow_end_state=WorkflowExecutionStatus.COMPLETED,
         )
-        entry = (await
-                 ml_job_service.get_batch_prediction_jobs([id],
-                                                          project_ids=None))[0]
+        entry = (
+            await ml_job_service.get_batch_prediction_jobs([id], project_ids=None)
+        )[0]
     else:
         id, _ = await ml_job_service.create_training_job(
             pquery_id=PredictiveQueryID('dummy_pquery'),
@@ -1353,8 +1393,11 @@ async def test_validation_failure_early_return_surfaces_real_error(
     await ml_job_service.modify_job_if_open_generic(entry)
 
     if job_kind == 'batch-prediction':
-        entry = (await ml_job_service.get_batch_prediction_jobs(
-            [cast(BatchPredictionJobID, id)], project_ids=None))[0]
+        entry = (
+            await ml_job_service.get_batch_prediction_jobs(
+                [cast(BatchPredictionJobID, id)], project_ids=None
+            )
+        )[0]
     else:
         entry = await ml_job_service.get_training_job(cast(TrainingJobID, id))
         assert entry is not None
@@ -1369,7 +1412,8 @@ async def test_validation_failure_early_return_surfaces_real_error(
 
 @pytest.mark.asyncio
 async def test_bp_parent_step5_failed_child_preserves_real_error(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     """The child freezes the BP row terminal FAILED with the real error; a
     later success-shaped OK overwrite must be rejected by the open-gate, so the
     real error survives and finalize never sees a non-terminal row to mask."""
@@ -1381,34 +1425,37 @@ async def test_bp_parent_step5_failed_child_preserves_real_error(
         id=id,
         now=now_utc(),
         config=BatchPredictionJobConfig(
-            PredictiveQueryID('some_pquery'), TrainingJobID.make_random_id(),
-            TaskType.REGRESSION, generate_pred_table_job_id=(
-                GeneratePredictionTableJobID.as_child_of(id)),
-            graph_id=GraphIDv1('test_graph')),
+            PredictiveQueryID('some_pquery'),
+            TrainingJobID.make_random_id(),
+            TaskType.REGRESSION,
+            generate_pred_table_job_id=(GeneratePredictionTableJobID.as_child_of(id)),
+            graph_id=GraphIDv1('test_graph'),
+        ),
         project_id=_PROJECT_ID,
     )
 
     # What the child writes on its graceful shard-failure path.
-    real_err = ('kumo-pred subprocess exited non-zero for job '
-                f'{id} on shard(s) [0]; see pool worker logs for details')
+    real_err = (
+        'kumo-pred subprocess exited non-zero for job '
+        f'{id} on shard(s) [0]; see pool worker logs for details'
+    )
     child_output = BatchPredictionJobOutput.failed(
-        err_msg=real_err, workflow_end_state=WorkflowExecutionStatus.COMPLETED)
-    entry = (await
-             ml_job_service.get_batch_prediction_jobs([id],
-                                                      project_ids=None))[0]
+        err_msg=real_err, workflow_end_state=WorkflowExecutionStatus.COMPLETED
+    )
+    entry = (await ml_job_service.get_batch_prediction_jobs([id], project_ids=None))[0]
     entry.execution = child_output
     await ml_job_service.modify_job_if_open_generic(entry)
 
     # The parent's success-shaped overwrite must be rejected by the open-gate.
     ok_overwrite = BatchPredictionJobOutput(
-        status=JobStatus.DONE, log=JobEventLogEntry.done(),
+        status=JobStatus.DONE,
+        log=JobEventLogEntry.done(),
         results=BatchPredictionJobResults(key_cols=[]),
-        workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+        workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+    )
     await ml_job_service.save_batch_prediction_job_output(id, ok_overwrite)
 
-    entry = (await
-             ml_job_service.get_batch_prediction_jobs([id],
-                                                      project_ids=None))[0]
+    entry = (await ml_job_service.get_batch_prediction_jobs([id], project_ids=None))[0]
     assert entry.execution.status == JobStatus.FAILED
     assert entry.execution.status.is_terminal
     assert entry.execution.workflow_end_state is not None
@@ -1491,8 +1538,9 @@ def _build_ml_backend_activities(ml_backend: MLJobBackend):
         StateDbJobQueue(state_db, job_queue_settings),
         ml_backend,
         ml_backend._require_ml_job_service(),
-        DataBackendContext(deploy_env(),
-                           DataBackendSettings(disable_async_ingestion=True)),
+        DataBackendContext(
+            deploy_env(), DataBackendSettings(disable_async_ingestion=True)
+        ),
         job_queue_settings,
         slack_url=None,
     )
@@ -1548,12 +1596,10 @@ async def test_finalize_job_terminalizes_nonterminal_rows(
         )
         validation_read = AsyncMock(return_value=response)
     elif validation_outcome == 'unreadable':
-        validation_read = AsyncMock(
-            side_effect=ValueError('corrupt validation json'))
+        validation_read = AsyncMock(side_effect=ValueError('corrupt validation json'))
     else:
         validation_read = AsyncMock(return_value=None)
-    monkeypatch.setattr(ml_backend, 'get_job_validation_response',
-                        validation_read)
+    monkeypatch.setattr(ml_backend, 'get_job_validation_response', validation_read)
 
     await activities.finalize_job(id)
 
@@ -1571,7 +1617,8 @@ async def test_finalize_job_terminalizes_nonterminal_rows(
 
 @pytest.mark.asyncio
 async def test_a_registered_custom_table_survives_the_job_record(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     """`TrainingTable.from_source_table` was a no-op against the cloud.
 
     The SDK reconstructs a `TrainingTable` from a job ID alone and asks the
@@ -1594,14 +1641,13 @@ async def test_a_registered_custom_table_survives_the_job_record(
             source=S3RelativeSource(path='labels'),
             file_type=FileType.PARQUET,
         ),
-        table_mod_spec=TrainingTableSpec(weight_col='weight',
-                                         split_col='SPLIT'),
+        table_mod_spec=TrainingTableSpec(weight_col='weight', split_col='SPLIT'),
     )
     ml_job_service = ml_backend._require_ml_job_service()
 
     id = await ml_job_service.create_generate_train_table_job(
         config=GenerateTrainTableJobConfig(
-            pquery_id=PredictiveQueryID("p"),
+            pquery_id=PredictiveQueryID('p'),
             plan=TrainingTableGenerationPlan(),
             graph_id=to_graph_id('dummy_graph'),
             custom_train_table=registered,
@@ -1609,15 +1655,13 @@ async def test_a_registered_custom_table_survives_the_job_record(
         project_id=_PROJECT_ID,
     )
 
-    entry = await ml_job_service.get_generate_train_table_job(
-        id, project_ids=None)
+    entry = await ml_job_service.get_generate_train_table_job(id, project_ids=None)
     assert entry is not None
     # Durable: read back out of the job row, not out of the caller's object.
     assert entry.config.custom_train_table == registered
     assert entry.custom_train_table_used is True
 
-    resources = await ml_backend.get_generate_train_table_jobs(
-        {id}, project_ids=None)
+    resources = await ml_backend.get_generate_train_table_jobs({id}, project_ids=None)
     recovered = resources[0].config.custom_train_table
     assert recovered is not None
     assert recovered.table_mod_spec.weight_col == 'weight'
@@ -1627,7 +1671,8 @@ async def test_a_registered_custom_table_survives_the_job_record(
 
 @pytest.mark.asyncio
 async def test_a_generated_job_says_it_registered_nothing(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     """The other half of the same answer: a generating job carries no custom
     table and says so, so a reader can tell that apart from a record that
     cannot say -- which is what the SDK refuses on.
@@ -1636,22 +1681,22 @@ async def test_a_generated_job_says_it_registered_nothing(
 
     id = await ml_job_service.create_generate_train_table_job(
         config=GenerateTrainTableJobConfig(
-            pquery_id=PredictiveQueryID("p"),
+            pquery_id=PredictiveQueryID('p'),
             plan=TrainingTableGenerationPlan(),
             graph_id=to_graph_id('dummy_graph'),
         ),
         project_id=_PROJECT_ID,
     )
 
-    resources = await ml_backend.get_generate_train_table_jobs(
-        {id}, project_ids=None)
+    resources = await ml_backend.get_generate_train_table_jobs({id}, project_ids=None)
     assert resources[0].config.custom_train_table is None
     assert resources[0].custom_train_table_used is False
 
 
 @pytest.mark.asyncio
 async def test_gen_train_table_public_end_time_is_execution_completion_time(
-    ml_backend: MLJobBackend, ):
+    ml_backend: MLJobBackend,
+):
     """A terminal gen-train-table job's public ``end_time`` must be the real
     completion time (``execution.last_updated_at``), not the stale DB-row
     ``timestamps.updated_at`` (finding 024).
@@ -1667,7 +1712,7 @@ async def test_gen_train_table_public_end_time_is_execution_completion_time(
     completion = created + timedelta(seconds=13)
     id = await ml_job_service.create_generate_train_table_job(
         config=GenerateTrainTableJobConfig(
-            pquery_id=PredictiveQueryID("p"),
+            pquery_id=PredictiveQueryID('p'),
             plan=TrainingTableGenerationPlan(),
             graph_id=to_graph_id('dummy_graph'),
         ),
@@ -1676,20 +1721,19 @@ async def test_gen_train_table_public_end_time_is_execution_completion_time(
     )
     # The terminal-completion write stamps execution.last_updated_at from
     # now_utc(); job.timestamps is left untouched (stays at created_at).
-    with patch("statedb.db.ml_jobs.now_utc", return_value=completion):
+    with patch('statedb.db.ml_jobs.now_utc', return_value=completion):
         await ml_job_service.save_generate_train_table_job_output(
-            id, GenerateTrainTableJobOutput.failed(err_msg="boom"))
+            id, GenerateTrainTableJobOutput.failed(err_msg='boom')
+        )
 
     # The stale DB timestamp really is still created_at, distinct from the
     # completion time -- so selecting the wrong field is observable.
-    entry = await ml_job_service.get_generate_train_table_job(
-        id, project_ids=None)
+    entry = await ml_job_service.get_generate_train_table_job(id, project_ids=None)
     assert entry is not None
     assert entry.timestamps.updated_at == created
     assert entry.execution.last_updated_at == completion
 
-    resources = await ml_backend.get_generate_train_table_jobs({id},
-                                                               project_ids=None)
+    resources = await ml_backend.get_generate_train_table_jobs({id}, project_ids=None)
     assert len(resources) == 1
     report = resources[0].job_status_report
     assert report.status.is_terminal

@@ -31,11 +31,12 @@ class InternalWriteMode(Enum):
 
 class SQLConnector(Connector):
     r"""Base class for connecting to various SQL data sources."""
+
     def __init__(self, name: str, **kwargs):
         super().__init__(name, **kwargs)
 
     def _get_connector_type(self) -> str:
-        return "Sql"
+        return 'Sql'
 
     def __getstate__(self):
         # Defer to the base Connector to strip process-local
@@ -43,7 +44,7 @@ class SQLConnector(Connector):
         # that cannot be pickled). Then drop `_context` so the live DB
         # connection doesn't travel across the pickle boundary.
         state = super().__getstate__()
-        state.pop("_context", None)
+        state.pop('_context', None)
         return state
 
     def __setstate__(self, state):
@@ -67,8 +68,10 @@ class SQLConnector(Connector):
     def skip_list_table(self) -> bool:
         return True
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=['table_name']))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL,
+        tracing_options=TraceOptions(trace_params=['table_name']),
+    )
     def _read_table(
         self,
         context: Any,
@@ -88,8 +91,7 @@ class SQLConnector(Connector):
         pkey: Optional[BaseColumnConfig] = None,
         cols: Optional[List[BaseColumnConfig]] = None,
     ) -> pd.DataFrame:
-        query = self.get_query(table_name, pkey, cols, limit=num_rows,
-                               offset=offset)
+        query = self.get_query(table_name, pkey, cols, limit=num_rows, offset=offset)
         return self.execute_query(context, query, pkey, cols)
 
     def _read_table_sample(
@@ -103,39 +105,45 @@ class SQLConnector(Connector):
     ) -> pd.DataFrame:
         if not num_rows and not frac:
             raise ValueError(
-                "Connector requires num_rows or frac to read a table "
-                "sample.")
-        query = self.get_query(table_name, pkey, cols, limit=num_rows,
-                               frac=frac, sample=True)
+                'Connector requires num_rows or frac to read a table sample.'
+            )
+        query = self.get_query(
+            table_name, pkey, cols, limit=num_rows, frac=frac, sample=True
+        )
         return self.execute_query(context, query, pkey, cols)
 
     # Data statistics #########################################################
 
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None) -> int:
+    def _get_table_num_rows(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         query = f'SELECT COUNT(*) FROM {self.sql_table_name(table_name)}'
         df = self.execute_query(self.context, query)
         return df.iloc[0, 0].item()
 
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         # TODO(Dulloor): Implement for SQL databases
         return 0
 
     # Utility functions #######################################################
 
     def get_user_pass_or_key(
-            self, warehouse: str, env_var_user: str, env_var_pass: str,
-            credentials: Optional[Dict[str, SecretStr]] = None,
-            key_encoding: Optional[serialization.Encoding] = None,
-            env_var_private_key: Optional[str] = None):
+        self,
+        warehouse: str,
+        env_var_user: str,
+        env_var_pass: str,
+        credentials: Optional[Dict[str, SecretStr]] = None,
+        key_encoding: Optional[serialization.Encoding] = None,
+        env_var_private_key: Optional[str] = None,
+    ):
         r"""
         Used by _open in subclasses to get username and password for a
         given warehouse, or username and private key (decoded).
         """
         credentials = credentials or {}
-        user: Optional[SecretStr] = credentials.get('user',
-                                                    os.getenv(env_var_user))
+        user: Optional[SecretStr] = credentials.get('user', os.getenv(env_var_user))
         # Extract the secret values
         if user is not None and isinstance(user, SecretStr):
             user: str = user.get_secret_value()
@@ -148,8 +156,10 @@ class SQLConnector(Connector):
                 # Try to get private key from environment variable
                 private_key = os.getenv(env_var_private_key)
                 if not private_key:
-                    logger.info("Attempted to load private key from env var, "
-                                f"{env_var_private_key} not set.")
+                    logger.info(
+                        'Attempted to load private key from env var, '
+                        f'{env_var_private_key} not set.'
+                    )
             if private_key:
                 if isinstance(private_key, SecretStr):
                     private_key: str = private_key.get_secret_value()
@@ -169,23 +179,24 @@ class SQLConnector(Connector):
                     # exception from cryptography package doesn't provide
                     # any meaningful information on why key is invalid
                     raise ConnectorError(
-                        "The private key provided is invalid or in an "
-                        "unsupported format. Please ensure the key is in PEM "
+                        'The private key provided is invalid or in an '
+                        'unsupported format. Please ensure the key is in PEM '
                         "format (starts with '-----BEGIN PRIVATE KEY-----' or "
                         "'-----BEGIN RSA PRIVATE KEY-----'). If the key is "
-                        "encrypted, provide the passphrase via the "
-                        "'private_key_passphrase' credential field.")
+                        'encrypted, provide the passphrase via the '
+                        "'private_key_passphrase' credential field."
+                    )
 
                 if not user:
                     raise ConnectorError(
-                        f"Private key provided for connecting to {warehouse} "
-                        "but also need a username passed in via credentials. "
-                        "Alternatively, provide username and password in the "
-                        f"environment variables `{env_var_user}` and "
-                        f"`{env_var_pass}`.")
+                        f'Private key provided for connecting to {warehouse} '
+                        'but also need a username passed in via credentials. '
+                        'Alternatively, provide username and password in the '
+                        f'environment variables `{env_var_user}` and '
+                        f'`{env_var_pass}`.'
+                    )
                 if key_encoding:
-                    pkey_serialized = private_key_bytes(pkey_serialized,
-                                                        key_encoding)
+                    pkey_serialized = private_key_bytes(pkey_serialized, key_encoding)
 
                 return {'user': user, 'private_key': pkey_serialized}
             else:
@@ -201,11 +212,13 @@ class SQLConnector(Connector):
         if not user or not password:  # pragma: no cover
             if self._DISABLE_INTERACTIVE_INPUT:
                 raise ConnectorError(
-                    "No credentials were provided for connecting to "
-                    f"{warehouse}. Please pass in credentials through "
-                    "the constructor, or provide them in the environment "
-                    f"variables `{env_var_user}` and `{env_var_pass}`.")
+                    'No credentials were provided for connecting to '
+                    f'{warehouse}. Please pass in credentials through '
+                    'the constructor, or provide them in the environment '
+                    f'variables `{env_var_user}` and `{env_var_pass}`.'
+                )
             import getpass
+
             user = input('Enter your username: ')
             password = getpass.getpass('Enter your password: ')
 
@@ -244,24 +257,24 @@ class SQLConnector(Connector):
         if cols is None:
             select_query = '*'
         elif len(cols) == 0 and pkey is None:
-            raise ValueError("Should specify at least some column or leave "
-                             "cols as None to select all columns, but got "
-                             "an empty list for cols and no pkey specified.")
+            raise ValueError(
+                'Should specify at least some column or leave '
+                'cols as None to select all columns, but got '
+                'an empty list for cols and no pkey specified.'
+            )
         else:
             names = [col.name for col in cols]
             names += [pkey.name] if pkey is not None else []
-            select_query = ', '.join(
-                self.sql_column_name(name) for name in names)
+            select_query = ', '.join(self.sql_column_name(name) for name in names)
 
         if sample:
             from kumo_core.custom_sql import sample_select
+
             if limit is None:
                 raise ValueError('Source sampling requires a row limit.')
-            query = sample_select(self.sql_table_name(table_name), limit,
-                                  select_query)
+            query = sample_select(self.sql_table_name(table_name), limit, select_query)
             return f'{query} OFFSET {offset}' if offset > 0 else query
-        query_body = f'SELECT {select_query} from ' \
-                     f'{self.sql_table_name(table_name)}'
+        query_body = f'SELECT {select_query} from {self.sql_table_name(table_name)}'
         if limit is not None and offset > 0:
             return f'{query_body} LIMIT {limit} OFFSET {offset}'
         elif limit is not None:

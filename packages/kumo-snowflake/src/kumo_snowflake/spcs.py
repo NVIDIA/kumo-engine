@@ -27,19 +27,19 @@ from kumoapi.data_source import (
 )
 
 #: Where the container runtime mounts the OAuth token.
-SPCS_TOKEN_PATH = "/snowflake/session/token"
+SPCS_TOKEN_PATH = '/snowflake/session/token'
 
 #: What the runtime exports. Read rather than accepted from a caller: this
 #: helper describes the container it is running in, and a value passed in
 #: would let it describe something else while still claiming to be SPCS.
-ACCOUNT_ENV = "SNOWFLAKE_ACCOUNT"
-HOST_ENV = "SNOWFLAKE_HOST"
+ACCOUNT_ENV = 'SNOWFLAKE_ACCOUNT'
+HOST_ENV = 'SNOWFLAKE_HOST'
 
 
 def spcs_identity_create_args(
     display_name: str,
     *,
-    description: str = "",
+    description: str = '',
 ) -> CreateIdentityArgs:
     """Describes the identity this container already has.
 
@@ -63,17 +63,19 @@ def spcs_identity_create_args(
     """
     if not os.path.exists(SPCS_TOKEN_PATH):
         raise ValueError(
-            f"no snowflake token at {SPCS_TOKEN_PATH}, so this is not a "
-            f"snowpark container services environment. This identity reads a "
-            f"token the container runtime mounts, and there is none to read; "
-            f"create a key-pair or password identity instead")
+            f'no snowflake token at {SPCS_TOKEN_PATH}, so this is not a '
+            f'snowpark container services environment. This identity reads a '
+            f'token the container runtime mounts, and there is none to read; '
+            f'create a key-pair or password identity instead'
+        )
     account = os.environ.get(ACCOUNT_ENV)
     if not account:
         raise ValueError(
-            f"the snowflake token at {SPCS_TOKEN_PATH} is mounted but "
-            f"{ACCOUNT_ENV} is unset, so there is no account to authenticate "
-            f"against. A container runtime sets both; one without the other "
-            f"is an environment this cannot describe")
+            f'the snowflake token at {SPCS_TOKEN_PATH} is mounted but '
+            f'{ACCOUNT_ENV} is unset, so there is no account to authenticate '
+            f'against. A container runtime sets both; one without the other '
+            f'is an environment this cannot describe'
+        )
     return CreateIdentityArgs(
         display_name=display_name,
         description=description,

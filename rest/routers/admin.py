@@ -38,29 +38,25 @@ class AdminResource:
         self._auth = auth
         self._direct_connect_auth_store = direct_connect_auth_store
         self._direct_connect_login_method = (
-            direct_connect_login_method
-            or auth.settings.direct_connect_login_method)
+            direct_connect_login_method or auth.settings.direct_connect_login_method
+        )
         self.router = APIRouter(
-            prefix="/v0/admin",
-            tags=["Admin"],
+            prefix='/v0/admin',
+            tags=['Admin'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={
-                HTTPStatus.NOT_FOUND: {
-                    "description": "Not found (ADMIN)"
-                }
-            },
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found (ADMIN)'}},
         )
         # Doesn't require admin, but an admin check is done in the code to
         # conditionally exclude admin-only parts of the response
         self.router.add_api_route(
-            "/info",
+            '/info',
             self.get_admin_info,
             response_model=AdminResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/members",
+            '/members',
             self.get_organization_members,
             dependencies=[Depends(auth.require_customer_admin)],
             response_model=List[OrganizationMember],
@@ -68,7 +64,7 @@ class AdminResource:
         )
 
         self.router.add_api_route(
-            "/users",
+            '/users',
             self.list_direct_connect_users,
             dependencies=[Depends(auth.require_customer_admin)],
             response_model=List[DirectConnectUserResponse],
@@ -76,7 +72,7 @@ class AdminResource:
         )
 
         self.router.add_api_route(
-            "/users",
+            '/users',
             self.create_direct_connect_user,
             dependencies=[Depends(auth.require_customer_admin)],
             response_model=DirectConnectUserResponse,
@@ -84,7 +80,7 @@ class AdminResource:
         )
 
         self.router.add_api_route(
-            "/users/{user_id}",
+            '/users/{user_id}',
             self.update_direct_connect_user,
             dependencies=[Depends(auth.require_customer_admin)],
             response_model=DirectConnectUserResponse,
@@ -92,7 +88,7 @@ class AdminResource:
         )
 
         self.router.add_api_route(
-            "/users/{user_id}/password",
+            '/users/{user_id}/password',
             self.set_direct_connect_user_password,
             dependencies=[Depends(auth.require_customer_admin)],
             response_model=DirectConnectUserResponse,
@@ -105,13 +101,13 @@ class AdminResource:
         # Direct Connect user management degrade. Under auth-enabled an
         # unconfigured store is a real startup error -- let it surface.
         store = self._direct_connect_auth_store
-        if store is None or (self._auth.settings.disable
-                             and not store.is_configured):
+        if store is None or (self._auth.settings.disable and not store.is_configured):
             return None
         return store
 
     async def get_organization_members(
-            self, request: Request) -> List[OrganizationMember]:
+        self, request: Request
+    ) -> List[OrganizationMember]:
         """
         Get information about the members of the user's organization.
         """
@@ -125,11 +121,13 @@ class AdminResource:
                 email=user.email,
                 uid=user.user_id,
                 roles=['Admin'] if user.role == 'admin' else ['User'],
-            ) for user in users
+            )
+            for user in users
         ]
 
     async def list_direct_connect_users(
-            self, request: Request) -> List[DirectConnectUserResponse]:
+        self, request: Request
+    ) -> List[DirectConnectUserResponse]:
         store = self._dc_store
         if store is None:
             return []
@@ -142,12 +140,14 @@ class AdminResource:
     ) -> DirectConnectUserResponse:
         store = self._dc_store
         if store is None:
-            raise HTTPException(HTTPStatus.NOT_FOUND,
-                                'Direct Connect users are not enabled')
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND, 'Direct Connect users are not enabled'
+            )
         if self._direct_connect_password_login_enabled():
             if not payload.password:
-                raise HTTPException(HTTPStatus.BAD_REQUEST,
-                                    'Temporary password is required')
+                raise HTTPException(
+                    HTTPStatus.BAD_REQUEST, 'Temporary password is required'
+                )
         elif payload.password is not None:
             raise HTTPException(
                 HTTPStatus.BAD_REQUEST,
@@ -162,7 +162,7 @@ class AdminResource:
         )
 
     def _direct_connect_password_login_enabled(self) -> bool:
-        return self._direct_connect_login_method.lower() == "password"
+        return self._direct_connect_login_method.lower() == 'password'
 
     async def update_direct_connect_user(
         self,
@@ -172,8 +172,9 @@ class AdminResource:
     ) -> DirectConnectUserResponse:
         store = self._dc_store
         if store is None:
-            raise HTTPException(HTTPStatus.NOT_FOUND,
-                                'Direct Connect users are not enabled')
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND, 'Direct Connect users are not enabled'
+            )
         return await store.update_user(
             user_id,
             role=payload.role,
@@ -188,20 +189,22 @@ class AdminResource:
     ) -> DirectConnectUserResponse:
         store = self._dc_store
         if store is None:
-            raise HTTPException(HTTPStatus.NOT_FOUND,
-                                'Direct Connect users are not enabled')
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND, 'Direct Connect users are not enabled'
+            )
         return await store.set_temporary_password(
             user_id,
             payload.password,
         )
 
     async def get_admin_info(self, request: Request) -> AdminResponse:
-        """ Get information about the Organization administrators"""
+        """Get information about the Organization administrators"""
         user_authorization = get_user_authorization_from_request(request)
         return AdminResponse(
             organization_name='Kumo',
             user_is_customer_admin=user_authorization.is_admin,
             customer_admin_emails=[],
-            customer_admin_info=AdminInformation(
-                api_enabled=True) if user_authorization.is_admin else None,
+            customer_admin_info=AdminInformation(api_enabled=True)
+            if user_authorization.is_admin
+            else None,
         )

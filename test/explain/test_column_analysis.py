@@ -46,6 +46,7 @@ TRAIN_TABLE = 'TRAIN_TABLE'
 class _FakeFeatureStore:
     """Stand-in for the bits of ``FeatureStore`` ``ColumnAnalysis`` reads:
     ``train_table_name`` and per-(table, column) ``TensorMapper`` lookup."""
+
     train_table_name = TRAIN_TABLE
 
     def __init__(self, mapper_dict: dict[str, dict[str, TensorMapper]]):
@@ -57,6 +58,7 @@ class _FakeFeatureStore:
 
 class _FakeDataModule:
     """Stand-in for ``datamodule``: ``ColumnAnalysis`` only reads ``.data``."""
+
     def __init__(self, feature_store: _FakeFeatureStore):
         self.data = (feature_store, None)
 
@@ -64,6 +66,7 @@ class _FakeDataModule:
 class _FakeModule:
     """Stand-in for the ``pl_model``: ``ColumnAnalysis`` only reads
     ``.encoder.exclude_cols_dict`` and ``.target_encoder``."""
+
     class encoder:
         exclude_cols_dict: dict = {}
 
@@ -113,15 +116,12 @@ def _build_batch() -> tuple[HeteroData, _FakeDataModule]:
     hetero[TRAIN_TABLE].batch_size = 4
     hetero[TRAIN_TABLE].y = torch.tensor([[True], [False], [True], [False]])
 
-    feature_store = _FakeFeatureStore({
-        USER: {
-            'AGE': age_mapper,
-            'GENDER': gender_mapper
-        },
-        ORDER: {
-            'AMOUNT': amount_mapper
-        },
-    })
+    feature_store = _FakeFeatureStore(
+        {
+            USER: {'AGE': age_mapper, 'GENDER': gender_mapper},
+            ORDER: {'AMOUNT': amount_mapper},
+        }
+    )
     return hetero, _FakeDataModule(feature_store)
 
 
@@ -129,10 +129,12 @@ def test_column_analysis_correctness() -> None:
     hetero, datamodule = _build_batch()
     module = _FakeModule()
 
-    analyzer = ColumnAnalysis(task_type=TaskType.BINARY_CLASSIFICATION,
-                              root_dir=None, normalize=False)
-    analyzer.explain_start(module=module, datamodule=datamodule,
-                           stage=TrainingStage.VAL)
+    analyzer = ColumnAnalysis(
+        task_type=TaskType.BINARY_CLASSIFICATION, root_dir=None, normalize=False
+    )
+    analyzer.explain_start(
+        module=module, datamodule=datamodule, stage=TrainingStage.VAL
+    )
     analyzer.explain_post_step(
         batch=hetero,
         module=module,

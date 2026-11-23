@@ -39,6 +39,7 @@ class _CurrentPrincipal:
 
 class WorkerPrincipalAuthorityResolver:
     """Resolve a capability owner from current authoritative membership."""
+
     def __init__(self, services: StateServices) -> None:
         self._services = services
         self._direct_resolver: DirectConnectGroupResolver | None = None
@@ -52,40 +53,42 @@ class WorkerPrincipalAuthorityResolver:
             AUTHORIZATION_DISABLED: 'native_disabled',
             AUTHORIZATION_PROXIED: 'native_proxied',
         }.get(authorization.principal_id)
-        if (synthetic_backend is not None
-                and authorization.auth_backend != synthetic_backend):
+        if (
+            synthetic_backend is not None
+            and authorization.auth_backend != synthetic_backend
+        ):
             # Synthetic request principals are deployment-mode sentinels, not
             # identities that an external provider can resolve.  A capability
             # carrying one under any other backend is inconsistent (for
             # example after a mode change) and must fail before a Direct
             # Connect lookup is attempted.
             raise PrincipalAuthorityDeniedError(
-                'Synthetic request authority is invalid')
+                'Synthetic request authority is invalid'
+            )
 
         if authorization.auth_backend == 'native_disabled':
             if configured.enabled:
-                raise PrincipalAuthorityDeniedError(
-                    'Authentication mode changed')
+                raise PrincipalAuthorityDeniedError('Authentication mode changed')
             membership = await self._resolve_native_request(authorization)
             is_admin = authorization.principal_id == AUTHORIZATION_DISABLED
         elif authorization.auth_backend == 'native_proxied':
             if not configured.enabled or not configured.proxy:
-                raise PrincipalAuthorityDeniedError(
-                    'Authentication mode changed')
+                raise PrincipalAuthorityDeniedError('Authentication mode changed')
             membership = await self._resolve_native_request(authorization)
             is_admin = False
         elif authorization.auth_backend != 'direct_connect':
-            raise PrincipalAuthorityDeniedError(
-                'Authentication backend changed')
+            raise PrincipalAuthorityDeniedError('Authentication backend changed')
         elif configured.enabled and not configured.proxy:
             membership, is_admin = await self._resolve_direct_connect(
-                authorization.principal_id)
+                authorization.principal_id
+            )
         else:
             raise PrincipalAuthorityDeniedError('Authentication mode changed')
 
         if membership.external_membership_unavailable:
             raise PrincipalAuthorityUnavailableError(
-                'External membership is unavailable')
+                'External membership is unavailable'
+            )
         return _CurrentPrincipal(
             user_id=UserID(authorization.principal_id),
             user_name=authorization.principal_name,
@@ -100,6 +103,7 @@ class WorkerPrincipalAuthorityResolver:
     ):
         from rest.deps.group_membership import ResolvedGroupMembership
         from statedb.rest.group import PrincipalType
+
         groups = await self._services.groups.resolve_native_memberships(
             authorization.principal_id,
             principal_type=PrincipalType.USER,
@@ -117,6 +121,5 @@ class WorkerPrincipalAuthorityResolver:
         membership = await self._direct_resolver.resolve_groups(user_id, None)
         record = await self._services.direct_connect_auth.get_user(user_id)
         if record is None or record.disabled:
-            raise PrincipalAuthorityDeniedError(
-                'Direct Connect user is inactive')
+            raise PrincipalAuthorityDeniedError('Direct Connect user is inactive')
         return membership, record.role == 'admin'

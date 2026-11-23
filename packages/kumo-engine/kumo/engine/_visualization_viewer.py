@@ -514,18 +514,20 @@ def viewer(svg: str, layouts: dict, initial_layout: str, static_svg: str) -> dic
         '<label><input type="radio" '
         f'value="{name}" disabled=""/><span>{label}</span></label>'
         for name, label in [('standard', 'Standard'), ('compact', 'Compact')]
-        if name in layouts)
+        if name in layouts
+    )
     if not options:
-        options = ('<label><input type="radio" value="standard" disabled=""/>'
-                   '<span>Standard</span></label>')
-    fit_icon = ('M 3 8 V 3 H 8 M 16 3 H 21 V 8 M 21 16 V 21 H 16 '
-                'M 8 21 H 3 V 16 M 7 7 H 17 V 17 H 7 Z')
-    enter_icon = ('M 9 3 H 3 V 9 M 15 3 H 21 V 9 M 3 15 V 21 H 9 '
-                  'M 21 15 V 21 H 15')
-    exit_icon = ('M 3 9 H 9 V 3 M 15 3 V 9 H 21 M 9 21 V 15 H 3 '
-                 'M 21 15 H 15 V 21')
-    export_icon = ('M 12 3 V 15 M 7 10 L 12 15 L 17 10 '
-                   'M 4 16 V 21 H 20 V 16')
+        options = (
+            '<label><input type="radio" value="standard" disabled=""/>'
+            '<span>Standard</span></label>'
+        )
+    fit_icon = (
+        'M 3 8 V 3 H 8 M 16 3 H 21 V 8 M 21 16 V 21 H 16 '
+        'M 8 21 H 3 V 16 M 7 7 H 17 V 17 H 7 Z'
+    )
+    enter_icon = 'M 9 3 H 3 V 9 M 15 3 H 21 V 9 M 3 15 V 21 H 9 M 21 15 V 21 H 15'
+    exit_icon = 'M 3 9 H 9 V 3 M 15 3 V 9 H 21 M 9 21 V 15 H 3 M 21 15 H 15 V 21'
+    export_icon = 'M 12 3 V 15 M 7 10 L 12 15 L 17 10 M 4 16 V 21 H 20 V 16'
 
     body = (
         '<div class="kumo-graph-live" style="display:none">'
@@ -553,9 +555,11 @@ def viewer(svg: str, layouts: dict, initial_layout: str, static_svg: str) -> dic
         'aria-label="Graph visualization">'
         f'<div class="kumo-graph-scene">{svg}</div></div></div>'
         '<div class="kumo-graph-static">'
-        + render_static_svg(static_svg,
-                            'Rerun this cell to activate animation.',
-                            'Table relationships') + '</div>')
+        + render_static_svg(
+            static_svg, 'Rerun this cell to activate animation.', 'Table relationships'
+        )
+        + '</div>'
+    )
     script = (
         'const view=host.querySelector(".kumo-graph-view");'
         'const svg=view.querySelector("svg"),scene=view.firstElementChild;'
@@ -566,10 +570,17 @@ def viewer(svg: str, layouts: dict, initial_layout: str, static_svg: str) -> dic
         'host.querySelector(".kumo-graph-export-options").hidden=true});'
         'live.style.display="contents";view.hidden=false;'
         'const edges=Array.from(view.querySelectorAll(".kumo-edge"));'
-        + _HOVER + _CAMERA + _EXPORT
+        + _HOVER
+        + _CAMERA
+        + _EXPORT
         + 'host.querySelector(".kumo-graph-toolbar").hidden=false;'
         'fallback.hidden=true;'
-        'view.tabIndex=0;view.setAttribute("aria-label","Pannable graph visualization");')
-    return dict(body=body, style=_STYLE, script=script,
-                data={'layouts': layouts, 'initial': initial_layout},
-                class_name='kumo-graph')
+        'view.tabIndex=0;view.setAttribute("aria-label","Pannable graph visualization");'
+    )
+    return dict(
+        body=body,
+        style=_STYLE,
+        script=script,
+        data={'layouts': layouts, 'initial': initial_layout},
+        class_name='kumo-graph',
+    )

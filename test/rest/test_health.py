@@ -28,14 +28,14 @@ def test_internal_rest_health(client: TestClient):
 @pytest.mark.asyncio
 async def test_internal_rest_health_reports_state_db_schema_failure():
     status = StateDBSchemaStatus(
-        backend="sqlite",
+        backend='sqlite',
         expected_schema_version=SCHEMA_VERSION,
         stored_schema_version=0,
-        expected_schema_hash=schema_identity("sqlite"),
-        stored_schema_hash="old-schema",
+        expected_schema_hash=schema_identity('sqlite'),
+        stored_schema_hash='old-schema',
         expected_table_count=3,
         existing_state_table_count=2,
-        missing_table_names=("projects",),
+        missing_table_names=('projects',),
         ok=False,
         error_type=None,
         error_message=None,
@@ -49,19 +49,19 @@ async def test_internal_rest_health_reports_state_db_schema_failure():
 
     assert response.status_code == 503
     assert json.loads(response.body) == {
-        "status": "unhealthy",
-        "state_db": {
-            "backend": "sqlite",
-            "expected_schema_version": SCHEMA_VERSION,
-            "stored_schema_version": 0,
-            "expected_schema_hash": schema_identity("sqlite"),
-            "stored_schema_hash": "old-schema",
-            "expected_table_count": 3,
-            "existing_state_table_count": 2,
-            "missing_table_names": ["projects"],
-            "ok": False,
-            "error_type": None,
-            "error_message": None,
+        'status': 'unhealthy',
+        'state_db': {
+            'backend': 'sqlite',
+            'expected_schema_version': SCHEMA_VERSION,
+            'stored_schema_version': 0,
+            'expected_schema_hash': schema_identity('sqlite'),
+            'stored_schema_hash': 'old-schema',
+            'expected_table_count': 3,
+            'existing_state_table_count': 2,
+            'missing_table_names': ['projects'],
+            'ok': False,
+            'error_type': None,
+            'error_message': None,
         },
     }
     get_schema_status.assert_awaited_once_with()

@@ -70,7 +70,8 @@ def _clear_pod_namespace(monkeypatch):  # pyright: ignore[reportUnusedFunction]
 def _to_dict(obj):
     """Serialize a dataclass to a JSON-round-tripped dict for comparison."""
     serialized = json.loads(
-        json.dumps(dataclasses.asdict(obj), default=to_jsonable_python))
+        json.dumps(dataclasses.asdict(obj), default=to_jsonable_python)
+    )
     # Keep legacy fixture coverage focused on pre-existing config surfaces.
     serialized.pop('metadata_storage', None)
     serialized.pop('ambient_s3', None)
@@ -88,9 +89,7 @@ def test_storage_lifecycle_readiness_defaults_false_and_parses(monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({'storage': {
-            'lifecycle_ready': True
-        }}),
+        json.dumps({'storage': {'lifecycle_ready': True}}),
     )
     assert load_raw_deploy_config().storage.lifecycle_ready is True
 
@@ -102,19 +101,21 @@ def test_s3_compatible_storage_config_parses_without_secret_values(monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'storage': {
-                'data_plane_storage_root': 's3://example-dataplane/customer-a/',
-                'artifact_root': 's3://example-artifacts/',
-                's3': {
-                    'endpoint_url': 'https://minio.example.test:9000',
-                    'region': 'us-east-1',
-                    'addressing_style': 'path',
-                    'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
-                    'ca_bundle_path': '/etc/kumo/minio-ca/ca.crt',
+        json.dumps(
+            {
+                'storage': {
+                    'data_plane_storage_root': 's3://example-dataplane/customer-a/',
+                    'artifact_root': 's3://example-artifacts/',
+                    's3': {
+                        'endpoint_url': 'https://minio.example.test:9000',
+                        'region': 'us-east-1',
+                        'addressing_style': 'path',
+                        'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+                        'ca_bundle_path': '/etc/kumo/minio-ca/ca.crt',
+                    },
                 },
-            },
-        }),
+            }
+        ),
     )
 
     storage = load_raw_deploy_config().storage
@@ -147,17 +148,19 @@ def test_s3_compatible_storage_rejects_unsafe_endpoint(monkeypatch, endpoint):
     _clear_env(monkeypatch)
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'storage': {
-                'data_plane_storage_root': 's3://example-dataplane/',
-                's3': {
-                    'endpoint_url': endpoint,
-                    'region': 'us-east-1',
-                    'addressing_style': 'path',
-                    'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+        json.dumps(
+            {
+                'storage': {
+                    'data_plane_storage_root': 's3://example-dataplane/',
+                    's3': {
+                        'endpoint_url': endpoint,
+                        'region': 'us-east-1',
+                        'addressing_style': 'path',
+                        'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+                    },
                 },
-            },
-        }),
+            }
+        ),
     )
 
     with pytest.raises(ValidationError, match='endpoint_url'):
@@ -168,17 +171,19 @@ def test_s3_compatible_storage_requires_s3_root(monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'storage': {
-                'data_plane_storage_root': '/mnt/localssd',
-                's3': {
-                    'endpoint_url': 'https://minio.example.test:9000',
-                    'region': 'us-east-1',
-                    'addressing_style': 'path',
-                    'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+        json.dumps(
+            {
+                'storage': {
+                    'data_plane_storage_root': '/mnt/localssd',
+                    's3': {
+                        'endpoint_url': 'https://minio.example.test:9000',
+                        'region': 'us-east-1',
+                        'addressing_style': 'path',
+                        'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+                    },
                 },
-            },
-        }),
+            }
+        ),
     )
 
     with pytest.raises(ValidationError, match='at least one s3://'):
@@ -190,17 +195,19 @@ def test_s3_compatible_storage_requires_https_in_production(monkeypatch):
     monkeypatch.setenv('DEPLOY_STAGE', 'prod')
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'storage': {
-                'data_plane_storage_root': 's3://example-dataplane/',
-                's3': {
-                    'endpoint_url': 'http://minio:9000',
-                    'region': 'us-east-1',
-                    'addressing_style': 'path',
-                    'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+        json.dumps(
+            {
+                'storage': {
+                    'data_plane_storage_root': 's3://example-dataplane/',
+                    's3': {
+                        'endpoint_url': 'http://minio:9000',
+                        'region': 'us-east-1',
+                        'addressing_style': 'path',
+                        'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+                    },
                 },
-            },
-        }),
+            }
+        ),
     )
 
     with pytest.raises(ValidationError, match='must use https'):
@@ -212,18 +219,20 @@ def test_s3_compatible_storage_survives_root_resolution(monkeypatch):
     monkeypatch.setenv('DEPLOY_STAGE', 'dev_local')
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'storage': {
-                'data_plane_storage_root': 's3://example-dataplane/',
-                'lifecycle_ready': True,
-                's3': {
-                    'endpoint_url': 'http://minio:9000',
-                    'region': 'us-east-1',
-                    'addressing_style': 'path',
-                    'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+        json.dumps(
+            {
+                'storage': {
+                    'data_plane_storage_root': 's3://example-dataplane/',
+                    'lifecycle_ready': True,
+                    's3': {
+                        'endpoint_url': 'http://minio:9000',
+                        'region': 'us-east-1',
+                        'addressing_style': 'path',
+                        'credential_secret_name': 'MINIO_KUMO_CREDENTIALS',
+                    },
                 },
-            },
-        }),
+            }
+        ),
     )
 
     storage = DeployEnvConfig.parse_from_env().storage
@@ -285,27 +294,47 @@ _DEV = DeployStage.DEV
 _PROD = DeployStage.PROD
 
 _MIGRATION_CASES = [
-    pytest.param({}, _DEV, 'test', 'inst', 'migration_default.json',
-                 id='default'),
-    pytest.param({}, _DEV, 'test', 'inst', 'migration_aws_remote.json',
-                 id='aws-remote'),
-    pytest.param({'IS_GCP_DEPLOY': 'true'}, _DEV, 'test', 'inst',
-                 'migration_gcp_remote.json', id='gcp-remote'),
-    pytest.param({'TEMPORAL_SERVER': 'localhost'}, _DEV, 'test', 'inst',
-                 'migration_dev_local.json', id='dev-local'),
-    pytest.param({'TEMPORAL_SERVER': 'cloud'}, _PROD, 'acme', 'prod',
-                 'migration_prod_cloud.json', id='prod-cloud'),
+    pytest.param({}, _DEV, 'test', 'inst', 'migration_default.json', id='default'),
+    pytest.param(
+        {}, _DEV, 'test', 'inst', 'migration_aws_remote.json', id='aws-remote'
+    ),
+    pytest.param(
+        {'IS_GCP_DEPLOY': 'true'},
+        _DEV,
+        'test',
+        'inst',
+        'migration_gcp_remote.json',
+        id='gcp-remote',
+    ),
+    pytest.param(
+        {'TEMPORAL_SERVER': 'localhost'},
+        _DEV,
+        'test',
+        'inst',
+        'migration_dev_local.json',
+        id='dev-local',
+    ),
+    pytest.param(
+        {'TEMPORAL_SERVER': 'cloud'},
+        _PROD,
+        'acme',
+        'prod',
+        'migration_prod_cloud.json',
+        id='prod-cloud',
+    ),
 ]
 
 
 class TestLegacyMigration:
     """Legacy env vars -> ConfigMigrationHelper -> matches fixture JSON."""
+
     @pytest.mark.parametrize(
         'env_vars,deploy_mode,_legacy_tenant,instance_id,fixture',
         _MIGRATION_CASES,
     )
-    def test_env_to_raw_config(self, monkeypatch, env_vars, deploy_mode,
-                               _legacy_tenant, instance_id, fixture):
+    def test_env_to_raw_config(
+        self, monkeypatch, env_vars, deploy_mode, _legacy_tenant, instance_id, fixture
+    ):
         _clear_env(monkeypatch)
         for k, v in env_vars.items():
             monkeypatch.setenv(k, v)
@@ -364,6 +393,7 @@ _DEV_ENV = {'DEPLOY_STAGE': 'dev', 'INSTANCE_ID': 'abc123'}
 
 class TestStructuredConfigE2E:
     """Structured config (preset/file) -> DeployEnvConfig -> fixture JSON."""
+
     @pytest.mark.parametrize(
         'preset,config_file,env_vars,fixture',
         [
@@ -371,13 +401,10 @@ class TestStructuredConfigE2E:
             ('aws', None, _PROD_ENV, 'resolved_aws_minimal.json'),
             ('gcp', None, _PROD_ENV, 'resolved_gcp_minimal.json'),
             # b2: preset + override file -> DeployEnvConfig
-            ('aws', 'raw_aws_overrides.json', _PROD_ENV,
-             'resolved_aws_overrides.json'),
-            ('gcp', 'raw_gcp_overrides.json', _PROD_ENV,
-             'resolved_gcp_overrides.json'),
+            ('aws', 'raw_aws_overrides.json', _PROD_ENV, 'resolved_aws_overrides.json'),
+            ('gcp', 'raw_gcp_overrides.json', _PROD_ENV, 'resolved_gcp_overrides.json'),
             # b3: file only (no preset) -> DeployEnvConfig
-            (None, 'raw_dev_overrides.json', _DEV_ENV,
-             'resolved_dev_overrides.json'),
+            (None, 'raw_dev_overrides.json', _DEV_ENV, 'resolved_dev_overrides.json'),
         ],
         ids=[
             'aws-minimal',
@@ -387,14 +414,14 @@ class TestStructuredConfigE2E:
             'dev-overrides',
         ],
     )
-    def test_config_e2e(self, monkeypatch, preset, config_file, env_vars,
-                        fixture):
+    def test_config_e2e(self, monkeypatch, preset, config_file, env_vars, fixture):
         _clear_env(monkeypatch)
         if preset:
             monkeypatch.setenv('PLATFORM_PRESET', preset)
         if config_file:
-            monkeypatch.setenv('DEPLOY_ENV_CONFIG_FILE',
-                               os.path.join(_TEST_DATA_DIR, config_file))
+            monkeypatch.setenv(
+                'DEPLOY_ENV_CONFIG_FILE', os.path.join(_TEST_DATA_DIR, config_file)
+            )
         for k, v in env_vars.items():
             monkeypatch.setenv(k, v)
 
@@ -411,17 +438,19 @@ class TestStructuredConfigE2E:
         monkeypatch.setenv('INSTANCE_ID', 'ambient-test')
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'ambient_s3': {
-                    'approved_role_arns': [role_arn],
-                },
-            }),
+            json.dumps(
+                {
+                    'ambient_s3': {
+                        'approved_role_arns': [role_arn],
+                    },
+                }
+            ),
         )
 
         cfg = DeployEnvConfig.parse_from_env(app_name='rest-api')
 
         assert cfg.ambient_s3 is not None
-        assert cfg.ambient_s3.approved_role_arns == (role_arn, )
+        assert cfg.ambient_s3.approved_role_arns == (role_arn,)
 
     def test_external_host_structured_config_is_preserved(self, monkeypatch):
         _clear_env(monkeypatch)
@@ -448,8 +477,7 @@ class TestStructuredConfigE2E:
         assert cfg.external_host is None
 
     @pytest.mark.parametrize('preset', ['aws', 'gcp'])
-    def test_ambient_s3_presets_are_disabled_by_default(self, monkeypatch,
-                                                        preset):
+    def test_ambient_s3_presets_are_disabled_by_default(self, monkeypatch, preset):
         _clear_env(monkeypatch)
         monkeypatch.setenv('PLATFORM_PRESET', preset)
         monkeypatch.setenv('DEPLOY_STAGE', 'prod')
@@ -466,21 +494,22 @@ class TestStructuredConfigE2E:
         monkeypatch.setenv('INSTANCE_ID', 'ambient-gcp-test')
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'ambient_gcp': {
-                    'approved_service_account_emails': [email],
-                },
-            }),
+            json.dumps(
+                {
+                    'ambient_gcp': {
+                        'approved_service_account_emails': [email],
+                    },
+                }
+            ),
         )
 
         cfg = DeployEnvConfig.parse_from_env(app_name='rest-api')
 
         assert cfg.ambient_gcp is not None
-        assert cfg.ambient_gcp.approved_service_account_emails == (email, )
+        assert cfg.ambient_gcp.approved_service_account_emails == (email,)
 
     @pytest.mark.parametrize('preset', ['aws', 'gcp'])
-    def test_ambient_gcp_presets_are_disabled_by_default(
-            self, monkeypatch, preset):
+    def test_ambient_gcp_presets_are_disabled_by_default(self, monkeypatch, preset):
         _clear_env(monkeypatch)
         monkeypatch.setenv('PLATFORM_PRESET', preset)
         monkeypatch.setenv('DEPLOY_STAGE', 'prod')
@@ -497,6 +526,7 @@ class TestStructuredConfigE2E:
 
 class TestConstruction:
     """Test DeployEnvConfig constructed directly (not from env)."""
+
     def test_basic_fields(self):
         cfg = DeployEnvConfig(
             client_id='test-app',
@@ -545,12 +575,15 @@ class TestMetadataStorageConfig:
         _clear_env(monkeypatch)
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'metadata_storage': {
-                    'type': 'postgres',
-                    'dsn': 'postgresql://user:pass@localhost/db',
+            json.dumps(
+                {
+                    'metadata_storage': {
+                        'type': 'postgres',
+                        'dsn': 'postgresql://user:pass@localhost/db',
+                    }
                 }
-            }))
+            ),
+        )
         monkeypatch.setenv('DEPLOY_STAGE', 'dev')
         monkeypatch.setenv('INSTANCE_ID', 'test')
 
@@ -562,12 +595,15 @@ class TestMetadataStorageConfig:
         _clear_env(monkeypatch)
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'metadata_storage': {
-                    'type': 'postgres',
-                    'dsn_secret_name': 'STATE_DB_DSN',
+            json.dumps(
+                {
+                    'metadata_storage': {
+                        'type': 'postgres',
+                        'dsn_secret_name': 'STATE_DB_DSN',
+                    }
                 }
-            }))
+            ),
+        )
         monkeypatch.setenv('DEPLOY_STAGE', 'dev')
         monkeypatch.setenv('INSTANCE_ID', 'test')
 
@@ -580,15 +616,18 @@ class TestMetadataStorageConfig:
         _clear_env(monkeypatch)
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'metadata_storage': {
-                    'type': 'postgres',
-                    'auth_mode': 'azure_entra',
-                    'username': 'kumo-wi',
-                    'host': 'kumo.postgres.database.azure.com',
-                    'database': 'postgres',
+            json.dumps(
+                {
+                    'metadata_storage': {
+                        'type': 'postgres',
+                        'auth_mode': 'azure_entra',
+                        'username': 'kumo-wi',
+                        'host': 'kumo.postgres.database.azure.com',
+                        'database': 'postgres',
+                    }
                 }
-            }))
+            ),
+        )
         monkeypatch.setenv('DEPLOY_STAGE', 'dev')
         monkeypatch.setenv('INSTANCE_ID', 'test')
 
@@ -601,7 +640,8 @@ class TestMetadataStorageConfig:
         with pytest.raises(ValidationError):
             PostgresMetadataStorageConfig(
                 dsn='postgresql://user:pass@localhost/db',
-                dsn_secret_name='STATE_DB_DSN')
+                dsn_secret_name='STATE_DB_DSN',
+            )
 
     def test_postgres_rejects_no_dsn_source(self):
         with pytest.raises(ValidationError):
@@ -610,30 +650,33 @@ class TestMetadataStorageConfig:
 
 class TestAuthConfig:
     """Auth config is part of the structured deploy-config contract."""
+
     def test_parse_direct_connect_auth_config(self, monkeypatch):
         _clear_env(monkeypatch)
         monkeypatch.setenv('DEPLOY_STAGE', 'dev')
         monkeypatch.setenv('INSTANCE_ID', 'test')
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'auth': {
-                    'enabled': True,
-                    'backend': 'direct_connect',
-                    'direct_connect': {
-                        'login_method': 'password',
-                        'allowed_return_origins':
-                        'https://kumo.example.com, http://localhost:5173',
-                        'admin_emails': ['admin@kumo.ai', ' ops@kumo.ai '],
-                        'password': {
-                            'temporary_password_ref': {
-                                'secret_name': 'direct-connect-auth',
-                                'secret_key': 'temporary-password',
+            json.dumps(
+                {
+                    'auth': {
+                        'enabled': True,
+                        'backend': 'direct_connect',
+                        'direct_connect': {
+                            'login_method': 'password',
+                            'allowed_return_origins': 'https://kumo.example.com, http://localhost:5173',
+                            'admin_emails': ['admin@kumo.ai', ' ops@kumo.ai '],
+                            'password': {
+                                'temporary_password_ref': {
+                                    'secret_name': 'direct-connect-auth',
+                                    'secret_key': 'temporary-password',
+                                },
                             },
                         },
                     },
-                },
-            }))
+                }
+            ),
+        )
 
         cfg = DeployEnvConfig.parse_from_env()
 
@@ -645,7 +688,9 @@ class TestAuthConfig:
         assert isinstance(direct_connect, DirectConnectAuthConfig)
         assert direct_connect.login_method == 'password'
         assert direct_connect.allowed_return_origins == (
-            'https://kumo.example.com', 'http://localhost:5173')
+            'https://kumo.example.com',
+            'http://localhost:5173',
+        )
         assert direct_connect.admin_emails == ('admin@kumo.ai', 'ops@kumo.ai')
 
         password = direct_connect.password
@@ -658,6 +703,7 @@ class TestAuthConfig:
 
 class TestTemporalProperties:
     """Temporal-related properties derived from orchestration config."""
+
     def test_cloud_temporal_namespace(self):
         cfg = DeployEnvConfig(
             deploy_mode=DeployStage.PROD,
@@ -676,8 +722,9 @@ class TestTemporalProperties:
 
     def test_custom_temporal_namespace(self):
         cfg = DeployEnvConfig(
-            orchestration=CustomTemporalConfig(server_address='10.0.0.5:7233',
-                                               namespace=DEVTEST_NAMESPACE),
+            orchestration=CustomTemporalConfig(
+                server_address='10.0.0.5:7233', namespace=DEVTEST_NAMESPACE
+            ),
             instance_id='user-inst',
         )
         assert cfg.temporal_namespace == DEVTEST_NAMESPACE
@@ -689,8 +736,10 @@ class TestTemporalProperties:
 
     def test_tls_cert_dir_custom(self):
         cfg = DeployEnvConfig(
-            orchestration=CustomTemporalConfig(server_address='10.0.0.5:7233',
-                                               tls_cert_dir='/etc/certs'), )
+            orchestration=CustomTemporalConfig(
+                server_address='10.0.0.5:7233', tls_cert_dir='/etc/certs'
+            ),
+        )
         assert cfg.tls_cert_dir == '/etc/certs'
 
     def test_web_url_cloud(self):
@@ -703,13 +752,14 @@ class TestTemporalProperties:
 
     def test_web_url_localhost(self):
         cfg = DeployEnvConfig(
-            orchestration=CustomTemporalConfig(
-                server_address='127.0.0.1:7233'), )
+            orchestration=CustomTemporalConfig(server_address='127.0.0.1:7233'),
+        )
         assert cfg.web_url == 'localhost:7233'
 
 
 class TestK8sProperties:
     """k8s_namespace and k8s_deploy_env_label."""
+
     def test_prod_namespace(self):
         cfg = DeployEnvConfig(
             deploy_mode=DeployStage.PROD,
@@ -753,6 +803,7 @@ class TestK8sProperties:
 
 class TestIdSuffix:
     """id_suffix, task_queue, workflow_id, strip_suffix."""
+
     def test_prod_suffix(self):
         cfg = DeployEnvConfig(
             deploy_mode=DeployStage.PROD,
@@ -828,21 +879,23 @@ class TestIdSuffix:
 
 class TestStorageResolution:
     """Storage roots are eagerly resolved in parse_from_env."""
+
     def test_default_s3_root(self, monkeypatch):
         _clear_env(monkeypatch)
         monkeypatch.setenv('DEPLOY_STAGE', 'prod')
         cfg = DeployEnvConfig.parse_from_env()
 
         assert cfg.storage.data_plane_storage_root == (
-            's3://kumo-prod-dataplane-bucket/prod/')
+            's3://kumo-prod-dataplane-bucket/prod/'
+        )
         assert cfg.storage.control_plane_storage_root == (
-            cfg.storage.data_plane_storage_root)
+            cfg.storage.data_plane_storage_root
+        )
 
     def test_custom_bucket(self, monkeypatch):
         _clear_env(monkeypatch)
         monkeypatch.setenv('DEPLOY_STAGE', 'prod')
-        monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET',
-                           's3://customer-bucket')
+        monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET', 's3://customer-bucket')
 
         cfg = DeployEnvConfig.parse_from_env()
 
@@ -852,26 +905,24 @@ class TestStorageResolution:
         _clear_env(monkeypatch)
         monkeypatch.setenv('DEPLOY_STAGE', 'preprod')
         monkeypatch.setenv('INSTANCE_ID', 'i-123')
-        monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET',
-                           's3://customer-bucket/{instance_id}')
+        monkeypatch.setenv(
+            'CUSTOM_S3_DATA_PLANE_BUCKET', 's3://customer-bucket/{instance_id}'
+        )
 
         cfg = DeployEnvConfig.parse_from_env()
 
-        assert cfg.storage.data_plane_storage_root == (
-            's3://customer-bucket/i-123')
+        assert cfg.storage.data_plane_storage_root == ('s3://customer-bucket/i-123')
 
     def test_preprod_legacy_append(self, monkeypatch):
         """PREPROD without {instance_id} template gets instance_id appended."""
         _clear_env(monkeypatch)
         monkeypatch.setenv('DEPLOY_STAGE', 'preprod')
         monkeypatch.setenv('INSTANCE_ID', 'i-123')
-        monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET',
-                           's3://customer-bucket')
+        monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET', 's3://customer-bucket')
 
         cfg = DeployEnvConfig.parse_from_env()
 
-        assert cfg.storage.data_plane_storage_root == (
-            's3://customer-bucket/i-123')
+        assert cfg.storage.data_plane_storage_root == ('s3://customer-bucket/i-123')
 
     def test_custom_persist_dir(self, monkeypatch):
         _clear_env(monkeypatch)
@@ -880,8 +931,7 @@ class TestStorageResolution:
 
         cfg = DeployEnvConfig.parse_from_env()
 
-        assert cfg.storage.control_plane_storage_root == (
-            's3://persist-bucket/prod')
+        assert cfg.storage.control_plane_storage_root == ('s3://persist-bucket/prod')
 
     def test_region_suffix(self, monkeypatch):
         _clear_env(monkeypatch)
@@ -891,7 +941,8 @@ class TestStorageResolution:
         cfg = DeployEnvConfig.parse_from_env()
 
         assert cfg.storage.data_plane_storage_root == (
-            's3://kumo-prod-eu-dataplane-bucket/prod/')
+            's3://kumo-prod-eu-dataplane-bucket/prod/'
+        )
 
     def test_kumo_home_placeholder_uses_repo_cache(self, monkeypatch, tmp_path):
         _clear_env(monkeypatch)
@@ -900,9 +951,8 @@ class TestStorageResolution:
         monkeypatch.setenv('INSTANCE_ID', 'abc123')
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({'storage': {
-                'data_plane_storage_root': '{kumo_home}'
-            }}))
+            json.dumps({'storage': {'data_plane_storage_root': '{kumo_home}'}}),
+        )
 
         with patch('getpass.getuser', return_value='testuser'):
             cfg = DeployEnvConfig.parse_from_env()
@@ -918,20 +968,21 @@ class TestStorageResolution:
         monkeypatch.setenv('INSTANCE_ID', 'abc123')
         monkeypatch.setenv(
             'DEPLOY_ENV_CONFIG_JSON',
-            json.dumps({
-                'storage': {
-                    'data_plane_storage_root': 's3://bucket/{instance_id}/'
-                }
-            }))
+            json.dumps(
+                {'storage': {'data_plane_storage_root': 's3://bucket/{instance_id}/'}}
+            ),
+        )
 
-        with patch('getpass.getuser', return_value='testuser'), patch(
+        with (
+            patch('getpass.getuser', return_value='testuser'),
+            patch(
                 'service_framework.deploy_env_config.get_default_home_dir'
-        ) as get_home_dir:
+            ) as get_home_dir,
+        ):
             cfg = DeployEnvConfig.parse_from_env()
 
         get_home_dir.assert_not_called()
-        assert cfg.storage.data_plane_storage_root == (
-            's3://bucket/testuser-abc123/')
+        assert cfg.storage.data_plane_storage_root == ('s3://bucket/testuser-abc123/')
 
 
 class TestIsDataplanePath:
@@ -939,6 +990,7 @@ class TestIsDataplanePath:
     Bugs here surface only at integration time, so unit-cover the URI
     scheme + prefix-comparison semantics explicitly.
     """
+
     def _cfg(self, root: str) -> DeployEnvConfig:
         return DeployEnvConfig(
             deploy_mode=DeployStage.PROD,
@@ -957,12 +1009,14 @@ class TestIsDataplanePath:
     def test_path_under_root(self):
         cfg = self._cfg('s3://example-bucket/jobs/')
         assert cfg.is_dataplane_path(
-            's3://example-bucket/jobs/job-1/train_table/x.parquet')
+            's3://example-bucket/jobs/job-1/train_table/x.parquet'
+        )
 
     def test_path_outside_root_rejected(self):
         cfg = self._cfg('s3://example-bucket/jobs/')
         assert not cfg.is_dataplane_path(
-            's3://example-other-bucket/jobs/job-1/x.parquet')
+            's3://example-other-bucket/jobs/job-1/x.parquet'
+        )
         assert not cfg.is_dataplane_path('/mnt/localssd/edge_persist/job-1/x')
         assert not cfg.is_dataplane_path('/tmp/staging_abc/tt.parquet')
 
@@ -993,6 +1047,7 @@ class TestIsDataplanePath:
 
 class TestParseFromEnv:
     """Test parse_from_env with various env var combinations."""
+
     def test_default_dev(self, monkeypatch):
         _clear_env(monkeypatch)
         monkeypatch.setenv('DEPLOY_STAGE', 'dev')
@@ -1105,15 +1160,9 @@ class TestErrors:
         # Omitting it should raise.
         _clear_env(monkeypatch)
         bad = {
-            'data_compute': {
-                'type': 'DISKGRAPH'
-            },
-            'orchestration': {
-                'type': 'custom'
-            },
-            'secrets': {
-                'backend': 'k8s_mount'
-            },
+            'data_compute': {'type': 'DISKGRAPH'},
+            'orchestration': {'type': 'custom'},
+            'secrets': {'backend': 'k8s_mount'},
             'storage': {},
             'logging': {},
         }
@@ -1144,10 +1193,14 @@ class TestErrors:
 
 class TestLoggingOutputFormat:
     def test_platform_defaults(self):
-        assert (PLATFORM_DEFAULTS[PlatformPreset.AWS].logging.output_format ==
-                LoggingOutputFormat.TEXT)
-        assert (PLATFORM_DEFAULTS[PlatformPreset.GCP].logging.output_format ==
-                LoggingOutputFormat.TEXT)
+        assert (
+            PLATFORM_DEFAULTS[PlatformPreset.AWS].logging.output_format
+            == LoggingOutputFormat.TEXT
+        )
+        assert (
+            PLATFORM_DEFAULTS[PlatformPreset.GCP].logging.output_format
+            == LoggingOutputFormat.TEXT
+        )
 
 
 # ===================================================================

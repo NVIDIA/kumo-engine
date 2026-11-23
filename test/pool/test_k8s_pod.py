@@ -7,6 +7,7 @@ The (future) K8sPlacementStrategy uses these when constructing pod
 manifests; the env-var keys + values must match what
 :mod:`pool.worker_main` parses, which is what these tests pin.
 """
+
 import pytest
 
 from pool.k8s_pod import (
@@ -67,8 +68,7 @@ def test_activity_pod_env_vars_uses_activity_queue():
 
 
 def test_activity_pod_with_higher_gpu_concurrency():
-    env = activity_pod_env_vars(pool_worker_uid='w-a', job_id='j-1',
-                                gpu_concurrency=4)
+    env = activity_pod_env_vars(pool_worker_uid='w-a', job_id='j-1', gpu_concurrency=4)
     assert env['POOL_GPU_CONCURRENCY'] == '4'
 
 
@@ -93,8 +93,7 @@ def test_forwarded_deploy_env_vars_empty_when_unset():
     assert forwarded_deploy_env_vars() == {}
 
 
-def test_forwarded_deploy_env_vars_inlines_config_file_to_json(
-        tmp_path, monkeypatch):
+def test_forwarded_deploy_env_vars_inlines_config_file_to_json(tmp_path, monkeypatch):
     # Controller may set DEPLOY_ENV_CONFIG_FILE (a host-local path
     # that's not valid inside the pod) instead of forwarding
     # DEPLOY_ENV_CONFIG_JSON. Inline the file content so the pod's
@@ -114,9 +113,9 @@ def test_forwarded_deploy_env_vars_inlines_config_file_to_json(
 
 
 def test_forwarded_deploy_env_vars_existing_json_takes_precedence_over_file(
-        tmp_path, monkeypatch):
-    monkeypatch.setenv('DEPLOY_ENV_CONFIG_JSON',
-                       '{"orchestration": {"type": "local"}}')
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv('DEPLOY_ENV_CONFIG_JSON', '{"orchestration": {"type": "local"}}')
     config_file = tmp_path / 'unused.json'
     config_file.write_text('{"orchestration": {"type": "cloud"}}')
     monkeypatch.setenv('DEPLOY_ENV_CONFIG_FILE', str(config_file))
@@ -124,8 +123,7 @@ def test_forwarded_deploy_env_vars_existing_json_takes_precedence_over_file(
     env = forwarded_deploy_env_vars()
 
     # JSON env directly set wins; file is ignored.
-    assert env[
-        'DEPLOY_ENV_CONFIG_JSON'] == '{"orchestration": {"type": "local"}}'
+    assert env['DEPLOY_ENV_CONFIG_JSON'] == '{"orchestration": {"type": "local"}}'
 
 
 def test_daemon_pod_env_vars_forwards_deploy_env(monkeypatch):
@@ -133,8 +131,9 @@ def test_daemon_pod_env_vars_forwards_deploy_env(monkeypatch):
     monkeypatch.setenv('DEPLOY_STAGE', 'dev')
     monkeypatch.setenv('INSTANCE_ID', 'antest-3a37fb')
     monkeypatch.setenv('AWS_REGION', 'us-west-2')
-    monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET',
-                       's3://example-bucket/preprod/test')
+    monkeypatch.setenv(
+        'CUSTOM_S3_DATA_PLANE_BUCKET', 's3://example-bucket/preprod/test'
+    )
 
     env = daemon_pod_env_vars(pool_worker_uid='worker-a')
 
@@ -142,8 +141,7 @@ def test_daemon_pod_env_vars_forwards_deploy_env(monkeypatch):
     assert env['DEPLOY_STAGE'] == 'dev'
     assert env['INSTANCE_ID'] == 'antest-3a37fb'
     assert env['AWS_REGION'] == 'us-west-2'
-    assert env['CUSTOM_S3_DATA_PLANE_BUCKET'] == (
-        's3://example-bucket/preprod/test')
+    assert env['CUSTOM_S3_DATA_PLANE_BUCKET'] == ('s3://example-bucket/preprod/test')
     assert env['POOL_WORKER_UID'] == 'worker-a'
     assert env['POOL_STORAGE_MODE'] == PoolStorageMode.DAEMON_ON_PVC.value
 
@@ -153,8 +151,9 @@ def test_activity_pod_env_vars_forwards_deploy_env(monkeypatch):
     monkeypatch.setenv('DEPLOY_STAGE', 'dev')
     monkeypatch.setenv('INSTANCE_ID', 'antest-3a37fb')
     monkeypatch.setenv('AWS_REGION', 'us-west-2')
-    monkeypatch.setenv('CUSTOM_S3_DATA_PLANE_BUCKET',
-                       's3://example-bucket/preprod/test')
+    monkeypatch.setenv(
+        'CUSTOM_S3_DATA_PLANE_BUCKET', 's3://example-bucket/preprod/test'
+    )
 
     pvc_env = activity_pod_env_vars(
         pool_worker_uid='worker-a',
@@ -172,16 +171,16 @@ def test_activity_pod_env_vars_forwards_deploy_env(monkeypatch):
         assert env['INSTANCE_ID'] == 'antest-3a37fb'
         assert env['AWS_REGION'] == 'us-west-2'
         assert env['CUSTOM_S3_DATA_PLANE_BUCKET'] == (
-            's3://example-bucket/preprod/test')
+            's3://example-bucket/preprod/test'
+        )
 
-    assert pvc_env['POOL_STORAGE_MODE'] == (
-        PoolStorageMode.ACTIVITY_ON_PVC.value)
+    assert pvc_env['POOL_STORAGE_MODE'] == (PoolStorageMode.ACTIVITY_ON_PVC.value)
     assert emptydir_env['POOL_STORAGE_MODE'] == (
-        PoolStorageMode.ACTIVITY_ON_EMPTYDIR.value)
+        PoolStorageMode.ACTIVITY_ON_EMPTYDIR.value
+    )
 
 
-def test_pool_pods_forward_only_nonsecret_gcp_connector_io_controls(
-        monkeypatch):
+def test_pool_pods_forward_only_nonsecret_gcp_connector_io_controls(monkeypatch):
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'transfer-bucket')
     monkeypatch.setenv('GOOGLE_CLOUD_PROJECT', 'staging-project')
     forbidden_credentials = {
@@ -192,11 +191,12 @@ def test_pool_pods_forward_only_nonsecret_gcp_connector_io_controls(
         monkeypatch.setenv(name, value)
 
     for env in (
-            daemon_pod_env_vars(pool_worker_uid='worker-a'),
-            activity_pod_env_vars(pool_worker_uid='worker-a', job_id='job-1'),
+        daemon_pod_env_vars(pool_worker_uid='worker-a'),
+        activity_pod_env_vars(pool_worker_uid='worker-a', job_id='job-1'),
     ):
         assert env['GCP_STORAGE_TRANSFER_BUCKET'] == 'transfer-bucket'
         assert env['GOOGLE_CLOUD_PROJECT'] == 'staging-project'
         assert forbidden_credentials.keys().isdisjoint(env)
-        assert all(value not in env.values()
-                   for value in forbidden_credentials.values())
+        assert all(
+            value not in env.values() for value in forbidden_credentials.values()
+        )

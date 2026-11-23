@@ -29,6 +29,7 @@ Usage from a test::
 
 The companion fixture is :func:`test.conftest.seed_col_stats`.
 """
+
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -133,10 +134,11 @@ def seed_col_stats_cache(
         cache = get_active_cache()
         if cache is None:
             raise RuntimeError(
-                "BackendCacheManager unavailable: persist_dir is not set. "
-                "Either pass persist_dir=... explicitly, or ensure the "
-                "autouse `run_before_and_after_tests` fixture in "
-                "test/conftest.py has run.")
+                'BackendCacheManager unavailable: persist_dir is not set. '
+                'Either pass persist_dir=... explicitly, or ensure the '
+                'autouse `run_before_and_after_tests` fixture in '
+                'test/conftest.py has run.'
+            )
 
     fingerprint = _build_fingerprint(
         connector_name=connector_name,
@@ -160,7 +162,8 @@ def seed_col_stats_cache(
                 data_version=data_version,
                 approx=False,
                 include_heavy_nlp=include_heavy_nlp,
-            ))
+            )
+        )
         if not stats_for_col:
             continue
         # The cache lookup key embeds the column's stype (see
@@ -173,8 +176,9 @@ def seed_col_stats_cache(
         # whose ``Stype.supports_dtype`` accepts the column's dtype. The
         # extra keys are dead weight at most — they're never queried by
         # callers that don't ask for them.
-        col_stats[BaseColumnConfig(name=col_name, stype=None,
-                                   dtype=kumo_dtype)] = stats_for_col
+        col_stats[BaseColumnConfig(name=col_name, stype=None, dtype=kumo_dtype)] = (
+            stats_for_col
+        )
         for stype in Stype:
             if stype == Stype.unsupported:
                 continue
@@ -183,8 +187,9 @@ def seed_col_stats_cache(
             except Exception:
                 supported = False
             if supported:
-                col_stats[BaseColumnConfig(name=col_name, stype=stype,
-                                           dtype=kumo_dtype)] = stats_for_col
+                col_stats[
+                    BaseColumnConfig(name=col_name, stype=stype, dtype=kumo_dtype)
+                ] = stats_for_col
 
     if col_stats:
         cache.add_col_stats(fingerprint, col_stats)
@@ -197,8 +202,9 @@ def seed_col_stats_cache(
     # `compute_table_stats_native` for any missing entries).
     # ------------------------------------------------------------------
     table_stats: Dict[TableStatType, Stats] = {
-        TableStatType.NUM_ROWS:
-        Stats(value=len(df), approx=False, data_version=data_version),
+        TableStatType.NUM_ROWS: Stats(
+            value=len(df), approx=False, data_version=data_version
+        ),
     }
     cache.add_table_stats(fingerprint, table_stats)
     cache.save_table_stats(fingerprint, data_version, table_stats)
@@ -207,5 +213,4 @@ def seed_col_stats_cache(
     # call `get_data_version` which reads from `table_version_cache`. Test
     # connectors usually compute their own version (e.g. parquet mtime)
     # so this is a hint rather than a load-bearing write.
-    cache.table_version_cache.save_in_memory(connector_name, table_name,
-                                             data_version)
+    cache.table_version_cache.save_in_memory(connector_name, table_name, data_version)

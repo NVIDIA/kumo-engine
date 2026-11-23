@@ -66,7 +66,7 @@ def model_plan_to_yaml(
 
     def remove_newlines_in_parentheses(text):
         def replacer(match):
-            return match.group(0).replace("\n    ", " ")
+            return match.group(0).replace('\n    ', ' ')
 
         return re.sub(r'\(.*?\)', replacer, text, flags=re.DOTALL)
 
@@ -98,24 +98,21 @@ def update_model_plan_from_yaml(
     2. Translates YAML errors to show line context
     3. Pre-validates hop keys with clear error messages
     """
-    yaml_repr = re.sub(r'^(\s*[\w_]+:)(?=\S)', r'\1 ', yaml_repr,
-                       flags=re.MULTILINE)
+    yaml_repr = re.sub(r'^(\s*[\w_]+:)(?=\S)', r'\1 ', yaml_repr, flags=re.MULTILINE)
     yaml_repr = re.sub(r'^(\s+-)(?=\S)', r'\1 ', yaml_repr, flags=re.MULTILINE)
 
     try:
         sections_dict = yaml.safe_load(yaml_repr)
     except (ScannerError, ParserError) as e:
         friendly_error = _translate_yaml_error(e, yaml_repr)
-        error_message = friendly_error.replace(_INVALID_SYNTAX_PREFIX,
-                                               "").strip()
+        error_message = friendly_error.replace(_INVALID_SYNTAX_PREFIX, '').strip()
         raise ModelPlanSyntaxError(error_message) from e
 
     if sections_dict is None:
         return plan
 
     if not isinstance(sections_dict, dict):
-        raise ModelPlanSyntaxError(
-            "Could not parse the Model Plan as valid YAML.")
+        raise ModelPlanSyntaxError('Could not parse the Model Plan as valid YAML.')
 
     all_errors: list[LineError] = []
     for key in plan.__dataclass_fields__:  # type: ignore
@@ -126,7 +123,8 @@ def update_model_plan_from_yaml(
 
             if key == 'neighbor_sampling' and isinstance(options_dict, dict):
                 neighbor_sampling_errors = _prevalidate_neighbor_sampling_keys(
-                    options_dict)
+                    options_dict
+                )
                 if neighbor_sampling_errors:
                     all_errors.extend(neighbor_sampling_errors)
                     continue
@@ -139,13 +137,13 @@ def update_model_plan_from_yaml(
             field.name
             for field in plan.__dataclass_fields__.values()  # type: ignore
         ]
-        all_errors.append({
-            'type':
-            ExtraFieldsError(valid_top_sections=valid_top_sections),
-            'loc': (name, ),
-            'input':
-            sections_dict[name],
-        })
+        all_errors.append(
+            {
+                'type': ExtraFieldsError(valid_top_sections=valid_top_sections),
+                'loc': (name,),
+                'input': sections_dict[name],
+            }
+        )
 
     if len(all_errors) > 0:
         raise ModelPlanValidationError(
@@ -176,18 +174,22 @@ def _translate_yaml_error(error: Exception, yaml_repr: str) -> str:
         stripped = line.strip()
         if stripped.startswith('->') or stripped.startswith('- >'):
             return (
-                f"{_INVALID_SYNTAX_PREFIX}\n\n"
+                f'{_INVALID_SYNTAX_PREFIX}\n\n'
                 f"  {repr(stripped.split(':')[0])}: empty source (before '->').\n"
-                f"  Fix by adding a table.column before '->'.")
+                f"  Fix by adding a table.column before '->'."
+            )
 
     if line_num and 1 <= line_num <= len(lines):
         problem_line = lines[line_num - 1]
-        pointer = (f"{' ' * (len(f'Line {line_num}: ') + col_num - 1)}^\n"
-                   if col_num else "")
-        return (f"{_INVALID_SYNTAX_PREFIX}\n\n"
-                f"Line {line_num}: {problem_line}\n{pointer}{error_msg}")
+        pointer = (
+            f'{" " * (len(f"Line {line_num}: ") + col_num - 1)}^\n' if col_num else ''
+        )
+        return (
+            f'{_INVALID_SYNTAX_PREFIX}\n\n'
+            f'Line {line_num}: {problem_line}\n{pointer}{error_msg}'
+        )
 
-    return f"{_INVALID_SYNTAX_PREFIX} {error_msg}"
+    return f'{_INVALID_SYNTAX_PREFIX} {error_msg}'
 
 
 def _prevalidate_neighbor_sampling_keys(options_dict: dict) -> list[LineError]:
@@ -217,47 +219,55 @@ def _prevalidate_neighbor_sampling_keys(options_dict: dict) -> list[LineError]:
                 if arrow_count == 0:
                     invalid_keys.append(
                         f"  {repr(key)}: missing the '->' separator.\n"
-                        f"  Fix by adding '->' between source and destination.")
+                        f"  Fix by adding '->' between source and destination."
+                    )
                 elif arrow_count > 1:
                     invalid_keys.append(
                         f"  {repr(key)}: too many '->'.\n"
-                        f"  Fix by removing the extra arrow(s).")
+                        f'  Fix by removing the extra arrow(s).'
+                    )
                 elif '->' in key:
                     src, dst = key.split('->')
                     if not src.strip():
                         invalid_keys.append(
                             f"  {repr(key)}: empty source (before '->').\n"
-                            f"  Fix by adding a table.column before '->'.")
+                            f"  Fix by adding a table.column before '->'."
+                        )
                     elif not dst.strip():
                         invalid_keys.append(
                             f"  {repr(key)}: empty destination (after '->').\n"
-                            f"  Fix by adding a table.column after '->'.")
+                            f"  Fix by adding a table.column after '->'."
+                        )
                     elif '.' not in src:
                         invalid_keys.append(
-                            f"  {repr(key)}: source is missing the dot separator.\n"
-                            f"  Fix by adding a dot between table and column.")
+                            f'  {repr(key)}: source is missing the dot separator.\n'
+                            f'  Fix by adding a dot between table and column.'
+                        )
                     elif '.' not in dst:
                         invalid_keys.append(
-                            f"  {repr(key)}: destination is missing the dot separator.\n"
-                            f"  Fix by adding a dot between table and column.")
+                            f'  {repr(key)}: destination is missing the dot separator.\n'
+                            f'  Fix by adding a dot between table and column.'
+                        )
 
     if invalid_keys:
         # No `ctx` is passed, so PydanticCustomError leaves any literal
         # braces in the message untouched (the hop keys are `repr`'d).
-        errors.append({
-            'type':
-            PydanticCustomError(
-                'model_plan_syntax',
-                # The template is built from user input rather than a literal,
-                # which is safe here only because no `ctx` is passed.
-                str(  # type: ignore[arg-type]
-                    ModelPlanSyntaxError("Invalid hop key(s):\n\n" +
-                                         "\n".join(invalid_keys))),
-            ),
-            'loc': ('neighbor_sampling', 'num_neighbors'),
-            'input':
-            options_dict.get('num_neighbors'),
-        })
+        errors.append(
+            {
+                'type': PydanticCustomError(
+                    'model_plan_syntax',
+                    # The template is built from user input rather than a literal,
+                    # which is safe here only because no `ctx` is passed.
+                    str(  # type: ignore[arg-type]
+                        ModelPlanSyntaxError(
+                            'Invalid hop key(s):\n\n' + '\n'.join(invalid_keys)
+                        )
+                    ),
+                ),
+                'loc': ('neighbor_sampling', 'num_neighbors'),
+                'input': options_dict.get('num_neighbors'),
+            }
+        )
 
     return errors
 
@@ -265,6 +275,7 @@ def _prevalidate_neighbor_sampling_keys(options_dict: dict) -> list[LineError]:
 class _PrettyDumper(yaml.SafeDumper):
     r"""A custom dumper to deal with enums and prettify nested list
     representations."""
+
     def represent_data(self, data):
         if data is None:
             # Represent empty data as `attr:` instead of `attr: null`:
@@ -284,8 +295,7 @@ class _PrettyDumper(yaml.SafeDumper):
 
         if isinstance(data, NumNeighborsConfig):
             out = {  # Represent number of neighbors with extra keys:
-                f'hop{key + 1}':
-                dict(default=value.default) | value.__pydantic_extra__
+                f'hop{key + 1}': dict(default=value.default) | value.__pydantic_extra__
                 for key, value in data.to_dict().items()
             }
             return self.represent_mapping('tag:yaml.org,2002:map', out)

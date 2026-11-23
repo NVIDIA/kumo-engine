@@ -17,8 +17,10 @@ async def test_wait_on_workflow_uses_exact_run_id() -> None:
     ctx.temporal_client.return_value = temporal_client
 
     result = await DataBackendActivities.wait_on_workflow(
-        ctx, 'child-workflow', 'completed-run')
+        ctx, 'child-workflow', 'completed-run'
+    )
 
     assert result == 'done'
-    temporal_client.result.assert_awaited_once_with('child-workflow',
-                                                    run_id='completed-run')
+    temporal_client.result.assert_awaited_once_with(
+        'child-workflow', run_id='completed-run'
+    )

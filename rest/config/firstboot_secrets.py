@@ -8,15 +8,14 @@ from typing import Any, Dict, Optional
 
 from io_utils.secrets import get_secrets
 
-_DEFAULT_FIRSTBOOT_SECRET_DIR = "/opt/kumo/secrets"
+_DEFAULT_FIRSTBOOT_SECRET_DIR = '/opt/kumo/secrets'
 
 
 def _candidate_secret_paths(secret_name: str) -> list[str]:
-    explicit_path = os.getenv("KUMO_FIRSTBOOT_SECRET_PATH")
+    explicit_path = os.getenv('KUMO_FIRSTBOOT_SECRET_PATH')
     if explicit_path:
         return [explicit_path]
-    secret_dir = os.getenv("KUMO_FIRSTBOOT_SECRET_DIR",
-                           _DEFAULT_FIRSTBOOT_SECRET_DIR)
+    secret_dir = os.getenv('KUMO_FIRSTBOOT_SECRET_DIR', _DEFAULT_FIRSTBOOT_SECRET_DIR)
     return [os.path.join(secret_dir, secret_name)]
 
 
@@ -25,11 +24,11 @@ def load_firstboot_secret(secret_name: str) -> Optional[Dict[str, Any]]:
     for secret_path in _candidate_secret_paths(secret_name):
         if not os.path.exists(secret_path):
             continue
-        with open(secret_path, encoding="utf-8") as file:
+        with open(secret_path, encoding='utf-8') as file:
             payload = json.load(file)
         if not isinstance(payload, dict):
             raise RuntimeError(
-                f"Firstboot secret file must contain a JSON object: {secret_path}"
+                f'Firstboot secret file must contain a JSON object: {secret_path}'
             )
         return payload
     return None

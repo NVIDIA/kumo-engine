@@ -25,6 +25,7 @@ class ResolvedGroupMembership:
 
 class NativeGroupResolver:
     """Resolve live Kumo-native membership without an external adapter."""
+
     def __init__(self, state_services: Optional[StateServices] = None):
         self._state_services = state_services
 
@@ -38,8 +39,7 @@ class NativeGroupResolver:
     ) -> ResolvedGroupMembership:
         del auth_context
         if self._state_services is None:
-            raise RuntimeError(
-                "NativeGroupResolver StateServices is not configured")
+            raise RuntimeError('NativeGroupResolver StateServices is not configured')
         from statedb.rest.group import PrincipalType
 
         group_ids = await self._state_services.groups.resolve_native_memberships(

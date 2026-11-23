@@ -25,8 +25,7 @@ def authoring_task(train_table_stats=None, **rows) -> SimpleNamespace:
     task = SimpleNamespace(
         target_to_entity_paths=[[EDGE]],
         get_train_table_stats=lambda after_split: train_table_stats,
-        graph={name: table(name)
-               for name in rows},
+        graph={name: table(name) for name in rows},
     )
     task.asked = asked
     return task
@@ -40,8 +39,7 @@ def test_authoring_neighbor_inference_stays_at_monolith_boundary() -> None:
     assert infer_authoring_max_target_neighbors_per_entity(task) == 64
 
 
-def test_authoring_neighbor_inference_applies_the_shared_degree_formula(
-) -> None:
+def test_authoring_neighbor_inference_applies_the_shared_degree_formula() -> None:
     # 40000 / 100 -> degree 400 -> ceil(sqrt(400) * 8) == 160, the same
     # number `kumo_core.automl.target_fanout` produces for that degree.
     task = authoring_task(events=40_000, users=100)
@@ -66,8 +64,7 @@ def test_authoring_neighbor_inference_prefers_measured_node_degrees() -> None:
     assert task.asked == []
 
 
-def test_authoring_neighbor_inference_ignores_statistics_without_degrees(
-) -> None:
+def test_authoring_neighbor_inference_ignores_statistics_without_degrees() -> None:
     task = authoring_task(
         train_table_stats=SimpleNamespace(
             stats_type=TrainTableType.TEMPORAL_LINK_PRED,

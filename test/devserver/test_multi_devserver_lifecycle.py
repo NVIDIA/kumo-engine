@@ -36,7 +36,8 @@ def _manifest(phase='planned'):
             },
         },
         phase=phase,
-        owner_token='owner-a')
+        owner_token='owner-a',
+    )
 
 
 def test_manifest_round_trip_is_atomic_json(tmp_path):
@@ -52,29 +53,35 @@ def test_manifest_round_trip_is_atomic_json(tmp_path):
 
 def test_manifest_rejects_unowned_resources_and_missing_parent(tmp_path):
     with pytest.raises(DevserverLifecycleError, match='owner token'):
-        new_manifest({
-            'train-a': {
-                'resources': {
-                    'scope': {
-                        'owner_token': 'somebody-else',
+        new_manifest(
+            {
+                'train-a': {
+                    'resources': {
+                        'scope': {
+                            'owner_token': 'somebody-else',
+                        },
                     },
                 },
             },
-        }, owner_token='owner-a')
+            owner_token='owner-a',
+        )
 
     with pytest.raises(DevserverLifecycleError, match='does not exist'):
-        write_manifest_atomic(tmp_path / 'missing' / 'manifest.json',
-                              _manifest())
+        write_manifest_atomic(tmp_path / 'missing' / 'manifest.json', _manifest())
 
 
 def test_manifest_rejects_invalid_phase_when_read(tmp_path):
     path = tmp_path / 'lifecycle.json'
-    path.write_text(json.dumps({
-        'version': 1,
-        'phase': 'deleting',
-        'owner_token': 'owner-a',
-        'children': {},
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                'version': 1,
+                'phase': 'deleting',
+                'owner_token': 'owner-a',
+                'children': {},
+            }
+        )
+    )
 
     with pytest.raises(DevserverLifecycleError, match='phase'):
         read_manifest(path)
@@ -119,10 +126,10 @@ def test_stale_manifest_is_ambiguous_without_full_owner_verification():
     manifest = _manifest()
 
     missing = inspect_stale_manifest(manifest)
-    false = inspect_stale_manifest(manifest,
-                                   lambda *_: False)
+    false = inspect_stale_manifest(manifest, lambda *_: False)
     raised = inspect_stale_manifest(
-        manifest, lambda *_: (_ for _ in ()).throw(RuntimeError('unreachable')))
+        manifest, lambda *_: (_ for _ in ()).throw(RuntimeError('unreachable'))
+    )
 
     assert missing.status is StaleManifestStatus.AMBIGUOUS
     assert false.status is StaleManifestStatus.AMBIGUOUS
@@ -140,19 +147,24 @@ def test_stale_manifest_requires_all_resources_to_verify():
                 },
             },
         },
-        owner_token='owner-a')
+        owner_token='owner-a',
+    )
 
     inspection = inspect_stale_manifest(
         manifest,
         lambda resource_id, resource, owner_token: (
-            resource['owner_token'] == owner_token and resource_id !=
-            'train-a/port-block'))
+            resource['owner_token'] == owner_token
+            and resource_id != 'train-a/port-block'
+        ),
+    )
     verified = inspect_stale_manifest(
         manifest,
-        lambda resource_id, resource, owner_token: resource['owner_token'] ==
-        owner_token)
+        lambda resource_id, resource, owner_token: (
+            resource['owner_token'] == owner_token
+        ),
+    )
 
     assert inspection.status is StaleManifestStatus.AMBIGUOUS
-    assert inspection.verified_resources == ('train-a/scope', )
+    assert inspection.verified_resources == ('train-a/scope',)
     assert verified.status is StaleManifestStatus.VERIFIED
     assert verified.verified_resources == ('train-a/scope', 'train-a/port-block')

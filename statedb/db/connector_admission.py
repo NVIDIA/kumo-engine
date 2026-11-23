@@ -73,38 +73,48 @@ async def require_connectors_for_admission(
     connectors = StateDBConnectorRepository()
 
     project_row = await projects.get(tx, str(project_id))
-    if (project_row is None
-            or project_row.payload.status != ProjectStatus.ACTIVE):
+    if project_row is None or project_row.payload.status != ProjectStatus.ACTIVE:
         raise ValueError(f"Active project '{project_id}' not found")
     group_id = project_row.payload.group_id
     await lock_group_relations(tx, [group_id])
 
     project_row = await projects.get(tx, str(project_id))
     group_row = await groups.get(tx, str(group_id))
-    if (project_row is None
-            or project_row.payload.status != ProjectStatus.ACTIVE
-            or project_row.payload.group_id != group_id or group_row is None
-            or group_row.payload.status != GroupStatus.ACTIVE):
+    if (
+        project_row is None
+        or project_row.payload.status != ProjectStatus.ACTIVE
+        or project_row.payload.group_id != group_id
+        or group_row is None
+        or group_row.payload.status != GroupStatus.ACTIVE
+    ):
         raise ValueError(f"Active project '{project_id}' not found")
 
     for connector_id in ids:
         connector = await connectors.get(tx, connector_id)
-        if (connector is None or connector.project_id != project_id
-                or connector.tombstoned_at is not None):
+        if (
+            connector is None
+            or connector.project_id != project_id
+            or connector.tombstoned_at is not None
+        ):
             raise ValueError(
-                f"Connector '{connector_id}' is not active in project "
-                f"'{project_id}'")
+                f"Connector '{connector_id}' is not active in project '{project_id}'"
+            )
         if not isinstance(connector, ExternalConnectorDBEntry):
             continue
         identity_row = await identities.get(tx, str(connector.identity_id))
         binding = await bindings.find_one_by_fields(
-            tx, {
+            tx,
+            {
                 'identity_id': str(connector.identity_id),
                 'group_id': str(group_id),
-            })
-        if (identity_row is None or binding is None
-                or identity_row.payload.config.type.value !=
-                connector.config.type.value):
+            },
+        )
+        if (
+            identity_row is None
+            or binding is None
+            or identity_row.payload.config.type.value != connector.config.type.value
+        ):
             raise ValueError(
                 f"Connector '{connector_id}' identity is not active for "
-                f"project '{project_id}'")
+                f"project '{project_id}'"
+            )

@@ -36,26 +36,40 @@ class _TaskDataset:
 
 def _graph_config(*, alternate: bool = False):
     return {
-        'tables': [{
-            'table_name': 'users',
-            'source_table_name': ('other.schema.users'
-                                  if alternate else 'db.schema.users'),
-            'pkey': {
-                'name': 'id',
-                'dtype': 'int64',
-                'stype': 'ID',
-            },
-            'cols': ([{
-                'name': 'label',
-                'dtype': 'bool',
-                'stype': 'categorical',
-            }] + ([{
-                'name': 'new_feature',
-                'dtype': 'float64',
-                'stype': 'numerical',
-            }] if alternate else [])),
-            'fkeys': [],
-        }]
+        'tables': [
+            {
+                'table_name': 'users',
+                'source_table_name': (
+                    'other.schema.users' if alternate else 'db.schema.users'
+                ),
+                'pkey': {
+                    'name': 'id',
+                    'dtype': 'int64',
+                    'stype': 'ID',
+                },
+                'cols': (
+                    [
+                        {
+                            'name': 'label',
+                            'dtype': 'bool',
+                            'stype': 'categorical',
+                        }
+                    ]
+                    + (
+                        [
+                            {
+                                'name': 'new_feature',
+                                'dtype': 'float64',
+                                'stype': 'numerical',
+                            }
+                        ]
+                        if alternate
+                        else []
+                    )
+                ),
+                'fkeys': [],
+            }
+        ]
     }
 
 
@@ -70,18 +84,24 @@ def _fake_published_bundle(root: Path) -> Path:
         ('metrics', 'metrics.json'),
     ):
         artifact = bundle / relative_path
-        artifacts.append({
-            'role': role,
-            'relative_path': relative_path,
-            'size_bytes': artifact.stat().st_size,
-            'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
-        })
-    (bundle / MANIFEST_FILE).write_text(json.dumps({
-        'schema_version': 1,
-        'policy': 'vital-training-artifacts-v1',
-        'excluded_by_default': [],
-        'artifacts': artifacts,
-    }))
+        artifacts.append(
+            {
+                'role': role,
+                'relative_path': relative_path,
+                'size_bytes': artifact.stat().st_size,
+                'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            }
+        )
+    (bundle / MANIFEST_FILE).write_text(
+        json.dumps(
+            {
+                'schema_version': 1,
+                'policy': 'vital-training-artifacts-v1',
+                'excluded_by_default': [],
+                'artifacts': artifacts,
+            }
+        )
+    )
     write_training_spec(
         bundle,
         predictive_query=QUERY,
@@ -96,8 +116,9 @@ def _prediction_table(root: Path) -> PredictionTable:
     return PredictionTable(QUERY, root, root, 0, 'tt-1', (), ())
 
 
-def _predict_with_stubbed_scorer(bundle: Path, root: Path,
-                                 snapshot_id: str, *, alternate: bool = False) -> list:
+def _predict_with_stubbed_scorer(
+    bundle: Path, root: Path, snapshot_id: str, *, alternate: bool = False
+) -> list:
     from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.task_dataset import DiskgraphTaskManifest
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
@@ -108,12 +129,12 @@ def _predict_with_stubbed_scorer(bundle: Path, root: Path,
     (root / 'config.json').write_text('{}')
     trainer = Trainer.load(bundle)
     trainer._id = 'fresh-process'
-    snapshot = GraphSnapshot(snapshot_id, root / 'index',
-                             _graph_config(alternate=alternate))
+    snapshot = GraphSnapshot(
+        snapshot_id, root / 'index', _graph_config(alternate=alternate)
+    )
     table = _prediction_table(root)
     output = PredictionOutputConfig(
-        SimpleNamespace(
-            sink_backend=SimpleNamespace(write_files=lambda *a, **k: None)),
+        SimpleNamespace(sink_backend=SimpleNamespace(write_files=lambda *a, **k: None)),
         ApiType.PREDICTIONS,
         'out',
     )
@@ -122,8 +143,11 @@ def _predict_with_stubbed_scorer(bundle: Path, root: Path,
         kind = PredictionArtifactType.PREDICTIONS
         worker = kwargs['partition_id']
         writer = StreamingFrameWriter(
-            str(Path(kwargs['output_dir']) / kind.output_file_name /
-                f'part-{worker:05d}'),
+            str(
+                Path(kwargs['output_dir'])
+                / kind.output_file_name
+                / f'part-{worker:05d}'
+            ),
             max_file_size=1 << 20,
             max_buffer_size=1 << 20,
             index=False,
@@ -131,19 +155,22 @@ def _predict_with_stubbed_scorer(bundle: Path, root: Path,
         )
         with writer:
             writer.write(
-                pd.DataFrame({
-                    'True_PROB': [.8],
-                    'TARGET_PRED': [True],
-                }))
-        kwargs['artifact_stats_collector'].add_partition(
-            worker, {kind: writer.stats})
+                pd.DataFrame(
+                    {
+                        'True_PROB': [0.8],
+                        'TARGET_PRED': [True],
+                    }
+                )
+            )
+        kwargs['artifact_stats_collector'].add_partition(worker, {kind: writer.stats})
 
     with ExitStack() as stack:
         stack.enter_context(
             patch(
                 'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
                 return_value=_TaskDataset(),
-            ))
+            )
+        )
         stack.enter_context(
             patch(
                 'kumo_core.prediction.materialize_prediction_task',
@@ -151,45 +178,57 @@ def _predict_with_stubbed_scorer(bundle: Path, root: Path,
                     manifest_path='task',
                     bundle_dir='bundle',
                 ),
-            ))
+            )
+        )
         stack.enter_context(
             patch(
                 'kumo.engine.trainer.trainer._stage_model_bundle',
                 return_value=root,
-            ))
+            )
+        )
         stack.enter_context(
-            patch('kumo.engine.trainer.trainer.bundle_task_options',
-                  return_value={'lag_timesteps': 0}))
+            patch(
+                'kumo.engine.trainer.trainer.bundle_task_options',
+                return_value={'lag_timesteps': 0},
+            )
+        )
         stack.enter_context(
             patch.object(
                 DiskgraphTaskManifest,
                 'load',
-                return_value=SimpleNamespace(task_type='binary_classification',
-                                             stage_counts={'predict': 1}),
-            ))
+                return_value=SimpleNamespace(
+                    task_type='binary_classification', stage_counts={'predict': 1}
+                ),
+            )
+        )
         stack.enter_context(
-            patch.object(ResolvedNumericalTask, 'from_manifest',
-                         return_value=None))
+            patch.object(ResolvedNumericalTask, 'from_manifest', return_value=None)
+        )
         stack.enter_context(
-            patch('kumo_core.train.diskgraph_nested_trainer.load_encoders', return_value=None))
+            patch(
+                'kumo_core.train.diskgraph_nested_trainer.load_encoders',
+                return_value=None,
+            )
+        )
         stack.enter_context(
             patch.object(
                 DiskgraphNestedTrainer,
                 'load',
                 side_effect=lambda task, *a, **k: SimpleNamespace(
-                    task=task, predict=fake_predict),
-            ))
+                    task=task, predict=fake_predict
+                ),
+            )
+        )
         result = trainer.predict(
             table,
             snapshot=snapshot,
             output_config=output,
-            binary_classification_threshold=.5,
+            binary_classification_threshold=0.5,
         )
     return result.frame['TARGET_PRED'].tolist()
 
 
-def test_fresh_process_loaded_model_predicts_new_data_version(
-        tmp_path: Path) -> None:
+def test_fresh_process_loaded_model_predicts_new_data_version(tmp_path: Path) -> None:
     bundle = _fake_published_bundle(tmp_path / 'bundle')
     child_root = tmp_path / 'child'
     code = """
@@ -224,7 +263,8 @@ print(json.dumps(_predict_with_stubbed_scorer(
 
 
 def test_loaded_model_accepts_compatible_independently_constructed_graph(
-        tmp_path: Path) -> None:
+    tmp_path: Path,
+) -> None:
     bundle = _fake_published_bundle(tmp_path / 'bundle')
     assert _predict_with_stubbed_scorer(
         bundle,

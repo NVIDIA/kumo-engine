@@ -35,7 +35,7 @@ class DeprecatedAdvancedAutoTrainerOptions:
     train_start_offset: Optional[int] = None
     train_end_offset: Optional[int] = None
     majority_sampling_ratio: Optional[float] = None
-    weight_mode: str = ""
+    weight_mode: str = ''
     entity_candidate: Optional[Union[bool, str]] = None
     entity_candidate_aggregation: Optional[str] = None
     channels: List[int] = field(default_factory=list)
@@ -50,10 +50,10 @@ class DeprecatedAdvancedAutoTrainerOptions:
     early_stopping: List[List[Any]] = field(default_factory=list)
     seed: Optional[int] = None
     task_path_override: Optional[str] = None
-    module: str = ""
+    module: str = ''
     probabilistic_modeling: Optional[str] = None
     handle_new_target_entities: bool = False
-    lp_target_embedding_mode: str = ""
+    lp_target_embedding_mode: str = ''
     lp_embedding_dim: int = 32
     lp_ranking_emb_loss_coeff: float = 0.0
     split: Optional[str] = None

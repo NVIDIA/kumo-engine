@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-from test.rest.integ.public_api_smoke_helpers import run_train_prediction_smoke
-
 import pytest
 from fastapi.testclient import TestClient
+
+from test.rest.integ.public_api_smoke_helpers import run_train_prediction_smoke
 
 # Phase 1b converted-owner smoke extracted from
 # test/rest/integ/test_diskgraph_public_api_e2e.py::
@@ -15,8 +15,8 @@ from fastapi.testclient import TestClient
 # HTTP/JSON only; the original owner retains diskgraph filesystem/config
 # assertions that are not part of the black-box gate.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['local'], indirect=True),
 ]
 
 

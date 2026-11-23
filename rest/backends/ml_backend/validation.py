@@ -31,6 +31,7 @@ class TableValidator:
     implementing validations like training table validation and prediction
     table validation.
     """
+
     def __init__(self, query_type: QueryType, task_type: TaskType):
         self.query_type = query_type
         self.task_type = task_type
@@ -58,36 +59,43 @@ class TableValidator:
         errors: List[ValidationError] = []
 
         # Validate that prediction table is not empty:
-        logger.info(f"Validating ingested table at path {table_path}")
+        logger.info(f'Validating ingested table at path {table_path}')
         if is_empty(table_path):
             # Handle non-intuitive non-empty column case (Batch Predictions
             # using a STATIC query predicting a single column)
-            if (stage == 'pred' and self.query_type == QueryType.STATIC
-                    and self.task_type.is_node_pred):
-                prediction_column = "prediction column"
+            if (
+                stage == 'pred'
+                and self.query_type == QueryType.STATIC
+                and self.task_type.is_node_pred
+            ):
+                prediction_column = 'prediction column'
                 if predictive_query is not None:
                     prediction_column = predictive_query.target.to_string()
                 errors.append(
                     ValidationError(
-                        "Cannot generate predictions - no rows with empty"
-                        f" {prediction_column}",
-                        f"Your {prediction_column} is completely filled. Our"
-                        f" model needs rows with empty {prediction_column} to"
-                        " predict values for."
-                        f" To fix this: 1. Add {prediction_column}, include "
-                        f"rows where your {prediction_column} is empty or "
-                        "contains N/A in the graph. 2. Combine your datasets, "
-                        "if you have training data and prediction data "
-                        "separately, merge them into one dataset before "
-                        "running the model."))
+                        'Cannot generate predictions - no rows with empty'
+                        f' {prediction_column}',
+                        f'Your {prediction_column} is completely filled. Our'
+                        f' model needs rows with empty {prediction_column} to'
+                        ' predict values for.'
+                        f' To fix this: 1. Add {prediction_column}, include '
+                        f'rows where your {prediction_column} is empty or '
+                        'contains N/A in the graph. 2. Combine your datasets, '
+                        'if you have training data and prediction data '
+                        'separately, merge them into one dataset before '
+                        'running the model.',
+                    )
+                )
             else:
                 errors.append(
                     ValidationError(
-                        f"Empty {stage} table",
+                        f'Empty {stage} table',
                         f'Generated {stage} table is empty. '
                         'Please modify your query to make filters less '
                         'restrictive or add more data that will fit '
-                        'your desired filters.'))
+                        'your desired filters.',
+                    )
+                )
 
         return ValidationResponse(errors=errors)
 
@@ -123,14 +131,17 @@ class MaterializeTaskValidator:
         config = DataScaleLimits.parse_from_env()
 
         # Features:
-        self.max_single_table_size = (max_single_table_size
-                                      or config.max_table_size_bytes)
-        self.max_total_table_size = (max_total_table_size
-                                     or config.max_graph_total_size_bytes)
+        self.max_single_table_size = (
+            max_single_table_size or config.max_table_size_bytes
+        )
+        self.max_total_table_size = (
+            max_total_table_size or config.max_graph_total_size_bytes
+        )
 
         # Graph:
-        self.max_total_graph_edges = (max_total_graph_edges
-                                      or config.max_graph_total_edges)
+        self.max_total_graph_edges = (
+            max_total_graph_edges or config.max_graph_total_edges
+        )
 
     def post_materialization(
         self,
@@ -160,8 +171,10 @@ class MaterializeTaskValidator:
             if num_rows < 1:
                 errors.append(
                     ValidationError(
-                        "Number of rows should be greater than 0",
-                        (f"Table {table_name} has {num_rows} rows.")))
+                        'Number of rows should be greater than 0',
+                        (f'Table {table_name} has {num_rows} rows.'),
+                    )
+                )
 
         # 3) Validate no.of edges:
         # We cannot support even with downsampling, so we fail:
@@ -171,26 +184,31 @@ class MaterializeTaskValidator:
             frac = total_downsampled_edges / self.max_total_graph_edges
             errors.append(
                 ValidationError(
-                    "Graph is too large",
-                    (f"The provided graph exceeds Kumo's graph size limits:"
-                     f" it contains {total_edges} edges (computed by "
-                     f"[total connections in the graph] x 2). This is "
-                     f"{frac:.3f}x more than the maximum number of edges "
-                     f"Kumo supports ie. {self.max_total_graph_edges}. "
-                     f"Please reduce the number of edges in your "
-                     f"graph (e.g. by removing links or reducing the size "
-                     f"of your tables) to proceed.")))
+                    'Graph is too large',
+                    (
+                        f"The provided graph exceeds Kumo's graph size limits:"
+                        f' it contains {total_edges} edges (computed by '
+                        f'[total connections in the graph] x 2). This is '
+                        f'{frac:.3f}x more than the maximum number of edges '
+                        f'Kumo supports ie. {self.max_total_graph_edges}. '
+                        f'Please reduce the number of edges in your '
+                        f'graph (e.g. by removing links or reducing the size '
+                        f'of your tables) to proceed.'
+                    ),
+                )
+            )
         # We can support but will have to downsample, so we warn:
         elif total_edges > self.max_total_graph_edges:
             frac = total_edges / self.max_total_graph_edges
             warn_msg = (
                 f"The provided graph exceeds Kumo's graph size limits: it "
-                f"contains {total_edges} edges (computed by [total connections"
-                f" in the graph x 2]). This is {frac:.3f}x more than "
-                f"the maximum number of edges Kumo supports ie. "
-                f"{self.max_total_graph_edges}. Relationships that "
-                f"produce larger than 2 billion edges may "
-                f"be downsampled in the training process.")
+                f'contains {total_edges} edges (computed by [total connections'
+                f' in the graph x 2]). This is {frac:.3f}x more than '
+                f'the maximum number of edges Kumo supports ie. '
+                f'{self.max_total_graph_edges}. Relationships that '
+                f'produce larger than 2 billion edges may '
+                f'be downsampled in the training process.'
+            )
             logger.warning(warn_msg)
 
         # TODO(manan): separately validate fkey tensor since this tensor is

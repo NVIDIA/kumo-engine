@@ -21,14 +21,14 @@ def get_index_map(df: pd.DataFrame, index_offset: int = 0) -> pd.DataFrame:
     r"""Returns a :class:`pandas.DataFrame` that can be later used to map
     indices to a contiguous range in :obj:`{ 0, ..., len(df) - 1 }`."""
     arange = pd.RangeIndex(index_offset, index_offset + len(df))
-    return pd.DataFrame(index=df.index,
-                        data={core_mapping.NODE_INDEX_COLUMN: arange})
+    return pd.DataFrame(index=df.index, data={core_mapping.NODE_INDEX_COLUMN: arange})
 
 
 def node_idx_tensor(index_map: pd.DataFrame) -> torch.Tensor:
     r"""Returns a node idx :obj:`torch.Tensor` from the index map."""
-    return torch.from_numpy(
-        index_map[core_mapping.NODE_INDEX_COLUMN].values).to(torch.long)
+    return torch.from_numpy(index_map[core_mapping.NODE_INDEX_COLUMN].values).to(
+        torch.long
+    )
 
 
 def merge_size(
@@ -92,12 +92,12 @@ def map_values(
 
     # Join index map for src_data and dst_data:
     src = src_index_map.merge(
-        src_data.rename('src'), left_index=True, right_index=True).rename(
-            columns={core_mapping.NODE_INDEX_COLUMN: 'row'})
+        src_data.rename('src'), left_index=True, right_index=True
+    ).rename(columns={core_mapping.NODE_INDEX_COLUMN: 'row'})
 
     dst = dst_index_map.merge(
-        dst_data.rename('dst'), left_index=True, right_index=True).rename(
-            columns={core_mapping.NODE_INDEX_COLUMN: 'col'})
+        dst_data.rename('dst'), left_index=True, right_index=True
+    ).rename(columns={core_mapping.NODE_INDEX_COLUMN: 'col'})
 
     # Perform the actual merge:
     try:
@@ -105,8 +105,11 @@ def map_values(
     except MemoryError:
         size, contributors = merge_size(src, dst, 'src', 'dst')
         logger.exception(
-            "Edge index creation failed: cannot create %s edges "
-            "(largest contributors: %s)", size, contributors)
+            'Edge index creation failed: cannot create %s edges '
+            '(largest contributors: %s)',
+            size,
+            contributors,
+        )
         raise
 
     row = torch.from_numpy(out['row'].values).to(torch.long)
@@ -126,8 +129,10 @@ def map_index(
     specified in :obj:`index_map`."""
 
     if isinstance(index_map.index, pd.RangeIndex):
-        raise ValueError("Cannot map indices to a contiguous range without "
-                         "an explicitly given primary key")
+        raise ValueError(
+            'Cannot map indices to a contiguous range without '
+            'an explicitly given primary key'
+        )
 
     if not isinstance(ser, pd.Series):
         ser = pd.Series(data=ser)
@@ -194,16 +199,21 @@ class MapIndex:
         indices specified in :obj:`index_map`, refer to :func:`map_index`
         for more details.
         """
-        return map_index(ser, self.index_map, return_mask,
-                         default_val=default_val, filter_nan=filter_nan)
+        return map_index(
+            ser,
+            self.index_map,
+            return_mask,
+            default_val=default_val,
+            filter_nan=filter_nan,
+        )
 
 
 _SeriesIndex = Union[pd.Series, pd.Index]
 
 
 def _maybe_cast_to_compatible_types(
-        ser1: _SeriesIndex,
-        ser2: _SeriesIndex) -> Tuple[_SeriesIndex, _SeriesIndex]:
+    ser1: _SeriesIndex, ser2: _SeriesIndex
+) -> Tuple[_SeriesIndex, _SeriesIndex]:
     """Cast the two series into data types that are safe to merge
     together, using `pd.merge`
 
@@ -222,8 +232,8 @@ def _maybe_cast_to_compatible_types(
 
 
 def _maybe_cast_str_series_to_numeric(
-        ser: Union[pd.Series,
-                   pd.Index], dtype: PandasDtype) -> Union[pd.Series, pd.Index]:
+    ser: Union[pd.Series, pd.Index], dtype: PandasDtype
+) -> Union[pd.Series, pd.Index]:
     # Note, we cast strings to numbers (rather than numbers to strings) to
     # avoid differences in string formatting between floats and ints, such as
     # `1.0` vs `1`.
@@ -235,8 +245,9 @@ def _maybe_cast_str_series_to_numeric(
 
     new_ser = pd.to_numeric(ser)
 
-    logger.info("While mapping, cast series from data type %s to %s", ser.dtype,
-                new_ser.dtype)
+    logger.info(
+        'While mapping, cast series from data type %s to %s', ser.dtype, new_ser.dtype
+    )
 
     return new_ser
 

@@ -77,7 +77,9 @@ def test_model_plan_basic():
         QueryType.TEMPORAL,
     )
 
-    assert out == """
+    assert (
+        out
+        == """
 training_table_generation:
   split: inferred
   train_start_offset: ???
@@ -121,28 +123,33 @@ model_architecture:
   normalization: ???
   use_seq_id: ???
   prediction_time_encodings: ???"""[1:]
+    )
 
-    assert plan == model_plan_from_yaml("")
-    assert plan == model_plan_from_yaml("training_job:\n  num_experiments: ???")
+    assert plan == model_plan_from_yaml('')
+    assert plan == model_plan_from_yaml('training_job:\n  num_experiments: ???')
     assert plan == model_plan_from_yaml(out)
 
 
 def test_model_plan_from_default():
-    graph_config = GraphConfig(tables=[
-        TableConfig(
-            table_name="users",
-            pkey=PrimaryKeyConfig(name="user_id"),
-        ),
-        TableConfig(
-            table_name="transactions", fkeys=[
-                ForeignKeyConfig(
-                    name="user_id",
-                    dst_table="users",
-                    dst_key="user_id",
-                ),
-            ]),
-    ])
-    target_to_entity_paths = [[("transactions", "user_id", "users")]]
+    graph_config = GraphConfig(
+        tables=[
+            TableConfig(
+                table_name='users',
+                pkey=PrimaryKeyConfig(name='user_id'),
+            ),
+            TableConfig(
+                table_name='transactions',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id',
+                        dst_table='users',
+                        dst_key='user_id',
+                    ),
+                ],
+            ),
+        ]
+    )
+    target_to_entity_paths = [[('transactions', 'user_id', 'users')]]
     plan = ModelPlan.from_default(
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         query_type=QueryType.TEMPORAL,
@@ -157,7 +164,9 @@ def test_model_plan_from_default():
         TaskType.TEMPORAL_LINK_PREDICTION,
         QueryType.TEMPORAL,
     )
-    assert out == """
+    assert (
+        out
+        == """
 training_table_generation:
   split: inferred
   train_start_offset: inferred
@@ -285,6 +294,7 @@ model_architecture:
   - dot_product
   use_seq_id:
   - false"""[1:]
+    )
 
     plan.validate(
         TaskType.TEMPORAL_LINK_PREDICTION,
@@ -333,7 +343,7 @@ def test_model_plan_forecasting():
 
     plan.training_table_generation.split = 'TemporalSplit([0.8, 0.1, 0.1])'
 
-    with pytest.raises(ValueError, match="Forecasting requires a "):
+    with pytest.raises(ValueError, match='Forecasting requires a '):
         plan.validate(
             task_type=TaskType.FORECASTING,
             query_type=QueryType.TEMPORAL,
@@ -383,13 +393,17 @@ def test_from_yaml(
     has_train_table_weight_col: bool,
     run_mode: RunMode,
 ):
-    if (task_type == TaskType.TEMPORAL_LINK_PREDICTION
-            and query_type == QueryType.STATIC):
+    if (
+        task_type == TaskType.TEMPORAL_LINK_PREDICTION
+        and query_type == QueryType.STATIC
+    ):
         return
-    if (task_type == TaskType.FORECASTING and query_type == QueryType.STATIC):
+    if task_type == TaskType.FORECASTING and query_type == QueryType.STATIC:
         return
-    if (task_type == TaskType.STATIC_LINK_PREDICTION
-            and query_type == QueryType.TEMPORAL):
+    if (
+        task_type == TaskType.STATIC_LINK_PREDICTION
+        and query_type == QueryType.TEMPORAL
+    ):
         return
 
     plan = ModelPlan.from_default(
@@ -399,8 +413,7 @@ def test_from_yaml(
         run_mode=run_mode,
         has_train_table_weight_col=has_train_table_weight_col,
     )
-    yaml = model_plan_to_yaml(plan, task_type, query_type,
-                              has_train_table_weight_col)
+    yaml = model_plan_to_yaml(plan, task_type, query_type, has_train_table_weight_col)
 
     plan = model_plan_from_yaml(yaml)
     plan.validate(
@@ -412,42 +425,45 @@ def test_from_yaml(
     )
 
 
-@pytest.mark.parametrize('split_text', [
-    'TimeRangeSplit(['
-    '("2024-02-20", "2024-07-09"), '
-    '("2024-07-09 23:53:03", "2024-07-16 23:53:03"), '
-    '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
-    '])',
-    'TimeRangeSplit(['
-    '("2024-02-20 23:53:03", "2024-07-09 23:53:03"), '
-    '("2024-07-09 23:53:03", "2024-07-16 23:53:03"), '
-    '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
-    '])',
-    'TimeRangeSplit(['
-    '("2024-02-20 10:00:00", "2024-07-09 10:00:00"), '
-    '("2024-07-09 10:00:00", "2024-07-16 10:00:00")'
-    '])',
-    'TimeRangeSplit(['
-    '("2024-02-20", "2024-07-09 23:53:03"), '
-    '("2024-07-09 23:53:03", "2024-07-16"), '
-    '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
-    '])',
-    'TimeRangeSplit(['
-    '("2024-02-20 00:00:00", "2024-07-09"), '
-    '("2024-07-09", "2024-07-16"), '
-    '("2024-07-16", "2024-07-23")'
-    '])',
-    'TimeRangeSplit(['
-    '("2024-02-20", "2024-07-09"), '
-    '("2024-07-09", "2024-07-16"), '
-    '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
-    '])',
-    'TimeSplit(timestamp_boundaries=['
-    '("2024-02-20", "2024-07-09"), '
-    '("2024-07-09 23:53:03", "2024-07-16 23:53:03"), '
-    '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
-    '])',
-])
+@pytest.mark.parametrize(
+    'split_text',
+    [
+        'TimeRangeSplit(['
+        '("2024-02-20", "2024-07-09"), '
+        '("2024-07-09 23:53:03", "2024-07-16 23:53:03"), '
+        '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
+        '])',
+        'TimeRangeSplit(['
+        '("2024-02-20 23:53:03", "2024-07-09 23:53:03"), '
+        '("2024-07-09 23:53:03", "2024-07-16 23:53:03"), '
+        '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
+        '])',
+        'TimeRangeSplit(['
+        '("2024-02-20 10:00:00", "2024-07-09 10:00:00"), '
+        '("2024-07-09 10:00:00", "2024-07-16 10:00:00")'
+        '])',
+        'TimeRangeSplit(['
+        '("2024-02-20", "2024-07-09 23:53:03"), '
+        '("2024-07-09 23:53:03", "2024-07-16"), '
+        '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
+        '])',
+        'TimeRangeSplit(['
+        '("2024-02-20 00:00:00", "2024-07-09"), '
+        '("2024-07-09", "2024-07-16"), '
+        '("2024-07-16", "2024-07-23")'
+        '])',
+        'TimeRangeSplit(['
+        '("2024-02-20", "2024-07-09"), '
+        '("2024-07-09", "2024-07-16"), '
+        '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
+        '])',
+        'TimeSplit(timestamp_boundaries=['
+        '("2024-02-20", "2024-07-09"), '
+        '("2024-07-09 23:53:03", "2024-07-16 23:53:03"), '
+        '("2024-08-28 23:53:03", "2024-09-04 23:53:03")'
+        '])',
+    ],
+)
 def test_split_literals(split_text):
     task_type = TaskType.BINARY_CLASSIFICATION
     query_type = QueryType.TEMPORAL
@@ -463,17 +479,20 @@ def test_split_literals(split_text):
         plan.training_table_generation.split = split_text
 
         parsed_plan = model_plan_from_yaml(
-            model_plan_to_yaml(plan, task_type, query_type))
+            model_plan_to_yaml(plan, task_type, query_type)
+        )
         assert parsed_plan.training_table_generation.split == (
-            plan.training_table_generation.split)
+            plan.training_table_generation.split
+        )
 
 
 def test_invalid_yaml():
     yaml = """
     - training_table_generation
     """
-    with pytest.raises(ValueError,
-                       match="Could not parse the Model Plan as valid YAML"):
+    with pytest.raises(
+        ValueError, match='Could not parse the Model Plan as valid YAML'
+    ):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -498,16 +517,20 @@ def test_invalid_yaml():
       train_table_path_override:s3://example-bucket
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    assert (plan.training_table_generation.train_table_path_override ==
-            's3://example-bucket')
+    assert (
+        plan.training_table_generation.train_table_path_override
+        == 's3://example-bucket'
+    )
 
     yaml = """
     training_table_generation:
       train_table_path_override: s3://example-bucket
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    assert (plan.training_table_generation.train_table_path_override ==
-            's3://example-bucket')
+    assert (
+        plan.training_table_generation.train_table_path_override
+        == 's3://example-bucket'
+    )
 
 
 def test_model_plan_validator():
@@ -515,16 +538,14 @@ def test_model_plan_validator():
     training_table_generation:
       train_start_offset: -1
     """[1:]
-    with pytest.raises(ValueError,
-                       match="Input should be greater than or equal to"):
+    with pytest.raises(ValueError, match='Input should be greater than or equal to'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     training_table_generation:
       train_end_offset: -1
     """[1:]
-    with pytest.raises(ValueError,
-                       match="Input should be greater than or equal to"):
+    with pytest.raises(ValueError, match='Input should be greater than or equal to'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -532,8 +553,7 @@ def test_model_plan_validator():
       max_target_neighbors_per_entity:
       - -2
     """[1:]
-    with pytest.raises(ValueError,
-                       match="Input should be greater than or equal to"):
+    with pytest.raises(ValueError, match='Input should be greater than or equal to'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -542,21 +562,21 @@ def test_model_plan_validator():
       - name: cosine_with_warmup_restarts
         interval: full_run
     """[1:]
-    with pytest.raises(ValueError, match="Input should be"):
+    with pytest.raises(ValueError, match='Input should be'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     model_architecture:
       channels: [test]
     """[1:]
-    with pytest.raises(ValueError, match="Input should be a valid integer"):
+    with pytest.raises(ValueError, match='Input should be a valid integer'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     model_architecture:
       activation: [super_relu]
     """[1:]
-    with pytest.raises(ValueError, match="Input should be"):
+    with pytest.raises(ValueError, match='Input should be'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -565,36 +585,35 @@ def test_model_plan_validator():
       - name: exponential_lr
         interval: epoch
     """[1:]
-    with pytest.raises(ValueError, match="is not a valid learning rate"):
+    with pytest.raises(ValueError, match='is not a valid learning rate'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     model_architecture:
       channels: []
     """[1:]
-    with pytest.raises(ValueError, match="List should have at least 1"):
+    with pytest.raises(ValueError, match='List should have at least 1'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     model_architecture:
       channels: [0]
     """[1:]
-    with pytest.raises(ValueError,
-                       match="Input should be greater than or equal to"):
+    with pytest.raises(ValueError, match='Input should be greater than or equal to'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     training_table_generation:
       split: foo
     """[1:]
-    with pytest.raises(ValueError, match="is not a valid split"):
+    with pytest.raises(ValueError, match='is not a valid split'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     training_table_generation:
       split: TemporalSplit([0.8, 0.1, 0.1]
     """[1:]
-    with pytest.raises(ValueError, match="is not a valid split"):
+    with pytest.raises(ValueError, match='is not a valid split'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -603,7 +622,7 @@ def test_model_plan_validator():
         COL_1: Null()
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match="is not a valid column name"):
+    with pytest.raises(ValueError, match='is not a valid column name'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -618,7 +637,7 @@ def test_model_plan_validator():
         COL_2: Null()
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match="are not valid column names"):
+    with pytest.raises(ValueError, match='are not valid column names'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -631,7 +650,7 @@ def test_model_plan_validator():
       encoder_overrides:
         TABLE_1.COL_1: Foo()
     """[1:]
-    with pytest.raises(ValueError, match="is not a valid encoder"):
+    with pytest.raises(ValueError, match='is not a valid encoder'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -640,7 +659,7 @@ def test_model_plan_validator():
         TABLE_1.COL_1: Foo()
         TABLE_1.COL_2: Bar()
     """[1:]
-    with pytest.raises(ValueError, match="are not valid encoders"):
+    with pytest.raises(ValueError, match='are not valid encoders'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -651,7 +670,7 @@ def test_model_plan_validator():
         kwargs:
           foo: 0.1
     """[1:]
-    with pytest.raises(ValueError, match="is not a valid learning rate"):
+    with pytest.raises(ValueError, match='is not a valid learning rate'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -664,7 +683,7 @@ def test_model_plan_validator():
         kwargs:
           foo: 0.1
     """[1:]
-    with pytest.raises(ValueError, match="are not valid learning rate"):
+    with pytest.raises(ValueError, match='are not valid learning rate'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -672,7 +691,7 @@ def test_model_plan_validator():
       max_target_neighbors_per_entity:
       - 513
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 512"):
+    with pytest.raises(ValueError, match='less than or equal to 512'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -680,7 +699,7 @@ def test_model_plan_validator():
       num_neighbors:
       - [16, 16, 16, 16, 16, 16, 17]
     """[1:]
-    with pytest.raises(ValueError, match="at most 6 items"):
+    with pytest.raises(ValueError, match='at most 6 items'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -688,7 +707,7 @@ def test_model_plan_validator():
       num_neighbors:
       - [129]
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 128"):
+    with pytest.raises(ValueError, match='less than or equal to 128'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -696,7 +715,7 @@ def test_model_plan_validator():
       batch_size:
       - 2049
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 2048"):
+    with pytest.raises(ValueError, match='less than or equal to 2048'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -704,7 +723,7 @@ def test_model_plan_validator():
       channels:
       - 513
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 512"):
+    with pytest.raises(ValueError, match='less than or equal to 512'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -712,7 +731,7 @@ def test_model_plan_validator():
       output_embedding_dim:
       - 257
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 256"):
+    with pytest.raises(ValueError, match='less than or equal to 256'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -720,21 +739,21 @@ def test_model_plan_validator():
       channels:
       - 55
     """[1:]
-    with pytest.raises(ValueError, match="requires an even number"):
+    with pytest.raises(ValueError, match='requires an even number'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     training_table_generation:
       timeframe_step: 0
     """[1:]
-    with pytest.raises(ValueError, match="greater than 0"):
+    with pytest.raises(ValueError, match='greater than 0'):
         model_plan_from_yaml(yaml)
 
     yaml = """
     optimization:
       min_steps_per_epoch: 4001
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 4000"):
+    with pytest.raises(ValueError, match='less than or equal to 4000'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -742,7 +761,7 @@ def test_model_plan_validator():
       num_pre_message_passing_layers:
       - 5
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 4"):
+    with pytest.raises(ValueError, match='less than or equal to 4'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -750,7 +769,7 @@ def test_model_plan_validator():
       num_post_message_passing_layers:
       - 9
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 8"):
+    with pytest.raises(ValueError, match='less than or equal to 8'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -772,7 +791,7 @@ def test_model_plan_validator():
         channels:
         - 65
     """[1:]
-    with pytest.raises(ValueError, match="requires an even number"):
+    with pytest.raises(ValueError, match='requires an even number'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -782,7 +801,7 @@ def test_model_plan_validator():
         aggregation:
         - [cosmic_max]
     """[1:]
-    with pytest.raises(ValueError, match="Input should be"):
+    with pytest.raises(ValueError, match='Input should be'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -790,7 +809,7 @@ def test_model_plan_validator():
       sample_from_entity_table: false
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match="not supported for temporal"):
+    with pytest.raises(ValueError, match='not supported for temporal'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -804,7 +823,7 @@ def test_model_plan_validator():
       - name: huber
         delta: 0
     """[1:]
-    with pytest.raises(ValueError, match="greater than 0"):
+    with pytest.raises(ValueError, match='greater than 0'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -813,7 +832,7 @@ def test_model_plan_validator():
       - name: focal
         gamma: 0.5
     """[1:]
-    with pytest.raises(ValueError, match="greater than or equal to 1"):
+    with pytest.raises(ValueError, match='greater than or equal to 1'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -822,7 +841,7 @@ def test_model_plan_validator():
       - name: quantile
         q: 1.1
     """[1:]
-    with pytest.raises(ValueError, match="less than or equal to 1"):
+    with pytest.raises(ValueError, match='less than or equal to 1'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -831,7 +850,7 @@ def test_model_plan_validator():
       - name: quantile
         q: -0.1
     """[1:]
-    with pytest.raises(ValueError, match="greater than or equal to 0"):
+    with pytest.raises(ValueError, match='greater than or equal to 0'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -856,7 +875,7 @@ def test_model_plan_validator():
       - binary_cross_entropy
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match=r"\[mae, mse\] are not valid"):
+    with pytest.raises(ValueError, match=r'\[mae, mse\] are not valid'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -885,7 +904,7 @@ def test_model_plan_validator():
       - multi_quantile
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match=r"\[multi_quantile\] are not valid"):
+    with pytest.raises(ValueError, match=r'\[multi_quantile\] are not valid'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -930,7 +949,7 @@ def test_model_plan_validator():
       - name: reduce_lr_on_plateau
         interval: epoch
     """[1:]
-    with pytest.raises(ValueError, match="is not a valid learning rate"):
+    with pytest.raises(ValueError, match='is not a valid learning rate'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -953,7 +972,7 @@ def test_model_plan_validator():
       - wape
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(Exception, match=r"are not valid"):
+    with pytest.raises(Exception, match=r'are not valid'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -974,10 +993,11 @@ def test_model_plan_max_target_neighbors_per_entity():
         TaskType.BINARY_CLASSIFICATION,
         QueryType.STATIC,
     )
-    assert isinstance(plan.neighbor_sampling.max_target_neighbors_per_entity,
-                      MissingType)
+    assert isinstance(
+        plan.neighbor_sampling.max_target_neighbors_per_entity, MissingType
+    )
     plan.neighbor_sampling.max_target_neighbors_per_entity = [8]
-    with pytest.raises(ValueError, match=r"not supported for static binary"):
+    with pytest.raises(ValueError, match=r'not supported for static binary'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -996,8 +1016,9 @@ def test_model_plan_max_target_neighbors_per_entity():
         TaskType.STATIC_LINK_PREDICTION,
         QueryType.STATIC,
     )
-    assert isinstance(plan.neighbor_sampling.max_target_neighbors_per_entity,
-                      MissingType)
+    assert isinstance(
+        plan.neighbor_sampling.max_target_neighbors_per_entity, MissingType
+    )
 
     plan.neighbor_sampling.max_target_neighbors_per_entity = [8]
     assert 'max_target_neighbors_per_entity' in model_plan_to_yaml(
@@ -1023,7 +1044,7 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.optimization.majority_sampling_ratio = [100]
 
-    with pytest.raises(ValueError, match=r"supported for temporal multilabel"):
+    with pytest.raises(ValueError, match=r'supported for temporal multilabel'):
         plan.validate(
             task_type=TaskType.MULTILABEL_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -1041,8 +1062,8 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.training_table_generation.split = 'RandomSplit([0.8, 0.1, 0.1])'
     with pytest.raises(
-            ValueError,
-            match=r"Temporal link prediction requires a temporal split"):
+        ValueError, match=r'Temporal link prediction requires a temporal split'
+    ):
         plan.validate(
             task_type=TaskType.TEMPORAL_LINK_PREDICTION,
             query_type=QueryType.TEMPORAL,
@@ -1059,8 +1080,8 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.training_table_generation.split = 'RandomLinkSplit([0.8, 0.1, 0.1])'
     with pytest.raises(
-            ValueError,
-            match=r"Temporal link prediction requires a temporal split"):
+        ValueError, match=r'Temporal link prediction requires a temporal split'
+    ):
         plan.validate(
             task_type=TaskType.TEMPORAL_LINK_PREDICTION,
             query_type=QueryType.TEMPORAL,
@@ -1075,7 +1096,7 @@ def test_model_plan_validate_incompatible_option():
         run_mode=RunMode.FAST,
     )
     plan.training_table_generation.weight_col = 'users.weight'
-    with pytest.raises(ValueError, match=r"not supported"):
+    with pytest.raises(ValueError, match=r'not supported'):
         plan.validate(
             task_type=TaskType.FORECASTING,
             query_type=QueryType.TEMPORAL,
@@ -1093,8 +1114,9 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.training_table_generation.split = 'TemporalSplit([0.8, 0.1, 0.1])'
 
-    with pytest.raises(ValueError,
-                       match="the target table doesn't have a 'Create Date'"):
+    with pytest.raises(
+        ValueError, match="the target table doesn't have a 'Create Date'"
+    ):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -1110,8 +1132,9 @@ def test_model_plan_validate_incompatible_option():
         run_mode=RunMode.FAST,
     )
     plan.training_table_generation.split = 'TemporalSplit([0.8, 0.1, 0.1])'
-    with pytest.raises(ValueError,
-                       match="the target table doesn't have a 'Create Date'"):
+    with pytest.raises(
+        ValueError, match="the target table doesn't have a 'Create Date'"
+    ):
         plan.validate(
             task_type=TaskType.STATIC_LINK_PREDICTION,
             query_type=QueryType.STATIC,
@@ -1120,7 +1143,8 @@ def test_model_plan_validate_incompatible_option():
         )
     # GraphTransformerModelPlan is not supported for link prediction
     for task_type in [
-            TaskType.STATIC_LINK_PREDICTION, TaskType.TEMPORAL_LINK_PREDICTION
+        TaskType.STATIC_LINK_PREDICTION,
+        TaskType.TEMPORAL_LINK_PREDICTION,
     ]:
         plan = ModelPlan.from_default(
             task_type=task_type,
@@ -1136,9 +1160,10 @@ def test_model_plan_validate_incompatible_option():
             )
         ]
         with pytest.raises(
-                ValueError,
-                match=r"GraphTransformer models are not supported for "
-                r"Link Prediction"):
+            ValueError,
+            match=r'GraphTransformer models are not supported for '
+            r'Link Prediction',
+        ):
             plan.validate(
                 task_type=task_type,
                 query_type=QueryType.STATIC,
@@ -1183,8 +1208,7 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.training_table_generation.forecast_length = 2
 
-    with pytest.raises(ValueError,
-                       match=r"not supported for temporal link prediction"):
+    with pytest.raises(ValueError, match=r'not supported for temporal link prediction'):
         plan.validate(
             task_type=TaskType.TEMPORAL_LINK_PREDICTION,
             query_type=QueryType.TEMPORAL,
@@ -1200,7 +1224,7 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.training_table_generation.forecast_length = 2
 
-    with pytest.raises(ValueError, match=r"supported for link prediction"):
+    with pytest.raises(ValueError, match=r'supported for link prediction'):
         plan.validate(
             task_type=TaskType.LINK_PREDICTION,
             query_type=QueryType.STATIC,
@@ -1216,8 +1240,7 @@ def test_model_plan_validate_incompatible_option():
     )
     plan.training_table_generation.forecast_length = 2
 
-    with pytest.raises(ValueError,
-                       match=r"not supported for static regression"):
+    with pytest.raises(ValueError, match=r'not supported for static regression'):
         plan.validate(
             task_type=TaskType.REGRESSION,
             query_type=QueryType.STATIC,
@@ -1234,8 +1257,7 @@ def test_model_plan_validate_incompatible_option():
     plan.training_table_generation.lag_timesteps = 10
     plan.model_architecture.past_encoder = [PastEncoderType.MLP]
 
-    with pytest.raises(ValueError,
-                       match=r"not supported for static regression"):
+    with pytest.raises(ValueError, match=r'not supported for static regression'):
         plan.validate(
             task_type=TaskType.REGRESSION,
             query_type=QueryType.STATIC,
@@ -1256,8 +1278,7 @@ def test_model_plan_validate_incompatible_option():
 # name-based property of its own -- not `Split.is_temporal_split`.
 # ---------------------------------------------------------------------------
 
-MANUAL_SPLIT = ("ManualSplit(col='SPLIT', train_value=0, val_value=1, "
-                "test_value=2)")
+MANUAL_SPLIT = "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)"
 
 
 def test_manual_split_descriptor_is_row_assigned_not_time_derived():
@@ -1271,15 +1292,18 @@ def test_manual_split_descriptor_is_row_assigned_not_time_derived():
     assert descriptor.assigns_stages_explicitly
 
 
-@pytest.mark.parametrize(('split', 'is_temporal'), [
-    ('ApproxDateOffsetSplit([0.8, 0.1, 0.1])', True),
-    ('DateOffsetSplit([-2, 0])', True),
-    ('TemporalSplit([0.8, 0.1, 0.1])', True),
-    ("TimeRangeSplit([['2024-01-01', '2024-02-01']])", True),
-    ('TimeSplit(fractions=[0.8, 0.1, 0.1])', True),
-    ('RandomSplit([0.8, 0.1, 0.1])', False),
-    ('RandomLinkSplit([0.8, 0.1, 0.1])', False),
-])
+@pytest.mark.parametrize(
+    ('split', 'is_temporal'),
+    [
+        ('ApproxDateOffsetSplit([0.8, 0.1, 0.1])', True),
+        ('DateOffsetSplit([-2, 0])', True),
+        ('TemporalSplit([0.8, 0.1, 0.1])', True),
+        ("TimeRangeSplit([['2024-01-01', '2024-02-01']])", True),
+        ('TimeSplit(fractions=[0.8, 0.1, 0.1])', True),
+        ('RandomSplit([0.8, 0.1, 0.1])', False),
+        ('RandomLinkSplit([0.8, 0.1, 0.1])', False),
+    ],
+)
 def test_split_descriptor_temporal_answer_is_unchanged(split, is_temporal):
     # Enumerating the time-derived families rather than negating the random
     # ones must not move the answer for any other family.
@@ -1311,8 +1335,8 @@ def test_temporal_link_prediction_accepts_a_manual_split():
 
 
 @pytest.mark.parametrize(
-    'split',
-    ['RandomSplit([0.8, 0.1, 0.1])', 'RandomLinkSplit([0.8, 0.1, 0.1])'])
+    'split', ['RandomSplit([0.8, 0.1, 0.1])', 'RandomLinkSplit([0.8, 0.1, 0.1])']
+)
 def test_temporal_link_prediction_still_rejects_a_random_split(split):
     # A random split carries no such assurance; accepting `ManualSplit` must
     # not widen the gate to the families the TODO above it is about.
@@ -1325,8 +1349,8 @@ def test_temporal_link_prediction_still_rejects_a_random_split(split):
     plan.training_table_generation.split = split
 
     with pytest.raises(
-            ValueError,
-            match=r"Temporal link prediction requires a temporal split"):
+        ValueError, match=r'Temporal link prediction requires a temporal split'
+    ):
         plan.validate(
             task_type=TaskType.TEMPORAL_LINK_PREDICTION,
             query_type=QueryType.TEMPORAL,
@@ -1338,7 +1362,8 @@ def test_temporal_link_prediction_still_rejects_a_random_split(split):
 @pytest.mark.parametrize('has_train_table_time_col', [False, True])
 @pytest.mark.parametrize('query_type', [QueryType.STATIC, QueryType.TEMPORAL])
 def test_non_temporal_task_still_accepts_a_manual_split(
-        query_type, has_train_table_time_col):
+    query_type, has_train_table_time_col
+):
     # Neither the "is this time-derived split missing its time column?" gate
     # nor the static-with-timestamp family list may catch a `ManualSplit`: it
     # derives nothing from time, and it has already answered the leakage
@@ -1368,8 +1393,9 @@ def test_a_temporal_split_without_a_time_column_is_still_rejected():
     )
     plan.training_table_generation.split = 'TemporalSplit([0.8, 0.1, 0.1])'
 
-    with pytest.raises(ValueError,
-                       match=r"the target table doesn't have a 'Create Date'"):
+    with pytest.raises(
+        ValueError, match=r"the target table doesn't have a 'Create Date'"
+    ):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -1379,43 +1405,47 @@ def test_a_temporal_split_without_a_time_column_is_still_rejected():
 
 
 def test_model_plan_validate_weight_col_against_graph_config():
-    graph_config = GraphConfig(tables=[
-        TableConfig(
-            table_name="users",
-            pkey=PrimaryKeyConfig(name="user_id"),
-            cols=[ColumnConfig(name="user_weight", dtype=Dtype.float)],
-        ),
-        TableConfig(
-            table_name="transactions",
-            fkeys=[
-                ForeignKeyConfig(
-                    name="user_id",
-                    dst_table="users",
-                    dst_key="user_id",
-                ),
-            ],
-            cols=[
-                ColumnConfig(name="amount", dtype=Dtype.float),
-                ColumnConfig(name="status", dtype=Dtype.string),
-            ],
-        ),
-    ])
-    target_to_entity_paths = [[("transactions", "user_id", "users")]]
+    graph_config = GraphConfig(
+        tables=[
+            TableConfig(
+                table_name='users',
+                pkey=PrimaryKeyConfig(name='user_id'),
+                cols=[ColumnConfig(name='user_weight', dtype=Dtype.float)],
+            ),
+            TableConfig(
+                table_name='transactions',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id',
+                        dst_table='users',
+                        dst_key='user_id',
+                    ),
+                ],
+                cols=[
+                    ColumnConfig(name='amount', dtype=Dtype.float),
+                    ColumnConfig(name='status', dtype=Dtype.string),
+                ],
+            ),
+        ]
+    )
+    target_to_entity_paths = [[('transactions', 'user_id', 'users')]]
     validate_kwargs = dict(
         task_type=TaskType.REGRESSION,
         query_type=QueryType.STATIC,
         has_train_table_time_col=False,
         run_mode=RunMode.FAST,
         graph=graph_config,
-        entity_table_names=["users"],
+        entity_table_names=['users'],
         target_to_entity_paths=target_to_entity_paths,
     )
 
     unsupported_plan = ModelPlan.from_default(**validate_kwargs)
-    unsupported_plan.training_table_generation.weight_col = "transactions.amount"
+    unsupported_plan.training_table_generation.weight_col = 'transactions.amount'
     with pytest.raises(
-            ValueError, match=r"Weighted training-table generation is "
-            r"not yet supported on DiskGraph"):
+        ValueError,
+        match=r'Weighted training-table generation is '
+        r'not yet supported on DiskGraph',
+    ):
         unsupported_plan.validate(**validate_kwargs)
 
 
@@ -1440,14 +1470,14 @@ def test_model_plan_validate_warnings():
         has_train_table_time_col=False,
         run_mode=RunMode.FAST,
         graph=MagicMock(),
-        rhs_table_name_rows=("rhs_table_name", 5_000_001),
+        rhs_table_name_rows=('rhs_table_name', 5_000_001),
         raise_on_error=False,
     )
     assert len(errors) == 0
     assert len(warnings) == 3
-    assert "cause a GPU out-of-memory error" in str(warnings[0])
-    assert "cause a GPU out-of-memory error" in str(warnings[1])
-    assert "cause a GPU out-of-memory error" in str(warnings[2])
+    assert 'cause a GPU out-of-memory error' in str(warnings[0])
+    assert 'cause a GPU out-of-memory error' in str(warnings[1])
+    assert 'cause a GPU out-of-memory error' in str(warnings[2])
 
 
 def test_model_plan_catch_all_errors_and_warnings():
@@ -1464,13 +1494,11 @@ def test_model_plan_catch_all_errors_and_warnings():
         'csvv.LOAN.AMOUNT': 'Numerical()',
     }
     plan.neighbor_sampling.max_target_neighbors_per_entity = [8]
-    plan.optimization.loss = ["mae"]
+    plan.optimization.loss = ['mae']
     plan.model_architecture.handle_new_target_entities = True
     plan.model_architecture.target_embedding_mode = ['lookup']
     plan.model_architecture.model[0].channels = [256, 512]
-    plan.model_architecture.model[0].aggregation = [[
-        'sum', 'mean', 'max', 'std'
-    ]]
+    plan.model_architecture.model[0].aggregation = [['sum', 'mean', 'max', 'std']]
 
     errors, warnings = plan.validate(
         TaskType.STATIC_LINK_PREDICTION,
@@ -1492,7 +1520,7 @@ def test_model_plan_validate_models():
             has_train_table_time_col=False,
             run_mode=RunMode.FAST,
             graph=MagicMock(),
-            rhs_table_name_rows=("rhs_table_name", 5_000),
+            rhs_table_name_rows=('rhs_table_name', 5_000),
             raise_on_error=False,
         )
 
@@ -1521,7 +1549,7 @@ def test_model_plan_validate_models():
     errors, warnings = validate_plan(plan)
     assert len(errors) == 1
     assert len(warnings) == 0
-    assert "Link Prediction" in str(errors[0])
+    assert 'Link Prediction' in str(errors[0])
 
     # Error: channels is not divisible by num_heads, GT are not for link pred
     plan.model_architecture.model = [
@@ -1535,7 +1563,7 @@ def test_model_plan_validate_models():
     errors, warnings = validate_plan(plan)
     assert len(errors) == 2
     assert len(warnings) == 0
-    assert "must be divisible" in str(errors[0])
+    assert 'must be divisible' in str(errors[0])
 
     # Error: Warning about large number of aggregation operators
     plan.model_architecture.model = [
@@ -1547,7 +1575,7 @@ def test_model_plan_validate_models():
     errors, warnings = validate_plan(plan)
     assert len(errors) == 0
     assert len(warnings) == 1
-    assert "aggregation" in str(warnings[0])
+    assert 'aggregation' in str(warnings[0])
 
     # GT are not for link pred, everything else is good
     plan.model_architecture.model = [
@@ -1565,7 +1593,7 @@ def test_model_plan_validate_models():
     errors, warnings = validate_plan(plan)
     assert len(errors) == 1
     assert len(warnings) == 0
-    assert "Link Prediction" in str(errors[0])
+    assert 'Link Prediction' in str(errors[0])
 
 
 def test_model_plan_serialization():
@@ -1595,25 +1623,29 @@ def test_model_plan_serialization():
             plan,
             TaskType.STATIC_LINK_PREDICTION,
             QueryType.STATIC,
-        ))
+        )
+    )
     errors, warnings = target_plan.validate(
         TaskType.STATIC_LINK_PREDICTION,
         QueryType.STATIC,
         has_train_table_time_col=False,
         run_mode=RunMode.FAST,
         graph=MagicMock(),
-        rhs_table_name_rows=("rhs_table_name", 5_000),
+        rhs_table_name_rows=('rhs_table_name', 5_000),
         raise_on_error=False,
     )
     assert len(errors) == 1
     assert len(warnings) == 0
-    assert "Link Prediction" in str(errors[0])
+    assert 'Link Prediction' in str(errors[0])
 
 
-@pytest.mark.parametrize('max_steps, expected', [
-    (None, (None, None)),
-    (MissingType.VALUE, (2000, 4000)),
-])
+@pytest.mark.parametrize(
+    'max_steps, expected',
+    [
+        (None, (None, None)),
+        (MissingType.VALUE, (2000, 4000)),
+    ],
+)
 def test_model_plan_eval_steps(max_steps, expected):
     task = (TaskType.BINARY_CLASSIFICATION, QueryType.STATIC)
     plan = ModelPlan()
@@ -1630,8 +1662,10 @@ def test_model_plan_eval_steps(max_steps, expected):
     )
 
     assert errors == []
-    assert (plan.optimization.max_val_steps,
-            plan.optimization.max_test_steps) == expected
+    assert (
+        plan.optimization.max_val_steps,
+        plan.optimization.max_test_steps,
+    ) == expected
 
 
 def test_model_plan_metric_assignment():
@@ -1684,8 +1718,9 @@ def test_model_plan_split_assignment():
     )
 
     plan.training_table_generation.split = 'TemporalSplit([0.8, 0.1, 0.1])'
-    with pytest.raises(ValueError,
-                       match="the target table doesn't have a 'Create Date'"):
+    with pytest.raises(
+        ValueError, match="the target table doesn't have a 'Create Date'"
+    ):
         plan.validate(
             TaskType.BINARY_CLASSIFICATION,
             QueryType.STATIC,
@@ -1727,39 +1762,44 @@ def test_model_plan_split_assignment():
             run_mode=RunMode.FAST,
             raise_on_error=False,
         )
-        assert any("internal representation" in str(err)
-                   and 'TemporalSplit(ratio=' in str(err) for err in errors), (
-                       f"expected raw TimeSplit rejection for {split_repr!r}, "
-                       f"got errors={errors}")
+        assert any(
+            'internal representation' in str(err) and 'TemporalSplit(ratio=' in str(err)
+            for err in errors
+        ), f'expected raw TimeSplit rejection for {split_repr!r}, got errors={errors}'
 
     # TimeSplit with timestamp boundaries
-    _assert_raw_time_split_rejected('TimeSplit(timestamp_boundaries=['
-                                    '("2024-02-20", "2024-07-09"), '
-                                    '("2024-07-09", "2024-07-16"), '
-                                    '("2024-07-16", "2024-07-23")'
-                                    '])')
+    _assert_raw_time_split_rejected(
+        'TimeSplit(timestamp_boundaries=['
+        '("2024-02-20", "2024-07-09"), '
+        '("2024-07-09", "2024-07-16"), '
+        '("2024-07-16", "2024-07-23")'
+        '])'
+    )
 
     # TimeSplit with indices
-    _assert_raw_time_split_rejected('TimeSplit('
-                                    'indices=[(-180, -120), (-120, -60), '
-                                    '(-60, 0)], '
-                                    'unit="days", '
-                                    'timeframe_size=7, '
-                                    'anchor_start_offset=0'
-                                    ')')
+    _assert_raw_time_split_rejected(
+        'TimeSplit('
+        'indices=[(-180, -120), (-120, -60), '
+        '(-60, 0)], '
+        'unit="days", '
+        'timeframe_size=7, '
+        'anchor_start_offset=0'
+        ')'
+    )
 
     # TimeSplit with fractions
-    _assert_raw_time_split_rejected('TimeSplit('
-                                    'fractions=[0.7, 0.2, 0.1], '
-                                    'unit="days", '
-                                    'timeframe_size=7, '
-                                    'anchor_start_offset=0'
-                                    ')')
+    _assert_raw_time_split_rejected(
+        'TimeSplit('
+        'fractions=[0.7, 0.2, 0.1], '
+        'unit="days", '
+        'timeframe_size=7, '
+        'anchor_start_offset=0'
+        ')'
+    )
 
     # A public split family (e.g. `TemporalSplit`) validates on temporal
     # queries (it only warns about possible leakage, it does not error).
-    plan.training_table_generation.split = (
-        'TemporalSplit(ratio=[0.7, 0.2, 0.1])')
+    plan.training_table_generation.split = 'TemporalSplit(ratio=[0.7, 0.2, 0.1])'
     plan.validate(
         task_type=TaskType.BINARY_CLASSIFICATION,
         query_type=QueryType.TEMPORAL,
@@ -1775,21 +1815,24 @@ def test_model_plan_split_assignment():
             'unit="years", '  # Invalid unit
             'timeframe_size=7, '
             'anchor_start_offset=0'
-            ')')
+            ')'
+        )
 
     # Test invalid TimeSplit - overlapping boundaries
-    with pytest.raises(ValueError,
-                       match="must be strictly smaller than the start"):
+    with pytest.raises(ValueError, match='must be strictly smaller than the start'):
         plan.training_table_generation.split = (
             'TimeSplit(timestamp_boundaries=['
             '("2024-02-20", "2024-07-09"), '
             '("2024-07-08", "2024-07-16"), '  # Overlaps with previous
             '("2024-07-16", "2024-07-23")'
-            '])')
+            '])'
+        )
 
 
-_RAW_TIME_SPLIT = ('TimeSplit(fractions=[0.7, 0.2, 0.1], unit="days", '
-                   'timeframe_size=7, anchor_start_offset=0)')
+_RAW_TIME_SPLIT = (
+    'TimeSplit(fractions=[0.7, 0.2, 0.1], unit="days", '
+    'timeframe_size=7, anchor_start_offset=0)'
+)
 
 
 def _validate_split(task_type, query_type, has_time_col, split_repr):
@@ -1811,10 +1854,10 @@ def _validate_split(task_type, query_type, has_time_col, split_repr):
 
 
 def _assert_raw_time_split_error(errors):
-    assert any("internal representation" in str(err)
-               and 'TemporalSplit(ratio=' in str(err)
-               for err in errors), f"expected raw TimeSplit rejection, "\
-        f"got errors={errors}"
+    assert any(
+        'internal representation' in str(err) and 'TemporalSplit(ratio=' in str(err)
+        for err in errors
+    ), f'expected raw TimeSplit rejection, got errors={errors}'
 
 
 @pytest.mark.parametrize(
@@ -1829,11 +1872,11 @@ def _assert_raw_time_split_error(errors):
         (TaskType.REGRESSION, QueryType.STATIC, True),
         # Forecasting.
         (TaskType.FORECASTING, QueryType.TEMPORAL, True),
-    ])
+    ],
+)
 def test_raw_time_split_rejected_uniformly(task_type, query_type, has_time_col):
     """Raw user-supplied `TimeSplit` is rejected for every query type."""
-    errors = _validate_split(task_type, query_type, has_time_col,
-                             _RAW_TIME_SPLIT)
+    errors = _validate_split(task_type, query_type, has_time_col, _RAW_TIME_SPLIT)
     _assert_raw_time_split_error(errors)
 
 
@@ -1887,9 +1930,10 @@ def test_encoder_overrides(data_backend, create_graph, encoder_strings):
         }
 
     with pytest.raises(
-            ValueError,
-            match=("'csvv.LOAN.AMOUNT', 'csv.LOOAN.AMOUNT', 'DISTRICTT.A10'"
-                   " and 'DISTRICT.A17'"),
+        ValueError,
+        match=(
+            "'csvv.LOAN.AMOUNT', 'csv.LOOAN.AMOUNT', 'DISTRICTT.A10' and 'DISTRICT.A17'"
+        ),
     ):
         plan.validate(
             TaskType.MULTICLASS_CLASSIFICATION,
@@ -1927,9 +1971,11 @@ def test_encoder_overrides_incompatible_encoders(
         }
 
     with pytest.raises(
-            ValueError,
-            match=(r"'csv.LOAN.AMOUNT'.*'Index\(.*\)'.*'numerical'.*"
-                   r"'csv.LOAN.STATUS'.*'Numerical\(.*\)'.*'categorical'"),
+        ValueError,
+        match=(
+            r"'csv.LOAN.AMOUNT'.*'Index\(.*\)'.*'numerical'.*"
+            r"'csv.LOAN.STATUS'.*'Numerical\(.*\)'.*'categorical'"
+        ),
     ):
         plan.validate(
             TaskType.MULTICLASS_CLASSIFICATION,
@@ -1955,16 +2001,23 @@ def test_encoder_overrides_removed_encoders():
 
 @pytest.mark.parametrize('encoder_strings', [True, False])
 def test_encoder_overrides_multiple_text_models(encoder_strings):
-    graph_config = GraphConfig(tables=[
-        TableConfig(
-            table_name="table0", cols=[
-                ColumnConfig(name="text0", stype=Stype.text),
-                ColumnConfig(name="text1", stype=Stype.text),
-            ]),
-        TableConfig(table_name="table1", cols=[
-            ColumnConfig(name="text0", stype=Stype.text),
-        ])
-    ])
+    graph_config = GraphConfig(
+        tables=[
+            TableConfig(
+                table_name='table0',
+                cols=[
+                    ColumnConfig(name='text0', stype=Stype.text),
+                    ColumnConfig(name='text1', stype=Stype.text),
+                ],
+            ),
+            TableConfig(
+                table_name='table1',
+                cols=[
+                    ColumnConfig(name='text0', stype=Stype.text),
+                ],
+            ),
+        ]
+    )
 
     plan = ModelPlan.from_default(
         task_type=TaskType.MULTICLASS_CLASSIFICATION,
@@ -1994,7 +2047,7 @@ def test_encoder_overrides_multiple_text_models(encoder_strings):
     )
     assert len(errors) == 0
     assert len(warnings) == 1
-    assert "GPU out-of-memory" in str(warnings[0])
+    assert 'GPU out-of-memory' in str(warnings[0])
 
 
 def test_encoder_overrides_with_encoder_classes():
@@ -2008,7 +2061,7 @@ def test_encoder_overrides_with_encoder_classes():
         TaskType.BINARY_CLASSIFICATION,
         QueryType.TEMPORAL,
     )
-    assert "COL_1: Index(min_occ=10, na_strategy=separate)" in out
+    assert 'COL_1: Index(min_occ=10, na_strategy=separate)' in out
 
     # Check that we can read back in encoder string representation.
     model_plan_from_yaml(out)
@@ -2021,24 +2074,31 @@ def test_parse_text_encoder_overrides():
         table.column: Index(min_occ=10, na_strategy=separate)
     """
     ColumnProcessingPlan.get_encoder_overrides(
-        yaml.safe_load(encoder_overrides_model_plan)['column_processing']
-        ['encoder_overrides'])
+        yaml.safe_load(encoder_overrides_model_plan)['column_processing'][
+            'encoder_overrides'
+        ]
+    )
 
 
 @pytest.mark.parametrize('adaptive_sampling', [True, False])
 def test_num_neighbors(adaptive_sampling: bool):
-    graph_config = GraphConfig(tables=[  # type: ignore
-        TableConfig(
-            table_name="users",
-            pkey=PrimaryKeyConfig(name="user_id"),
-        ),
-        TableConfig(
-            table_name="transactions", fkeys=[
-                ForeignKeyConfig(name="user_id", dst_table="users",
-                                 dst_key="user_id"),
-            ]),
-    ])
-    target_to_entity_paths = [[("transactions", "user_id", "users")]]
+    graph_config = GraphConfig(
+        tables=[  # type: ignore
+            TableConfig(
+                table_name='users',
+                pkey=PrimaryKeyConfig(name='user_id'),
+            ),
+            TableConfig(
+                table_name='transactions',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id', dst_table='users', dst_key='user_id'
+                    ),
+                ],
+            ),
+        ]
+    )
+    target_to_entity_paths = [[('transactions', 'user_id', 'users')]]
 
     plan = ModelPlan.from_default(
         task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2081,7 +2141,7 @@ def test_num_neighbors(adaptive_sampling: bool):
           default: 12
     """[1:]
 
-    with pytest.raises(ValueError, match="hop definition"):
+    with pytest.raises(ValueError, match='hop definition'):
         update_model_plan_from_yaml(plan, yaml).validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2101,7 +2161,7 @@ def test_num_neighbors(adaptive_sampling: bool):
           USERS.user_id->transactions.user_id: 24
           users.user_id->transactions.USER_ID: 24
     """[1:]
-    with pytest.raises(ValueError, match="do not exist in the graph"):
+    with pytest.raises(ValueError, match='do not exist in the graph'):
         update_model_plan_from_yaml(plan, yaml).validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2142,7 +2202,7 @@ def test_num_neighbors(adaptive_sampling: bool):
           default: 12
           users.user_id->transactions.user_id: inferred
     """[1:]
-    with pytest.raises(ValueError, match="only allowed in the first hop"):
+    with pytest.raises(ValueError, match='only allowed in the first hop'):
         update_model_plan_from_yaml(plan, yaml).validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2154,40 +2214,55 @@ def test_num_neighbors(adaptive_sampling: bool):
         )
 
 
-@pytest.mark.parametrize('array_config, num_neighbors, expect_oom',
-                         [(False, 500, False), (False, 512, True),
-                          (True, [128, 4, 1, 1], False),
-                          (True, [128, 8, 1, 1], True)])
+@pytest.mark.parametrize(
+    'array_config, num_neighbors, expect_oom',
+    [
+        (False, 500, False),
+        (False, 512, True),
+        (True, [128, 4, 1, 1], False),
+        (True, [128, 8, 1, 1], True),
+    ],
+)
 def test_num_neighbors_adaptive_sampling_oom(
     array_config: bool,
     num_neighbors: int | list[int],
     expect_oom: bool,
 ):
-    graph_config = GraphConfig(tables=[  # type: ignore
-        TableConfig(
-            table_name="users",
-            pkey=PrimaryKeyConfig(name="user_id"),
-        ),
-        TableConfig(
-            table_name="articles",
-            pkey=PrimaryKeyConfig(name="article_id"),
-        ),
-        TableConfig(
-            table_name="transactions", fkeys=[
-                ForeignKeyConfig(name="user_id", dst_table="users",
-                                 dst_key="user_id"),
-                ForeignKeyConfig(name="article_id", dst_table="articles",
-                                 dst_key="article_id"),
-            ]),
-        TableConfig(
-            table_name="views", fkeys=[
-                ForeignKeyConfig(name="user_id", dst_table="users",
-                                 dst_key="user_id"),
-                ForeignKeyConfig(name="article_id", dst_table="articles",
-                                 dst_key="article_id"),
-            ]),
-    ])
-    target_to_entity_paths = [[("transactions", "user_id", "users")]]
+    graph_config = GraphConfig(
+        tables=[  # type: ignore
+            TableConfig(
+                table_name='users',
+                pkey=PrimaryKeyConfig(name='user_id'),
+            ),
+            TableConfig(
+                table_name='articles',
+                pkey=PrimaryKeyConfig(name='article_id'),
+            ),
+            TableConfig(
+                table_name='transactions',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id', dst_table='users', dst_key='user_id'
+                    ),
+                    ForeignKeyConfig(
+                        name='article_id', dst_table='articles', dst_key='article_id'
+                    ),
+                ],
+            ),
+            TableConfig(
+                table_name='views',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id', dst_table='users', dst_key='user_id'
+                    ),
+                    ForeignKeyConfig(
+                        name='article_id', dst_table='articles', dst_key='article_id'
+                    ),
+                ],
+            ),
+        ]
+    )
+    target_to_entity_paths = [[('transactions', 'user_id', 'users')]]
 
     plan = ModelPlan.from_default(
         task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2249,31 +2324,41 @@ def test_num_neighbors_adaptive_sampling_oom(
 
 
 def test_num_neighbors_adaptive_sampling_neg_1():
-    graph_config = GraphConfig(tables=[  # type: ignore
-        TableConfig(
-            table_name="users",
-            pkey=PrimaryKeyConfig(name="user_id"),
-        ),
-        TableConfig(
-            table_name="articles",
-            pkey=PrimaryKeyConfig(name="article_id"),
-        ),
-        TableConfig(
-            table_name="transactions", fkeys=[
-                ForeignKeyConfig(name="user_id", dst_table="users",
-                                 dst_key="user_id"),
-                ForeignKeyConfig(name="article_id", dst_table="articles",
-                                 dst_key="article_id"),
-            ]),
-        TableConfig(
-            table_name="views", fkeys=[
-                ForeignKeyConfig(name="user_id", dst_table="users",
-                                 dst_key="user_id"),
-                ForeignKeyConfig(name="article_id", dst_table="articles",
-                                 dst_key="article_id"),
-            ]),
-    ])
-    target_to_entity_paths = [[("transactions", "user_id", "users")]]
+    graph_config = GraphConfig(
+        tables=[  # type: ignore
+            TableConfig(
+                table_name='users',
+                pkey=PrimaryKeyConfig(name='user_id'),
+            ),
+            TableConfig(
+                table_name='articles',
+                pkey=PrimaryKeyConfig(name='article_id'),
+            ),
+            TableConfig(
+                table_name='transactions',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id', dst_table='users', dst_key='user_id'
+                    ),
+                    ForeignKeyConfig(
+                        name='article_id', dst_table='articles', dst_key='article_id'
+                    ),
+                ],
+            ),
+            TableConfig(
+                table_name='views',
+                fkeys=[
+                    ForeignKeyConfig(
+                        name='user_id', dst_table='users', dst_key='user_id'
+                    ),
+                    ForeignKeyConfig(
+                        name='article_id', dst_table='articles', dst_key='article_id'
+                    ),
+                ],
+            ),
+        ]
+    )
+    target_to_entity_paths = [[('transactions', 'user_id', 'users')]]
 
     plan = ModelPlan.from_default(
         task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2342,8 +2427,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
 
     # Verify start_time is set and train_start_offset is missing
     assert plan.training_table_generation.start_time == InferredType.VALUE
-    assert (
-        plan.training_table_generation.train_start_offset == MissingType.VALUE)
+    assert plan.training_table_generation.train_start_offset == MissingType.VALUE
 
     plan.training_table_generation.start_time = -10
     plan.training_table_generation.end_time = -1
@@ -2354,7 +2438,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
         run_mode=RunMode.FAST,
     )
     plan.training_table_generation.end_time = -20
-    with pytest.raises(ValueError, match="start_time must be smaller"):
+    with pytest.raises(ValueError, match='start_time must be smaller'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2362,7 +2446,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
             run_mode=RunMode.FAST,
         )
     plan.training_table_generation.end_time = '2024-02-01'
-    with pytest.raises(ValueError, match="both be offsets"):
+    with pytest.raises(ValueError, match='both be offsets'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2389,7 +2473,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
 
     # Verify validation fails if train_start_offset is set
     plan.training_table_generation.train_start_offset = 10
-    with pytest.raises(ValueError, match="field is not supported"):
+    with pytest.raises(ValueError, match='field is not supported'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2408,8 +2492,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
     )
 
     # Verify train_start_offset is set and start_time is missing
-    assert (
-        plan.training_table_generation.train_start_offset == InferredType.VALUE)
+    assert plan.training_table_generation.train_start_offset == InferredType.VALUE
     assert plan.training_table_generation.start_time == MissingType.VALUE
 
     plan.training_table_generation.start_time = -10
@@ -2429,8 +2512,8 @@ def test_model_plan_decoupled_splits(monkeypatch):
         )
 
     # Absolute bounds are supported alongside inferred legacy defaults.
-    plan.training_table_generation.start_time = "2024-01-01"
-    plan.training_table_generation.end_time = "2024-02-01"
+    plan.training_table_generation.start_time = '2024-01-01'
+    plan.training_table_generation.end_time = '2024-02-01'
     plan.validate(
         task_type=TaskType.BINARY_CLASSIFICATION,
         query_type=QueryType.TEMPORAL,
@@ -2445,7 +2528,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
         has_train_table_time_col=False,
         run_mode=RunMode.FAST,
     )
-    static_plan.training_table_generation.start_time = "2024-01-01"
+    static_plan.training_table_generation.start_time = '2024-01-01'
     with pytest.raises(ValueError) as error:
         static_plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2454,7 +2537,7 @@ def test_model_plan_decoupled_splits(monkeypatch):
             run_mode=RunMode.FAST,
         )
     assert "The 'start_time' field is not supported" in str(error.value)
-    assert "train_start_offset" not in str(error.value)
+    assert 'train_start_offset' not in str(error.value)
 
     # Case 1: use_decoupled_split=False and static query with TimeSplit raises
     # error
@@ -2471,7 +2554,8 @@ def test_model_plan_decoupled_splits(monkeypatch):
     plan.training_table_generation.split = (
         'TimeSplit(timestamp_boundaries=[("2024-01-01", "2024-03-01"), '
         '("2024-03-01", "2024-05-01"), '
-        '("2024-05-01", "2024-07-01")])')
+        '("2024-05-01", "2024-07-01")])'
+    )
 
     errors, _ = plan.validate(
         task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2483,12 +2567,16 @@ def test_model_plan_decoupled_splits(monkeypatch):
 
     # Should have an error about TimeSplit not being in acceptable_splits
     # TimeSplit is not in acceptable_splits when _USE_DECOUPLED_SPLITS=False
-    assert any("contains a timestamp" in str(err) and "TimeSplit" in str(err)
-               for err in errors)
     assert any(
-        all(split_cls in str(err)
-            for split_cls in ["RandomSplit", "TemporalSplit", "TimeRangeSplit"])
-        for err in errors)
+        'contains a timestamp' in str(err) and 'TimeSplit' in str(err) for err in errors
+    )
+    assert any(
+        all(
+            split_cls in str(err)
+            for split_cls in ['RandomSplit', 'TemporalSplit', 'TimeRangeSplit']
+        )
+        for err in errors
+    )
 
     # Case 2: raw user-supplied TimeSplit is now rejected uniformly,
     # regardless of _USE_DECOUPLED_SPLITS. The flag-gated acceptance was
@@ -2508,7 +2596,8 @@ def test_model_plan_decoupled_splits(monkeypatch):
     plan.training_table_generation.split = (
         'TimeSplit(timestamp_boundaries=[("2024-01-01", "2024-03-01"), '
         '("2024-03-01", "2024-05-01"), '
-        '("2024-05-01", "2024-07-01")])')
+        '("2024-05-01", "2024-07-01")])'
+    )
 
     errors, _ = plan.validate(
         task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2519,8 +2608,10 @@ def test_model_plan_decoupled_splits(monkeypatch):
     )
 
     # Raw TimeSplit is rejected even with _USE_DECOUPLED_SPLITS=True.
-    assert any("internal representation" in str(err)
-               and 'TemporalSplit(ratio=' in str(err) for err in errors)
+    assert any(
+        'internal representation' in str(err) and 'TemporalSplit(ratio=' in str(err)
+        for err in errors
+    )
 
     # Case 3: use_decoupled_split=False and forecasting with TimeSplit raises
     # error
@@ -2537,7 +2628,8 @@ def test_model_plan_decoupled_splits(monkeypatch):
     plan.training_table_generation.split = (
         'TimeSplit(timestamp_boundaries=[("2024-01-01", "2024-03-01"), '
         '("2024-03-01", "2024-05-01"), '
-        '("2024-05-01", "2024-07-01")])')
+        '("2024-05-01", "2024-07-01")])'
+    )
 
     errors, _ = plan.validate(
         task_type=TaskType.FORECASTING,
@@ -2549,11 +2641,13 @@ def test_model_plan_decoupled_splits(monkeypatch):
 
     # Should have an error about TimeSplit not being in acceptable_splits for
     # forecasting
-    assert any("Forecasting requires a" in str(err) for err in errors)
+    assert any('Forecasting requires a' in str(err) for err in errors)
     assert any(
-        all(split_cls in str(err)
-            for split_cls in ["DateOffsetSplit", "TimeRangeSplit"])
-        for err in errors)
+        all(
+            split_cls in str(err) for split_cls in ['DateOffsetSplit', 'TimeRangeSplit']
+        )
+        for err in errors
+    )
 
     # Case 4: raw user-supplied TimeSplit on forecasting is rejected
     # uniformly, regardless of _USE_DECOUPLED_SPLITS (flag-gated acceptance
@@ -2571,7 +2665,8 @@ def test_model_plan_decoupled_splits(monkeypatch):
     plan.training_table_generation.split = (
         'TimeSplit(timestamp_boundaries=[("2024-01-01", "2024-03-01"), '
         '("2024-03-01", "2024-05-01"), '
-        '("2024-05-01", "2024-07-01")])')
+        '("2024-05-01", "2024-07-01")])'
+    )
 
     errors, _ = plan.validate(
         task_type=TaskType.FORECASTING,
@@ -2582,8 +2677,10 @@ def test_model_plan_decoupled_splits(monkeypatch):
     )
 
     # Raw TimeSplit is rejected even with _USE_DECOUPLED_SPLITS=True.
-    assert any("internal representation" in str(err)
-               and 'TemporalSplit(ratio=' in str(err) for err in errors)
+    assert any(
+        'internal representation' in str(err) and 'TemporalSplit(ratio=' in str(err)
+        for err in errors
+    )
 
 
 def test_model_plan_unify() -> None:
@@ -2610,30 +2707,28 @@ def test_model_plan_unify() -> None:
     ]
 
     # checks that default values are created in the new API
-    assert plan.model_architecture.model[0].name == "GNN"
+    assert plan.model_architecture.model[0].name == 'GNN'
     assert plan.model_architecture.model[0].channels == [64, 128, 256]
     assert plan.model_architecture.model[0].aggregation == expected_aggs
 
     # checks that unify on the new API doesn't introduce any change
     plan = plan.unify()
-    assert plan.model_architecture.model[0].name == "GNN"
+    assert plan.model_architecture.model[0].name == 'GNN'
     assert plan.model_architecture.model[0].channels == [64, 128, 256]
     assert plan.model_architecture.model[0].aggregation == expected_aggs
 
     # sets values for the old API without deleting new API
     plan.model_architecture.channels = [4, 8, 32]
     plan = plan.unify()
-    assert plan.model_architecture.model[0].name == "GNN"
+    assert plan.model_architecture.model[0].name == 'GNN'
     assert plan.model_architecture.model[0].channels == [4, 8, 32]
     assert plan.model_architecture.model[0].aggregation == expected_aggs
 
     plan.model_architecture.aggregation = [[AggregationType.MAX]]
     plan = plan.unify()
-    assert plan.model_architecture.model[0].name == "GNN"
+    assert plan.model_architecture.model[0].name == 'GNN'
     assert plan.model_architecture.model[0].channels == [4, 8, 32]
-    assert plan.model_architecture.model[0].aggregation == [[
-        AggregationType.MAX
-    ]]
+    assert plan.model_architecture.model[0].aggregation == [[AggregationType.MAX]]
 
 
 def test_static_lp_validator() -> None:
@@ -2702,17 +2797,23 @@ def test_temporal_lp_validator() -> None:
     assert len(warnings) == 0
 
 
-@pytest.mark.parametrize('hop_key,error_match', [
-    ('customer.CustomerID->transaction.CustomerID->: 32', "too many '->'"),
-    ('customer.CustomerIDtransaction.CustomerID: 32',
-     "missing the '->' separator"),
-    ('->transaction.CustomerID: 32', 'empty source'),
-    ('customer.CustomerID->: 32', 'empty destination'),
-    ('customerCustomerID->transaction.CustomerID: 32',
-     'source is missing the dot separator'),
-    ('customer.CustomerID->transactionCustomerID: 32',
-     'destination is missing the dot separator'),
-])
+@pytest.mark.parametrize(
+    'hop_key,error_match',
+    [
+        ('customer.CustomerID->transaction.CustomerID->: 32', "too many '->'"),
+        ('customer.CustomerIDtransaction.CustomerID: 32', "missing the '->' separator"),
+        ('->transaction.CustomerID: 32', 'empty source'),
+        ('customer.CustomerID->: 32', 'empty destination'),
+        (
+            'customerCustomerID->transaction.CustomerID: 32',
+            'source is missing the dot separator',
+        ),
+        (
+            'customer.CustomerID->transactionCustomerID: 32',
+            'destination is missing the dot separator',
+        ),
+    ],
+)
 def test_hop_key_format_errors(hop_key: str, error_match: str):
     yaml_str = f"""
     neighbor_sampling:
@@ -2725,19 +2826,26 @@ def test_hop_key_format_errors(hop_key: str, error_match: str):
         model_plan_from_yaml(yaml_str)
 
 
-@pytest.mark.parametrize('hop_key', [
-    '.CustomerID->transaction.CustomerID: 32',
-    'customer.->transaction.CustomerID: 32',
-    'customer.CustomerID->.CustomerID: 32',
-    'customer.CustomerID->transaction.: 32',
-])
+@pytest.mark.parametrize(
+    'hop_key',
+    [
+        '.CustomerID->transaction.CustomerID: 32',
+        'customer.->transaction.CustomerID: 32',
+        'customer.CustomerID->.CustomerID: 32',
+        'customer.CustomerID->transaction.: 32',
+    ],
+)
 def test_hop_key_empty_parts(hop_key: str):
-    graph_config = GraphConfig(tables=[
-        TableConfig(table_name="customer", pkey=PrimaryKeyConfig(
-            name="CustomerID")),
-        TableConfig(table_name="transaction", pkey=PrimaryKeyConfig(
-            name="CustomerID")),
-    ])
+    graph_config = GraphConfig(
+        tables=[
+            TableConfig(
+                table_name='customer', pkey=PrimaryKeyConfig(name='CustomerID')
+            ),
+            TableConfig(
+                table_name='transaction', pkey=PrimaryKeyConfig(name='CustomerID')
+            ),
+        ]
+    )
     yaml_str = f"""
     neighbor_sampling:
       num_neighbors:
@@ -2746,7 +2854,7 @@ def test_hop_key_empty_parts(hop_key: str):
           {hop_key}
     """[1:]
     plan = model_plan_from_yaml(yaml_str)
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ValueError, match='empty'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -2765,8 +2873,12 @@ def test_hop_key_valid():
           customer.CustomerID->transaction.CustomerID: 32
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    assert plan.neighbor_sampling.num_neighbors[0].hop1.__pydantic_extra__[
-        'customer.CustomerID->transaction.CustomerID'] == 32
+    assert (
+        plan.neighbor_sampling.num_neighbors[0].hop1.__pydantic_extra__[
+            'customer.CustomerID->transaction.CustomerID'
+        ]
+        == 32
+    )
 
 
 def test_yaml_missing_space_after_colon():
@@ -2801,30 +2913,44 @@ def test_yaml_invalid_structure():
     training_table_generation
       split: RandomSplit([0.8, 0.1, 0.1])
     """[1:]
-    with pytest.raises(ValueError,
-                       match="Invalid syntax in model plan|Could not parse"):
+    with pytest.raises(
+        ValueError, match='Invalid syntax in model plan|Could not parse'
+    ):
         model_plan_from_yaml(yaml)
 
 
-@pytest.mark.parametrize('invalid_yaml', [
-    'run_mode: invalid\ntraining_job:\n  num_experiments: 2',
-    'invalid_field:\n  nested: value\ntraining_job:\n  num_experiments: 2',
-])
+@pytest.mark.parametrize(
+    'invalid_yaml',
+    [
+        'run_mode: invalid\ntraining_job:\n  num_experiments: 2',
+        'invalid_field:\n  nested: value\ntraining_job:\n  num_experiments: 2',
+    ],
+)
 def test_model_plan_invalid_top_level_field(invalid_yaml: str):
-    with pytest.raises(ValueError, match="top-level field is not allowed"):
+    with pytest.raises(ValueError, match='top-level field is not allowed'):
         model_plan_from_yaml(invalid_yaml)
 
 
-@pytest.mark.parametrize('hop_key,tables', [
-    ('nonexistent.table->users.user_id: 32', [
-        TableConfig(table_name="users", pkey=PrimaryKeyConfig(name="user_id")),
-    ]),
-    ('users.user_id->transactions.nonexistent_col: 32', [
-        TableConfig(table_name="users", pkey=PrimaryKeyConfig(name="user_id")),
-        TableConfig(table_name="transactions",
-                    pkey=PrimaryKeyConfig(name="trans_id")),
-    ]),
-])
+@pytest.mark.parametrize(
+    'hop_key,tables',
+    [
+        (
+            'nonexistent.table->users.user_id: 32',
+            [
+                TableConfig(table_name='users', pkey=PrimaryKeyConfig(name='user_id')),
+            ],
+        ),
+        (
+            'users.user_id->transactions.nonexistent_col: 32',
+            [
+                TableConfig(table_name='users', pkey=PrimaryKeyConfig(name='user_id')),
+                TableConfig(
+                    table_name='transactions', pkey=PrimaryKeyConfig(name='trans_id')
+                ),
+            ],
+        ),
+    ],
+)
 def test_model_plan_invalid_graph_references(hop_key: str, tables: list):
     graph_config = GraphConfig(tables=tables)
     yaml_str = f"""
@@ -2835,7 +2961,7 @@ def test_model_plan_invalid_graph_references(hop_key: str, tables: list):
           {hop_key}
     """[1:]
     plan = model_plan_from_yaml(yaml_str)
-    with pytest.raises(ValueError, match="do not exist in the graph"):
+    with pytest.raises(ValueError, match='do not exist in the graph'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.STATIC,
@@ -2864,9 +2990,7 @@ def test_model_plan_valid_structure():
     """[1:]
     plan = model_plan_from_yaml(yaml)
     assert plan.training_job.num_experiments == 2
-    assert plan.optimization.max_epochs == 8 or plan.optimization.max_epochs == [
-        8
-    ]
+    assert plan.optimization.max_epochs == 8 or plan.optimization.max_epochs == [8]
 
 
 def test_error_message_format():
@@ -2880,8 +3004,8 @@ def test_error_message_format():
     with pytest.raises(ValueError) as exc_info:
         model_plan_from_yaml(yaml)
     error_msg = str(exc_info.value)
-    assert "Invalid syntax in model plan" in error_msg
-    assert "Fix by" in error_msg or "fix by" in error_msg.lower()
+    assert 'Invalid syntax in model plan' in error_msg
+    assert 'Fix by' in error_msg or 'fix by' in error_msg.lower()
 
 
 def test_validate_optimizer():
@@ -2890,7 +3014,7 @@ def test_validate_optimizer():
       optimizer:
         - Muon
     """[1:]
-    with pytest.raises(ValueError, match="Input should be"):
+    with pytest.raises(ValueError, match='Input should be'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -2898,7 +3022,7 @@ def test_validate_optimizer():
       lookup_optimization:
         - optimizer: Adagrad
     """[1:]
-    with pytest.raises(ValueError, match="Field required"):
+    with pytest.raises(ValueError, match='Field required'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -2907,7 +3031,7 @@ def test_validate_optimizer():
         - optimizer: Adagrad
           base_lr: 0.0
     """[1:]
-    with pytest.raises(ValueError, match="Input should be greater than 0"):
+    with pytest.raises(ValueError, match='Input should be greater than 0'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -2954,7 +3078,7 @@ def test_na_strategy():
       na_strategy:
         number: separate
     """[1:]
-    with pytest.raises(ValueError, match="Input should be"):
+    with pytest.raises(ValueError, match='Input should be'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -2962,7 +3086,7 @@ def test_na_strategy():
       na_strategy:
         numerical: test
     """[1:]
-    with pytest.raises(ValueError, match="Input should be"):
+    with pytest.raises(ValueError, match='Input should be'):
         model_plan_from_yaml(yaml)
 
     yaml = """
@@ -2971,7 +3095,7 @@ def test_na_strategy():
         numerical: most_frequent
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match="is not a supported N/A"):
+    with pytest.raises(ValueError, match='is not a supported N/A'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2986,7 +3110,7 @@ def test_na_strategy():
         categorical: mean
     """[1:]
     plan = model_plan_from_yaml(yaml)
-    with pytest.raises(ValueError, match="hold unsupported N/A"):
+    with pytest.raises(ValueError, match='hold unsupported N/A'):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -3009,14 +3133,20 @@ def test_na_strategy():
     )
 
 
-@pytest.mark.parametrize('field', [
-    'entity_candidate',
-    'entity_candidate_aggregation',
-])
+@pytest.mark.parametrize(
+    'field',
+    [
+        'entity_candidate',
+        'entity_candidate_aggregation',
+    ],
+)
 def test_entity_candidate_settings_rejected(field):
-    kwargs = dict(task_type=TaskType.BINARY_CLASSIFICATION,
-                  query_type=QueryType.TEMPORAL,
-                  has_train_table_time_col=True, run_mode=RunMode.FAST)
+    kwargs = dict(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
     plan = ModelPlan.from_default(**kwargs)
     plan.validate(**kwargs)
 
@@ -3024,7 +3154,8 @@ def test_entity_candidate_settings_rejected(field):
     plan = from_json(to_json(plan), ModelPlan)
     assert getattr(plan.training_table_generation, field) == 'candidate'
 
-    with pytest.raises(ValueError,
-                       match=f"'training_table_generation.{field}' is not "
-                       "supported.*WHERE filter"):
+    with pytest.raises(
+        ValueError,
+        match=f"'training_table_generation.{field}' is not supported.*WHERE filter",
+    ):
         plan.validate(**kwargs)

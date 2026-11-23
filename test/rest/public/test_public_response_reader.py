@@ -3,16 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from io import BytesIO
+
 from test.rest.integ import public_response_reader as reader
 
 
 def test_https_reader_never_passes_signed_url_to_fsutil(monkeypatch) -> None:
     expected = b'parquet-bytes'
-    monkeypatch.setattr(reader, 'urlopen',
-                        lambda _url, timeout: BytesIO(expected))
+    monkeypatch.setattr(reader, 'urlopen', lambda _url, timeout: BytesIO(expected))
     monkeypatch.setattr(
-        reader.fsutil, 'isdir', lambda _path:
-        (_ for _ in ()).throw(AssertionError('signed URL reached fsutil')))
+        reader.fsutil,
+        'isdir',
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError('signed URL reached fsutil')
+        ),
+    )
 
     url = 'https://signed.example.test/table.parquet?signature=secret'
     assert reader.public_parquet_refs(url) == [url]

@@ -76,12 +76,11 @@ from statedb.utils.errors import (
 logger = logging.getLogger(__name__)
 
 # names of env vars used for connecting to databricks
-_ENV_DATABRICKS_CLUSTER_ID = EnvVar('DATABRICKS_CLUSTER_ID', type=str,
-                                    default_value='')
-_ENV_DATABRICKS_WAREHOUSE_ID = EnvVar('DATABRICKS_WAREHOUSE_ID', type=str,
-                                      default_value='')
-_ENV_DATABRICKS_CATALOG = EnvVar('DATABRICKS_CATALOG', type=str,
-                                 default_value='')
+_ENV_DATABRICKS_CLUSTER_ID = EnvVar('DATABRICKS_CLUSTER_ID', type=str, default_value='')
+_ENV_DATABRICKS_WAREHOUSE_ID = EnvVar(
+    'DATABRICKS_WAREHOUSE_ID', type=str, default_value=''
+)
+_ENV_DATABRICKS_CATALOG = EnvVar('DATABRICKS_CATALOG', type=str, default_value='')
 
 _DATABRICKS_SAMPLE_CATALOG = 'samples'
 _SAMPLE_TABLE_PERMISSIONS = 'SAMPLE_TABLE_PERMISSIONS'
@@ -89,12 +88,12 @@ _SqlResult = TypeVar('_SqlResult')
 
 
 def _dataframe_result(cursor: Any, query: str) -> pd.DataFrame:
-    return safe_to_pandas(
-        fix_types_for_pandas(cursor.execute(query).fetchall_arrow()))
+    return safe_to_pandas(fix_types_for_pandas(cursor.execute(query).fetchall_arrow()))
 
 
-def _sample_dataframe(cursor: Any, source: str, limit: int,
-                      projection: str = '*') -> pd.DataFrame:
+def _sample_dataframe(
+    cursor: Any, source: str, limit: int, projection: str = '*'
+) -> pd.DataFrame:
     dbx_sql.sample(cursor, source, limit, projection)
     return safe_to_pandas(fix_types_for_pandas(cursor.fetchall_arrow()))
 
@@ -144,21 +143,23 @@ def validate_databricks_auth(
     token = creds.get('pat')
     client_id = creds.get('client_id')
     client_secret = creds.get('client_secret')
-    token_value = token.get_secret_value().strip() if token else ""
-    client_id_value = (client_id.get_secret_value().strip()
-                       if client_id else "")
-    client_secret_value = (client_secret.get_secret_value().strip()
-                           if client_secret else "")
+    token_value = token.get_secret_value().strip() if token else ''
+    client_id_value = client_id.get_secret_value().strip() if client_id else ''
+    client_secret_value = (
+        client_secret.get_secret_value().strip() if client_secret else ''
+    )
 
     has_pat = bool(token_value)
     has_oauth = bool(client_id_value and client_secret_value)
     has_partial_oauth = bool(client_id_value) != bool(client_secret_value)
 
     if has_partial_oauth:
-        raise ConnectorError("Databricks OAuth credentials are incomplete. "
-                             "Both client_id and client_secret are required.")
+        raise ConnectorError(
+            'Databricks OAuth credentials are incomplete. '
+            'Both client_id and client_secret are required.'
+        )
     if not has_pat and not has_oauth:
-        raise ConnectorError("No Databricks credentials were provided.")
+        raise ConnectorError('No Databricks credentials were provided.')
 
     resolved_credentials: Dict[str, SecretStr] = {}
     if has_pat:
@@ -167,7 +168,7 @@ def validate_databricks_auth(
         resolved_credentials['client_id'] = SecretStr(client_id_value)
         resolved_credentials['client_secret'] = SecretStr(client_secret_value)
 
-    auth_mode = "oauth" if has_oauth else "pat"
+    auth_mode = 'oauth' if has_oauth else 'pat'
     try:
         connection_info = DatabricksConnectionInfo(
             host=host,
@@ -176,8 +177,7 @@ def validate_databricks_auth(
             catalog='',
             credentials=resolved_credentials,
         )
-        client_args = DatabricksClient(
-            connection_info).workspace_client_kwargs()
+        client_args = DatabricksClient(connection_info).workspace_client_kwargs()
         client = WorkspaceClient(**client_args)
         client.current_user.me()
     except ConnectorError:
@@ -185,19 +185,24 @@ def validate_databricks_auth(
     except WarehouseMisconfigurationError as err:
         raise ConnectorError(str(err)) from None
     except PermissionDenied as err:
-        if auth_mode == "pat":
-            message = ("Databricks PAT authentication failed. "
-                       "The PAT may be invalid, expired, revoked, or from a "
-                       "different Databricks workspace.")
+        if auth_mode == 'pat':
+            message = (
+                'Databricks PAT authentication failed. '
+                'The PAT may be invalid, expired, revoked, or from a '
+                'different Databricks workspace.'
+            )
         else:
-            message = ("Databricks OAuth authentication failed. "
-                       "Please verify client_id, client_secret, and service "
-                       "principal permissions.")
+            message = (
+                'Databricks OAuth authentication failed. '
+                'Please verify client_id, client_secret, and service '
+                'principal permissions.'
+            )
         raise ConnectorError(message, error=err) from None
     except Exception:
         raise ConnectorError(
-            f"Failed to authenticate with Databricks. Authentication mode used is {auth_mode}. "
-            "Please verify your host and credentials.", ) from None
+            f'Failed to authenticate with Databricks. Authentication mode used is {auth_mode}. '
+            'Please verify your host and credentials.',
+        ) from None
 
 
 class DatabricksConnector(SQLConnector):
@@ -210,6 +215,7 @@ class DatabricksConnector(SQLConnector):
         warehouse_id (str): The Databricks SQL warehouse ID.
         catalog (str): The name of the UC catalogue.
     """
+
     #: `export_table_read_only` takes a `sql` argument; Snowflake's and
     #: BigQuery's exports do not.
     exports_custom_sql = True
@@ -235,13 +241,15 @@ class DatabricksConnector(SQLConnector):
         self.schema_name = schema_name
 
     def _get_connector_type(self) -> str:
-        return "Databricks"
+        return 'Databricks'
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}'
-                f'(host={self.host}, catalog={self.catalog}, '
-                f'schema={self.schema_name}, '
-                f'cluster={self.cluster_id}, warehouse={self.warehouse_id})')
+        return (
+            f'{self.__class__.__name__}'
+            f'(host={self.host}, catalog={self.catalog}, '
+            f'schema={self.schema_name}, '
+            f'cluster={self.cluster_id}, warehouse={self.warehouse_id})'
+        )
 
     # Connecting and closing connections ######################################
 
@@ -256,17 +264,19 @@ class DatabricksConnector(SQLConnector):
                 self.set_credentials(credentials)
             client = DatabricksClient(self._to_databricks_connection_info())
             return client.create_sql_connection(schema=self.schema_name)
-        except (DatabricksErrors.Error, WarehouseRetriableError,
-                WarehouseExtendedRetriableError,
-                WarehouseMisconfigurationError) as err:
+        except (
+            DatabricksErrors.Error,
+            WarehouseRetriableError,
+            WarehouseExtendedRetriableError,
+            WarehouseMisconfigurationError,
+        ) as err:
             if isinstance(err, WarehouseMisconfigurationError):
                 # These messages are authored locally and contain only
                 # configuration guidance, never provider response text.
                 raise ConnectorError(str(err)) from None
             if isinstance(err, DatabricksErrors.Error):
                 raise ConnectorError(
-                    'Databricks could not establish the configured '
-                    'connection.',
+                    'Databricks could not establish the configured connection.',
                     error=err,
                 ) from None
             raise ConnectorError(
@@ -282,15 +292,16 @@ class DatabricksConnector(SQLConnector):
             if self._require_explicit_credentials:
                 raise ConnectorError(
                     'Identity-backed Databricks connectors require explicit '
-                    'OAuth credentials.')
+                    'OAuth credentials.'
+                )
             creds = {}
             if DATABRICKS_TOKEN.parse_value():
                 creds['pat'] = SecretStr(DATABRICKS_TOKEN.parse_value())
             if DATABRICKS_CLIENT_ID.parse_value():
-                creds['client_id'] = SecretStr(
-                    DATABRICKS_CLIENT_ID.parse_value())
+                creds['client_id'] = SecretStr(DATABRICKS_CLIENT_ID.parse_value())
                 creds['client_secret'] = SecretStr(
-                    DATABRICKS_CLIENT_SECRET.parse_value())
+                    DATABRICKS_CLIENT_SECRET.parse_value()
+                )
         return DatabricksConnectionInfo(
             host=self.host,
             cluster_id=self.cluster_id,
@@ -319,25 +330,28 @@ class DatabricksConnector(SQLConnector):
         """Reject coordinates outside a fixed-schema connector target."""
         if schema_name.casefold() != self.schema_name.casefold():
             raise ConnectorError(
-                'Databricks table schema does not match the connector schema.')
+                'Databricks table schema does not match the connector schema.'
+            )
 
     # Overrides functions from sql connector ##################################
     def sql_table_name(self, table_name: str):
         return f'{self._fully_qualify_table_name(table_name)}'
 
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         is_databricks_view = self.is_table_view(table_name)
         if not is_databricks_view:
-            query = ('DESCRIBE DETAIL '
-                     f'{self._fully_qualify_table_name(table_name)}')
+            query = f'DESCRIBE DETAIL {self._fully_qualify_table_name(table_name)}'
             df = self._get_df_result(self.context, query)
             if len(df) > 0:
                 return df.loc[0]['sizeInBytes']
-        logger.warning(f"could not retrieve Databricks table information "
-                       f"for table {table_name}")
+        logger.warning(
+            f'could not retrieve Databricks table information for table {table_name}'
+        )
         return super()._get_table_source_size(
-            table_name=self._fully_qualify_table_name(table_name))
+            table_name=self._fully_qualify_table_name(table_name)
+        )
 
     # Reading table metadata ##################################################
 
@@ -346,20 +360,27 @@ class DatabricksConnector(SQLConnector):
         table_name: str,
     ) -> str:
         try:
-            return self._run_sql(self.context, dbx_identity.table_version,
-                                 self._fully_qualify_table_name(table_name))
+            return self._run_sql(
+                self.context,
+                dbx_identity.table_version,
+                self._fully_qualify_table_name(table_name),
+            )
         except Exception as error:
             if is_not_found(error):
                 raise SourceTableNotFoundError(table_name, self.name) from None
             if 'EXPECT_TABLE_NOT_VIEW' in str(error):
                 logger.info(
                     'Using default data version for Databricks view %r '
-                    'because history is not available for views', table_name)
+                    'because history is not available for views',
+                    table_name,
+                )
             else:
                 logger.warning(
                     'Could not retrieve Databricks data version for '
-                    'table %r (error_type=%s)', table_name,
-                    type(error).__name__)
+                    'table %r (error_type=%s)',
+                    table_name,
+                    type(error).__name__,
+                )
             return hour_version()
 
     def is_table_view(self, table_name: str) -> bool:
@@ -367,27 +388,31 @@ class DatabricksConnector(SQLConnector):
         checking if it has history available. Views and streaming tables do not
         support time travel operations."""
         try:
-            extended_query = (f'DESCRIBE EXTENDED '
-                              f'{self._fully_qualify_table_name(table_name)}')
+            extended_query = (
+                f'DESCRIBE EXTENDED {self._fully_qualify_table_name(table_name)}'
+            )
             df = self._get_df_result(self.context, extended_query)
 
             if len(df) > 0:
                 type_rows = df[df['col_name'] == 'Type']
                 if len(type_rows) > 0:
                     table_type = type_rows.iloc[0]['data_type']
-                    if (table_type == 'STREAMING_TABLE' or table_type == 'VIEW'
-                            or table_type == 'MATERIALIZED_VIEW'):
+                    if (
+                        table_type == 'STREAMING_TABLE'
+                        or table_type == 'VIEW'
+                        or table_type == 'MATERIALIZED_VIEW'
+                    ):
                         return True
                 else:
-                    raise ConnectorError(
-                        "Kumo was unable to determine the table type.")
+                    raise ConnectorError('Kumo was unable to determine the table type.')
 
             return False
         except ConnectorError:
             raise
         except Exception:
-            raise ConnectorError(f"Could not retrieve Databricks table history "
-                                 f"for table {table_name}.") from None
+            raise ConnectorError(
+                f'Could not retrieve Databricks table history for table {table_name}.'
+            ) from None
 
     def has_links_support(self) -> bool:
         return True
@@ -400,13 +425,17 @@ class DatabricksConnector(SQLConnector):
             from kumo_databricks.catalog import table_names
 
             with self.context.cursor() as cursor:
-                return table_names(cursor, catalog=self.catalog,
-                                   schema=schema_name,
-                                   target_schema=self.schema_name)
+                return table_names(
+                    cursor,
+                    catalog=self.catalog,
+                    schema=schema_name,
+                    target_schema=self.schema_name,
+                )
         except Exception:
             raise ConnectorError(
                 'Could not list Databricks tables. Please verify your '
-                'connection settings and permissions.') from None
+                'connection settings and permissions.'
+            ) from None
 
     def table_exists(self, table_name: str) -> bool:
         r"""Return whether an exact fixed-schema table is visible.
@@ -429,7 +458,8 @@ class DatabricksConnector(SQLConnector):
     def validate_permissions(self) -> None:
         if not self.catalog or not self.catalog.strip():
             raise ConnectorError(
-                'Databricks catalog is required for exact target validation.')
+                'Databricks catalog is required for exact target validation.'
+            )
         self.check_schema_exists(self.schema_name)
 
     def _fetch_table_metadata(
@@ -439,19 +469,22 @@ class DatabricksConnector(SQLConnector):
         schema_name: Optional[str] = None,
     ) -> Dict[str, TableMetadataConfig]:
         # Fetch table metadata from databricks.
-        column_metadata_dict = self.get_column_metadata(self.context,
-                                                        schema_name,
-                                                        table_names)
+        column_metadata_dict = self.get_column_metadata(
+            self.context, schema_name, table_names
+        )
 
         table_metadata_dict: Dict[str, TableMetadataConfig] = {}
 
         for (table_name, column_name), dtype in column_metadata_dict.items():
             if table_name not in table_metadata_dict:
                 table_metadata_dict[table_name] = TableMetadataConfig(
-                    table_name=table_name, source_name=table_name,
-                    data_source=self._name)
+                    table_name=table_name,
+                    source_name=table_name,
+                    data_source=self._name,
+                )
             table_metadata_dict[table_name].cols.append(
-                BaseColumnConfig(name=column_name, dtype=dtype))
+                BaseColumnConfig(name=column_name, dtype=dtype)
+            )
 
         return table_metadata_dict
 
@@ -465,11 +498,12 @@ class DatabricksConnector(SQLConnector):
     ) -> List[TableMetadataConfig]:
         try:
             if schema_name:
-                logger.info(f"fetching Databricks table metadata for "
-                            f"{table_names} under schema {schema_name}")
+                logger.info(
+                    f'fetching Databricks table metadata for '
+                    f'{table_names} under schema {schema_name}'
+                )
             else:
-                logger.info(f"fetching Databricks table metadata for "
-                            f"{table_names}")
+                logger.info(f'fetching Databricks table metadata for {table_names}')
 
             requested_names = table_names
             lookup_names = None
@@ -479,19 +513,19 @@ class DatabricksConnector(SQLConnector):
                     for table_name in requested_names
                 ]
             table_metadata_dict = self._fetch_table_metadata(
-                lookup_names, skip_inferral, schema_name)
+                lookup_names, skip_inferral, schema_name
+            )
 
             if requested_names:
                 out: List[TableMetadataConfig] = []
                 assert lookup_names is not None
-                for requested_name, lookup_name in zip(requested_names,
-                                                       lookup_names,
-                                                       strict=True):
+                for requested_name, lookup_name in zip(
+                    requested_names, lookup_names, strict=True
+                ):
                     if lookup_name not in table_metadata_dict:
                         if ignore_errors:
                             continue
-                        raise SourceTableNotFoundError(requested_name,
-                                                       self.name)
+                        raise SourceTableNotFoundError(requested_name, self.name)
                     metadata = deepcopy(table_metadata_dict[lookup_name])
                     metadata.table_name = requested_name
                     metadata.source_name = requested_name
@@ -503,12 +537,11 @@ class DatabricksConnector(SQLConnector):
             raise
         except Exception as err:
             logger.error(
-                "Error retrieving Databricks table metadata "
-                "(error_type=%s)",
-                type(err).__name__)
-            schema_suffix = (f", schema {schema_name}" if schema_name else "")
-            table_suffix = (f" for table(s) {table_names}"
-                            if table_names else "")
+                'Error retrieving Databricks table metadata (error_type=%s)',
+                type(err).__name__,
+            )
+            schema_suffix = f', schema {schema_name}' if schema_name else ''
+            table_suffix = f' for table(s) {table_names}' if table_names else ''
             raise ConnectorError(
                 message=(
                     'Kumo was unable to retrieve table information from '
@@ -516,7 +549,8 @@ class DatabricksConnector(SQLConnector):
                     f'{schema_suffix}'
                     f'{table_suffix}. '
                     'Please verify your connection settings and permissions.'
-                ), ) from None
+                ),
+            ) from None
 
     def _read_table(
         self,
@@ -529,9 +563,12 @@ class DatabricksConnector(SQLConnector):
             return super()._read_table(context, table_name, pkey, cols)
         except Exception:
             raise ConnectorError(
-                message=(f'An error occurred while reading table {table_name} '
-                         f'from Databricks. Please verify your connection '
-                         f'settings and permissions.')) from None
+                message=(
+                    f'An error occurred while reading table {table_name} '
+                    f'from Databricks. Please verify your connection '
+                    f'settings and permissions.'
+                )
+            ) from None
 
     def _read_table_chunk(
         self,
@@ -543,13 +580,17 @@ class DatabricksConnector(SQLConnector):
         cols: Optional[List[BaseColumnConfig]] = None,
     ) -> pd.DataFrame:
         try:
-            return super()._read_table_chunk(context, table_name, num_rows,
-                                             offset, pkey, cols)
+            return super()._read_table_chunk(
+                context, table_name, num_rows, offset, pkey, cols
+            )
         except Exception:
             raise ConnectorError(
-                message=(f'An error occurred while reading a chunk of table '
-                         f'{table_name} from Databricks. Please verify your '
-                         f'connection settings and permissions.')) from None
+                message=(
+                    f'An error occurred while reading a chunk of table '
+                    f'{table_name} from Databricks. Please verify your '
+                    f'connection settings and permissions.'
+                )
+            ) from None
 
     def _read_table_sample(
         self,
@@ -563,7 +604,8 @@ class DatabricksConnector(SQLConnector):
         if num_rows is None:
             raise ConnectorError(
                 'Databricks source sampling requires num_rows; '
-                'an unbounded fraction-only source read is not supported.')
+                'an unbounded fraction-only source read is not supported.'
+            )
         try:
             if cols is None:
                 projection = '*'
@@ -573,19 +615,25 @@ class DatabricksConnector(SQLConnector):
                     names.append(pkey.name)
                 if not names:
                     raise ValueError('At least one sample column is required.')
-                projection = ', '.join(
-                    dbx_sql.quote_identifier(name) for name in names)
-            df = self._run_sql(context, _sample_dataframe,
-                               self.sql_table_name(table_name), num_rows,
-                               projection)
+                projection = ', '.join(dbx_sql.quote_identifier(name) for name in names)
+            df = self._run_sql(
+                context,
+                _sample_dataframe,
+                self.sql_table_name(table_name),
+                num_rows,
+                projection,
+            )
             if pkey is not None:
                 df.set_index(pkey.name, inplace=True)
             return cast_df(df, pkey, cols)
         except Exception:
             raise ConnectorError(
-                message=(f'An error occurred while reading a sample of table '
-                         f'{table_name} from Databricks. Please verify your '
-                         f'connection settings and permissions.')) from None
+                message=(
+                    f'An error occurred while reading a sample of table '
+                    f'{table_name} from Databricks. Please verify your '
+                    f'connection settings and permissions.'
+                )
+            ) from None
 
     # Writing to Databricks Delta table #######################################
 
@@ -607,14 +655,13 @@ class DatabricksConnector(SQLConnector):
 
     def _fully_qualify_output_table_name(self, table_schema_name: str) -> str:
         """Quote a Kumo-internal output coordinate for SQL."""
-        schema_name, table_name = (
-            self.require_output_table_within_connector_target(table_schema_name)
+        schema_name, table_name = self.require_output_table_within_connector_target(
+            table_schema_name
         )
         return dbx_sql.qualified_name(schema_name, table_name)
 
     def managed_volume_stage(self, export_id: str | None = None) -> str:
-        return dbx_output.staging_stage(self.catalog, self.schema_name,
-                                        export_id)
+        return dbx_output.staging_stage(self.catalog, self.schema_name, export_id)
 
     def ensure_managed_volume(self) -> None:
         """Ensure the recommended one managed staging volume per schema."""
@@ -629,18 +676,18 @@ class DatabricksConnector(SQLConnector):
 
     def _require_managed_stage(self, artifact_path: str) -> str:
         try:
-            return dbx_write.within_stage(artifact_path, self.catalog,
-                                          self.schema_name)
+            return dbx_write.within_stage(artifact_path, self.catalog, self.schema_name)
         except ArtifactValidationError as error:
             raise ConnectorError(str(error)) from None
 
     def _volume_worker_count(self, files: list[Path]) -> int:
         configured = _DATABRICKS_VOLUME_UPLOAD_CONCURRENCY.parse_value()
-        memory_budget = (_DATABRICKS_VOLUME_UPLOAD_MEMORY_BUDGET.parse_value())
+        memory_budget = _DATABRICKS_VOLUME_UPLOAD_MEMORY_BUDGET.parse_value()
         if configured <= 0 or memory_budget <= 0:
             raise ConnectorError(
                 'Databricks volume upload concurrency and memory budget must '
-                'be positive.')
+                'be positive.'
+            )
         largest_file = max((file.stat().st_size for file in files), default=1)
         # databricks-sql-connector 4.x currently reads one PUT source file
         # into memory before sending it to the presigned URL. Bound aggregate
@@ -660,9 +707,7 @@ class DatabricksConnector(SQLConnector):
         if not commands:
             return
         worker_count = max(1, min(worker_count, len(commands)))
-        batches = [
-            commands[index::worker_count] for index in range(worker_count)
-        ]
+        batches = [commands[index::worker_count] for index in range(worker_count)]
         connection_info = self._to_databricks_connection_info()
 
         def run_batch(batch: list[str]) -> None:
@@ -673,35 +718,39 @@ class DatabricksConnector(SQLConnector):
                     for attempt in range(_DATABRICKS_VOLUME_UPLOAD_ATTEMPTS):
                         try:
                             with restricted_diagnostic_boundary(
-                                    exception_types=(
-                                        DatabricksErrors.Error,
-                                        HTTPError,
-                                        OSError,
-                                    ), safe_message=(
-                                        'Databricks managed-volume operation '
-                                        'failed')):
+                                exception_types=(
+                                    DatabricksErrors.Error,
+                                    HTTPError,
+                                    OSError,
+                                ),
+                                safe_message=(
+                                    'Databricks managed-volume operation failed'
+                                ),
+                            ):
                                 if connection is None:
                                     connection = DatabricksClient(
                                         connection_info,
                                     ).create_sql_connection(
                                         schema=self.schema_name,
                                         staging_allowed_local_path=(
-                                            staging_allowed_local_path),
+                                            staging_allowed_local_path
+                                        ),
                                     )
                                     cursor = connection.cursor()
                                 assert cursor is not None
                                 cursor.execute(command)
                             break
                         except Exception as error:
-                            missing = (ignore_missing
-                                       and any(marker in str(error).upper()
-                                               for marker in (
-                                                   'PATH_NOT_FOUND',
-                                                   'RESOURCE_DOES_NOT_EXIST',
-                                                   'NO_SUCH_FILE',
-                                                   'NO SUCH FILE OR DIRECTORY',
-                                                   'DOES NOT EXIST',
-                                               )))
+                            missing = ignore_missing and any(
+                                marker in str(error).upper()
+                                for marker in (
+                                    'PATH_NOT_FOUND',
+                                    'RESOURCE_DOES_NOT_EXIST',
+                                    'NO_SUCH_FILE',
+                                    'NO SUCH FILE OR DIRECTORY',
+                                    'DOES NOT EXIST',
+                                )
+                            )
                             if cursor is not None:
                                 with suppress(BaseException):
                                     cursor.close()
@@ -712,8 +761,7 @@ class DatabricksConnector(SQLConnector):
                             connection = None
                             if missing:
                                 break
-                            if attempt + 1 == (
-                                    _DATABRICKS_VOLUME_UPLOAD_ATTEMPTS):
+                            if attempt + 1 == (_DATABRICKS_VOLUME_UPLOAD_ATTEMPTS):
                                 raise
             finally:
                 if cursor is not None:
@@ -724,12 +772,10 @@ class DatabricksConnector(SQLConnector):
                         connection.close()
 
         with ThreadPoolExecutor(
-                max_workers=worker_count,
-                thread_name_prefix='databricks-volume',
+            max_workers=worker_count,
+            thread_name_prefix='databricks-volume',
         ) as executor:
-            futures = [
-                executor.submit(run_batch, batch) for batch in batches if batch
-            ]
+            futures = [executor.submit(run_batch, batch) for batch in batches if batch]
             for future in as_completed(futures):
                 future.result()
 
@@ -747,14 +793,22 @@ class DatabricksConnector(SQLConnector):
         The SQL warehouse returns a presigned URL and the connector sends file
         bytes directly to the volume's object storage.
         """
-        files = (_validated_local_parquet_files(artifact_path)
-                 if files is None else files)
-        stage = (self.managed_volume_stage()
-                 if stage is None else self._require_managed_stage(stage))
+        files = (
+            _validated_local_parquet_files(artifact_path) if files is None else files
+        )
+        stage = (
+            self.managed_volume_stage()
+            if stage is None
+            else self._require_managed_stage(stage)
+        )
         try:
-            return dbx_write.stage_files(self._run_volume_commands,
-                                         self._volume_workers, files,
-                                         stage=stage, file_prefix=file_prefix)
+            return dbx_write.stage_files(
+                self._run_volume_commands,
+                self._volume_workers,
+                files,
+                stage=stage,
+                file_prefix=file_prefix,
+            )
         except ArtifactValidationError as error:
             raise ConnectorError(str(error)) from None
 
@@ -773,8 +827,7 @@ class DatabricksConnector(SQLConnector):
         return self._volume_worker_count(files)
 
     def _cleanup_volume_files(self, files: list[str]) -> None:
-        dbx_write.cleanup(self._run_volume_commands, self._volume_workers,
-                          files)
+        dbx_write.cleanup(self._run_volume_commands, self._volume_workers, files)
 
     def cleanup_managed_volume_files(self, files: list[str]) -> None:
         validated = [self._require_managed_stage(path) for path in files]
@@ -795,25 +848,34 @@ class DatabricksConnector(SQLConnector):
         stage = self._require_managed_stage(stage)
         if not re.fullmatch(r'[A-Za-z0-9_-]+', file_prefix):
             raise ConnectorError(
-                'Databricks managed-volume file prefix contains unsupported '
-                'characters.')
+                'Databricks managed-volume file prefix contains unsupported characters.'
+            )
         try:
             listing = self._get_df_result(
                 self.context,
                 f'LIST {_quote_string(stage)}',
             )
         except Exception as error:
-            if any(marker in str(error).upper()
-                   for marker in ('PATH_NOT_FOUND', 'RESOURCE_DOES_NOT_EXIST',
-                                  'NO_SUCH_FILE', 'NO SUCH FILE OR DIRECTORY',
-                                  'DOES NOT EXIST')):
+            if any(
+                marker in str(error).upper()
+                for marker in (
+                    'PATH_NOT_FOUND',
+                    'RESOURCE_DOES_NOT_EXIST',
+                    'NO_SUCH_FILE',
+                    'NO SUCH FILE OR DIRECTORY',
+                    'DOES NOT EXIST',
+                )
+            ):
                 return
             raise
         if listing.empty:
             return
         path_column = next(
-            (column for column in listing.columns
-             if str(column).casefold() in ('path', 'name')),
+            (
+                column
+                for column in listing.columns
+                if str(column).casefold() in ('path', 'name')
+            ),
             listing.columns[0],
         )
         stage_prefix = stage.rstrip('/') + '/'
@@ -826,11 +888,10 @@ class DatabricksConnector(SQLConnector):
             path = self._require_managed_stage(str(value))
             if not path.casefold().startswith(stage_prefix.casefold()):
                 raise ConnectorError(
-                    'Databricks returned a file outside the shared retry '
-                    'directory.')
-            relative_path = path[len(stage_prefix):]
-            if '/' not in relative_path and producer_pattern.fullmatch(
-                    relative_path):
+                    'Databricks returned a file outside the shared retry directory.'
+                )
+            relative_path = path[len(stage_prefix) :]
+            if '/' not in relative_path and producer_pattern.fullmatch(relative_path):
                 files.append(path)
         self._cleanup_volume_files(files)
 
@@ -847,28 +908,31 @@ class DatabricksConnector(SQLConnector):
         if num_rows <= 0:
             raise ValueError('Databricks volume sample size must be positive.')
         if not columns:
-            raise ValueError(
-                'Databricks volume sample requires at least one column.')
+            raise ValueError('Databricks volume sample requires at least one column.')
         select_list = ', '.join(
-            dbx_sql.quote_identifier(column.name) for column in columns)
-        query = (f'SELECT {select_list} '
-                 f'FROM read_files({_quote_string(stage)}, format => '
-                 f"{_quote_string('parquet')}) "
-                 f'LIMIT {int(num_rows)}')
+            dbx_sql.quote_identifier(column.name) for column in columns
+        )
+        query = (
+            f'SELECT {select_list} '
+            f'FROM read_files({_quote_string(stage)}, format => '
+            f'{_quote_string("parquet")}) '
+            f'LIMIT {int(num_rows)}'
+        )
         try:
             sample = self._get_df_result(self.context, query)
         except Exception:
             raise ConnectorError(
                 'Databricks could not read the staged prediction Parquet '
-                'files for column statistics.') from None
+                'files for column statistics.'
+            ) from None
         missing = [
-            column.name for column in columns
-            if column.name not in sample.columns
+            column.name for column in columns if column.name not in sample.columns
         ]
         if missing:
             raise ConnectorError(
                 'Databricks staged prediction Parquet is missing expected '
-                f'column(s): {", ".join(missing)}.')
+                f'column(s): {", ".join(missing)}.'
+            )
         return sample
 
     @blocking_method()
@@ -888,15 +952,13 @@ class DatabricksConnector(SQLConnector):
         S3, ADLS, arbitrary volumes, and inline cloud credentials are
         intentionally unsupported.
         """
-        schema_name, table_name = (
-            self.require_output_table_within_connector_target(table_schema_name)
+        schema_name, table_name = self.require_output_table_within_connector_target(
+            table_schema_name
         )
-        destination_table = self._fully_qualify_output_table_name(
-            table_schema_name)
+        destination_table = self._fully_qualify_output_table_name(table_schema_name)
         try:
             dbx_write.load(
-                execute=lambda statement: self._get_df_result(
-                    self.context, statement),
+                execute=lambda statement: self._get_df_result(self.context, statement),
                 run=self._run_volume_commands,
                 workers=self._volume_workers,
                 catalog=self.catalog,
@@ -921,97 +983,98 @@ class DatabricksConnector(SQLConnector):
         except Exception as e:
             if 'SCHEMA_NOT_FOUND' in str(e):
                 raise ConnectorError(
-                    f"Cannot write to table {destination_table} "
-                    f"since schema {schema_name} does not exist.") from None
-            logger.warning('Databricks output write failed (%s)',
-                           type(e).__name__)
+                    f'Cannot write to table {destination_table} '
+                    f'since schema {schema_name} does not exist.'
+                ) from None
+            logger.warning('Databricks output write failed (%s)', type(e).__name__)
             raise ConnectorError(
                 'Kumo encountered an error while writing data to the '
-                'configured Databricks output table.') from None
+                'configured Databricks output table.'
+            ) from None
 
     def check_schema_exists(self, schema_name: str) -> None:
         try:
             self._check_schema(schema_name)
         except WarehouseRetriableError:
-            raise ConnectorError(
-                f"Unable to verify schema '{schema_name}'") from None
+            raise ConnectorError(f"Unable to verify schema '{schema_name}'") from None
         except DatabricksErrors.Error as e:
-            raise ConnectorError(f"Unable to verify schema '{schema_name}'",
-                                 error=e) from None
+            raise ConnectorError(
+                f"Unable to verify schema '{schema_name}'", error=e
+            ) from None
 
     @blocking_method()
-    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2,
-           logger=None)
+    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2, logger=None)
     def _check_schema(self, schema_name: str):
         r"""Check if the given schema exists under the catalog for the current
         connector"""
         if not schema_name:
-            raise ValueError("Schema is unspecified.")
+            raise ValueError('Schema is unspecified.')
         context = self.context
         # Legacy databricks catalog requires special treatment
-        is_legacy = (self.catalog == 'hive_metastore')
+        is_legacy = self.catalog == 'hive_metastore'
         with context.cursor() as cursor:
             try:
                 query = (
                     f'show grants '
                     f'{dbx_sql.quote_identifier(self._retrieve_current_user())} '
                     f'on SCHEMA {dbx_sql.quote_identifier(self.catalog)}.'
-                    f'{dbx_sql.quote_identifier(schema_name)}')
+                    f'{dbx_sql.quote_identifier(schema_name)}'
+                )
                 df = cursor.execute(query).fetchall_arrow().to_pandas()
                 if is_legacy:
                     # Legacy catalog won't raise permission denied exception
                     # if USAGE permission is not granted.
                     if len(df) == 0:
                         raise ConnectorError(
-                            "Connector does not have USAGE permission on "
-                            f"catalog {self.catalog} and/or USAGE permission "
-                            f"on schema {schema_name}.",
-                            diagnostic_code=ConnectorValidationDiagnosticCode.
-                            TARGET_ACCESS_DENIED)
+                            'Connector does not have USAGE permission on '
+                            f'catalog {self.catalog} and/or USAGE permission '
+                            f'on schema {schema_name}.',
+                            diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED,
+                        )
             except HTTPError:
-                raise WarehouseRetriableError(
-                    'Databricks request failed') from None
+                raise WarehouseRetriableError('Databricks request failed') from None
             except DatabricksErrors.ServerOperationError as e:
                 error_code = _databricks_server_error_code(e)
                 if error_code == _SAMPLE_TABLE_PERMISSIONS:
-                    if ((self.catalog
-                         or '').casefold() == _DATABRICKS_SAMPLE_CATALOG):
+                    if (self.catalog or '').casefold() == _DATABRICKS_SAMPLE_CATALOG:
                         self._validate_sample_schema_read_access(schema_name)
                         return
                     raise ConnectorValidationDiagnosticError(
-                        ConnectorValidationDiagnosticCode.
-                        DATABRICKS_SAMPLE_TABLE_PERMISSIONS) from None
+                        ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
+                    ) from None
                 error_class = _databricks_error_class(e)
-                if _databricks_error_class_is(error_class,
-                                              'CATALOG_DOES_NOT_EXIST'):
+                if _databricks_error_class_is(error_class, 'CATALOG_DOES_NOT_EXIST'):
                     raise ConnectorError(
-                        f"Catalog {self.catalog} does not exist or is not "
-                        "accessible to the connector.",
-                        diagnostic_code=ConnectorValidationDiagnosticCode.
-                        TARGET_NOT_FOUND) from None
+                        f'Catalog {self.catalog} does not exist or is not '
+                        'accessible to the connector.',
+                        diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND,
+                    ) from None
                 # Unity Catalog reports a missing catalog *or* schema on this
                 # ``SHOW GRANTS ON SCHEMA`` as SCHEMA_DOES_NOT_EXIST; legacy
                 # hive_metastore uses SECURABLE_DOES_NOT_EXIST, or omits the
                 # code entirely (its text is the only signal there).
-                if (_databricks_error_class_is(error_class,
-                                               'SCHEMA_DOES_NOT_EXIST')
-                        or _databricks_error_class_is(
-                            error_class, 'SECURABLE_DOES_NOT_EXIST')
-                        or (error_class is None and is_legacy
-                            and 'does not exist' in str(e))):
+                if (
+                    _databricks_error_class_is(error_class, 'SCHEMA_DOES_NOT_EXIST')
+                    or _databricks_error_class_is(
+                        error_class, 'SECURABLE_DOES_NOT_EXIST'
+                    )
+                    or (
+                        error_class is None and is_legacy and 'does not exist' in str(e)
+                    )
+                ):
                     raise ConnectorError(
-                        f"Schema {schema_name} does not exist "
-                        f"under catalog {self.catalog}.",
-                        diagnostic_code=ConnectorValidationDiagnosticCode.
-                        TARGET_NOT_FOUND) from None
+                        f'Schema {schema_name} does not exist '
+                        f'under catalog {self.catalog}.',
+                        diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND,
+                    ) from None
                 if _databricks_error_class_is(error_class, 'PERMISSION_DENIED'):
                     raise ConnectorError(
-                        "Connector does not have USE CATALOG "
-                        f"permission on catalog {self.catalog} "
-                        "and/or USE SCHEMA permission on schema "
-                        f"{schema_name}.",
-                        diagnostic_code=ConnectorValidationDiagnosticCode.
-                        TARGET_ACCESS_DENIED) from None
+                        'Connector does not have USE CATALOG '
+                        f'permission on catalog {self.catalog} '
+                        'and/or USE SCHEMA permission on schema '
+                        f'{schema_name}.',
+                        diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED,
+                    ) from None
                 raise e
 
     def _validate_sample_schema_read_access(self, schema_name: str) -> None:
@@ -1022,22 +1085,24 @@ class DatabricksConnector(SQLConnector):
         proves that the exact schema is listed, then performs a one-row,
         read-only query against one of its visible tables.
         """
-        code = (ConnectorValidationDiagnosticCode.
-                DATABRICKS_SAMPLE_TABLE_PERMISSIONS)
+        code = ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
         try:
             with self.context.cursor() as cursor:
                 schema_rows = cursor.execute(
-                    f'SHOW SCHEMAS IN '
-                    f'{dbx_sql.quote_identifier(self.catalog)}').fetchall()
-            if not any(row and str(row[0]).casefold() == schema_name.casefold()
-                       for row in schema_rows):
+                    f'SHOW SCHEMAS IN {dbx_sql.quote_identifier(self.catalog)}'
+                ).fetchall()
+            if not any(
+                row and str(row[0]).casefold() == schema_name.casefold()
+                for row in schema_rows
+            ):
                 raise ConnectorValidationDiagnosticError(code)
 
             with self.context.cursor() as cursor:
                 table_rows = cursor.execute(
                     f'SHOW TABLES IN '
                     f'{dbx_sql.quote_identifier(self.catalog)}.'
-                    f'{dbx_sql.quote_identifier(schema_name)}').fetchall()
+                    f'{dbx_sql.quote_identifier(schema_name)}'
+                ).fetchall()
             table_names = [str(row[1]) for row in table_rows if len(row) > 1]
             if not table_names:
                 raise ConnectorValidationDiagnosticError(code)
@@ -1050,11 +1115,13 @@ class DatabricksConnector(SQLConnector):
                             f'{dbx_sql.quote_identifier(self.catalog)}.'
                             f'{dbx_sql.quote_identifier(schema_name)}.'
                             f'{dbx_sql.quote_identifier(table_name)} '
-                            f'LIMIT 1').fetchone()
+                            f'LIMIT 1'
+                        ).fetchone()
                     return
                 except HTTPError:
                     raise WarehouseRetriableError(
-                        'Databricks system sample read probe failed') from None
+                        'Databricks system sample read probe failed'
+                    ) from None
                 except DatabricksErrors.Error:
                     continue
             raise ConnectorValidationDiagnosticError(code)
@@ -1062,7 +1129,8 @@ class DatabricksConnector(SQLConnector):
             raise
         except HTTPError:
             raise WarehouseRetriableError(
-                'Databricks system sample metadata probe failed') from None
+                'Databricks system sample metadata probe failed'
+            ) from None
         except DatabricksErrors.Error:
             raise ConnectorValidationDiagnosticError(code) from None
 
@@ -1072,22 +1140,23 @@ class DatabricksConnector(SQLConnector):
         connection_info = self._to_databricks_connection_info()
         assert connection_info is not None
         host = connection_info.host
-        token = connection_info.credentials.get("pat", None)
+        token = connection_info.credentials.get('pat', None)
         client_id = connection_info.credentials.get('client_id', None)
 
         if not host:
-            raise ConnectorError("No databricks hostname was provided.")
+            raise ConnectorError('No databricks hostname was provided.')
         elif client_id:
             # Service principal client ID is the current user ID
             return client_id.get_secret_value()
         elif token:
             # Get current user ID via databricks SDK if credential
             # only contains PAT
-            client = WorkspaceClient(host=host, auth_type="pat",
-                                     token=token.get_secret_value())
+            client = WorkspaceClient(
+                host=host, auth_type='pat', token=token.get_secret_value()
+            )
             return client.current_user.me().user_name
         else:
-            raise ConnectorError("No databricks credentials were provided")
+            raise ConnectorError('No databricks credentials were provided')
 
     def check_table_write_permissions(
         self,
@@ -1096,66 +1165,76 @@ class DatabricksConnector(SQLConnector):
         mode: InternalWriteMode,
     ) -> None:
         if mode not in {
-                InternalWriteMode.APPEND,
-                InternalWriteMode.OVERWRITE,
+            InternalWriteMode.APPEND,
+            InternalWriteMode.OVERWRITE,
         }:
             raise ConnectorError(
-                'Invalid Databricks output write mode; expected APPEND or '
-                'OVERWRITE.')
-        if (not self.schema_name
-                or table_schema.casefold() != self.schema_name.casefold()):
+                'Invalid Databricks output write mode; expected APPEND or OVERWRITE.'
+            )
+        if (
+            not self.schema_name
+            or table_schema.casefold() != self.schema_name.casefold()
+        ):
             raise ConnectorError(
-                'Databricks output table schema does not match the '
-                'connector schema.')
+                'Databricks output table schema does not match the connector schema.'
+            )
         try:
             self._check_table(table_name, table_schema)
         except WarehouseRetriableError:
             raise ConnectorError(
-                f"Unable to verify write permissions for table "
-                f"'{table_schema}.{table_name}'") from None
+                f'Unable to verify write permissions for table '
+                f"'{table_schema}.{table_name}'"
+            ) from None
         except DatabricksErrors.Error as e:
             raise ConnectorError(
-                f"Unable to verify write permissions for table "
-                f"'{table_schema}.{table_name}'", error=e) from None
+                f'Unable to verify write permissions for table '
+                f"'{table_schema}.{table_name}'",
+                error=e,
+            ) from None
 
     @blocking_method()
-    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2,
-           logger=None)
+    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2, logger=None)
     def _check_table(self, table_name: str, schema_name: str):
         r"""Check if sufficient permission has been granted to create and
         write to the specified table under the given schema."""
         if not table_name:
-            raise ValueError("Table name is unspecified.")
+            raise ValueError('Table name is unspecified.')
         context = self.context
         with context.cursor() as cursor:
             current_user = self._retrieve_current_user()
-            is_legacy = (self.catalog == 'hive_metastore')
-            schema_query = (f'show grants `{current_user}` on SCHEMA `'
-                            f'{self.catalog}`.`{schema_name}`')
-            table_query = (f'show grants `{current_user}` on TABLE `'
-                           f'{self.catalog}`.`{schema_name}`.`{table_name}`')
+            is_legacy = self.catalog == 'hive_metastore'
+            schema_query = (
+                f'show grants `{current_user}` on SCHEMA `'
+                f'{self.catalog}`.`{schema_name}`'
+            )
+            table_query = (
+                f'show grants `{current_user}` on TABLE `'
+                f'{self.catalog}`.`{schema_name}`.`{table_name}`'
+            )
             try:
                 # Schema query should not throw exception after checking
                 # schema existence
-                schema_df: pd.DataFrame = cursor.execute(
-                    schema_query).fetchall_arrow().to_pandas()
-                table_df: pd.DataFrame = cursor.execute(
-                    table_query).fetchall_arrow().to_pandas()
+                schema_df: pd.DataFrame = (
+                    cursor.execute(schema_query).fetchall_arrow().to_pandas()
+                )
+                table_df: pd.DataFrame = (
+                    cursor.execute(table_query).fetchall_arrow().to_pandas()
+                )
                 if is_legacy:
                     # Legacy catalog won't raise permission denied exception
                     # if SELECT permission is not granted.
                     if len(table_df) == 0:
                         raise ConnectorError(
-                            "Connector does not have SELECT "
-                            f"permission on table {self.catalog}."
-                            f"{schema_name}.{table_name}.")
+                            'Connector does not have SELECT '
+                            f'permission on table {self.catalog}.'
+                            f'{schema_name}.{table_name}.'
+                        )
                 # Table exists and permission to read the table is granted.
                 # Check permissions to append/overwrite the table.
                 permissions = table_df['ActionType'].tolist()
                 # Check if required permission to append to table is
                 # granted
-                if {'ALL PRIVILEGES', 'OWN',
-                        'MODIFY'}.intersection(permissions):
+                if {'ALL PRIVILEGES', 'OWN', 'MODIFY'}.intersection(permissions):
                     return
                 logger.warning(
                     'Databricks returned no direct MODIFY grant for '
@@ -1168,18 +1247,21 @@ class DatabricksConnector(SQLConnector):
                 )
                 return
             except HTTPError:
-                raise WarehouseRetriableError(
-                    'Databricks request failed') from None
+                raise WarehouseRetriableError('Databricks request failed') from None
             except DatabricksErrors.ServerOperationError as e:
                 # Either the table does not exist, or permission to read
                 # table within the schema is not granted.
-                if ('TABLE_DOES_NOT_EXIST' in str(e)
-                        or is_legacy and 'does not exist' in str(e)):
+                if (
+                    'TABLE_DOES_NOT_EXIST' in str(e)
+                    or is_legacy
+                    and 'does not exist' in str(e)
+                ):
                     # Table does not exist. Check required permission for
                     # creating the table in the schema.
                     permissions = schema_df['ActionType'].tolist()
-                    if {'ALL PRIVILEGES', 'OWN', 'CREATE',
-                            'CREATE TABLE'}.intersection(permissions):
+                    if {'ALL PRIVILEGES', 'OWN', 'CREATE', 'CREATE TABLE'}.intersection(
+                        permissions
+                    ):
                         return
                     logger.warning(
                         'Databricks returned no direct CREATE TABLE grant for '
@@ -1191,31 +1273,36 @@ class DatabricksConnector(SQLConnector):
                     )
                     return
                 elif 'PERMISSION_DENIED' in str(e):
-                    raise ConnectorError("Connector does not have SELECT "
-                                         f"permission on table {self.catalog}."
-                                         f"{schema_name}.{table_name}.")
+                    raise ConnectorError(
+                        'Connector does not have SELECT '
+                        f'permission on table {self.catalog}.'
+                        f'{schema_name}.{table_name}.'
+                    )
                 else:
                     raise e
 
     # Utility functions #######################################################
 
     @blocking_method()
-    def _run_sql(self, context: Any, operation: Callable[..., _SqlResult],
-                 query: str, *args: Any) -> _SqlResult:
+    def _run_sql(
+        self, context: Any, operation: Callable[..., _SqlResult], query: str, *args: Any
+    ) -> _SqlResult:
         return self._execute_sql(context, operation, query, *args)
 
-    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2,
-           logger=None)
-    def _execute_sql(self, context: Any, operation: Callable[..., _SqlResult],
-                     query: str, *args: Any) -> _SqlResult:
+    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2, logger=None)
+    def _execute_sql(
+        self, context: Any, operation: Callable[..., _SqlResult], query: str, *args: Any
+    ) -> _SqlResult:
         try:
             with restricted_diagnostic_boundary(
-                    exception_types=(
-                        DatabricksErrors.Error,
-                        HTTPError,
-                        OSError,
-                        pa.ArrowException,
-                    ), safe_message='Databricks SQL operation failed'):
+                exception_types=(
+                    DatabricksErrors.Error,
+                    HTTPError,
+                    OSError,
+                    pa.ArrowException,
+                ),
+                safe_message='Databricks SQL operation failed',
+            ):
                 with context.cursor() as cursor:
                     return operation(cursor, query, *args)
         except HTTPError:
@@ -1228,14 +1315,13 @@ class DatabricksConnector(SQLConnector):
     def drop_table_if_exists(self, table_name: str) -> None:
         self._get_df_result(
             self.context,
-            'DROP TABLE IF EXISTS '
-            f'{self._fully_qualify_output_table_name(table_name)}',
+            f'DROP TABLE IF EXISTS {self._fully_qualify_output_table_name(table_name)}',
         )
 
     def databricks_to_dtype(self, data_type: str) -> Dtype:
         dtype = dtype_for(data_type)
         if dtype == Dtype.unsupported:
-            logger.warning(f"Unsupported databricks type: {data_type}")
+            logger.warning(f'Unsupported databricks type: {data_type}')
         return dtype
 
     def get_column_metadata(
@@ -1250,35 +1336,34 @@ class DatabricksConnector(SQLConnector):
             schema, table = self._target_table_coordinate(table_names[0])
             try:
                 declared = self._run_sql(
-                    context, dbx_identity.column_types,
-                    dbx_sql.qualified_name(self.catalog, schema, table))
+                    context,
+                    dbx_identity.column_types,
+                    dbx_sql.qualified_name(self.catalog, schema, table),
+                )
             except Exception as error:
                 if is_not_found(error):
                     return {}
                 raise
-            columns = {
-                (table, column): dtype
-                for column, dtype in declared.items()
-            }
+            columns = {(table, column): dtype for column, dtype in declared.items()}
         else:
             requested: Dict[str, List[str]] = {}
             for name in table_names or []:
                 table = self._target_table_coordinate(name)[1]
                 requested.setdefault(table.casefold(), []).append(table)
             with context.cursor() as cursor:
-                columns = column_types(cursor, catalog=self.catalog,
-                                       schema=schema_name,
-                                       target_schema=self.schema_name)
+                columns = column_types(
+                    cursor,
+                    catalog=self.catalog,
+                    schema=schema_name,
+                    target_schema=self.schema_name,
+                )
             if requested:
                 columns = {
                     (requested_name, column): dtype
                     for (table, column), dtype in columns.items()
                     for requested_name in requested.get(table.casefold(), [])
                 }
-        return {
-            key: self.databricks_to_dtype(dtype)
-            for key, dtype in columns.items()
-        }
+        return {key: self.databricks_to_dtype(dtype) for key, dtype in columns.items()}
 
     # =========================================================================
     # Export
@@ -1294,9 +1379,14 @@ class DatabricksConnector(SQLConnector):
         graph_table_count: Optional[int] = None,
     ) -> ExportMetrics:
         from kumo.connector.source_bridge import read_source
-        return read_source(self._source_reader(),
-                           self._reader_table_name(source_name), table_fp,
-                           data_version, graph_table_count=graph_table_count)
+
+        return read_source(
+            self._source_reader(),
+            self._reader_table_name(source_name),
+            table_fp,
+            data_version,
+            graph_table_count=graph_table_count,
+        )
 
     @blocking_method()
     def export_query(
@@ -1314,8 +1404,14 @@ class DatabricksConnector(SQLConnector):
         because a query has no source table to name it after.
         """
         from kumo.connector.source_bridge import read_source
-        return read_source(self._source_reader(), table_fp.ingest_path_fpid,
-                           table_fp, data_version, sql=sql)
+
+        return read_source(
+            self._source_reader(),
+            table_fp.ingest_path_fpid,
+            table_fp,
+            data_version,
+            sql=sql,
+        )
 
     def download(
         self,
@@ -1326,10 +1422,12 @@ class DatabricksConnector(SQLConnector):
     ) -> None:
         from kumo.data import MaterializationStage
         from kumo.data.utils import get_materialize_path
+
         fsutil.copy(
-            get_materialize_path(table_fp, data_version,
-                                 MaterializationStage.INGEST), local_dest,
-            overwrite=True)
+            get_materialize_path(table_fp, data_version, MaterializationStage.INGEST),
+            local_dest,
+            overwrite=True,
+        )
 
     def _reader_table_name(self, source_name: str) -> str:
         """The reader qualifies with its own catalog and schema, so it is
@@ -1349,10 +1447,13 @@ class DatabricksConnector(SQLConnector):
         # here is what keeps `ensure_managed_volume`'s CREATE from running at
         # all -- pinning the mode alone would still have issued it.
         volume, client = self._staging_volume() if staged else (None, None)
-        return DatabricksSourceReader(self.context, catalog=self.catalog,
-                                      schema=self.schema_name,
-                                      workspace_client=client,
-                                      staging_volume_path=volume)
+        return DatabricksSourceReader(
+            self.context,
+            catalog=self.catalog,
+            schema=self.schema_name,
+            workspace_client=client,
+            staging_volume_path=volume,
+        )
 
     def _staging_volume(self) -> Tuple[Optional[str], Any]:
         """Offering staging we cannot actually write turns a read that would
@@ -1367,11 +1468,15 @@ class DatabricksConnector(SQLConnector):
         except Exception as error:
             logger.info(
                 'Databricks staging is unavailable, so %s will be streamed '
-                '(error_type=%s)', self.schema_name,
-                type(error).__name__)
+                '(error_type=%s)',
+                self.schema_name,
+                type(error).__name__,
+            )
             return None, None
-        return (f'/Volumes/{self.catalog}/{self.schema_name}/'
-                f'{dbx_output.STAGING_VOLUME}/source-reader'), client
+        return (
+            f'/Volumes/{self.catalog}/{self.schema_name}/'
+            f'{dbx_output.STAGING_VOLUME}/source-reader'
+        ), client
 
     @blocking_method()
     def export_table_read_only(
@@ -1402,21 +1507,28 @@ class DatabricksConnector(SQLConnector):
         # connector's namespace is refused by name rather than after a query.
         # For a query, `source_name` is not a table -- it is only what staging
         # prefixes and errors key on -- so it is not a coordinate to normalize.
-        table = (source_name
-                 if sql is not None else self._reader_table_name(source_name))
+        table = source_name if sql is not None else self._reader_table_name(source_name)
         if cols is None:
-            metadata = (self.get_query_metadata(sql) if sql is not None else
-                        self.get_table_metadata([source_name])[0])
+            metadata = (
+                self.get_query_metadata(sql)
+                if sql is not None
+                else self.get_table_metadata([source_name])[0]
+            )
             cols = self._readable_columns(metadata, source_name)
         # A custom table is addressed by `destination`, not keyed by a data
         # version, so the reader's stamp is discarded by `stage_source`.
         # Supplying one skips deriving it, which is a `DESCRIBE HISTORY` per
         # export -- on top of the one `get_table_metadata` already issued
         # above when it resolved the schema.
-        return stage_source(self._source_reader(staged=False), table,
-                            destination, columns=cols, sql=sql,
-                            mode=ReadMode.STREAMED,
-                            version=_CUSTOM_SOURCE_VERSION)
+        return stage_source(
+            self._source_reader(staged=False),
+            table,
+            destination,
+            columns=cols,
+            sql=sql,
+            mode=ReadMode.STREAMED,
+            version=_CUSTOM_SOURCE_VERSION,
+        )
 
     def _readable_columns(
         self,
@@ -1450,22 +1562,26 @@ class DatabricksConnector(SQLConnector):
         """
         readable = {
             column.name: column.dtype
-            for column in metadata.cols if column.dtype != Dtype.unsupported
+            for column in metadata.cols
+            if column.dtype != Dtype.unsupported
         }
         dropped = [
-            column.name for column in metadata.cols
-            if column.dtype == Dtype.unsupported
+            column.name for column in metadata.cols if column.dtype == Dtype.unsupported
         ]
         if dropped:
             logger.info(
                 'Databricks custom source %s has %d column(s) of a type Kumo '
-                'cannot read; they are not selected: %s', source_name,
-                len(dropped), ', '.join(sorted(dropped)))
+                'cannot read; they are not selected: %s',
+                source_name,
+                len(dropped),
+                ', '.join(sorted(dropped)),
+            )
         if not readable:
             raise ConnectorError(
-                f"No column of Databricks custom source {source_name!r} has a "
-                f"type Kumo can read: {', '.join(sorted(dropped))}. Cast or "
-                "drop these columns in the source table or query.")
+                f'No column of Databricks custom source {source_name!r} has a '
+                f'type Kumo can read: {", ".join(sorted(dropped))}. Cast or '
+                'drop these columns in the source table or query.'
+            )
         return readable
 
     # Custom SQL query pushdown ###############################################
@@ -1482,15 +1598,16 @@ class DatabricksConnector(SQLConnector):
             if detail is not None:
                 raise ConnectorError(detail) from None
             raise ConnectorError(
-                "Databricks failed to describe the custom SQL query", error=err)
+                'Databricks failed to describe the custom SQL query', error=err
+            )
 
         cols = [
-            BaseColumnConfig(name=name,
-                             dtype=self.databricks_to_dtype(data_type))
+            BaseColumnConfig(name=name, dtype=self.databricks_to_dtype(data_type))
             for name, data_type in columns
         ]
-        return TableMetadataConfig(table_name='', source_name='',
-                                   data_source=self._name, cols=cols)
+        return TableMetadataConfig(
+            table_name='', source_name='', data_source=self._name, cols=cols
+        )
 
     @blocking_method()
     def get_query_num_rows(self, sql: str) -> int:
@@ -1500,6 +1617,7 @@ class DatabricksConnector(SQLConnector):
             subquery_safe_sql,
             validate_connector_sql_scope,
         )
+
         connector_type = ConnectorType.DATABRICKS
         advisory_read_only_check(sql, connector_type)
         validate_connector_sql_scope(sql, connector_type, self)
@@ -1527,21 +1645,22 @@ class DatabricksConnector(SQLConnector):
             )
         try:
             self._get_df_result(
-                self.context, 'SET STATEMENT_TIMEOUT = '
-                f'{DATABRICKS_SAMPLE_QUERY_TIMEOUT_SECONDS}')
-            return self._run_sql(self.context, _sample_dataframe, f'({sql})',
-                                 num_rows)
+                self.context,
+                f'SET STATEMENT_TIMEOUT = {DATABRICKS_SAMPLE_QUERY_TIMEOUT_SECONDS}',
+            )
+            return self._run_sql(self.context, _sample_dataframe, f'({sql})', num_rows)
         except DecimalOutOfBoundsError as err:
             raise ConnectorError(
                 f"Databricks DECIMAL column '{err.column_name}' contains a "
                 "value outside Kumo's signed 64-bit integer range. Cast the "
-                "column to DOUBLE or STRING in Custom SQL, or keep its values "
-                "within the signed 64-bit range.") from None
+                'column to DOUBLE or STRING in Custom SQL, or keep its values '
+                'within the signed 64-bit range.'
+            ) from None
         except Exception as err:
             detail = _databricks_query_error_detail(err)
             if detail is not None:
                 raise ConnectorError(detail) from None
-            raise ConnectorError("Databricks sample query failed", error=err)
+            raise ConnectorError('Databricks sample query failed', error=err)
         finally:
             self._reset_sample_statement_timeout()
 
@@ -1561,9 +1680,11 @@ class DatabricksConnector(SQLConnector):
             self._get_df_result(self.context, 'SET STATEMENT_TIMEOUT = 0')
         except Exception as reset_err:
             logger.warning(
-                "Failed to reset Databricks STATEMENT_TIMEOUT after a sample "
-                "query; invalidating the connection so it reopens with the "
-                "default timeout: %s", reset_err)
+                'Failed to reset Databricks STATEMENT_TIMEOUT after a sample '
+                'query; invalidating the connection so it reopens with the '
+                'default timeout: %s',
+                reset_err,
+            )
             try:
                 self.close()
             except Exception as close_err:
@@ -1571,9 +1692,10 @@ class DatabricksConnector(SQLConnector):
                 # escape would mask a successful preview's return value. The
                 # load-bearing step is dropping `_context` below.
                 logger.warning(
-                    "Error while closing the invalidated Databricks "
-                    "connection after a failed STATEMENT_TIMEOUT reset: %s",
-                    close_err)
+                    'Error while closing the invalidated Databricks '
+                    'connection after a failed STATEMENT_TIMEOUT reset: %s',
+                    close_err,
+                )
             finally:
                 # Force the poisoned session to be dropped even if close()
                 # raised, so the next `context` access reopens cleanly.
@@ -1581,7 +1703,8 @@ class DatabricksConnector(SQLConnector):
 
 
 def _databricks_server_error_code(
-        error: DatabricksErrors.ServerOperationError) -> Optional[str]:
+    error: DatabricksErrors.ServerOperationError,
+) -> Optional[str]:
     """Return one exact Databricks SQL error code without exposing details."""
     context = getattr(error, 'context', None)
     if isinstance(context, dict):
@@ -1595,13 +1718,13 @@ def _databricks_server_error_code(
     message = getattr(error, 'message', None)
     if not isinstance(message, str):
         return None
-    match = re.match(r'^\[([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)\](?:\s|$)',
-                     message)
+    match = re.match(r'^\[([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)\](?:\s|$)', message)
     return match.group(1) if match else None
 
 
 def _databricks_error_class(
-        error: DatabricksErrors.ServerOperationError) -> Optional[str]:
+    error: DatabricksErrors.ServerOperationError,
+) -> Optional[str]:
     """Return the structured error class for target-validation classification.
 
     Extends :func:`_databricks_server_error_code` (a context ``error_code`` or a
@@ -1620,8 +1743,9 @@ def _databricks_error_class(
     bracket = re.match(r'^\[([^\]]*)\]', message)
     if bracket is None:
         return None
-    match = re.search(r'ErrorClass=([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)',
-                      bracket.group(1))
+    match = re.search(
+        r'ErrorClass=([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)', bracket.group(1)
+    )
     return match.group(1) if match else None
 
 
@@ -1630,31 +1754,22 @@ def _databricks_error_class_is(error_class: Optional[str], base: str) -> bool:
     specialization. Databricks appends dotted subclasses, e.g.
     ``SCHEMA_DOES_NOT_EXIST.RESOURCE_DOES_NOT_EXIST``.
     """
-    return error_class is not None and (error_class == base
-                                        or error_class.startswith(f'{base}.'))
+    return error_class is not None and (
+        error_class == base or error_class.startswith(f'{base}.')
+    )
 
 
 _DATABRICKS_QUERY_ERRORS = {
-    'PARSE_SYNTAX_ERROR':
-    'Databricks could not parse the query.',
-    'TABLE_OR_VIEW_NOT_FOUND':
-    'Databricks could not find a referenced table or view.',
-    'UNBOUND_SQL_PARAMETER':
-    'Databricks does not accept unbound parameters in Custom SQL.',
-    'UNRESOLVED_COLUMN':
-    'Databricks could not resolve a referenced column.',
-    'UNRESOLVED_ROUTINE':
-    'Databricks could not resolve a referenced function.',
-    'UNRESOLVED_TABLE_VALUED_FUNCTION':
-    'Databricks could not resolve a referenced table function.',
-    'TABLE_VALUED_FUNCTION_NOT_FOUND':
-    'Databricks could not find a referenced table function.',
-    'DELTA_TIMESTAMP_GREATER_THAN_COMMIT':
-    'Databricks could not read the requested historical table version.',
-    'DELTA_TIME_TRAVEL_INVALID_BEGIN_VALUE':
-    'Databricks could not read the requested historical table version.',
-    'INVALID_TEMPORAL_VERSION':
-    'Databricks could not read the requested historical table version.',
+    'PARSE_SYNTAX_ERROR': 'Databricks could not parse the query.',
+    'TABLE_OR_VIEW_NOT_FOUND': 'Databricks could not find a referenced table or view.',
+    'UNBOUND_SQL_PARAMETER': 'Databricks does not accept unbound parameters in Custom SQL.',
+    'UNRESOLVED_COLUMN': 'Databricks could not resolve a referenced column.',
+    'UNRESOLVED_ROUTINE': 'Databricks could not resolve a referenced function.',
+    'UNRESOLVED_TABLE_VALUED_FUNCTION': 'Databricks could not resolve a referenced table function.',
+    'TABLE_VALUED_FUNCTION_NOT_FOUND': 'Databricks could not find a referenced table function.',
+    'DELTA_TIMESTAMP_GREATER_THAN_COMMIT': 'Databricks could not read the requested historical table version.',
+    'DELTA_TIME_TRAVEL_INVALID_BEGIN_VALUE': 'Databricks could not read the requested historical table version.',
+    'INVALID_TEMPORAL_VERSION': 'Databricks could not read the requested historical table version.',
 }
 
 
@@ -1664,8 +1779,14 @@ def _databricks_query_error_detail(error: Exception) -> Optional[str]:
     code = _databricks_server_error_code(error)
     if code is None:
         return None
-    return next((message for base, message in _DATABRICKS_QUERY_ERRORS.items()
-                 if code == base or code.startswith(f'{base}.')), None)
+    return next(
+        (
+            message
+            for base, message in _DATABRICKS_QUERY_ERRORS.items()
+            if code == base or code.startswith(f'{base}.')
+        ),
+        None,
+    )
 
 
 def _quote_string(value: str) -> str:
@@ -1675,6 +1796,5 @@ def _quote_string(value: str) -> str:
 
 # Explicit dataclass definition ###############################################
 
-DatabricksConnectorConfig = to_dataclass(DatabricksConnector,
-                                         base_cls=ConnectorConfig)
+DatabricksConnectorConfig = to_dataclass(DatabricksConnector, base_cls=ConnectorConfig)
 register(DatabricksConnector, DatabricksConnectorConfig, group='connector')

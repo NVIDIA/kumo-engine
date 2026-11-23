@@ -20,18 +20,21 @@ STAGING_BUCKET = os.environ.get('KUMO_BIGQUERY_STAGING')
 if not (PROJECT and STAGING_BUCKET):
     pytest.skip(
         'LIVE BIGQUERY OUTPUT NOT RUN: set KUMO_BIGQUERY_PROJECT and '
-        'KUMO_BIGQUERY_STAGING', allow_module_level=True)
+        'KUMO_BIGQUERY_STAGING',
+        allow_module_level=True,
+    )
 RUN = uuid.uuid4().hex[:8]
 DATASET = f'kumo_conn_test_engine_{RUN}'
 STAGING_URI = f'{STAGING_BUCKET}/engine/{RUN}'
 
 try:
     import google.auth
-    CREDENTIALS = google.auth.default(
-        scopes=[SCOPE])[0].with_quota_project(PROJECT)
+
+    CREDENTIALS = google.auth.default(scopes=[SCOPE])[0].with_quota_project(PROJECT)
 except Exception as error:
-    pytest.skip(f'LIVE BIGQUERY OUTPUT NOT RUN: {type(error).__name__}',
-                allow_module_level=True)
+    pytest.skip(
+        f'LIVE BIGQUERY OUTPUT NOT RUN: {type(error).__name__}', allow_module_level=True
+    )
 
 from google.cloud import bigquery, storage  # noqa: E402
 from kumo_core.sources.errors import SourceNotFoundError  # noqa: E402
@@ -50,8 +53,9 @@ def client():
     try:
         yield bq
     finally:
-        bq.delete_dataset(f'{PROJECT}.{DATASET}', delete_contents=True,
-                          not_found_ok=True)
+        bq.delete_dataset(
+            f'{PROJECT}.{DATASET}', delete_contents=True, not_found_ok=True
+        )
         for blob in staged_objects():
             blob.delete()
 
@@ -62,14 +66,19 @@ def cpu_fitted(fitted):
     trainer, table, snapshot = fitted
     assert trainer._training_result is not None
     cpu_trainer = kumo.Trainer.load(
-        trainer._training_result.bundle_dir, accelerator='cpu')
+        trainer._training_result.bundle_dir, accelerator='cpu'
+    )
     return cpu_trainer, table, snapshot
 
 
 def connector(staged, dataset=DATASET):
-    return kumo.BigQueryConnector(project_id=PROJECT, dataset_id=dataset,
-                                  identity=kumo.BigQueryIdentity(),
-                                  staging_uri=STAGING_URI if staged else None, require_staged=staged)
+    return kumo.BigQueryConnector(
+        project_id=PROJECT,
+        dataset_id=dataset,
+        identity=kumo.BigQueryIdentity(),
+        staging_uri=STAGING_URI if staged else None,
+        require_staged=staged,
+    )
 
 
 def rows(client, name):
@@ -83,11 +92,18 @@ def test_predict_and_export_to_bigquery(cpu_fitted, client, staged):
     trainer, table, snapshot = cpu_fitted
     name = f'preds_{uuid.uuid4().hex[:6]}'
     output = PredictionOutputConfig(
-        connector(staged), artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name=name)
+        connector(staged),
+        artifact_type=PredictionArtifactType.PREDICTIONS,
+        table_name=name,
+    )
 
-    result = trainer.predict(table, snapshot=snapshot, output_config=output,
-                             binary_classification_threshold=.5, num_workers=2)
+    result = trainer.predict(
+        table,
+        snapshot=snapshot,
+        output_config=output,
+        binary_classification_threshold=0.5,
+        num_workers=2,
+    )
 
     assert len(result.files) >= 2
     frame = result.frame
@@ -98,9 +114,13 @@ def test_predict_and_export_to_bigquery(cpu_fitted, client, staged):
     assert sorted(row.ENTITY for row in loaded) == sorted(frame['ENTITY'])
 
     result.export(
-        PredictionOutputConfig(connector(staged),
-                               artifact_type=PredictionArtifactType.PREDICTIONS,
-                               table_name=name, write_mode=WriteMode.APPEND))
+        PredictionOutputConfig(
+            connector(staged),
+            artifact_type=PredictionArtifactType.PREDICTIONS,
+            table_name=name,
+            write_mode=WriteMode.APPEND,
+        )
+    )
     assert rows(client, name) == 2 * len(frame)
 
     result.export(output)
@@ -112,16 +132,20 @@ def test_embeddings_land_as_repeated_float(cpu_fitted, client):
     trainer, table, snapshot = cpu_fitted
     name = f'emb_{uuid.uuid4().hex[:6]}'
     result = trainer.predict(
-        table, snapshot=snapshot, binary_classification_threshold=.5,
+        table,
+        snapshot=snapshot,
+        binary_classification_threshold=0.5,
         output_config=PredictionOutputConfig(
-            connector(False), artifact_type=PredictionArtifactType.EMBEDDINGS,
-            table_name=name))
+            connector(False),
+            artifact_type=PredictionArtifactType.EMBEDDINGS,
+            table_name=name,
+        ),
+    )
 
     written = client.get_table(f'{PROJECT}.{DATASET}.{name}')
     assert rows(client, name) == result.num_rows
     embedding = [f for f in written.schema if f.mode == 'REPEATED']
-    assert [(f.field_type, f.mode)
-            for f in embedding] == [('FLOAT', 'REPEATED')]
+    assert [(f.field_type, f.mode) for f in embedding] == [('FLOAT', 'REPEATED')]
 
 
 def test_missing_dataset_fails_before_scoring(cpu_fitted, client):
@@ -130,9 +154,15 @@ def test_missing_dataset_fails_before_scoring(cpu_fitted, client):
     before = set(runs.glob('*-predict-*'))
     output = PredictionOutputConfig(
         connector(False, dataset=f'missing_{RUN}'),
-        artifact_type=PredictionArtifactType.PREDICTIONS, table_name='preds')
+        artifact_type=PredictionArtifactType.PREDICTIONS,
+        table_name='preds',
+    )
 
     with pytest.raises(SourceNotFoundError, match='does not exist'):
-        trainer.predict(table, snapshot=snapshot, output_config=output,
-                        binary_classification_threshold=.5)
+        trainer.predict(
+            table,
+            snapshot=snapshot,
+            output_config=output,
+            binary_classification_threshold=0.5,
+        )
     assert set(runs.glob('*-predict-*')) == before

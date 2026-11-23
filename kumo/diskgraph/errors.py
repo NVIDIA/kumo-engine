@@ -3,16 +3,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Platform representations of portable DiskGraph ingest errors."""
 
-from kumo_core.diskgraph.runner import \
-    DiskgraphCancelledError as CoreDiskgraphCancelledError
-from kumo_core.diskgraph.runner import \
-    DiskgraphDataplaneNoSpaceError as CoreDiskgraphDataplaneNoSpaceError
-from kumo_core.diskgraph.runner import DiskgraphIngestError
-from kumo_core.diskgraph.runner import \
-    DiskgraphNoSpaceError as CoreDiskgraphNoSpaceError
-from kumo_core.diskgraph.runner import DiskgraphRetryExhaustedError
-from kumo_core.diskgraph.runner import \
-    NonRetryableDiskgraphError as CoreNonRetryableDiskgraphError
+from kumo_core.diskgraph.runner import (
+    DiskgraphCancelledError as CoreDiskgraphCancelledError,
+)
+from kumo_core.diskgraph.runner import (
+    DiskgraphDataplaneNoSpaceError as CoreDiskgraphDataplaneNoSpaceError,
+)
+from kumo_core.diskgraph.runner import (
+    DiskgraphIngestError,
+    DiskgraphRetryExhaustedError,
+)
+from kumo_core.diskgraph.runner import (
+    DiskgraphNoSpaceError as CoreDiskgraphNoSpaceError,
+)
+from kumo_core.diskgraph.runner import (
+    NonRetryableDiskgraphError as CoreNonRetryableDiskgraphError,
+)
 
 from common_utils.error import PublicException
 
@@ -38,7 +44,8 @@ class DiskgraphNoSpaceError(PublicException):
 
 
 def as_platform_diskgraph_exception(
-    error: DiskgraphIngestError, ) -> PublicException:
+    error: DiskgraphIngestError,
+) -> PublicException:
     """Preserve the platform error contract for a portable ingest error."""
     if isinstance(error, CoreDiskgraphDataplaneNoSpaceError):
         error_type = DiskgraphDataplaneNoSpaceError
@@ -66,9 +73,9 @@ def as_platform_diskgraph_exception(
 
 
 __all__ = [
-    "DiskgraphCancelledError",
-    "DiskgraphDataplaneNoSpaceError",
-    "DiskgraphNoSpaceError",
-    "NonRetryableDiskgraphError",
-    "as_platform_diskgraph_exception",
+    'DiskgraphCancelledError',
+    'DiskgraphDataplaneNoSpaceError',
+    'DiskgraphNoSpaceError',
+    'NonRetryableDiskgraphError',
+    'as_platform_diskgraph_exception',
 ]

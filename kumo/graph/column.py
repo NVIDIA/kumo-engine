@@ -11,9 +11,8 @@ from kumo_core.types import ColStatType, EdgeStatType
 from kumo_core.utils.mixins import CastMixin
 from kumo_core.utils.names import fully_qualified_table_name, get_table_name
 from kumo_core.utils.registry import register
-from kumoapi.encoder import Datetime, Encoder, Image
+from kumoapi.encoder import Datetime, Encoder, Image, Null
 from kumoapi.encoder import Index as _Index
-from kumoapi.encoder import Null
 from kumoapi.typing import ColStatType as ApiColStatType
 from kumoapi.typing import Dtype, Stype
 
@@ -65,6 +64,7 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
             a scalar-string multicategorical column. Native list columns do
             not use a delimiter.
     """
+
     def __init__(
         self,
         name: str,
@@ -105,8 +105,11 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
     @property
     def qualified_name(self) -> str:
         """Return the column name qualified by its table when available."""
-        return (f"{get_table_name(self.table_name)}.{self.name}"
-                if self.has_table else self.name)
+        return (
+            f'{get_table_name(self.table_name)}.{self.name}'
+            if self.has_table
+            else self.name
+        )
 
     @property
     def pandas(self):
@@ -119,8 +122,10 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
             graph[table_name, col_name].pandas[:1000]  # first 1000 rows
         """
         from kumo.graph.pandas_view import PandasView
-        return PandasView(self.connector, self.table_name, cols=[self],
-                          return_series=True)
+
+        return PandasView(
+            self.connector, self.table_name, cols=[self], return_series=True
+        )
 
     @property
     def pandas_indexed(self):
@@ -132,9 +137,13 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
             graph[table_name, col_name].pandas[:1000]  # first 1000 rows
         """
         from kumo.graph.pandas_view import PandasView
-        return PandasView(self.connector, self.table_name,
-                          cols=[self, Column(name=NODE_INDEX_COLUMN)],
-                          return_series=False)
+
+        return PandasView(
+            self.connector,
+            self.table_name,
+            cols=[self, Column(name=NODE_INDEX_COLUMN)],
+            return_series=False,
+        )
 
     # ``INVALID_FRACTION`` and ``DROPPED_ROWS`` are vestigial cast-phase
     # stats not computed by the DG ingest pipeline. Excluded from
@@ -164,20 +173,26 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
             excluded.append(ColStatType.STRING_AVG_LEN)
 
         return [
-            stat for stat in list(ColStatType) if stat.supports(self.dtype)
-            and stat.supports_stype(self.stype) and stat not in excluded
+            stat
+            for stat in list(ColStatType)
+            if stat.supports(self.dtype)
+            and stat.supports_stype(self.stype)
+            and stat not in excluded
         ]
 
     @property
     def full_encoder_stats(self) -> List[ColStatType]:
-        r"""A list of all supported statstics on this column used for encoder.
-        """
+        r"""A list of all supported statstics on this column used for encoder."""
         if self.dtype is None:
             return []
 
         return [
-            stat for stat in list(ColStatType) if stat.supports(self.dtype)
-            and stat.supports_stype(self.stype) and stat not in [
+            stat
+            for stat in list(ColStatType)
+            if stat.supports(self.dtype)
+            and stat.supports_stype(self.stype)
+            and stat
+            not in [
                 ColStatType.HISTOGRAM,
                 ColStatType.HISTOGRAM_HALF_MONTH,
                 ColStatType.NUM_IRRATIONAL,
@@ -228,13 +243,16 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
         return hash(self.name)
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}({self.name}, stype={self.stype}, '
-                f'dtype={self.dtype})')
+        return (
+            f'{self.__class__.__name__}({self.name}, stype={self.stype}, '
+            f'dtype={self.dtype})'
+        )
 
 
 @register(data_cls=PrimaryKeyConfig)
 class PrimaryKey(BaseColumn):
     r"""The primary key of a :class:`kumo.graph.Table`."""
+
     def __init__(
         self,
         name: str,
@@ -253,7 +271,7 @@ class PrimaryKey(BaseColumn):
         self._name = name
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}({self.name}, dtype={self.dtype})')
+        return f'{self.__class__.__name__}({self.name}, dtype={self.dtype})'
 
     @property
     def full_stats(self) -> List[ColStatType]:
@@ -269,6 +287,7 @@ class PrimaryKey(BaseColumn):
 @register(data_cls=ForeignKeyConfig)
 class ForeignKey(BaseColumn):
     r"""A foreign key of a :class:`kumo.graph.Table`."""
+
     def __init__(
         self,
         name: str,
@@ -288,27 +307,34 @@ class ForeignKey(BaseColumn):
 
         # Check if the dst_table can be fully-qualified.
         if self.dst_table is not None and self.dst_data_source is not None:
-            self.dst_table = fully_qualified_table_name(self.dst_table,
-                                                        self.dst_data_source)
+            self.dst_table = fully_qualified_table_name(
+                self.dst_table, self.dst_data_source
+            )
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}({self.name}, '
-                f'dst_table={self.dst_table}, '
-                f'dst_key={self.dst_key}, '
-                f'dtype={self.dtype})')
+        return (
+            f'{self.__class__.__name__}({self.name}, '
+            f'dst_table={self.dst_table}, '
+            f'dst_key={self.dst_key}, '
+            f'dtype={self.dtype})'
+        )
 
     @property
     def just_dst_table(self) -> str:
         if self.dst_table is None:
-            raise RuntimeError("Foreign Key must have non-empty dst_table")
+            raise RuntimeError('Foreign Key must have non-empty dst_table')
         return self.dst_table
 
     @property
     def dst_table_name(self) -> str:
         return get_table_name(self.just_dst_table)
 
-    def can_link_to_dtype(self, other_name: str, other_dtype: Optional[Dtype],
-                          raise_on_error: bool = False) -> bool:
+    def can_link_to_dtype(
+        self,
+        other_name: str,
+        other_dtype: Optional[Dtype],
+        raise_on_error: bool = False,
+    ) -> bool:
         """Return True if the current foreign key is permitted to link to
         a column with the given dtype in another table.
 
@@ -325,27 +351,30 @@ class ForeignKey(BaseColumn):
         At least one dtype of None is allowed for now since this case comes up
         in testing but shouldn't in prod; TODO: never allow links with None
         """
-        if (self.dtype is None or other_dtype is None):
+        if self.dtype is None or other_dtype is None:
             logging.warn_or_raise(
-                f"Links are only allowed between matching datatypes, but "
-                f"a link was defined between datatypes {self.name}"
-                f"(dtype={self.dtype}) and {other_name}(dtype={other_dtype})"
-                ", at least one of which is None. Please update"
-                " the datatype selection of one or both of your tables to"
-                " ensure that they match.", raise_on_error=raise_on_error)
+                f'Links are only allowed between matching datatypes, but '
+                f'a link was defined between datatypes {self.name}'
+                f'(dtype={self.dtype}) and {other_name}(dtype={other_dtype})'
+                ', at least one of which is None. Please update'
+                ' the datatype selection of one or both of your tables to'
+                ' ensure that they match.',
+                raise_on_error=raise_on_error,
+            )
             return True
 
         elif self.dtype.is_int() and other_dtype.is_int():
             if self.dtype.can_link_to_dtype(other_dtype):
                 return True
             logging.warn_or_raise(
-                f"Links are only allowed between matching datatypes or "
-                f"lossless integer widening, but a link was defined between "
-                f"datatypes {self.name}(dtype={self.dtype}) and "
-                f"{other_name}(dtype={other_dtype}). Please update the "
-                "datatype selection of one or both of your tables to ensure "
-                "that they match, or widen the destination key dtype.",
-                raise_on_error=raise_on_error)
+                f'Links are only allowed between matching datatypes or '
+                f'lossless integer widening, but a link was defined between '
+                f'datatypes {self.name}(dtype={self.dtype}) and '
+                f'{other_name}(dtype={other_dtype}). Please update the '
+                'datatype selection of one or both of your tables to ensure '
+                'that they match, or widen the destination key dtype.',
+                raise_on_error=raise_on_error,
+            )
             return False
 
         elif self.dtype.is_float() and other_dtype.is_float():
@@ -356,20 +385,22 @@ class ForeignKey(BaseColumn):
         elif self.dtype != other_dtype:
             if self.dtype.can_link_to_dtype(other_dtype):
                 logging.warn_or_raise(
-                    f"Foreign-key column {self.name}(dtype={self.dtype}) links "
-                    f"to {other_name}(dtype={other_dtype}): int/float mismatch, "
-                    f"likely due to NaN-promotion in pandas < 2.0. The link will "
-                    f"be allowed. To silence this warning use "
+                    f'Foreign-key column {self.name}(dtype={self.dtype}) links '
+                    f'to {other_name}(dtype={other_dtype}): int/float mismatch, '
+                    f'likely due to NaN-promotion in pandas < 2.0. The link will '
+                    f'be allowed. To silence this warning use '
                     f"df['{self.name}'].astype('Int64') on the FK column.",
-                    raise_on_error=False)
+                    raise_on_error=False,
+                )
                 return True
             logging.warn_or_raise(
-                f"Links are only allowed between matching datatypes, but "
-                f"a link was defined between datatypes {self.name}"
-                f"(dtype={self.dtype}) and {other_name}(dtype={other_dtype})"
-                ". Please update the datatype selection of "
-                "one or both of your tables to ensure that they match.",
-                raise_on_error=raise_on_error)
+                f'Links are only allowed between matching datatypes, but '
+                f'a link was defined between datatypes {self.name}'
+                f'(dtype={self.dtype}) and {other_name}(dtype={other_dtype})'
+                '. Please update the datatype selection of '
+                'one or both of your tables to ensure that they match.',
+                raise_on_error=raise_on_error,
+            )
             return False
 
         return True
@@ -377,8 +408,8 @@ class ForeignKey(BaseColumn):
 
 @register(data_cls=ColumnConfig, group='graph')
 class Column(BaseColumn):
-    r"""A feature column of a :class:`kumo.graph.Table`.
-    """
+    r"""A feature column of a :class:`kumo.graph.Table`."""
+
     def __init__(
         self,
         name: str,
@@ -416,8 +447,9 @@ class Column(BaseColumn):
         if EncoderGenerator.supports_encoder(self, encoder):
             self._encoder = encoder
         else:
-            raise ValueError(f'Invalid encoder type ({type(encoder)}) '
-                             f'for column {self}')
+            raise ValueError(
+                f'Invalid encoder type ({type(encoder)}) for column {self}'
+            )
 
     # Materialization #########################################################
 
@@ -431,31 +463,35 @@ class Column(BaseColumn):
         if self.dtype is Dtype.unsupported:
             status = False
             logging.warn_or_raise(
-                f"Column '{self.name}' has unsupported data type",
-                raise_on_error)
+                f"Column '{self.name}' has unsupported data type", raise_on_error
+            )
 
         # 2. The column has a data type defined, if it is not encoded with a
         # Null() encoder:
         if not isinstance(self.encoder, Null) and self.dtype is None:
             status = False
-            logging.warn_or_raise(f"Column '{self.name}' has no data type",
-                                  raise_on_error)
+            logging.warn_or_raise(
+                f"Column '{self.name}' has no data type", raise_on_error
+            )
 
         # 3. The column has a semantic type defined (all columns require a
         # semantic type):
         if self.stype is None:
             status = False
-            logging.warn_or_raise(f"Column '{self.name}' has no semantic type",
-                                  raise_on_error)
+            logging.warn_or_raise(
+                f"Column '{self.name}' has no semantic type", raise_on_error
+            )
 
         # 4. The semantic type supports the column data type:
-        elif (not isinstance(self.encoder, Null)
-              and not self.stype.supports_dtype(self.dtype)):
+        elif not isinstance(self.encoder, Null) and not self.stype.supports_dtype(
+            self.dtype
+        ):
             status = False
             logging.warn_or_raise(
                 f"Column '{self.name}' has the semantic type '{self.stype}' "
                 f"which is incompatible with its data type '{self.dtype}'",
-                raise_on_error)
+                raise_on_error,
+            )
 
         return status
 
@@ -468,45 +504,51 @@ class Column(BaseColumn):
         status = True
         # 1. The encoder is present
         if self.encoder is None:
-            logging.warn_or_raise(f"Column '{self.name}' has no encoder",
-                                  raise_on_error)
+            logging.warn_or_raise(
+                f"Column '{self.name}' has no encoder", raise_on_error
+            )
             status = False
 
         # 2. Don't use `Categorical` for encoding (mostly) distinct values:
         if not (self.encoder is None or isinstance(self.encoder, Null)):
             data_version = data_version or self.connector.get_data_version(
-                self.table_name)
+                self.table_name
+            )
             if self.stype == Stype.ID:
-                num_unique_stat = col_stats.get(self.base_config(),
-                                                {}).get(ColStatType.NUM_UNIQUE)
+                num_unique_stat = col_stats.get(self.base_config(), {}).get(
+                    ColStatType.NUM_UNIQUE
+                )
                 if num_unique_stat is not None:
-                    num_unique, num_entries = (num_unique_stat.value,
-                                               num_unique_stat.num_entries)
+                    num_unique, num_entries = (
+                        num_unique_stat.value,
+                        num_unique_stat.num_entries,
+                    )
 
                     if num_entries is None:
                         logger.warning(
-                            "NUM_UNIQUE statistic for %s has no num_entries",
+                            'NUM_UNIQUE statistic for %s has no num_entries',
                             self,
                         )
-                    elif encoder_selection.is_mostly_unique_id(
-                            num_unique, num_entries):
+                    elif encoder_selection.is_mostly_unique_id(num_unique, num_entries):
                         status = False
                         logging.warn_or_raise(
                             f"The '{self.encoder}' encoder of column "
                             f"'{self.name}' is used to encode a column with "
                             f"'{num_unique}' distinct values across "
                             f"'{num_entries}' rows. This will result in a "
-                            f"feature representation with mostly unique "
-                            f"embeddings per row which may hurt performance. "
-                            f"Consider applying a different encoder strategy "
-                            f"for this particular column.",
-                            raise_on_error=False)
+                            f'feature representation with mostly unique '
+                            f'embeddings per row which may hurt performance. '
+                            f'Consider applying a different encoder strategy '
+                            f'for this particular column.',
+                            raise_on_error=False,
+                        )
                 else:
                     logger.warning(
-                        f"NUM_UNIQUE statistic was requested on {self} during "
-                        f"column encoder validation but was not found in the "
-                        f"backend cache. Soon, this will be treated as an "
-                        f"error.")
+                        f'NUM_UNIQUE statistic was requested on {self} during '
+                        f'column encoder validation but was not found in the '
+                        f'backend cache. Soon, this will be treated as an '
+                        f'error.'
+                    )
 
         return status
 
@@ -514,6 +556,7 @@ class Column(BaseColumn):
 @register(data_cls=TimeColumnConfig)
 class TimeColumn(BaseColumn):
     r"""The time column of a :class:`kumo.graph.Table`."""
+
     def __init__(
         self,
         name: str,
@@ -534,18 +577,20 @@ class TimeColumn(BaseColumn):
         if self.is_pseudo:
             if not dtype.is_int():
                 raise ValueError(
-                    f"Cannot set Pseudo Time Column {self.name} to date type "
-                    f"'{dtype}'. Must be of int type.")
+                    f'Cannot set Pseudo Time Column {self.name} to date type '
+                    f"'{dtype}'. Must be of int type."
+                )
         else:
             if dtype is None:
                 raise ValueError(
-                    f"Time Column '{self.name}' must have a non-empty data "
-                    "type.")
+                    f"Time Column '{self.name}' must have a non-empty data type."
+                )
             elif not dtype.is_timestamp():
                 raise ValueError(
                     f"Cannot set Time Column '{self.name}' to data type "
                     f"'{dtype}'. Must be either '{Dtype.time}' or "
-                    f"'{Dtype.date}'.")
+                    f"'{Dtype.date}'."
+                )
         self._dtype = dtype
 
     @property
@@ -564,6 +609,7 @@ class TimeColumn(BaseColumn):
 class BoolColumn(BaseColumn):
     r"""A column of a :class:`kumo.graph.Table` holding explicit boolean
     values."""
+
     def __init__(
         self,
         name: str,
@@ -578,11 +624,13 @@ class BoolColumn(BaseColumn):
     @dtype.setter
     def dtype(self, dtype: Dtype):
         if dtype is None:
-            raise ValueError(f"Boolean column '{self.name}' must have a "
-                             f"non-empty data type.")
+            raise ValueError(
+                f"Boolean column '{self.name}' must have a non-empty data type."
+            )
         if dtype != Dtype.bool:
-            raise ValueError(f"Cannot set boolean column '{self.name}' to "
-                             f"data type '{dtype}'.")
+            raise ValueError(
+                f"Cannot set boolean column '{self.name}' to data type '{dtype}'."
+            )
         self._dtype = dtype
 
     def __repr__(self) -> str:
@@ -598,12 +646,14 @@ class EncoderGenerator:
     NA_THRESHOLD = encoder_selection.NA_THRESHOLD
     SMALL_NUM_ROWS_THRESHOLD = encoder_selection.SMALL_NUM_ROWS_THRESHOLD
     CATEGORY_UNIQUE_THRESHOLD_MULTIPLIER = (
-        encoder_selection.CATEGORY_UNIQUE_THRESHOLD_MULTIPLIER)
+        encoder_selection.CATEGORY_UNIQUE_THRESHOLD_MULTIPLIER
+    )
     MAX_ONE_HOT_CATEGORIES = encoder_selection.MAX_ONE_HOT_CATEGORIES
     MAX_VALUE_TO_STANDARDIZE = encoder_selection.MAX_VALUE_TO_STANDARDIZE
     UNIQUE_ID_THRESHOLD = encoder_selection.UNIQUE_ID_THRESHOLD
     MAX_AUTO_CATEGORICAL_CONVERSION_THRESHOLD = (
-        encoder_selection.MAX_AUTO_CATEGORICAL_CONVERSION_THRESHOLD)
+        encoder_selection.MAX_AUTO_CATEGORICAL_CONVERSION_THRESHOLD
+    )
     MAX_CATEGORIES = encoder_selection.MAX_CATEGORIES
     MAX_MULTI_LABEL_CATEGORIES = encoder_selection.MAX_MULTI_LABEL_CATEGORIES
     UNIQUE_INT_THRESHOLD = encoder_selection.UNIQUE_INT_THRESHOLD
@@ -634,17 +684,16 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Dict[ApiColStatType, encoder_selection._EncoderStat]:
         supported = {
-            stat_type.value: stat_type
-            for stat_type in encoder_selection.REQUIRED_STATS
+            stat_type.value: stat_type for stat_type in encoder_selection.REQUIRED_STATS
         }
         return {
-            supported[stat_type.value]:
-            encoder_selection._EncoderStat(
+            supported[stat_type.value]: encoder_selection._EncoderStat(
                 value=stat.value,
                 approx=stat.approx,
                 num_entries=stat.num_entries,
             )
-            for stat_type, stat in stats.items() if stat_type.value in supported
+            for stat_type, stat in stats.items()
+            if stat_type.value in supported
         }
 
     @classmethod
@@ -656,8 +705,11 @@ class EncoderGenerator:
         table_name: str | None = None,
     ) -> Encoder:
         return encoder_selection.select_encoder(
-            (f"{table_name}.{col.name}"
-             if table_name is not None else col.qualified_name),
+            (
+                f'{table_name}.{col.name}'
+                if table_name is not None
+                else col.qualified_name
+            ),
             col.dtype,
             col.stype,
             cls._shared_stats(stats),
@@ -670,7 +722,8 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Encoder:
         return encoder_selection.select_numerical_encoder(
-            cls._shared_stats(stats), column_name=col.qualified_name)
+            cls._shared_stats(stats), column_name=col.qualified_name
+        )
 
     @classmethod
     def get_categorical_encoder(
@@ -710,8 +763,10 @@ class EncoderGenerator:
     @staticmethod
     def get_required_text_stats() -> list[ColStatType]:
         return [
-            ColStatType.STRING_GLOVE_OVERLAP, ColStatType.STRING_AVG_TOKENS,
-            ColStatType.STRING_MAX_TOKENS, ColStatType.STRING_AVG_NON_CHAR
+            ColStatType.STRING_GLOVE_OVERLAP,
+            ColStatType.STRING_AVG_TOKENS,
+            ColStatType.STRING_MAX_TOKENS,
+            ColStatType.STRING_AVG_NON_CHAR,
         ]
 
     @classmethod

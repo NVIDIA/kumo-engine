@@ -92,34 +92,31 @@ from temporalio_commons import TemporalClient
 
 log = logging.getLogger(__name__)
 instrumentor = Instrumentator()
-instrumentor.add(
-    metrics.default(latency_lowr_buckets=(0.2, 0.5, 1, 2, 5, 10, 30, 60)))
+instrumentor.add(metrics.default(latency_lowr_buckets=(0.2, 0.5, 1, 2, 5, 10, 30, 60)))
 
 
 async def _state_db_health_response(
-    state_services: Optional[StateServices], ) -> Response:
+    state_services: Optional[StateServices],
+) -> Response:
     if state_services is None:
         return NonStrictJSONResponse(
-            {
-                "status": "starting",
-                "state_db": None
-            },
+            {'status': 'starting', 'state_db': None},
             status_code=503,
         )
     state_db_status = await state_services.status.get_schema_status()
     if not state_db_status.ok:
         return NonStrictJSONResponse(
             {
-                "status": "unhealthy",
-                "state_db": dataclasses.asdict(state_db_status),
+                'status': 'unhealthy',
+                'state_db': dataclasses.asdict(state_db_status),
             },
             status_code=503,
         )
-    return NonStrictJSONResponse({"status": "ok"})
+    return NonStrictJSONResponse({'status': 'ok'})
 
 
 class AppBuilder:
-    KUMO_REST_API_VERSION = "0.0.1"
+    KUMO_REST_API_VERSION = '0.0.1'
 
     def __init__(
         self,
@@ -138,7 +135,8 @@ class AppBuilder:
             log.warning(
                 'Authentication is DISABLED (DISABLE_AUTH=true): every request '
                 'is treated as a customer administrator. This is insecure and '
-                'must never be used on a network-reachable deployment.')
+                'must never be used on a network-reachable deployment.'
+            )
         self._driver = driver
         self._temporal_client = temporal_client
         self._ml_backend = ml_backend
@@ -151,10 +149,12 @@ class AppBuilder:
         self._job_queue: Optional[StateDbJobQueue] = None
 
         api_key_driver = APIKeyDriver(
-            direct_connect_auth_store=direct_connect_auth_store)
+            direct_connect_auth_store=direct_connect_auth_store
+        )
         if direct_connect_auth_store is not None:
             group_resolver = DirectConnectGroupResolver(
-                auth_store=direct_connect_auth_store)
+                auth_store=direct_connect_auth_store
+            )
         else:
             group_resolver = NativeGroupResolver()
 
@@ -165,17 +165,25 @@ class AppBuilder:
         self._project_resolver = project_resolver
 
         auth_rsc = AuthenticationResource(auth)
-        direct_connect_auth_rsc = (DirectConnectAuthResource(
-            direct_connect_auth_store,
-            group_resolver=(group_resolver if isinstance(
-                group_resolver, DirectConnectGroupResolver) else None),
-            login_method=auth.settings.direct_connect_login_method,
-            allowed_return_origins=(
-                auth.settings.direct_connect_allowed_return_origins),
-            password_login_ip_rate_limit_enabled=(
-                auth.settings.
-                direct_connect_password_login_ip_rate_limit_enabled),
-        ) if direct_connect_auth_store is not None else None)
+        direct_connect_auth_rsc = (
+            DirectConnectAuthResource(
+                direct_connect_auth_store,
+                group_resolver=(
+                    group_resolver
+                    if isinstance(group_resolver, DirectConnectGroupResolver)
+                    else None
+                ),
+                login_method=auth.settings.direct_connect_login_method,
+                allowed_return_origins=(
+                    auth.settings.direct_connect_allowed_return_origins
+                ),
+                password_login_ip_rate_limit_enabled=(
+                    auth.settings.direct_connect_password_login_ip_rate_limit_enabled
+                ),
+            )
+            if direct_connect_auth_store is not None
+            else None
+        )
         api_keys_v2_rsc = UserAPIKeyResource(auth, api_key_driver)
         self._groups_driver = GroupsDriver()
         groups_driver = self._groups_driver
@@ -192,8 +200,7 @@ class AppBuilder:
         constants_rsc = ConstantsResource(auth)
         tensorboard_rsc = TensorboardRouter(auth, driver.tensorboard_driver)
         log_rsc = LogResource(auth)
-        eval_rsc = EvaluationStatisticsResource(auth, driver,
-                                                driver.pquery_driver)
+        eval_rsc = EvaluationStatisticsResource(auth, driver, driver.pquery_driver)
         graph_router_2 = GraphRouter(
             auth,
             driver.graph_driver,
@@ -228,16 +235,17 @@ class AppBuilder:
         admin_rsc = AdminResource(
             auth,
             direct_connect_auth_store,
-            direct_connect_login_method=(
-                auth.settings.direct_connect_login_method),
+            direct_connect_login_method=(auth.settings.direct_connect_login_method),
         )
-        snapshot_rsc = SnapshotResource(auth, driver.data_snapshot_api_driver,
-                                        self._ml_backend)
-        gen_train_table_rsc = GenerateTrainTableRouter(auth,
-                                                       driver.pquery_driver,
-                                                       self._ml_backend)
+        snapshot_rsc = SnapshotResource(
+            auth, driver.data_snapshot_api_driver, self._ml_backend
+        )
+        gen_train_table_rsc = GenerateTrainTableRouter(
+            auth, driver.pquery_driver, self._ml_backend
+        )
         gen_pred_table_rsc = GeneratePredictionTableRouter(
-            auth, driver.pquery_driver, self._ml_backend)
+            auth, driver.pquery_driver, self._ml_backend
+        )
 
         predictive_query_v2_router = PredictiveQueryV2Router(
             auth,
@@ -248,20 +256,25 @@ class AppBuilder:
         # Disable /openapi.json, /docs and /redoc endpoints in production
         # mode.
         if deploy_env_v2().deploy_mode == DeployStage.PROD:
-            self._app = FastAPI(default_response_class=NonStrictJSONResponse,
-                                debug=self._settings.debug, openapi_url=None)
+            self._app = FastAPI(
+                default_response_class=NonStrictJSONResponse,
+                debug=self._settings.debug,
+                openapi_url=None,
+            )
         else:
-            self._app = FastAPI(default_response_class=NonStrictJSONResponse,
-                                debug=self._settings.debug)
+            self._app = FastAPI(
+                default_response_class=NonStrictJSONResponse, debug=self._settings.debug
+            )
         instrumentor.instrument(self._app)
-        self._app.add_api_route("/", self.root, methods=['GET'])
-        self._app.add_api_route("/health", self.health, methods=['GET'],
-                                include_in_schema=False)
+        self._app.add_api_route('/', self.root, methods=['GET'])
+        self._app.add_api_route(
+            '/health', self.health, methods=['GET'], include_in_schema=False
+        )
 
         async def _version_endpoint() -> JSONResponse:
-            return JSONResponse({"version": get_kumo_version()})
+            return JSONResponse({'version': get_kumo_version()})
 
-        self._app.add_api_route("/version", _version_endpoint, methods=['GET'])
+        self._app.add_api_route('/version', _version_endpoint, methods=['GET'])
         self._app.include_router(auth_rsc.router)
         if direct_connect_auth_rsc is not None:
             self._app.include_router(direct_connect_auth_rsc.router)
@@ -294,46 +307,49 @@ class AppBuilder:
                 if func and inspect.iscoroutinefunction(func):
                     log.debug(
                         'Enable asyncio blocking detection on path %s: %s',
-                        route.path, route.name)
+                        route.path,
+                        route.name,
+                    )
                     route.dependant.call = measure_blocking_code(func)
 
-        self._app.on_event("startup")(self.startup_event)
-        self._app.on_event("shutdown")(self.shutdown_event)
+        self._app.on_event('startup')(self.startup_event)
+        self._app.on_event('shutdown')(self.shutdown_event)
 
         allow_credentials = not auth.settings.disable
         allow_origins = parse_cors_allowed_origins(settings.middleware_origin)
-        validate_cors_allowed_origins(allow_origins,
-                                      allow_credentials=allow_credentials)
+        validate_cors_allowed_origins(
+            allow_origins, allow_credentials=allow_credentials
+        )
         self._cors_app = CORSMiddleware(
             self._app,
             allow_origins=allow_origins,
             allow_credentials=allow_credentials,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=['*'],
+            allow_headers=['*'],
         )
 
         # Expose resolvers on app state for the authorization middleware
         self._app.state.group_resolver = group_resolver
         self._app.state.project_resolver = project_resolver
 
-        authorization_context_middleware: partial[Coroutine[
-            Any, Any,
-            Any]] = partial(authorization_middleware,
-                            auth_disabled=auth.settings.disable,
-                            auth_proxied=auth.settings.proxy,
-                            is_unit_test=self.settings.is_unit_test,
-                            group_resolver=group_resolver,
-                            project_resolver=project_resolver,
-                            api_key_driver=self._api_key_driver,
-                            direct_connect_auth_store=direct_connect_auth_store)
-        self._app.middleware("http")(authorization_context_middleware)
+        authorization_context_middleware: partial[Coroutine[Any, Any, Any]] = partial(
+            authorization_middleware,
+            auth_disabled=auth.settings.disable,
+            auth_proxied=auth.settings.proxy,
+            is_unit_test=self.settings.is_unit_test,
+            group_resolver=group_resolver,
+            project_resolver=project_resolver,
+            api_key_driver=self._api_key_driver,
+            direct_connect_auth_store=direct_connect_auth_store,
+        )
+        self._app.middleware('http')(authorization_context_middleware)
 
         # Print slow requests to the log
         self._app.add_middleware(
             RequestTimeMiddleware,
             exclude_prefixes=[
-                "/v0/fixtures/",
-                "/metrics",
+                '/v0/fixtures/',
+                '/metrics',
             ],
             threshold_sec=10,
         )
@@ -341,8 +357,8 @@ class AppBuilder:
         # Strip same-subdomain www-authenticate header:
         self._app.add_middleware(
             StripHeaderMiddleware,
-            headers=["WWW-Authenticate"],
-            exclude_paths=["/openapi.json", "/docs", "/redoc"],
+            headers=['WWW-Authenticate'],
+            exclude_paths=['/openapi.json', '/docs', '/redoc'],
         )
 
         # Support request profiling (enabled by profile=true query param)
@@ -351,58 +367,56 @@ class AppBuilder:
         # Add more security recommendations:
         self._app.add_middleware(SecurityHeaderMiddleware)
 
-        async def validation_exception_handler(request: Request,
-                                               exc: RequestValidationError):
+        async def validation_exception_handler(
+            request: Request, exc: RequestValidationError
+        ):
             # ``exc.errors()`` may embed a raw exception object under
             # ``ctx``; encode it before returning the structured 422.
-            return JSONResponse(content=jsonable_encoder(exc.errors()),
-                                status_code=422)
+            return JSONResponse(content=jsonable_encoder(exc.errors()), status_code=422)
 
-        async def public_exception_handler(request: Request,
-                                           exc: PublicException):
+        async def public_exception_handler(request: Request, exc: PublicException):
             return JSONResponse(
-                status_code=exc.http_code, content={
-                    "error": exc.get_user_message(),
-                    "error_type": exc.__class__.__name__,
-                })
+                status_code=exc.http_code,
+                content={
+                    'error': exc.get_user_message(),
+                    'error_type': exc.__class__.__name__,
+                },
+            )
 
-        async def core_public_exception_handler(request: Request,
-                                                exc: Exception):
+        async def core_public_exception_handler(request: Request, exc: Exception):
             platform_error = as_platform_public_exception(exc)
             assert platform_error is not None
             return await public_exception_handler(request, platform_error)
 
-        async def optimistic_lock_exception_handler(request: Request,
-                                                    exc: OptimisticLockError):
+        async def optimistic_lock_exception_handler(
+            request: Request, exc: OptimisticLockError
+        ):
             return JSONResponse(
                 status_code=409,  # Conflict
                 content={
-                    "error":
-                    str(exc),
-                    "error_type":
-                    "OptimisticLockError",
-                    "retry":
-                    True,
-                    "message":
-                    "The resource was modified by another request. "
-                    "Please retry your operation.",
-                })
+                    'error': str(exc),
+                    'error_type': 'OptimisticLockError',
+                    'retry': True,
+                    'message': 'The resource was modified by another request. '
+                    'Please retry your operation.',
+                },
+            )
 
-        self._app.add_exception_handler(RequestValidationError,
-                                        validation_exception_handler)
-        self._app.add_exception_handler(PublicException,
-                                        public_exception_handler)
-        self._app.add_exception_handler(PublicError,
-                                        core_public_exception_handler)
-        self._app.add_exception_handler(TrainingValidationError,
-                                        core_public_exception_handler)
-        self._app.add_exception_handler(OptimisticLockError,
-                                        optimistic_lock_exception_handler)
+        self._app.add_exception_handler(
+            RequestValidationError, validation_exception_handler
+        )
+        self._app.add_exception_handler(PublicException, public_exception_handler)
+        self._app.add_exception_handler(PublicError, core_public_exception_handler)
+        self._app.add_exception_handler(
+            TrainingValidationError, core_public_exception_handler
+        )
+        self._app.add_exception_handler(
+            OptimisticLockError, optimistic_lock_exception_handler
+        )
 
         # Initialize OpenTelemetry tracing for requests to this API
         if monitoring_settings.init_tracing:
-            tracing_provider = tracing.init_tracing('kumo-rest',
-                                                    monitoring_settings)
+            tracing_provider = tracing.init_tracing('kumo-rest', monitoring_settings)
             tracing.connect_fastapi(self._app, tracing_provider)
 
     @classmethod
@@ -416,16 +430,17 @@ class AppBuilder:
         CredentialsEncryptor(deploy_mode=deploy_env_v2().deploy_mode)
 
         # Set up Data Backend
-        data_backend_ctx = DataBackendContext(deploy_config,
-                                              settings.data_backend_settings)
+        data_backend_ctx = DataBackendContext(
+            deploy_config, settings.data_backend_settings
+        )
 
         # Set up ML Backend in-process (no AutoRPC client). Its StateDB-backed
         # services are late-bound in startup_event once the StateDB is open.
-        ml_backend = MLJobBackend(MLBackendSettings.parse_from_env(),
-                                  temporal_client)
+        ml_backend = MLJobBackend(MLBackendSettings.parse_from_env(), temporal_client)
 
-        auth = Authentication(settings.authentication,
-                              is_unit_test=settings.app.is_unit_test)
+        auth = Authentication(
+            settings.authentication, is_unit_test=settings.app.is_unit_test
+        )
 
         # Set up REST API Driver.
         projects_driver = ProjectsDriver()
@@ -440,9 +455,16 @@ class AppBuilder:
 
         direct_connect_auth_store = DirectConnectAuthStore()
 
-        return cls(settings.app, auth, driver, temporal_client, ml_backend,
-                   settings.monitoring_settings, projects_driver,
-                   direct_connect_auth_store)
+        return cls(
+            settings.app,
+            auth,
+            driver,
+            temporal_client,
+            ml_backend,
+            settings.monitoring_settings,
+            projects_driver,
+            direct_connect_auth_store,
+        )
 
     @property
     def settings(self) -> AppSettings:
@@ -461,7 +483,7 @@ class AppBuilder:
         return self._driver
 
     async def root(self) -> Response:
-        content = {"Kumo Rest API": f"{self.KUMO_REST_API_VERSION}"}
+        content = {'Kumo Rest API': f'{self.KUMO_REST_API_VERSION}'}
         return NonStrictJSONResponse(content)
 
     async def health(self) -> Response:
@@ -492,33 +514,33 @@ class AppBuilder:
         await self._ml_backend.start(read_only=True)
         # DB-backed admission queue over the active StateDB (read-only debug
         # use here; the workflow worker owns admission/release).
-        self._job_queue = StateDbJobQueue(state_db,
-                                          MLJobQueueSettings.parse_from_env())
+        self._job_queue = StateDbJobQueue(state_db, MLJobQueueSettings.parse_from_env())
         self._api_key_driver.configure_state_services(self._state_services)
         self._driver._configure_state_services(self._state_services)
         self._groups_driver._configure_state_services(self._state_services)
         self._projects_driver._configure_state_services(self._state_services)
-        default_group, _ = (
-            await self._state_services.groups.ensure_default_resources())
+        default_group, _ = await self._state_services.groups.ensure_default_resources()
         await ensure_startup_ambient_identities(
             self._state_services.identities,
             default_group.id,
             auth_disabled=self._auth.settings.disable,
         )
         if self._group_resolver is not None and hasattr(
-                self._group_resolver, "configure_state_services"):
+            self._group_resolver, 'configure_state_services'
+        ):
             self._group_resolver.configure_state_services(self._state_services)
         if self._project_resolver is not None:
-            self._project_resolver.configure_state_services(
-                self._state_services)
-        if (self._direct_connect_auth_store is not None
-                and not self._auth.settings.disable):
+            self._project_resolver.configure_state_services(self._state_services)
+        if (
+            self._direct_connect_auth_store is not None
+            and not self._auth.settings.disable
+        ):
             auth_store = self._direct_connect_auth_store
-            auth_store.configure_auth_service(
-                self._state_services.direct_connect_auth)
+            auth_store.configure_auth_service(self._state_services.direct_connect_auth)
             await auth_store.init_once()
             direct_connect_config = resolve_direct_connect_runtime_config(
-                deploy_env_v2())
+                deploy_env_v2()
+            )
             if direct_connect_config.login_method == 'oidc':
                 await auth_store.seed_or_reconcile_oidc_config(
                     issuer=direct_connect_config.oidc.issuer,
@@ -527,8 +549,7 @@ class AppBuilder:
                     groups_claim=direct_connect_config.oidc.groups_claim,
                     admin_emails=list(direct_connect_config.admin_emails),
                     google_sa_key=direct_connect_config.oidc.google_sa_key,
-                    google_admin_email=(
-                        direct_connect_config.oidc.google_admin_email),
+                    google_admin_email=(direct_connect_config.oidc.google_admin_email),
                 )
                 # Dev-only escape hatch (devserver `oidc` variant): IdPs like
                 # Entra ID omit `email_verified`, which blocks first-admin
@@ -537,19 +558,22 @@ class AppBuilder:
                 # deploy-stage so a stray env var can't grant admin in prod.
                 if os.getenv('KUMO_DEV_TRUST_ADMIN_EMAILS') == '1':
                     if deploy_env_v2().deploy_mode.is_dev:
-                        await auth_store.seed_oidc_admins(admin_emails=list(
-                            direct_connect_config.admin_emails))
+                        await auth_store.seed_oidc_admins(
+                            admin_emails=list(direct_connect_config.admin_emails)
+                        )
                     else:
                         log.warning(
                             'Ignoring KUMO_DEV_TRUST_ADMIN_EMAILS=1 outside a '
                             'dev deploy-stage (deploy_mode=%s).',
-                            deploy_env_v2().deploy_mode.value)
+                            deploy_env_v2().deploy_mode.value,
+                        )
             if direct_connect_config.login_method == 'password':
                 await auth_store.warm_password_reset_token_lookup_key()
                 await auth_store.seed_local_admins(
                     admin_emails=list(direct_connect_config.admin_emails),
                     temporary_password=(
-                        direct_connect_config.local_admin_temp_password),
+                        direct_connect_config.local_admin_temp_password
+                    ),
                 )
             await auth_store.cleanup_expired_sessions()
             await auth_store.cleanup_expired_password_reset_tokens()
@@ -570,8 +594,7 @@ class AppBuilder:
         log.info('Starting REST App shutdown.')
 
         if self._state_services is not None:
-            await self._state_services.connector_authorizations.stop_maintenance(
-            )
+            await self._state_services.connector_authorizations.stop_maintenance()
 
         if self._direct_connect_auth_store is not None:
             await self._direct_connect_auth_store.close()

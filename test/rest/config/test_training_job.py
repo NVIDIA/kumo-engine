@@ -15,8 +15,8 @@ from rest.config.training_job import (
 
 def test_save_load_test_plain():
     test_explain = TestExplanation(
-        contribution_summary=ColumnContributionSummary(
-            global_column_contributions=[]))
+        contribution_summary=ColumnContributionSummary(global_column_contributions=[])
+    )
     result = TrainingJobResults(
         total_training_time_sec=1,
         total_iterations=1,
@@ -33,16 +33,18 @@ def test_save_load_test_plain():
 
 
 def test_with_metrics():
-    result = TrainingJobResults(total_training_time_sec=1, total_iterations=1,
-                                _test_explain_file_path=__file__).with_metrics(
-                                    [
-                                        Metric("test_val", 1),
-                                        Metric("train_val", 2),
-                                        Metric("val_val", 3),
-                                    ])
-    assert result.test_metrics == [Metric("val", 1)]
-    assert result.train_metrics == [Metric("val", 2)]
-    assert result.val_metrics == [Metric("val", 3)]
+    result = TrainingJobResults(
+        total_training_time_sec=1, total_iterations=1, _test_explain_file_path=__file__
+    ).with_metrics(
+        [
+            Metric('test_val', 1),
+            Metric('train_val', 2),
+            Metric('val_val', 3),
+        ]
+    )
+    assert result.test_metrics == [Metric('val', 1)]
+    assert result.train_metrics == [Metric('val', 2)]
+    assert result.val_metrics == [Metric('val', 3)]
 
 
 def test_a_local_file_custom_training_table_is_refused_at_the_boundary():
@@ -57,15 +59,22 @@ def test_a_local_file_custom_training_table_is_refused_at_the_boundary():
 
     with pytest.raises(Exception, match='calling process'):
         TrainingJobInternalRequest(
-            pquery_id='pq', custom_train_table=CustomTrainingTable(
+            pquery_id='pq',
+            custom_train_table=CustomTrainingTable(
                 source_table=LocalFileSourceTable(path='/tmp/rows.parquet'),
-                table_mod_spec=spec))
+                table_mod_spec=spec,
+            ),
+        )
 
     request = TrainingJobInternalRequest(
-        pquery_id='pq', custom_train_table=CustomTrainingTable(
-            source_table=SnowflakeSourceTable(snowflake_connector_id='c',
-                                              database='D', schema_name='S',
-                                              table='t'), table_mod_spec=spec))
+        pquery_id='pq',
+        custom_train_table=CustomTrainingTable(
+            source_table=SnowflakeSourceTable(
+                snowflake_connector_id='c', database='D', schema_name='S', table='t'
+            ),
+            table_mod_spec=spec,
+        ),
+    )
 
     assert request.custom_train_table is not None
 
@@ -80,5 +89,4 @@ def test_a_local_file_is_refused_by_name_on_the_driver_route():
     from rest.utils.driver_common import extract_source_table_type
 
     with pytest.raises(ValueError, match='calling process'):
-        extract_source_table_type(
-            LocalFileSourceTable(path='/tmp/rows.parquet'))
+        extract_source_table_type(LocalFileSourceTable(path='/tmp/rows.parquet'))

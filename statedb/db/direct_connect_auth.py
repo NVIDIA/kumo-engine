@@ -40,7 +40,7 @@ from statedb.db.repositories import (
 from statedb.db.row_parsing import row_str
 from statedb.db.runtime import StateDB, StateTx
 
-_CONFIG_ROW_ID = "default"
+_CONFIG_ROW_ID = 'default'
 
 
 def _normalize_email(email: str) -> str:
@@ -48,7 +48,7 @@ def _normalize_email(email: str) -> str:
 
 
 def _identity_key(issuer: str, subject: str) -> str:
-    return hashlib.sha256(f"{issuer}|{subject}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f'{issuer}|{subject}'.encode('utf-8')).hexdigest()
 
 
 def _session_lookup_key(session_token: str) -> str:
@@ -61,40 +61,40 @@ def _session_lookup_key(session_token: str) -> str:
     retained only by the caller/browser.
     """
     digest = hashlib.sha256(
-        b"kumo-direct-connect-session-v1\0" + session_token.encode("utf-8"),
+        b'kumo-direct-connect-session-v1\0' + session_token.encode('utf-8'),
     ).hexdigest()
-    return f"v1:{digest}"
+    return f'v1:{digest}'
 
 
 class DirectConnectAuthStateReader:
     def __init__(self, tx: StateTx) -> None:
         self._tx = tx
-        self._config = JsonRepository("direct_connect_config",
-                                      DirectConnectAuthConfigRecord)
-        self._users = JsonRepository("direct_connect_users",
-                                     DirectConnectUserRecord)
+        self._config = JsonRepository(
+            'direct_connect_config', DirectConnectAuthConfigRecord
+        )
+        self._users = JsonRepository('direct_connect_users', DirectConnectUserRecord)
         self._identity_links = JsonRepository(
-            "direct_connect_identity_links",
+            'direct_connect_identity_links',
             DirectConnectIdentityLinkRecord,
         )
-        self._sessions = JsonRepository("direct_connect_sessions",
-                                        DirectConnectSessionRecord)
+        self._sessions = JsonRepository(
+            'direct_connect_sessions', DirectConnectSessionRecord
+        )
         self._password_credentials = JsonRepository(
-            "direct_connect_password_credentials",
+            'direct_connect_password_credentials',
             DirectConnectPasswordCredentialRecord,
         )
         self._password_reset_tokens = JsonRepository(
-            "direct_connect_password_reset_tokens",
+            'direct_connect_password_reset_tokens',
             DirectConnectPasswordResetRecord,
         )
         self._password_login_attempts = JsonRepository(
-            "direct_connect_password_login_attempts",
+            'direct_connect_password_login_attempts',
             DirectConnectPasswordLoginAttemptRecord,
         )
 
     async def get_config(self) -> Optional[DirectConnectAuthConfigRecord]:
-        return deepcopy(await self._config.get_payload(self._tx,
-                                                       _CONFIG_ROW_ID))
+        return deepcopy(await self._config.get_payload(self._tx, _CONFIG_ROW_ID))
 
     async def get_user(
         self,
@@ -103,8 +103,10 @@ class DirectConnectAuthStateReader:
         return deepcopy(await self._users.get_payload(self._tx, user_id))
 
     async def list_users(self) -> list[tuple[str, DirectConnectUserRecord]]:
-        return [(row.id, deepcopy(row.payload))
-                for row in await self._users.list_all(self._tx)]
+        return [
+            (row.id, deepcopy(row.payload))
+            for row in await self._users.list_all(self._tx)
+        ]
 
     async def get_user_id_by_email(self, email: str) -> Optional[str]:
         normalized_email = _normalize_email(email)
@@ -140,7 +142,7 @@ class DirectConnectAuthStateReader:
     ) -> Optional[tuple[str, DirectConnectIdentityLinkRecord]]:
         row = await self._identity_links.find_one_by_fields(
             self._tx,
-            {"user_id": user_id},
+            {'user_id': user_id},
         )
         if row is None:
             return None
@@ -150,29 +152,29 @@ class DirectConnectAuthStateReader:
         self,
         session_id: str,
     ) -> Optional[DirectConnectSessionRecord]:
-        return deepcopy(await self._sessions.get_payload(
-            self._tx, _session_lookup_key(session_id)))
+        return deepcopy(
+            await self._sessions.get_payload(self._tx, _session_lookup_key(session_id))
+        )
 
     async def get_password_credential(
         self,
         user_id: str,
     ) -> Optional[DirectConnectPasswordCredentialRecord]:
-        return deepcopy(await self._password_credentials.get_payload(
-            self._tx, user_id))
+        return deepcopy(await self._password_credentials.get_payload(self._tx, user_id))
 
     async def get_password_reset_token(
         self,
         token_key: str,
     ) -> Optional[DirectConnectPasswordResetRecord]:
-        return deepcopy(await self._password_reset_tokens.get_payload(
-            self._tx, token_key))
+        return deepcopy(
+            await self._password_reset_tokens.get_payload(self._tx, token_key)
+        )
 
     async def get_password_login_attempt(
         self,
         key: str,
     ) -> Optional[DirectConnectPasswordLoginAttemptRecord]:
-        return deepcopy(await self._password_login_attempts.get_payload(
-            self._tx, key))
+        return deepcopy(await self._password_login_attempts.get_payload(self._tx, key))
 
     async def list_password_login_attempts_by_key(
         self,
@@ -200,7 +202,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
             self._tx,
             user_id,
             record,
-            extra_fields={"normalized_email": _normalize_email(record.email)},
+            extra_fields={'normalized_email': _normalize_email(record.email)},
         )
 
     async def set_identity_user_id(
@@ -215,16 +217,18 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         await self.lock_identity_link(identity_link_id)
         previous_link_ids = await _select_ids(
             self._tx,
-            "direct_connect_identity_links",
-            (f"{_json_value(self._tx, 'user_id')} = "
-             f"{_placeholder(self._tx, 1)} AND id <> "
-             f"{_placeholder(self._tx, 2)}"),
+            'direct_connect_identity_links',
+            (
+                f'{_json_value(self._tx, "user_id")} = '
+                f'{_placeholder(self._tx, 1)} AND id <> '
+                f'{_placeholder(self._tx, 2)}'
+            ),
             [user_id, identity_link_id],
-            "id",
+            'id',
         )
         await _delete_ids(
             self._tx,
-            "direct_connect_identity_links",
+            'direct_connect_identity_links',
             previous_link_ids,
         )
         await self._identity_links.upsert(
@@ -238,7 +242,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         )
 
     async def lock_identity_refresh(self, user_id: str) -> None:
-        if self._tx.backend != "postgres":
+        if self._tx.backend != 'postgres':
             return
         await self._tx.fetchrow(
             """
@@ -251,7 +255,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         )
 
     async def lock_identity_link(self, identity_link_id: str) -> None:
-        if self._tx.backend != "postgres":
+        if self._tx.backend != 'postgres':
             return
         await self._tx.fetchrow(
             """
@@ -268,7 +272,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         user_id: str,
     ) -> Optional[tuple[str, DirectConnectIdentityLinkRecord]]:
         await self.lock_identity_refresh(user_id)
-        for_update = "FOR UPDATE" if self._tx.backend == "postgres" else ""
+        for_update = 'FOR UPDATE' if self._tx.backend == 'postgres' else ''
         rows = await self._tx.fetch(
             f"""
             SELECT id, payload, created_at, updated_at
@@ -280,8 +284,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
             user_id,
         )
         if len(rows) > 1:
-            raise ValueError(
-                f"Expected at most one identity link for user {user_id!r}")
+            raise ValueError(f'Expected at most one identity link for user {user_id!r}')
         if not rows:
             return None
         row = self._identity_links._row_from_list_row(rows[0])
@@ -305,8 +308,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
     ) -> None:
         record = deepcopy(record)
         record.timestamps = update_timestamps(record.timestamps)
-        await self._sessions.upsert(
-            self._tx, _session_lookup_key(session_id), record)
+        await self._sessions.upsert(self._tx, _session_lookup_key(session_id), record)
 
     async def pop_session(
         self,
@@ -314,19 +316,18 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
     ) -> Optional[DirectConnectSessionRecord]:
         existing = await self.get_session(session_id)
         if existing is not None:
-            await self._sessions.delete(
-                self._tx, _session_lookup_key(session_id))
+            await self._sessions.delete(self._tx, _session_lookup_key(session_id))
         return existing
 
     async def delete_sessions_for_user(self, user_id: str) -> int:
         session_ids = await _select_ids(
             self._tx,
-            "direct_connect_sessions",
-            f"{_json_value(self._tx, 'user_id')} = {_placeholder(self._tx, 1)}",
+            'direct_connect_sessions',
+            f'{_json_value(self._tx, "user_id")} = {_placeholder(self._tx, 1)}',
             [user_id],
-            "id",
+            'id',
         )
-        await _delete_ids(self._tx, "direct_connect_sessions", session_ids)
+        await _delete_ids(self._tx, 'direct_connect_sessions', session_ids)
         return len(session_ids)
 
     async def delete_expired_sessions(
@@ -337,13 +338,13 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         now = now or now_utc()
         expired = await _select_ids(
             self._tx,
-            "direct_connect_sessions",
-            f"{_json_value(self._tx, 'expires_time')} <= {_placeholder(self._tx, 1)}",
+            'direct_connect_sessions',
+            f'{_json_value(self._tx, "expires_time")} <= {_placeholder(self._tx, 1)}',
             [_datetime_json_value(now)],
-            f"{_json_value(self._tx, 'expires_time')}, id",
+            f'{_json_value(self._tx, "expires_time")}, id',
             limit=limit,
         )
-        await _delete_ids(self._tx, "direct_connect_sessions", expired)
+        await _delete_ids(self._tx, 'direct_connect_sessions', expired)
         return len(expired)
 
     async def set_password_credential(
@@ -372,16 +373,14 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         now = now or now_utc()
         expired = await _select_ids(
             self._tx,
-            "direct_connect_password_reset_tokens",
-            f"{_json_value(self._tx, 'used')} = {_placeholder(self._tx, 1)} "
-            f"OR {_json_value(self._tx, 'expires_time')} <= {_placeholder(self._tx, 2)}",
-            [_encode_json_value(self._tx, True),
-             _datetime_json_value(now)],
-            f"{_json_value(self._tx, 'expires_time')}, id",
+            'direct_connect_password_reset_tokens',
+            f'{_json_value(self._tx, "used")} = {_placeholder(self._tx, 1)} '
+            f'OR {_json_value(self._tx, "expires_time")} <= {_placeholder(self._tx, 2)}',
+            [_encode_json_value(self._tx, True), _datetime_json_value(now)],
+            f'{_json_value(self._tx, "expires_time")}, id',
             limit=limit,
         )
-        await _delete_ids(self._tx, "direct_connect_password_reset_tokens",
-                          expired)
+        await _delete_ids(self._tx, 'direct_connect_password_reset_tokens', expired)
         return len(expired)
 
     async def set_password_login_attempt(
@@ -403,7 +402,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         return existing
 
     async def lock_password_login_attempt_keys(self, keys: list[str]) -> None:
-        if self._tx.backend != "postgres":
+        if self._tx.backend != 'postgres':
             return
         lock_keys = sorted(set(keys))
         if not lock_keys:
@@ -436,9 +435,9 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
     ) -> int:
         now = now or now_utc()
         stale_where_sql = (
-            f"({_json_value(self._tx, 'locked_until')} IS NULL "
-            f"OR {_json_value(self._tx, 'locked_until')} <= {_placeholder(self._tx, 1)}) "
-            f"AND {_json_value(self._tx, 'first_failed_time')} <= {_placeholder(self._tx, 2)}"
+            f'({_json_value(self._tx, "locked_until")} IS NULL '
+            f'OR {_json_value(self._tx, "locked_until")} <= {_placeholder(self._tx, 1)}) '
+            f'AND {_json_value(self._tx, "first_failed_time")} <= {_placeholder(self._tx, 2)}'
         )
         stale_args = [
             _datetime_json_value(now),
@@ -446,15 +445,15 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
         ]
         expired = await _select_ids(
             self._tx,
-            "direct_connect_password_login_attempts",
+            'direct_connect_password_login_attempts',
             stale_where_sql,
             list(stale_args),
-            f"{_json_value(self._tx, 'first_failed_time')}, id",
+            f'{_json_value(self._tx, "first_failed_time")}, id',
             limit=limit,
         )
         return await _delete_ids_where(
             self._tx,
-            "direct_connect_password_login_attempts",
+            'direct_connect_password_login_attempts',
             expired,
             stale_where_sql,
             stale_args,
@@ -462,7 +461,7 @@ class DirectConnectAuthStateWriter(DirectConnectAuthStateReader):
 
 
 def _row_id(row: object) -> str:
-    return row_str(row, "id", 0)
+    return row_str(row, 'id', 0)
 
 
 def _datetime_json_value(value: datetime) -> str:
@@ -471,12 +470,15 @@ def _datetime_json_value(value: datetime) -> str:
 
 def _normalized_email_sql(tx: StateTx, field_name: str) -> str:
     value = _json_value(tx, field_name)
-    return (f"lower(btrim({value}))"
-            if tx.backend == "postgres" else f"lower(trim({value}))")
+    return (
+        f'lower(btrim({value}))'
+        if tx.backend == 'postgres'
+        else f'lower(trim({value}))'
+    )
 
 
 def _aliased_json_value(tx: StateTx, table_alias: str, field_name: str) -> str:
-    if tx.backend == "postgres":
+    if tx.backend == 'postgres':
         return f"{table_alias}.payload->>'{field_name}'"
     return f"json_extract({table_alias}.payload, '$.{field_name}')"
 
@@ -490,10 +492,10 @@ async def _select_ids(
     *,
     limit: int | None = None,
 ) -> list[str]:
-    limit_sql = ""
+    limit_sql = ''
     if limit is not None:
         args.append(limit)
-        limit_sql = f"LIMIT {_placeholder(tx, len(args))}"
+        limit_sql = f'LIMIT {_placeholder(tx, len(args))}'
     rows = await tx.fetch(
         f"""
         SELECT id
@@ -511,7 +513,7 @@ async def _delete_ids(tx: StateTx, table_name: str, row_ids: list[str]) -> None:
     if not row_ids:
         return
     args: list[object] = []
-    predicate = _in_predicate(tx, "id", row_ids, args)
+    predicate = _in_predicate(tx, 'id', row_ids, args)
     await tx.execute(
         f"""
         DELETE FROM {table_name}
@@ -531,7 +533,7 @@ async def _delete_ids_where(
     if not row_ids:
         return 0
     delete_args = list(args)
-    id_predicate = _in_predicate(tx, "id", row_ids, delete_args)
+    id_predicate = _in_predicate(tx, 'id', row_ids, delete_args)
     return await _execute_count(
         tx,
         f"""
@@ -545,12 +547,12 @@ async def _delete_ids_where(
 
 async def _execute_count(tx: StateTx, sql: str, args: list[object]) -> int:
     result = await tx.execute(sql, *args)
-    if tx.backend == "postgres":
+    if tx.backend == 'postgres':
         try:
             return int(str(result).split()[-1])
         except (IndexError, ValueError):
             return 0
-    row = await tx.fetchrow("SELECT changes()")
+    row = await tx.fetchrow('SELECT changes()')
     return int(row[0] if row is not None else 0)
 
 
@@ -565,13 +567,17 @@ async def _conditional_update_payload(
     search_fields: dict[str, object] | None = None,
 ) -> int:
     record = deepcopy(record)
-    if hasattr(record, "timestamps"):
+    if hasattr(record, 'timestamps'):
         record.timestamps = update_timestamps(record.timestamps)
     payload_json = payload_json_for_storage(
-        payload_dict_for_storage(record, extra_fields=search_fields))
+        payload_dict_for_storage(record, extra_fields=search_fields)
+    )
     updated_at = encode_timestamp(tx, utcnow())
-    payload_expr = (f"{_placeholder(tx, 1)}::jsonb"
-                    if tx.backend == "postgres" else _placeholder(tx, 1))
+    payload_expr = (
+        f'{_placeholder(tx, 1)}::jsonb'
+        if tx.backend == 'postgres'
+        else _placeholder(tx, 1)
+    )
     return await _execute_count(
         tx,
         f"""
@@ -603,7 +609,9 @@ class DirectConnectAuthService:
         async with self.write() as writer:
             await writer.set_config(config)
 
-    async def list_users(self, ) -> list[tuple[str, DirectConnectUserRecord]]:
+    async def list_users(
+        self,
+    ) -> list[tuple[str, DirectConnectUserRecord]]:
         async with self.read() as reader:
             return await reader.list_users()
 
@@ -632,8 +640,12 @@ class DirectConnectAuthService:
         self,
         user_id: str,
     ) -> AsyncGenerator[
-            tuple[DirectConnectAuthStateWriter,
-                  Optional[tuple[str, DirectConnectIdentityLinkRecord]]], None]:
+        tuple[
+            DirectConnectAuthStateWriter,
+            Optional[tuple[str, DirectConnectIdentityLinkRecord]],
+        ],
+        None,
+    ]:
         """Hold the cross-replica identity lock through one IdP refresh."""
         async with self._state_db.write_tx() as tx:
             writer = DirectConnectAuthStateWriter(tx)
@@ -676,7 +688,7 @@ class DirectConnectAuthService:
             records = await writer.list_password_login_attempts_by_key(keys)
             for key, limit in attempts:
                 record = records.get(key)
-                if (record is None or record.first_failed_time <= now - window):
+                if record is None or record.first_failed_time <= now - window:
                     record = DirectConnectPasswordLoginAttemptRecord(
                         timestamps=get_current_timestamps(),
                         first_failed_time=now,
@@ -712,53 +724,57 @@ class DirectConnectAuthService:
                 _datetime_json_value(now),
             )
             if row is None:
-                return "invalid_token", None, None
+                return 'invalid_token', None, None
 
-            reset_record = (writer._password_reset_tokens._row_from_db_row(
+            reset_record = writer._password_reset_tokens._row_from_db_row(
                 token_key,
                 row,
-            ).payload)
+            ).payload
             user = await writer.get_user(reset_record.user_id)
             if user is None:
-                return "invalid_token", None, None
+                return 'invalid_token', None, None
             if user.disabled:
-                return "disabled", reset_record.user_id, user
+                return 'disabled', reset_record.user_id, user
             current_credential = await writer.get_password_credential(
-                reset_record.user_id)
+                reset_record.user_id
+            )
             current_credential_tag = direct_connect_password_credential_tag(
-                current_credential)
+                current_credential
+            )
             if current_credential_tag != direct_connect_password_credential_tag(
-                    expected_credential):
-                return "invalid_token", None, None
+                expected_credential
+            ):
+                return 'invalid_token', None, None
             if reset_record.credential_tag is None:
-                return "invalid_token", None, None
+                return 'invalid_token', None, None
             if reset_record.credential_tag != current_credential_tag:
-                return "invalid_token", None, None
+                return 'invalid_token', None, None
 
             reset_record.used = True
             updated = await _conditional_update_payload(
                 tx,
-                "direct_connect_password_reset_tokens",
+                'direct_connect_password_reset_tokens',
                 token_key,
                 reset_record,
                 extra_where_sql=(
-                    f"{_json_value(tx, 'used')} = {_placeholder(tx, 4)} "
-                    f"AND {_json_value(tx, 'expires_time')} > "
-                    f"{_placeholder(tx, 5)}"),
+                    f'{_json_value(tx, "used")} = {_placeholder(tx, 4)} '
+                    f'AND {_json_value(tx, "expires_time")} > '
+                    f'{_placeholder(tx, 5)}'
+                ),
                 extra_args=[
                     _encode_json_value(tx, False),
                     _datetime_json_value(now),
                 ],
             )
             if updated != 1:
-                return "invalid_token", None, None
+                return 'invalid_token', None, None
 
             await writer.set_password_credential(
                 reset_record.user_id,
                 credential,
             )
             await writer.delete_sessions_for_user(reset_record.user_id)
-            return "ok", reset_record.user_id, user
+            return 'ok', reset_record.user_id, user
 
     async def update_user_if_not_last_admin(
         self,
@@ -771,22 +787,22 @@ class DirectConnectAuthService:
             writer = DirectConnectAuthStateWriter(tx)
             record = await writer.get_user(user_id)
             if record is None:
-                return "not_found", None
+                return 'not_found', None
 
             proposed_role = role or record.role
-            proposed_disabled = (record.disabled
-                                 if disabled is None else disabled)
-            demoting_last_admin = (record.role == "admin"
-                                   and not record.disabled
-                                   and (proposed_role != "admin"
-                                        or proposed_disabled))
+            proposed_disabled = record.disabled if disabled is None else disabled
+            demoting_last_admin = (
+                record.role == 'admin'
+                and not record.disabled
+                and (proposed_role != 'admin' or proposed_disabled)
+            )
             # A role change or a disable must end the user's live sessions
             # in the same transaction (like password reset above), so the
             # user re-authenticates under the new privileges instead of
             # keeping a stale session; no-op updates keep sessions intact.
-            invalidate_sessions = (proposed_role != record.role
-                                   or (proposed_disabled
-                                       and not record.disabled))
+            invalidate_sessions = proposed_role != record.role or (
+                proposed_disabled and not record.disabled
+            )
 
             record.role = proposed_role
             record.disabled = proposed_disabled
@@ -794,9 +810,9 @@ class DirectConnectAuthService:
                 await writer.set_user(user_id, record)
                 if invalidate_sessions:
                     await writer.delete_sessions_for_user(user_id)
-                return "updated", record
+                return 'updated', record
 
-            if tx.backend == "postgres":
+            if tx.backend == 'postgres':
                 await tx.fetch(
                     f"""
                     SELECT id
@@ -806,49 +822,50 @@ class DirectConnectAuthService:
                            OR {_json_value(tx, 'disabled')} IS NULL)
                     FOR UPDATE
                     """,
-                    "admin",
+                    'admin',
                     _encode_json_value(tx, False),
                 )
 
-            other_role_expr = _aliased_json_value(tx, "other", "role")
-            other_disabled_expr = _aliased_json_value(tx, "other", "disabled")
+            other_role_expr = _aliased_json_value(tx, 'other', 'role')
+            other_disabled_expr = _aliased_json_value(tx, 'other', 'disabled')
             updated = await _conditional_update_payload(
                 tx,
-                "direct_connect_users",
+                'direct_connect_users',
                 user_id,
                 record,
                 extra_where_sql=(
-                    "EXISTS ("
-                    "SELECT 1 FROM direct_connect_users other "
-                    f"WHERE other.id <> {_placeholder(tx, 4)} "
-                    f"AND {other_role_expr} = {_placeholder(tx, 5)} "
-                    f"AND ({other_disabled_expr} = {_placeholder(tx, 6)} "
-                    f"OR {other_disabled_expr} IS NULL))"),
+                    'EXISTS ('
+                    'SELECT 1 FROM direct_connect_users other '
+                    f'WHERE other.id <> {_placeholder(tx, 4)} '
+                    f'AND {other_role_expr} = {_placeholder(tx, 5)} '
+                    f'AND ({other_disabled_expr} = {_placeholder(tx, 6)} '
+                    f'OR {other_disabled_expr} IS NULL))'
+                ),
                 extra_args=[
                     user_id,
-                    "admin",
+                    'admin',
                     _encode_json_value(tx, False),
                 ],
-                search_fields={
-                    "normalized_email": _normalize_email(record.email)
-                },
+                search_fields={'normalized_email': _normalize_email(record.email)},
             )
             if updated == 1:
                 if invalidate_sessions:
                     await writer.delete_sessions_for_user(user_id)
-                return "updated", record
+                return 'updated', record
 
             existing = await writer.get_user(user_id)
-            return "last_admin", existing
+            return 'last_admin', existing
 
     @asynccontextmanager
     async def read(
-        self, ) -> AsyncGenerator[DirectConnectAuthStateReader, None]:
+        self,
+    ) -> AsyncGenerator[DirectConnectAuthStateReader, None]:
         async with self._state_db.read_tx() as tx:
             yield DirectConnectAuthStateReader(tx)
 
     @asynccontextmanager
     async def write(
-        self, ) -> AsyncGenerator[DirectConnectAuthStateWriter, None]:
+        self,
+    ) -> AsyncGenerator[DirectConnectAuthStateWriter, None]:
         async with self._state_db.write_tx() as tx:
             yield DirectConnectAuthStateWriter(tx)

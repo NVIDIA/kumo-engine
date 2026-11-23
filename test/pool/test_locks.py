@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for ``pool.locks.PerSnapshotLocks``."""
+
 import asyncio
 
 import pytest
@@ -34,10 +35,10 @@ def test_concurrent_create_is_deduped():
     with the same ``asyncio.Lock`` instance — otherwise critical sections
     for the same snapshot could run concurrently.
     """
+
     async def _run() -> None:
         locks = PerSnapshotLocks()
-        results = await asyncio.gather(
-            *[locks.get('snap-new') for _ in range(32)])
+        results = await asyncio.gather(*[locks.get('snap-new') for _ in range(32)])
         assert all(r is results[0] for r in results)
 
     asyncio.run(_run())
@@ -60,8 +61,7 @@ async def test_acquire_serializes_same_snapshot():
     await asyncio.gather(worker('a', 0.02), worker('b', 0.0))
     # No interleaving: enter/exit must pair for each name before the next
     # name enters.
-    assert order == [('enter', 'a'), ('exit', 'a'), ('enter', 'b'),
-                     ('exit', 'b')]
+    assert order == [('enter', 'a'), ('exit', 'a'), ('enter', 'b'), ('exit', 'b')]
 
 
 @pytest.mark.asyncio

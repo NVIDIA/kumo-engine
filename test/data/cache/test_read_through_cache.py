@@ -9,8 +9,8 @@ from kumo.data.cache.read_through_cache import ReadThroughCache
 
 def test_put_and_get(tmp_path: pathlib.Path):
     temp_path: str = tmp_path.resolve().as_posix()
-    key = "test_key"
-    value = "test_value"
+    key = 'test_key'
+    value = 'test_value'
 
     cache = ReadThroughCache(temp_path, 'test1')
     cache.put(key, value)
@@ -20,8 +20,8 @@ def test_put_and_get(tmp_path: pathlib.Path):
 
 def test_load(tmp_path: pathlib.Path):
     temp_path: str = tmp_path.resolve().as_posix()
-    key = "test_key"
-    value = "test_value"
+    key = 'test_key'
+    value = 'test_value'
 
     cache = ReadThroughCache(temp_path, 'test1')
     cache.put(key, value)
@@ -32,8 +32,8 @@ def test_load(tmp_path: pathlib.Path):
 
 def test_remove(tmp_path: pathlib.Path):
     temp_path: str = tmp_path.resolve().as_posix()
-    key = "test_key"
-    value = "test_value"
+    key = 'test_key'
+    value = 'test_value'
 
     cache = ReadThroughCache(temp_path, 'test1')
     cache.put(key, value)

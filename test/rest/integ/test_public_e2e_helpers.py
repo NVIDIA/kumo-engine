@@ -2,13 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from test.rest.integ import test_e2e_public_api
 from unittest.mock import MagicMock
 
 from kumo_core.types import TaskType
 from kumoapi.pquery import QueryType
 
 from rest.config.predictive_query_v2 import PQueryMetadataResponse
+from test.rest.integ import test_e2e_public_api
 
 
 def test_task_type_lookup_uses_explicit_project_scope(monkeypatch) -> None:
@@ -17,15 +17,19 @@ def test_task_type_lookup_uses_explicit_project_scope(monkeypatch) -> None:
         query_type=QueryType.TEMPORAL,
     )
     get_and_expect_success = MagicMock(return_value=response)
-    monkeypatch.setattr(test_e2e_public_api, 'get_and_expect_success',
-                        get_and_expect_success)
+    monkeypatch.setattr(
+        test_e2e_public_api, 'get_and_expect_success', get_and_expect_success
+    )
     private_api_client = MagicMock()
 
-    assert test_e2e_public_api._get_task_type_v1_compat(
-        private_api_client,
-        'pquery-test',
-        project_id='project-test',
-    ) == TaskType.REGRESSION
+    assert (
+        test_e2e_public_api._get_task_type_v1_compat(
+            private_api_client,
+            'pquery-test',
+            project_id='project-test',
+        )
+        == TaskType.REGRESSION
+    )
     get_and_expect_success.assert_called_once_with(
         private_api_client,
         '/v1/predictive_queries/pquery-test/metadata',

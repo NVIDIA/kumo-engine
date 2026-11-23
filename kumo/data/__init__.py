@@ -71,8 +71,10 @@ def get_persist_dir() -> str:
     context (all prior callers set it to exactly this value).
     """
     from service_framework.deploy_env_config import deploy_env
+
     return normalize_persist_dir(
-        osp.join(deploy_env().data_plane_storage_root, DATA_PERSIST_DIR_NAME))
+        osp.join(deploy_env().data_plane_storage_root, DATA_PERSIST_DIR_NAME)
+    )
 
 
 _active_cache: Optional[BackendCacheManager] = None
@@ -90,12 +92,14 @@ def get_active_cache() -> BackendCacheManager:
         # ``CACHE_DIR`` import is inlined to avoid a module-load cycle
         # with ``kumo.data.backend_cache``.
         from kumo.data.backend_cache import CACHE_DIR, BackendCacheManager
+
         _active_cache = BackendCacheManager(osp.join(persist_dir, CACHE_DIR))
     return _active_cache
 
 
 def reset_active_cache_for_test(
-    cache: Optional[BackendCacheManager] = None, ) -> None:
+    cache: Optional[BackendCacheManager] = None,
+) -> None:
     """Test seam to replace or clear the active :class:`BackendCacheManager`."""
     global _active_cache
     _active_cache = cache

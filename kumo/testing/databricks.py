@@ -25,23 +25,28 @@ class DatabricksTableConnector:
 def withDatabricksCredentials(func: Callable):
     """Skip unless DATABRICKS_HOST and DATABRICKS_TOKEN are set."""
     from kumo.testing._skip import skip_if
-    has_no_credentials = not (DATABRICKS_HOST.parse_value()
-                              and DATABRICKS_TOKEN.parse_value())
-    return skip_if(has_no_credentials, "No Databricks credentials found", func)
+
+    has_no_credentials = not (
+        DATABRICKS_HOST.parse_value() and DATABRICKS_TOKEN.parse_value()
+    )
+    return skip_if(has_no_credentials, 'No Databricks credentials found', func)
 
 
 def withDatabricksOauthCredentials(func: Callable):
     """Skip unless the host, client ID, and client secret variables are set."""
     from kumo.testing._skip import skip_if
-    has_no_credentials = not (DATABRICKS_HOST.parse_value()
-                              and DATABRICKS_CLIENT_ID.parse_value()
-                              and DATABRICKS_CLIENT_SECRET.parse_value())
-    return skip_if(has_no_credentials, "No Databricks credentials found", func)
+
+    has_no_credentials = not (
+        DATABRICKS_HOST.parse_value()
+        and DATABRICKS_CLIENT_ID.parse_value()
+        and DATABRICKS_CLIENT_SECRET.parse_value()
+    )
+    return skip_if(has_no_credentials, 'No Databricks credentials found', func)
 
 
 @contextlib.contextmanager
 def disable_databricks_env_credentials() -> Generator[None, None, None]:
-    """ Disables the ability to fetch databricks credentials from the env.
+    """Disables the ability to fetch databricks credentials from the env.
 
     This is necessary for writing unit tests that test the case where
     environment credentials are not available.
@@ -50,8 +55,8 @@ def disable_databricks_env_credentials() -> Generator[None, None, None]:
     old_pat = DATABRICKS_TOKEN.name
     old_client_id = DATABRICKS_CLIENT_ID.name
     try:
-        DATABRICKS_TOKEN.name = "_UNSET_ENV_VAR"
-        DATABRICKS_CLIENT_ID.name = "_UNSET_ENV_VAR"
+        DATABRICKS_TOKEN.name = '_UNSET_ENV_VAR'
+        DATABRICKS_CLIENT_ID.name = '_UNSET_ENV_VAR'
         Connector.disable_interactive_input()
         yield
     finally:

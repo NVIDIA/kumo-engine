@@ -65,6 +65,7 @@ TRAIN_TABLE = 'TRAIN_TABLE'
 class _FakeFeatureStore:
     """Stand-in for the bits of ``FeatureStore``
     ``SubgraphCollector.explain_post_step``'s ``csv`` path reads."""
+
     train_table_name = TRAIN_TABLE
     table_names = [USER]
 
@@ -84,6 +85,7 @@ class _FakeFeatureStore:
 class _FakeGraphStore:
     """No foreign keys: exercises the single-entity-type path, not the
     multi-hop foreign-key reconstruction (see module docstring)."""
+
     def get_foreign_keys(self, table_name: str) -> list[tuple[str, str]]:
         return []
 
@@ -103,8 +105,7 @@ def test_subgraph_collector_writes_per_entity_csv(tmp_path: object) -> None:
 
     age_mapper = NumericalTensorMapper()
     tf = get_tf(
-        pa.RecordBatch.from_arrays([pa.array(ages, type=pa.float64())],
-                                   names=['AGE']),
+        pa.RecordBatch.from_arrays([pa.array(ages, type=pa.float64())], names=['AGE']),
         {'AGE': age_mapper},
     )
 
@@ -121,27 +122,24 @@ def test_subgraph_collector_writes_per_entity_csv(tmp_path: object) -> None:
     hetero[TRAIN_TABLE].y = torch.tensor([[True], [False], [True], [False]])
 
     df_dict = {
-        USER:
-        pd.DataFrame({
-            'USER_ID': [0, 1, 2, 3],
-            'AGE': ages
-        }),
+        USER: pd.DataFrame({'USER_ID': [0, 1, 2, 3], 'AGE': ages}),
     }
     schema_dict = {
-        USER: TestTableSchema(stypes={'AGE': Stype.numerical},
-                              pkey_name='USER_ID'),
+        USER: TestTableSchema(stypes={'AGE': Stype.numerical}, pkey_name='USER_ID'),
     }
-    train_table_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3],
-        'TARGET': [True, False, True, False],
-    })
+    train_table_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3],
+            'TARGET': [True, False, True, False],
+        }
+    )
     _, _, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
         encoders=EncodersConfig(
-            encoders={USER: {"AGE": Numerical(_stats={ColStatType.MEAN: 35.0})}},
+            encoders={USER: {'AGE': Numerical(_stats={ColStatType.MEAN: 35.0})}},
             target=TargetEncoderConfig(
-                "TARGET",
+                'TARGET',
                 Index(_stats={ColStatType.CATEGORY_COUNTS: [[False, 2], [True, 2]]}),
             ),
         ),
@@ -149,8 +147,7 @@ def test_subgraph_collector_writes_per_entity_csv(tmp_path: object) -> None:
     )
 
     trainer = Trainer(
-        task=TaskConfig(TaskType.BINARY_CLASSIFICATION,
-                        name='TEST_SUBGRAPH_COLLECTOR'),
+        task=TaskConfig(TaskType.BINARY_CLASSIFICATION, name='TEST_SUBGRAPH_COLLECTOR'),
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=0),
         head=NodePredHead(),
@@ -186,24 +183,24 @@ def test_subgraph_collector_writes_per_entity_csv(tmp_path: object) -> None:
         formats=['csv'],
         target_to_entity_paths=[],
     )
-    collector.explain_pre_step(batch=hetero, module=trainer.pl_model,
-                               datamodule=datamodule, stage=TrainingStage.TEST,
-                               batch_idx=0)
+    collector.explain_pre_step(
+        batch=hetero,
+        module=trainer.pl_model,
+        datamodule=datamodule,
+        stage=TrainingStage.TEST,
+        batch_idx=0,
+    )
     logits = trainer.pl_model.common_step(hetero)
     collector.explain_post_step(
         batch=hetero,
         module=trainer.pl_model,
         datamodule=datamodule,
-        step_output={
-            'logits': logits,
-            'target': hetero[TRAIN_TABLE].y
-        },
+        step_output={'logits': logits, 'target': hetero[TRAIN_TABLE].y},
         stage=TrainingStage.TEST,
         batch_idx=0,
     )
 
-    csv_paths = sorted(
-        glob.glob(osp.join(root_dir, 'test', 'csv', '*', 'USER.csv')))
+    csv_paths = sorted(glob.glob(osp.join(root_dir, 'test', 'csv', '*', 'USER.csv')))
     assert len(csv_paths) == 4
 
     for i, path in enumerate(csv_paths):

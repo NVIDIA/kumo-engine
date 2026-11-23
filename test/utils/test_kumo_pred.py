@@ -13,8 +13,7 @@ from kumo.utils.pred_utils import get_partition_offsets_and_lengths
 
 def test_get_partition_offsets_and_lengths():
     with tempfile.TemporaryDirectory() as tmpdir:
-        partitioned_pred_table_path = osp.join(str(tmpdir),
-                                               'partitioned_pred_table')
+        partitioned_pred_table_path = osp.join(str(tmpdir), 'partitioned_pred_table')
         os.makedirs(partitioned_pred_table_path)
         partition_lengths = [111, 111, 111, 111, 111, 111, 112, 111, 111]
         for partition, length in enumerate(partition_lengths):
@@ -25,6 +24,7 @@ def test_get_partition_offsets_and_lengths():
             pd.DataFrame({'id': range(length)}).to_parquet(path)
 
         offsets, lengths = get_partition_offsets_and_lengths(
-            partitioned_pred_table_path)
+            partitioned_pred_table_path
+        )
         assert offsets == [0, 111, 222, 333, 444, 555, 666, 778, 889]
         assert lengths == partition_lengths

@@ -42,7 +42,7 @@ def test_construct_gpu_oom_message():
                     model_name='glove.840B-300d',
                     num_tokens=400_000,
                     embedding_dim=300,
-                )
+                ),
             ],
         ),
         subgraph_size=SubgraphSize(
@@ -61,12 +61,12 @@ def test_construct_gpu_oom_message():
         TaskType.TEMPORAL_LINK_PREDICTION,
     )
 
-    assert "Out of 1 experiment(s), 1 experiment(s) failed" in msg
-    assert "out-of-memory issue. Despite re-attempting" in msg
+    assert 'Out of 1 experiment(s), 1 experiment(s) failed' in msg
+    assert 'out-of-memory issue. Despite re-attempting' in msg
 
-    assert "we were unable to avoid GPU out-of-memory issues" in msg
+    assert 'we were unable to avoid GPU out-of-memory issues' in msg
 
-    assert "require approximately 9830.40MB of GPU memory" in msg
+    assert 'require approximately 9830.40MB of GPU memory' in msg
     # The percentage is computed against `TOTAL_GPU_BYTES` which is set at
     # module load to either the hardcoded Tesla T4 value (17 GB) when CUDA
     # is unavailable, OR `torch.cuda.get_device_properties('cuda').total_memory`
@@ -74,22 +74,21 @@ def test_construct_gpu_oom_message():
     # exact percent varies (e.g. 60.00% on the hardcoded fallback,
     # ~65.92% on a 15.6 GB Tesla T4 with reserved memory). Loosen to a
     # regex match on the message shape rather than the GPU-dependent value.
-    assert re.search(r'amounts to roughly \d+\.\d+% of available GPU memory',
-                     msg)
-    assert "Encoder: 13056 parameters (9828.95MB)" in msg
-    assert "GNN: 363776 parameters (1.39MB)" in msg
-    assert "Head: 16897 parameters (0.06MB)" in msg
-    assert "Total: 393731 parameters (9830.40MB)" in msg
-    assert "consider excluding high cardinality columns" in msg
-    assert "decrease the number of GNN layers" in msg
-    assert "consider decreasing the output embedding dimensionality" in msg
+    assert re.search(r'amounts to roughly \d+\.\d+% of available GPU memory', msg)
+    assert 'Encoder: 13056 parameters (9828.95MB)' in msg
+    assert 'GNN: 363776 parameters (1.39MB)' in msg
+    assert 'Head: 16897 parameters (0.06MB)' in msg
+    assert 'Total: 393731 parameters (9830.40MB)' in msg
+    assert 'consider excluding high cardinality columns' in msg
+    assert 'decrease the number of GNN layers' in msg
+    assert 'consider decreasing the output embedding dimensionality' in msg
 
-    assert "current model is using 460000 tokens to embed text" in msg
-    assert "This consumes about 469.21MB of GPU memory" in msg
-    assert "Consider using a smaller text embedding model" in msg
-    assert "multiple text embedding models have been used to embed text" in msg
+    assert 'current model is using 460000 tokens to embed text' in msg
+    assert 'This consumes about 469.21MB of GPU memory' in msg
+    assert 'Consider using a smaller text embedding model' in msg
+    assert 'multiple text embedding models have been used to embed text' in msg
 
-    assert "contains about 200000 nodes and about 1000000 edges" in msg
-    assert "this consumes approximately 778.20MB of GPU memory" in msg
-    assert "store the target entity features" in msg
-    assert "Consider reducing the number of hops" in msg
+    assert 'contains about 200000 nodes and about 1000000 edges' in msg
+    assert 'this consumes approximately 778.20MB of GPU memory' in msg
+    assert 'store the target entity features' in msg
+    assert 'Consider reducing the number of hops' in msg

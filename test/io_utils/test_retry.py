@@ -33,7 +33,7 @@ def test_reraise(caplog):
         with pytest.raises(KeyError):
             _raiser(KeyError)
     # 2 tries -> 1 retry
-    assert caplog.text.count("retrying in") == 1
+    assert caplog.text.count('retrying in') == 1
     caplog.clear()
 
     with caplog.at_level(WARNING):

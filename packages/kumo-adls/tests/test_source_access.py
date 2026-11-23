@@ -38,13 +38,15 @@ def parquet(value):
 
 
 def reader_for(client):
-    return source_reader(client, client.account_name, filesystem='curated',
-                         prefix='orders')
+    return source_reader(
+        client, client.account_name, filesystem='curated', prefix='orders'
+    )
 
 
 @pytest.mark.usefixtures('no_auth_environment')
 def test_shared_reader_matches_engine_rows_versions_and_borrowed_lifetime(
-        monkeypatch, connector, tmp_path):
+    monkeypatch, connector, tmp_path
+):
     credential = SimpleNamespace(closed=False, scopes=[])
 
     def get_token(*scopes, **kwargs):
@@ -55,8 +57,9 @@ def test_shared_reader_matches_engine_rows_versions_and_borrowed_lifetime(
     payload = parquet(7)
     adapter = HTTPAdapter()
     properties = dict(HEADERS, **{'Content-Length': str(len(payload))})
-    adapter.register_uri('HEAD', re.compile(r'https://companylake\.'),
-                         headers=properties)
+    adapter.register_uri(
+        'HEAD', re.compile(r'https://companylake\.'), headers=properties
+    )
     conditions = []
 
     def download(request, context):
@@ -64,19 +67,21 @@ def test_shared_reader_matches_engine_rows_versions_and_borrowed_lifetime(
         requested = request.headers.get('x-ms-range', 'bytes=0-')
         start, end = requested.removeprefix('bytes=').split('-', 1)
         first, last = int(start), int(end) if end else len(payload) - 1
-        context.headers.update({
-            'Content-Length':
-            str(last - first + 1),
-            'Content-Range':
-            f'bytes {first}-{last}/{len(payload)}'
-        })
+        context.headers.update(
+            {
+                'Content-Length': str(last - first + 1),
+                'Content-Range': f'bytes {first}-{last}/{len(payload)}',
+            }
+        )
         context.status_code = 206
-        return payload[first:last + 1]
+        return payload[first : last + 1]
 
     adapter.register_uri(
         'GET',
         re.compile(r'https://companylake\.[^/]+/curated/orders/events.parquet'),
-        headers=properties, content=download)
+        headers=properties,
+        content=download,
+    )
     monkeypatch.setattr(clients, 'HTTPAdapter', lambda **kwargs: adapter)
     borrowed = clients.create_client(credential, 'companylake')
     close = Mock(wraps=borrowed.close)
@@ -85,24 +90,28 @@ def test_shared_reader_matches_engine_rows_versions_and_borrowed_lifetime(
     monkeypatch.setattr('kumo_adls.backend.session_for', selected)
     shared = reader_for(borrowed)
     engine, name = ADLSSourceBackend()._reader(connector(), 'events.parquet')
-    selected.assert_called_once_with(None, 'companylake',
-                                     'dfs.core.windows.net')
+    selected.assert_called_once_with(None, 'companylake', 'dfs.core.windows.net')
     assert type(shared) is type(engine) is ADLSSourceReader
     version = shared.data_version(name)
     assert version == engine.data_version(name)
     outputs = [
-        reader.prepare(name, str(tmp_path / str(index)), columns=None,
-                       mode=ReadMode.STREAMED, transform=False)
+        reader.prepare(
+            name,
+            str(tmp_path / str(index)),
+            columns=None,
+            mode=ReadMode.STREAMED,
+            transform=False,
+        )
         for index, reader in enumerate((shared, engine))
     ]
     for output in outputs:
         assert output.version == version
         assert pq.read_table(list(output.paths)).to_pydict() == {'id': [7]}
-    assert conditions and all(condition == '"stable"'
-                              for condition in conditions)
+    assert conditions and all(condition == '"stable"' for condition in conditions)
     assert credential.scopes and all(
-        scopes == ('https://storage.azure.com/.default', )
-        for scopes in credential.scopes)
+        scopes == ('https://storage.azure.com/.default',)
+        for scopes in credential.scopes
+    )
     del shared, engine
     gc.collect()
     close.assert_not_called()
@@ -128,10 +137,13 @@ def test_injected_clients_isolate_concurrent_identities_and_accounts(tmp_path):
         account, identity, client, value = case
         reader = reader_for(client)
         version = reader.data_version('events.parquet')
-        output = reader.prepare('events.parquet',
-                                str(tmp_path / f'{account}-{identity}'),
-                                columns=None, mode=ReadMode.STREAMED,
-                                transform=False)
+        output = reader.prepare(
+            'events.parquet',
+            str(tmp_path / f'{account}-{identity}'),
+            columns=None,
+            mode=ReadMode.STREAMED,
+            transform=False,
+        )
         assert pq.read_table(list(output.paths)).to_pydict() == {'id': [value]}
         assert output.version == version
         assert not client.closed
@@ -154,8 +166,11 @@ def test_engine_cleanup_does_not_close_injected_client(monkeypatch):
     version = reader.data_version('events.parquet')
     owned = FakeService('ownedlake')
     credential = Mock()
-    monkeypatch.setattr(session, 'credential_for', lambda *args:
-                        (credential, 'https://storage.azure.com'))
+    monkeypatch.setattr(
+        session,
+        'credential_for',
+        lambda *args: (credential, 'https://storage.azure.com'),
+    )
     monkeypatch.setattr(session, 'create_client', lambda *args: owned)
     session.close()
     session.session_for(None, 'ownedlake', 'dfs.core.windows.net')
@@ -170,8 +185,7 @@ def test_engine_cleanup_does_not_close_injected_client(monkeypatch):
 def test_shared_reader_preserves_root_spelling(connector, monkeypatch, prefix):
     client = FakeService()
     monkeypatch.setattr('kumo_adls.backend.session_for', lambda *args: client)
-    shared = source_reader(client, 'companylake', filesystem='curated',
-                           prefix=prefix)
+    shared = source_reader(client, 'companylake', filesystem='curated', prefix=prefix)
     engine = ADLSSourceBackend()._discovery(connector(prefix=prefix))
     assert shared.root == engine.root
 
@@ -180,13 +194,12 @@ def test_shared_reader_preserves_root_spelling(connector, monkeypatch, prefix):
 def test_reader_rejects_noncanonical_prefix_before_client_use(prefix):
     client = Mock()
     with pytest.raises(ValueError):
-        source_reader(client, 'companylake', filesystem='curated',
-                      prefix=prefix)
+        source_reader(client, 'companylake', filesystem='curated', prefix=prefix)
     client.get_file_system_client.assert_not_called()
 
 
 def test_shared_reader_imports_and_construction_do_not_load_identity_adapters():
-    script = '''
+    script = """
 import importlib.abc, os, sys
 for key in list(os.environ):
     if key.startswith('AZURE_'): del os.environ[key]
@@ -209,9 +222,11 @@ assert reader.root=='curated@companylake.dfs.core.windows.net/orders'
 assert source_access(client, 'companylake').filesystem is not None
 assert not any(name in sys.modules for name in forbidden)
 client.close()
-'''
-    completed = subprocess.run([sys.executable, '-c', script],
-                               capture_output=True, text=True,
-                               env=dict(os.environ,
-                                        PYTHONPATH=os.pathsep.join(sys.path)))
+"""
+    completed = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)),
+    )
     assert completed.returncode == 0, completed.stderr

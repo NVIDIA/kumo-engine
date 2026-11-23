@@ -37,11 +37,14 @@ class UploadedFileService:
         from statedb.db.connectors import StateDBConnectorRepository
 
         connector = await StateDBConnectorRepository().get(tx, connector_id)
-        if (connector is None or connector.project_id != project_id
-                or not is_active_project_upload_connector(connector)):
+        if (
+            connector is None
+            or connector.project_id != project_id
+            or not is_active_project_upload_connector(connector)
+        ):
             raise ValueError(
-                'Uploaded file connector must be an active project upload '
-                'connector')
+                'Uploaded file connector must be an active project upload connector'
+            )
         return connector
 
     async def record_completed(
@@ -60,16 +63,16 @@ class UploadedFileService:
         normalized_name = normalize_uploaded_file_name(source_table_name)
         async with self._state_db.write_tx() as tx:
             project = await self._projects.get(tx, str(project_id))
-            if (project is None
-                    or project.payload.status != ProjectStatus.ACTIVE):
-                raise ProjectNotFoundError(
-                    f"Active project '{project_id}' not found")
+            if project is None or project.payload.status != ProjectStatus.ACTIVE:
+                raise ProjectNotFoundError(f"Active project '{project_id}' not found")
             connector = await self._require_project_upload_connector(
-                tx, project_id, connector_id)
+                tx, project_id, connector_id
+            )
             root = connector.config.root_dir.rstrip('/')
             if path != root and not path.startswith(root + '/'):
                 raise ValueError(
-                    'Uploaded file path is outside the project upload root')
+                    'Uploaded file path is outside the project upload root'
+                )
             existing = await self._uploads.find_one_by_fields(
                 tx,
                 {
@@ -81,11 +84,13 @@ class UploadedFileService:
                 entry = existing.payload
                 if entry.connector_id != connector_id:
                     raise ValueError(
-                        'Uploaded file belongs to another project connector')
+                        'Uploaded file belongs to another project connector'
+                    )
                 if entry.file_type != file_type:
                     raise ValueError(
                         'An uploaded file with this name already exists with '
-                        'another file type')
+                        'another file type'
+                    )
                 entry.path = path
                 entry.timestamps = update_timestamps(entry.timestamps)
             else:
@@ -113,14 +118,12 @@ class UploadedFileService:
             row = await self._uploads.find_one_by_fields(
                 tx,
                 {
-                    'project_id':
-                    str(project_id),
-                    'connector_id':
-                    str(connector_id),
-                    'normalized_source_table_name':
-                    normalize_uploaded_file_name(source_table_name),
-                    'file_type':
-                    file_type,
+                    'project_id': str(project_id),
+                    'connector_id': str(connector_id),
+                    'normalized_source_table_name': normalize_uploaded_file_name(
+                        source_table_name
+                    ),
+                    'file_type': file_type,
                 },
             )
         return row.payload if row is not None else None
@@ -139,21 +142,17 @@ class UploadedFileService:
         """
         async with self._state_db.read_tx() as tx:
             project = await self._projects.get(tx, str(project_id))
-            if (project is None
-                    or project.payload.status != ProjectStatus.ACTIVE):
-                raise ProjectNotFoundError(
-                    f"Active project '{project_id}' not found")
-            await self._require_project_upload_connector(
-                tx, project_id, connector_id)
+            if project is None or project.payload.status != ProjectStatus.ACTIVE:
+                raise ProjectNotFoundError(f"Active project '{project_id}' not found")
+            await self._require_project_upload_connector(tx, project_id, connector_id)
             row = await self._uploads.find_one_by_fields(
                 tx,
                 {
-                    'project_id':
-                    str(project_id),
-                    'connector_id':
-                    str(connector_id),
-                    'normalized_source_table_name':
-                    normalize_uploaded_file_name(source_table_name),
+                    'project_id': str(project_id),
+                    'connector_id': str(connector_id),
+                    'normalized_source_table_name': normalize_uploaded_file_name(
+                        source_table_name
+                    ),
                 },
             )
         return row.payload if row is not None else None
@@ -167,23 +166,18 @@ class UploadedFileService:
     ) -> bool:
         async with self._state_db.write_tx() as tx:
             project = await self._projects.get(tx, str(project_id))
-            if (project is None
-                    or project.payload.status != ProjectStatus.ACTIVE):
-                raise ProjectNotFoundError(
-                    f"Active project '{project_id}' not found")
-            await self._require_project_upload_connector(
-                tx, project_id, connector_id)
+            if project is None or project.payload.status != ProjectStatus.ACTIVE:
+                raise ProjectNotFoundError(f"Active project '{project_id}' not found")
+            await self._require_project_upload_connector(tx, project_id, connector_id)
             row = await self._uploads.find_one_by_fields(
                 tx,
                 {
-                    'project_id':
-                    str(project_id),
-                    'connector_id':
-                    str(connector_id),
-                    'normalized_source_table_name':
-                    normalize_uploaded_file_name(source_table_name),
-                    'file_type':
-                    file_type,
+                    'project_id': str(project_id),
+                    'connector_id': str(connector_id),
+                    'normalized_source_table_name': normalize_uploaded_file_name(
+                        source_table_name
+                    ),
+                    'file_type': file_type,
                 },
             )
             if row is None:
@@ -196,6 +190,5 @@ class UploadedFileService:
         project_id: ProjectID,
     ) -> list[UploadedFileDBEntry]:
         async with self._state_db.read_tx() as tx:
-            rows = await self._uploads.list_by_field(tx, 'project_id',
-                                                     str(project_id))
+            rows = await self._uploads.list_by_field(tx, 'project_id', str(project_id))
         return [row.payload for row in rows]

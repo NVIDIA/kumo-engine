@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for ``pool.strategy_singlehost.SinglehostPlacementStrategy``."""
+
 import asyncio
 
 import pytest
@@ -58,7 +59,8 @@ def test_provision_uses_static_singlehost_queues(activity):
 
 def test_provision_uses_injected_deployment_scoped_queue():
     strategy = SinglehostPlacementStrategy(
-        task_queue='diskgraph-daemon-tq-devserver-train-a')
+        task_queue='diskgraph-daemon-tq-devserver-train-a'
+    )
     req = _request(SnapshotActivity.GEN_TT)
 
     async def run():

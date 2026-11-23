@@ -29,7 +29,8 @@ def projects_router() -> tuple[ProjectsRouter, MagicMock]:
     auth = SimpleNamespace(authenticate_request_header=lambda: None)
     driver = MagicMock(spec=ProjectsDriver)
     driver.validate_project_name = AsyncMock(
-        return_value=ValidateNameResponse(is_valid=True, error_msg=None))
+        return_value=ValidateNameResponse(is_valid=True, error_msg=None)
+    )
     return ProjectsRouter(auth, driver), driver
 
 
@@ -43,21 +44,21 @@ async def test_validate_project_name_is_group_neutral(projects_router) -> None:
     driver.validate_project_name.assert_awaited_once_with(name='Available')
 
 
-def test_validate_project_name_openapi_has_no_group_parameter(
-        projects_router) -> None:
+def test_validate_project_name_openapi_has_no_group_parameter(projects_router) -> None:
     router, _ = projects_router
     app = FastAPI()
     app.include_router(router.router)
 
-    operation = app.openapi(
-    )['paths']['/v0/projects/utils/validate_name']['post']
-    assert [(parameter['name'], parameter['in'])
-            for parameter in operation['parameters']] == [('name', 'query')]
+    operation = app.openapi()['paths']['/v0/projects/utils/validate_name']['post']
+    assert [
+        (parameter['name'], parameter['in']) for parameter in operation['parameters']
+    ] == [('name', 'query')]
 
 
 @pytest.mark.asyncio
 async def test_internal_project_id_and_slug_lookup_share_safe_not_found(
-        projects_router) -> None:
+    projects_router,
+) -> None:
     router, driver = projects_router
     error = ProjectNotFoundError('Project not found')
     driver._get_project = AsyncMock(side_effect=error)

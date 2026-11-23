@@ -13,9 +13,19 @@ def test_split_partitions_across_jobs():
         split_partitions_across_jobs(5, 6)
 
     # Test for partition_count > job_count.
-    assert split_partitions_across_jobs(12, 5) == [(0, 3), (3, 6), (6, 8),
-                                                   (8, 10), (10, 12)]
+    assert split_partitions_across_jobs(12, 5) == [
+        (0, 3),
+        (3, 6),
+        (6, 8),
+        (8, 10),
+        (10, 12),
+    ]
 
     # Test for partition_count == job_count.
-    assert split_partitions_across_jobs(5, 5) == [(0, 1), (1, 2), (2, 3),
-                                                  (3, 4), (4, 5)]
+    assert split_partitions_across_jobs(5, 5) == [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+    ]

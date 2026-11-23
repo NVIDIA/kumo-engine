@@ -19,7 +19,7 @@ from service_framework.deploy_env_config import DeployEnvConfig
 from service_framework.deploy_stage import DeployStage
 from temporalio_commons import terminate_open_workflows
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '-l',
@@ -28,15 +28,25 @@ if __name__ == "__main__":
         required=False,
         action='store_true',
         default=False,
-        help=('If true, reset REST devserver for running in local mode, '
-              'i.e., make devserver-local'),
+        help=(
+            'If true, reset REST devserver for running in local mode, '
+            'i.e., make devserver-local'
+        ),
     )
-    parser.add_argument('-n', '--dry_run', dest='dry_run', action='store_true',
-                        required=False, default=False, help='Dry run.')
+    parser.add_argument(
+        '-n',
+        '--dry_run',
+        dest='dry_run',
+        action='store_true',
+        required=False,
+        default=False,
+        help='Dry run.',
+    )
     args = parser.parse_args()
 
-    deploy_env = DeployEnvConfig.parse_from_env(deploy_mode=(
-        DeployStage.DEV_LOCAL if args.local_devserver else DeployStage.DEV))
+    deploy_env = DeployEnvConfig.parse_from_env(
+        deploy_mode=(DeployStage.DEV_LOCAL if args.local_devserver else DeployStage.DEV)
+    )
 
     db_storage_root = get_db_storage_root()
     print(f'Delete db storage at {db_storage_root}')
@@ -53,7 +63,5 @@ if __name__ == "__main__":
     if not args.dry_run:
         fsutil.rm(jobs_dir, ignore_errors=True)
 
-    print(
-        f'Terminate open workflows in {deploy_env.temporal_server_address} Temporal'
-    )
+    print(f'Terminate open workflows in {deploy_env.temporal_server_address} Temporal')
     asyncio.run(terminate_open_workflows.run(deploy_env, ignore_error=True))

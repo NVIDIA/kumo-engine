@@ -34,15 +34,14 @@ from monitoring.settings import MonitoringSettings
 from service_framework.deploy_env import DeployStage
 from service_framework.deploy_env_config import deploy_env
 
-LOCAL_JAEGER_HOSTNAME = "localhost"
+LOCAL_JAEGER_HOSTNAME = 'localhost'
 
 # Will be set to Jaeger endpoint in Grafana Cloud when available
-REMOTE_JAEGER_HOSTNAME = "localhost"
+REMOTE_JAEGER_HOSTNAME = 'localhost'
 
 INIT_METADATA_KEYS = ['instance_id', 'version']
 
-ROOT_DIR = os.path.join(os.path.dirname(
-    os.path.realpath(__file__))).split('kumo')[0]
+ROOT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__))).split('kumo')[0]
 TRACING_TESTDIR = os.path.join(ROOT_DIR, 'kumo', 'test_results', 'traces')
 
 log = logging.getLogger(__name__)
@@ -67,6 +66,7 @@ class FileSpanExporter(SpanExporter):
     This should be used for Kumo unit tests or in the case that we want to
     store spans to a file somewhere.
     """
+
     def __init__(
         self,
         filepath: str,
@@ -80,7 +80,7 @@ class FileSpanExporter(SpanExporter):
             fsutil.makedirs(base_dir, exist_ok=True)
 
         # Initialize the empty file
-        self._save_json({"traces": []})
+        self._save_json({'traces': []})
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
@@ -98,11 +98,11 @@ class FileSpanExporter(SpanExporter):
     # enabled for tracing, hence we cannot directly invoke those due to
     # infinite recursion.
     def _load_json(self):
-        with open(self._filepath, "r", encoding="utf-8") as f:
+        with open(self._filepath, 'r', encoding='utf-8') as f:
             return from_json(f.read(), dict[str, list])
 
     def _save_json(self, data):
-        with open(self._filepath, "w", encoding="utf-8") as f:
+        with open(self._filepath, 'w', encoding='utf-8') as f:
             f.write(to_json(data))
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
@@ -122,7 +122,7 @@ def _get_parameterized_key(span: ReadableSpan) -> Optional[str]:
     attrs = span.attributes or {}
     for k, v in attrs.items():
         if k.startswith('params.'):
-            params[k[len('params.'):]] = str(v)
+            params[k[len('params.') :]] = str(v)
     if not params:
         return None
     params_str = ','.join([f'{k}={v}' for k, v in sorted(params.items())])
@@ -137,8 +137,12 @@ class RequestTraceAnalyzerConfig:
     request_latency_threshold: float = 1.0
 
     # Request paths (prefix match) excluded from trace analysis.
-    excluded_urls: Sequence[str] = ('/v0/admin', '/v0/fixture',
-                                    '/v0/authentication', '/v0/log')
+    excluded_urls: Sequence[str] = (
+        '/v0/admin',
+        '/v0/fixture',
+        '/v0/authentication',
+        '/v0/log',
+    )
 
     # We use the following heuristics to detect potential optimization
     # opportunities via caching, batching and parallelizing. The basic idea is
@@ -182,10 +186,12 @@ class SpanGroup:
         """For logging warning message."""
         return (
             'Span group has {count} spans, total exec time '
-            '{exec_time:.3f}s, merged duration {merged_duration:.3f}s').format(
-                count=len(self.intervals),
-                exec_time=sum([_get_duration_sec(i) for i in self.intervals]),
-                merged_duration=self.merged_duration)
+            '{exec_time:.3f}s, merged duration {merged_duration:.3f}s'
+        ).format(
+            count=len(self.intervals),
+            exec_time=sum([_get_duration_sec(i) for i in self.intervals]),
+            merged_duration=self.merged_duration,
+        )
 
     @property
     def merged_duration(self) -> float:
@@ -216,6 +222,7 @@ class RequestTraceAnalyzer(SpanProcessor):
     In-house span processor for inspecting and analyzing all spans
     associated with the same REST API request (same trace id).
     """
+
     def __init__(self, config: RequestTraceAnalyzerConfig) -> None:
         # Keep track of all spans in TTL cache to prevent accidental memory
         # leak. Upon completion of a request's trace, we'll delete the spans
@@ -225,7 +232,7 @@ class RequestTraceAnalyzer(SpanProcessor):
         self._trace_id_spans = cachetools.TTLCache(maxsize=1024, ttl=10 * 60)
         self._config = config
 
-    def on_end(self, span: "ReadableSpan") -> None:
+    def on_end(self, span: 'ReadableSpan') -> None:
         span_ctx = span.context or get_span_context()
         trace_id = span_ctx.trace_id
 
@@ -257,8 +264,7 @@ class RequestTraceAnalyzer(SpanProcessor):
         if request_latency < self._config.request_latency_threshold:
             return
 
-        log.info('Analyzing request: %s, latency: %.3fs', span.name,
-                 request_latency)
+        log.info('Analyzing request: %s, latency: %.3fs', span.name, request_latency)
         # Analyze all child spans.
         group_by_param_key: Dict[str, SpanGroup] = {}
         group_by_span_name: Dict[str, SpanGroup] = {}
@@ -268,8 +274,7 @@ class RequestTraceAnalyzer(SpanProcessor):
             group_by_span_name.setdefault(span.name, SpanGroup()).add_span(span)
             param_key = _get_parameterized_key(span)
             if param_key:
-                group_by_param_key.setdefault(param_key,
-                                              SpanGroup()).add_span(span)
+                group_by_param_key.setdefault(param_key, SpanGroup()).add_span(span)
 
         warning_messages = []
         # Check spans grouped by parameterized name
@@ -281,20 +286,27 @@ class RequestTraceAnalyzer(SpanProcessor):
                     duplicate_calls += 1
             if duplicate_calls >= self._config.duplicate_calls:
                 warning_messages.append(
-                    f'Too many duplicate calls of {key}: {group.summary}')
+                    f'Too many duplicate calls of {key}: {group.summary}'
+                )
 
         # Check spans grouped by (un-parameterized) span name
         min_duration = self._config.merged_duration_frac * request_latency
         for name, group in group_by_span_name.items():
-            if (len(group.intervals) >= self._config.repeated_calls
-                    and group.merged_duration >= min_duration):
+            if (
+                len(group.intervals) >= self._config.repeated_calls
+                and group.merged_duration >= min_duration
+            ):
                 warning_messages.append(
-                    f'Too many repeated calls of {name}: {group.summary}')
+                    f'Too many repeated calls of {name}: {group.summary}'
+                )
 
         if warning_messages:
-            log.warning('Detected problems in request %s trace_id=%s:\n%s',
-                        span.name, trace.format_trace_id(trace_id),
-                        '\n'.join(warning_messages))
+            log.warning(
+                'Detected problems in request %s trace_id=%s:\n%s',
+                span.name,
+                trace.format_trace_id(trace_id),
+                '\n'.join(warning_messages),
+            )
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         del timeout_millis
@@ -304,8 +316,7 @@ class RequestTraceAnalyzer(SpanProcessor):
 def init_tracing(
     service_name: str,
     settings: MonitoringSettings,
-    trace_analyzer_config:
-    RequestTraceAnalyzerConfig = RequestTraceAnalyzerConfig(),
+    trace_analyzer_config: RequestTraceAnalyzerConfig = RequestTraceAnalyzerConfig(),
 ) -> trace.TracerProvider:
     """
     This function should be called when a process/service (such as
@@ -322,7 +333,7 @@ def init_tracing(
     monitoring.tracing.enable_tracing()
     monitoring.tracing.initialize_tracing(service_name, [], False)
 
-    resource = Resource(attributes={"service.name": service_name})
+    resource = Resource(attributes={'service.name': service_name})
 
     # set the tracer provider
     provider = TracerProvider(resource=resource)
@@ -335,7 +346,8 @@ def init_tracing(
         host = settings.jaeger_hostname
         port = settings.jaeger_port
         oltp_exporter = trace_exporter.OTLPSpanExporter(
-            endpoint=f'http://{host}:{port}', insecure=True)
+            endpoint=f'http://{host}:{port}', insecure=True
+        )
         span_processor = BatchSpanProcessor(oltp_exporter)
 
     provider.add_span_processor(span_processor=span_processor)
@@ -346,8 +358,12 @@ def init_tracing(
     # Add baggage (metadata) to context
     add_init_metadata_to_current_context()
 
-    log.info('Started OpenTelemetry tracing at %s:%d (Jaeger) [%s]',
-             settings.jaeger_hostname, settings.jaeger_port, service_name)
+    log.info(
+        'Started OpenTelemetry tracing at %s:%d (Jaeger) [%s]',
+        settings.jaeger_hostname,
+        settings.jaeger_port,
+        service_name,
+    )
 
     return provider
 
@@ -361,6 +377,7 @@ def connect_fastapi(
     FastAPI middleware. This allows us to collect very basic traces when an
     endpoint is hit.
     """
+
     def server_request_hook(span: Span, scope: dict):
         # This is the top-level span for all REST API calls
         # Add baggage (metadata) to context
@@ -373,14 +390,14 @@ def connect_fastapi(
 
     def client_request_hook(span: Span, scope: dict, message: dict):
         if span and span.is_recording():
-            span.set_attribute("path", scope.get('path', ''))
+            span.set_attribute('path', scope.get('path', ''))
             add_all_metadata_to_span(get_context(), span)
         else:
             log.debug('client_request_hool - Span is not recording')
 
     def client_response_hook(span: Span, scope: dict, message: dict):
         if span and span.is_recording():
-            span.set_attribute("body", message.get('body', ''))
+            span.set_attribute('body', message.get('body', ''))
             add_all_metadata_to_span(get_context(), span)
         else:
             log.debug('client_response_hook - Span is not recording')
@@ -507,8 +524,8 @@ def add_metadata_to_current_context(key: str, value: str):
 
 def add_init_metadata_to_current_context():
     """Add common metadata to the current context"""
-    add_metadata_to_current_context("instance_id", deploy_env().instance_id)
-    add_metadata_to_current_context("version", get_kumo_version())
+    add_metadata_to_current_context('instance_id', deploy_env().instance_id)
+    add_metadata_to_current_context('version', get_kumo_version())
 
 
 r"""
@@ -543,7 +560,8 @@ def start_span(
     ctx = ctx if ctx is not None else context.get_current()
 
     with provider.get_tracer(__name__).start_as_current_span(
-            f"KUMO-{name}", links=links, context=ctx, kind=kind) as span:
+        f'KUMO-{name}', links=links, context=ctx, kind=kind
+    ) as span:
         try:
             add_all_metadata_to_span(ctx, span)
             yield span
@@ -565,8 +583,9 @@ def start_async_span(
 
     ctx = ctx if ctx is not None else context.get_current()
 
-    span = provider.get_tracer(__name__).start_span(f"KUMO-{name}", links=links,
-                                                    context=ctx)
+    span = provider.get_tracer(__name__).start_span(
+        f'KUMO-{name}', links=links, context=ctx
+    )
     add_all_metadata_to_span(ctx, span)
     return span
 

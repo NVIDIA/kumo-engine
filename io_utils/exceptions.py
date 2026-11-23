@@ -10,12 +10,14 @@ from io_utils import logging
 
 logger = logging.getLogger(__name__)
 
-_EXCEPTIONS_MUST_RAISE = (EventLoopBlockedError, )
+_EXCEPTIONS_MUST_RAISE = (EventLoopBlockedError,)
 
 
 @contextmanager
-def catch_and_log(ex_to_catch: Tuple[Type[Exception], ...] = (Exception, ),
-                  ex_to_raise: Tuple[Type[Exception], ...] = ()):
+def catch_and_log(
+    ex_to_catch: Tuple[Type[Exception], ...] = (Exception,),
+    ex_to_raise: Tuple[Type[Exception], ...] = (),
+):
     r"""
     Catches and logs exceptions. If no `ex_to_catch` are provided, it catches
     all exceptions. The caught exception will not be raised, unless it's
@@ -39,6 +41,6 @@ def catch_and_log(ex_to_catch: Tuple[Type[Exception], ...] = (Exception, ),
     try:
         yield
     except ex_to_catch as e:  # type: ignore
-        logger.exception(f"Encountered exception: {e}")
+        logger.exception(f'Encountered exception: {e}')
         if ex_to_raise and isinstance(e, ex_to_raise):
             raise

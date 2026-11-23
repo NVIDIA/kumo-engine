@@ -23,23 +23,27 @@ def fitted(tmp_path_factory):
     data = root / 'data'
     data.mkdir()
     times = pd.Timestamp('2024-01-01') + pd.to_timedelta(
-        rng.integers(0, 300, 400), unit='D')
+        rng.integers(0, 300, 400), unit='D'
+    )
     label = pd.array(rng.random(400) < 0.5, dtype='boolean')
     label[:40] = pd.NA
-    pd.DataFrame({
-        'ID': np.arange(400),
-        'TS': times,
-        'LABEL': label,
-        'F1': rng.normal(size=400),
-    }).to_parquet(data / 'ents.parquet')
+    pd.DataFrame(
+        {
+            'ID': np.arange(400),
+            'TS': times,
+            'LABEL': label,
+            'F1': rng.normal(size=400),
+        }
+    ).to_parquet(data / 'ents.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
-    ents = kumo.Table.from_source_table(connector['ents.parquet'],
-                                        primary_key='ID',
-                                        time_column='TS').infer_metadata()
+    ents = kumo.Table.from_source_table(
+        connector['ents.parquet'], primary_key='ID', time_column='TS'
+    ).infer_metadata()
     graph = kumo.Graph(tables={'ents': ents}, edges=[])
     snapshot = graph.snapshot()
     pquery = kumo.PredictiveQuery(
-        graph=graph, query='PREDICT ents.LABEL = True FOR EACH ents.ID')
+        graph=graph, query='PREDICT ents.LABEL = True FOR EACH ents.ID'
+    )
     plan = ModelPlan()
     plan.training_job.disable_explain = True
     plan.optimization.max_epochs = 1
@@ -54,8 +58,7 @@ def fitted(tmp_path_factory):
 def test_static_query_on_timestamped_entity_is_temporal(fitted):
     run = fitted[0]
     metadata = json.loads((run / 'task_dataset' / 'metadata.json').read_text())
-    model = json.loads(
-        (run / 'published-model' / 'model' / 'config.json').read_text())
+    model = json.loads((run / 'published-model' / 'model' / 'config.json').read_text())
 
     assert metadata['is_temporal'] is True
     assert model['encoder']['exclude_cols_dict'] == {'ents': ['LABEL']}
@@ -64,30 +67,38 @@ def test_static_query_on_timestamped_entity_is_temporal(fitted):
 def test_custom_prediction_rows_need_timestamp(fitted):
     _, pquery, snapshot, connector, data, times = fitted
     pd.DataFrame({'ENTITY1': [0, 1]}).to_parquet(data / 'bare.parquet')
-    pd.DataFrame({
-        'ENTITY1': [0, 1],
-        'TIMESTAMP': times[:2],
-    }).to_parquet(data / 'anchored.parquet')
+    pd.DataFrame(
+        {
+            'ENTITY1': [0, 1],
+            'TIMESTAMP': times[:2],
+        }
+    ).to_parquet(data / 'anchored.parquet')
 
     with pytest.raises(ValueError, match='TIMESTAMP'):
-        PredictionTable.from_source_table(connector['bare.parquet'],
-                                          pq=pquery, snapshot=snapshot)
-    table = PredictionTable.from_source_table(connector['anchored.parquet'],
-                                              pq=pquery, snapshot=snapshot)
+        PredictionTable.from_source_table(
+            connector['bare.parquet'], pq=pquery, snapshot=snapshot
+        )
+    table = PredictionTable.from_source_table(
+        connector['anchored.parquet'], pq=pquery, snapshot=snapshot
+    )
     assert table.row_count == 2
 
 
 def test_predict_refuses_static_rows_that_none_can_be_scored(fitted):
     _, pquery, snapshot, connector, data, times = fitted
-    pd.DataFrame({
-        'ENTITY1': range(1000, 1004),
-        'TIMESTAMP': times[:4],
-    }).to_parquet(data / 'unknown.parquet')
+    pd.DataFrame(
+        {
+            'ENTITY1': range(1000, 1004),
+            'TIMESTAMP': times[:4],
+        }
+    ).to_parquet(data / 'unknown.parquet')
 
     with pytest.raises(ValueError) as raised:
-        PredictionTable.from_source_table(connector['unknown.parquet'],
-                                          pq=pquery, snapshot=snapshot)
+        PredictionTable.from_source_table(
+            connector['unknown.parquet'], pq=pquery, snapshot=snapshot
+        )
     assert str(raised.value) == (
         'None of the 4 requested entities can be scored, found while building '
         'the prediction table: not in snapshot '
-        '(sample: 1000, 1001, 1002, …)')
+        '(sample: 1000, 1001, 1002, …)'
+    )

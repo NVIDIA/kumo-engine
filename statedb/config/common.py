@@ -36,7 +36,8 @@ class ID(ValidatedStr):
     For now, identifiers should be at most 256 characters long, must begin with
     a letter, and may only contain alphanumeric characters and underscores.
     """
-    def __new__(cls, name: str, entity: str = ""):
+
+    def __new__(cls, name: str, entity: str = ''):
         validate_id(name, entity or cls.__name__)
         # In Kumo v1 legacy experience, this was 64 characters long. We
         # changed it to 256 characters to support the scenarios where same
@@ -59,6 +60,7 @@ class SourceTableName(ValidatedStr):
     For now, identifiers should be at most 64 characters long, and may only
     contain alphanumeric characters and underscores.
     """
+
     def __new__(cls, name: str):
         validate_source_name(name)
         validate_max_length(name, 256)
@@ -72,6 +74,7 @@ class PredictiveQueryID(ValidatedStr, DBID):
     2) <pquery_name>-<core_schema.FPID> that contains a fingerprint ID
        separated by "-"
     """
+
     def __new__(cls, contents: str, entity: str = 'Predictive Query'):
         validate_non_empty(contents)
         if _FP_SUFFIX_SEPARATOR not in contents:
@@ -93,13 +96,10 @@ class PredictiveQueryID(ValidatedStr, DBID):
         if not fpid:
             return super().__new__(cls, name_id)
         else:
-            return super().__new__(cls,
-                                   _FP_SUFFIX_SEPARATOR.join([name_id, fpid]))
+            return super().__new__(cls, _FP_SUFFIX_SEPARATOR.join([name_id, fpid]))
 
     @classmethod
-    def parse(
-            cls,
-            id: str) -> Tuple['PredictiveQueryID', Optional[core_schema.FPID]]:
+    def parse(cls, id: str) -> Tuple['PredictiveQueryID', Optional[core_schema.FPID]]:
         if _FP_SUFFIX_SEPARATOR not in id:
             return cls(id), None
         pqid, fpid = id.split(_FP_SUFFIX_SEPARATOR, maxsplit=1)
@@ -137,12 +137,11 @@ class PredictiveQueryID(ValidatedStr, DBID):
         return name == 'pquery' and fpid is not None
 
     @classmethod
-    def from_public(cls, id: Union[str,
-                                   'PredictiveQueryID']) -> 'PredictiveQueryID':
+    def from_public(cls, id: Union[str, 'PredictiveQueryID']) -> 'PredictiveQueryID':
         name, fpid = cls.parse(id)
         if not fpid:
-            raise ValueError(f"Invalid predictive query ID: {id}")
-        if name == "pquery":
+            raise ValueError(f'Invalid predictive query ID: {id}')
+        if name == 'pquery':
             return PredictiveQueryID.compose(pquery_name=None, fpid=fpid)
         return PredictiveQueryID.compose(pquery_name=name, fpid=fpid)
 
@@ -152,7 +151,8 @@ class GraphIDv1(ID, DBID):
     GraphID v1 is the name of graph, must be valid identifiers, as defined by
     :class:`ID`.
     """
-    def __new__(cls, contents: str, entity: str = ""):
+
+    def __new__(cls, contents: str, entity: str = ''):
         return super().__new__(cls, contents, entity)
 
 
@@ -165,18 +165,20 @@ class GraphIDv2(ValidatedStr, DBID):
     separated by exactly one ``-``.
 
     If the predictive query ID is missing, it will be replaced with "NA"."""
+
     def __new__(cls, contents: str):
         validate_non_empty(contents)
         pquery_id_str, fpid_str = cls._split(contents)
         try:
-            pquery_id = (None if pquery_id_str == "NA" else
-                         PredictiveQueryID(pquery_id_str))
-            fpid = None if fpid_str == "NA" else core_schema.FPID(fpid_str)
+            pquery_id = (
+                None if pquery_id_str == 'NA' else PredictiveQueryID(pquery_id_str)
+            )
+            fpid = None if fpid_str == 'NA' else core_schema.FPID(fpid_str)
             return cls.compose(pquery_id, fpid)
         except ValueError as err:
             raise ValueError(
-                f'Graph ID v2 must be valid identifier, got: {contents}. '
-                f'err: {err}') from err
+                f'Graph ID v2 must be valid identifier, got: {contents}. err: {err}'
+            ) from err
 
     @staticmethod
     def _split(id: str) -> Tuple[str, str]:
@@ -232,7 +234,7 @@ class GraphIDv2(ValidatedStr, DBID):
     def from_public(cls, id: Union[str, 'GraphIDv2']) -> 'GraphIDv2':
         pqid, fpid = cls.parse(id)
         if not fpid:
-            raise ValueError(f"Invalid Graph ID: {id}")
+            raise ValueError(f'Invalid Graph ID: {id}')
         return GraphIDv2.compose(pquery_id=pqid, fpid=fpid)
 
 
@@ -247,27 +249,32 @@ def to_graph_id(graph_id_str: str) -> GraphID:
 
 class ConnectorID(ID, DBID):
     def __new__(cls, name: str):
-        if not re.fullmatch(r"^connector_[a-f0-9]{32}$", name):
-            raise ValueError(f"Invalid ConnectorID '{name}': must match "
-                             "'connector_<32 hex chars>'.")
+        if not re.fullmatch(r'^connector_[a-f0-9]{32}$', name):
+            raise ValueError(
+                f"Invalid ConnectorID '{name}': must match 'connector_<32 hex chars>'."
+            )
         return str.__new__(cls, name)
 
     @classmethod
-    def generate(cls) -> "ConnectorID":
-        return cls(f"connector_{uuid.uuid4().hex}")
+    def generate(cls) -> 'ConnectorID':
+        return cls(f'connector_{uuid.uuid4().hex}')
 
 
 class UserID(str):
     """External or local authentication user identifier."""
+
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
         from pydantic_core import core_schema
+
         return core_schema.no_info_after_validator_function(
-            cls, core_schema.str_schema())
+            cls, core_schema.str_schema()
+        )
 
 
 class APIKeyID(ValidatedStr, DBID):
     """Identifier for API key metadata/secret records."""
+
     def __new__(cls, value: str):
         validate_non_empty(value)
         validate_max_length(value, 256)
@@ -276,11 +283,14 @@ class APIKeyID(ValidatedStr, DBID):
 
 class OrganizationID(str):
     """Authentication organization identifier."""
+
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
         from pydantic_core import core_schema
+
         return core_schema.no_info_after_validator_function(
-            cls, core_schema.str_schema())
+            cls, core_schema.str_schema()
+        )
 
 
 class JobID(ValidatedStr, DBID):
@@ -289,43 +299,45 @@ class JobID(ValidatedStr, DBID):
     kubernetes job identifiers, filenames, and URL fragments. Note that
     kubernetes identifiers do not permit underscore characters.
     """
+
     def __new__(cls, name: str):
 
         validate_non_empty(name)
         validate_max_length(name, 64)
         if not re.fullmatch(r'[a-zA-Z0-9\-]*', name):
             raise ValueError(
-                f"{cls.__name__} identifier may only contain alphanumeric "
-                f"characters and dashes. Got: {name}")
+                f'{cls.__name__} identifier may only contain alphanumeric '
+                f'characters and dashes. Got: {name}'
+            )
         return super().__new__(cls, name)
 
 
 class TrainingJobID(JobID, DBID):
     @staticmethod
     def make_random_id() -> 'TrainingJobID':
-        return TrainingJobID(f"trainingjob-{uuid.uuid4().hex}")
+        return TrainingJobID(f'trainingjob-{uuid.uuid4().hex}')
 
     @staticmethod
     def is_valid_id(job_id: str) -> bool:
-        return job_id.startswith("trainingjob-")
+        return job_id.startswith('trainingjob-')
 
     @staticmethod
-    def as_parent_of(
-            child_job_id: 'GenerateTrainTableJobID') -> 'TrainingJobID':
+    def as_parent_of(child_job_id: 'GenerateTrainTableJobID') -> 'TrainingJobID':
         hex = child_job_id.split('-')[-1]
-        return TrainingJobID(f"trainingjob-{hex}")
+        return TrainingJobID(f'trainingjob-{hex}')
 
 
 class LLMEmbeddingJobID(JobID, DBID):
     @staticmethod
     def make_random_id() -> 'LLMEmbeddingJobID':
-        return LLMEmbeddingJobID(f"llm-embedding-job-{uuid.uuid4().hex}")
+        return LLMEmbeddingJobID(f'llm-embedding-job-{uuid.uuid4().hex}')
 
 
 class GenerateTrainTableJobID(JobID, DBID):
     @staticmethod
     def as_child_of(
-        parent_job_id: TrainingJobID, ) -> 'GenerateTrainTableJobID':
+        parent_job_id: TrainingJobID,
+    ) -> 'GenerateTrainTableJobID':
         """
         Compose ID of a GenerateTrainTableJob as direct child of a parent
         TrainingJob, the returned job ID will contain the same hex suffix.
@@ -339,7 +351,7 @@ class GenerateTrainTableJobID(JobID, DBID):
 
     @staticmethod
     def make_random_id() -> 'GenerateTrainTableJobID':
-        return GenerateTrainTableJobID(f"gen-traintable-job-{uuid.uuid4().hex}")
+        return GenerateTrainTableJobID(f'gen-traintable-job-{uuid.uuid4().hex}')
 
     @staticmethod
     def is_valid_id(job_id: str) -> bool:
@@ -351,8 +363,9 @@ class GenerateTrainTableJobID(JobID, DBID):
     ) -> bool:
         """Determine (by id) whether this job is a direct child of the given
         training job."""
-        return (self == GenerateTrainTableJobID.as_child_of(parent_job_id)
-                and parent_job_id == TrainingJobID.as_parent_of(self))
+        return self == GenerateTrainTableJobID.as_child_of(
+            parent_job_id
+        ) and parent_job_id == TrainingJobID.as_parent_of(self)
 
     @property
     def wf_id(self) -> str:  # Temporal workflow id for this job.
@@ -361,8 +374,9 @@ class GenerateTrainTableJobID(JobID, DBID):
 
 class SplitJobID(JobID, DBID):
     @staticmethod
-    def as_child_of(parent_job_id: GenerateTrainTableJobID,
-                    split_fpid: core_schema.FPID) -> 'SplitJobID':
+    def as_child_of(
+        parent_job_id: GenerateTrainTableJobID, split_fpid: core_schema.FPID
+    ) -> 'SplitJobID':
         """Compose ID of a SplitJob as direct child of a parent
         GenerateTrainTableJob, the returned job ID will contain the same
         hex suffix.
@@ -385,7 +399,7 @@ class SplitJobID(JobID, DBID):
 
     @staticmethod
     def make_random_id() -> 'SplitJobID':
-        return SplitJobID(f"split-job-{uuid.uuid4().hex}")
+        return SplitJobID(f'split-job-{uuid.uuid4().hex}')
 
     def is_child_of(
         self,
@@ -417,7 +431,7 @@ class SplitJobID(JobID, DBID):
 class BatchPredictionJobID(JobID, DBID):
     @staticmethod
     def make_random_id() -> 'BatchPredictionJobID':
-        return BatchPredictionJobID(f"bp-job-{uuid.uuid4().hex}")
+        return BatchPredictionJobID(f'bp-job-{uuid.uuid4().hex}')
 
     @staticmethod
     def is_valid_id(job_id: str) -> bool:
@@ -425,17 +439,17 @@ class BatchPredictionJobID(JobID, DBID):
 
     @staticmethod
     def as_parent_of(
-            child_job_id: 'GeneratePredictionTableJobID'
+        child_job_id: 'GeneratePredictionTableJobID',
     ) -> 'BatchPredictionJobID':
         hex = child_job_id.split('-')[-1]
-        return BatchPredictionJobID(f"bp-job-{hex}")
+        return BatchPredictionJobID(f'bp-job-{hex}')
 
 
 class ArtifactExportJobID(JobID, DBID):
     @staticmethod
     def make_random_id() -> 'ArtifactExportJobID':
         # TODO(dong) make id based on job id and output type / config.
-        return ArtifactExportJobID(f"ae-job-{uuid.uuid4().hex}")
+        return ArtifactExportJobID(f'ae-job-{uuid.uuid4().hex}')
 
 
 class GeneratePredictionTableJobID(JobID, DBID):
@@ -457,8 +471,7 @@ class GeneratePredictionTableJobID(JobID, DBID):
 
     @staticmethod
     def make_random_id() -> 'GeneratePredictionTableJobID':
-        return GeneratePredictionTableJobID(
-            f"gen-predtable-job-{uuid.uuid4().hex}")
+        return GeneratePredictionTableJobID(f'gen-predtable-job-{uuid.uuid4().hex}')
 
     @staticmethod
     def is_valid_id(job_id: str) -> bool:
@@ -467,8 +480,9 @@ class GeneratePredictionTableJobID(JobID, DBID):
     def is_child_of(self, parent_job_id: BatchPredictionJobID) -> bool:
         """Determine (by id) whether this job is a direct child of the given
         batch prediction job."""
-        return (self == GeneratePredictionTableJobID.as_child_of(parent_job_id)
-                and parent_job_id == BatchPredictionJobID.as_parent_of(self))
+        return self == GeneratePredictionTableJobID.as_child_of(
+            parent_job_id
+        ) and parent_job_id == BatchPredictionJobID.as_parent_of(self)
 
     @property
     def wf_id(self) -> str:  # Temporal workflow id for this job.
@@ -481,10 +495,10 @@ class BatchPredictionWorkflowID(ID, DBID):
 
 @extends_enum(jobs_api.JobType)
 class JobType(str, Enum):
-    GENERATE_TRAIN_TABLE_JOB = "GENERATE_TRAIN_TABLE_JOB"
-    GENERATE_PREDICTION_TABLE_JOB = "GENERATE_PREDICTION_TABLE_JOB"
-    TRAINING_JOB = "TRAINING_JOB"
-    BATCH_PREDICTION_JOB = "BATCH_PREDICTION_JOB"
+    GENERATE_TRAIN_TABLE_JOB = 'GENERATE_TRAIN_TABLE_JOB'
+    GENERATE_PREDICTION_TABLE_JOB = 'GENERATE_PREDICTION_TABLE_JOB'
+    TRAINING_JOB = 'TRAINING_JOB'
+    BATCH_PREDICTION_JOB = 'BATCH_PREDICTION_JOB'
 
     @staticmethod
     def from_id(id: JobID) -> 'JobType':
@@ -500,10 +514,10 @@ class JobType(str, Enum):
 
 
 class JobSource(str, Enum):
-    SDK = "SDK"
-    UI = "UI"
-    REST = "REST"
-    UNKNOWN = "UNKNOWN"
+    SDK = 'SDK'
+    UI = 'UI'
+    REST = 'REST'
+    UNKNOWN = 'UNKNOWN'
 
 
 class TableIDv1(ValidatedStr, DBID):
@@ -513,22 +527,22 @@ class TableIDv1(ValidatedStr, DBID):
     Both `connector_id` and `table_name` must be valid identifiers,
     as defined by :class:`ID`.
     """
+
     def __new__(cls, contents: str):
         try:
             validate_non_empty(contents)
             connector_id, table_name = contents.split('.')
-            return TableIDv1.compose(ConnectorID(connector_id),
-                                     TableName(table_name))
+            return TableIDv1.compose(ConnectorID(connector_id), TableName(table_name))
         except ValueError as err:
             raise ValueError(
-                "TableID must have the format <connector_id>.<table_name>, "
-                "or <pquery_id>.<table_name>:<fpid>, "
-                f"got {contents}, err: {err}")
+                'TableID must have the format <connector_id>.<table_name>, '
+                'or <pquery_id>.<table_name>:<fpid>, '
+                f'got {contents}, err: {err}'
+            )
 
     @classmethod
-    def compose(cls, connector_id: ConnectorID,
-                table_name: TableName) -> 'TableIDv1':
-        return super().__new__(cls, f"{connector_id}.{table_name}")
+    def compose(cls, connector_id: ConnectorID, table_name: TableName) -> 'TableIDv1':
+        return super().__new__(cls, f'{connector_id}.{table_name}')
 
     @staticmethod
     def parse(id: Union[str, 'TableIDv1']) -> Tuple[ConnectorID, TableName]:
@@ -556,6 +570,7 @@ class TableIDv2(ValidatedStr, DBID):
     deprecated now. There might be traces of data in the DB with this format,
     but this is not actively used in any API anymore.
     """
+
     def __new__(cls, contents: str):
         validate_non_empty(contents)
         try:
@@ -563,25 +578,26 @@ class TableIDv2(ValidatedStr, DBID):
             # `<pquery>.<table>` shape (no separator). Per the class
             # docstring, missing components are normalized to "NA".
             if _FP_SUFFIX_SEPARATOR in contents:
-                table_id, fpid = contents.split(_FP_SUFFIX_SEPARATOR,
-                                                maxsplit=1)
+                table_id, fpid = contents.split(_FP_SUFFIX_SEPARATOR, maxsplit=1)
             else:
                 table_id, fpid = contents, 'NA'
             pquery_id, table_name = table_id.split('.', maxsplit=1)
             return TableIDv2.compose(
-                PredictiveQueryID(pquery_id), TableName(table_name),
-                core_schema.FPID(fpid) if fpid != "NA" else None)
+                PredictiveQueryID(pquery_id),
+                TableName(table_name),
+                core_schema.FPID(fpid) if fpid != 'NA' else None,
+            )
         except ValueError as err:
             raise ValueError(
-                "TableID must have the format <connector_id>.<table_name>, "
-                "or <pquery_id>.<table_name>:<fpid>, "
-                f"got {contents}, err: {err}")
+                'TableID must have the format <connector_id>.<table_name>, '
+                'or <pquery_id>.<table_name>:<fpid>, '
+                f'got {contents}, err: {err}'
+            )
 
     @staticmethod
     def parse(
-        id: Union[str, 'TableIDv2']
-    ) -> Tuple[Optional[PredictiveQueryID], TableName,
-               Optional[core_schema.FPID]]:
+        id: Union[str, 'TableIDv2'],
+    ) -> Tuple[Optional[PredictiveQueryID], TableName, Optional[core_schema.FPID]]:
         # Mirror ``__new__`` leniency: ids without the ``-fpid`` suffix
         # parse as fpid='NA'. Per the class docstring, missing components
         # are normalized to "NA".
@@ -605,7 +621,7 @@ class TableIDv2(ValidatedStr, DBID):
     ) -> 'TableIDv2':
         pquery_id = pquery_id or PredictiveQueryID('NA')
         fpid_str = fpid or 'NA'
-        id = f"{pquery_id}.{table_name}{_FP_SUFFIX_SEPARATOR}{fpid_str}"
+        id = f'{pquery_id}.{table_name}{_FP_SUFFIX_SEPARATOR}{fpid_str}'
         return super().__new__(cls, id)
 
     @classmethod
@@ -627,11 +643,11 @@ class TableIDv2(ValidatedStr, DBID):
     def from_public(cls, id: Union[str, 'TableIDv2']) -> 'TableIDv2':
         pqid, table_name, fpid = cls.parse(id)
         if not fpid:
-            raise ValueError(f"Invalid Table ID: {id}")
+            raise ValueError(f'Invalid Table ID: {id}')
         if table_name == TableName('table'):
             return TableIDv2.compose(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=fpid,
             )
         return TableIDv2.compose(
@@ -641,8 +657,9 @@ class TableIDv2(ValidatedStr, DBID):
         )
 
     @staticmethod
-    def update(id: 'TableIDv2', new_pquery_id: Optional[PredictiveQueryID],
-               include_fpid: bool):
+    def update(
+        id: 'TableIDv2', new_pquery_id: Optional[PredictiveQueryID], include_fpid: bool
+    ):
         _, table_name, fpid = TableIDv2.parse(id)
         fpid = fpid if include_fpid else None
         return TableIDv2.compose(new_pquery_id, table_name, fpid)
@@ -666,10 +683,7 @@ def to_table_ids(table_ids: List[str]) -> List[TableID]:
 
 
 def to_table_ids_dict(tabls_id_dict: Dict[str, Any]) -> Dict[TableID, Any]:
-    return {
-        to_table_id(table_id): value
-        for table_id, value in tabls_id_dict.items()
-    }
+    return {to_table_id(table_id): value for table_id, value in tabls_id_dict.items()}
 
 
 @kumo_dataclass(frozen=True, eq=True, order=True)
@@ -681,11 +695,12 @@ class ColumnID:
     unique within a table. This will be used as part of the public API
     that constructs graphs.
     """
+
     table_id: TableID
     col_name: str
 
     def __str__(self) -> str:
-        return f"{self.table_id}.{self.col_name}"
+        return f'{self.table_id}.{self.col_name}'
 
     @staticmethod
     def from_fqn(full_qualified_name: str) -> 'ColumnID':
@@ -705,6 +720,7 @@ class GraphLink:
     intended to be used in the Table webpage, enabling the user to navigate
     to the graphs that include the given table.
     """
+
     name: str
     id: Optional[GraphID] = None
     snapshot_id: Optional[GraphSnapshotID] = None
@@ -715,6 +731,7 @@ class ConnectorLink:
     """ConnectorLink contains information needed to render a URL to a
     connector.
     """
+
     name: str
     id: ConnectorID
 
@@ -724,6 +741,7 @@ class PredictiveQueryLink:
     """PredictiveQueryLink contains information needed to render a URL to a
     predictive query.
     """
+
     name: str
     id: Optional[PredictiveQueryID] = None
     training_job_id: Optional[TrainingJobID] = None
@@ -734,14 +752,15 @@ class BatchPredictionWorkflowLink:
     """BatchPredictionWorkflowLink contains information needed to render a
     URL to a Batch Prediction Workflow.
     """
+
     name: str
     id: BatchPredictionWorkflowID
 
 
 @kumo_dataclass
 class TableLink:
-    """TableLink contains information needed to render a URL to a table.
-    """
+    """TableLink contains information needed to render a URL to a table."""
+
     name: str
     id: TableID
 
@@ -752,14 +771,14 @@ class JobFailureInfo:
     stacktrace: str
 
     def remove_employee_only_fields(self) -> None:
-        """Delete fields that should not be shown to customers.
-        """
-        self.stacktrace = ""
+        """Delete fields that should not be shown to customers."""
+        self.stacktrace = ''
 
 
 @kumo_dataclass
 class EntityValidationMessage:
-    """ Represents a message tied to a DB entity (such as table or graph). """
+    """Represents a message tied to a DB entity (such as table or graph)."""
+
     # ID that can be used to generate the URL to the entity
     id: str
 
@@ -773,12 +792,12 @@ class CallToActionLevel(Enum):
     # Indicates that the CTA is non-blocking, but recommended to fix. For
     # example, it could indicate that a table has many invalid values, which
     # could degrade model performance, but will not block training.
-    WARNING = "WARNING"
+    WARNING = 'WARNING'
 
     # Indicates that the CTA is blocking a core product flow. For example, it
     # could indicate that a table is missing underlying data, which would block
     # training from occurring.
-    CRITICAL = "CRITICAL"
+    CRITICAL = 'CRITICAL'
 
 
 @kumo_dataclass
@@ -787,6 +806,7 @@ class CallToAction:
     user needs to perform a particular action, such as retraining a Predictive
     Query.
     """
+
     level: CallToActionLevel
     message: str
 
@@ -897,85 +917,90 @@ class JobEventLogEntry(jobs_api.JobEventLogEntry):
         return curr_datetime or now_utc()
 
     @classmethod
-    def untrained(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+    def untrained(cls, curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Not yet trained",
+            stage_name='Not yet trained',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This query has been created but no training job "
-                    "can be found. Please try training again."),
+            detail=(
+                'This query has been created but no training job '
+                'can be found. Please try training again.'
+            ),
         )
 
     @classmethod
     def not_started(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Not Started",
+            stage_name='Not Started',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job has been queued and is waiting to start "
-            "processing.",
+            detail='This job has been queued and is waiting to start processing.',
         )
 
     @classmethod
-    def starting(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+    def starting(cls, curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Ingesting Data",
+            stage_name='Ingesting Data',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job is processing data from your warehouse.",
+            detail='This job is processing data from your warehouse.',
         )
 
     @classmethod
     def generating_training_table(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Generating Training Data",
+            stage_name='Generating Training Data',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job is currently generating all training examples.",
+            detail='This job is currently generating all training examples.',
         )
 
     @classmethod
     def generating_pred_table(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Generating Prediction Table data",
+            stage_name='Generating Prediction Table data',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This job is currently generating the prediction table."),
+            detail=('This job is currently generating the prediction table.'),
         )
 
     @classmethod
     def waiting_training_table(
-            cls, job_id: GenerateTrainTableJobID,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, job_id: GenerateTrainTableJobID, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Waiting for Training Data to be generated",
-            last_updated_at=cls._timestamp(curr_datetime), detail=(
-                "This training job is currently waiting for training data to "
-                f"be generated by job={job_id}"))
+            stage_name='Waiting for Training Data to be generated',
+            last_updated_at=cls._timestamp(curr_datetime),
+            detail=(
+                'This training job is currently waiting for training data to '
+                f'be generated by job={job_id}'
+            ),
+        )
 
     @classmethod
     def waiting_pred_table(
-            cls, job_id: GeneratePredictionTableJobID,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls,
+        job_id: GeneratePredictionTableJobID,
+        curr_datetime: Optional[datetime] = None,
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Waiting for Prediction Data to be generated",
+            stage_name='Waiting for Prediction Data to be generated',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This batch prediction job is currently waiting for pred "
-                    f"table to be generated by job={job_id}"))
+            detail=(
+                'This batch prediction job is currently waiting for pred '
+                f'table to be generated by job={job_id}'
+            ),
+        )
 
     @classmethod
     def materializing(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Data Materialization",
+            stage_name='Data Materialization',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job is currently materializing the Kumo graph.",
+            detail='This job is currently materializing the Kumo graph.',
         )
 
     @classmethod
@@ -984,10 +1009,12 @@ class JobEventLogEntry(jobs_api.JobEventLogEntry):
         curr_datetime: Optional[datetime] = None,
     ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Provisioning Resources",
+            stage_name='Provisioning Resources',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This job is currently provisioning required resources. "
-                    "This may take up to 10 minutes."),
+            detail=(
+                'This job is currently provisioning required resources. '
+                'This may take up to 10 minutes.'
+            ),
         )
 
     @classmethod
@@ -996,82 +1023,84 @@ class JobEventLogEntry(jobs_api.JobEventLogEntry):
         curr_datetime: Optional[datetime] = None,
     ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Loading Materialized Data",
+            stage_name='Loading Materialized Data',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job is currently loading materialized data.",
+            detail='This job is currently loading materialized data.',
         )
 
     @classmethod
     def configuring_prediction_job(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Configuring prediction job",
+            stage_name='Configuring prediction job',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This job is currently being configured. "
-                    "Batch Prediction will start soon! "
-                    "This may take up to 10 minutes."),
+            detail=(
+                'This job is currently being configured. '
+                'Batch Prediction will start soon! '
+                'This may take up to 10 minutes.'
+            ),
         )
 
     @classmethod
-    def training(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+    def training(cls, curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Training",
+            stage_name='Training',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job is currently training your model.",
+            detail='This job is currently training your model.',
         )
 
     @classmethod
     def refit_trainval(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+        cls, curr_datetime: Optional[datetime] = None
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Refitting on Validation Data",
+            stage_name='Refitting on Validation Data',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This job is currently refitting the best model "
-                    "found using Auto ML on both training and validation "
-                    "data for most optimal performance on the holdout data"),
+            detail=(
+                'This job is currently refitting the best model '
+                'found using Auto ML on both training and validation '
+                'data for most optimal performance on the holdout data'
+            ),
         )
 
     @classmethod
-    def refit_full(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+    def refit_full(cls, curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Refitting on Full Data",
+            stage_name='Refitting on Full Data',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail=("This job is currently refitting the best model found "
-                    "using Auto ML on all available data (training, "
-                    "validation and holdout) for most optimal performance at "
-                    "prediction time"),
+            detail=(
+                'This job is currently refitting the best model found '
+                'using Auto ML on all available data (training, '
+                'validation and holdout) for most optimal performance at '
+                'prediction time'
+            ),
         )
 
     @classmethod
-    def predicting(
-            cls,
-            curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+    def predicting(cls, curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Predicting",
+            stage_name='Predicting',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job is currently generating your predictions.",
+            detail='This job is currently generating your predictions.',
         )
 
     @classmethod
-    def done(cls,
-             curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
+    def done(cls, curr_datetime: Optional[datetime] = None) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Done",
+            stage_name='Done',
             last_updated_at=cls._timestamp(curr_datetime),
-            detail="This job successfully completed!",
+            detail='This job successfully completed!',
         )
 
     @classmethod
-    def failed(cls, curr_datetime: Optional[datetime] = None,
-               message: str = "This job has failed.") -> 'JobEventLogEntry':
+    def failed(
+        cls,
+        curr_datetime: Optional[datetime] = None,
+        message: str = 'This job has failed.',
+    ) -> 'JobEventLogEntry':
         return cls(
-            stage_name="Failed",
+            stage_name='Failed',
             last_updated_at=cls._timestamp(curr_datetime),
             detail=message,
         )
@@ -1095,6 +1124,7 @@ class JobExecution:
     Generic base dataclass to persist execution states/metedata into DB for
     a long-running job (executed as a Temporal workflow).
     """
+
     status: JobStatus
     log: JobEventLogEntry
     # Set when a queue-managed job is admitted to execution, so it is unset
@@ -1127,13 +1157,11 @@ class DataSnapshot(Enum):
     def parse_id(self, snapshot_id: str) -> Tuple[core_schema.FPID, str]:
         """Parse a snapshot ID with its prefix and exactly one ``@``."""
         if not snapshot_id.startswith(self.prefix):
-            raise ValueError(
-                f'{self.name} snapshot ID is invalid: {snapshot_id}')
-        fpid_data_ver = snapshot_id[len(self.prefix):]
+            raise ValueError(f'{self.name} snapshot ID is invalid: {snapshot_id}')
+        fpid_data_ver = snapshot_id[len(self.prefix) :]
         parts = fpid_data_ver.split('@')
         if len(parts) != 2:
-            raise ValueError(
-                f'{self.name} snapshot ID is invalid: {snapshot_id}')
+            raise ValueError(f'{self.name} snapshot ID is invalid: {snapshot_id}')
         fpid, data_ver = parts
         return core_schema.FPID(fpid), data_ver
 
@@ -1154,91 +1182,95 @@ class DataSnapshot(Enum):
         graph_id, data_version = snapshot_id.split('@', 1)
         _, fpid = GraphIDv2.parse(graph_id)
         if not fpid:
-            raise ValueError(f"Invalid graph snapshot ID: {snapshot_id}")
+            raise ValueError(f'Invalid graph snapshot ID: {snapshot_id}')
         return self.format_id(fpid, data_version)
 
 
 class IdentityID(ID, DBID):
     def __new__(cls, name: str):
-        if not re.fullmatch(r"^identity_[a-f0-9]{32}$", name):
-            raise ValueError(f"Invalid IdentityID '{name}': must match "
-                             "'identity_<32 hex chars>'.")
+        if not re.fullmatch(r'^identity_[a-f0-9]{32}$', name):
+            raise ValueError(
+                f"Invalid IdentityID '{name}': must match 'identity_<32 hex chars>'."
+            )
         return str.__new__(cls, name)
 
     @classmethod
-    def generate(cls) -> "IdentityID":
-        return cls(f"identity_{uuid.uuid4().hex}")
+    def generate(cls) -> 'IdentityID':
+        return cls(f'identity_{uuid.uuid4().hex}')
 
 
 class IdentityGroupID(ID, DBID):
     def __new__(cls, name: str):
-        if not re.fullmatch(r"^identity_group_[a-f0-9]{32}$", name):
-            raise ValueError(f"Invalid IdentityGroupID '{name}': must match "
-                             "'identity_group_<32 hex chars>'.")
+        if not re.fullmatch(r'^identity_group_[a-f0-9]{32}$', name):
+            raise ValueError(
+                f"Invalid IdentityGroupID '{name}': must match "
+                "'identity_group_<32 hex chars>'."
+            )
         return str.__new__(cls, name)
 
     @classmethod
-    def generate(cls) -> "IdentityGroupID":
-        return cls(f"identity_group_{uuid.uuid4().hex}")
+    def generate(cls) -> 'IdentityGroupID':
+        return cls(f'identity_group_{uuid.uuid4().hex}')
 
 
 class ProjectID(ID, DBID):
     def __new__(cls, name: str):
-        if name != 'default' and not re.fullmatch(r"^project_[a-f0-9]{32}$",
-                                                  name):
+        if name != 'default' and not re.fullmatch(r'^project_[a-f0-9]{32}$', name):
             raise ValueError(
                 f"Invalid ProjectID '{name}': must be 'default' or match "
-                "'project_<32 hex chars>'.")
+                "'project_<32 hex chars>'."
+            )
         return str.__new__(cls, name)
 
     @classmethod
-    def generate(cls) -> "ProjectID":
-        return cls(f"project_{uuid.uuid4().hex}")
+    def generate(cls) -> 'ProjectID':
+        return cls(f'project_{uuid.uuid4().hex}')
 
 
 class GroupID(ID, DBID):
     def __new__(cls, name: str):
-        if not re.fullmatch(r"^group_[a-f0-9]{32}$", name):
+        if not re.fullmatch(r'^group_[a-f0-9]{32}$', name):
             raise ValueError(
-                f"Invalid GroupID '{name}': must match 'group_<32 hex chars>'.")
+                f"Invalid GroupID '{name}': must match 'group_<32 hex chars>'."
+            )
         return str.__new__(cls, name)
 
     @classmethod
-    def generate(cls) -> "GroupID":
-        return cls(f"group_{uuid.uuid4().hex}")
+    def generate(cls) -> 'GroupID':
+        return cls(f'group_{uuid.uuid4().hex}')
 
 
 class GroupMemberID(ID, DBID):
     @classmethod
-    def generate(cls) -> "GroupMemberID":
-        return cls(f"group_member_{uuid.uuid4().hex}")
+    def generate(cls) -> 'GroupMemberID':
+        return cls(f'group_member_{uuid.uuid4().hex}')
 
 
 class ExternalGroupMappingID(ID, DBID):
     @classmethod
-    def generate(cls) -> "ExternalGroupMappingID":
-        return cls(f"external_group_mapping_{uuid.uuid4().hex}")
+    def generate(cls) -> 'ExternalGroupMappingID':
+        return cls(f'external_group_mapping_{uuid.uuid4().hex}')
 
 
 class GroupMembershipRuleID(ID, DBID):
     @classmethod
-    def generate(cls) -> "GroupMembershipRuleID":
-        return cls(f"group_membership_rule_{uuid.uuid4().hex}")
+    def generate(cls) -> 'GroupMembershipRuleID':
+        return cls(f'group_membership_rule_{uuid.uuid4().hex}')
 
 
 class UploadedFileID(ID, DBID):
     @classmethod
-    def generate(cls) -> "UploadedFileID":
-        return cls(f"uploaded_file_{uuid.uuid4().hex}")
+    def generate(cls) -> 'UploadedFileID':
+        return cls(f'uploaded_file_{uuid.uuid4().hex}')
 
 
 class ConnectorAuthorizationID(ID, DBID):
     @classmethod
-    def generate(cls) -> "ConnectorAuthorizationID":
-        return cls(f"connector_authorization_{uuid.uuid4().hex}")
+    def generate(cls) -> 'ConnectorAuthorizationID':
+        return cls(f'connector_authorization_{uuid.uuid4().hex}')
 
 
 class ConnectorAuthorizationUseID(ID, DBID):
     @classmethod
-    def generate(cls) -> "ConnectorAuthorizationUseID":
-        return cls(f"connector_authorization_use_{uuid.uuid4().hex}")
+    def generate(cls) -> 'ConnectorAuthorizationUseID':
+        return cls(f'connector_authorization_use_{uuid.uuid4().hex}')

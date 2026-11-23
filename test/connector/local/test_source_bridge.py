@@ -31,9 +31,15 @@ FILES = ('part-0.parquet', 'part-1.parquet')
 class FakeReader:
     source_type = ConnectorType.SNOWFLAKE
 
-    def __init__(self, version='v-reader', num_rows=3, source_size=11,
-                 scanned_bytes=None, modes=(ReadMode.STAGED, ReadMode.STREAMED),
-                 error=None):
+    def __init__(
+        self,
+        version='v-reader',
+        num_rows=3,
+        source_size=11,
+        scanned_bytes=None,
+        modes=(ReadMode.STAGED, ReadMode.STREAMED),
+        error=None,
+    ):
         self.version = version
         self.num_rows = num_rows
         self.source_size = source_size
@@ -54,9 +60,19 @@ class FakeReader:
     def data_version(self, table):
         return self.version
 
-    def prepare(self, table, dest, *, columns, mode, aliases=None,
-                expected_rows=None, worker_ceiling=None, sql=None,
-                version=None):
+    def prepare(
+        self,
+        table,
+        dest,
+        *,
+        columns,
+        mode,
+        aliases=None,
+        expected_rows=None,
+        worker_ceiling=None,
+        sql=None,
+        version=None,
+    ):
         self.dest, self.mode, self.sql = dest, mode, sql
         self.tables_read.append(table)
         self.versions.append(version)
@@ -69,10 +85,15 @@ class FakeReader:
         for path in paths:
             with open(path, 'wb') as f:
                 f.write(b'parquet')
-        return StagedTable(directory=dest, paths=paths, version=version
-                           or self.version, source_size=self.source_size,
-                           mode_used=mode, num_rows=self.num_rows,
-                           scanned_bytes=self.scanned_bytes)
+        return StagedTable(
+            directory=dest,
+            paths=paths,
+            version=version or self.version,
+            source_size=self.source_size,
+            mode_used=mode,
+            num_rows=self.num_rows,
+            scanned_bytes=self.scanned_bytes,
+        )
 
 
 @pytest.fixture
@@ -80,10 +101,7 @@ def table_fp():
     return IngestedTableFingerprint(
         connector_name='snowflake',
         source_name='CUSTOMERS',
-        cols={
-            'id': Dtype.int64,
-            'name': Dtype.string
-        },
+        cols={'id': Dtype.int64, 'name': Dtype.string},
         pkey='id',
         time_col=None,
         end_time_col=None,
@@ -91,8 +109,7 @@ def table_fp():
 
 
 def ingest_dir(table_fp, data_version):
-    return get_materialize_path(table_fp, data_version,
-                                MaterializationStage.INGEST)
+    return get_materialize_path(table_fp, data_version, MaterializationStage.INGEST)
 
 
 def test_the_parquet_lands_flat_under_the_callers_own_data_version(table_fp):
@@ -103,8 +120,7 @@ def test_the_parquet_lands_flat_under_the_callers_own_data_version(table_fp):
     assert not osp.exists(ingest_dir(table_fp, 'v-reader'))
 
 
-def test_source_size_is_the_parquet_written_not_what_the_warehouse_scanned(
-        table_fp):
+def test_source_size_is_the_parquet_written_not_what_the_warehouse_scanned(table_fp):
     """SOURCE_SIZE reserves the disk an ingest needs, so only bytes that
     landed on it can mean it, whatever else a vendor reported."""
     reader = FakeReader(source_size=11, scanned_bytes=9000)
@@ -123,8 +139,7 @@ def test_a_read_divides_the_budget_between_the_reads_that_can_run(monkeypatch):
     assert worker_ceiling(50) == 1
 
 
-def test_a_table_count_narrows_the_read_and_its_absence_leaves_it_alone(
-        table_fp):
+def test_a_table_count_narrows_the_read_and_its_absence_leaves_it_alone(table_fp):
     untouched = FakeReader()
     read_source(untouched, 'CUSTOMERS', table_fp, 'v1')
     assert untouched.ceilings == [None]
@@ -140,8 +155,9 @@ def test_the_scratch_directory_is_removed_however_the_read_ends(table_fp):
     read_source(reader, 'CUSTOMERS', table_fp, 'v1')
     assert not osp.exists(reader.dest)
 
-    failed = FakeReader(error=RuntimeError('warehouse said no'),
-                        modes=(ReadMode.STAGED, ))
+    failed = FakeReader(
+        error=RuntimeError('warehouse said no'), modes=(ReadMode.STAGED,)
+    )
     with pytest.raises(RuntimeError):
         read_source(failed, 'CUSTOMERS', table_fp, 'v1')
     assert not osp.exists(failed.dest)
@@ -165,13 +181,11 @@ def test_the_bridge_delegates_the_choice_of_mode_to_kumo_core(table_fp):
 
 @pytest.mark.parametrize('num_rows', [None, 0, 7])
 def test_num_rows_passes_through_to_the_export_metrics(table_fp, num_rows):
-    metrics = read_source(FakeReader(num_rows=num_rows), 'CUSTOMERS', table_fp,
-                          'v1')
+    metrics = read_source(FakeReader(num_rows=num_rows), 'CUSTOMERS', table_fp, 'v1')
     assert metrics.num_rows == num_rows
 
 
-def test_a_destination_that_cannot_be_cleared_stops_the_publish(
-        table_fp, monkeypatch):
+def test_a_destination_that_cannot_be_cleared_stops_the_publish(table_fp, monkeypatch):
     """The copy is entry-by-entry, so a delete that only partly succeeded
     would leave the previous attempt's shards for this one to overlay, and
     ingest would read the mixture as one table."""
@@ -181,8 +195,9 @@ def test_a_destination_that_cannot_be_cleared_stops_the_publish(
         raise OSError('one shard could not be deleted')
 
     monkeypatch.setattr(source_bridge.fsutil, 'rm', refuse)
-    monkeypatch.setattr(source_bridge.fsutil, 'copy',
-                        lambda *args, **kwargs: copied.append(args))
+    monkeypatch.setattr(
+        source_bridge.fsutil, 'copy', lambda *args, **kwargs: copied.append(args)
+    )
 
     with pytest.raises(RuntimeError, match='could not clear') as excinfo:
         read_source(FakeReader(), 'CUSTOMERS', table_fp, 'v1')
@@ -196,8 +211,9 @@ def test_a_query_reaches_the_reader_as_sql_not_as_a_table_name(table_fp):
     """A Custom SQL table has no source table to read; the name is only what
     staging prefixes and errors key on."""
     reader = FakeReader()
-    metrics = read_source(reader, 'fpv3.sql.dbx.orders', table_fp, 'v1',
-                          sql='SELECT id FROM orders')
+    metrics = read_source(
+        reader, 'fpv3.sql.dbx.orders', table_fp, 'v1', sql='SELECT id FROM orders'
+    )
 
     assert reader.sql == 'SELECT id FROM orders'
     assert reader.tables_read == ['fpv3.sql.dbx.orders']
@@ -218,21 +234,28 @@ def test_a_pinned_mode_replaces_the_readers_offer(tmp_path):
     the staged offer first, which for every warehouse means unloading through
     the customer's own storage."""
     reader = FakeReader(modes=(ReadMode.STAGED, ReadMode.STREAMED))
-    stage_source(reader, 'CUSTOMERS', str(tmp_path / 'dest'),
-                 columns={'id': Dtype.int64}, mode=ReadMode.STREAMED)
+    stage_source(
+        reader,
+        'CUSTOMERS',
+        str(tmp_path / 'dest'),
+        columns={'id': Dtype.int64},
+        mode=ReadMode.STREAMED,
+    )
     assert reader.modes_tried == [ReadMode.STREAMED]
 
 
 def test_an_unpinned_stage_source_still_takes_the_readers_first_offer(tmp_path):
     reader = FakeReader(modes=(ReadMode.STAGED, ReadMode.STREAMED))
-    stage_source(reader, 'CUSTOMERS', str(tmp_path / 'dest'),
-                 columns={'id': Dtype.int64})
+    stage_source(
+        reader, 'CUSTOMERS', str(tmp_path / 'dest'), columns={'id': Dtype.int64}
+    )
     assert reader.modes_tried == [ReadMode.STAGED]
 
 
 @pytest.mark.parametrize('failure_type', [RuntimeError, KeyboardInterrupt])
-def test_failed_publisher_does_not_delete_peer_output(tmp_path, monkeypatch,
-                                                      caplog, failure_type):
+def test_failed_publisher_does_not_delete_peer_output(
+    tmp_path, monkeypatch, caplog, failure_type
+):
     destination = tmp_path / 'destination'
     error = failure_type('private publication detail')
 
@@ -244,10 +267,8 @@ def test_failed_publisher_does_not_delete_peer_output(tmp_path, monkeypatch,
     monkeypatch.setattr(source_bridge.fsutil, 'copy', failed_copy)
     reader = FakeReader()
     with pytest.raises(failure_type) as caught:
-        stage_source(reader, 'CUSTOMERS', str(destination),
-                     columns={'id': Dtype.int64})
+        stage_source(reader, 'CUSTOMERS', str(destination), columns={'id': Dtype.int64})
     assert caught.value is error
-    assert (destination /
-            'peer.parquet').read_bytes() == b'other publisher output'
+    assert (destination / 'peer.parquet').read_bytes() == b'other publisher output'
     assert not os.path.exists(reader.dest)
     assert 'private publication detail' not in caplog.text

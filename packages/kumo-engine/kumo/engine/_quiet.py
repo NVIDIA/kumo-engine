@@ -6,6 +6,7 @@ r"""Imports PyTorch Geometric without its unactionable FutureWarning."""
 import warnings
 
 with warnings.catch_warnings():
-    warnings.filterwarnings('ignore', r'`torch\.jit\.script` is deprecated',
-                            FutureWarning)
+    warnings.filterwarnings(
+        'ignore', r'`torch\.jit\.script` is deprecated', FutureWarning
+    )
     import torch_geometric.nn  # noqa: F401

@@ -23,7 +23,9 @@ def test_parser_extracts_fields():
             'host': 'h',
             'port': '6543',
             'database': 'db',
-        }, 'SECRET')
+        },
+        'SECRET',
+    )
     assert conn == PostgresConn(
         username='u',
         password='p',
@@ -36,10 +38,14 @@ def test_parser_extracts_fields():
 
 
 def test_parser_default_database_applied_when_missing():
-    conn = postgres_conn_from_secret({
-        'username': 'u',
-        'host': 'h',
-    }, 'SECRET', default_database='fallback')
+    conn = postgres_conn_from_secret(
+        {
+            'username': 'u',
+            'host': 'h',
+        },
+        'SECRET',
+        default_database='fallback',
+    )
     assert conn.database == 'fallback'
 
 
@@ -55,7 +61,9 @@ def test_parser_alias_fields_are_not_supported():
                 'user': 'u',
                 'POSTGRES_HOST': 'h',
                 'dbname': 'db',
-            }, 'SECRET')
+            },
+            'SECRET',
+        )
 
 
 def test_parser_bad_sslmode_raises():
@@ -65,10 +73,10 @@ def test_parser_bad_sslmode_raises():
                 'username': 'u',
                 'host': 'h',
                 'database': 'db',
-                'tls': {
-                    'sslmode': 'require'
-                },
-            }, 'SECRET')
+                'tls': {'sslmode': 'require'},
+            },
+            'SECRET',
+        )
 
 
 def test_parser_invalid_tls_config_raises():
@@ -79,7 +87,9 @@ def test_parser_invalid_tls_config_raises():
                 'host': 'h',
                 'database': 'db',
                 'tls': 'not-a-mapping',
-            }, 'SECRET')
+            },
+            'SECRET',
+        )
 
 
 def test_parser_tls_fields():
@@ -92,7 +102,9 @@ def test_parser_tls_fields():
                 'sslmode': 'verify-full',
                 'sslrootcert': '/opt/kumo/secrets/postgres-ca.pem',
             },
-        }, 'SECRET')
+        },
+        'SECRET',
+    )
     assert conn.sslmode == 'verify-full'
     assert conn.sslrootcert == '/opt/kumo/secrets/postgres-ca.pem'
 
@@ -123,17 +135,19 @@ def test_postgresql_dsn_tls_in_query():
     assert postgresql_dsn(_TLS_CONN) == (
         'postgresql://u:p@host:6543/kumo'
         '?sslmode=verify-full'
-        '&sslrootcert=%2Fopt%2Fkumo%2Fsecrets%2Fpostgres-ca.pem')
+        '&sslrootcert=%2Fopt%2Fkumo%2Fsecrets%2Fpostgres-ca.pem'
+    )
 
 
 def test_postgresql_dsn_url_quotes_credentials():
     assert postgresql_dsn(_NO_PORT_QUOTING_CONN) == (
-        'postgresql://user%40example.com:p%40ss%20word'
-        '@postgres.example.com:6543/kumo')
+        'postgresql://user%40example.com:p%40ss%20word@postgres.example.com:6543/kumo'
+    )
 
 
 def test_psycopg2_dsn_tls_in_query():
     assert psycopg2_dsn(_TLS_CONN) == (
         'postgresql+psycopg2://u:p@host:6543/kumo'
         '?sslmode=verify-full'
-        '&sslrootcert=%2Fopt%2Fkumo%2Fsecrets%2Fpostgres-ca.pem')
+        '&sslrootcert=%2Fopt%2Fkumo%2Fsecrets%2Fpostgres-ca.pem'
+    )

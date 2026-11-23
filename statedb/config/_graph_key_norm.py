@@ -7,6 +7,7 @@ Lives in ``statedb/config/`` so both data_backend and ml_backend
 workflows can import it without creating a cross-backend dependency
 edge.
 """
+
 import hashlib
 
 from kumo_core.types.schema import FPID

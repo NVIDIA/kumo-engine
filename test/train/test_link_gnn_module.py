@@ -10,6 +10,7 @@ tests assert that a masked placeholder negative does NOT change the loss
 relative to a batch that omits it, for each loss variant, and that the
 no-mask path is unchanged.
 """
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -31,18 +32,15 @@ from torch_geometric.data import HeteroData
 def _make_module(loss_fn: str) -> LinkGNNLightningModule:
     return LinkGNNLightningModule(
         encoder=HeteroTensorFrameEncoder(
-            table_encoder_dict={
-                'LHS': {},
-                'RHS': {},
-                'TRAIN_TABLE': {}
-            },
+            table_encoder_dict={'LHS': {}, 'RHS': {}, 'TRAIN_TABLE': {}},
             out_channels=8,
             time_col_dict={},
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=8, num_mp_layers=0),
-        head=LinkPredHead(in_channels=8, embedding_dim=4,
-                          use_rhs_projector=True, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=8, embedding_dim=4, use_rhs_projector=True, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='TRAIN_TABLE',
         entity_table_names=('LHS', 'RHS'),
@@ -104,9 +102,9 @@ def test_masked_negative_equals_omitted() -> None:
         model = _make_module(loss_fn)
         masked_loss = model.loss(_make_output(pos, neg_garbage), neg_mask=mask)
         ref_loss = model.loss(_make_output(pos, neg_real_only), neg_mask=None)
-        assert torch.allclose(
-            masked_loss, ref_loss,
-            atol=1e-5), (f'{loss_fn}: masked={masked_loss} ref={ref_loss}')
+        assert torch.allclose(masked_loss, ref_loss, atol=1e-5), (
+            f'{loss_fn}: masked={masked_loss} ref={ref_loss}'
+        )
 
 
 def test_all_masked_row_no_nan() -> None:
@@ -145,10 +143,12 @@ def test_train_step_threads_mask_from_batch() -> None:
         captured['neg_mask'] = neg_mask
         return real_loss(o, neg_mask=neg_mask)
 
-    with patch.object(model, 'common_step', return_value=out), \
-            patch.object(model, 'log_learning_rate'), \
-            patch.object(model, 'log_epoch'), \
-            patch.object(model, 'loss', side_effect=spy_loss):
+    with (
+        patch.object(model, 'common_step', return_value=out),
+        patch.object(model, 'log_learning_rate'),
+        patch.object(model, 'log_epoch'),
+        patch.object(model, 'loss', side_effect=spy_loss),
+    ):
         loss = model.train_step(batch, batch_idx=0)
 
     assert captured['neg_mask'] is not None
@@ -177,10 +177,12 @@ def test_train_step_no_mask_when_absent() -> None:
         captured['neg_mask'] = neg_mask
         return real_loss(o, neg_mask=neg_mask)
 
-    with patch.object(model, 'common_step', return_value=out), \
-            patch.object(model, 'log_learning_rate'), \
-            patch.object(model, 'log_epoch'), \
-            patch.object(model, 'loss', side_effect=spy_loss):
+    with (
+        patch.object(model, 'common_step', return_value=out),
+        patch.object(model, 'log_learning_rate'),
+        patch.object(model, 'log_epoch'),
+        patch.object(model, 'loss', side_effect=spy_loss),
+    ):
         model.train_step(batch, batch_idx=0)
 
     assert captured['neg_mask'] is None
@@ -189,19 +191,15 @@ def test_train_step_no_mask_when_absent() -> None:
 def _make_static_module() -> LinkGNNLightningModule:
     model = LinkGNNLightningModule(
         encoder=HeteroTensorFrameEncoder(
-            table_encoder_dict={
-                'LHS': {},
-                'RHS': {},
-                'TRAIN_TABLE': {}
-            },
+            table_encoder_dict={'LHS': {}, 'RHS': {}, 'TRAIN_TABLE': {}},
             out_channels=8,
             time_col_dict={},
             exclude_cols_dict={},
         ),
-        model=HeteroGNN(channels=8, num_mp_layers=0, metadata=(['LHS',
-                                                                'RHS'], [])),
-        head=LinkPredHead(in_channels=8, embedding_dim=4,
-                          use_rhs_projector=True, use_mlp_head=False),
+        model=HeteroGNN(channels=8, num_mp_layers=0, metadata=(['LHS', 'RHS'], [])),
+        head=LinkPredHead(
+            in_channels=8, embedding_dim=4, use_rhs_projector=True, use_mlp_head=False
+        ),
         task_type=TaskType.STATIC_LINK_PREDICTION,
         train_table_name='TRAIN_TABLE',
         entity_table_names=('LHS', 'RHS'),
@@ -221,16 +219,19 @@ def _static_eval_batch(batch_size: int = 2) -> HeteroData:
     return batch
 
 
-@pytest.mark.parametrize('candidates, expected', [
-    (None, [0, 2, 4]),
-    ([2, 4, 5], [2, 4]),
-    ([1, 3], TrainingValidationError),
-])
-def test_static_two_tower_uses_canonical_rhs_catalog(candidates,
-                                                     expected) -> None:
+@pytest.mark.parametrize(
+    'candidates, expected',
+    [
+        (None, [0, 2, 4]),
+        ([2, 4, 5], [2, 4]),
+        ([1, 3], TrainingValidationError),
+    ],
+)
+def test_static_two_tower_uses_canonical_rhs_catalog(candidates, expected) -> None:
     model = _make_static_module()
-    model.register_buffer('canonical_rhs_node_idx', torch.tensor([0, 2, 4]),
-                          persistent=False)
+    model.register_buffer(
+        'canonical_rhs_node_idx', torch.tensor([0, 2, 4]), persistent=False
+    )
     node_ids = None if candidates is None else torch.tensor(candidates)
     datamodule = SimpleNamespace(predict_candidates=lambda: node_ids)
 
@@ -263,16 +264,18 @@ def test_static_eval_reads_exclude_off_batch_and_skips_past_visit():
         captured['exclude_lhs_batch'] = ex_lhs
         return None, torch.zeros(2, 1, dtype=torch.long)
 
-    with patch.object(model, 'common_step',
-                      return_value={'LHS': torch.randn(2, 8)}), \
-         patch.object(model.head, 'lhs_forward',
-                      side_effect=lambda e: e), \
-         patch.object(model, 'get_ground_truth',
-                      return_value=(rhs_y_index, lhs_y_batch, None)), \
-         patch.object(model, 'get_rhs_pred_index_mat', side_effect=spy_pred), \
-         patch.object(model, 'update_metrics'), \
-         patch.object(model, 'get_past_visit_ground_truth',
-                      return_value=(None, None)) as past_visit:
+    with (
+        patch.object(model, 'common_step', return_value={'LHS': torch.randn(2, 8)}),
+        patch.object(model.head, 'lhs_forward', side_effect=lambda e: e),
+        patch.object(
+            model, 'get_ground_truth', return_value=(rhs_y_index, lhs_y_batch, None)
+        ),
+        patch.object(model, 'get_rhs_pred_index_mat', side_effect=spy_pred),
+        patch.object(model, 'update_metrics'),
+        patch.object(
+            model, 'get_past_visit_ground_truth', return_value=(None, None)
+        ) as past_visit,
+    ):
         model.disable_eval_metrics = False
         model.evaluation_step(batch, stage=TrainingStage.VAL, batch_idx=0)
 
@@ -304,14 +307,15 @@ def test_static_eval_tt_ng_remaps_exclude_to_valid_rhs():
         captured['exclude_lhs_batch'] = ex_lhs
         return None, torch.zeros(2, 1, dtype=torch.long)
 
-    with patch.object(model, 'common_step',
-                      return_value={'LHS': torch.randn(2, 8)}), \
-         patch.object(model.head, 'lhs_forward',
-                      side_effect=lambda e: e), \
-         patch.object(model, 'get_ground_truth',
-                      return_value=(rhs_y_index, lhs_y_batch, None)), \
-         patch.object(model, 'get_rhs_pred_index_mat', side_effect=spy_pred), \
-         patch.object(model, 'update_metrics'):
+    with (
+        patch.object(model, 'common_step', return_value={'LHS': torch.randn(2, 8)}),
+        patch.object(model.head, 'lhs_forward', side_effect=lambda e: e),
+        patch.object(
+            model, 'get_ground_truth', return_value=(rhs_y_index, lhs_y_batch, None)
+        ),
+        patch.object(model, 'get_rhs_pred_index_mat', side_effect=spy_pred),
+        patch.object(model, 'update_metrics'),
+    ):
         model.disable_eval_metrics = False
         model.evaluation_step(batch, stage=TrainingStage.VAL, batch_idx=0)
 

@@ -47,6 +47,7 @@ Everything else under `skills/` is this script's output: a refresh deletes it.
 `--check` ignores the `SKILL-BUILD` stamp, which names the commit that built the package and so
 differs on every commit even when no skill file changed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -57,7 +58,9 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location('package_skill', HERE / 'package_skill.py')
+spec = importlib.util.spec_from_file_location(
+    'package_skill', HERE / 'package_skill.py'
+)
 assert spec and spec.loader
 package_skill = importlib.util.module_from_spec(spec)
 sys.modules.setdefault('package_skill', package_skill)
@@ -82,8 +85,11 @@ def skill_dirs(root: Path) -> list[str]:
 
 def nested(root: Path) -> list[str]:
     """Every `SKILL.md` under `root` that is not at the top of its own skill directory."""
-    return sorted(p.relative_to(root).as_posix() for p in root.rglob('SKILL.md')
-                  if len(p.relative_to(root).parts) != 2)
+    return sorted(
+        p.relative_to(root).as_posix()
+        for p in root.rglob('SKILL.md')
+        if len(p.relative_to(root).parts) != 2
+    )
 
 
 def owner(rel: Path) -> str | None:
@@ -137,8 +143,10 @@ def unresolved(root: Path) -> list[str]:
             elif head in entries.get(skill, ()):
                 path = root / skill / target
             elif any(head in names for names in entries.values()):
-                errors.append(f'{where}: `{target}` is another skill\'s file: start it with '
-                              f'that skill\'s name')
+                errors.append(
+                    f"{where}: `{target}` is another skill's file: start it with "
+                    f"that skill's name"
+                )
                 continue
             else:
                 continue  # not a package path, e.g. a Kumo source module
@@ -149,13 +157,18 @@ def unresolved(root: Path) -> list[str]:
 
 def flatten(pkg: Path, out: Path) -> Path:
     """Lay the package `pkg` out under `out` with every skill beside the router."""
-    inner = sorted(p.parent.relative_to(pkg) for p in pkg.rglob('SKILL.md') if p.parent != pkg)
+    inner = sorted(
+        p.parent.relative_to(pkg) for p in pkg.rglob('SKILL.md') if p.parent != pkg
+    )
     deep = [p.as_posix() for p in inner if len(p.parts) != 1]
     if deep:
         raise SystemExit(f'{HOST} package nests skills below its top level: {deep}')
     names = {p.name for p in inner}
-    shutil.copytree(pkg, out / ROUTER,
-                    ignore=lambda d, entries: names & set(entries) if Path(d) == pkg else ())
+    shutil.copytree(
+        pkg,
+        out / ROUTER,
+        ignore=lambda d, entries: names & set(entries) if Path(d) == pkg else (),
+    )
     for name in sorted(names):
         shutil.copytree(pkg / name, out / name)
     return out
@@ -170,22 +183,30 @@ def build(out: Path, catalog_files: Path = CATALOG_FILES) -> Path:
     # A signed name in the package would overwrite what NVSkills CI wrote, unseen by --check.
     signed = [p.relative_to(pkg).as_posix() for p in pkg.rglob('*') if p.name in SIGNED]
     if signed:
-        raise SystemExit(f'{HOST} package ships {signed}: written by NVSkills CI, not by hand')
+        raise SystemExit(
+            f'{HOST} package ships {signed}: written by NVSkills CI, not by hand'
+        )
     root = flatten(pkg, out / 'skills')
     errors = unresolved(root)
     if errors:
-        raise SystemExit(f'{HOST}, one directory per skill: {len(errors)} unresolved '
-                         f'reference(s): {errors[:3]}')
+        raise SystemExit(
+            f'{HOST}, one directory per skill: {len(errors)} unresolved '
+            f'reference(s): {errors[:3]}'
+        )
     if catalog_files.is_dir():
         skills = skill_dirs(root)
         for path in sorted(catalog_files.rglob('*')):
             if path.is_file():
                 rel = path.relative_to(catalog_files)
                 if path.name in SIGNED:
-                    raise SystemExit(f'{path}: {rel} is written by NVSkills CI, not by hand')
+                    raise SystemExit(
+                        f'{path}: {rel} is written by NVSkills CI, not by hand'
+                    )
                 if owner(rel) not in skills:
-                    raise SystemExit(f'{path}: {rel} is not the {CARD} or {EVALS}/ of a skill '
-                                     f'in the {HOST} package ({skills})')
+                    raise SystemExit(
+                        f'{path}: {rel} is not the {CARD} or {EVALS}/ of a skill '
+                        f'in the {HOST} package ({skills})'
+                    )
                 target = root / rel
                 if target.exists():
                     raise SystemExit(f'{path}: {rel} is already in the {HOST} package')
@@ -196,8 +217,9 @@ def build(out: Path, catalog_files: Path = CATALOG_FILES) -> Path:
         # published, so the gap is reported (`not_ready`) rather than fatal.
         gaps = missing(root)
         if gaps:
-            raise SystemExit(f'{catalog_files}: the catalog would drop these skills; add '
-                             f'{gaps}')
+            raise SystemExit(
+                f'{catalog_files}: the catalog would drop these skills; add {gaps}'
+            )
     return root
 
 
@@ -209,9 +231,12 @@ def not_ready(catalog_files: Path = CATALOG_FILES) -> list[str]:
 
 def signed_cards(root: Path) -> frozenset[str]:
     """The cards under `root` that NVSkills CI rewrote when it signed their skill."""
-    return frozenset(f'{skill}/{CARD}' for skill in skill_dirs(root)
-                     if (root / skill / 'skill.oms.sig').is_file()
-                     and (root / skill / CARD).is_file())
+    return frozenset(
+        f'{skill}/{CARD}'
+        for skill in skill_dirs(root)
+        if (root / skill / 'skill.oms.sig').is_file()
+        and (root / skill / CARD).is_file()
+    )
 
 
 def files(root: Path, kept: frozenset[str] = frozenset()) -> dict[str, bytes]:
@@ -239,9 +264,11 @@ def stale(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list[s
     with tempfile.TemporaryDirectory() as tmp:
         want = files(build(Path(tmp), catalog_files), kept)
     have = files(dest, kept)
-    return ([f'+ {p}' for p in sorted(want.keys() - have.keys())]
-            + [f'- {p}' for p in sorted(have.keys() - want.keys())]
-            + [f'~ {p}' for p in sorted(want.keys() & have.keys()) if want[p] != have[p]])
+    return (
+        [f'+ {p}' for p in sorted(want.keys() - have.keys())]
+        + [f'- {p}' for p in sorted(have.keys() - want.keys())]
+        + [f'~ {p}' for p in sorted(want.keys() & have.keys()) if want[p] != have[p]]
+    )
 
 
 def publish(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list[str]:
@@ -269,8 +296,11 @@ def publish(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--check', action='store_true',
-                    help=f'exit 1 if {PUBLISHED.relative_to(REPO)}/ is out of date')
+    ap.add_argument(
+        '--check',
+        action='store_true',
+        help=f'exit 1 if {PUBLISHED.relative_to(REPO)}/ is out of date',
+    )
     args = ap.parse_args()
     where = PUBLISHED.relative_to(REPO)
     changes = stale() if args.check else publish()
@@ -279,14 +309,20 @@ def main() -> None:
     if not changes:
         print(f'{where}/ is up to date')
     elif args.check:
-        print(f'{where}/ is out of date: run {Path(__file__).relative_to(REPO)}', file=sys.stderr)
+        print(
+            f'{where}/ is out of date: run {Path(__file__).relative_to(REPO)}',
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     else:
         print(f'{where}/ refreshed: {len(changes)} file(s)')
     todo = not_ready()
     if todo:
-        print(f'not publishable yet: the catalog would drop every skill until '
-              f'{CATALOG_FILES.relative_to(REPO)}/ supplies {todo}', file=sys.stderr)
+        print(
+            f'not publishable yet: the catalog would drop every skill until '
+            f'{CATALOG_FILES.relative_to(REPO)}/ supplies {todo}',
+            file=sys.stderr,
+        )
 
 
 if __name__ == '__main__':

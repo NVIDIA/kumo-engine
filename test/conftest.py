@@ -5,7 +5,7 @@
 # Register fixtures defined under test/fixtures/ so they're discoverable
 # session-wide without per-test imports. Currently exposes
 # ``dg_indexed_financial_graph`` (see test/fixtures/dg_indexed_graph.py).
-pytest_plugins = ["test.fixtures.dg_indexed_graph"]
+pytest_plugins = ['test.fixtures.dg_indexed_graph']
 
 import asyncio  # noqa: E402
 import copy  # noqa: E402
@@ -21,39 +21,37 @@ import time  # noqa: E402
 import uuid  # noqa: E402
 from collections.abc import Callable  # noqa: E402
 from contextlib import ExitStack  # noqa: E402
-from test.fixtures.backend_cache import (  # noqa: E402, F401
-    auto_setup_kumo_backend,
-    backend_cache,
+from typing import (  # noqa: E402
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Union,
 )
-from test.fixtures.local import (  # noqa: E402, F401
-    tempdir,
-    valid_fake_private_key,
-)
-from typing import Dict  # noqa: E402
-from typing import Generator  # noqa: E402
-from typing import List  # noqa: E402
-from typing import Optional  # noqa: E402
-from typing import Union  # noqa: E402
 from uuid import uuid4  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 from databricks.sdk import WorkspaceClient  # noqa: E402
-from databricks.sdk.service.catalog import PermissionsChange  # noqa: E402
-from databricks.sdk.service.catalog import Privilege  # noqa: E402
-from databricks.sdk.service.catalog import SecurableType  # noqa: E402
-from databricks.sdk.service.catalog import VolumeType  # noqa: E402
+from databricks.sdk.service.catalog import (  # noqa: E402
+    PermissionsChange,
+    Privilege,
+    SecurableType,
+    VolumeType,
+)
 from kumo_core import embedding_models  # noqa: E402
 from kumo_core.glove import TokenEmbeddingTable  # noqa: E402
 from kumo_core.train.mapping import NODE_INDEX_COLUMN  # noqa: E402
 from kumo_core.types import TaskType  # noqa: E402
-from kumoapi.encoder import Datetime  # noqa: E402
-from kumoapi.encoder import Index  # noqa: E402
-from kumoapi.encoder import MaxLogNumerical  # noqa: E402
-from kumoapi.encoder import MultiCategorical  # noqa: E402
-from kumoapi.encoder import Numerical  # noqa: E402
-from kumoapi.encoder import TextEmbedding  # noqa: E402
+from kumoapi.encoder import (  # noqa: E402
+    Datetime,
+    Index,
+    MaxLogNumerical,
+    MultiCategorical,
+    Numerical,
+    TextEmbedding,
+)
 from kumoapi.typing import Dtype, Stype  # noqa: E402
 from snowflake.snowpark import Session as SnowparkSession  # noqa: E402
 
@@ -62,8 +60,7 @@ from io_utils import fsutil, kumo_dataclass  # noqa: E402
 from io_utils.databricks import DatabricksConnectionInfo  # noqa: E402
 from io_utils.fsutil.uri import UCURI  # noqa: E402
 from kumo.connector import snowflake_connector  # noqa: E402
-from kumo.connector.composite_file_connector import \
-    CompositeFileConnector  # noqa: E402
+from kumo.connector.composite_file_connector import CompositeFileConnector  # noqa: E402
 from kumo.connector.csv_connector import CSVConnector  # noqa: E402
 from kumo.connector.parquet_connector import ParquetConnector  # noqa: E402
 from kumo.graph import column as graph_column  # noqa: E402
@@ -80,6 +77,14 @@ from kumo.testing.gcs import setup_gcs_credentials  # noqa: E402
 from kumo.testing.generator import EdgeSpec, GraphSpec, TableSpec  # noqa: E402
 from kumo.testing.snowflake import setup_snowflake_credentials  # noqa: E402
 from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
+from test.fixtures.backend_cache import (  # noqa: E402, F401
+    auto_setup_kumo_backend,
+    backend_cache,
+)
+from test.fixtures.local import (  # noqa: E402, F401
+    tempdir,
+    valid_fake_private_key,
+)
 
 # Set the test IAM role for get_temporary_aws_credential fallback. This
 # allows tests that exercise warehouse → S3 flows (export/write) to
@@ -87,12 +92,14 @@ from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
 # OIDC tokens are not available). OIDC-migrated workflows override this
 # with the dedicated preprod test role after configuring their scoped
 # workflow identity; legacy workflows retain the existing default.
-os.environ.setdefault('AWS_TEST_ROLE_ARN',
-                      'arn:aws:iam::926922431314:role/unittest-iam-role')
+os.environ.setdefault(
+    'AWS_TEST_ROLE_ARN', 'arn:aws:iam::926922431314:role/unittest-iam-role'
+)
 
 _TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS = 30
-_TEMPORAL_CLI_VERSION_FILE = (pathlib.Path(__file__).resolve().parents[1] /
-                              '.temporal-cli-version')
+_TEMPORAL_CLI_VERSION_FILE = (
+    pathlib.Path(__file__).resolve().parents[1] / '.temporal-cli-version'
+)
 
 # Production code resolves GloVe artifacts through deploy_env_config.json. Keep
 # the public dataset fallback for tests of that configuration path; the
@@ -128,9 +135,7 @@ def configure_test_glove_artifacts(tmp_path_factory):
         'wow',
         'cool',
     ]
-    pd.DataFrame({
-        'index': tokens
-    }).to_parquet(artifacts / 'glove_6B_index.parquet')
+    pd.DataFrame({'index': tokens}).to_parquet(artifacts / 'glove_6B_index.parquet')
     np.save(
         artifacts / 'glove_6B_50d_emb.npy',
         np.ones((len(tokens), 50), dtype=np.float32),
@@ -155,32 +160,34 @@ def _env_var_enabled(name: str) -> bool:
 
 
 def pytest_addoption(parser):
-    parser.addoption("--runnightly", action="store_true", default=False,
-                     help="run nightly tests")
-    parser.addoption('--runsnowflake', action='store_true', default=False,
-                     help="run snowflake tests")
+    parser.addoption(
+        '--runnightly', action='store_true', default=False, help='run nightly tests'
+    )
+    parser.addoption(
+        '--runsnowflake', action='store_true', default=False, help='run snowflake tests'
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if not config.getoption("--runnightly"):
-        skip_nightly = pytest.mark.skip(
-            reason="need --runnightly option to run")
+    if not config.getoption('--runnightly'):
+        skip_nightly = pytest.mark.skip(reason='need --runnightly option to run')
         for item in items:
-            if "nightly" in item.keywords:
+            if 'nightly' in item.keywords:
                 item.add_marker(skip_nightly)
 
     # check if you got an option like --key=snowflake
-    if not config.getoption("--runsnowflake"):
-        skip_snowflake = pytest.mark.skip(
-            reason="need --runsnowflake option to run")
+    if not config.getoption('--runsnowflake'):
+        skip_snowflake = pytest.mark.skip(reason='need --runsnowflake option to run')
         for item in items:
-            if "snowflake" in item.keywords:
+            if 'snowflake' in item.keywords:
                 item.add_marker(skip_snowflake)
     else:
-        skip_snowflake = pytest.mark.skip(reason="skip because not snowflake")
+        skip_snowflake = pytest.mark.skip(reason='skip because not snowflake')
         for item in items:
-            if ("snowflake" not in item.keywords
-                    and 'enable_snowflake_test' not in item.fixturenames):
+            if (
+                'snowflake' not in item.keywords
+                and 'enable_snowflake_test' not in item.fixturenames
+            ):
                 item.add_marker(skip_snowflake)
 
 
@@ -193,9 +200,10 @@ def pytest_runtest_makereport(item, call):
     rep = outcome.get_result()
     # Setup failures almost always mean fixtures didn't come up and
     # there is no temporal_client to dump anything from.
-    if rep.failed and rep.when in ("call", "teardown"):
+    if rep.failed and rep.when in ('call', 'teardown'):
         from test import _flake_diagnostics
-        tc = item.funcargs.get("temporal_client")
+
+        tc = item.funcargs.get('temporal_client')
         _flake_diagnostics.run_on_failure(item.nodeid, tc)
 
 
@@ -207,22 +215,25 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     # Normal setup runs after pytest's skip hook and before fixture setup.
     # Keep the base identity until all session workers have been torn down.
     marker = item.get_closest_marker('bigquery_credentials')
-    needs_gcs = (item.get_closest_marker('gcs_credentials') is not None
-                 or 'gcs_credentials' in item.fixturenames)
+    needs_gcs = (
+        item.get_closest_marker('gcs_credentials') is not None
+        or 'gcs_credentials' in item.fixturenames
+    )
     if marker is None and not needs_gcs:
         return
     if _GCP_SESSION not in item.config.stash:
         if item.config.stash.get(GCP_WORKERS_STARTED, False):
             raise RuntimeError(
                 'GCP tests cannot reuse workers started before credential setup; '
-                'run GCP integration modules in a separate pytest invocation')
+                'run GCP integration modules in a separate pytest invocation'
+            )
         session = ExitStack()
         item.config.add_cleanup(session.close)
         session.enter_context(setup_gcs_credentials())
         item.config.stash[_GCP_SESSION] = session
     identity = BigQueryIdentity.DEFAULT
     if marker is not None:
-        identity, = marker.args
+        (identity,) = marker.args
     scoped = ExitStack()
     item.stash[_GCP_TEST] = scoped
     scoped.enter_context(setup_gcs_credentials())
@@ -247,23 +258,25 @@ def gcs_credentials() -> None:
 
 def pytest_configure(config):
     config.addinivalue_line('markers', 'gcs_credentials: live GCS prerequisite')
-    config.addinivalue_line('markers', 'bigquery_credentials(identity): BigQuery identity')
+    config.addinivalue_line(
+        'markers', 'bigquery_credentials(identity): BigQuery identity'
+    )
     # register nightly marker
-    config.addinivalue_line("markers",
-                            ("nightly(name): Used to mark long-running"
-                             " tests that are only run nightly."))
-    config.addinivalue_line("markers",
-                            ("snowflake(name): Used to mark snowflake test"))
+    config.addinivalue_line(
+        'markers',
+        ('nightly(name): Used to mark long-running tests that are only run nightly.'),
+    )
+    config.addinivalue_line('markers', ('snowflake(name): Used to mark snowflake test'))
 
     if not _env_var_enabled(_ENABLE_FSUTIL_DEBUG_LOGS_ENV):
         logging.getLogger('io_utils.fsutil').setLevel(logging.INFO)
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope='session', autouse=True)
 def close_test_state_dbs():
     from statedb.db import StateDB
 
-    original_descriptor = StateDB.__dict__["open_sqlite"]
+    original_descriptor = StateDB.__dict__['open_sqlite']
     original_open = StateDB.open_sqlite
     opened = []
 
@@ -282,31 +295,34 @@ def close_test_state_dbs():
                 asyncio.run(state_db.close())
             except Exception:  # pylint: disable=broad-except
                 logging.getLogger(__name__).exception(
-                    "Failed to close a test StateDB sqlite pool")
+                    'Failed to close a test StateDB sqlite pool'
+                )
 
 
 def pytest_sessionfinish(session, exitstatus):
     try:
         from async_utils import event_loop_watchdog
+
         event_loop_watchdog._reset_global_watchdog_for_tests()
     except Exception:  # pylint: disable=broad-except
         logging.getLogger(__name__).exception(
-            "Failed to stop event-loop watchdog during pytest teardown")
+            'Failed to stop event-loop watchdog during pytest teardown'
+        )
 
 
 def _assert_loopback_sockets_available_for_temporal() -> None:
     socket_error = None
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", 0))
+            sock.bind(('127.0.0.1', 0))
     except OSError as exc:
         socket_error = repr(exc)
     if socket_error is not None:
         pytest.fail(
-            "Temporal local test server cannot start because this environment "
-            f"does not allow loopback TCP sockets: {socket_error}. Run these "
-            "tests outside the socket-restricted sandbox, or set "
-            "TEMPORAL_SERVER=cloud to use Temporal Cloud.",
+            'Temporal local test server cannot start because this environment '
+            f'does not allow loopback TCP sockets: {socket_error}. Run these '
+            'tests outside the socket-restricted sandbox, or set '
+            'TEMPORAL_SERVER=cloud to use Temporal Cloud.',
             pytrace=False,
         )
 
@@ -321,7 +337,7 @@ def _temporal_dev_server_kwargs() -> dict[str, str]:
     return {'dev_server_download_version': f'v{version}'}
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def temporal_workflow_env():
     """Start a version-pinned Temporal dev server once per pytest session.
 
@@ -333,7 +349,7 @@ def temporal_workflow_env():
     event loop. A dedicated event loop is used only for server startup and
     shutdown; individual async tests keep their own function-scoped loops.
     """
-    if os.environ.get("TEMPORAL_SERVER", "").lower() == "cloud":
+    if os.environ.get('TEMPORAL_SERVER', '').lower() == 'cloud':
         yield None
         return
 
@@ -346,19 +362,21 @@ def temporal_workflow_env():
     from temporalio.testing import WorkflowEnvironment
 
     _SEARCH_ATTRS = {
-        "instance_id": IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD,
-        "rpc_method": IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD,
-        "rpc_service": IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD,
+        'instance_id': IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD,
+        'rpc_method': IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD,
+        'rpc_service': IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD,
     }
 
     async def _start() -> WorkflowEnvironment:
-        env = await WorkflowEnvironment.start_local(namespace="devtest",
-                                                    **dev_server_kwargs)
+        env = await WorkflowEnvironment.start_local(
+            namespace='devtest', **dev_server_kwargs
+        )
         await env.client.operator_service.add_search_attributes(
             AddSearchAttributesRequest(
                 search_attributes=_SEARCH_ATTRS,
-                namespace="devtest",
-            ))
+                namespace='devtest',
+            )
+        )
         return env
 
     try:
@@ -366,23 +384,26 @@ def temporal_workflow_env():
             asyncio.wait_for(
                 _start(),
                 timeout=_TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS,
-            ))
+            )
+        )
     except asyncio.TimeoutError:
         message = (
-            "Timed out after "
-            f"{_TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS}s starting the local "
-            "Temporal test server. Run these tests outside the "
-            "socket-restricted sandbox or set TEMPORAL_SERVER=cloud.")
+            'Timed out after '
+            f'{_TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS}s starting the local '
+            'Temporal test server. Run these tests outside the '
+            'socket-restricted sandbox or set TEMPORAL_SERVER=cloud.'
+        )
         if downloads_cli:
-            message += (" To skip the Temporal CLI download, set "
-                        "KUMO_TEMPORAL_CLI_PATH to a local `temporal` binary.")
+            message += (
+                ' To skip the Temporal CLI download, set '
+                'KUMO_TEMPORAL_CLI_PATH to a local `temporal` binary.'
+            )
         pytest.fail(message, pytrace=False)
     # Required because some activities call AutoRpcClientConfig.parse_from_env()
     # which falls back to deploy_env() and reads global DeployEnvConfig singleton
     # for the Temporal address.
     with pytest.MonkeyPatch.context() as mp:
-        mp.setenv('TEMPORAL_ADDRESS',
-                  env.client.service_client.config.target_host)
+        mp.setenv('TEMPORAL_ADDRESS', env.client.service_client.config.target_host)
         try:
             yield env
         finally:
@@ -391,7 +412,7 @@ def temporal_workflow_env():
 
 @pytest.fixture()
 def enable_snowflake_test(request):
-    return request.config.getoption("--runsnowflake")
+    return request.config.getoption('--runsnowflake')
 
 
 # Fixture to mock time.time() and time.sleep() in tests
@@ -408,8 +429,8 @@ def mock_time(monkeypatch):
             self.current_time += x
 
     mock_time = MockTime()
-    monkeypatch.setattr(time, "time", mock_time.time)
-    monkeypatch.setattr(time, "sleep", mock_time.sleep)
+    monkeypatch.setattr(time, 'time', mock_time.time)
+    monkeypatch.setattr(time, 'sleep', mock_time.sleep)
     yield mock_time
 
 
@@ -437,7 +458,7 @@ def _create_graph(
         root_dir (str, optional): the directory where the graph data will be
             located. Example folder is :obj:`test/csv_data`.
     """
-    graph_name = f"{name}{'_TEMPORAL' if temporal else ''}"
+    graph_name = f'{name}{"_TEMPORAL" if temporal else ""}'
 
     if not parquet:
         connector_name = 'csv'
@@ -449,8 +470,7 @@ def _create_graph(
             root = osp.join(root_dir, name)
             connector_name = name
         else:
-            root = osp.join(osp.dirname(osp.realpath(__file__)), 'csv_data',
-                            name)
+            root = osp.join(osp.dirname(osp.realpath(__file__)), 'csv_data', name)
         graph = Graph(name=f'{graph_name}_csv')
         graph.connect(CSVConnector(connector_name, root, na_values='?'))
     else:
@@ -458,8 +478,7 @@ def _create_graph(
         # training and prediction tables in the V2 API. Drop once our testing
         # infrastructure is cleaned up to better support persisting pandas
         # connectors:
-        root = osp.join(osp.dirname(osp.realpath(__file__)), 'parquet_data',
-                        name)
+        root = osp.join(osp.dirname(osp.realpath(__file__)), 'parquet_data', name)
         graph = Graph(name=f'{graph_name}_parquet')
         graph.connect(ParquetConnector('parquet', root))
 
@@ -507,6 +526,7 @@ def _seed_file_backed_graph_col_stats(graph: Graph) -> None:
 
     from kumo.connector.file_connector import FileConnector
     from kumo.connector.utils import cast_df_to_dtypes
+
     seed_logger = logging.getLogger(__name__)
     by_connector: Dict[str, List[Table]] = {}
     for table in graph.tables:
@@ -529,8 +549,10 @@ def _seed_file_backed_graph_col_stats(graph: Graph) -> None:
                 df = connector.read_table(table.source_name)
             except Exception as exc:  # pragma: no cover - defensive
                 seed_logger.warning(
-                    "Skipping col-stats seed for %s: read_table failed: %s",
-                    table.source_name, exc)
+                    'Skipping col-stats seed for %s: read_table failed: %s',
+                    table.source_name,
+                    exc,
+                )
                 continue
             # CSV reads come back as object dtype even when the graph
             # config declares numeric / date / bool columns; coerce them
@@ -555,13 +577,14 @@ def _seed_file_backed_graph_col_stats(graph: Graph) -> None:
                 meta_list = connector.get_table_metadata([table.source_name])
             except Exception as exc:  # pragma: no cover - defensive
                 seed_logger.warning(
-                    "Col-stats seed: get_table_metadata failed for %s: %s",
-                    table.source_name, exc)
+                    'Col-stats seed: get_table_metadata failed for %s: %s',
+                    table.source_name,
+                    exc,
+                )
                 meta_list = []
             if meta_list:
                 for meta_col in meta_list[0].cols:
-                    if (meta_col.dtype is not None
-                            and meta_col.name in df.columns):
+                    if meta_col.dtype is not None and meta_col.name in df.columns:
                         dtypes_to_cast.setdefault(meta_col.name, meta_col.dtype)
             for col in table.cols:
                 if col.dtype is None or col.name not in df.columns:
@@ -569,8 +592,11 @@ def _seed_file_backed_graph_col_stats(graph: Graph) -> None:
                 # Explicit `add_col(...)` dtype overrides the connector's
                 # metadata-inferred dtype.
                 dtypes_to_cast[col.name] = col.dtype
-            if table.has_pkey() and table.pkey.dtype is not None and (
-                    table.pkey.name in df.columns):
+            if (
+                table.has_pkey()
+                and table.pkey.dtype is not None
+                and (table.pkey.name in df.columns)
+            ):
                 dtypes_to_cast[table.pkey.name] = table.pkey.dtype
             if dtypes_to_cast:
                 df = df.copy()
@@ -578,25 +604,29 @@ def _seed_file_backed_graph_col_stats(graph: Graph) -> None:
                     df = cast_df_to_dtypes(df, dtypes_to_cast)
                 except Exception as exc:  # pragma: no cover - defensive
                     seed_logger.warning(
-                        "Col-stats seed: dtype cast failed for %s: %s",
-                        table.source_name, exc)
+                        'Col-stats seed: dtype cast failed for %s: %s',
+                        table.source_name,
+                        exc,
+                    )
             table_dfs[table.source_name] = df
-            primary_keys[table.source_name] = (table.pkey.name
-                                               if table.has_pkey() else None)
-            time_cols[table.source_name] = (table.time_col.name
-                                            if table.has_time_col() else None)
+            primary_keys[table.source_name] = (
+                table.pkey.name if table.has_pkey() else None
+            )
+            time_cols[table.source_name] = (
+                table.time_col.name if table.has_time_col() else None
+            )
         if table_dfs:
             try:
-                _seed_parquet_col_stats(connector, table_dfs, primary_keys,
-                                        time_cols)
+                _seed_parquet_col_stats(connector, table_dfs, primary_keys, time_cols)
             except Exception as exc:  # pragma: no cover - defensive
                 seed_logger.warning(
-                    "Col-stats seed failed for connector %s: %s",
-                    connector.name, exc)
+                    'Col-stats seed failed for connector %s: %s', connector.name, exc
+                )
 
 
-def _create_s3_graph(name: str, tables: Optional[List[str]] = None,
-                     infer: bool = False) -> Graph:
+def _create_s3_graph(
+    name: str, tables: Optional[List[str]] = None, infer: bool = False
+) -> Graph:
     r"""
     Args:
         tables (list, optional): list of tables to be included in the graph.
@@ -653,8 +683,7 @@ def _create_snowflake_graph(
             metadata_file = 'metadata_timecol.json'
     else:
         metadata_file = 'metadata.json'
-    graph.add_from_config(osp.join(root, metadata_file),
-                          data_source='snowflake')
+    graph.add_from_config(osp.join(root, metadata_file), data_source='snowflake')
     graph = filter_tables(graph, tables)
 
     if infer:
@@ -719,8 +748,9 @@ def _generate_graph(
     # repeatedly - this results in using each Dtype at least once without a
     # huge encoding cost if there are many tables in the test graph
     for table_id, _ in enumerate(row_sizes):
-        table_specs[table_id] = TableSpec(row_sizes[table_id],
-                                          feat_cols[min(table_id, 2)])
+        table_specs[table_id] = TableSpec(
+            row_sizes[table_id], feat_cols[min(table_id, 2)]
+        )
     edge_specs = {}
 
     num_tables = len(table_specs.keys())
@@ -762,30 +792,92 @@ def tiny_node_pred_graph(
     action_table_path = osp.join(tables_path, 'actions.csv')
     # Create entity table
     if add_entity_end_time:
-        pd.DataFrame({
-            'entity_id': [10, 20],
-            'end_time': ['2022-02-08', '2022-02-08'],
-        }).to_csv(entity_table_path, index=False)
+        pd.DataFrame(
+            {
+                'entity_id': [10, 20],
+                'end_time': ['2022-02-08', '2022-02-08'],
+            }
+        ).to_csv(entity_table_path, index=False)
     else:
-        pd.DataFrame({
-            'entity_id': [10, 20],
-        }).to_csv(entity_table_path, index=False)
+        pd.DataFrame(
+            {
+                'entity_id': [10, 20],
+            }
+        ).to_csv(entity_table_path, index=False)
     # Create actions table
-    pd.DataFrame({
-        'entity_id_in_actions': [
-            10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-            10, 10, 10, 10
-        ],
-        'amount':
-        [1, 1, 1, 1, 1, 1, 20, 15, 23, 47, 38, 44, 41, 40, 1, 1, 1, 1, 1, 1, 1],
-        'date': [
-            '2022-02-08', '2022-02-07', '2022-02-06', '2022-02-05',
-            '2022-02-04', '2022-02-03', '2022-02-02', '2022-02-01',
-            '2022-01-31', '2022-01-30', '2022-01-29', '2022-01-28',
-            '2022-01-27', '2022-01-26', '2022-01-25', '2022-01-24',
-            '2022-01-23', '2022-01-22', '2022-01-21', '2022-01-20', '2022-01-19'
-        ]
-    }).to_csv(action_table_path, index=False)
+    pd.DataFrame(
+        {
+            'entity_id_in_actions': [
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+                10,
+            ],
+            'amount': [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                20,
+                15,
+                23,
+                47,
+                38,
+                44,
+                41,
+                40,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ],
+            'date': [
+                '2022-02-08',
+                '2022-02-07',
+                '2022-02-06',
+                '2022-02-05',
+                '2022-02-04',
+                '2022-02-03',
+                '2022-02-02',
+                '2022-02-01',
+                '2022-01-31',
+                '2022-01-30',
+                '2022-01-29',
+                '2022-01-28',
+                '2022-01-27',
+                '2022-01-26',
+                '2022-01-25',
+                '2022-01-24',
+                '2022-01-23',
+                '2022-01-22',
+                '2022-01-21',
+                '2022-01-20',
+                '2022-01-19',
+            ],
+        }
+    ).to_csv(action_table_path, index=False)
 
     # ``data_version`` is set explicitly so ``Table.data_version`` returns
     # a string straight from ``self._data_version`` instead of going
@@ -796,30 +888,46 @@ def tiny_node_pred_graph(
     # ``DEFAULT_DATA_VERSION = '-1'`` — otherwise ``has_valid_data_version``
     # returns False and the global-materialize-dir assert fires.
     if add_entity_end_time:
-        entity = Table('entity', 'csv',
-                       graph_column.PrimaryKey('entity_id', Dtype.int32),
-                       source_name='entity', end_time_col='end_time',
-                       data_version='1')
+        entity = Table(
+            'entity',
+            'csv',
+            graph_column.PrimaryKey('entity_id', Dtype.int32),
+            source_name='entity',
+            end_time_col='end_time',
+            data_version='1',
+        )
     else:
-        entity = Table('entity', 'csv',
-                       graph_column.PrimaryKey('entity_id', Dtype.int32),
-                       source_name='entity', data_version='1')
+        entity = Table(
+            'entity',
+            'csv',
+            graph_column.PrimaryKey('entity_id', Dtype.int32),
+            source_name='entity',
+            data_version='1',
+        )
     tables = [
         entity,
         Table(
-            'actions', 'csv',
-            graph_column.PrimaryKey('entity_id_in_actions', Dtype.int32), cols=[
-                graph_column.Column('amount', dtype=Dtype.int32,
-                                    stype=Stype.numerical)
-            ], source_name='actions', fkeys=[
-                graph_column.ForeignKey('entity_id_in_actions', 'csv.entity',
-                                        'entity_id')
-            ], time_col=graph_column.TimeColumn('date', Dtype.date),
-            data_version='1')
+            'actions',
+            'csv',
+            graph_column.PrimaryKey('entity_id_in_actions', Dtype.int32),
+            cols=[
+                graph_column.Column('amount', dtype=Dtype.int32, stype=Stype.numerical)
+            ],
+            source_name='actions',
+            fkeys=[
+                graph_column.ForeignKey(
+                    'entity_id_in_actions', 'csv.entity', 'entity_id'
+                )
+            ],
+            time_col=graph_column.TimeColumn('date', Dtype.date),
+            data_version='1',
+        ),
     ]
-    graph = Graph(name=name,
-                  data_source_dict={'csv': CSVConnector('csv', tables_path)},
-                  tables=tables)
+    graph = Graph(
+        name=name,
+        data_source_dict={'csv': CSVConnector('csv', tables_path)},
+        tables=tables,
+    )
     return graph
 
 
@@ -888,143 +996,179 @@ def node_pred_test_graph(
             'USER_ID': [0, 1, 2, 3],
             'AGE': [19, 20, 21, 22],
             'LOCATION_ID': [0, 1, 0, 1],
-        }, )
+        },
+    )
     if user_with_nonexistent_location:
         users['LOCATION_ID'][3] = 5  # 5 is a non-existent location
     if add_na_pkeys:
         users.loc[4] = [pd.NA, 23, pd.NA]
 
     new_users = pd.DataFrame(
-        {
-            'USER_ID': [4, 5],
-            'AGE': [20, 21],
-            'LOCATION_ID': [0, 1]
-        }, )
+        {'USER_ID': [4, 5], 'AGE': [20, 21], 'LOCATION_ID': [0, 1]},
+    )
     if users_time_col_fkey:
         users.insert(
-            2, 'CREATE_TIME',
+            2,
+            'CREATE_TIME',
             pd.to_datetime(
-                ['1989-12-01', '1989-12-10', '1990-01-02',
-                 '1990-01-03']).astype('datetime64[ns]'))
+                ['1989-12-01', '1989-12-10', '1990-01-02', '1990-01-03']
+            ).astype('datetime64[ns]'),
+        )
         users.insert(2, 'FIRST_TRANSACT', [1, 2, 3, 4])
 
     users = users.set_index('USER_ID')
-    locations = pd.DataFrame({
-        'LOCATION_ID': [0, 1],
-        'NAME': ['Pallet Town', 'Cerulean City'],
-        'DESCRIPTION': [
-            'Pallet Town is a fictional town in Kanto.',
-            'Cerulean City is a seaside city located in northern Kanto.'
-        ],
-    })
+    locations = pd.DataFrame(
+        {
+            'LOCATION_ID': [0, 1],
+            'NAME': ['Pallet Town', 'Cerulean City'],
+            'DESCRIPTION': [
+                'Pallet Town is a fictional town in Kanto.',
+                'Cerulean City is a seaside city located in northern Kanto.',
+            ],
+        }
+    )
     if add_na_pkeys:
         locations.loc[2] = [pd.NA, 'MissingNO.', '']
     user_id_col = 'uSER_ID' if rename_transaction_fkey else 'USER_ID'
     transactions_timestamps = [
-        '1990-01-01', '1990-01-01', '1990-01-01', '1990-01-01', '1990-01-03',
-        '1990-01-03', '1990-01-04', '1990-01-04', '1990-01-04', '1990-01-05'
+        '1990-01-01',
+        '1990-01-01',
+        '1990-01-01',
+        '1990-01-01',
+        '1990-01-03',
+        '1990-01-03',
+        '1990-01-04',
+        '1990-01-04',
+        '1990-01-04',
+        '1990-01-05',
     ]
 
     if add_high_precision_timestamp:
         for i in range(len(transactions_timestamps)):
-            transactions_timestamps[i] += " 17:28:34.951234"
+            transactions_timestamps[i] += ' 17:28:34.951234'
 
-    transactions = pd.DataFrame({
-        user_id_col: [0, 1, 2, 3, 1, 3, 3, 0, 1, 0],
-        'AMOUNT': [0.0, 0.0, 0.0, 0.0, 150.0, 20.0, 30.0, 30.0, 150.0, 0.0],
-        'CATEGORY': [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        'BANK_ID': [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        'IS_ONLINE': [
-            True,
-            False,
-            False,
-            False,
-            False if not add_na_booleans else None,
-            True,
-            True,
-            False,
-            False,
-            True,
-        ],
-        'DATE':
-        transactions_timestamps,
-        'TYPE': ['A', 'B', 'C', 'D', 'E'] * 2,
-        'MULTI_STATUS_PIPE': ['A|B', 'C|D', 'A|B|C', 'A|B|C|D', 'B'] * 2,
-        'MULTI_STATUS_COMMA': ['A,B', 'C,D', 'A,B,C', 'A,B,C,D', 'B'] * 2,
-        'MULTI_STATUS_MIXED_COMMA':
-        ['A,|B', '|C,D', 'A,|B,|C', 'A,|B,|C,D', '|B'] * 2,
-        'MULTI_STATUS_MIXED_PIPE':
-        ['A|,B', ',C|D', 'A|,B|,C', 'A|,B|,C|D', ',B'] * 2,
-    })
-    transactions_with_pkey = pd.DataFrame({
-        user_id_col: [0, 1, 2, 3, 1, 3, 3, 0, 1, 0],
-        'TRANSACTION_ID': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        'AMOUNT': [0.0, 0.0, 0.0, 0.0, 150.0, 20.0, 30.0, 30.0, 150.0, 0.0],
-        'CATEGORY': [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        'BANK_ID': [0, 0, 0, 0, 0, 1, 1, 1, 2 if add_dangling_fkeys else 1, 1],
-        'IS_ONLINE': [
-            True,
-            False,
-            False,
-            False,
-            False if not add_na_booleans else None,
-            True,
-            True,
-            False,
-            False,
-            True,
-        ],
-        'DATE':
-        transactions_timestamps,
-        'TYPE': ['A', 'B', 'C', 'D', 'E'] * 2,
-    })
+    transactions = pd.DataFrame(
+        {
+            user_id_col: [0, 1, 2, 3, 1, 3, 3, 0, 1, 0],
+            'AMOUNT': [0.0, 0.0, 0.0, 0.0, 150.0, 20.0, 30.0, 30.0, 150.0, 0.0],
+            'CATEGORY': [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+            'BANK_ID': [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+            'IS_ONLINE': [
+                True,
+                False,
+                False,
+                False,
+                False if not add_na_booleans else None,
+                True,
+                True,
+                False,
+                False,
+                True,
+            ],
+            'DATE': transactions_timestamps,
+            'TYPE': ['A', 'B', 'C', 'D', 'E'] * 2,
+            'MULTI_STATUS_PIPE': ['A|B', 'C|D', 'A|B|C', 'A|B|C|D', 'B'] * 2,
+            'MULTI_STATUS_COMMA': ['A,B', 'C,D', 'A,B,C', 'A,B,C,D', 'B'] * 2,
+            'MULTI_STATUS_MIXED_COMMA': ['A,|B', '|C,D', 'A,|B,|C', 'A,|B,|C,D', '|B']
+            * 2,
+            'MULTI_STATUS_MIXED_PIPE': ['A|,B', ',C|D', 'A|,B|,C', 'A|,B|,C|D', ',B']
+            * 2,
+        }
+    )
+    transactions_with_pkey = pd.DataFrame(
+        {
+            user_id_col: [0, 1, 2, 3, 1, 3, 3, 0, 1, 0],
+            'TRANSACTION_ID': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'AMOUNT': [0.0, 0.0, 0.0, 0.0, 150.0, 20.0, 30.0, 30.0, 150.0, 0.0],
+            'CATEGORY': [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+            'BANK_ID': [0, 0, 0, 0, 0, 1, 1, 1, 2 if add_dangling_fkeys else 1, 1],
+            'IS_ONLINE': [
+                True,
+                False,
+                False,
+                False,
+                False if not add_na_booleans else None,
+                True,
+                True,
+                False,
+                False,
+                True,
+            ],
+            'DATE': transactions_timestamps,
+            'TYPE': ['A', 'B', 'C', 'D', 'E'] * 2,
+        }
+    )
     if small_target_values:
         transactions['AMOUNT'] /= 10000
     if add_na_timestamps:
-        transactions.loc[10] = [
-            0, 0.0, 0, 0, True, pd.NA, 'A', None, None, None, None
-        ]
+        transactions.loc[10] = [0, 0.0, 0, 0, True, pd.NA, 'A', None, None, None, None]
         transactions.loc[11] = [
-            1, 100.0, 0, 0, True, pd.NA, 'B', None, None, None, None
+            1,
+            100.0,
+            0,
+            0,
+            True,
+            pd.NA,
+            'B',
+            None,
+            None,
+            None,
+            None,
         ]
     if add_na_pkeys:
         idx = len(transactions)
         transactions.loc[idx] = [
-            pd.NA, 0.0, 0, 0, True, '1990-01-03', 'A', None, None, None, None
+            pd.NA,
+            0.0,
+            0,
+            0,
+            True,
+            '1990-01-03',
+            'A',
+            None,
+            None,
+            None,
+            None,
         ]
     # Convert to datetime with explicit nanosecond precision to ensure
     # compatibility with PyArrow 14
-    transactions['DATE'] = pd.to_datetime(
-        transactions['DATE']).astype('datetime64[ns]')
+    transactions['DATE'] = pd.to_datetime(transactions['DATE']).astype('datetime64[ns]')
     transactions_with_pkey['DATE'] = pd.to_datetime(
-        transactions_with_pkey['DATE']).astype('datetime64[ns]')
-    sessions = pd.DataFrame({
-        'USER_ID': [1, 3, 1, 3],
-        'DURATION': [1.0, 1.0, 1.0, 1.0],
-        'DATE': ['1990-01-02', '1990-01-02', '1990-01-04', '1990-01-04'],
-    })
+        transactions_with_pkey['DATE']
+    ).astype('datetime64[ns]')
+    sessions = pd.DataFrame(
+        {
+            'USER_ID': [1, 3, 1, 3],
+            'DURATION': [1.0, 1.0, 1.0, 1.0],
+            'DATE': ['1990-01-02', '1990-01-02', '1990-01-04', '1990-01-04'],
+        }
+    )
     if add_na_timestamps:
         sessions.loc[4] = [1, 1.0, pd.NA]
     if add_na_pkeys:
         idx = len(sessions)
         sessions.loc[idx] = [pd.NA, 1.0, '1990-01-03']
     sessions['DATE'] = pd.to_datetime(sessions['DATE']).astype('datetime64[ns]')
-    orders = pd.DataFrame({
-        'USER_ID': [1, 2, 1, 2],
-        'BALANCE': [1.0, 1.0, 1.0, 1.0],
-        'DATE': ['1990-01-02', '1990-01-02', '1990-01-04', '1990-01-04'],
-    })
+    orders = pd.DataFrame(
+        {
+            'USER_ID': [1, 2, 1, 2],
+            'BALANCE': [1.0, 1.0, 1.0, 1.0],
+            'DATE': ['1990-01-02', '1990-01-02', '1990-01-04', '1990-01-04'],
+        }
+    )
     if add_na_timestamps:
         orders.loc[4] = [1, 1.0, pd.NA]
     if add_na_pkeys:
         idx = len(orders)
         orders.loc[idx] = [pd.NA, 1.0, '1990-01-03']
     orders['DATE'] = pd.to_datetime(orders['DATE']).astype('datetime64[ns]')
-    banks = pd.DataFrame({
-        'BANK_ID': [0, 1],
-        'BANK_TYPE': ['A', 'B'],
-        'AMOUNT': [1, 1],
-    })
+    banks = pd.DataFrame(
+        {
+            'BANK_ID': [0, 1],
+            'BANK_TYPE': ['A', 'B'],
+            'AMOUNT': [1, 1],
+        }
+    )
     if add_na_pkeys:
         banks.loc[2] = [pd.NA, 'A', 1]
 
@@ -1033,24 +1177,41 @@ def node_pred_test_graph(
     tables_path = osp.join(root_dir, tables_dir)
     os.makedirs(tables_path)
     tables_names = [
-        'USERS', 'TRANSACTIONS', 'SESSIONS', 'ORDERS', 'BANKS', 'LOCATIONS',
-        'OLD_USERS', 'OLD_TRANSACTIONS', 'TRANSACTIONS_WITH_PKEY'
+        'USERS',
+        'TRANSACTIONS',
+        'SESSIONS',
+        'ORDERS',
+        'BANKS',
+        'LOCATIONS',
+        'OLD_USERS',
+        'OLD_TRANSACTIONS',
+        'TRANSACTIONS_WITH_PKEY',
     ]
     tables = [
-        users, transactions, sessions, orders, banks, locations, users,
-        transactions, transactions_with_pkey
+        users,
+        transactions,
+        sessions,
+        orders,
+        banks,
+        locations,
+        users,
+        transactions,
+        transactions_with_pkey,
     ]
     for table_name, table in zip(tables_names, tables):
         table_path = osp.join(tables_path, table_name + '.parquet')
         # Ensure timestamps are written with int96 for PyArrow 14 compatibility
         # This matches how the production code writes timestamps
-        table.to_parquet(table_path,
-                         index=True if 'USERS' in table_name else False,
-                         use_deprecated_int96_timestamps=True)
+        table.to_parquet(
+            table_path,
+            index=True if 'USERS' in table_name else False,
+            use_deprecated_int96_timestamps=True,
+        )
     if create_hypothetical_entity:
         new_users_path = osp.join(tables_path, 'NEW_USERS.parquet')
-        new_users.to_parquet(new_users_path, index=False,
-                             use_deprecated_int96_timestamps=True)
+        new_users.to_parquet(
+            new_users_path, index=False, use_deprecated_int96_timestamps=True
+        )
 
     connector = ParquetConnector('parquet', root_dir=tables_path)
     _seed_parquet_col_stats(
@@ -1080,10 +1241,15 @@ def node_pred_test_graph(
     # Create graph:
     graph = Graph(name=name)
     graph.connect(connector)
-    graph.add('USERS', pkey='USER_ID', cols=['AGE'],
-              time_col='CREATE_TIME' if users_time_col_fkey else None)
     graph.add(
-        'TRANSACTIONS', cols=[
+        'USERS',
+        pkey='USER_ID',
+        cols=['AGE'],
+        time_col='CREATE_TIME' if users_time_col_fkey else None,
+    )
+    graph.add(
+        'TRANSACTIONS',
+        cols=[
             'AMOUNT',
             'TYPE',
             'CATEGORY',
@@ -1091,9 +1257,15 @@ def node_pred_test_graph(
             'MULTI_STATUS_COMMA',
             'MULTI_STATUS_MIXED_COMMA',
             'MULTI_STATUS_MIXED_PIPE',
-        ], time_col='DATE')
-    graph.add('TRANSACTIONS_WITH_PKEY', cols=['AMOUNT', 'TYPE', 'CATEGORY'],
-              time_col='DATE', pkey='TRANSACTION_ID')
+        ],
+        time_col='DATE',
+    )
+    graph.add(
+        'TRANSACTIONS_WITH_PKEY',
+        cols=['AMOUNT', 'TYPE', 'CATEGORY'],
+        time_col='DATE',
+        pkey='TRANSACTION_ID',
+    )
     graph.add('SESSIONS', cols=['DURATION'], time_col='DATE')
     graph.add('ORDERS', cols=['BALANCE'], time_col='DATE')
     graph.add('BANKS', cols=['BANK_TYPE'], pkey='BANK_ID')
@@ -1104,31 +1276,31 @@ def node_pred_test_graph(
     graph.link(src_table='TRANSACTIONS', src_key='BANK_ID', dst_table='BANKS')
     graph.link(src_table='USERS', src_key='LOCATION_ID', dst_table='LOCATIONS')
     if users_time_col_fkey:
-        graph.link(src_table='USERS', src_key='FIRST_TRANSACT',
-                   dst_table='TRANSACTIONS_WITH_PKEY')
-    graph.link(src_table='TRANSACTIONS_WITH_PKEY', src_key=user_id_col,
-               dst_table='USERS')
-    graph.link(src_table='TRANSACTIONS_WITH_PKEY', src_key='BANK_ID',
-               dst_table='BANKS')
+        graph.link(
+            src_table='USERS',
+            src_key='FIRST_TRANSACT',
+            dst_table='TRANSACTIONS_WITH_PKEY',
+        )
+    graph.link(
+        src_table='TRANSACTIONS_WITH_PKEY', src_key=user_id_col, dst_table='USERS'
+    )
+    graph.link(src_table='TRANSACTIONS_WITH_PKEY', src_key='BANK_ID', dst_table='BANKS')
     if add_disconnected_tables:
         graph.add('OLD_USERS', pkey='USER_ID')
         graph.add('OLD_TRANSACTIONS', cols=['AMOUNT'], time_col='DATE')
-        graph.link(src_table='OLD_TRANSACTIONS', src_key='USER_ID',
-                   dst_table='OLD_USERS')
+        graph.link(
+            src_table='OLD_TRANSACTIONS', src_key='USER_ID', dst_table='OLD_USERS'
+        )
     graph = graph.infer_metadata()
     graph['LOCATIONS', 'DESCRIPTION'].stype = Stype.text
     graph['TRANSACTIONS', 'MULTI_STATUS_PIPE'].stype = Stype.multicategorical
     graph['TRANSACTIONS', 'MULTI_STATUS_PIPE'].multicategorical_delimiter = '|'
     graph['TRANSACTIONS', 'MULTI_STATUS_COMMA'].stype = Stype.multicategorical
     graph['TRANSACTIONS', 'MULTI_STATUS_COMMA'].multicategorical_delimiter = ','
-    graph['TRANSACTIONS',
-          'MULTI_STATUS_MIXED_COMMA'].stype = Stype.multicategorical
-    graph['TRANSACTIONS',
-          'MULTI_STATUS_MIXED_COMMA'].multicategorical_delimiter = ','
-    graph['TRANSACTIONS',
-          'MULTI_STATUS_MIXED_PIPE'].stype = Stype.multicategorical
-    graph['TRANSACTIONS',
-          'MULTI_STATUS_MIXED_PIPE'].multicategorical_delimiter = '|'
+    graph['TRANSACTIONS', 'MULTI_STATUS_MIXED_COMMA'].stype = Stype.multicategorical
+    graph['TRANSACTIONS', 'MULTI_STATUS_MIXED_COMMA'].multicategorical_delimiter = ','
+    graph['TRANSACTIONS', 'MULTI_STATUS_MIXED_PIPE'].stype = Stype.multicategorical
+    graph['TRANSACTIONS', 'MULTI_STATUS_MIXED_PIPE'].multicategorical_delimiter = '|'
     if infer_encoders:
         return graph.infer_encoders()
     else:
@@ -1140,10 +1312,8 @@ def node_pred_test_graph(
         graph['TRANSACTIONS', 'IS_ONLINE'].encoder = Index()
         graph['TRANSACTIONS', 'MULTI_STATUS_PIPE'].encoder = MultiCategorical()
         graph['TRANSACTIONS', 'MULTI_STATUS_COMMA'].encoder = MultiCategorical()
-        graph['TRANSACTIONS',
-              'MULTI_STATUS_MIXED_COMMA'].encoder = MultiCategorical()
-        graph['TRANSACTIONS',
-              'MULTI_STATUS_MIXED_PIPE'].encoder = MultiCategorical()
+        graph['TRANSACTIONS', 'MULTI_STATUS_MIXED_COMMA'].encoder = MultiCategorical()
+        graph['TRANSACTIONS', 'MULTI_STATUS_MIXED_PIPE'].encoder = MultiCategorical()
         graph['TRANSACTIONS_WITH_PKEY', 'AMOUNT'].encoder = MaxLogNumerical()
         graph['TRANSACTIONS_WITH_PKEY', 'DATE'].encoder = Datetime()
         graph['TRANSACTIONS_WITH_PKEY', 'CATEGORY'].encoder = Index(min_occ=2)
@@ -1172,33 +1342,58 @@ def create_forecasting_graph() -> Callable:
 
 def forecasting_test_graph(root_dir: str) -> Graph:
     os.makedirs(root_dir, exist_ok=True)
-    user_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2],
-        'AGE': [10, 20, 30],
-    })
+    user_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2],
+            'AGE': [10, 20, 30],
+        }
+    )
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
-    trans_df = pd.DataFrame({
-        'USER_ID': [0] * 32 + [1] * 32 + [2] * 32,
-        'AMOUNT':
-        np.random.rand(3 * 32),
-        'DATE': [
-            '1989-01-01', '1989-01-03', '1989-01-05', '1989-01-07',
-            '1989-01-09', '1989-01-11', '1989-01-13', '1989-01-15',
-            '1989-01-17', '1989-01-19', '1989-01-21', '1989-01-23',
-            '1989-01-25', '1989-01-27', '1989-01-29', '1989-01-31',
-            '1990-01-01', '1990-01-03', '1990-01-05', '1990-01-07',
-            '1990-01-09', '1990-01-11', '1990-01-13', '1990-01-15',
-            '1990-01-17', '1990-01-19', '1990-01-21', '1990-01-23',
-            '1990-01-25', '1990-01-27', '1990-01-29', '1990-01-31'
-        ] * 3,
-        'PRODUCT_ID': [0] * 64 + [1] * 32
-    })
+    trans_df = pd.DataFrame(
+        {
+            'USER_ID': [0] * 32 + [1] * 32 + [2] * 32,
+            'AMOUNT': np.random.rand(3 * 32),
+            'DATE': [
+                '1989-01-01',
+                '1989-01-03',
+                '1989-01-05',
+                '1989-01-07',
+                '1989-01-09',
+                '1989-01-11',
+                '1989-01-13',
+                '1989-01-15',
+                '1989-01-17',
+                '1989-01-19',
+                '1989-01-21',
+                '1989-01-23',
+                '1989-01-25',
+                '1989-01-27',
+                '1989-01-29',
+                '1989-01-31',
+                '1990-01-01',
+                '1990-01-03',
+                '1990-01-05',
+                '1990-01-07',
+                '1990-01-09',
+                '1990-01-11',
+                '1990-01-13',
+                '1990-01-15',
+                '1990-01-17',
+                '1990-01-19',
+                '1990-01-21',
+                '1990-01-23',
+                '1990-01-25',
+                '1990-01-27',
+                '1990-01-29',
+                '1990-01-31',
+            ]
+            * 3,
+            'PRODUCT_ID': [0] * 64 + [1] * 32,
+        }
+    )
     parquet_path = osp.join(root_dir, 'TRANS.parquet')
     trans_df.to_parquet(parquet_path)
-    product_df = pd.DataFrame({
-        'PRODUCT_ID': [0, 1],
-        'BRAND': ['HERMES', 'CHANEL']
-    })
+    product_df = pd.DataFrame({'PRODUCT_ID': [0, 1], 'BRAND': ['HERMES', 'CHANEL']})
     parquet_path = osp.join(root_dir, 'PRODUCTS.parquet')
     product_df.to_parquet(parquet_path)
 
@@ -1221,8 +1416,9 @@ def forecasting_test_graph(root_dir: str) -> Graph:
     graph = Graph(name='FORECASTING_TEST_GRAPH')
     graph.connect(connector)
     graph.add('USERS', pkey='USER_ID', cols=['AGE'])
-    graph.add('TRANS', fkeys=['USER_ID', 'PRODUCT_ID'], cols=['AMOUNT'],
-              time_col='DATE')
+    graph.add(
+        'TRANS', fkeys=['USER_ID', 'PRODUCT_ID'], cols=['AMOUNT'], time_col='DATE'
+    )
     graph.add('PRODUCTS', pkey='PRODUCT_ID', cols=['BRAND'])
 
     graph.infer_links()
@@ -1287,14 +1483,17 @@ def _create_financial_task(
         task.random_split([0.8, 0.1, 0.1])
 
     try:
-        train_df = graph.connector(
-            graph.tables[0].data_source).read_table(train_table_name)
+        train_df = graph.connector(graph.tables[0].data_source).read_table(
+            train_table_name
+        )
         task.seed_train_table_col_stats_from_dataframe(train_df)
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).warning(
             'seed_train_table_col_stats_from_dataframe failed in '
             '_create_financial_task (%s); strict path will surface '
-            'the genuine miss at the call site.', exc)
+            'the genuine miss at the call site.',
+            exc,
+        )
 
     # Now that the train-table col-stats cache is seeded, run the
     # encoder inference that the constructor skipped. Mirrors what
@@ -1330,18 +1529,23 @@ def _create_synthetic_task(
         train_table_name = 'TRAINING_MULTILABEL'
 
         from kumo_core.training.options import allow_array_targets
+
         if allow_array_targets():
             target_col = dict(name='0', dtype=Dtype.stringlist)
             train_col_specs = [
-                dict(dtype=Dtype.stringlist, na_frac=0, distinct_vals=7,
-                     max_labels=4)
+                dict(dtype=Dtype.stringlist, na_frac=0, distinct_vals=7, max_labels=4)
             ]
         else:
             train_table_name = 'TRAINING_MULTILABEL'
             target_col = dict(name='0', dtype=Dtype.string)
             train_col_specs = [
-                dict(dtype=Dtype.string, na_frac=0, distinct_vals=7,
-                     max_labels=4, delimiter="|")
+                dict(
+                    dtype=Dtype.string,
+                    na_frac=0,
+                    distinct_vals=7,
+                    max_labels=4,
+                    delimiter='|',
+                )
             ]
     elif task_type == TaskType.REGRESSION:
         train_table_name = 'TRAINING_REGRESSION'
@@ -1368,19 +1572,13 @@ def _create_synthetic_task(
     # FK/FK relatioships:
     graph_spec = GraphSpec(
         table_specs={
-            0:
-            TableSpec(num_entity_nodes,
-                      [Dtype.float, (Dtype.float, 0.1), (Dtype.string, 0.4)]),
-            1:
-            TableSpec(25, [Dtype.int, Dtype.time]),
-            2:
-            TableSpec(36, [Dtype.int, Dtype.date]),
+            0: TableSpec(
+                num_entity_nodes, [Dtype.float, (Dtype.float, 0.1), (Dtype.string, 0.4)]
+            ),
+            1: TableSpec(25, [Dtype.int, Dtype.time]),
+            2: TableSpec(36, [Dtype.int, Dtype.date]),
         },
-        edge_specs={
-            (0, 1): EdgeSpec(0.5),
-            (2, 0): EdgeSpec(1),
-            (1, 2): EdgeSpec(1)
-        },
+        edge_specs={(0, 1): EdgeSpec(0.5), (2, 0): EdgeSpec(1), (1, 2): EdgeSpec(1)},
     )
 
     graph = graph_spec.generate(f'{name}_{temporal}_{task_type}')
@@ -1406,13 +1604,18 @@ def _create_synthetic_task(
     # index
     data_source = kwargs.get(
         'data_source',
-        TableSpec(num_entity_nodes,
-                  train_col_specs).generate(pkey_as_index=False))
+        TableSpec(num_entity_nodes, train_col_specs).generate(pkey_as_index=False),
+    )
     data_source[NODE_INDEX_COLUMN] = range(data_source.shape[0])
-    fkeys = kwargs.get('fkeys', [{
-        'name': 'index',
-        'dst_table': 't0',
-    }])
+    fkeys = kwargs.get(
+        'fkeys',
+        [
+            {
+                'name': 'index',
+                'dst_table': 't0',
+            }
+        ],
+    )
     time_col = kwargs.get('time_col', '1' if temporal else None)
     split_ratio = kwargs.get('split_ratio', [0.8, 0.1, 0.1])
 
@@ -1448,7 +1651,9 @@ def _create_synthetic_task(
             logging.getLogger(__name__).debug(
                 'seed_train_table_col_stats_from_dataframe failed in '
                 '_create_synthetic_task (%s); strict path will surface '
-                'the genuine miss at the call site.', exc)
+                'the genuine miss at the call site.',
+                exc,
+            )
 
     task.infer_metadata(include_cols=[target_col])
 
@@ -1526,35 +1731,38 @@ def snowflake_credentials() -> None:
     setup_snowflake_credentials()
 
 
-@pytest.fixture(scope="module")
-def snowflake_session(snowflake_credentials,
-                      schema: str = 'FINANCIAL_PYTEST') -> SnowparkSession:
+@pytest.fixture(scope='module')
+def snowflake_session(
+    snowflake_credentials, schema: str = 'FINANCIAL_PYTEST'
+) -> SnowparkSession:
     private_key = os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY]
 
     from cryptography.hazmat.primitives import serialization
 
     # perform the same decoding used by SQLConnector.get_user_pass_or_key
     pkey_serialized = serialization.load_pem_private_key(
-        private_key.encode(), password=None)
+        private_key.encode(), password=None
+    )
 
     pkey_serialized = pkey_serialized.private_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption())
+        encryption_algorithm=serialization.NoEncryption(),
+    )
 
     connection_parameters = {
-        "account": 'xva19026',
-        "user": os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER),
+        'account': 'xva19026',
+        'user': os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER),
         # Fetch private key from secrets manager if available, otherwise fallback to environment variable
-        "private_key": pkey_serialized,
-        "warehouse": 'WH_XS',
-        "database": 'KUMO',
-        "schema": schema,
+        'private_key': pkey_serialized,
+        'warehouse': 'WH_XS',
+        'database': 'KUMO',
+        'schema': schema,
     }
     return SnowparkSession.builder.configs(connection_parameters).create()
 
 
-@pytest.fixture(name="snowflake_connector")
+@pytest.fixture(name='snowflake_connector')
 def snowflake_connector_factory() -> Callable:
     return _snowflake_connector
 
@@ -1579,24 +1787,23 @@ class SyntheticTaskDescriptor:
 
 # Tasks indexed by a SyntheticTaskDescriptor use these metrics values
 DEFAULT_METRICS = {
-    TaskType.REGRESSION:
-    None,
-    TaskType.MULTICLASS_CLASSIFICATION:
-    None,
-    TaskType.MULTILABEL_CLASSIFICATION:
-    None,
-    TaskType.MULTILABEL_RANKING:
-    None,
-    TaskType.BINARY_CLASSIFICATION:
-    ['auroc', 'ap', 'auprc', 'recall@100', 'precision@100'],
-    TaskType.TEMPORAL_LINK_PREDICTION:
-    None,
-    TaskType.STATIC_LINK_PREDICTION:
-    None,
+    TaskType.REGRESSION: None,
+    TaskType.MULTICLASS_CLASSIFICATION: None,
+    TaskType.MULTILABEL_CLASSIFICATION: None,
+    TaskType.MULTILABEL_RANKING: None,
+    TaskType.BINARY_CLASSIFICATION: [
+        'auroc',
+        'ap',
+        'auprc',
+        'recall@100',
+        'precision@100',
+    ],
+    TaskType.TEMPORAL_LINK_PREDICTION: None,
+    TaskType.STATIC_LINK_PREDICTION: None,
 }
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def get_task() -> Callable:
     task_dict: Dict[SyntheticTaskDescriptor, Task] = {}
 
@@ -1643,9 +1850,9 @@ def generate_graph() -> Callable:
 
 
 @pytest.fixture(autouse=True)
-def run_before_and_after_tests(auto_setup_kumo_backend: bool,
-                               backend_cache,
-                               tmp_path: pathlib.Path):
+def run_before_and_after_tests(
+    auto_setup_kumo_backend: bool, backend_cache, tmp_path: pathlib.Path
+):
     if not auto_setup_kumo_backend:
         yield
         return
@@ -1693,9 +1900,11 @@ def _redirect_test_diskgraph_data_root():
     )
 
     env = _dec.deploy_env()
-    needs_redirect = (env.deploy_mode == DeployStage.TEST
-                      and isinstance(env.data_compute, DiskgraphConfig)
-                      and env.data_compute.data_root == '/mnt/localssd')
+    needs_redirect = (
+        env.deploy_mode == DeployStage.TEST
+        and isinstance(env.data_compute, DiskgraphConfig)
+        and env.data_compute.data_root == '/mnt/localssd'
+    )
     if not needs_redirect:
         yield
         return
@@ -1705,8 +1914,7 @@ def _redirect_test_diskgraph_data_root():
     os.makedirs(writable_root, exist_ok=True)
     patched = dataclasses.replace(
         env,
-        data_compute=dataclasses.replace(env.data_compute,
-                                         data_root=writable_root),
+        data_compute=dataclasses.replace(env.data_compute, data_root=writable_root),
     )
     _dec._deploy_env = patched
     try:
@@ -1741,6 +1949,7 @@ def seed_col_stats() -> Callable[..., None]:
         - Implementation lives in :mod:`test.util.cache_seeding`.
     """
     from test.util.cache_seeding import seed_col_stats_cache
+
     return seed_col_stats_cache
 
 
@@ -1755,8 +1964,11 @@ def _seed_parquet_col_stats(
     time_cols = time_cols or {}
     for table_name, df in table_dfs.items():
         primary_key = primary_keys.get(table_name)
-        if (primary_key is not None and primary_key not in df.columns
-                and df.index.name == primary_key):
+        if (
+            primary_key is not None
+            and primary_key not in df.columns
+            and df.index.name == primary_key
+        ):
             df = df.reset_index()
         elif df.index.name is not None and df.index.name not in df.columns:
             # See `_seed_from_connector` for the symmetric
@@ -1766,8 +1978,7 @@ def _seed_parquet_col_stats(
             df = df.reset_index()
         time_col = time_cols.get(table_name)
         date_like_cols = [
-            col for col in df.columns
-            if (col == time_col or _looks_like_time_col(col))
+            col for col in df.columns if (col == time_col or _looks_like_time_col(col))
         ]
         for col in date_like_cols:
             if not pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -1795,16 +2006,18 @@ def _column_config_name(column) -> Optional[str]:
 
 def _looks_like_time_col(column_name: str) -> bool:
     upper_name = column_name.upper()
-    return (upper_name in {'DATE', 'TIMESTAMP'} or upper_name.endswith('_DATE')
-            or upper_name.endswith('_TIME')
-            or upper_name.endswith('_TIMESTAMP'))
+    return (
+        upper_name in {'DATE', 'TIMESTAMP'}
+        or upper_name.endswith('_DATE')
+        or upper_name.endswith('_TIME')
+        or upper_name.endswith('_TIMESTAMP')
+    )
 
 
 def _install_dg_col_stats_fallback() -> Callable[[], None]:
     """Seed local file-backed table stats on first DG cache miss in tests."""
-    from test.util.cache_seeding import seed_col_stats_cache
-
     from statedb.utils.errors import UnsupportedInDiskgraphError
+    from test.util.cache_seeding import seed_col_stats_cache
 
     original_compute_col_stats = Table.compute_col_stats
 
@@ -1819,10 +2032,12 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
         # by an in-memory ``df_dict``), which has no ``root_dir``. Treat it as
         # seedable so the autouse fallback covers DataFrame-built test graphs
         # (the gap left by the file-backed seed path in ``_create_graph``).
-        return (table.has_connector
-                and table.connector.__class__.__name__ == 'PandasConnector'
-                and getattr(table.connector, 'df_dict', None) is not None
-                and table.source_name in table.connector.df_dict)
+        return (
+            table.has_connector
+            and table.connector.__class__.__name__ == 'PandasConnector'
+            and getattr(table.connector, 'df_dict', None) is not None
+            and table.source_name in table.connector.df_dict
+        )
 
     def _can_seed_from_connector(table: Table) -> bool:
         if not table.has_connector:
@@ -1832,7 +2047,9 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
         if _is_pandas_connector(table):
             return True
         return table.connector.__class__.__name__ in {
-            'BigQueryConnector', 'DatabricksConnector', 'SnowflakeConnector'
+            'BigQueryConnector',
+            'DatabricksConnector',
+            'SnowflakeConnector',
         }
 
     def _read_seed_df(table: Table) -> pd.DataFrame:
@@ -1844,9 +2061,9 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
             # need for seeding (we want the full schema/dtype payload).
             df = table.connector.df_dict[table.source_name]
         else:
-            df = table.connector.read_table_sample(table.source_name,
-                                                   num_rows=10000,
-                                                   skip_cache=True)
+            df = table.connector.read_table_sample(
+                table.source_name, num_rows=10000, skip_cache=True
+            )
 
         # Parquet date columns round-trip as object strings (or as
         # ``datetime.date`` python objects) instead of ``datetime64``. The
@@ -1858,9 +2075,10 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
         # coercion ``_seed_parquet_col_stats`` applies to parquet
         # round-trips so the seeded stats line up with the
         # production-inferred dtype.
-        time_col_name = (table.time_col.name if table.has_time_col() else None)
+        time_col_name = table.time_col.name if table.has_time_col() else None
         date_like_cols = [
-            col for col in df.columns
+            col
+            for col in df.columns
             if (col == time_col_name or _looks_like_time_col(col))
         ]
         for col in date_like_cols:
@@ -1873,11 +2091,15 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
         from kumo.connector.utils import cast_df_to_dtypes
 
         data_version = table.data_version or table.connector.get_data_version(
-            table.source_name)
+            table.source_name
+        )
         df = _read_seed_df(table)
         primary_key = table.pkey.name if table.has_pkey() else None
-        if (primary_key is not None and primary_key not in df.columns
-                and df.index.name == primary_key):
+        if (
+            primary_key is not None
+            and primary_key not in df.columns
+            and df.index.name == primary_key
+        ):
             df = df.reset_index()
         elif df.index.name is not None and df.index.name not in df.columns:
             # Parquet round-trips can preserve a column as
@@ -1906,19 +2128,24 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
             meta_list = table.connector.get_table_metadata([table.source_name])
         except Exception as exc:  # pragma: no cover - defensive
             logging.getLogger(__name__).warning(
-                "Col-stats seed: get_table_metadata failed for %s: %s",
-                table.source_name, exc)
+                'Col-stats seed: get_table_metadata failed for %s: %s',
+                table.source_name,
+                exc,
+            )
             meta_list = []
         if meta_list:
             for meta_col in meta_list[0].cols:
-                if (meta_col.dtype is not None and meta_col.name in df.columns):
+                if meta_col.dtype is not None and meta_col.name in df.columns:
                     dtypes_to_cast.setdefault(meta_col.name, meta_col.dtype)
         for col in table.cols:
             if col.dtype is None or col.name not in df.columns:
                 continue
             dtypes_to_cast[col.name] = col.dtype
-        if table.has_pkey() and table.pkey.dtype is not None and (
-                table.pkey.name in df.columns):
+        if (
+            table.has_pkey()
+            and table.pkey.dtype is not None
+            and (table.pkey.name in df.columns)
+        ):
             dtypes_to_cast[table.pkey.name] = table.pkey.dtype
         if dtypes_to_cast:
             df = df.copy()
@@ -1926,8 +2153,10 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
                 df = cast_df_to_dtypes(df, dtypes_to_cast)
             except Exception as exc:  # pragma: no cover - defensive
                 logging.getLogger(__name__).warning(
-                    "Col-stats seed: dtype cast failed for %s: %s",
-                    table.source_name, exc)
+                    'Col-stats seed: dtype cast failed for %s: %s',
+                    table.source_name,
+                    exc,
+                )
 
         seed_col_stats_cache(
             df,
@@ -1946,16 +2175,16 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
         # DiskGraph-populated cache"). Both are unblocked by seeding via
         # :func:`seed_col_stats_cache`.
         msg = str(exc)
-        return ('Requested col stats missing from the DiskGraph-populated '
-                'cache' in msg or 'requested col stats missing from the '
-                'DiskGraph-populated cache' in msg)
+        return (
+            'Requested col stats missing from the DiskGraph-populated cache' in msg
+            or 'requested col stats missing from the DiskGraph-populated cache' in msg
+        )
 
     def _compute_col_stats_with_seed(table: Table, *args, **kwargs):
         try:
             return original_compute_col_stats(table, *args, **kwargs)
         except UnsupportedInDiskgraphError as exc:
-            if not _is_cache_miss_error(exc) or not _can_seed_from_connector(
-                    table):
+            if not _is_cache_miss_error(exc) or not _can_seed_from_connector(table):
                 raise
             _seed_from_connector(table)
             return original_compute_col_stats(table, *args, **kwargs)
@@ -1973,8 +2202,7 @@ def _install_dg_col_stats_fallback() -> Callable[[], None]:
         try:
             return original_compute_exact_stats(table, *args, **kwargs)
         except UnsupportedInDiskgraphError as exc:
-            if not _is_cache_miss_error(exc) or not _can_seed_from_connector(
-                    table):
+            if not _is_cache_miss_error(exc) or not _can_seed_from_connector(table):
                 raise
             _seed_from_connector(table)
             return original_compute_exact_stats(table, *args, **kwargs)
@@ -2000,25 +2228,34 @@ def _create_fixed_static_graph(
     user_df = pd.DataFrame({'USER_ID': np.arange(num_users)})
     store_df = pd.DataFrame({'STORE_ID': np.arange(num_stores)})
 
-    user_store_edge_index_all = np.stack([
-        np.repeat(np.arange(num_users - 1), num_stores - 1),
-        np.tile(np.arange(num_stores - 1), num_users - 1)
-    ])
+    user_store_edge_index_all = np.stack(
+        [
+            np.repeat(np.arange(num_users - 1), num_stores - 1),
+            np.tile(np.arange(num_stores - 1), num_users - 1),
+        ]
+    )
 
     order_sampled_idx = np.concatenate(
-        (np.repeat(np.arange(num_edges_order / 8), 4),
-         np.arange(num_edges_order - int(num_edges_order / 8) * 4))).astype(int)
+        (
+            np.repeat(np.arange(num_edges_order / 8), 4),
+            np.arange(num_edges_order - int(num_edges_order / 8) * 4),
+        )
+    ).astype(int)
 
     order_edge_index = user_store_edge_index_all[:, order_sampled_idx]
 
     view_sampled_idx = np.concatenate(
-        (np.repeat(np.arange(num_edges_order / 6), 3),
-         np.arange(num_edges_order - int(num_edges_order / 6) * 3))).astype(int)
+        (
+            np.repeat(np.arange(num_edges_order / 6), 3),
+            np.arange(num_edges_order - int(num_edges_order / 6) * 3),
+        )
+    ).astype(int)
     view_edge_index = user_store_edge_index_all[:, view_sampled_idx]
 
     # deliberately add some duplication
     order_edge_index = np.concatenate(
-        [order_edge_index, order_edge_index[:, :10]], axis=1)
+        [order_edge_index, order_edge_index[:, :10]], axis=1
+    )
 
     fkey_user = 'USER_ID'
     fkey_store = 'STORE_ID'
@@ -2026,15 +2263,19 @@ def _create_fixed_static_graph(
         fkey_user = 'USER_ID_FK'
         fkey_store = 'STORE_ID_FK'
 
-    order_df = pd.DataFrame({
-        fkey_user: order_edge_index[0],
-        fkey_store: order_edge_index[1],
-    })
+    order_df = pd.DataFrame(
+        {
+            fkey_user: order_edge_index[0],
+            fkey_store: order_edge_index[1],
+        }
+    )
 
-    view_df = pd.DataFrame({
-        'USER_ID': view_edge_index[0],
-        'STORE_ID': view_edge_index[1],
-    })
+    view_df = pd.DataFrame(
+        {
+            'USER_ID': view_edge_index[0],
+            'STORE_ID': view_edge_index[1],
+        }
+    )
 
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
@@ -2066,10 +2307,10 @@ def _create_fixed_static_graph(
     graph.add(
         name='ORDERS',
         fkeys=[
-            dict(name=fkey_user, dst_table='USERS', dst_key='USER_ID',
-                 dtype=Dtype.int),
-            dict(name=fkey_store, dst_table='STORES', dst_key='STORE_ID',
-                 dtype=Dtype.int),
+            dict(name=fkey_user, dst_table='USERS', dst_key='USER_ID', dtype=Dtype.int),
+            dict(
+                name=fkey_store, dst_table='STORES', dst_key='STORE_ID', dtype=Dtype.int
+            ),
         ],
     )
     graph.add(
@@ -2095,19 +2336,24 @@ def _create_static_graph(
     user_df = pd.DataFrame({'USER_ID': np.arange(num_users)})
     store_df = pd.DataFrame({'STORE_ID': np.arange(num_stores)})
 
-    user_store_edge_index_all = np.stack([
-        np.repeat(np.arange(num_users - 1), num_stores - 1),
-        np.tile(np.arange(num_stores - 1), num_users - 1)
-    ])
-    order_sampled_idx = np.random.permutation(
-        (num_users - 1) * (num_stores - 1))[:num_edges_order]
-    view_sampled_idx = np.random.permutation(
-        (num_users - 1) * (num_stores - 1))[:num_edges_view]
+    user_store_edge_index_all = np.stack(
+        [
+            np.repeat(np.arange(num_users - 1), num_stores - 1),
+            np.tile(np.arange(num_stores - 1), num_users - 1),
+        ]
+    )
+    order_sampled_idx = np.random.permutation((num_users - 1) * (num_stores - 1))[
+        :num_edges_order
+    ]
+    view_sampled_idx = np.random.permutation((num_users - 1) * (num_stores - 1))[
+        :num_edges_view
+    ]
     order_edge_index = user_store_edge_index_all[:, order_sampled_idx]
     view_edge_index = user_store_edge_index_all[:, view_sampled_idx]
     # deliberately add some duplication
     order_edge_index = np.concatenate(
-        [order_edge_index, order_edge_index[:, :10]], axis=1)
+        [order_edge_index, order_edge_index[:, :10]], axis=1
+    )
 
     fkey_user = 'USER_ID'
     fkey_store = 'STORE_ID'
@@ -2115,15 +2361,19 @@ def _create_static_graph(
         fkey_user = 'USER_ID_FK'
         fkey_store = 'STORE_ID_FK'
 
-    order_df = pd.DataFrame({
-        fkey_user: order_edge_index[0],
-        fkey_store: order_edge_index[1],
-    })
+    order_df = pd.DataFrame(
+        {
+            fkey_user: order_edge_index[0],
+            fkey_store: order_edge_index[1],
+        }
+    )
 
-    view_df = pd.DataFrame({
-        'USER_ID': view_edge_index[0],
-        'STORE_ID': view_edge_index[1],
-    })
+    view_df = pd.DataFrame(
+        {
+            'USER_ID': view_edge_index[0],
+            'STORE_ID': view_edge_index[1],
+        }
+    )
 
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
@@ -2155,10 +2405,10 @@ def _create_static_graph(
     graph.add(
         name='ORDERS',
         fkeys=[
-            dict(name=fkey_user, dst_table='USERS', dst_key='USER_ID',
-                 dtype=Dtype.int),
-            dict(name=fkey_store, dst_table='STORES', dst_key='STORE_ID',
-                 dtype=Dtype.int),
+            dict(name=fkey_user, dst_table='USERS', dst_key='USER_ID', dtype=Dtype.int),
+            dict(
+                name=fkey_store, dst_table='STORES', dst_key='STORE_ID', dtype=Dtype.int
+            ),
         ],
     )
     graph.add(
@@ -2188,8 +2438,7 @@ def create_static_node_pred_graph(tmp_path: pathlib.Path) -> Callable:
 
 
 @pytest.fixture()
-def create_large_static_node_pred_test_graph(
-        tmp_path: pathlib.Path) -> Callable:
+def create_large_static_node_pred_test_graph(tmp_path: pathlib.Path) -> Callable:
     return functools.partial(large_static_node_pred_test_graph, tmp_path)
 
 
@@ -2225,9 +2474,9 @@ def add_df(
 
 
 def large_static_node_pred_test_graph(
-        tmp_path: pathlib.Path,
-        name: str = 'kumo_large_static_test_graph',
-        seed: int = 42  # Add a seed parameter for deterministic results
+    tmp_path: pathlib.Path,
+    name: str = 'kumo_large_static_test_graph',
+    seed: int = 42,  # Add a seed parameter for deterministic results
 ) -> Graph:
     r"""
     Create a large static node prediction test graph with predefined
@@ -2246,18 +2495,23 @@ def large_static_node_pred_test_graph(
     np.random.seed(seed)
 
     num_entities = 60
-    df = pd.DataFrame({
-        'USER_ID':
-        list(range(num_entities)),
-        'STATUS':
-        np.random.choice(['A', 'B', 'C'], size=num_entities),
-        'PAYMENTS':
-        np.random.randint(10, 51, size=num_entities),
-        'DATE':
-        (['2000-01-01'] * 10 + ['2000-02-01'] * 5 + ['2000-03-01'] * 10 +
-         ['2000-04-01'] * 5 + ['2000-05-01'] * 10 + ['2000-06-01'] * 5 +
-         ['2000-07-01'] * 10 + ['2000-08-01'] * 5)
-    })
+    df = pd.DataFrame(
+        {
+            'USER_ID': list(range(num_entities)),
+            'STATUS': np.random.choice(['A', 'B', 'C'], size=num_entities),
+            'PAYMENTS': np.random.randint(10, 51, size=num_entities),
+            'DATE': (
+                ['2000-01-01'] * 10
+                + ['2000-02-01'] * 5
+                + ['2000-03-01'] * 10
+                + ['2000-04-01'] * 5
+                + ['2000-05-01'] * 10
+                + ['2000-06-01'] * 5
+                + ['2000-07-01'] * 10
+                + ['2000-08-01'] * 5
+            ),
+        }
+    )
     df = df.set_index('USER_ID')
     graph = Graph(name=name)
     add_df(
@@ -2297,55 +2551,86 @@ def static_node_pred_test_graph(
     """
     assert mode in ['joint', 'separate', 'static', 'separate-unique']
 
-    df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3],
-        'USER_ID_FKEY': [0, 1, 2, 3],
-        'STATUS': ['A', 'B', pd.NA, 'B'],
-        'target': ['A', 'B', pd.NA, 'B'],
-        'PAYMENTS': [10.0, 20.0, 40.0, 80.0],
-        'DATE': ['1990-01-01', '1990-01-02', '1990-01-03', '1990-01-04'],
-        'STATUS_BOOL': [True, False, False, True],
-        'MULTI_STATUS': ['A,B', 'C,D', pd.NA, 'A,B,C'],
-    })
+    df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3],
+            'USER_ID_FKEY': [0, 1, 2, 3],
+            'STATUS': ['A', 'B', pd.NA, 'B'],
+            'target': ['A', 'B', pd.NA, 'B'],
+            'PAYMENTS': [10.0, 20.0, 40.0, 80.0],
+            'DATE': ['1990-01-01', '1990-01-02', '1990-01-03', '1990-01-04'],
+            'STATUS_BOOL': [True, False, False, True],
+            'MULTI_STATUS': ['A,B', 'C,D', pd.NA, 'A,B,C'],
+        }
+    )
     if add_na_pkeys:
-        df.loc[len(df)] = [
-            pd.NA, pd.NA, 'A', 'B', 10.0, '1990-01-01', True, 'A,B'
-        ]
+        df.loc[len(df)] = [pd.NA, pd.NA, 'A', 'B', 10.0, '1990-01-01', True, 'A,B']
     if add_na_timestamps and mode != 'static':
         df.loc[len(df)] = [4, 4, 'A', 'B', 10.0, pd.NA, True, 'A,B']
     df = df.set_index('USER_ID')
     if mode == 'joint':
         graph = Graph(name=name)
         add_df(
-            graph, df, 'USERS', tmp_path, pkey='USER_ID', cols=[
-                'PAYMENTS', 'STATUS', 'STATUS_BOOL', 'target', 'MULTI_STATUS'
-            ], time_col='DATE')
+            graph,
+            df,
+            'USERS',
+            tmp_path,
+            pkey='USER_ID',
+            cols=['PAYMENTS', 'STATUS', 'STATUS_BOOL', 'target', 'MULTI_STATUS'],
+            time_col='DATE',
+        )
         graph['USERS', 'MULTI_STATUS'].stype = Stype.multicategorical
         graph['USERS', 'MULTI_STATUS'].multicategorical_delimiter = ','
         return graph.infer_metadata().infer_encoders()
     if mode == 'static':
         df = df.drop(columns=['DATE'])
         graph = Graph(name=name)
-        add_df(graph, df, 'USERS', tmp_path, pkey='USER_ID',
-               cols=['PAYMENTS', 'STATUS', 'STATUS_BOOL', 'MULTI_STATUS'])
+        add_df(
+            graph,
+            df,
+            'USERS',
+            tmp_path,
+            pkey='USER_ID',
+            cols=['PAYMENTS', 'STATUS', 'STATUS_BOOL', 'MULTI_STATUS'],
+        )
         graph['USERS', 'MULTI_STATUS'].stype = Stype.multicategorical
         graph['USERS', 'MULTI_STATUS'].multicategorical_delimiter = ','
         return graph.infer_metadata().infer_encoders()
     if mode == 'separate':
         entity_df = df.drop(columns=['STATUS'])
-        target_df = pd.DataFrame({
-            'USER_ID_PKEY': [0, 1, 3],
-            'STATUS': ['A', 'B', 'B'],
-            'STATUS_BOOL': [True, False, True],
-            'MULTI_STATUS': ['A,B', 'C,D', 'A,B,C'],
-        })
+        target_df = pd.DataFrame(
+            {
+                'USER_ID_PKEY': [0, 1, 3],
+                'STATUS': ['A', 'B', 'B'],
+                'STATUS_BOOL': [True, False, True],
+                'MULTI_STATUS': ['A,B', 'C,D', 'A,B,C'],
+            }
+        )
         graph = Graph(name=name)
-        add_df(graph, entity_df, 'USERS', tmp_path, pkey='USER_ID',
-               fkeys=['USER_ID_FKEY'], cols=['PAYMENTS'], time_col='DATE')
-        add_df(graph, target_df, 'USERS_TARGET', tmp_path, pkey='USER_ID_PKEY',
-               cols=['STATUS', 'STATUS_BOOL', 'MULTI_STATUS'])
-        graph.link(src_table='USERS', src_key='USER_ID_FKEY',
-                   dst_table='USERS_TARGET', dst_key='USER_ID_PKEY')
+        add_df(
+            graph,
+            entity_df,
+            'USERS',
+            tmp_path,
+            pkey='USER_ID',
+            fkeys=['USER_ID_FKEY'],
+            cols=['PAYMENTS'],
+            time_col='DATE',
+        )
+        add_df(
+            graph,
+            target_df,
+            'USERS_TARGET',
+            tmp_path,
+            pkey='USER_ID_PKEY',
+            cols=['STATUS', 'STATUS_BOOL', 'MULTI_STATUS'],
+        )
+        graph.link(
+            src_table='USERS',
+            src_key='USER_ID_FKEY',
+            dst_table='USERS_TARGET',
+            dst_key='USER_ID_PKEY',
+        )
         graph['USERS_TARGET', 'MULTI_STATUS'].stype = Stype.multicategorical
         graph['USERS_TARGET', 'MULTI_STATUS'].multicategorical_delimiter = ','
         graph = graph.infer_metadata().infer_encoders()
@@ -2353,40 +2638,59 @@ def static_node_pred_test_graph(
     if mode == 'separate-unique':
         entity_df = df.drop(columns=['STATUS'])
         entity_df['USER_ID_FKEY'] = entity_df.index
-        target_df = pd.DataFrame({
-            'USER_ID': [0, 1, 3],
-            'STATUS': ['A', 'B', 'B'],
-            'STATUS_BOOL': [True, False, True],
-            'MULTI_STATUS': ['A,B', 'C,D', 'A,B,C'],
-        })
+        target_df = pd.DataFrame(
+            {
+                'USER_ID': [0, 1, 3],
+                'STATUS': ['A', 'B', 'B'],
+                'STATUS_BOOL': [True, False, True],
+                'MULTI_STATUS': ['A,B', 'C,D', 'A,B,C'],
+            }
+        )
         target_df = target_df.set_index('USER_ID')
 
         graph = Graph(name=name)
-        add_df(graph, entity_df, 'USERS', tmp_path, pkey='USER_ID',
-               cols=['PAYMENTS'], time_col='DATE', fkeys=['USER_ID_FKEY'])
-        add_df(graph, target_df, 'USERS_TARGET', tmp_path, pkey='USER_ID',
-               cols=['STATUS', 'STATUS_BOOL', 'MULTI_STATUS'])
+        add_df(
+            graph,
+            entity_df,
+            'USERS',
+            tmp_path,
+            pkey='USER_ID',
+            cols=['PAYMENTS'],
+            time_col='DATE',
+            fkeys=['USER_ID_FKEY'],
+        )
+        add_df(
+            graph,
+            target_df,
+            'USERS_TARGET',
+            tmp_path,
+            pkey='USER_ID',
+            cols=['STATUS', 'STATUS_BOOL', 'MULTI_STATUS'],
+        )
         graph.link('USERS', 'USER_ID_FKEY', 'USERS_TARGET', 'USER_ID')
         graph['USERS_TARGET', 'MULTI_STATUS'].stype = Stype.multicategorical
         graph['USERS_TARGET', 'MULTI_STATUS'].multicategorical_delimiter = ','
         return graph.infer_links().infer_metadata().infer_encoders()
 
 
-def _create_temporal_graph(tmp_path: pathlib.Path, num_users: int,
-                           num_stores: int, num_edges: int,
-                           seed: int = 0) -> Graph:
+def _create_temporal_graph(
+    tmp_path: pathlib.Path,
+    num_users: int,
+    num_stores: int,
+    num_edges: int,
+    seed: int = 0,
+) -> Graph:
     np.random.seed(seed)
     # the last user/store are isolated.
     user_df = pd.DataFrame({'USER_ID': np.arange(num_users)})
 
-    store_df = pd.DataFrame({
-        'STORE_ID':
-        np.arange(num_stores),
-        'FEATURE':
-        np.arange(num_stores),
-        'TIMESTAMP':
-        pd.to_datetime(10 * np.arange(num_stores), unit='D'),
-    })
+    store_df = pd.DataFrame(
+        {
+            'STORE_ID': np.arange(num_stores),
+            'FEATURE': np.arange(num_stores),
+            'TIMESTAMP': pd.to_datetime(10 * np.arange(num_stores), unit='D'),
+        }
+    )
 
     order_value_length_1 = int(num_edges / 3)
     order_value_length_2 = num_edges - 3 * order_value_length_1
@@ -2394,22 +2698,26 @@ def _create_temporal_graph(tmp_path: pathlib.Path, num_users: int,
     # Note that using randint for `ORDER_VALUE` will cause task creation
     # to crash intermittently as at times train table, val table or test
     # table only contains one type of value.
-    order_df = pd.DataFrame({
-        'ORDER_ID':
-        np.arange(num_edges),
-        'USER_ID':
-        np.random.randint(0, num_users - 1, (num_edges, )),
-        'STORE_ID':
-        np.random.randint(0, num_stores - 1, (num_edges, )),
-        'ORDER_VALUE':
-        np.concatenate((np.array(["1", "2", "3"] * order_value_length_1),
-                        np.array(["2"] * order_value_length_2))),
-        'ORDER_SCORE':
-        np.concatenate((np.array([1, 2, 3] * order_value_length_1),
-                        np.array([1] * order_value_length_2))),
-        'TIMESTAMP':
-        pd.to_datetime(np.arange(num_edges), unit='D'),
-    })
+    order_df = pd.DataFrame(
+        {
+            'ORDER_ID': np.arange(num_edges),
+            'USER_ID': np.random.randint(0, num_users - 1, (num_edges,)),
+            'STORE_ID': np.random.randint(0, num_stores - 1, (num_edges,)),
+            'ORDER_VALUE': np.concatenate(
+                (
+                    np.array(['1', '2', '3'] * order_value_length_1),
+                    np.array(['2'] * order_value_length_2),
+                )
+            ),
+            'ORDER_SCORE': np.concatenate(
+                (
+                    np.array([1, 2, 3] * order_value_length_1),
+                    np.array([1] * order_value_length_2),
+                )
+            ),
+            'TIMESTAMP': pd.to_datetime(np.arange(num_edges), unit='D'),
+        }
+    )
 
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
@@ -2419,27 +2727,20 @@ def _create_temporal_graph(tmp_path: pathlib.Path, num_users: int,
     connector = ParquetConnector(name='parquet', root_dir=root_dir)
     _seed_parquet_col_stats(
         connector,
-        {
-            'USERS': user_df,
-            'STORES': store_df,
-            'ORDERS': order_df
-        },
-        {
-            'USERS': 'USER_ID',
-            'STORES': 'STORE_ID',
-            'ORDERS': 'ORDER_ID'
-        },
-        {
-            'STORES': 'TIMESTAMP',
-            'ORDERS': 'TIMESTAMP'
-        },
+        {'USERS': user_df, 'STORES': store_df, 'ORDERS': order_df},
+        {'USERS': 'USER_ID', 'STORES': 'STORE_ID', 'ORDERS': 'ORDER_ID'},
+        {'STORES': 'TIMESTAMP', 'ORDERS': 'TIMESTAMP'},
     )
 
     graph = Graph(name='temporal_graph')
     graph.connect(connector)
     graph.add('USERS', pkey=dict(name='USER_ID', dtype=Dtype.int))
-    graph.add('STORES', pkey=dict(name='STORE_ID', dtype=Dtype.int),
-              cols=['FEATURE'], time_col='TIMESTAMP')
+    graph.add(
+        'STORES',
+        pkey=dict(name='STORE_ID', dtype=Dtype.int),
+        cols=['FEATURE'],
+        time_col='TIMESTAMP',
+    )
     graph.add(
         name='ORDERS',
         pkey=dict(name='ORDER_ID', dtype=Dtype.int),
@@ -2483,16 +2784,14 @@ def irregular_graph_fixed(tmp_path: pathlib.Path) -> Callable:
 def _irregular_graph_fixed(tmp_path: pathlib.Path) -> Graph:
     user_df = pd.DataFrame({'USER_ID': np.arange(4)})
     store_df = pd.DataFrame({'STORE_ID': np.arange(2)})
-    order_df = pd.DataFrame({
-        'USER_ID':
-        np.array([0, 0, 0, 1, 1, 1, 2, 2, 3, 3]),
-        'STORE_ID':
-        np.array([0, 1, 0, 0, 0, 1, 1, 1, 0, 1]),
-        'ORDER_VALUE':
-        np.array([2, 1, 6, 2, 1, 4, 3, 2, 4, 2]),
-        'TIMESTAMP':
-        pd.to_datetime([0, 4, 6, 0, 2, 4, 0, 2, 0, 6], unit='D'),
-    })
+    order_df = pd.DataFrame(
+        {
+            'USER_ID': np.array([0, 0, 0, 1, 1, 1, 2, 2, 3, 3]),
+            'STORE_ID': np.array([0, 1, 0, 0, 0, 1, 1, 1, 0, 1]),
+            'ORDER_VALUE': np.array([2, 1, 6, 2, 1, 4, 3, 2, 4, 2]),
+            'TIMESTAMP': pd.to_datetime([0, 4, 6, 0, 2, 4, 0, 2, 0, 6], unit='D'),
+        }
+    )
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
     store_df.to_parquet(osp.join(root_dir, 'STORES.parquet'))
@@ -2501,16 +2800,8 @@ def _irregular_graph_fixed(tmp_path: pathlib.Path) -> Graph:
     connector = ParquetConnector(name='parquet', root_dir=root_dir)
     _seed_parquet_col_stats(
         connector,
-        {
-            'USERS': user_df,
-            'STORES': store_df,
-            'ORDERS': order_df
-        },
-        {
-            'USERS': 'USER_ID',
-            'STORES': 'STORE_ID',
-            'ORDERS': None
-        },
+        {'USERS': user_df, 'STORES': store_df, 'ORDERS': order_df},
+        {'USERS': 'USER_ID', 'STORES': 'STORE_ID', 'ORDERS': None},
         {'ORDERS': 'TIMESTAMP'},
     )
 
@@ -2539,25 +2830,30 @@ def _irregular_graph_fixed(tmp_path: pathlib.Path) -> Graph:
     return graph
 
 
-def _temporal_multilabel_graph_fixed(tmp_path: pathlib.Path, ) -> Graph:
+def _temporal_multilabel_graph_fixed(
+    tmp_path: pathlib.Path,
+) -> Graph:
     num_users = 5
     num_timeframe = 9
-    user_df = pd.DataFrame({
-        'USER_ID': np.arange(num_users),
-    })
-    order_df = pd.DataFrame({
-        'USER_ID':
-        np.repeat(np.arange(0, num_users), num_timeframe),
-        'MULTI_LABEL_v1': ['', '', '', 'a', 'a|b', '', 'c', 'a', 'a|b'] +
-        ['', '', 'c', '', 'd', 'a', '', 'a', ''] +
-        ['', '', '', '', '', '', '', '', ''] +
-        ['', '', '', '', '', '', '', 'b', 'b'] +
-        ['', '', 'a', 'b|c', 'a|b|c', '', 'a', 'a|b', 'a|c'],
-        'TIMESTAMP':
-        pd.to_datetime(np.tile(np.arange(num_timeframe), num_users), unit='D'),
-        'PRICE':
-        np.arange(num_users * num_timeframe),
-    })
+    user_df = pd.DataFrame(
+        {
+            'USER_ID': np.arange(num_users),
+        }
+    )
+    order_df = pd.DataFrame(
+        {
+            'USER_ID': np.repeat(np.arange(0, num_users), num_timeframe),
+            'MULTI_LABEL_v1': ['', '', '', 'a', 'a|b', '', 'c', 'a', 'a|b']
+            + ['', '', 'c', '', 'd', 'a', '', 'a', '']
+            + ['', '', '', '', '', '', '', '', '']
+            + ['', '', '', '', '', '', '', 'b', 'b']
+            + ['', '', 'a', 'b|c', 'a|b|c', '', 'a', 'a|b', 'a|c'],
+            'TIMESTAMP': pd.to_datetime(
+                np.tile(np.arange(num_timeframe), num_users), unit='D'
+            ),
+            'PRICE': np.arange(num_users * num_timeframe),
+        }
+    )
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
     order_df.to_parquet(osp.join(root_dir, 'ORDERS.parquet'))
@@ -2565,14 +2861,8 @@ def _temporal_multilabel_graph_fixed(tmp_path: pathlib.Path, ) -> Graph:
     connector = ParquetConnector(name='parquet', root_dir=root_dir)
     _seed_parquet_col_stats(
         connector,
-        {
-            'USERS': user_df,
-            'ORDERS': order_df
-        },
-        {
-            'USERS': 'USER_ID',
-            'ORDERS': None
-        },
+        {'USERS': user_df, 'ORDERS': order_df},
+        {'USERS': 'USER_ID', 'ORDERS': None},
         {'ORDERS': 'TIMESTAMP'},
     )
 
@@ -2618,10 +2908,12 @@ def _temporal_graph_fixed(
     name: str = 'temporal_graph_fixed',
     store_order: List[int] = None,
 ) -> Graph:
-    user_df = pd.DataFrame({
-        'USER_ID': np.arange(num_users),
-        'AGE': np.arange(num_users) % 20 + 20,
-    })
+    user_df = pd.DataFrame(
+        {
+            'USER_ID': np.arange(num_users),
+            'AGE': np.arange(num_users) % 20 + 20,
+        }
+    )
     store_df = pd.DataFrame({'STORE_ID': np.arange(num_stores)})
     if store_order is not None:
         store_df = store_df.iloc[store_order]
@@ -2637,57 +2929,108 @@ def _temporal_graph_fixed(
 
     order_score_length_1 = int(num_edges / 3)
     order_score_length_2 = num_edges - 3 * order_score_length_1
-    order_df = pd.DataFrame({
-        'ORDER_ID':
-        np.arange(0, num_edges),
-        'USER_ID':
-        np.repeat(np.arange(0, num_users), int(num_edges / num_users)),
-        'STORE_ID':
-        np.concatenate(
-            (np.tile(np.arange(0, num_stores),
-                     int(num_edges / num_stores)), np.arange(0, length))),
-        'STORE_ID_NUM':
-        np.concatenate(
-            (np.tile(np.arange(0, num_stores),
-                     int(num_edges / num_stores)), np.arange(0, length))),
-        'ORDER_VALUE_2':
-        np.concatenate((np.array([1, 2, 1] * order_value_length_1),
-                        np.array([2] * order_value_length_2))),
-        'ORDER_VALUE':
-        np.concatenate((np.repeat(np.arange(int(num_edges / 8)),
-                                  4), np.arange(length_2))),
-        'ORDER_VALUE_3':
-        np.concatenate((np.repeat(np.arange(int(num_edges / 8)),
-                                  4), np.arange(length_2))),
-        'ORDER_SCORE':
-        np.concatenate((np.array([1, 2, 3] * order_score_length_1),
-                        np.array([1] * order_score_length_2))),
-        'TIMESTAMP':
-        pd.to_datetime(np.arange(num_edges), unit='D'),
-        'IMAGE_URL': ['image_url'] * num_edges,
-    })
+    order_df = pd.DataFrame(
+        {
+            'ORDER_ID': np.arange(0, num_edges),
+            'USER_ID': np.repeat(np.arange(0, num_users), int(num_edges / num_users)),
+            'STORE_ID': np.concatenate(
+                (
+                    np.tile(np.arange(0, num_stores), int(num_edges / num_stores)),
+                    np.arange(0, length),
+                )
+            ),
+            'STORE_ID_NUM': np.concatenate(
+                (
+                    np.tile(np.arange(0, num_stores), int(num_edges / num_stores)),
+                    np.arange(0, length),
+                )
+            ),
+            'ORDER_VALUE_2': np.concatenate(
+                (
+                    np.array([1, 2, 1] * order_value_length_1),
+                    np.array([2] * order_value_length_2),
+                )
+            ),
+            'ORDER_VALUE': np.concatenate(
+                (np.repeat(np.arange(int(num_edges / 8)), 4), np.arange(length_2))
+            ),
+            'ORDER_VALUE_3': np.concatenate(
+                (np.repeat(np.arange(int(num_edges / 8)), 4), np.arange(length_2))
+            ),
+            'ORDER_SCORE': np.concatenate(
+                (
+                    np.array([1, 2, 3] * order_score_length_1),
+                    np.array([1] * order_score_length_2),
+                )
+            ),
+            'TIMESTAMP': pd.to_datetime(np.arange(num_edges), unit='D'),
+            'IMAGE_URL': ['image_url'] * num_edges,
+        }
+    )
     if add_na_pkeys:
         # lhs is NA
         order_df.loc[len(order_df)] = [
-            len(order_df), pd.NA, 1, 1, 1, 2, 3, 3,
-            pd.to_datetime(2, unit='D'), 'image_url'
+            len(order_df),
+            pd.NA,
+            1,
+            1,
+            1,
+            2,
+            3,
+            3,
+            pd.to_datetime(2, unit='D'),
+            'image_url',
         ]
         # rhs is NA
         order_df.loc[len(order_df)] = [
-            len(order_df), 1, pd.NA, pd.NA, 1, 2, 3, 3,
-            pd.to_datetime(2, unit='D'), 'image_url'
+            len(order_df),
+            1,
+            pd.NA,
+            pd.NA,
+            1,
+            2,
+            3,
+            3,
+            pd.to_datetime(2, unit='D'),
+            'image_url',
         ]
         # both are NA
         order_df.loc[len(order_df)] = [
-            len(order_df), pd.NA, pd.NA, pd.NA, 1, 2, 3, 3,
-            pd.to_datetime(2, unit='D'), 'image_url'
+            len(order_df),
+            pd.NA,
+            pd.NA,
+            pd.NA,
+            1,
+            2,
+            3,
+            3,
+            pd.to_datetime(2, unit='D'),
+            'image_url',
         ]
     if add_na_timestamps:
         order_df.loc[len(order_df)] = [
-            len(order_df), 1, 1, 1, 1, 2, 3, 3, pd.NA, 'image_url'
+            len(order_df),
+            1,
+            1,
+            1,
+            1,
+            2,
+            3,
+            3,
+            pd.NA,
+            'image_url',
         ]
         order_df.loc[len(order_df)] = [
-            len(order_df), 2, 2, 2, 1, 2, 3, 3, pd.NA, 'image_url'
+            len(order_df),
+            2,
+            2,
+            2,
+            1,
+            2,
+            3,
+            3,
+            pd.NA,
+            'image_url',
         ]
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
@@ -2697,16 +3040,8 @@ def _temporal_graph_fixed(
     connector = ParquetConnector(name='parquet', root_dir=root_dir)
     _seed_parquet_col_stats(
         connector,
-        {
-            'USERS': user_df,
-            'STORES': store_df,
-            'ORDERS': order_df
-        },
-        {
-            'USERS': 'USER_ID',
-            'STORES': 'STORE_ID',
-            'ORDERS': 'ORDER_ID'
-        },
+        {'USERS': user_df, 'STORES': store_df, 'ORDERS': order_df},
+        {'USERS': 'USER_ID', 'STORES': 'STORE_ID', 'ORDERS': 'ORDER_ID'},
         {'ORDERS': 'TIMESTAMP'},
     )
 
@@ -2772,8 +3107,9 @@ def _small_temporal_graph_fixed(
     add_na_pkeys: bool = False,
     add_na_timestamps: bool = False,
 ) -> Graph:
-    return _temporal_graph_fixed(tmp_path, num_users, num_stores, num_edges,
-                                 add_na_pkeys, add_na_timestamps)
+    return _temporal_graph_fixed(
+        tmp_path, num_users, num_stores, num_edges, add_na_pkeys, add_na_timestamps
+    )
 
 
 def _large_temporal_graph_fixed(
@@ -2784,8 +3120,9 @@ def _large_temporal_graph_fixed(
     add_na_pkeys: bool = False,
     add_na_timestamps: bool = False,
 ) -> Graph:
-    return _temporal_graph_fixed(tmp_path, num_users, num_stores, num_edges,
-                                 add_na_pkeys, add_na_timestamps)
+    return _temporal_graph_fixed(
+        tmp_path, num_users, num_stores, num_edges, add_na_pkeys, add_na_timestamps
+    )
 
 
 def _large_temporal_graph(tmp_path: pathlib.Path) -> Graph:
@@ -2801,19 +3138,19 @@ def _static_graph(tmp_path: pathlib.Path, key_name_match: bool = True) -> Graph:
     num_stores = 6
     num_edges_order = 20
     num_edges_view = 30
-    return _create_static_graph(tmp_path, num_users, num_stores,
-                                num_edges_order, num_edges_view, key_name_match)
+    return _create_static_graph(
+        tmp_path, num_users, num_stores, num_edges_order, num_edges_view, key_name_match
+    )
 
 
-def _fixed_static_graph(tmp_path: pathlib.Path,
-                        key_name_match: bool = True) -> Graph:
+def _fixed_static_graph(tmp_path: pathlib.Path, key_name_match: bool = True) -> Graph:
     num_users = 10
     num_stores = 6
     num_edges_order = 20
     num_edges_view = 30
-    return _create_fixed_static_graph(tmp_path, num_users, num_stores,
-                                      num_edges_order, num_edges_view,
-                                      key_name_match)
+    return _create_fixed_static_graph(
+        tmp_path, num_users, num_stores, num_edges_order, num_edges_view, key_name_match
+    )
 
 
 def _large_static_graph(tmp_path: pathlib.Path, sparse: bool) -> Graph:
@@ -2826,8 +3163,9 @@ def _large_static_graph(tmp_path: pathlib.Path, sparse: bool) -> Graph:
     else:
         num_edges_order = 1000
         num_edges_view = 1500
-    return _create_static_graph(tmp_path, num_users, num_stores,
-                                num_edges_order, num_edges_view)
+    return _create_static_graph(
+        tmp_path, num_users, num_stores, num_edges_order, num_edges_view
+    )
 
 
 @pytest.fixture()
@@ -2890,18 +3228,15 @@ def binary_hyperedge_task(tmp_path: pathlib.Path) -> Task:
     graph = _temporal_graph(tmp_path)
     graph.compute_table_stats()
 
-    train_table_df = pd.DataFrame({
-        'USER_ID':
-        np.random.randint(0, graph['USERS'].num_rows(), (20, )),
-        'STORE_ID':
-        np.random.randint(0, graph['STORES'].num_rows(), (20, )),
-        'TIMESTAMP':
-        pd.to_datetime(np.random.randint(80, 100, (20, )), unit='D'),
-        'TARGET':
-        np.array([0, 1] * 10),
-        'FEAT':
-        np.random.uniform(size=(20, )),
-    })
+    train_table_df = pd.DataFrame(
+        {
+            'USER_ID': np.random.randint(0, graph['USERS'].num_rows(), (20,)),
+            'STORE_ID': np.random.randint(0, graph['STORES'].num_rows(), (20,)),
+            'TIMESTAMP': pd.to_datetime(np.random.randint(80, 100, (20,)), unit='D'),
+            'TARGET': np.array([0, 1] * 10),
+            'FEAT': np.random.uniform(size=(20,)),
+        }
+    )
     train_table_df[NODE_INDEX_COLUMN] = range(train_table_df.shape[0])
 
     return Task(
@@ -2915,8 +3250,12 @@ def binary_hyperedge_task(tmp_path: pathlib.Path) -> Task:
             dict(name='STORE_ID', dst_table='STORES', dtype=Dtype.int),
         ],
         cols=[
-            dict(name='FEAT', stype=Stype.numerical, dtype=Dtype.float,
-                 encoder=Numerical())
+            dict(
+                name='FEAT',
+                stype=Stype.numerical,
+                dtype=Dtype.float,
+                encoder=Numerical(),
+            )
         ],
         time_col='TIMESTAMP',
         task_name='BINARY_HYPEREDGE_TASK',
@@ -2980,8 +3319,7 @@ def lp_test_graph(
     entity1_path = osp.join(tables_path, 'USERS.' + suffix)
     entity2_path = osp.join(tables_path, 'PRODUCTS.' + suffix)
     trans_path = osp.join(tables_path, 'TRANS.' + suffix)
-    entity2_extra_connect_path = osp.join(tables_path,
-                                          'PRODUCT_BRANDS.' + suffix)
+    entity2_extra_connect_path = osp.join(tables_path, 'PRODUCT_BRANDS.' + suffix)
 
     # Create user entity table
     ages = list(range(17, 17 + (num_entities) * 8, 8))
@@ -2996,25 +3334,34 @@ def lp_test_graph(
     write_pd_df(user_df, entity1_path, suffix)
 
     # Create product entity table
-    rhs_df = pd.DataFrame({
-        'PRODUCT_ID':
-        range(2),
-        'BRAND': ['PATAGONIA', 'KUMO'],
-        'DATE': ['2970-01-01', '2970-01-01']
-        if rhs_entities_in_future else ['1970-01-01', '1970-01-01']
-    })
+    rhs_df = pd.DataFrame(
+        {
+            'PRODUCT_ID': range(2),
+            'BRAND': ['PATAGONIA', 'KUMO'],
+            'DATE': ['2970-01-01', '2970-01-01']
+            if rhs_entities_in_future
+            else ['1970-01-01', '1970-01-01'],
+        }
+    )
     if duplicated_rhs:
         rhs_df = pd.concat([rhs_df, rhs_df, rhs_df], ignore_index=True)
     write_pd_df(rhs_df, entity2_path, suffix)
 
     # Create product feature table
-    product_brands_df = pd.DataFrame({
-        'PRODUCT_ID': [0, 1, 0, 0, 1],
-        'BRAND': ['PATAGONIA', 'KUMO', 'PATAGONIA', 'PATAGONIA', 'KUMO'],
-        'BRAND_VALUE': [5, 5, 10, 20, 5],
-        'DATE':
-        ['2018-01-01', '2018-01-01', '2018-01-10', '2018-01-20', '2018-01-15']
-    })
+    product_brands_df = pd.DataFrame(
+        {
+            'PRODUCT_ID': [0, 1, 0, 0, 1],
+            'BRAND': ['PATAGONIA', 'KUMO', 'PATAGONIA', 'PATAGONIA', 'KUMO'],
+            'BRAND_VALUE': [5, 5, 10, 20, 5],
+            'DATE': [
+                '2018-01-01',
+                '2018-01-01',
+                '2018-01-10',
+                '2018-01-20',
+                '2018-01-15',
+            ],
+        }
+    )
     write_pd_df(product_brands_df, entity2_extra_connect_path, suffix)
 
     # Create Transaction table:
@@ -3061,18 +3408,19 @@ def lp_test_graph(
             ignore_index=True,
         )
 
-    trans_df = pd.DataFrame({
-        'TRANS_ID': range(df_len),
-        fkey_user: user_ids,
-        fkey_product: product_ids,
-        'AMOUNT': amounts,
-        'DATE': dates,
-    })
+    trans_df = pd.DataFrame(
+        {
+            'TRANS_ID': range(df_len),
+            fkey_user: user_ids,
+            fkey_product: product_ids,
+            'AMOUNT': amounts,
+            'DATE': dates,
+        }
+    )
     write_pd_df(trans_df, trans_path, suffix)
 
     if use_parquet:
-        connector = ParquetConnector('parquet', root_dir=tables_path,
-                                     na_values='?')
+        connector = ParquetConnector('parquet', root_dir=tables_path, na_values='?')
     else:
         connector = CSVConnector('csv', root_dir=tables_path, na_values='?')
     _seed_parquet_col_stats(
@@ -3103,11 +3451,12 @@ def lp_test_graph(
     graph.add(name='USERS', pkey='USER_ID', cols=['AGE'])
     if set_entity_time_col:
         graph['USERS'].set_time_col('DATE')
-    graph.add(name='PRODUCTS', pkey='PRODUCT_ID', cols=['BRAND'],
-              time_col='DATE')
+    graph.add(name='PRODUCTS', pkey='PRODUCT_ID', cols=['BRAND'], time_col='DATE')
     graph.add(
-        name='PRODUCT_BRANDS', cols=['BRAND_VALUE'],
-        fkeys=[dict(name='PRODUCT_ID', dst_table='PRODUCTS', dtype=Dtype.int)])
+        name='PRODUCT_BRANDS',
+        cols=['BRAND_VALUE'],
+        fkeys=[dict(name='PRODUCT_ID', dst_table='PRODUCTS', dtype=Dtype.int)],
+    )
     graph.add(
         name='TRANS',
         fkeys=[
@@ -3130,25 +3479,30 @@ def lp_test_graph(
     return graph
 
 
-def _temporal_multiclass_graph_fixed(tmp_path: pathlib.Path, ) -> Graph:
+def _temporal_multiclass_graph_fixed(
+    tmp_path: pathlib.Path,
+) -> Graph:
     num_users = 5
     num_timeframe = 7
-    user_df = pd.DataFrame({
-        'USER_ID': np.arange(num_users),
-    })
-    order_df = pd.DataFrame({
-        'USER_ID':
-        np.repeat(np.arange(0, num_users), num_timeframe),
-        'MULTI_CLASS_v1': ['a', 'b', 'c', 'a', 'a', 'b', 'a'] +
-        ['c', 'c', 'c', 'b', 'b', 'c', 'c'] +
-        ['a', 'b', 'c', 'a', 'a', 'c', 'a'] +
-        ['a', 'a', 'b', 'b', 'b', 'c', 'a'] +
-        ['b', 'a', 'a', 'c', 'a', 'b', 'b'],
-        'TIMESTAMP':
-        pd.to_datetime(np.tile(np.arange(num_timeframe), num_users), unit='D'),
-        'PRICE':
-        np.arange(num_users * num_timeframe),
-    })
+    user_df = pd.DataFrame(
+        {
+            'USER_ID': np.arange(num_users),
+        }
+    )
+    order_df = pd.DataFrame(
+        {
+            'USER_ID': np.repeat(np.arange(0, num_users), num_timeframe),
+            'MULTI_CLASS_v1': ['a', 'b', 'c', 'a', 'a', 'b', 'a']
+            + ['c', 'c', 'c', 'b', 'b', 'c', 'c']
+            + ['a', 'b', 'c', 'a', 'a', 'c', 'a']
+            + ['a', 'a', 'b', 'b', 'b', 'c', 'a']
+            + ['b', 'a', 'a', 'c', 'a', 'b', 'b'],
+            'TIMESTAMP': pd.to_datetime(
+                np.tile(np.arange(num_timeframe), num_users), unit='D'
+            ),
+            'PRICE': np.arange(num_users * num_timeframe),
+        }
+    )
     root_dir = tmp_path.resolve().as_posix()
     user_df.to_parquet(osp.join(root_dir, 'USERS.parquet'))
     order_df.to_parquet(osp.join(root_dir, 'ORDERS.parquet'))
@@ -3156,14 +3510,8 @@ def _temporal_multiclass_graph_fixed(tmp_path: pathlib.Path, ) -> Graph:
     connector = ParquetConnector(name='parquet', root_dir=root_dir)
     _seed_parquet_col_stats(
         connector,
-        {
-            'USERS': user_df,
-            'ORDERS': order_df
-        },
-        {
-            'USERS': 'USER_ID',
-            'ORDERS': None
-        },
+        {'USERS': user_df, 'ORDERS': order_df},
+        {'USERS': 'USER_ID', 'ORDERS': None},
         {'ORDERS': 'TIMESTAMP'},
     )
 
@@ -3216,9 +3564,12 @@ def temp_ucv(ucws) -> Generator[UCURI, None, None]:
 
     schema_info = ucws.schemas.create(catalog_name='ucv_test', name=schema)
     assert schema_info.full_name is not None
-    volume_info = ucws.volumes.create(catalog_name='ucv_test',
-                                      schema_name=schema, name=volume,
-                                      volume_type=VolumeType.MANAGED)
+    volume_info = ucws.volumes.create(
+        catalog_name='ucv_test',
+        schema_name=schema,
+        name=volume,
+        volume_type=VolumeType.MANAGED,
+    )
     assert volume_info.full_name is not None
 
     # The SQL warehouse runs in Shared mode as its own service principal, which
@@ -3229,20 +3580,18 @@ def temp_ucv(ucws) -> Generator[UCURI, None, None]:
         SecurableType.SCHEMA.value,
         schema_info.full_name,
         changes=[
-            PermissionsChange(principal='account users',
-                              add=[Privilege.USE_SCHEMA])
+            PermissionsChange(principal='account users', add=[Privilege.USE_SCHEMA])
         ],
     )
     ucws.grants.update(
         SecurableType.VOLUME.value,
         volume_info.full_name,
         changes=[
-            PermissionsChange(principal='account users',
-                              add=[Privilege.READ_VOLUME])
+            PermissionsChange(principal='account users', add=[Privilege.READ_VOLUME])
         ],
     )
 
-    yield UCURI(catalog='ucv_test', uc_schema=schema, volume=volume, path="")
+    yield UCURI(catalog='ucv_test', uc_schema=schema, volume=volume, path='')
 
     ucws.volumes.delete(volume_info.full_name)
     ucws.schemas.delete(schema_info.full_name)
@@ -3263,10 +3612,12 @@ def _dense_small_temporal_graph_fixed(
     Ensures all 5 values are possible, but the table is sparser and
     deterministic. Uses 12 timestamps per user.
     """
-    user_df = pd.DataFrame({
-        'USER_ID': np.arange(num_users),
-        'AGE': np.arange(num_users) % 20 + 20,
-    })
+    user_df = pd.DataFrame(
+        {
+            'USER_ID': np.arange(num_users),
+            'AGE': np.arange(num_users) % 20 + 20,
+        }
+    )
     store_df = pd.DataFrame({'STORE_ID': np.arange(num_stores)})
     if add_na_pkeys:
         user_df.loc[len(user_df)] = [pd.NA, 33]
@@ -3286,21 +3637,26 @@ def _dense_small_temporal_graph_fixed(
                     user_ids.append(user_id)
                     store_ids.append(store_id)
                     store_id_nums.append(store_id)
-                    order_values.append(f"value_{(user_id + t + store_id) % 5}")
+                    order_values.append(f'value_{(user_id + t + store_id) % 5}')
                     timestamps.append(pd.to_datetime(t, unit='D'))
 
-    order_df = pd.DataFrame({
-        'USER_ID': user_ids,
-        'STORE_ID': store_ids,
-        'STORE_ID_NUM': store_id_nums,
-        'ORDER_VALUE': order_values,
-        'TIMESTAMP': timestamps,
-    })
+    order_df = pd.DataFrame(
+        {
+            'USER_ID': user_ids,
+            'STORE_ID': store_ids,
+            'STORE_ID_NUM': store_id_nums,
+            'ORDER_VALUE': order_values,
+            'TIMESTAMP': timestamps,
+        }
+    )
 
     if add_na_pkeys:
         order_df.loc[len(order_df)] = [
-            pd.NA, 1, 1, 'value_0',
-            pd.to_datetime(2, unit='D')
+            pd.NA,
+            1,
+            1,
+            'value_0',
+            pd.to_datetime(2, unit='D'),
         ]
     if add_na_timestamps:
         order_df.loc[len(order_df)] = [1, 1, 1, 'value_0', pd.NA]
@@ -3313,16 +3669,8 @@ def _dense_small_temporal_graph_fixed(
     connector = ParquetConnector(name='parquet', root_dir=root_dir)
     _seed_parquet_col_stats(
         connector,
-        {
-            'USERS': user_df,
-            'STORES': store_df,
-            'ORDERS': order_df
-        },
-        {
-            'USERS': 'USER_ID',
-            'STORES': 'STORE_ID',
-            'ORDERS': None
-        },
+        {'USERS': user_df, 'STORES': store_df, 'ORDERS': order_df},
+        {'USERS': 'USER_ID', 'STORES': 'STORE_ID', 'ORDERS': None},
         {'ORDERS': 'TIMESTAMP'},
     )
 

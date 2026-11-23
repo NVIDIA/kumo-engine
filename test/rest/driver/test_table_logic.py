@@ -5,7 +5,6 @@
 import pathlib
 import re
 from datetime import datetime
-from test.rest.config.test_table import _s3_named  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
@@ -48,9 +47,10 @@ from statedb.config.predictive_query import PQueryDefinition
 from statedb.config.table import TableDataVersion
 from statedb.config.timestamp import ResourceTimestamps
 from statedb.rest.connector_authorization import CONNECTOR_TABLE_SOURCE_ACTIONS
+from test.rest.config.test_table import _s3_named  # noqa: E402
 
-_PROJECT_ID = ProjectID("project_" + "1" * 32)
-_CONNECTOR_ID = ConnectorID("connector_" + "1" * 32)
+_PROJECT_ID = ProjectID('project_' + '1' * 32)
+_CONNECTOR_ID = ConnectorID('connector_' + '1' * 32)
 
 
 @pytest.fixture(autouse=True)
@@ -69,10 +69,7 @@ async def test_get_table_v2_for_dangling_v2_tables():
         cols=[Column(name='a', stype=Stype.ID, dtype=Dtype.int)],
         source_table=S3SourceTable(
             connector_id=_CONNECTOR_ID,
-            source={
-                'mode': 'relative',
-                'path': 'path/file.parquet'
-            },
+            source={'mode': 'relative', 'path': 'path/file.parquet'},
             file_type=FileType.PARQUET,
             data_source_type=DataSourceType.S3,
         ),
@@ -94,19 +91,20 @@ async def test_get_table_v2_for_dangling_v2_tables():
             tables=SimpleNamespace(
                 get_table_entries_by_aliases=AsyncMock(
                     return_value={
-                        TableName("customers"): table_entry,
-                    }),
+                        TableName('customers'): table_entry,
+                    }
+                ),
                 get_table_entries=AsyncMock(return_value={fpid: table_entry}),
             ),
-            pqueries=SimpleNamespace(get_definitions_by_ids=AsyncMock(
-                return_value={})),
+            pqueries=SimpleNamespace(get_definitions_by_ids=AsyncMock(return_value={})),
             graphs=SimpleNamespace(),
         ),
         project_id=_PROJECT_ID,
     )
 
     response = await table_logic._get_many_table_entries_v2_from_state_services(
-        [TableIDv2('some_pq_name.customers-NA')])
+        [TableIDv2('some_pq_name.customers-NA')]
+    )
 
     assert response is not None
     assert len(response) == 1
@@ -144,19 +142,20 @@ async def test_get_table_v2_for_gcs_tables():
             tables=SimpleNamespace(
                 get_table_entries_by_aliases=AsyncMock(
                     return_value={
-                        TableName("customers"): table_entry,
-                    }),
+                        TableName('customers'): table_entry,
+                    }
+                ),
                 get_table_entries=AsyncMock(return_value={fpid: table_entry}),
             ),
-            pqueries=SimpleNamespace(get_definitions_by_ids=AsyncMock(
-                return_value={})),
+            pqueries=SimpleNamespace(get_definitions_by_ids=AsyncMock(return_value={})),
             graphs=SimpleNamespace(),
         ),
         project_id=_PROJECT_ID,
     )
 
     response = await table_logic._get_many_table_entries_v2_from_state_services(
-        [TableIDv2('some_pq_name.customers-NA')])
+        [TableIDv2('some_pq_name.customers-NA')]
+    )
 
     assert response is not None
     assert len(response) == 1
@@ -166,18 +165,14 @@ async def test_get_table_v2_for_gcs_tables():
 
 
 @pytest.mark.asyncio
-async def test_get_many_table_definitions_state_services_bulk_resolves_pquery_graph_ids(
-):
+async def test_get_many_table_definitions_state_services_bulk_resolves_pquery_graph_ids():
     customers_def = _s3_named()
     orders_def = TableDefinition(
         cols=customers_def.cols,
         source_table=S3SourceTable(
             file_type=FileType.PARQUET,
             connector_id=_CONNECTOR_ID,
-            source={
-                'mode': 'relative',
-                'path': 'orders'
-            },
+            source={'mode': 'relative', 'path': 'orders'},
         ),
         pkey='id',
         time_col='ts',
@@ -204,23 +199,23 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_pquery_gr
             updated_at=datetime.now(),
         ),
     )
-    graph_fpid = FPID("b" * 32)
-    pquery_id = PredictiveQueryID("some_pq_name")
+    graph_fpid = FPID('b' * 32)
+    pquery_id = PredictiveQueryID('some_pq_name')
     pquery_def = PQueryDefinition(
         timestamps=ResourceTimestamps(
             created_at=datetime.now(),
             updated_at=datetime.now(),
         ),
-        pquery_name="some_pq_name",
-        query_str="PREDICT COUNT(customers.*) FOR EACH customers.id",
+        pquery_name='some_pq_name',
+        query_str='PREDICT COUNT(customers.*) FOR EACH customers.id',
         graph_fpid=graph_fpid,
     )
     graph_entry = GraphDBEntryV2(
         id=graph_fpid,
         project_id=_PROJECT_ID,
         table_name_to_dbid={
-            TableName("customers"): customers_def.fpid,
-            TableName("orders"): orders_def.fpid,
+            TableName('customers'): customers_def.fpid,
+            TableName('orders'): orders_def.fpid,
         },
         col_groups=[],
         timestamps=ResourceTimestamps(
@@ -229,29 +224,37 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_pquery_gr
         ),
     )
     table_service = SimpleNamespace(
-        get_table_entries=AsyncMock(return_value={
-            customers_def.fpid: customers_entry,
-            orders_def.fpid: orders_entry,
-        }),
+        get_table_entries=AsyncMock(
+            return_value={
+                customers_def.fpid: customers_entry,
+                orders_def.fpid: orders_entry,
+            }
+        ),
         get_table_entry_by_alias=AsyncMock(
-            side_effect=AssertionError("scalar table alias fallback used")),
+            side_effect=AssertionError('scalar table alias fallback used')
+        ),
         get_table_entries_by_aliases=AsyncMock(return_value={}),
     )
     pquery_service = SimpleNamespace(
         get_definitions_by_ids=AsyncMock(return_value={pquery_id: pquery_def}),
         resolve_fpids=AsyncMock(
-            side_effect=AssertionError("pquery fpid resolver used")),
+            side_effect=AssertionError('pquery fpid resolver used')
+        ),
         get_definitions=AsyncMock(
-            side_effect=AssertionError("pquery fpid definitions lookup used")),
+            side_effect=AssertionError('pquery fpid definitions lookup used')
+        ),
         get_alias=AsyncMock(
-            side_effect=AssertionError("scalar pquery alias lookup used")),
+            side_effect=AssertionError('scalar pquery alias lookup used')
+        ),
         get_definition=AsyncMock(
-            side_effect=AssertionError("scalar pquery definition lookup used")),
+            side_effect=AssertionError('scalar pquery definition lookup used')
+        ),
     )
     graph_service = SimpleNamespace(
         get_graph_entries=AsyncMock(return_value={graph_fpid: graph_entry}),
         get_graph_entry=AsyncMock(
-            side_effect=AssertionError("scalar graph lookup used")),
+            side_effect=AssertionError('scalar graph lookup used')
+        ),
     )
     table_logic = TableLogic(
         MagicMock(),
@@ -263,10 +266,12 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_pquery_gr
         project_id=_PROJECT_ID,
     )
 
-    result = await table_logic.get_many_table_definitions([
-        TableIDv2("some_pq_name.customers-NA"),
-        TableIDv2("some_pq_name.orders-NA"),
-    ])
+    result = await table_logic.get_many_table_definitions(
+        [
+            TableIDv2('some_pq_name.customers-NA'),
+            TableIDv2('some_pq_name.orders-NA'),
+        ]
+    )
 
     assert result == [customers_def, orders_def]
     pquery_service.get_definitions_by_ids.assert_awaited_once_with([pquery_id])
@@ -274,31 +279,28 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_pquery_gr
     pquery_service.get_definitions.assert_not_awaited()
     pquery_service.get_alias.assert_not_awaited()
     pquery_service.get_definition.assert_not_awaited()
-    graph_service.get_graph_entries.assert_awaited_once_with(
-        _PROJECT_ID, {graph_fpid})
+    graph_service.get_graph_entries.assert_awaited_once_with(_PROJECT_ID, {graph_fpid})
     graph_service.get_graph_entry.assert_not_awaited()
     table_service.get_table_entries.assert_awaited_once_with(
-        _PROJECT_ID, {
+        _PROJECT_ID,
+        {
             customers_def.fpid,
             orders_def.fpid,
-        })
+        },
+    )
     table_service.get_table_entry_by_alias.assert_not_awaited()
     table_service.get_table_entries_by_aliases.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_get_many_table_definitions_state_services_bulk_resolves_aliases(
-):
+async def test_get_many_table_definitions_state_services_bulk_resolves_aliases():
     customers_def = _s3_named()
     orders_def = TableDefinition(
         cols=customers_def.cols,
         source_table=S3SourceTable(
             file_type=FileType.PARQUET,
             connector_id=_CONNECTOR_ID,
-            source={
-                'mode': 'relative',
-                'path': 'orders'
-            },
+            source={'mode': 'relative', 'path': 'orders'},
         ),
         pkey='id',
         time_col='ts',
@@ -306,7 +308,7 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_aliases(
     customers_entry = TableDBEntryV2(
         id=customers_def.fpid,
         project_id=_PROJECT_ID,
-        alias="customers",
+        alias='customers',
         config=customers_def,
         col_dtypes={},
         timestamps=ResourceTimestamps(
@@ -317,7 +319,7 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_aliases(
     orders_entry = TableDBEntryV2(
         id=orders_def.fpid,
         project_id=_PROJECT_ID,
-        alias="orders",
+        alias='orders',
         config=orders_def,
         col_dtypes={},
         timestamps=ResourceTimestamps(
@@ -326,59 +328,69 @@ async def test_get_many_table_definitions_state_services_bulk_resolves_aliases(
         ),
     )
     table_service = SimpleNamespace(
-        get_table_entries=AsyncMock(return_value={
-            customers_def.fpid: customers_entry,
-            orders_def.fpid: orders_entry,
-        }),
+        get_table_entries=AsyncMock(
+            return_value={
+                customers_def.fpid: customers_entry,
+                orders_def.fpid: orders_entry,
+            }
+        ),
         get_table_entry_by_alias=AsyncMock(
-            side_effect=AssertionError("scalar table alias lookup used")),
+            side_effect=AssertionError('scalar table alias lookup used')
+        ),
         get_table_entries_by_aliases=AsyncMock(
             return_value={
-                TableName("customers"): customers_entry,
-                TableName("orders"): orders_entry,
-            }),
+                TableName('customers'): customers_entry,
+                TableName('orders'): orders_entry,
+            }
+        ),
     )
     pquery_service = SimpleNamespace(
         get_definitions_by_ids=AsyncMock(return_value={}),
         resolve_fpids=AsyncMock(
-            side_effect=AssertionError("pquery fpid resolver used")),
+            side_effect=AssertionError('pquery fpid resolver used')
+        ),
         get_alias=AsyncMock(
-            side_effect=AssertionError("scalar pquery alias lookup used")),
+            side_effect=AssertionError('scalar pquery alias lookup used')
+        ),
         get_definition=AsyncMock(
-            side_effect=AssertionError("pquery definition lookup used")),
+            side_effect=AssertionError('pquery definition lookup used')
+        ),
     )
     table_logic = TableLogic(
         MagicMock(),
         state_services=SimpleNamespace(
             tables=table_service,
             pqueries=pquery_service,
-            graphs=SimpleNamespace(get_graph_entries=AsyncMock(
-                return_value={})),
+            graphs=SimpleNamespace(get_graph_entries=AsyncMock(return_value={})),
         ),
         project_id=_PROJECT_ID,
     )
 
-    result = await table_logic.get_many_table_definitions([
-        TableIDv2("missing_pq.customers-NA"),
-        TableIDv2("missing_pq.orders-NA"),
-    ])
+    result = await table_logic.get_many_table_definitions(
+        [
+            TableIDv2('missing_pq.customers-NA'),
+            TableIDv2('missing_pq.orders-NA'),
+        ]
+    )
 
     assert result == [customers_def, orders_def]
     pquery_service.get_definitions_by_ids.assert_awaited_once_with(
-        [PredictiveQueryID("missing_pq")])
+        [PredictiveQueryID('missing_pq')]
+    )
     pquery_service.resolve_fpids.assert_not_awaited()
     pquery_service.get_alias.assert_not_awaited()
     pquery_service.get_definition.assert_not_awaited()
     table_service.get_table_entries_by_aliases.assert_awaited_once()
-    aliases_arg = (
-        table_service.get_table_entries_by_aliases.await_args.args[1])
-    assert list(aliases_arg) == [TableName("customers"), TableName("orders")]
+    aliases_arg = table_service.get_table_entries_by_aliases.await_args.args[1]
+    assert list(aliases_arg) == [TableName('customers'), TableName('orders')]
     table_service.get_table_entry_by_alias.assert_not_awaited()
     table_service.get_table_entries.assert_awaited_once_with(
-        _PROJECT_ID, {
+        _PROJECT_ID,
+        {
             customers_def.fpid,
             orders_def.fpid,
-        })
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -387,7 +399,7 @@ async def test_get_table_v2_state_services_resolves_alias():
     table_entry = TableDBEntryV2(
         id=table_def.fpid,
         project_id=_PROJECT_ID,
-        alias="customers",
+        alias='customers',
         config=table_def,
         col_dtypes={},
         timestamps=ResourceTimestamps(
@@ -399,8 +411,9 @@ async def test_get_table_v2_state_services_resolves_alias():
         get_table_entries=AsyncMock(return_value={table_def.fpid: table_entry}),
         get_table_entries_by_aliases=AsyncMock(
             return_value={
-                TableName("customers"): table_entry,
-            }),
+                TableName('customers'): table_entry,
+            }
+        ),
     )
     table_logic = TableLogic(
         MagicMock(),
@@ -412,22 +425,25 @@ async def test_get_table_v2_state_services_resolves_alias():
         project_id=_PROJECT_ID,
     )
 
-    result = await table_logic.get_table_v2(TableIDv2("NA.customers-NA"))
+    result = await table_logic.get_table_v2(TableIDv2('NA.customers-NA'))
 
     assert result == table_def
     table_service.get_table_entries_by_aliases.assert_awaited_once()
     aliases_arg = table_service.get_table_entries_by_aliases.await_args.args[1]
-    assert list(aliases_arg) == [TableName("customers")]
+    assert list(aliases_arg) == [TableName('customers')]
     table_service.get_table_entries.assert_awaited_once_with(
-        _PROJECT_ID, {table_def.fpid})
+        _PROJECT_ID, {table_def.fpid}
+    )
 
 
 @pytest.mark.asyncio
 @patch.object(TableLogic, '_get_table_def_and_connector_ref')
-@pytest.mark.parametrize('connector_exception_type',
-                         [FileNotFoundError, ConnectorError])
+@pytest.mark.parametrize(
+    'connector_exception_type', [FileNotFoundError, ConnectorError]
+)
 async def test_get_col_stats_and_sample_rows_unreadable_sample_rows(
-        mock_get_table_def_and_connector_ref_method, connector_exception_type):
+    mock_get_table_def_and_connector_ref_method, connector_exception_type
+):
 
     connector_exception_message = 'TEST_EXCEPTION'
     connector_exception = connector_exception_type(connector_exception_message)
@@ -440,46 +456,59 @@ async def test_get_col_stats_and_sample_rows_unreadable_sample_rows(
     table_def_mock.get_connector_id.return_value = test_connector_id
     table_def_mock.cols = []
 
-    reference = ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                      connector_id=_CONNECTOR_ID)
-    mock_get_table_def_and_connector_ref_method.return_value = (table_def_mock,
-                                                                reference)
+    reference = ConnectorExecutionRef(
+        project_id=_PROJECT_ID, connector_id=_CONNECTOR_ID
+    )
+    mock_get_table_def_and_connector_ref_method.return_value = (
+        table_def_mock,
+        reference,
+    )
 
     table_logic = TableLogic(Mock(), project_id=_PROJECT_ID)
 
-    error_message = TABLE_READ_ERROR_MESSAGE.format(test_table_name,
-                                                    test_connector_id,
-                                                    connector_exception)
-    with patch(
+    error_message = TABLE_READ_ERROR_MESSAGE.format(
+        test_table_name, test_connector_id, connector_exception
+    )
+    with (
+        patch(
             'rest.driver.table_logic.DataBackend._execute_single_activity',
-            new=AsyncMock(side_effect=ValidationHTTPException(
-                error_message, connector_exception)),
-    ), pytest.raises(ValidationHTTPException, match=re.escape(error_message)):
+            new=AsyncMock(
+                side_effect=ValidationHTTPException(error_message, connector_exception)
+            ),
+        ),
+        pytest.raises(ValidationHTTPException, match=re.escape(error_message)),
+    ):
         await table_logic.get_col_stats_and_sample_rows(Mock())
 
 
 @pytest.mark.asyncio
 async def test_get_col_stats_at_version_uses_fingerprint_connector_cache():
     table_def = _s3_named()
-    version = TableDataVersion("test-version")
+    version = TableDataVersion('test-version')
     cache = Mock()
     cache.get_min_col_stats.return_value = {}
     table_logic = TableLogic(Mock(), project_id=_PROJECT_ID)
 
-    with patch.object(
+    with (
+        patch.object(
             TableLogic,
-            "_get_table_def_and_connector_ref",
-            new=AsyncMock(return_value=(
-                table_def,
-                ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                      connector_id=_CONNECTOR_ID),
-            )),
-    ), patch(
-            "rest.driver.table_logic.get_active_cache",
+            '_get_table_def_and_connector_ref',
+            new=AsyncMock(
+                return_value=(
+                    table_def,
+                    ConnectorExecutionRef(
+                        project_id=_PROJECT_ID, connector_id=_CONNECTOR_ID
+                    ),
+                )
+            ),
+        ),
+        patch(
+            'rest.driver.table_logic.get_active_cache',
             return_value=cache,
+        ),
     ):
         result = await table_logic.get_col_stats_at_version(
-            TableIDv2("NA.transactions-NA"),
+            TableIDv2('NA.transactions-NA'),
             version,
         )
 
@@ -498,39 +527,49 @@ async def test_get_table_def_and_connector_ref_existing_connector_path():
     table_def = Mock()
     table_def.get_connector_id.return_value = _CONNECTOR_ID
 
-    expected_ref = ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                         connector_id=_CONNECTOR_ID)
+    expected_ref = ConnectorExecutionRef(
+        project_id=_PROJECT_ID, connector_id=_CONNECTOR_ID
+    )
     execution_ref_for_project = AsyncMock(return_value=expected_ref)
     table_logic = TableLogic(
         Mock(),
-        state_services=SimpleNamespace(connectors=SimpleNamespace(
-            execution_ref_for_project=execution_ref_for_project)),
+        state_services=SimpleNamespace(
+            connectors=SimpleNamespace(
+                execution_ref_for_project=execution_ref_for_project
+            )
+        ),
         project_id=_PROJECT_ID,
     )
 
     with patch.object(
-            table_logic,
-            "get_table_v2",
-            new=AsyncMock(return_value=table_def),
+        table_logic,
+        'get_table_v2',
+        new=AsyncMock(return_value=table_def),
     ):
-        resolved_def, resolved_spec = (
-            await table_logic._get_table_def_and_connector_ref(Mock()))
+        (
+            resolved_def,
+            resolved_spec,
+        ) = await table_logic._get_table_def_and_connector_ref(Mock())
 
     assert resolved_def == table_def
     assert resolved_spec == expected_ref
     execution_ref_for_project.assert_awaited_once_with(
-        ANY, _PROJECT_ID, table_def.get_connector_id.return_value,
-        CONNECTOR_TABLE_SOURCE_ACTIONS)
+        ANY,
+        _PROJECT_ID,
+        table_def.get_connector_id.return_value,
+        CONNECTOR_TABLE_SOURCE_ACTIONS,
+    )
 
 
 @pytest.mark.asyncio
 async def test_validate_table_named_connector_requires_state_services():
     db_mock = Mock()
     db_mock.get_connector_if_exists.side_effect = AssertionError(
-        "legacy connector lookup used")
+        'legacy connector lookup used'
+    )
     table_logic = TableLogic(Mock(), project_id=_PROJECT_ID)
 
-    with pytest.raises(RuntimeError, match="TableLogic requires StateServices"):
+    with pytest.raises(RuntimeError, match='TableLogic requires StateServices'):
         await table_logic.validate_table(_s3_named())
 
     db_mock.get_connector_if_exists.assert_not_called()
@@ -561,8 +600,7 @@ def _make_table_logic_for_refresh_v2():
         tables=SimpleNamespace(get_table_entries=AsyncMock(return_value={})),
         connectors=SimpleNamespace(
             execution_ref_for_project=AsyncMock(return_value=execution_ref),
-            fresh_execution_refs_for_workflow=AsyncMock(
-                return_value=(refresh_ref, )),
+            fresh_execution_refs_for_workflow=AsyncMock(return_value=(refresh_ref,)),
         ),
     )
     return TableLogic(
@@ -578,17 +616,23 @@ async def test_trigger_async_refresh_v2_mints_a_fresh_workflow_reference():
     table_logic = _make_table_logic_for_refresh_v2()
     connectors = table_logic._require_state_services().connectors
 
-    with patch('rest.driver.table_logic.get_active_cache') as mock_gac, \
-            patch('rest.driver.table_logic.DataBackend.'
-                  'get_table_data_version_in_activity',
-                  new=AsyncMock(return_value='version-1')) as get_version, \
-            patch('rest.driver.table_logic.DataBackend.'
-                  'get_many_table_refresh_results',
-                  new=AsyncMock(return_value=[None])), \
-            patch('rest.driver.table_logic.DataBackend.start_refresh_table',
-                  new=AsyncMock()) as start_refresh:
+    with (
+        patch('rest.driver.table_logic.get_active_cache') as mock_gac,
+        patch(
+            'rest.driver.table_logic.DataBackend.get_table_data_version_in_activity',
+            new=AsyncMock(return_value='version-1'),
+        ) as get_version,
+        patch(
+            'rest.driver.table_logic.DataBackend.get_many_table_refresh_results',
+            new=AsyncMock(return_value=[None]),
+        ),
+        patch(
+            'rest.driver.table_logic.DataBackend.start_refresh_table', new=AsyncMock()
+        ) as start_refresh,
+    ):
         mock_gac.return_value.table_version_cache.get.coroutine = AsyncMock(
-            return_value=None)
+            return_value=None
+        )
         await table_logic.trigger_async_refresh_v2(
             table_def,
             TableIDv2('NA.tbl-abcdef123456abcdef123456abcdef12'),
@@ -599,10 +643,11 @@ async def test_trigger_async_refresh_v2_mints_a_fresh_workflow_reference():
     assert version_reference.authorization_token == 'version-token'
     assert refresh_reference.authorization_token == 'refresh-token'
     assert version_reference.authorization_token != (
-        refresh_reference.authorization_token)
+        refresh_reference.authorization_token
+    )
     connectors.fresh_execution_refs_for_workflow.assert_awaited_once_with(
         ANY,
-        (version_reference, ),
+        (version_reference,),
         CONNECTOR_TABLE_SOURCE_ACTIONS,
     )
 
@@ -628,19 +673,25 @@ async def test_trigger_async_refresh_v2_sql_table_always_recomputes_version():
     table_logic = _make_table_logic_for_refresh_v2()
     connectors = table_logic._require_state_services().connectors
 
-    with patch('rest.driver.table_logic.get_active_cache') as mock_gac, \
-            patch('rest.driver.table_logic.DataBackend.'
-                  'get_table_data_version_in_activity',
-                  new=AsyncMock(return_value='sql-hash-1')) as get_version, \
-            patch('rest.driver.table_logic.DataBackend.'
-                  'get_many_table_refresh_results',
-                  new=AsyncMock(return_value=[None])), \
-            patch('rest.driver.table_logic.DataBackend.start_refresh_table',
-                  new=AsyncMock()):
+    with (
+        patch('rest.driver.table_logic.get_active_cache') as mock_gac,
+        patch(
+            'rest.driver.table_logic.DataBackend.get_table_data_version_in_activity',
+            new=AsyncMock(return_value='sql-hash-1'),
+        ) as get_version,
+        patch(
+            'rest.driver.table_logic.DataBackend.get_many_table_refresh_results',
+            new=AsyncMock(return_value=[None]),
+        ),
+        patch(
+            'rest.driver.table_logic.DataBackend.start_refresh_table', new=AsyncMock()
+        ),
+    ):
         # A synthetic-name cache hit would let a physical table skip the probe;
         # the SQL table must ignore it and still recompute.
         mock_gac.return_value.table_version_cache.get.coroutine = AsyncMock(
-            return_value=TableDataVersion('stale-cached'))
+            return_value=TableDataVersion('stale-cached')
+        )
         await table_logic.trigger_async_refresh_v2(
             sql_def,
             TableIDv2('NA.tbl-abcdef123456abcdef123456abcdef12'),
@@ -670,20 +721,26 @@ async def test_trigger_async_refresh_v2_unreadable_source_raises(exc_type):
             str(table_def.get_source_table_name()),
             table_def.get_connector_id(),
             TABLE_READ_PROVIDER_ERROR,
-        ))
+        )
+    )
     table_logic = _make_table_logic_for_refresh_v2()
 
-    with patch('rest.driver.table_logic.get_active_cache') as mock_gac, \
-            patch('rest.driver.table_logic.DataBackend.'
-                  'get_table_data_version_in_activity',
-                  new=AsyncMock(side_effect=exc_type('boom'))):
+    with (
+        patch('rest.driver.table_logic.get_active_cache') as mock_gac,
+        patch(
+            'rest.driver.table_logic.DataBackend.get_table_data_version_in_activity',
+            new=AsyncMock(side_effect=exc_type('boom')),
+        ),
+    ):
         # Force the "no cached version → probe source" branch.
-        mock_gac.return_value.table_version_cache.get \
-            .coroutine = AsyncMock(return_value=None)
+        mock_gac.return_value.table_version_cache.get.coroutine = AsyncMock(
+            return_value=None
+        )
 
         with pytest.raises(ValidationHTTPException, match=expected_msg):
             await table_logic.trigger_async_refresh_v2(
-                table_def, TableIDv2('NA.tbl-abcdef123456abcdef123456abcdef12'))
+                table_def, TableIDv2('NA.tbl-abcdef123456abcdef123456abcdef12')
+            )
 
 
 @pytest.mark.asyncio
@@ -708,22 +765,33 @@ async def test_trigger_async_refresh_v2_skips_when_already_completed():
     completed_result.status = AsyncDataTaskStatus.DONE
     completed_result.stage = TableRefreshStage.COMPLETED
 
-    with patch('rest.driver.table_logic.get_active_cache') as mock_gac, \
-            patch.object(DataBackend, 'get_many_table_refresh_results',
-                         new=AsyncMock(return_value=[completed_result])), \
-            patch.object(DataBackend, 'start_refresh_table',
-                         new=AsyncMock()) as start_refresh_mock, \
-            patch.object(table_refresh_workflow.TableRefreshWorkflow,
-                         'compose_wf_id',
-                         return_value='wf-id-stub'):
+    with (
+        patch('rest.driver.table_logic.get_active_cache') as mock_gac,
+        patch.object(
+            DataBackend,
+            'get_many_table_refresh_results',
+            new=AsyncMock(return_value=[completed_result]),
+        ),
+        patch.object(
+            DataBackend, 'start_refresh_table', new=AsyncMock()
+        ) as start_refresh_mock,
+        patch.object(
+            table_refresh_workflow.TableRefreshWorkflow,
+            'compose_wf_id',
+            return_value='wf-id-stub',
+        ),
+    ):
         # Cached source version present + refresh_source=False → the
         # "skip relaunch" arm fires.
-        mock_gac.return_value.table_version_cache.get \
-            .coroutine = AsyncMock(return_value=cached_version)
+        mock_gac.return_value.table_version_cache.get.coroutine = AsyncMock(
+            return_value=cached_version
+        )
 
         result = await table_logic.trigger_async_refresh_v2(
-            table_def, TableIDv2('NA.tbl-abcdef123456abcdef123456abcdef12'),
-            refresh_source=False)
+            table_def,
+            TableIDv2('NA.tbl-abcdef123456abcdef123456abcdef12'),
+            refresh_source=False,
+        )
 
     assert result == TableDataVersion(cached_version)
     start_refresh_mock.assert_not_called()
@@ -757,10 +825,12 @@ async def test_create_table_v2_canonicalizes_custom_sql_source():
         time_col=None,
     )
 
-    connector = SimpleNamespace(config=SimpleNamespace(type=SimpleNamespace(
-        value='snowflake')))
-    connector_service = SimpleNamespace(get_for_project=AsyncMock(
-        return_value=connector))
+    connector = SimpleNamespace(
+        config=SimpleNamespace(type=SimpleNamespace(value='snowflake'))
+    )
+    connector_service = SimpleNamespace(
+        get_for_project=AsyncMock(return_value=connector)
+    )
     save_mock = AsyncMock()
     table_service = SimpleNamespace(
         # A truthy entry short-circuits the heavy `validate_table` path.
@@ -784,14 +854,14 @@ async def test_create_table_v2_canonicalizes_custom_sql_source():
     assert src.connector_type == ConnectorType.SNOWFLAKE
     # `referenced_tables` recomputed server-side (client's 'WRONG' discarded).
     assert src.referenced_tables == referenced_tables_or_none(
-        sql, ConnectorType.SNOWFLAKE)
+        sql, ConnectorType.SNOWFLAKE
+    )
     assert 'WRONG' not in src.referenced_tables
     # Canonical synthetic name derived from the normalized SQL.
     assert src.table == custom_sql_synthetic_name(sql, ConnectorType.SNOWFLAKE)
     # The fpid used for the dedupe lookup / persist is the canonical one, not
     # the provisional name's.
-    table_service.get_table_entry.assert_awaited_once_with(
-        _PROJECT_ID, persisted.fpid)
+    table_service.get_table_entry.assert_awaited_once_with(_PROJECT_ID, persisted.fpid)
     assert persisted.fpid != table_def.fpid
     connector_service.get_for_project.assert_awaited_once()
 
@@ -802,8 +872,11 @@ async def test_create_table_v2_physical_source_is_not_canonicalized():
     the Custom SQL guard is a no-op for physical sources and persists the
     definition unchanged."""
     table_def = _s3_named()
-    connector_service = SimpleNamespace(get_for_project=AsyncMock(
-        side_effect=AssertionError("connector lookup for physical table")))
+    connector_service = SimpleNamespace(
+        get_for_project=AsyncMock(
+            side_effect=AssertionError('connector lookup for physical table')
+        )
+    )
     save_mock = AsyncMock()
     table_service = SimpleNamespace(
         get_table_entry=AsyncMock(return_value=object()),
@@ -825,8 +898,7 @@ async def test_create_table_v2_physical_source_is_not_canonicalized():
 
 
 @pytest.mark.asyncio
-async def test_incomplete_direct_job_stats_report_unavailable_without_parsing(
-        tmp_path):
+async def test_incomplete_direct_job_stats_report_unavailable_without_parsing(tmp_path):
     from kumo_core.types import ColStatType
 
     from kumo.config import BaseColumnConfig
@@ -845,13 +917,16 @@ async def test_incomplete_direct_job_stats_report_unavailable_without_parsing(
     table_def = MagicMock()
     table_def.get_source_table_name.return_value = 'predictions'
 
-    with patch('rest.driver.table_logic._get_column_metadata',
-               return_value={}), patch(
-                   'rest.driver.table_logic._get_sample_rows',
-                   new=AsyncMock(side_effect=AssertionError(
-                       'direct output has no internal sample'))), patch(
-                           'rest.driver.table_logic.'
-                           '_build_column_summaries', return_value=[]):
+    with (
+        patch('rest.driver.table_logic._get_column_metadata', return_value={}),
+        patch(
+            'rest.driver.table_logic._get_sample_rows',
+            new=AsyncMock(
+                side_effect=AssertionError('direct output has no internal sample')
+            ),
+        ),
+        patch('rest.driver.table_logic._build_column_summaries', return_value=[]),
+    ):
         response = await try_load_col_stats_from_per_job_dir(
             table_def,
             MagicMock(),
@@ -867,8 +942,7 @@ async def test_incomplete_direct_job_stats_report_unavailable_without_parsing(
 
 
 @pytest.mark.asyncio
-async def test_job_stats_preview_uses_only_selected_prediction_files(
-        tmp_path):
+async def test_job_stats_preview_uses_only_selected_prediction_files(tmp_path):
     from types import SimpleNamespace
 
     from rest.driver.table_logic import try_load_col_stats_from_per_job_dir
@@ -878,8 +952,10 @@ async def test_job_stats_preview_uses_only_selected_prediction_files(
     (stats_dir / 'col_stats').write_text('{}')
     artifact_root = tmp_path / 'predictions.parquet'
     artifact_root.mkdir()
-    selected = (str(artifact_root / 'part-00000.parquet'),
-                str(artifact_root / 'part-00001.parquet'))
+    selected = (
+        str(artifact_root / 'part-00000.parquet'),
+        str(artifact_root / 'part-00001.parquet'),
+    )
     for path in selected:
         pathlib.Path(path).write_bytes(b'selected')
     foreign = artifact_root / 'foreign.parquet'
@@ -893,19 +969,25 @@ async def test_job_stats_preview_uses_only_selected_prediction_files(
     selected_sampler = AsyncMock(return_value={})
     resolved = SimpleNamespace(root=str(artifact_root), files=selected)
 
-    with patch(
+    with (
+        patch(
             'rest.driver.table_logic.resolve_prediction_artifact',
-            new=SimpleNamespace(
-                coroutine=AsyncMock(return_value=resolved))), patch(
-                'rest.driver.table_logic._get_selected_sample_rows',
-                new=selected_sampler), patch(
-                    'rest.driver.table_logic._get_sample_rows',
-                    new=AsyncMock(side_effect=AssertionError(
-                        'selected preview must not use connector root'))), \
-            patch('rest.driver.table_logic._get_column_metadata',
-                  return_value={}), patch(
-                      'rest.driver.table_logic._build_column_summaries',
-                      return_value=[]):
+            new=SimpleNamespace(coroutine=AsyncMock(return_value=resolved)),
+        ),
+        patch(
+            'rest.driver.table_logic._get_selected_sample_rows', new=selected_sampler
+        ),
+        patch(
+            'rest.driver.table_logic._get_sample_rows',
+            new=AsyncMock(
+                side_effect=AssertionError(
+                    'selected preview must not use connector root'
+                )
+            ),
+        ),
+        patch('rest.driver.table_logic._get_column_metadata', return_value={}),
+        patch('rest.driver.table_logic._build_column_summaries', return_value=[]),
+    ):
         response = await try_load_col_stats_from_per_job_dir(
             table_def,
             MagicMock(),

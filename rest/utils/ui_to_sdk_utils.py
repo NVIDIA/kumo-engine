@@ -21,9 +21,10 @@ from statedb.config.common import GeneratePredictionTableJobID
 logger = logging.getLogger(__name__)
 
 DISKGRAPH_FORECASTING_BP_UNSUPPORTED_MESSAGE = (
-    "DiskGraph forecasting batch prediction is not yet supported by SDK replay. "
-    "Skipping before training to avoid a known unsupported prediction-table "
-    "generation failure.")
+    'DiskGraph forecasting batch prediction is not yet supported by SDK replay. '
+    'Skipping before training to avoid a known unsupported prediction-table '
+    'generation failure.'
+)
 
 
 def is_diskgraph_forecasting_batch_prediction_sdk_unsupported(
@@ -31,10 +32,11 @@ def is_diskgraph_forecasting_batch_prediction_sdk_unsupported(
     task_type: Union[TaskType, str],
     forecast_length: Optional[int] = None,
 ) -> bool:
-    task_type_value = getattr(task_type, "value", task_type)
-    is_forecasting_plan = (forecast_length is not None and forecast_length > 1)
-    return is_diskgraph and (task_type_value == TaskType.FORECASTING.value
-                             or is_forecasting_plan)
+    task_type_value = getattr(task_type, 'value', task_type)
+    is_forecasting_plan = forecast_length is not None and forecast_length > 1
+    return is_diskgraph and (
+        task_type_value == TaskType.FORECASTING.value or is_forecasting_plan
+    )
 
 
 # ----------- Generate script methods -----------
@@ -62,7 +64,7 @@ def generate_conn_graph_or_table_sdk_script(
     Response:
         str: The final python script.
     """
-    final_script = ""
+    final_script = ''
     if include_header:
         header = generate_header(project_id)
         final_script = header
@@ -76,20 +78,20 @@ def generate_conn_graph_or_table_sdk_script(
         else:
             connector_config = connector
 
-        if connector_config.get("is_project_upload"):
-            project_upload_connector_ids.add(connector_config["connector_id"])
+        if connector_config.get('is_project_upload'):
+            project_upload_connector_ids.add(connector_config['connector_id'])
             continue
         connector_script = generate_connector_script(connector_config)
         final_script += connector_script
 
     if table_configs:
         for table in table_configs:
-            tables[
-                table.source_table_name] = "\\" + table.source_table_name + "\\"
+            tables[table.source_table_name] = '\\' + table.source_table_name + '\\'
             final_script += generate_table_script(
                 table.table_config,
-                is_project_upload=(table.table_config["connector_id"]
-                                   in project_upload_connector_ids),
+                is_project_upload=(
+                    table.table_config['connector_id'] in project_upload_connector_ids
+                ),
             )
 
     if edge_configs:
@@ -130,25 +132,26 @@ def generate_connector_script(connector_config: Dict[str, Any]) -> str:
     Generated variable references remain keyed by immutable connector ID, while
     the SDK lookup uses the user-facing name accepted by ``get_by_name``.
     """
-    connector_id = connector_config["connector_id"]
-    lookup_name = connector_config["lookup_name"]
+    connector_id = connector_config['connector_id']
+    lookup_name = connector_config['lookup_name']
     connector_classes = {
-        DataSourceType.S3: "S3Connector",
-        DataSourceType.GCS: "GCSConnector",
-        DataSourceType.ADLS: "ADLSConnector",
-        DataSourceType.SNOWFLAKE: "SnowflakeConnector",
-        DataSourceType.DATABRICKS: "DatabricksConnector",
-        DataSourceType.BIGQUERY: "BigQueryConnector",
+        DataSourceType.S3: 'S3Connector',
+        DataSourceType.GCS: 'GCSConnector',
+        DataSourceType.ADLS: 'ADLSConnector',
+        DataSourceType.SNOWFLAKE: 'SnowflakeConnector',
+        DataSourceType.DATABRICKS: 'DatabricksConnector',
+        DataSourceType.BIGQUERY: 'BigQueryConnector',
     }
     try:
-        connector_class = connector_classes[
-            connector_config["data_source_type"]]
+        connector_class = connector_classes[connector_config['data_source_type']]
     except KeyError as exc:
         raise ValueError(
-            f"Invalid data source type; {connector_config['data_source_type']}"
+            f'Invalid data source type; {connector_config["data_source_type"]}'
         ) from exc
-    return (f"{connector_id}_connector = kumo.{connector_class}.get_by_name("
-            f"{json.dumps(lookup_name)})\n\n")
+    return (
+        f'{connector_id}_connector = kumo.{connector_class}.get_by_name('
+        f'{json.dumps(lookup_name)})\n\n'
+    )
 
 
 def generate_table_script(
@@ -156,21 +159,21 @@ def generate_table_script(
     *,
     is_project_upload: bool = False,
 ):
-    connector_id = table_config["connector_id"]
-    if "sql" in table_config:
+    connector_id = table_config['connector_id']
+    if 'sql' in table_config:
         # Custom SQL table: reconstruct via Table.from_sql (mirrors the SDK
         # surface) rather than a physical, name-keyed source table. The backing
         # connector is emitted under its own warehouse type by the connector
         # script; only the table body differs here.
-        return f"""{table_config["table_name"]}_config = {table_config}
+        return f"""{table_config['table_name']}_config = {table_config}
 
-{table_config["table_name"]} = kumo.Table.from_sql(
+{table_config['table_name']} = kumo.Table.from_sql(
     connector={connector_id}_connector,
-    sql={table_config["table_name"]}_config["sql"],
-    columns={table_config["table_name"]}_config["cols"],
-    primary_key={table_config["table_name"]}_config['pkey'],
-    time_column={table_config["table_name"]}_config['time_col'],
-    end_time_column={table_config["table_name"]}_config["end_time_col"],
+    sql={table_config['table_name']}_config["sql"],
+    columns={table_config['table_name']}_config["cols"],
+    primary_key={table_config['table_name']}_config['pkey'],
+    time_column={table_config['table_name']}_config['time_col'],
+    end_time_column={table_config['table_name']}_config["end_time_col"],
 )
 
 """
@@ -178,19 +181,22 @@ def generate_table_script(
         source_table = (
             f'kumo.FileUploadConnector(file_type={table_config["table_name"]}'
             f'_config["file_type"].lower()).table('
-            f'{table_config["table_name"]}_config["table_name"])')
+            f'{table_config["table_name"]}_config["table_name"])'
+        )
     else:
-        source_table = (f'{connector_id}_connector.table('
-                        f'{table_config["table_name"]}_config["table_name"])')
+        source_table = (
+            f'{connector_id}_connector.table('
+            f'{table_config["table_name"]}_config["table_name"])'
+        )
 
-    script = f"""{table_config["table_name"]}_config = {table_config}
+    script = f"""{table_config['table_name']}_config = {table_config}
 
-{table_config["table_name"]} = kumo.Table(
+{table_config['table_name']} = kumo.Table(
     source_table={source_table},
-    columns={table_config["table_name"]}_config["cols"],
-    primary_key={table_config["table_name"]}_config['pkey'],
-    time_column={table_config["table_name"]}_config['time_col'],
-    end_time_column={table_config["table_name"]}_config["end_time_col"]
+    columns={table_config['table_name']}_config["cols"],
+    primary_key={table_config['table_name']}_config['pkey'],
+    time_column={table_config['table_name']}_config['time_col'],
+    end_time_column={table_config['table_name']}_config["end_time_col"]
 )
 
 """
@@ -266,7 +272,9 @@ training_job = trainer.fit(
     return script
 
 
-def generate_prediction_only_sdk_script(training_job_id: str, ) -> str:
+def generate_prediction_only_sdk_script(
+    training_job_id: str,
+) -> str:
     """
     Generates SDK code to load an existing trained model instead of
     training from scratch. Used for batch prediction SDK scripts where
@@ -312,11 +320,11 @@ def generate_prediction_job_sdk_script(
     Returns:
         Fully executable Python SDK script.
     """
-    script = ""
-    query_name = "pquery"
+    script = ''
+    query_name = 'pquery'
 
     if pq_config:
-        query_name = "prediction_pquery"
+        query_name = 'prediction_pquery'
         script += f"""# Generate new predictive query
 {query_name}_config = {pq_config}
 {query_name} = kumo.PredictiveQuery(
@@ -369,8 +377,9 @@ def generate_unsupported_diskgraph_forecasting_bp_sdk_script() -> str:
     # Use json.dumps() to safely embed the message as a Python string literal,
     # so future edits to the message constant cannot inject quotes/newlines
     # that would break the emitted script.
-    message_literal = json.dumps("SKIPPED_UNSUPPORTED: " +
-                                 DISKGRAPH_FORECASTING_BP_UNSUPPORTED_MESSAGE)
+    message_literal = json.dumps(
+        'SKIPPED_UNSUPPORTED: ' + DISKGRAPH_FORECASTING_BP_UNSUPPORTED_MESSAGE
+    )
     return f"""import sys
 
 print({message_literal})
@@ -399,10 +408,7 @@ def recursively_convert_dataclass_to_dict(obj: Any) -> Any:
 
         # If it's a dict, recursively convert its values
         if isinstance(obj, dict):
-            return {
-                k: recursively_convert_dataclass_to_dict(v)
-                for k, v in obj.items()
-            }
+            return {k: recursively_convert_dataclass_to_dict(v) for k, v in obj.items()}
 
         return obj
 
@@ -415,10 +421,9 @@ def recursively_convert_dataclass_to_dict(obj: Any) -> Any:
 
     extra = getattr(obj, '__pydantic_extra__', None)
     if extra:
-        result.update({
-            k: recursively_convert_dataclass_to_dict(v)
-            for k, v in extra.items()
-        })
+        result.update(
+            {k: recursively_convert_dataclass_to_dict(v) for k, v in extra.items()}
+        )
 
     return result
 
@@ -439,10 +444,7 @@ def render_str_vals_as_strings(data: Dict[str, Any]):
         Parsed dictionary with correct data types.
     """
     if isinstance(data, dict):
-        return {
-            key: render_str_vals_as_strings(value)
-            for key, value in data.items()
-        }
+        return {key: render_str_vals_as_strings(value) for key, value in data.items()}
     elif isinstance(data, list):
         return [render_str_vals_as_strings(item) for item in data]
     elif isinstance(data, (bool, int, float, type(None))):
@@ -469,7 +471,7 @@ def clean_up_pquery_string(
     """
     replacements = {
         r'\s+': ' ',  # Replace multiple spaces with a single space
-        r'\\n': ' '  # Replace \\n dots with a single space
+        r'\\n': ' ',  # Replace \\n dots with a single space
     }
 
     # Ensure that table is reffered by source table name in pquery
@@ -479,8 +481,7 @@ def clean_up_pquery_string(
             table_names_map[table.table_alias] = table.source_table_name
 
         if table.table_alias_in_graph:
-            table_names_map[
-                table.table_alias_in_graph] = table.source_table_name
+            table_names_map[table.table_alias_in_graph] = table.source_table_name
 
     replacements.update(table_names_map)
     pattern = re.compile('|'.join(f'({key})' for key in replacements.keys()))
@@ -510,10 +511,10 @@ def make_stype_and_dtype_sdk_compat(script: str) -> str:
         with stype and dtype formatting chages.
     """
     replacements = {
-        "stype=": "stype=Stype.",
-        "dtype=": "dtype=Dtype.",
-        "\\\\'": "",
-        "'\\\\": "",
+        'stype=': 'stype=Stype.',
+        'dtype=': 'dtype=Dtype.',
+        "\\\\'": '',
+        "'\\\\": '',
     }
 
     for old, new in replacements.items():
@@ -546,113 +547,117 @@ def bp_job_ouput_conf(
     staging_table_name_set = False
     write_mode: Optional[str] = None
 
-    file_output_types = (jobs_api.S3PredictionOutput,
-                         jobs_api.GCSPredictionOutput,
-                         jobs_api.ADLSPredictionOutput)
+    file_output_types = (
+        jobs_api.S3PredictionOutput,
+        jobs_api.GCSPredictionOutput,
+        jobs_api.ADLSPredictionOutput,
+    )
     for artifact in outputs:
         output_types.append(artifact.artifact_type.value)
         if isinstance(artifact, jobs_api.LocalPredictionOutput):
             artifact_extra_fields = list(artifact.extra_fields)
-            if (extra_fields is not None
-                    and artifact_extra_fields != extra_fields):
+            if extra_fields is not None and artifact_extra_fields != extra_fields:
                 raise ValueError(
-                    "SDK replay cannot represent outputs with different "
-                    "extra_fields.")
+                    'SDK replay cannot represent outputs with different extra_fields.'
+                )
             extra_fields = artifact_extra_fields
             continue
 
         artifact_connector_id = artifact.connector_id
         artifact_connector_type = artifact.storage_type.value
-        if (connector_id is not None and artifact_connector_id != connector_id):
+        if connector_id is not None and artifact_connector_id != connector_id:
             raise ValueError(
-                "SDK replay supports only one output connector per batch "
-                "prediction job.")
-        if (connector_type is not None
-                and artifact_connector_type != connector_type):
+                'SDK replay supports only one output connector per batch '
+                'prediction job.'
+            )
+        if connector_type is not None and artifact_connector_type != connector_type:
             raise ValueError(
-                "SDK replay supports only one output connector type per "
-                "batch prediction job.")
+                'SDK replay supports only one output connector type per '
+                'batch prediction job.'
+            )
         connector_id = artifact_connector_id
         connector_type = artifact_connector_type
 
         artifact_extra_fields = list(artifact.extra_fields)
-        if (extra_fields is not None and artifact_extra_fields != extra_fields):
+        if extra_fields is not None and artifact_extra_fields != extra_fields:
             raise ValueError(
-                "SDK replay cannot represent outputs with different "
-                "extra_fields.")
+                'SDK replay cannot represent outputs with different extra_fields.'
+            )
         extra_fields = artifact_extra_fields
 
         if isinstance(artifact, file_output_types):
             output_path = artifact.file_path
-            _, output_table_name = output_path.rstrip("/").rsplit(
-                "/", maxsplit=1)
-            output_table_name = output_table_name.removesuffix(".parquet")
-            output_table_name += "_sdk"
+            _, output_table_name = output_path.rstrip('/').rsplit('/', maxsplit=1)
+            output_table_name = output_table_name.removesuffix('.parquet')
+            output_table_name += '_sdk'
             if urlsplit(output_path).scheme:
                 parent = output_path.rstrip('/').rsplit('/', maxsplit=1)[0]
                 output_table_name = f'{parent}/{output_table_name}'
             output_table_names.append(output_table_name)
 
         else:
-            output_table_name = artifact.table_name + "_sdk"
+            output_table_name = artifact.table_name + '_sdk'
             output_table_names.append(output_table_name)
             if isinstance(artifact, jobs_api.SnowflakePredictionOutput):
                 artifact_write_mode = artifact.write_mode.value
-                if (write_mode is not None
-                        and artifact_write_mode != write_mode):
+                if write_mode is not None and artifact_write_mode != write_mode:
                     raise ValueError(
-                        "SDK replay cannot represent outputs with different "
-                        "write modes.")
+                        'SDK replay cannot represent outputs with different '
+                        'write modes.'
+                    )
                 write_mode = artifact_write_mode
             elif isinstance(artifact, jobs_api.BigQueryPredictionOutput):
                 artifact_write_mode = artifact.write_mode.value
-                if (write_mode is not None
-                        and artifact_write_mode != write_mode):
+                if write_mode is not None and artifact_write_mode != write_mode:
                     raise ValueError(
-                        "SDK replay cannot represent outputs with different "
-                        "write modes.")
-                if (staging_table_name_set
-                        and artifact.staging_table_name != staging_table_name):
+                        'SDK replay cannot represent outputs with different '
+                        'write modes.'
+                    )
+                if (
+                    staging_table_name_set
+                    and artifact.staging_table_name != staging_table_name
+                ):
                     raise ValueError(
-                        "SDK replay cannot represent outputs with different "
-                        "staging tables.")
+                        'SDK replay cannot represent outputs with different '
+                        'staging tables.'
+                    )
                 staging_table_name = artifact.staging_table_name
                 staging_table_name_set = True
                 write_mode = artifact_write_mode
 
-    output_connector = ""
+    output_connector = ''
     if connector_id is not None and connector_type is not None:
         connector_config = {
-            "connector_id": connector_id,
-            "data_source_type": connector_type,
+            'connector_id': connector_id,
+            'data_source_type': connector_type,
         }
-        output_connector = "\\" + connector_id + "_connector\\"
+        output_connector = '\\' + connector_id + '_connector\\'
 
     output_config: Dict[str, Any] = {}
     output_types = set(output_types)
     if output_types:
-        output_config["output_types"] = set(output_types)
+        output_config['output_types'] = set(output_types)
     if output_connector:
-        output_config["output_connector"] = output_connector
+        output_config['output_connector'] = output_connector
     if extra_fields:
-        output_config["extra_fields"] = extra_fields
+        output_config['extra_fields'] = extra_fields
     if staging_table_name:
-        output_config["staging_table_name"] = staging_table_name
+        output_config['staging_table_name'] = staging_table_name
     if write_mode:
-        output_config["write_mode"] = write_mode
+        output_config['write_mode'] = write_mode
 
     if len(output_table_names) > 1:
-        output_config["output_table_name"] = tuple(output_table_names)
+        output_config['output_table_name'] = tuple(output_table_names)
     elif len(output_table_names) == 1:
-        output_config["output_table_name"] = output_table_names[0]
+        output_config['output_table_name'] = output_table_names[0]
 
     # NOTE: Output config is empty for local download, but the SDK expects
     # a non-empty set for output_types and output_table_name.
     # Therefore, add a minimum of PREDICTIONS to output_types and predictions_output
     # to output_table_name.
-    if "output_types" not in output_config:
-        output_config["output_types"] = {"PREDICTIONS"}
-    if "output_table_name" not in output_config:
-        output_config["output_table_name"] = "predictions_output"
+    if 'output_types' not in output_config:
+        output_config['output_types'] = {'PREDICTIONS'}
+    if 'output_table_name' not in output_config:
+        output_config['output_table_name'] = 'predictions_output'
 
     return (output_config, connector_config)

@@ -46,6 +46,7 @@ class DiskgraphHandle:
     Frozen: handles are immutable and hashable. Must be JSON-serializable
     — Temporal activities receive handles as arguments.
     """
+
     graph_key: str
     graph_data_version: str
     job_id: Optional[str] = None
@@ -68,6 +69,7 @@ class DiskgraphHandle:
         """
         parts = os.path.normpath(index_path).split(os.sep)
         assert len(parts) >= 2, (
-            f"diskgraph index path must have at least two components "
-            f"({{graph_key}}/{{graph_data_version}}); got {index_path!r}")
+            f'diskgraph index path must have at least two components '
+            f'({{graph_key}}/{{graph_data_version}}); got {index_path!r}'
+        )
         return cls(graph_key=parts[-2], graph_data_version=parts[-1])

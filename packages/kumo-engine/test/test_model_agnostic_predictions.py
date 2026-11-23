@@ -28,21 +28,33 @@ MODEL = ModelManifest(id='toy-model')
 def _run(tmp_path, name, seed):
     scores = np.random.default_rng(seed).uniform(size=200)
     path = tmp_path / f'{name}.parquet'
-    pd.DataFrame({'ENTITY': range(200), 'True_PROB': scores,
-                  'TARGET_PRED': scores > .5}).to_parquet(path)
+    pd.DataFrame(
+        {'ENTITY': range(200), 'True_PROB': scores, 'TARGET_PRED': scores > 0.5}
+    ).to_parquet(path)
     manifest = _record_predictions(
-        name, {'predictions': (200, lambda: [str(path)])}, model=MODEL,
+        name,
+        {'predictions': (200, lambda: [str(path)])},
+        model=MODEL,
         snapshot=stub('snapshot', 'g@d'),
         task_type=TaskType.BINARY_CLASSIFICATION,
-        table=PredictionTableRecord(query_sha256='q', source='entities',
-                                    anchors=[], rows=200,
-                                    requested_rows=205, scored_rows=200,
-                                    skipped_rows=5),
-        scoring=RunScoring(binary_classification_threshold=.5,
-                           threshold_source='argument',
-                           num_classes_to_return=None, count_source='none',
-                           num_workers=1),
-        started_at='2026-10-28T00:00:00+00:00')
+        table=PredictionTableRecord(
+            query_sha256='q',
+            source='entities',
+            anchors=[],
+            rows=200,
+            requested_rows=205,
+            scored_rows=200,
+            skipped_rows=5,
+        ),
+        scoring=RunScoring(
+            binary_classification_threshold=0.5,
+            threshold_source='argument',
+            num_classes_to_return=None,
+            count_source='none',
+            num_workers=1,
+        ),
+        started_at='2026-10-28T00:00:00+00:00',
+    )
     return SimpleNamespace(id=name, manifest=manifest, bundle_id=MODEL.id)
 
 
@@ -58,13 +70,24 @@ def test_any_models_prediction_run_is_recorded_and_monitored(tmp_path):
     assert record.tags['kumo.bundle_id'] == 'toy-model'
 
     previous = _run(tmp_path, 'run-1', 2)
-    report = score_drift(SimpleNamespace(result=SimpleNamespace(
-        manifest=MODEL, id=MODEL.id)), run, previous=previous, snapshot=None,
-                         training_snapshot=None)
-    assert report.reasons['holdout'] == (
-        "the model's holdout records no score counts")
+    report = score_drift(
+        SimpleNamespace(result=SimpleNamespace(manifest=MODEL, id=MODEL.id)),
+        run,
+        previous=previous,
+        snapshot=None,
+        training_snapshot=None,
+    )
+    assert report.reasons['holdout'] == ("the model's holdout records no score counts")
     assert report.psi is None and report.bundle_matches is True
-    assert (report.previous_psi, report.previous_ks,
-            report.previous_wasserstein) == tuple(exact_drift(*(
+    assert (
+        report.previous_psi,
+        report.previous_ks,
+        report.previous_wasserstein,
+    ) == tuple(
+        exact_drift(
+            *(
                 Counts.from_dict(r.manifest.stats['predictions'].counts)
-                for r in (run, previous))).values())
+                for r in (run, previous)
+            )
+        ).values()
+    )

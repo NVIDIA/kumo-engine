@@ -41,23 +41,29 @@ def generate_ui_stats_dict(cols) -> Dict[BaseColumnConfig, List[ColStatType]]:
     stats_dict = {}
     for col in cols:
         col_config = BaseColumnConfig(
-            name=col.name, dtype=col.dtype, stype=col.stype,
-            multicategorical_delimiter=(col.multicategorical_delimiter))
+            name=col.name,
+            dtype=col.dtype,
+            stype=col.stype,
+            multicategorical_delimiter=(col.multicategorical_delimiter),
+        )
         stats_dict[col_config] = [
             ColStatType.NUM_NA,
             ColStatType.COUNT,
         ]
 
-        if (col_config.stype != Stype.sequence
-                and not col_config.dtype.is_list()):
+        if col_config.stype != Stype.sequence and not col_config.dtype.is_list():
             stats_dict[col_config] += [
                 ColStatType.NUM_UNIQUE,
             ]
 
         if col_config.stype == Stype.numerical:
             stats_dict[col_config] += [
-                ColStatType.MIN, ColStatType.MAX, ColStatType.MEAN,
-                ColStatType.QUANTILES, ColStatType.STD, ColStatType.HISTOGRAM
+                ColStatType.MIN,
+                ColStatType.MAX,
+                ColStatType.MEAN,
+                ColStatType.QUANTILES,
+                ColStatType.STD,
+                ColStatType.HISTOGRAM,
             ]
         elif col_config.stype == Stype.categorical:
             stats_dict[col_config] += [
@@ -88,7 +94,7 @@ def generate_ui_stats_dict(cols) -> Dict[BaseColumnConfig, List[ColStatType]]:
 class ColStatsSet(str, Enum):
     """Predefined set of col stats required for different purpose."""
 
-    UI = "UI"
+    UI = 'UI'
     MINIMAL = 'MINIMAL'
     REMAINING_FULL_ENCODER = 'REMAINING_FULL_ENCODER'
     FULL_ENCODER = 'FULL_ENCODER'
@@ -103,17 +109,17 @@ class ColStatsSet(str, Enum):
         elif self == ColStatsSet.FULL_ENCODER:
             return TableRefreshStage.COMPUTE_FULL_COL_STATS
         elif self in {
-                ColStatsSet.FULL,
-                ColStatsSet.BP,
+            ColStatsSet.FULL,
+            ColStatsSet.BP,
         }:
             return TableRefreshStage.COMPUTE_FULL_COL_STATS
         elif self == ColStatsSet.REMAINING_FULL_ENCODER:
             return TableRefreshStage.COMPUTE_FULL_COL_STATS
         else:
-            raise ValueError(f"Unknown ColStatsSet: {self}")
+            raise ValueError(f'Unknown ColStatsSet: {self}')
 
     def get_stats_types(
-            self, table: TableDefinition
+        self, table: TableDefinition
     ) -> Dict[BaseColumnConfig, List[ColStatType]]:
         if self == ColStatsSet.UI:
             return generate_ui_stats_dict(table.cols)
@@ -129,8 +135,7 @@ class ColStatsSet(str, Enum):
         }
         for stats in full_stat.values():
             stats[:] = [
-                stat for stat in stats
-                if stat != ColStatType.SUMMARY_STATS_BY_CLASS
+                stat for stat in stats if stat != ColStatType.SUMMARY_STATS_BY_CLASS
             ]
         if self == ColStatsSet.FULL:
             return full_stat
@@ -148,11 +153,12 @@ class ColStatsSet(str, Enum):
             base_columns = table.to_base_columns()
             columns = {col.name for col in base_columns}
             if {'SCORE', 'CLASS'} <= columns:
-                score_column_config = next(col.base_config()
-                                           for col in base_columns
-                                           if col.name == 'SCORE')
+                score_column_config = next(
+                    col.base_config() for col in base_columns if col.name == 'SCORE'
+                )
                 full_stat[score_column_config].append(
-                    ColStatType.SUMMARY_STATS_BY_CLASS)
+                    ColStatType.SUMMARY_STATS_BY_CLASS
+                )
             return full_stat
 
         full_encoder_stat = {
@@ -179,7 +185,7 @@ def validate_csv_file(file_path: str):
 
     Raises a ValidationException if the file is invalid.
     """
-    log.debug(f"Validating CSV file: {file_path}")
+    log.debug(f'Validating CSV file: {file_path}')
     try:
         # Try detecting a separator:
         separator = detect_csv_sep(file_path)
@@ -187,17 +193,22 @@ def validate_csv_file(file_path: str):
             rows = csv.reader(csv_file, delimiter=separator)
             next(rows, None)
             if next((row for row in rows if row), None) is None:
-                raise ValueError("Uploaded file is empty - has no rows.")
+                raise ValueError('Uploaded file is empty - has no rows.')
     except UnicodeDecodeError as err:
         log.error(err)
         raise ValidationException(
-            title=("Non UTF-8 encoded character detected in this file. "
-                   "Please make sure that your CSV file is encoded using "
-                   "UTF-8 before ingesting to Kumo."), message=f"{str(err)}")
+            title=(
+                'Non UTF-8 encoded character detected in this file. '
+                'Please make sure that your CSV file is encoded using '
+                'UTF-8 before ingesting to Kumo.'
+            ),
+            message=f'{str(err)}',
+        )
     except Exception as err:
-        log.error(f"Error when valdidating CSV file: {file_path}: {err}")
-        raise ValidationException(title="Failed to validate CSV file",
-                                  message=f"{str(err)}")
+        log.error(f'Error when valdidating CSV file: {file_path}: {err}')
+        raise ValidationException(
+            title='Failed to validate CSV file', message=f'{str(err)}'
+        )
 
 
 @blocking_func()
@@ -209,23 +220,25 @@ def validate_parquet_file(file_path: str):
 
     Raises a ValidationException if the file is invalid.
     """
-    log.debug(f"Validating parquet file: {file_path}")
+    log.debug(f'Validating parquet file: {file_path}')
     # Create a temporary parquet connector for the file_path.
     dir_path = osp.dirname(file_path)
-    parquet_connector = ParquetConnector(name="temp_conn", root_dir=dir_path)
+    parquet_connector = ParquetConnector(name='temp_conn', root_dir=dir_path)
     try:
         pq_dataset = parquet_connector._parquet_dataset(file_path)
         validate_parquet_schema(pq_dataset.schema)
 
-        if not any(fragment.metadata.num_rows > 0
-                   for fragment in pq_dataset.get_fragments()):
-            raise ValueError("Uploaded file is empty - has no rows.")
+        if not any(
+            fragment.metadata.num_rows > 0 for fragment in pq_dataset.get_fragments()
+        ):
+            raise ValueError('Uploaded file is empty - has no rows.')
 
     except ValidationException as val_ex:
         raise val_ex
     except Exception as err:
-        raise ValidationException(title="Failed to validate parquet file",
-                                  message=f"{str(err)}")
+        raise ValidationException(
+            title='Failed to validate parquet file', message=f'{str(err)}'
+        )
 
 
 def get_time_range_from_stats(
@@ -254,7 +267,7 @@ def get_time_range_from_stats(
     # backend code. Return None, to indicate to the user that it is no longer
     # calculating.
     if time_col not in stats.col_stats:
-        log.error(f"Exact stats for time col {time_col} are not present")
+        log.error(f'Exact stats for time col {time_col} are not present')
         return None
 
     col_stats = stats.col_stats[time_col]
@@ -265,14 +278,16 @@ def get_time_range_from_stats(
         min = Stats.from_config(col_stats[ColStatType.MIN])
         max = Stats.from_config(col_stats[ColStatType.MAX])
     except KeyError:
-        log.exception(f"Exact stats for time col {time_col} are "
-                      f"missing min or max stats")
+        log.exception(
+            f'Exact stats for time col {time_col} are missing min or max stats'
+        )
         return None
 
     min_value = None if is_missing_stat_value(min.value) else min.value
     max_value = None if is_missing_stat_value(max.value) else max.value
-    return FactTableTimeRange(min=min_value, max=max_value, approx=min.approx
-                              or max.approx)
+    return FactTableTimeRange(
+        min=min_value, max=max_value, approx=min.approx or max.approx
+    )
 
 
 def get_full_time_range(

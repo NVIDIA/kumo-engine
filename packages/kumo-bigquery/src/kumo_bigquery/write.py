@@ -30,13 +30,14 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from google.cloud import bigquery
-from kumo_bigquery import staging, streaming
-from kumo_bigquery.staging import StagingLocation
 from kumo_core.sources.errors import (
     PermanentSourceError,
     SourceAccessDeniedError,
     SourceNotFoundError,
 )
+
+from kumo_bigquery import staging, streaming
+from kumo_bigquery.staging import StagingLocation
 
 OUTPUT_TABLE_ID = re.compile(r'[A-Za-z0-9_-]{1,1024}')
 EXPORT_PREFIX = '_kumo.export'
@@ -52,10 +53,7 @@ _TYPE_NAMES = {
 }
 # Types a table can hold beyond those output is created with.
 _TABLE_TYPES = {
-    **{
-        name: arrow_type
-        for arrow_type, name in _TYPE_NAMES.items()
-    },
+    **{name: arrow_type for arrow_type, name in _TYPE_NAMES.items()},
     'NUMERIC': pa.decimal128(38, 9),
     'BIGNUMERIC': pa.decimal256(76, 38),
     'DATETIME': pa.timestamp('us'),
@@ -78,8 +76,8 @@ class OutputSchemaMismatchError(PermanentSourceError):
 
     ``problems`` names each column and its types, without the table's name.
     """
-    def __init__(self, message: str, *, table: str,
-                 problems: Sequence[str]) -> None:
+
+    def __init__(self, message: str, *, table: str, problems: Sequence[str]) -> None:
         super().__init__(message, table=table)
         self.problems = list(problems)
 
@@ -111,8 +109,11 @@ def load_job_config(
     """Parquet load; list columns (embeddings) become REPEATED fields."""
     config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.PARQUET,
-        write_disposition=(bigquery.WriteDisposition.WRITE_TRUNCATE if replace
-                           else bigquery.WriteDisposition.WRITE_APPEND),
+        write_disposition=(
+            bigquery.WriteDisposition.WRITE_TRUNCATE
+            if replace
+            else bigquery.WriteDisposition.WRITE_APPEND
+        ),
     )
     if schema:
         config.autodetect = False
@@ -142,8 +143,11 @@ def _canonical(arrow_type: pa.DataType) -> Optional[pa.DataType]:
         return pa.timestamp('us', tz='UTC')
     if pa.types.is_date(arrow_type):
         return pa.date32()
-    if (pa.types.is_list(arrow_type) or pa.types.is_large_list(arrow_type)
-            or pa.types.is_fixed_size_list(arrow_type)):
+    if (
+        pa.types.is_list(arrow_type)
+        or pa.types.is_large_list(arrow_type)
+        or pa.types.is_fixed_size_list(arrow_type)
+    ):
         inner = _canonical(arrow_type.value_type)
         if inner is None or pa.types.is_list(inner):
             return None
@@ -168,8 +172,9 @@ def _widens(source: pa.DataType, column: pa.DataType) -> bool:
     INT64 coercions do."""
     if pa.types.is_list(source) and pa.types.is_list(column):
         return _widens(source.value_type, column.value_type)
-    return pa.types.is_integer(source) and (pa.types.is_floating(column)
-                                            or pa.types.is_decimal(column))
+    return pa.types.is_integer(source) and (
+        pa.types.is_floating(column) or pa.types.is_decimal(column)
+    )
 
 
 def bq_field(field: pa.Field) -> Optional[bigquery.SchemaField]:
@@ -189,13 +194,15 @@ def bq_schema(target: pa.Schema) -> Optional[list[bigquery.SchemaField]]:
 
 def nonempty(files: Sequence[Path]) -> list[Path]:
     """An empty shard's column types are not trustworthy."""
-    return [path for path in files if pq.ParquetFile(path).metadata.num_rows
-            ] or list(files[:1])
+    return [path for path in files if pq.ParquetFile(path).metadata.num_rows] or list(
+        files[:1]
+    )
 
 
 @dataclass(frozen=True)
 class Plan:
     """What every shard is cast to, and the BigQuery schema it lands in."""
+
     target: pa.Schema
     schema: Optional[list[bigquery.SchemaField]]
 
@@ -207,14 +214,16 @@ def _source_fields(
     try:
         schema = pa.unify_schemas(
             [pq.read_schema(path).remove_metadata() for path in files],
-            promote_options='permissive')
+            promote_options='permissive',
+        )
     except (pa.ArrowInvalid, pa.ArrowTypeError) as error:
         raise PermanentSourceError(
-            f'Prediction shards have incompatible schemas: {error}') from None
+            f'Prediction shards have incompatible schemas: {error}'
+        ) from None
     extra = extra_columns or {}
-    return ([(field.name, field.type)
-             for field in schema if field.name not in extra] +
-            [(name, pa.scalar(value).type) for name, value in extra.items()])
+    return [(field.name, field.type) for field in schema if field.name not in extra] + [
+        (name, pa.scalar(value).type) for name, value in extra.items()
+    ]
 
 
 def plan(
@@ -237,45 +246,52 @@ def plan(
     fields = _source_fields(files, extra_columns)
     if not replace and existing is not None:
         return _append_plan(fields, existing, ref)
-    target = pa.schema([
-        pa.field(
-            name,
-            pa.string() if pa.types.is_null(arrow_type) else
-            (_canonical(arrow_type) or arrow_type))
-        for name, arrow_type in fields
-    ])
+    target = pa.schema(
+        [
+            pa.field(
+                name,
+                pa.string()
+                if pa.types.is_null(arrow_type)
+                else (_canonical(arrow_type) or arrow_type),
+            )
+            for name, arrow_type in fields
+        ]
+    )
     schema = bq_schema(target)
     if schema is not None and existing is not None:
         schema = _keep_column_metadata(schema, existing.schema)
     return Plan(target, schema)
 
 
-def _append_plan(fields: list[tuple[str, pa.DataType]], existing: Any,
-                 ref: str) -> Plan:
+def _append_plan(
+    fields: list[tuple[str, pa.DataType]], existing: Any, ref: str
+) -> Plan:
     columns = {field.name.casefold(): field for field in existing.schema}
     target, problems = [], []
     for name, arrow_type in fields:
         column = columns.get(name.casefold())
         if column is None:
-            problems.append(f'{name} ({_describe(arrow_type)}) is not a '
-                            f'table column')
+            problems.append(f'{name} ({_describe(arrow_type)}) is not a table column')
             continue
         if pa.types.is_null(arrow_type):
             continue
         wanted = _arrow_type(column)
         source = _canonical(arrow_type) or arrow_type
-        if wanted is None or not (source.equals(wanted)
-                                  or _widens(source, wanted)):
-            problems.append(f'{name} is {_describe(arrow_type)} but the table '
-                            f'column is {_type_name(column)} {column.mode}')
+        if wanted is None or not (source.equals(wanted) or _widens(source, wanted)):
+            problems.append(
+                f'{name} is {_describe(arrow_type)} but the table '
+                f'column is {_type_name(column)} {column.mode}'
+            )
             continue
         target.append(pa.field(column.name, wanted))
     if problems:
         raise OutputSchemaMismatchError(
             f'Cannot APPEND to {ref}: {"; ".join(problems)}. APPEND needs '
             f'every output column in the table with the same type; use '
-            f'WriteMode.OVERWRITE or another table.', table=ref,
-            problems=problems)
+            f'WriteMode.OVERWRITE or another table.',
+            table=ref,
+            problems=problems,
+        )
     return Plan(pa.schema(target), list(existing.schema))
 
 
@@ -287,8 +303,8 @@ def _describe(arrow_type: pa.DataType) -> str:
 
 
 def _keep_column_metadata(
-        schema: list[bigquery.SchemaField],
-        current: Sequence[bigquery.SchemaField]) -> list[bigquery.SchemaField]:
+    schema: list[bigquery.SchemaField], current: Sequence[bigquery.SchemaField]
+) -> list[bigquery.SchemaField]:
     """``OVERWRITE`` keeps the descriptions and policy tags of columns that
     keep their name and type."""
     kept = {
@@ -302,18 +318,21 @@ def _keep_column_metadata(
             merged.append(field)
             continue
         merged.append(
-            bigquery.SchemaField(field.name, field.field_type, mode=field.mode,
-                                 description=old.description,
-                                 policy_tags=old.policy_tags))
+            bigquery.SchemaField(
+                field.name,
+                field.field_type,
+                mode=field.mode,
+                description=old.description,
+                policy_tags=old.policy_tags,
+            )
+        )
     return merged
 
 
-def _cast(table: pa.Table, target: pa.Schema,
-          extra_columns: Optional[Mapping[str, Any]]) -> pa.Table:
-    extra = {
-        name.casefold(): value
-        for name, value in (extra_columns or {}).items()
-    }
+def _cast(
+    table: pa.Table, target: pa.Schema, extra_columns: Optional[Mapping[str, Any]]
+) -> pa.Table:
+    extra = {name.casefold(): value for name, value in (extra_columns or {}).items()}
     present = {name.casefold(): name for name in table.column_names}
     columns = []
     for field in target:
@@ -325,12 +344,11 @@ def _cast(table: pa.Table, target: pa.Schema,
         else:
             column = pa.nulls(table.num_rows, field.type)
         column = pc.cast(
-            column, options=pc.CastOptions(field.type,
-                                           allow_time_truncate=True))
+            column, options=pc.CastOptions(field.type, allow_time_truncate=True)
+        )
         if pa.types.is_list(field.type):
             # A null REPEATED value fails a stream; a load writes [].
-            column = pc.if_else(pc.is_null(column), pa.scalar([], field.type),
-                                column)
+            column = pc.if_else(pc.is_null(column), pa.scalar([], field.type), column)
         columns.append(column)
     return pa.Table.from_arrays(columns, schema=target)
 
@@ -341,8 +359,9 @@ def conformed_batches(
     extra_columns: Optional[Mapping[str, Any]] = None,
 ) -> Iterator[pa.RecordBatch]:
     for batch in pq.ParquetFile(path).iter_batches():
-        yield from _cast(pa.Table.from_batches([batch]), target,
-                         extra_columns).to_batches()
+        yield from _cast(
+            pa.Table.from_batches([batch]), target, extra_columns
+        ).to_batches()
 
 
 @contextmanager
@@ -352,8 +371,7 @@ def conformed(
     extra_columns: Optional[Mapping[str, Any]],
     scratch: str,
 ) -> Iterator[Path]:
-    if not extra_columns and pq.read_schema(path).remove_metadata().equals(
-            target):
+    if not extra_columns and pq.read_schema(path).remove_metadata().equals(target):
         yield path
         return
     descriptor, name = tempfile.mkstemp(suffix='.parquet', dir=scratch)
@@ -373,35 +391,44 @@ def conformed(
 
 def existing_table(client: Any, ref: str) -> Any:
     from google.api_core.exceptions import NotFound
+
     try:
         table = client.get_table(ref)
     except NotFound:
         return None
     if table.table_type != 'TABLE':
         raise PermanentSourceError(
-            f'{ref} is a {table.table_type}, not a table; choose another '
-            f'table name.', table=ref)
+            f'{ref} is a {table.table_type}, not a table; choose another table name.',
+            table=ref,
+        )
     return table
 
 
 def require_dataset(client: Any, dataset: str, location: str) -> None:
     from google.api_core.exceptions import Forbidden, NotFound
+
     try:
         found = client.get_dataset(dataset)
     except NotFound:
         raise SourceNotFoundError(
             f'BigQuery dataset {dataset} does not exist or is not visible to '
             f'this identity. Create it in location {location} or point the '
-            f'connector at an existing dataset.', table=dataset) from None
+            f'connector at an existing dataset.',
+            table=dataset,
+        ) from None
     except Forbidden:
         raise SourceAccessDeniedError(
             f'This identity cannot read BigQuery dataset {dataset}; grant '
-            f'roles/bigquery.dataEditor on it.', table=dataset) from None
+            f'roles/bigquery.dataEditor on it.',
+            table=dataset,
+        ) from None
     if (found.location or '').casefold() != location.casefold():
         raise PermanentSourceError(
             f'BigQuery dataset {dataset} is in location {found.location}, but '
             f'the connector uses {location}; set '
-            f'location={found.location!r}.', table=dataset)
+            f'location={found.location!r}.',
+            table=dataset,
+        )
 
 
 def probe_write_access(
@@ -426,19 +453,18 @@ def probe_write_access(
     existing = existing_table(client, ref)
     if existing is not None:
         required = write_permissions(replace=replace)
-        granted = set(
-            client.test_iam_permissions(ref, required).get('permissions', ()))
+        granted = set(client.test_iam_permissions(ref, required).get('permissions', ()))
         missing = sorted(set(required) - granted)
         if missing:
             raise MissingWritePermissions(
                 f'This identity cannot {"overwrite" if replace else "append"} '
                 f'BigQuery table {ref}: missing {", ".join(missing)}.',
-                table=ref)
+                table=ref,
+            )
         if probe_stream is not None and not create:
             probe_stream(ref)
     if create or existing is None:
-        probe = bigquery.Table(
-            f'{dataset}.__kumo_write_probe_{uuid.uuid4().hex}')
+        probe = bigquery.Table(f'{dataset}.__kumo_write_probe_{uuid.uuid4().hex}')
         probe.expires = datetime.now(timezone.utc) + timedelta(hours=1)
         try:
             client.create_table(probe)
@@ -446,7 +472,8 @@ def probe_write_access(
             raise SourceAccessDeniedError(
                 f'This identity cannot create tables in BigQuery dataset '
                 f'{dataset}; grant roles/bigquery.dataEditor on it.',
-                table=dataset) from None
+                table=dataset,
+            ) from None
         try:
             if probe_stream is not None:
                 probe_stream(str(probe.reference))
@@ -461,19 +488,22 @@ def _drop_probe(client: Any, probe: Any, dataset: str) -> None:
     except Exception as error:
         raise ProbeCleanupError(
             f'Write probe cleanup failed ({type(error).__name__}); the '
-            f'probe expires automatically.', table=dataset) from None
+            f'probe expires automatically.',
+            table=dataset,
+        ) from None
 
 
 def require_job_access(client: Any, project: str) -> None:
     from google.api_core.exceptions import Forbidden
+
     try:
-        client.query('SELECT 1',
-                     job_config=bigquery.QueryJobConfig(dry_run=True))
+        client.query('SELECT 1', job_config=bigquery.QueryJobConfig(dry_run=True))
     except Forbidden:
         raise SourceAccessDeniedError(
             f'This identity cannot run BigQuery jobs in project {project}; '
             f'grant roles/bigquery.jobUser there or set billing_project_id.',
-            table=project) from None
+            table=project,
+        ) from None
 
 
 # Jobs ########################################################################
@@ -485,23 +515,30 @@ def _run(job: Any, ref: str) -> None:
     try:
         job.result()
     except BadRequest as error:
-        detail = '; '.join(
-            str(item.get('message'))
-            for item in (job.errors or error.errors or ())
-            if item.get('message')) or error.message
+        detail = (
+            '; '.join(
+                str(item.get('message'))
+                for item in (job.errors or error.errors or ())
+                if item.get('message')
+            )
+            or error.message
+        )
         raise PermanentSourceError(
-            f'BigQuery {job.job_type} job {job.job_id} into {ref} failed: '
-            f'{detail}', table=ref) from None
+            f'BigQuery {job.job_type} job {job.job_id} into {ref} failed: {detail}',
+            table=ref,
+        ) from None
 
 
 def _create_table(client: Any, table: Any) -> None:
     from google.api_core.exceptions import BadRequest
+
     try:
         client.create_table(table)
     except BadRequest as error:
         raise PermanentSourceError(
-            f'Cannot create BigQuery table {table.reference}: '
-            f'{error.message}', table=str(table.reference)) from None
+            f'Cannot create BigQuery table {table.reference}: {error.message}',
+            table=str(table.reference),
+        ) from None
 
 
 def _like(table: Any, existing: Any) -> None:
@@ -521,10 +558,17 @@ def _restore_column_metadata(client: Any, ref: str, existing: Any) -> None:
         client.update_table(table, ['schema'])
 
 
-def load_uris(client: Any, uris: str | list[str], ref: str, *, replace: bool,
-              schema: Optional[Sequence[Any]] = None) -> None:
+def load_uris(
+    client: Any,
+    uris: str | list[str],
+    ref: str,
+    *,
+    replace: bool,
+    schema: Optional[Sequence[Any]] = None,
+) -> None:
     job = client.load_table_from_uri(
-        uris, ref, job_config=load_job_config(replace=replace, schema=schema))
+        uris, ref, job_config=load_job_config(replace=replace, schema=schema)
+    )
     _run(job, ref)
 
 
@@ -551,12 +595,21 @@ def staged_write(
     layout = plan(files, extra_columns, existing, replace=replace, ref=ref)
     with tempfile.TemporaryDirectory(prefix='kumo-bq-export-') as scratch:
         staging.staged_write(
-            storage, location=location, files=[
+            storage,
+            location=location,
+            files=[
                 partial(conformed, path, layout.target, extra_columns, scratch)
                 for path in files
-            ], load=lambda _: load_uris(client, location.object_uri(), ref,
-                                        replace=replace, schema=layout.schema),
-            worker_ceiling=worker_ceiling)
+            ],
+            load=lambda _: load_uris(
+                client,
+                location.object_uri(),
+                ref,
+                replace=replace,
+                schema=layout.schema,
+            ),
+            worker_ceiling=worker_ceiling,
+        )
 
 
 def streamed_write(
@@ -585,14 +638,19 @@ def streamed_write(
         unmapped = [field.name for field in target if bq_field(field) is None]
         raise PermanentSourceError(
             f'Cannot stream columns {", ".join(unmapped)} to BigQuery; '
-            f'configure a GCS staging_uri to load them instead.', table=ref)
+            f'configure a GCS staging_uri to load them instead.',
+            table=ref,
+        )
     project, dataset, _ = ref.split('.')
     created = None
     if not replace and existing is not None:
         destination = ref
     else:
-        destination = (f'{project}.{dataset}.{TEMP_TABLE_PREFIX}'
-                       f'{uuid.uuid4().hex}' if replace else ref)
+        destination = (
+            f'{project}.{dataset}.{TEMP_TABLE_PREFIX}{uuid.uuid4().hex}'
+            if replace
+            else ref
+        )
         created = bigquery.Table(destination, schema=layout.schema)
         if replace:
             created.expires = datetime.now(timezone.utc) + TEMP_TABLE_TTL
@@ -600,12 +658,17 @@ def streamed_write(
     keep = False
     try:
         table = bigquery.TableReference.from_string(destination)
-        parent = write_client.table_path(table.project, table.dataset_id,
-                                         table.table_id)
-        names = streaming.write_streams(write_client, parent, target, [
-            partial(conformed_batches, path, target, extra_columns)
-            for path in files
-        ], credentials=credentials, worker_ceiling=worker_ceiling)
+        parent = write_client.table_path(
+            table.project, table.dataset_id, table.table_id
+        )
+        names = streaming.write_streams(
+            write_client,
+            parent,
+            target,
+            [partial(conformed_batches, path, target, extra_columns) for path in files],
+            credentials=credentials,
+            worker_ceiling=worker_ceiling,
+        )
         streaming.commit_streams(write_client, parent, names)
         keep = not replace
         if replace:
@@ -613,7 +676,8 @@ def streamed_write(
             # reads them.
             config = bigquery.QueryJobConfig(
                 destination=ref,
-                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            )
             _like(config, existing)
             _run(client.query(f'SELECT * FROM `{destination}`', config), ref)
             if existing is not None:

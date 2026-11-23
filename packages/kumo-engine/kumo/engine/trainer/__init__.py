@@ -16,12 +16,12 @@ from kumo.engine.trainer.trainer import (
 )
 
 __all__ = [
-    "Trainer",
-    "TrainingResult",
-    "PredictionResult",
-    "ScoringDefaults",
-    "ModelOutputConfig",
-    "PredictionOutputConfig",
-    "SnapshotOutputConfig",
-    "TrainingTableOutputConfig",
+    'Trainer',
+    'TrainingResult',
+    'PredictionResult',
+    'ScoringDefaults',
+    'ModelOutputConfig',
+    'PredictionOutputConfig',
+    'SnapshotOutputConfig',
+    'TrainingTableOutputConfig',
 ]

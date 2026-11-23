@@ -30,8 +30,9 @@ from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
 
 from io_utils.json import to_json_dict
 from kumo.config.graph import GraphConfig
-from kumo.diskgraph._diskgraph_legacy import \
-    infer_connector_id_from_ingest_dir as _infer_connector_id_from_ingest_dir
+from kumo.diskgraph._diskgraph_legacy import (
+    infer_connector_id_from_ingest_dir as _infer_connector_id_from_ingest_dir,
+)
 from kumo.diskgraph.errors import as_platform_diskgraph_exception
 from statedb.utils.errors import DiskgraphError, rethrow_or_wrap
 
@@ -39,16 +40,16 @@ logger = logging.getLogger(__name__)
 
 
 def _log_diagnostic(diagnostic: Diagnostic) -> None:
-    chain = " -> ".join(f"{cause.kind}:{cause.summary}"
-                        for cause in diagnostic.chain)
-    frames = ",".join(f"{frame.module}@{frame.file}:{frame.line}"
-                      for frame in diagnostic.frames)
+    chain = ' -> '.join(f'{cause.kind}:{cause.summary}' for cause in diagnostic.chain)
+    frames = ','.join(
+        f'{frame.module}@{frame.file}:{frame.line}' for frame in diagnostic.frames
+    )
     logger.error(
-        "DiskGraph diagnostic: diagnostic_id=%s visibility=%s "
-        "component=diskgraph-ingest operation=%s category=%s code=%s "
-        "retryable=%s attempt=%d phase=%s exit_code=%s signal=%s "
-        "summary=%s chain=%s frames=%s fingerprint=%s "
-        "truncated_chain=%s truncated_frames=%s truncated_summary=%s",
+        'DiskGraph diagnostic: diagnostic_id=%s visibility=%s '
+        'component=diskgraph-ingest operation=%s category=%s code=%s '
+        'retryable=%s attempt=%d phase=%s exit_code=%s signal=%s '
+        'summary=%s chain=%s frames=%s fingerprint=%s '
+        'truncated_chain=%s truncated_frames=%s truncated_summary=%s',
         diagnostic.diagnostic_id,
         diagnostic.visibility,
         diagnostic.operation,
@@ -94,21 +95,24 @@ def normalize_diskgraph_source_fields(
                 # (<connector>.<table>); strip to bare table name.
                 fk['dst_table'] = dst_table.split('.')[-1]
 
-        source_table_name = (table.get('source_table_name')
-                             or source_table.get('source_table_name')
-                             or table.get('source_name')
-                             or table.get('table_name'))
-        connector_id = (table.get('connector_id')
-                        or source_table.get('connector_id')
-                        or table.get('data_source'))
+        source_table_name = (
+            table.get('source_table_name')
+            or source_table.get('source_table_name')
+            or table.get('source_name')
+            or table.get('table_name')
+        )
+        connector_id = (
+            table.get('connector_id')
+            or source_table.get('connector_id')
+            or table.get('data_source')
+        )
 
-        if (not connector_id
-                or connector_id == 'default') and source_table_name:
+        if (not connector_id or connector_id == 'default') and source_table_name:
             table_name = table.get('table_name') or source_table_name
             logger.warning(
                 "connector_id missing or 'default' for table '%s' after "
-                "upstream hydration — falling back to ingest dir inference. "
-                "This indicates a bug in source metadata propagation.",
+                'upstream hydration — falling back to ingest dir inference. '
+                'This indicates a bug in source metadata propagation.',
                 table_name,
             )
             table_version = table_data_versions.get(table_name)
@@ -184,10 +188,7 @@ def run_diskgraph_ingest(
         ingest_config = convert_diskgraph_config(
             converter_config,
             data_persist_dir,
-            {
-                k: str(v)
-                for k, v in table_data_versions.items()
-            },
+            {k: str(v) for k, v in table_data_versions.items()},
             source_paths=source_paths,
             source_specs=source_specs,
             subprocess_environment=subprocess_environment,
@@ -205,9 +206,7 @@ def run_diskgraph_ingest(
     # `--success-marker-content` CLI flags so the binary streams every
     # output file to the dataplane and writes `_MANIFEST.json` /
     # `_SUCCESS` last.
-    diskgraph_environment: dict[str,
-                                Optional[str]] = dict(subprocess_environment
-                                                      or {})
+    diskgraph_environment: dict[str, Optional[str]] = dict(subprocess_environment or {})
     # Nothing sets this any more, so unsetting it is defence rather than
     # cleanup: a value inherited from this process' own environment would
     # otherwise reach the binary, and the point of the retirement is that no
@@ -232,8 +231,9 @@ def run_diskgraph_ingest(
         if e.diagnostic is not None:
             _log_diagnostic(e.diagnostic)
         if e.private_output_tail:
-            logger.debug('Diskgraph ingest private output tail:\n%s',
-                         e.private_output_tail)
+            logger.debug(
+                'Diskgraph ingest private output tail:\n%s', e.private_output_tail
+            )
         raise as_platform_diskgraph_exception(e) from None
     except Exception as e:
         logger.error('Diskgraph ingest failed: %s', e, exc_info=True)
@@ -259,20 +259,23 @@ def run_diskgraph_ingest(
     success_path = output_path / '_SUCCESS'
 
     missing_files = [
-        str(path) for path in (
+        str(path)
+        for path in (
             col_stats_path,
             ingest_stats_path,
             index_metadata_path,
             manifest_path,
             success_path,
-        ) if not path.is_file()
+        )
+        if not path.is_file()
     ]
     if not kumo_stats_dir.is_dir():
         missing_files.append(str(kumo_stats_dir))
     if missing_files:
         raise RuntimeError(
             'diskgraph ingest completed but missing expected output files: '
-            f"{', '.join(missing_files)}")
+            f'{", ".join(missing_files)}'
+        )
 
     return DiskgraphIngestResult(
         index_path=str(output_path),

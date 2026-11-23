@@ -26,7 +26,7 @@ def coerce_datetime(value: object) -> datetime:
         return value
     if isinstance(value, str):
         return datetime.fromisoformat(value)
-    raise TypeError(f"Unsupported timestamp value: {value!r}")
+    raise TypeError(f'Unsupported timestamp value: {value!r}')
 
 
 def row_datetime(row: object, name: str, index: int) -> datetime:

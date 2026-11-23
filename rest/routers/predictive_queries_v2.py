@@ -53,6 +53,7 @@ class PredictiveQueryV2Router:
     This router provides endpoints for creating and managing predictive
     queries, including suggesting model plans based on provided queries.
     """
+
     def __init__(
         self,
         auth: Authentication,
@@ -64,131 +65,127 @@ class PredictiveQueryV2Router:
         self._projects_driver = projects_driver
 
         self.router = APIRouter(
-            prefix="/v1/predictive_queries",
-            tags=["API v1 (Under Development): Predictive Queries"],
+            prefix='/v1/predictive_queries',
+            tags=['API v1 (Under Development): Predictive Queries'],
             dependencies=[Depends(auth.authenticate_request_header)],
         )
 
         _create_pquery_responses = {
             HTTPStatus.UNPROCESSABLE_ENTITY: {
-                'description':
-                "Unable to create a predictive query with the provided "
-                "inputs"
+                'description': 'Unable to create a predictive query with the provided '
+                'inputs'
             }
         }
         self.router.add_api_route(
-            "/",
+            '/',
             self.create_pquery_v2,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a new predictive query with its full definition.",
+            summary='Create a new predictive query with its full definition.',
             responses=_create_pquery_responses,
             include_in_schema=False,
         )
 
         self.router.add_api_route(
-            "/{id}",
+            '/{id}',
             self.get_pquery_v2,
             response_model=PQueryResponse,
             methods=['GET'],
-            summary="Get a predictive query by ID.",
+            summary='Get a predictive query by ID.',
             responses={
-                HTTPStatus.NOT_FOUND: {
-                    'description': "Predictive query not found."
-                }
+                HTTPStatus.NOT_FOUND: {'description': 'Predictive query not found.'}
             },
         )
 
         self.router.add_api_route(
-            "/{id}/metadata",
+            '/{id}/metadata',
             self.get_pquery_metadata_v2,
             response_model=PQueryMetadataResponse,
             methods=['GET'],
-            summary="Get the task type and query type for a predictive "
-            "query.",
+            summary='Get the task type and query type for a predictive query.',
             responses={
-                HTTPStatus.NOT_FOUND: {
-                    'description': "Predictive query not found."
-                }
+                HTTPStatus.NOT_FOUND: {'description': 'Predictive query not found.'}
             },
         )
 
         self.router.add_api_route(
-            "/{id}/download_holdout",
+            '/{id}/download_holdout',
             self.generate_holdout_presigned_url_v2,
             response_model=OutputPresignedUrlResponse,
             methods=['GET'],
-            summary="Generate a presigned URL for the holdout dataset.",
+            summary='Generate a presigned URL for the holdout dataset.',
             responses={
-                HTTPStatus.NOT_FOUND: {
-                    'description': "Predictive query not found."
-                },
+                HTTPStatus.NOT_FOUND: {'description': 'Predictive query not found.'},
                 HTTPStatus.BAD_REQUEST: {
-                    'description': "Predictive query has not been trained yet."
+                    'description': 'Predictive query has not been trained yet.'
                 },
             },
         )
 
         self.router.add_api_route(
-            "/{id}/encoders",
+            '/{id}/encoders',
             self.get_encoders_for_pquery_v2,
             response_model=Optional[PQueryEncodersResponse],
             methods=['GET'],
-            summary="Get the encoders used for a predictive query.",
+            summary='Get the encoders used for a predictive query.',
             responses=nullable_response(),
         )
 
         self.router.add_api_route(
-            "/get_many",
+            '/get_many',
             self.get_many_pqueries_v2,
-            response_model=Dict[Union[TrainingJobID, BatchPredictionJobID,
-                                      GeneratePredictionTableJobID,
-                                      GenerateTrainTableJobID],
-                                Tuple[str, TaskType]],
+            response_model=Dict[
+                Union[
+                    TrainingJobID,
+                    BatchPredictionJobID,
+                    GeneratePredictionTableJobID,
+                    GenerateTrainTableJobID,
+                ],
+                Tuple[str, TaskType],
+            ],
             methods=['POST'],
-            summary="Get predictive query string for each job.",
+            summary='Get predictive query string for each job.',
         )
 
         self.router.add_api_route(
-            "/model_plan",
+            '/model_plan',
             self.get_default_model_plan,
             response_model=ModelPlanResponse,
             methods=['POST'],
-            summary="Generate a model plan for a predictive query.",
+            summary='Generate a model plan for a predictive query.',
             responses={
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description':
-                    "Unable to generate a model plan for the provided query."
+                    'description': 'Unable to generate a model plan for the provided query.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/validate",
+            '/validate',
             self.validate_pquery,
             response_model=jobs_api.ErrorDetails,
             methods=['POST'],
-            summary="Validates this predictive query.",
+            summary='Validates this predictive query.',
         )
 
         self.router.add_api_route(
-            "/{training_job_id}/get_allowed_bp_query_overrides",
+            '/{training_job_id}/get_allowed_bp_query_overrides',
             self.get_allowed_bp_query_overrides_v2,
             response_model=EditableQuery,
             methods=['GET'],
-            summary="Get allowed batch prediction query overrides for a V2"
-            " training job.",
+            summary='Get allowed batch prediction query overrides for a V2'
+            ' training job.',
         )
 
         self.router.add_api_route(
-            "/{training_job_id}/insert_filter_overrides",
+            '/{training_job_id}/insert_filter_overrides',
             self.insert_filter_overrides,
             response_model=EditableQuery,
             methods=['POST'],
-            summary="Insert filter overrides for a training job.",
+            summary='Insert filter overrides for a training job.',
             responses={
                 HTTPStatus.BAD_REQUEST: {
-                    'description': "Invalid filter overrides provided."
+                    'description': 'Invalid filter overrides provided.'
                 }
             },
         )
@@ -235,9 +232,9 @@ class PredictiveQueryV2Router:
             query.
         """
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
-            pq = await self._driver.get_predictive_query_v2(
-                id, ProjectID(project_id))
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
+            pq = await self._driver.get_predictive_query_v2(id, ProjectID(project_id))
             return PQueryResponse(
                 name=pq.name,
                 query_string=pq.query_string,
@@ -260,19 +257,21 @@ class PredictiveQueryV2Router:
             the predictive query.
         """
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
             task_type, query_type = await self._driver.get_pquery_metadata(
-                id, ProjectID(project_id))
+                id, ProjectID(project_id)
+            )
             return PQueryMetadataResponse(
                 task_type=task_type,
                 query_type=query_type,
             )
 
     async def generate_holdout_presigned_url_v2(
-            self,
-            id: PredictiveQueryID,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> OutputPresignedUrlResponse:
         """
         Generate a presigned URL for the predictive query's holdout dataset.
@@ -281,20 +280,21 @@ class PredictiveQueryV2Router:
         a download URL for that job's holdout data.
         """
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
             training_job_id = await self._driver.get_current_training_job_id(
-                ctx, id, ProjectID(project_id))
+                ctx, id, ProjectID(project_id)
+            )
             if training_job_id is None:
                 raise HTTPException(
-                    HTTPStatus.BAD_REQUEST,
-                    "Predictive Query has not been trained yet")
+                    HTTPStatus.BAD_REQUEST, 'Predictive Query has not been trained yet'
+                )
             training_job = await self._driver.get_training_job(
-                ctx, training_job_id, strip_expensive_fields=True)
-            if (training_job is None
-                    or str(training_job.project_id) != project_id):
+                ctx, training_job_id, strip_expensive_fields=True
+            )
+            if training_job is None or str(training_job.project_id) != project_id:
                 raise TrainingJobDoesNotExistError(training_job_id)
-            return await self._driver.generate_holdout_presigned_url(
-                training_job_id)
+            return await self._driver.generate_holdout_presigned_url(training_job_id)
 
     async def get_encoders_for_pquery_v2(
         self,
@@ -309,21 +309,26 @@ class PredictiveQueryV2Router:
         representation, or null when the query has no completed training job.
         """
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
             encoders = await self._driver.get_encoders_for_pquery(
-                ctx, id, ProjectID(project_id))
+                ctx, id, ProjectID(project_id)
+            )
             if encoders is None:
                 return None
             return PQueryEncodersResponse(encoders=encoders)
 
     async def get_many_pqueries_v2(
         self,
-        job_id_to_pq_fpid: Dict[Union[
-            TrainingJobID,
-            BatchPredictionJobID,
-            GeneratePredictionTableJobID,
-            GenerateTrainTableJobID,
-        ], PredictiveQueryID],
+        job_id_to_pq_fpid: Dict[
+            Union[
+                TrainingJobID,
+                BatchPredictionJobID,
+                GeneratePredictionTableJobID,
+                GenerateTrainTableJobID,
+            ],
+            PredictiveQueryID,
+        ],
         project_id: Annotated[str, Query()],
     ):
         """
@@ -351,8 +356,8 @@ class PredictiveQueryV2Router:
         project_id: Annotated[str, Query()],
         # Internal testing only.
         dialect: Annotated[
-            QueryDialect,
-            Query(include_in_schema=False)] = QueryDialect.PQLANG_V2,
+            QueryDialect, Query(include_in_schema=False)
+        ] = QueryDialect.PQLANG_V2,
     ) -> ModelPlanResponse:
         """
         Suggest a model plan for a given query.
@@ -370,17 +375,19 @@ class PredictiveQueryV2Router:
                 model plan information.
         """
         if not request.graph_definition:
-            raise ValueError("Graph definition must be set \
-               to generate model planner.")
+            raise ValueError(
+                'Graph definition must be set \
+               to generate model planner.'
+            )
         with wrap_driver_errors(
-            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}):
-            plan_info = (await
-                         self._driver.get_pquery_model_plan_with_graph_def(
-                             request.query_string,
-                             request.graph_definition,
-                             request.run_mode,
-                             project_id=ProjectID(project_id),
-                         ))
+            {PredictiveQueryDoesNotExistError: HTTPStatus.NOT_FOUND}
+        ):
+            plan_info = await self._driver.get_pquery_model_plan_with_graph_def(
+                request.query_string,
+                request.graph_definition,
+                request.run_mode,
+                project_id=ProjectID(project_id),
+            )
             return ModelPlanResponse(
                 suggested_model_plan=plan_info,
                 suggested_model_plan_yaml=model_plan_to_yaml(
@@ -396,18 +403,18 @@ class PredictiveQueryV2Router:
         project_id: Annotated[str, Query()],
     ) -> jobs_api.ErrorDetails:
         """
-            Validate a predictive query given PQueryValidationRequest. If
-            the request contains model_plan, then the query is also validated
-            in the context of the model_plan, otherwise simply in the context
-            of the graph.
+        Validate a predictive query given PQueryValidationRequest. If
+        the request contains model_plan, then the query is also validated
+        in the context of the model_plan, otherwise simply in the context
+        of the graph.
 
-            Args:
-                request (PQueryValidationRequest): The request object
-                    containing the query details.
-            Returns:
-                ErrorDetails: The response object containing the validation
-                    response.
-            """
+        Args:
+            request (PQueryValidationRequest): The request object
+                containing the query details.
+        Returns:
+            ErrorDetails: The response object containing the validation
+                response.
+        """
         # We do not support older versions of PQL in v1 APIs.
         # `validate` is a read-only check, so `check_unique_id=False` keeps
         # this route consistent with the SDK contract (validation must work
@@ -418,13 +425,12 @@ class PredictiveQueryV2Router:
                 project_id=ProjectID(project_id),
                 check_unique_id=False,
             )
-            return self._driver.convert_validation_response_to_error_details(
-                response)
+            return self._driver.convert_validation_response_to_error_details(response)
 
     async def get_allowed_bp_query_overrides_v2(
-            self,
-            training_job_id: TrainingJobID,
-            request_context: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        request_context: RequestContext = Depends(get_ctx),
     ) -> EditableQuery:
         """
         Get allowed batch prediction query overrides for a training job.
@@ -436,18 +442,17 @@ class PredictiveQueryV2Router:
             EditableQuery: The editable query object containing allowed
             overrides.
         """
-        with wrap_driver_errors(
-            {TrainingJobDoesNotExistError: HTTPStatus.NOT_FOUND}):
+        with wrap_driver_errors({TrainingJobDoesNotExistError: HTTPStatus.NOT_FOUND}):
             return await self._driver.get_allowed_bp_query_overrides_v2(
                 request_context,
                 training_job_id,
             )
 
     async def insert_filter_overrides(
-            self,
-            training_job_id: TrainingJobID,
-            filter_overrides: InsertFilterOverridesRequest,
-            request_context: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        filter_overrides: InsertFilterOverridesRequest,
+        request_context: RequestContext = Depends(get_ctx),
     ) -> EditableQuery:
         """
         V2 API for inserting filter overrides for a training job.

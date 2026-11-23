@@ -85,8 +85,7 @@ class ExternalGroupMappingResponse:
 
 @kumo_dataclass
 class ReplaceExternalGroupMappingsRequest:
-    mappings: List[CreateExternalGroupMappingRequest] = field(
-        default_factory=list)
+    mappings: List[CreateExternalGroupMappingRequest] = field(default_factory=list)
 
 
 @kumo_dataclass
@@ -116,8 +115,9 @@ class AdminGroupDetailResponse:
     display_name: str
     description: str = ''
     members: List[AdminGroupMemberResponse] = field(default_factory=list)
-    external_group_mappings: List[
-        AdminExternalGroupMappingResponse] = field(default_factory=list)
+    external_group_mappings: List[AdminExternalGroupMappingResponse] = field(
+        default_factory=list
+    )
 
 
 @kumo_dataclass

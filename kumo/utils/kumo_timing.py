@@ -10,8 +10,8 @@ from common_utils.kumo_timing import (
 )
 
 __all__ = [
-    "kumo_timing",
-    "kumo_timing_enabled",
-    "kumo_timing_event",
-    "record_event",
+    'kumo_timing',
+    'kumo_timing_enabled',
+    'kumo_timing_event',
+    'record_event',
 ]

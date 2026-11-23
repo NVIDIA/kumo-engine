@@ -6,15 +6,6 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from test.rest.integ import public_api_smoke_helpers
-from test.rest.integ.fixture_connector_args import (
-    _copy_fixture_source,
-    _project_upload_fixture,
-    duplicate_fixture_sources,
-    load_fixture_connectors,
-    provision_fixture_connectors,
-    provision_project_upload_connector,
-)
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -29,6 +20,15 @@ from kumo.testing.rest import get_and_expect_success, randomize_fixture_ids_v2
 from rest.config.api_command import FixtureDefinition
 from rest.config.connector import FileConnectorResourceConfig
 from statedb.config.common import ConnectorID, ProjectID
+from test.rest.integ import public_api_smoke_helpers
+from test.rest.integ.fixture_connector_args import (
+    _copy_fixture_source,
+    _project_upload_fixture,
+    duplicate_fixture_sources,
+    load_fixture_connectors,
+    provision_fixture_connectors,
+    provision_project_upload_connector,
+)
 
 
 def _local_fixture() -> FixtureDefinition:
@@ -43,10 +43,10 @@ def _local_fixture() -> FixtureDefinition:
 def _fixture_client(upload):
     services = SimpleNamespace(
         connectors=SimpleNamespace(
-            register_project_upload_connector=AsyncMock(
-                return_value=upload.id),
+            register_project_upload_connector=AsyncMock(return_value=upload.id),
             get_internal=AsyncMock(return_value=upload),
-        ))
+        )
+    )
     return SimpleNamespace(
         state_services=services,
         params=httpx.QueryParams(),
@@ -71,7 +71,8 @@ def test_smoke_resource_loads_repository_fixture(monkeypatch) -> None:
     fixture, loaded_connector, graph, pquery = (
         public_api_smoke_helpers.provision_smoke_resource(
             SimpleNamespace(),
-        ))
+        )
+    )
 
     assert loaded_connector is connector
     assert set(graph['tables']) == {'ACCOUNT', 'LOAN', 'TRANS'}
@@ -85,12 +86,8 @@ def test_smoke_resource_loads_repository_fixture(monkeypatch) -> None:
 
 def test_local_fixture_remaps_to_namespaced_project_upload() -> None:
     fixture = _local_fixture()
-    source_connectors = load_fixture_connectors(fixture,
-                                                ProjectID('default'))
-    roots = {
-        connector.id: connector.config.root_dir
-        for connector in source_connectors
-    }
+    source_connectors = load_fixture_connectors(fixture, ProjectID('default'))
+    roots = {connector.id: connector.config.root_dir for connector in source_connectors}
     upload_id = ConnectorID(f'connector_{"a" * 32}')
 
     remapped = _project_upload_fixture(fixture, upload_id, roots)
@@ -124,8 +121,7 @@ def test_local_fixture_rejects_full_s3_uri() -> None:
         graph,
         tables={**graph.tables, table_name: uri_table},
     )
-    source_connectors = load_fixture_connectors(fixture,
-                                                ProjectID('default'))
+    source_connectors = load_fixture_connectors(fixture, ProjectID('default'))
 
     with pytest.raises(ValueError, match='supported external S3 connector'):
         _project_upload_fixture(
@@ -145,21 +141,26 @@ async def test_local_fixture_preserves_s3_upload_storage(monkeypatch) -> None:
     upload = SimpleNamespace(
         id=upload_id,
         config=SimpleNamespace(
-            root_dir='s3://diskgraph-test/uploaded-datasets/default'),
+            root_dir='s3://diskgraph-test/uploaded-datasets/default'
+        ),
     )
     copy = AsyncMock()
-    monkeypatch.setattr('test.rest.integ.fixture_connector_args.fsutil.copy',
-                        SimpleNamespace(coroutine=copy))
+    monkeypatch.setattr(
+        'test.rest.integ.fixture_connector_args.fsutil.copy',
+        SimpleNamespace(coroutine=copy),
+    )
 
     project_id, connectors = await provision_fixture_connectors(
-        _fixture_client(upload), fixture, ProjectID('default'))
+        _fixture_client(upload), fixture, ProjectID('default')
+    )
 
     assert project_id == ProjectID('default')
     assert connectors == [upload]
     assert copy.await_count == 3
     assert all(
         call.args[1].startswith(
-            's3://diskgraph-test/uploaded-datasets/default/fixture-data/')
+            's3://diskgraph-test/uploaded-datasets/default/fixture-data/'
+        )
         for call in copy.await_args_list
     )
     assert {
@@ -184,7 +185,8 @@ async def test_public_e2e_duplicate_sources_preserve_table_basenames(
         ),
     )
     project_id, connectors = await provision_fixture_connectors(
-        _fixture_client(upload), fixture, ProjectID('default'))
+        _fixture_client(upload), fixture, ProjectID('default')
+    )
     duplicate_paths = await duplicate_fixture_sources(connectors[0], fixture)
 
     assert project_id == ProjectID('default')
@@ -194,12 +196,12 @@ async def test_public_e2e_duplicate_sources_preserve_table_basenames(
         for table in graph.tables.values()
     }
     assert duplicate_paths.keys() == graph_sources
-    account_path = next(path for path in graph_sources
-                        if path.endswith('/ACCOUNT'))
+    account_path = next(path for path in graph_sources if path.endswith('/ACCOUNT'))
     assert duplicate_paths[account_path].endswith('/ACCOUNT-duplicate')
     assert (upload_root / f'{duplicate_paths[account_path]}.parquet').is_file()
-    assert not any(path.name.startswith('FINANCIAL-duplicate')
-                   for path in upload_root.rglob('*'))
+    assert not any(
+        path.name.startswith('FINANCIAL-duplicate') for path in upload_root.rglob('*')
+    )
 
     file_connector = upload.config.as_connector()
     for graph in fixture.graphs:
@@ -207,27 +209,32 @@ async def test_public_e2e_duplicate_sources_preserve_table_basenames(
             source_table = table.source_table
             original = source_table.source.path
             duplicate = duplicate_paths[original]
-            original_path, original_type = (
-                await file_connector.get_path_and_type.coroutine(original))
-            duplicate_path, duplicate_type = (
-                await file_connector.get_path_and_type.coroutine(duplicate))
+            (
+                original_path,
+                original_type,
+            ) = await file_connector.get_path_and_type.coroutine(original)
+            (
+                duplicate_path,
+                duplicate_type,
+            ) = await file_connector.get_path_and_type.coroutine(duplicate)
             assert duplicate_type == original_type
             assert duplicate_path.endswith(f'.{original_type}')
             assert int(Path(original_path).stat().st_mtime) != int(
-                Path(duplicate_path).stat().st_mtime)
+                Path(duplicate_path).stat().st_mtime
+            )
 
     # The extensionless fixture path contains both TRANS.parquet and
     # TRANS.csv. CompositeFileConnector intentionally chooses Parquet. That
     # distinction is semantic: its K_SYMBOL blanks are true nulls, while the
     # CSV ingestion path represents them as empty strings. The modified graph
     # must preserve the 3276 prediction candidates selected by ``IS NULL``.
-    trans_path = next(path for path in graph_sources
-                      if path.endswith('/TRANS'))
-    original_trans, original_type = (
-        await file_connector.get_path_and_type.coroutine(trans_path))
-    duplicate_trans, duplicate_type = (
-        await file_connector.get_path_and_type.coroutine(
-            duplicate_paths[trans_path]))
+    trans_path = next(path for path in graph_sources if path.endswith('/TRANS'))
+    original_trans, original_type = await file_connector.get_path_and_type.coroutine(
+        trans_path
+    )
+    duplicate_trans, duplicate_type = await file_connector.get_path_and_type.coroutine(
+        duplicate_paths[trans_path]
+    )
     assert original_type == duplicate_type == 'parquet'
     original_df = pd.read_parquet(original_trans)
     duplicate_df = pd.read_parquet(duplicate_trans)
@@ -255,8 +262,7 @@ async def test_public_e2e_duplicate_source_preserves_nested_parquet_path(
         dataclasses.replace(
             graph,
             tables={
-                table_name:
-                dataclasses.replace(table, source_table=nested_source),
+                table_name: dataclasses.replace(table, source_table=nested_source),
             },
         )
     ]
@@ -268,18 +274,17 @@ async def test_public_e2e_duplicate_source_preserves_nested_parquet_path(
         config=FileConnectorResourceConfig(
             name=f'connector_{"b" * 32}',
             root_dir=str(upload_root),
-        ))
+        )
+    )
 
     duplicate_paths = await duplicate_fixture_sources(upload, fixture)
 
     assert duplicate_paths == {
-        'many/layers/events.parquet':
-        'many/layers/events-duplicate.parquet',
+        'many/layers/events.parquet': 'many/layers/events-duplicate.parquet',
     }
     duplicate_path = upload_root / 'many/layers/events-duplicate.parquet'
     assert duplicate_path.is_file()
-    assert int(source_path.stat().st_mtime) != int(
-        duplicate_path.stat().st_mtime)
+    assert int(source_path.stat().st_mtime) != int(duplicate_path.stat().st_mtime)
     assert pd.read_parquet(duplicate_path).to_dict('list') == {'id': [1, 2]}
 
 
@@ -290,14 +295,17 @@ async def test_fixture_copy_accepts_distinct_s3_data_version(monkeypatch) -> Non
         's3://bucket/source.csv': 100.25,
         's3://bucket/source-duplicate.csv': 101.25,
     }
-    monkeypatch.setattr('test.rest.integ.fixture_connector_args.fsutil.copy',
-                        SimpleNamespace(coroutine=copy))
+    monkeypatch.setattr(
+        'test.rest.integ.fixture_connector_args.fsutil.copy',
+        SimpleNamespace(coroutine=copy),
+    )
     monkeypatch.setattr(
         'test.rest.integ.fixture_connector_args.fsutil.get_last_modified_time',
         lambda path: versions[path],
     )
-    monkeypatch.setattr('test.rest.integ.fixture_connector_args.fsutil.is_local',
-                        lambda _path: False)
+    monkeypatch.setattr(
+        'test.rest.integ.fixture_connector_args.fsutil.is_local', lambda _path: False
+    )
 
     await _copy_fixture_source(
         's3://bucket/source.csv',
@@ -327,8 +335,7 @@ async def test_project_upload_fixture_is_hidden_on_private_and_public_routes(
     client: TestClient = request.getfixturevalue(client_fixture)
     source_root = tmp_path / f'{api_prefix[1:]}-fixture-data'
     source_root.mkdir()
-    pd.DataFrame({'id': [1, 2]}).to_parquet(
-        source_root / 'events.parquet', index=False)
+    pd.DataFrame({'id': [1, 2]}).to_parquet(source_root / 'events.parquet', index=False)
 
     project_id, connector = await provision_project_upload_connector(
         client,
@@ -337,17 +344,16 @@ async def test_project_upload_fixture_is_hidden_on_private_and_public_routes(
     )
 
     suffix = '/' if api_prefix == '/v0' else ''
-    listed = client.get(
-        f'{api_prefix}/projects/{project_id}/connectors{suffix}')
+    listed = client.get(f'{api_prefix}/projects/{project_id}/connectors{suffix}')
     assert listed.status_code == 200
-    assert str(connector.id) not in {
-        item['id'] for item in listed.json()
-    }
+    assert str(connector.id) not in {item['id'] for item in listed.json()}
     if checks_source_tables:
         source_tables = get_and_expect_success(
             client,
-            (f'{api_prefix}/projects/{project_id}/connectors/{connector.id}/'
-             'source-tables'),
+            (
+                f'{api_prefix}/projects/{project_id}/connectors/{connector.id}/'
+                'source-tables'
+            ),
             {},
             SourceTableListResponse,
         )

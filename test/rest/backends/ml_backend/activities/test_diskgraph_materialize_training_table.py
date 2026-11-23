@@ -8,7 +8,6 @@ import os
 import sys
 from dataclasses import dataclass
 from importlib import import_module
-from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 from types import SimpleNamespace
 
 import pytest
@@ -22,8 +21,9 @@ from kumoapi.pquery import ValidatedPredictiveQuery
 from kumoapi.typing import Dtype, Stype
 from kumopql.parser import PQLParser
 
-mtt = import_module(
-    'rest.backends.ml_backend.activities.materialize_training_task')
+from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
+
+mtt = import_module('rest.backends.ml_backend.activities.materialize_training_task')
 split_mod = import_module('rest.backends.ml_backend.activities.split')
 
 
@@ -39,9 +39,8 @@ def test_ttng_col_stats_sidecar_is_in_published_extension(tmp_path):
         'trainingjob-1',
     )
     assert mtt._ttng_train_table_col_stats_sidecar_path(
-        train_table_path,
-        '/tmp/dg/graph/v1') == ('/tmp/dg/graph/v1/train_tables/trainingjob-1/'
-                                'train_table_col_stats.json')
+        train_table_path, '/tmp/dg/graph/v1'
+    ) == ('/tmp/dg/graph/v1/train_tables/trainingjob-1/train_table_col_stats.json')
 
 
 def test_custom_tt_split_override_defaults_to_original_split():
@@ -70,21 +69,27 @@ def test_custom_tt_split_column_comes_from_the_job_spec():
     """A cloud-registered table naming its own split column used to have that
     name silently ignored: hosted read a deployment-wide environment variable
     and nothing else."""
-    job_input = SimpleNamespace(spec=SimpleNamespace(
-        custom_train_table=SimpleNamespace(split_col_name='fold')))
+    job_input = SimpleNamespace(
+        spec=SimpleNamespace(custom_train_table=SimpleNamespace(split_col_name='fold'))
+    )
 
     assert mtt._custom_tt_split_col_name(job_input) == 'fold'
 
 
 def test_a_job_with_no_custom_table_names_no_split_column():
-    assert mtt._custom_tt_split_col_name(
-        SimpleNamespace(spec=SimpleNamespace(custom_train_table=None))) is None
+    assert (
+        mtt._custom_tt_split_col_name(
+            SimpleNamespace(spec=SimpleNamespace(custom_train_table=None))
+        )
+        is None
+    )
 
 
 def test_ttng_task_parse_preserves_generated_logical_name():
     resolved = '/immutable/version/tt.parquet'
-    assert mtt._ttng_train_table_parse_target(resolved, ) == (resolved,
-                                                              'train_table')
+    assert mtt._ttng_train_table_parse_target(
+        resolved,
+    ) == (resolved, 'train_table')
 
 
 def test_ttng_task_parse_preserves_custom_logical_name():
@@ -146,13 +151,14 @@ def _install_custom_tt_bundle_fakes(monkeypatch, tmp_path, *, is_link_pred):
         }
 
     fake_dg = SimpleNamespace(
-        DiskgraphDataError=type('DiskgraphDataError', (Exception, ), {}),
+        DiskgraphDataError=type('DiskgraphDataError', (Exception,), {}),
         TimeUnit=object,
         SplitSpec=_SplitSpec,
         build_train_table_artifacts_for_existing_table=_build_artifacts,
     )
     if is_link_pred:
         from kumo.pquery import utils as pquery_utils
+
         monkeypatch.setattr(
             pquery_utils,
             'get_rhs_lp_table',
@@ -164,12 +170,14 @@ def _install_custom_tt_bundle_fakes(monkeypatch, tmp_path, *, is_link_pred):
 
 def _custom_tt_task(is_link_pred=False):
     return SimpleNamespace(
-        graph=SimpleNamespace(tables=[
-            SimpleNamespace(table_name='Customer', name='Customer',
-                            pkey_name='customer_id')
-        ]),
-        train_table=SimpleNamespace(
-            fkeys=[SimpleNamespace(dst_table='Customer')]),
+        graph=SimpleNamespace(
+            tables=[
+                SimpleNamespace(
+                    table_name='Customer', name='Customer', pkey_name='customer_id'
+                )
+            ]
+        ),
+        train_table=SimpleNamespace(fkeys=[SimpleNamespace(dst_table='Customer')]),
         task_type=SimpleNamespace(is_link_pred=is_link_pred),
     )
 
@@ -177,11 +185,13 @@ def _custom_tt_task(is_link_pred=False):
 def _custom_tt_pquery():
     parsed = PQLParser().to_parsed_predictive_query(
         'PREDICT LIST_DISTINCT(orders.product_id, 0, 7, days) '
-        'RANK TOP 3 FOR EACH Customer.customer_id')
+        'RANK TOP 3 FOR EACH Customer.customer_id'
+    )
     parsed.target_ast.stype_maybe = Stype.categorical
     return SimpleNamespace(
         graph=SimpleNamespace(),
-        validated_predictive_query=ValidatedPredictiveQuery(**vars(parsed)))
+        validated_predictive_query=ValidatedPredictiveQuery(**vars(parsed)),
+    )
 
 
 def _custom_tt_split_config():
@@ -195,12 +205,14 @@ def _custom_tt_split_config():
 
 
 def test_custom_tt_persists_durable_bundle_to_persisted_staging_dir(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """Custom generation returns a selected, re-ingestable bundle."""
     from kumo.data.generic.diskgraph_train_table import (
         ttng_bundle_dir_for_train_table,
         ttng_persisted_staging_dir,
     )
+
     _install_custom_tt_bundle_fakes(monkeypatch, tmp_path, is_link_pred=False)
     train_table_path = str(tmp_path / 'train_table')
     persisted = ttng_persisted_staging_dir(train_table_path)
@@ -221,24 +233,25 @@ def test_custom_tt_persists_durable_bundle_to_persisted_staging_dir(
     assert os.path.dirname(published) == os.path.join(persisted, '_bundles')
     assert os.path.exists(os.path.join(published, 'tt.parquet')), (
         'custom-TT must return an immutable tt.parquet selection so re-ingest '
-        'works on a restored pod')
+        'works on a restored pod'
+    )
     assert os.path.exists(os.path.join(published, 'tt_ingest_spec.json')), (
         'custom-TT must persist tt_ingest_spec.json (hard-required by '
-        'execute_tt_ingest) into ttng_persisted_staging_dir')
+        'execute_tt_ingest) into ttng_persisted_staging_dir'
+    )
 
     # Native user-data errors must retain their actionable text across the
     # activity boundary instead of being sanitized as an internal failure.
     fake_dg = sys.modules['diskgraph']
-    data_error = fake_dg.DiskgraphDataError(
-        'custom-TT weight is null at source row 7')
+    data_error = fake_dg.DiskgraphDataError('custom-TT weight is null at source row 7')
 
     def _raise_data_error(**_kwargs):
         raise data_error
 
     fake_dg.build_train_table_artifacts_for_existing_table = _raise_data_error
     with pytest.raises(
-            mtt.TrainingDataMaterializationError,
-            match='weight is null at source row 7',
+        mtt.TrainingDataMaterializationError,
+        match='weight is null at source row 7',
     ) as caught:
         mtt._build_ttng_custom_train_table_artifacts(
             train_table_path=train_table_path,
@@ -252,16 +265,19 @@ def test_custom_tt_persists_durable_bundle_to_persisted_staging_dir(
             weight_col_name=None,
         )
     assert caught.value.get_user_message() == (
-        'custom-TT weight is null at source row 7')
+        'custom-TT weight is null at source row 7'
+    )
 
 
 def test_custom_tt_build_routes_through_gen_persist_not_only_extension(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """Custom materialization routes gen -> immutable bundle -> ingest."""
     from kumo.data.generic.diskgraph_train_table import (
         ttng_bundle_dir_for_train_table,
         ttng_persisted_staging_dir,
     )
+
     _install_custom_tt_bundle_fakes(monkeypatch, tmp_path, is_link_pred=False)
     train_table_path = str(tmp_path / 'train_table')
     persisted = ttng_persisted_staging_dir(train_table_path)
@@ -282,11 +298,13 @@ def test_custom_tt_build_routes_through_gen_persist_not_only_extension(
     # fused custom path never emits) -- i.e. the flow does NOT rely solely on
     # an in-place extension published by the build.
     assert os.path.isdir(persisted), (
-        'custom-TT build must materialize a durable staging bundle dir')
+        'custom-TT build must materialize a durable staging bundle dir'
+    )
     published = ttng_bundle_dir_for_train_table(published_path)
     assert os.path.dirname(published) == os.path.join(persisted, '_bundles')
     assert os.path.exists(os.path.join(published, 'tt_ingest_spec.json')), (
-        'persisted custom bundle must be self-describing for re-ingest')
+        'persisted custom bundle must be self-describing for re-ingest'
+    )
 
 
 def test_custom_tt_build_persists_bundle_for_link_pred(monkeypatch, tmp_path):
@@ -295,6 +313,7 @@ def test_custom_tt_build_persists_bundle_for_link_pred(monkeypatch, tmp_path):
         ttng_bundle_dir_for_train_table,
         ttng_persisted_staging_dir,
     )
+
     _install_custom_tt_bundle_fakes(monkeypatch, tmp_path, is_link_pred=True)
     train_table_path = str(tmp_path / 'train_table')
     persisted = ttng_persisted_staging_dir(train_table_path)
@@ -314,9 +333,11 @@ def test_custom_tt_build_persists_bundle_for_link_pred(monkeypatch, tmp_path):
     published = ttng_bundle_dir_for_train_table(published_path)
     assert os.path.dirname(published) == os.path.join(persisted, '_bundles')
     assert os.path.exists(os.path.join(published, 'tt.parquet')), (
-        'LP custom-TT must persist the durable bundle for re-ingest')
+        'LP custom-TT must persist the durable bundle for re-ingest'
+    )
     assert os.path.exists(os.path.join(published, 'tt_ingest_spec.json')), (
-        'LP custom-TT must persist the LP-resolution ingest spec')
+        'LP custom-TT must persist the LP-resolution ingest spec'
+    )
 
 
 def test_custom_tt_split_column_still_reaches_dg_builder(monkeypatch, tmp_path):
@@ -327,8 +348,9 @@ def test_custom_tt_split_column_still_reaches_dg_builder(monkeypatch, tmp_path):
     test but runs against the persist-capable fixture so it stays green after
     the fix.
     """
-    _bundle, calls = _install_custom_tt_bundle_fakes(monkeypatch, tmp_path,
-                                                     is_link_pred=False)
+    _bundle, calls = _install_custom_tt_bundle_fakes(
+        monkeypatch, tmp_path, is_link_pred=False
+    )
 
     train_table_path = str(tmp_path / 'train_table')
     mtt._build_ttng_custom_train_table_artifacts(
@@ -367,23 +389,22 @@ def test_custom_tt_split_column_still_reaches_dg_builder(monkeypatch, tmp_path):
         pytest.param(True, True, id='temporal'),
     ],
 )
-def test_custom_tt_link_pred_passes_rhs_temporal_flag(monkeypatch, tmp_path,
-                                                      rhs_has_time_col,
-                                                      expected):
-    _bundle, calls = _install_custom_tt_bundle_fakes(monkeypatch, tmp_path,
-                                                     is_link_pred=True)
+def test_custom_tt_link_pred_passes_rhs_temporal_flag(
+    monkeypatch, tmp_path, rhs_has_time_col, expected
+):
+    _bundle, calls = _install_custom_tt_bundle_fakes(
+        monkeypatch, tmp_path, is_link_pred=True
+    )
 
     class _Graph:
         def __init__(self):
             self._tables = {
-                'Customer':
-                SimpleNamespace(
+                'Customer': SimpleNamespace(
                     table_name='Customer',
                     name='Customer',
                     pkey_name='customer_id',
                 ),
-                'Product':
-                SimpleNamespace(
+                'Product': SimpleNamespace(
                     table_name='Product',
                     name='Product',
                     pkey_name='product_id',
@@ -399,8 +420,7 @@ def test_custom_tt_link_pred_passes_rhs_temporal_flag(monkeypatch, tmp_path,
     graph = _Graph()
     task = SimpleNamespace(
         graph=graph,
-        train_table=SimpleNamespace(
-            fkeys=[SimpleNamespace(dst_table='Customer')]),
+        train_table=SimpleNamespace(fkeys=[SimpleNamespace(dst_table='Customer')]),
         task_type=SimpleNamespace(is_link_pred=True, value='link_prediction'),
     )
     pquery = SimpleNamespace(
@@ -460,15 +480,17 @@ def test_ttng_materialize_validates_bundle_and_early_returns(monkeypatch):
         mtt.AutoTrainer,
         'parse_pquery',
         lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError('bundle validation must not parse the raw source')),
+            AssertionError('bundle validation must not parse the raw source')
+        ),
     )
-    monkeypatch.setattr(mtt, 'save_json',
-                        lambda *_a, **_k: called.update(save_json=True))
+    monkeypatch.setattr(
+        mtt, 'save_json', lambda *_a, **_k: called.update(save_json=True)
+    )
 
     import tempfile
+
     _root = tempfile.mkdtemp(prefix='c1_gate_')
-    logical_path = os.path.join(_root, 'jobs', 'gen-traintable-job-j1',
-                                'train_table')
+    logical_path = os.path.join(_root, 'jobs', 'gen-traintable-job-j1', 'train_table')
     train_table_path = _write_current_v3_bundle_at(
         f'{logical_path}.ttng_staging',
         'gen-traintable-job-j1',
@@ -482,8 +504,7 @@ def test_ttng_materialize_validates_bundle_and_early_returns(monkeypatch):
     job_input = SimpleNamespace(
         id='trainingjob-j1',
         spec=SimpleNamespace(advanced_options=_FakeModelPlan()),
-        graph_data_compute_input=SimpleNamespace(graph_key='graph1',
-                                                 connectors={}),
+        graph_data_compute_input=SimpleNamespace(graph_key='graph1', connectors={}),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
@@ -516,8 +537,9 @@ def test_configure_forecasting_sequence_columns():
         def __init__(self):
             self.args = []
 
-        def _set_forecast_col_encoder(self, year_over_year,
-                                      include_future_labels=False):
+        def _set_forecast_col_encoder(
+            self, year_over_year, include_future_labels=False
+        ):
             self.args.append((year_over_year, include_future_labels))
 
     task = _ForecastingTask()
@@ -534,8 +556,9 @@ def test_configure_forecasting_sequence_columns_can_include_future_labels():
         def __init__(self):
             self.args = []
 
-        def _set_forecast_col_encoder(self, year_over_year,
-                                      include_future_labels=False):
+        def _set_forecast_col_encoder(
+            self, year_over_year, include_future_labels=False
+        ):
             self.args.append((year_over_year, include_future_labels))
 
     task = _ForecastingTask()
@@ -556,8 +579,9 @@ def test_configure_forecasting_sequence_columns_ignores_other_tasks():
         def __init__(self):
             self.called = False
 
-        def _set_forecast_col_encoder(self, year_over_year,
-                                      include_future_labels=False):
+        def _set_forecast_col_encoder(
+            self, year_over_year, include_future_labels=False
+        ):
             self.called = True
 
     task = _BinaryClassificationTask()
@@ -628,7 +652,8 @@ def test_build_ttng_feature_schema_includes_forecasting_train_table_sequences():
                 AUTOREGRESSION_COL: NumericalList(),
                 YOY_COL: NumericalList(),
             },
-        })
+        }
+    )
 
     schema = mtt._build_ttng_feature_schema(task, fitted_encoders)
 
@@ -644,8 +669,11 @@ def test_build_ttng_feature_schema_includes_forecasting_train_table_sequences():
         YOY_COL,
     ]
     assert train_table['mapper_key'] == 'TRAIN_TABLE'
-    assert [column['column_name'] for column in train_table['column_specs']
-            ] == [FUTURE_LABELS_COL, AUTOREGRESSION_COL, YOY_COL]
+    assert [column['column_name'] for column in train_table['column_specs']] == [
+        FUTURE_LABELS_COL,
+        AUTOREGRESSION_COL,
+        YOY_COL,
+    ]
 
 
 def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
@@ -654,14 +682,18 @@ def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
     monkeypatch.setattr(mtt.fsutil, 'exists', lambda _path: True)
     # tt_id now comes from the durable bundle spec; stub it to the value the old
     # path-parse produced for this train_table_path (gen-traintable-job-1).
-    monkeypatch.setattr(mtt, '_ttng_train_table_tt_id',
-                        lambda _p: 'gen-traintable-job-1')
-    monkeypatch.setattr(mtt, '_ttng_ensure_train_table_extension',
-                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        mtt, '_ttng_train_table_tt_id', lambda _p: 'gen-traintable-job-1'
+    )
+    monkeypatch.setattr(
+        mtt, '_ttng_ensure_train_table_extension', lambda *_args, **_kwargs: None
+    )
 
     import kumo.task.task as task_mod
-    monkeypatch.setattr(task_mod, 'collect_encoders',
-                        lambda _task: SimpleNamespace(encoders={}))
+
+    monkeypatch.setattr(
+        task_mod, 'collect_encoders', lambda _task: SimpleNamespace(encoders={})
+    )
 
     class _FakeService:
         def materialize_task_dataset(self, handle, spec):
@@ -669,19 +701,22 @@ def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
             return SimpleNamespace(
                 bundle_dir='/dg/graph-v1/task_datasets/trainingjob-1',
                 manifest_path=(
-                    '/dg/graph-v1/task_datasets/trainingjob-1/manifest.json'),
+                    '/dg/graph-v1/task_datasets/trainingjob-1/manifest.json'
+                ),
                 storage_kind='diskgraph_table',
             )
 
     import kumo.diskgraph as dg_mod
+
     monkeypatch.setattr(dg_mod, 'get_service', lambda: _FakeService())
     monkeypatch.setattr(
         mtt.JobConfig,
         'load',
         lambda _path: SimpleNamespace(diskgraph_task_dataset_bundle_dir=None),
     )
-    monkeypatch.setattr(mtt, 'save_json',
-                        lambda obj, path: calls['saved'].append((obj, path)))
+    monkeypatch.setattr(
+        mtt, 'save_json', lambda obj, path: calls['saved'].append((obj, path))
+    )
 
     train_table = SimpleNamespace(
         table_name='train_table',
@@ -697,7 +732,8 @@ def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
                 time_col_name=None,
                 has_time_col=lambda: False,
             ),
-        ], )
+        ],
+    )
     task = SimpleNamespace(
         task_type=mtt.TaskType.FORECASTING,
         train_table=train_table,
@@ -706,8 +742,7 @@ def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
     )
     job_input = SimpleNamespace(
         id='trainingjob-1',
-        graph_data_compute_input=SimpleNamespace(graph_key='graph1',
-                                                 connectors={}),
+        graph_data_compute_input=SimpleNamespace(graph_key='graph1', connectors={}),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
@@ -715,8 +750,8 @@ def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
         task=task,
         pquery=SimpleNamespace(validated_predictive_query=None, graph=graph),
         train_table_path=(
-            '/kumo/jobs/gen-traintable-job-1/train_table/_bundles/b1/'
-            'tt.parquet'),
+            '/kumo/jobs/gen-traintable-job-1/train_table/_bundles/b1/tt.parquet'
+        ),
         job_input=job_input,
         diskgraph_index_path='/dg/graph-v1',
         job_config_path='/job/config.json',
@@ -725,15 +760,16 @@ def test_ttng_task_dataset_uses_existing_extension_manifest(monkeypatch):
     assert calls['materialize'] is not None
     _, spec = calls['materialize']
     assert spec.tt_manifest_path == (
-        '/dg/graph-v1/train_tables/gen-traintable-job-1/manifest.json')
+        '/dg/graph-v1/train_tables/gen-traintable-job-1/manifest.json'
+    )
     saved_config, saved_path = calls['saved'][0]
     assert saved_config.diskgraph_task_dataset_bundle_dir == (
-        '/dg/graph-v1/task_datasets/trainingjob-1')
+        '/dg/graph-v1/task_datasets/trainingjob-1'
+    )
     assert saved_path == '/job/config.json'
 
 
-def test_ttng_custom_materialize_validates_bundle_and_early_returns(
-        monkeypatch):
+def test_ttng_custom_materialize_validates_bundle_and_early_returns(monkeypatch):
     """C1 for custom TT (was test_ttng_custom_train_table_builds_artifacts_via_
     source_mode): the custom-gen ACTIVITY already built +
     persisted the bundle, so materialize_training_table(is_custom_train_table=
@@ -763,13 +799,12 @@ def test_ttng_custom_materialize_validates_bundle_and_early_returns(
         get_train_table_stats=lambda after_split=False: {'ok': True},
     )
     task = SimpleNamespace(train_table=train_table, task_type='NODE')
-    monkeypatch.setattr(mtt.AutoTrainer, 'parse_pquery', lambda *_a, **_k:
-                        (task, None))
+    monkeypatch.setattr(mtt.AutoTrainer, 'parse_pquery', lambda *_a, **_k: (task, None))
 
     import tempfile
+
     _root = tempfile.mkdtemp(prefix='c1_gate_')
-    logical_path = os.path.join(_root, 'jobs', 'gen-traintable-j1',
-                                'train_table')
+    logical_path = os.path.join(_root, 'jobs', 'gen-traintable-j1', 'train_table')
     train_table_path = _write_current_v3_bundle_at(
         f'{logical_path}.ttng_staging',
         'gen-traintable-j1',
@@ -777,13 +812,21 @@ def test_ttng_custom_materialize_validates_bundle_and_early_returns(
 
     # Any of these being reached is a C1 violation.
     monkeypatch.setattr(
-        mtt, '_build_ttng_custom_train_table_artifacts', lambda **_k:
-        (_ for _ in ()).throw(
-            AssertionError('C1: materialize must not build custom bundle')))
+        mtt,
+        '_build_ttng_custom_train_table_artifacts',
+        lambda **_k: (_ for _ in ()).throw(
+            AssertionError('C1: materialize must not build custom bundle')
+        ),
+    )
     monkeypatch.setitem(
-        sys.modules, 'diskgraph',
-        SimpleNamespace(execute_tt_ingest=lambda **_k: (_ for _ in ()).throw(
-            AssertionError('C1: materialize must not ingest'))))
+        sys.modules,
+        'diskgraph',
+        SimpleNamespace(
+            execute_tt_ingest=lambda **_k: (_ for _ in ()).throw(
+                AssertionError('C1: materialize must not ingest')
+            )
+        ),
+    )
 
     class _FakeModelPlan:
         pass
@@ -793,8 +836,7 @@ def test_ttng_custom_materialize_validates_bundle_and_early_returns(
     job_input = SimpleNamespace(
         id='trainingjob-j1',
         spec=SimpleNamespace(advanced_options=_FakeModelPlan()),
-        graph_data_compute_input=SimpleNamespace(graph_key='graph1',
-                                                 connectors={}),
+        graph_data_compute_input=SimpleNamespace(graph_key='graph1', connectors={}),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
@@ -853,13 +895,16 @@ def test_apply_native_split_stats_accepts_multilabel_distribution():
 
     assert training_table._split_train_table_stats is training_table.saved_to_job_dir
     assert training_table.saved_to_job_dir is training_table.saved_to_cache
-    assert (training_table.saved_to_job_dir.train_table_stats.
-            target_distribution == target_distribution)
+    assert (
+        training_table.saved_to_job_dir.train_table_stats.target_distribution
+        == target_distribution
+    )
 
 
 def test_apply_native_split_stats_rejects_missing_target_distribution():
     training_table = SimpleNamespace(
-        task_type=split_mod.TaskType.MULTILABEL_CLASSIFICATION, )
+        task_type=split_mod.TaskType.MULTILABEL_CLASSIFICATION,
+    )
 
     with pytest.raises(RuntimeError, match='missing target_distribution'):
         split_mod._apply_native_split_stats(
@@ -918,8 +963,9 @@ def test_infer_graph_encoders_from_cached_stats_uses_cache_only(monkeypatch):
         def load_col_stats_cache(self, _fp, _ver):
             return True
 
-        def get_col_stats(self, _fp, stats_dict, *, data_version=None,
-                          approx=False, **_kwargs):
+        def get_col_stats(
+            self, _fp, stats_dict, *, data_version=None, approx=False, **_kwargs
+        ):
             col_cfg = next(iter(stats_dict.keys()))
             return {col_cfg: {'S': _FakeStat(1 if approx else 2)}}
 
@@ -951,15 +997,12 @@ def test_infer_graph_encoders_from_cached_stats_uses_cache_only(monkeypatch):
     assert infer_called['ok'] is True
 
 
-def test_infer_graph_encoders_from_cached_stats_hard_fails_on_missing(
-        monkeypatch):
+def test_infer_graph_encoders_from_cached_stats_hard_fails_on_missing(monkeypatch):
     class _FakeTable:
         name = 'connector_1.T1'
         data_version = 'v1'
         connector = object()
-        cols = [
-            SimpleNamespace(name='c1', encoder=None, base_config=lambda: 'cfg')
-        ]
+        cols = [SimpleNamespace(name='c1', encoder=None, base_config=lambda: 'cfg')]
 
         def fingerprint(self):
             return 'fp1'
@@ -1009,8 +1052,7 @@ def _c1_common_fakes(monkeypatch, *, bundle_present):
         get_train_table_stats=lambda after_split=False: None,
     )
     task = SimpleNamespace(train_table=train_table, task_type='NODE')
-    monkeypatch.setattr(mtt.AutoTrainer, 'parse_pquery', lambda *_a, **_k:
-                        (task, None))
+    monkeypatch.setattr(mtt.AutoTrainer, 'parse_pquery', lambda *_a, **_k: (task, None))
 
     class _FakeModelPlan:
         pass
@@ -1023,8 +1065,9 @@ def _c1_common_fakes(monkeypatch, *, bundle_present):
     # (assert_ttng_bundle_complete) can read the spec JSON. Scope under a temp
     # dir so the .ttng_staging bundle is written/verified for real.
     _root = tempfile.mkdtemp(prefix='c1_gate_')
-    logical_path = os.path.join(_root, 'jobs', 'gen-traintable-job-j1',
-                                'train_table', 'ttng_pq', 'train_table')
+    logical_path = os.path.join(
+        _root, 'jobs', 'gen-traintable-job-j1', 'train_table', 'ttng_pq', 'train_table'
+    )
     train_table_path = os.path.join(
         f'{logical_path}.ttng_staging',
         'tt.parquet',
@@ -1039,12 +1082,16 @@ def _c1_common_fakes(monkeypatch, *, bundle_present):
     def _boom_ingest(**_kwargs):
         raise AssertionError('C1: materialize_training_table must not ingest')
 
-    monkeypatch.setitem(sys.modules, 'diskgraph',
-                        SimpleNamespace(execute_tt_ingest=_boom_ingest))
+    monkeypatch.setitem(
+        sys.modules, 'diskgraph', SimpleNamespace(execute_tt_ingest=_boom_ingest)
+    )
     monkeypatch.setattr(
-        mtt, '_build_ttng_custom_train_table_artifacts', lambda **_k:
-        (_ for _ in ()).throw(
-            AssertionError('C1: must not build custom bundle at materialize')))
+        mtt,
+        '_build_ttng_custom_train_table_artifacts',
+        lambda **_k: (_ for _ in ()).throw(
+            AssertionError('C1: must not build custom bundle at materialize')
+        ),
+    )
     return _FakeModelPlan, train_table_path
 
 
@@ -1052,15 +1099,15 @@ def _c1_job_input(model_plan_cls):
     return SimpleNamespace(
         id='trainingjob-j1',
         spec=SimpleNamespace(advanced_options=model_plan_cls()),
-        graph_data_compute_input=SimpleNamespace(graph_key='graph1',
-                                                 connectors={}),
+        graph_data_compute_input=SimpleNamespace(graph_key='graph1', connectors={}),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
 
 def test_c1_ttng_bundle_present_validates_and_early_returns(monkeypatch):
-    model_plan_cls, train_table_path = _c1_common_fakes(monkeypatch,
-                                                        bundle_present=True)
+    model_plan_cls, train_table_path = _c1_common_fakes(
+        monkeypatch, bundle_present=True
+    )
 
     path_out, validation = mtt.materialize_training_table(
         job_input=_c1_job_input(model_plan_cls),
@@ -1077,8 +1124,9 @@ def test_c1_ttng_bundle_present_validates_and_early_returns(monkeypatch):
 def test_c1_ttng_bundle_present_early_returns_for_custom(monkeypatch):
     # is_custom_train_table=True must also just validate + early-return
     # (the custom-gen activity already persisted the bundle).
-    model_plan_cls, train_table_path = _c1_common_fakes(monkeypatch,
-                                                        bundle_present=True)
+    model_plan_cls, train_table_path = _c1_common_fakes(
+        monkeypatch, bundle_present=True
+    )
 
     path_out, validation = mtt.materialize_training_table(
         job_input=_c1_job_input(model_plan_cls),
@@ -1093,8 +1141,9 @@ def test_c1_ttng_bundle_present_early_returns_for_custom(monkeypatch):
 
 
 def test_c1_ttng_bundle_missing_raises(monkeypatch):
-    model_plan_cls, train_table_path = _c1_common_fakes(monkeypatch,
-                                                        bundle_present=False)
+    model_plan_cls, train_table_path = _c1_common_fakes(
+        monkeypatch, bundle_present=False
+    )
 
     with pytest.raises(mtt.TrainingDataMaterializationError):
         mtt.materialize_training_table(
@@ -1120,22 +1169,22 @@ def test_c1_ttng_bundle_missing_raises(monkeypatch):
 # refused outright, so nothing downstream was reachable.
 # ---------------------------------------------------------------------------
 
-TLP_MANUAL_SPLIT = ("ManualSplit(col='__kumo_precomputed_split', "
-                    "train_value=0, val_value=1, test_value=2)")
+TLP_MANUAL_SPLIT = (
+    "ManualSplit(col='__kumo_precomputed_split', "
+    'train_value=0, val_value=1, test_value=2)'
+)
 
 
 def _temporal_lp_graph():
     class _Graph:
         def __init__(self):
             self._tables = {
-                'Customer':
-                SimpleNamespace(
+                'Customer': SimpleNamespace(
                     table_name='Customer',
                     name='Customer',
                     pkey_name='customer_id',
                 ),
-                'Product':
-                SimpleNamespace(
+                'Product': SimpleNamespace(
                     table_name='Product',
                     name='Product',
                     pkey_name='product_id',
@@ -1152,7 +1201,8 @@ def _temporal_lp_graph():
 
 
 def test_temporal_link_prediction_manual_split_reaches_the_dg_builder(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     from kumo_core.model_plan import ModelPlan
     from kumo_core.training.table import build_split_spec
     from kumo_core.types import TaskType
@@ -1195,15 +1245,14 @@ def test_temporal_link_prediction_manual_split_reaches_the_dg_builder(
     assert config['manual_test_values'] == ['2']
 
     # 4. and reaches the DiskGraph builder as `ManualSplit`.
-    _bundle, calls = _install_custom_tt_bundle_fakes(monkeypatch, tmp_path,
-                                                     is_link_pred=True)
+    _bundle, calls = _install_custom_tt_bundle_fakes(
+        monkeypatch, tmp_path, is_link_pred=True
+    )
     graph = _temporal_lp_graph()
     task = SimpleNamespace(
         graph=graph,
-        train_table=SimpleNamespace(
-            fkeys=[SimpleNamespace(dst_table='Customer')]),
-        task_type=SimpleNamespace(is_link_pred=True,
-                                  value='temporal_link_prediction'),
+        train_table=SimpleNamespace(fkeys=[SimpleNamespace(dst_table='Customer')]),
+        task_type=SimpleNamespace(is_link_pred=True, value='temporal_link_prediction'),
     )
     pquery = SimpleNamespace(
         graph=graph,

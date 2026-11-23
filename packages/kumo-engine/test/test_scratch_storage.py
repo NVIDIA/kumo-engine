@@ -15,10 +15,16 @@ from kumo.engine._storage import network_storage
 def _mountinfo(monkeypatch, tmp_path: Path, *mounts: str) -> None:
     path = tmp_path / 'mountinfo'
     monkeypatch.setattr(storage_module, '_MOUNTINFO', path)
-    path.write_bytes(os.fsencode(''.join(
-        f'{i} 1 {device} / {point} rw - {fstype} src rw\n'
-        for i, (point, fstype, device) in enumerate(
-            mount.split() for mount in mounts))))
+    path.write_bytes(
+        os.fsencode(
+            ''.join(
+                f'{i} 1 {device} / {point} rw - {fstype} src rw\n'
+                for i, (point, fstype, device) in enumerate(
+                    mount.split() for mount in mounts
+                )
+            )
+        )
+    )
 
 
 def _disk(sys_block: Path, number: str, name: str, model: str) -> Path:
@@ -58,7 +64,8 @@ def sys_block(tmp_path, monkeypatch):
 
 def test_network_storage(monkeypatch, tmp_path, sys_block):
     _mountinfo(
-        monkeypatch, tmp_path,
+        monkeypatch,
+        tmp_path,
         '/ ext4 259:1',  # partition of an EBS volume
         '/local_disk0 xfs 9:0',  # RAID over instance-store NVMe
         '/local_disk0/dbfs fuse 0:50',
@@ -74,14 +81,18 @@ def test_network_storage(monkeypatch, tmp_path, sys_block):
     assert storage('/root/.cache/kumo-engine') == 'Amazon EBS'
     assert storage('/local_disk0/kumo-engine') is None
     assert storage('/local_disk0/dbfs/x') == (
-        'a network filesystem (fuse at /local_disk0/dbfs)')
+        'a network filesystem (fuse at /local_disk0/dbfs)'
+    )
     assert storage('/mnt/nfs') == 'a network filesystem (nfs4 at /mnt/nfs)'
     assert storage('/mnt/lvm/kumo-engine') == (
-        'a volume of 2 disks that includes Amazon EBS')
+        'a volume of 2 disks that includes Amazon EBS'
+    )
     assert storage('/mnt/données x/kumo') == (
-        'a network filesystem (fuse at /mnt/données x)')
+        'a network filesystem (fuse at /mnt/données x)'
+    )
     assert storage(os.fsdecode(b'/mnt/\xff/kumo')) == os.fsdecode(
-        b'a network filesystem (nfs at /mnt/\xff)')
+        b'a network filesystem (nfs at /mnt/\xff)'
+    )
     monkeypatch.setattr(storage_module, '_MOUNTINFO', tmp_path / 'missing')
     assert storage('/x') is None
 
@@ -89,13 +100,22 @@ def test_network_storage(monkeypatch, tmp_path, sys_block):
 def test_snapshot_warns_once_on_ebs_scratch(monkeypatch, tmp_path, sys_block):
     scratch = tmp_path / 'scratch'
     monkeypatch.setattr('kumo.engine._scratch._root', scratch)
-    _mountinfo(monkeypatch, tmp_path, '/ ext4 259:2',
-               f'{os.path.realpath(tmp_path)} ext4 259:1')
+    _mountinfo(
+        monkeypatch,
+        tmp_path,
+        '/ ext4 259:2',
+        f'{os.path.realpath(tmp_path)} ext4 259:1',
+    )
     sources = tmp_path / 'sources'
     sources.mkdir()
     (sources / 'users.csv').write_text('id,name\n1,Alice\n2,Bob\n')
-    graph = Graph(tables=[Table.from_source_table(
-        FileConnector(root_dir=str(sources))['users'], primary_key='id')])
+    graph = Graph(
+        tables=[
+            Table.from_source_table(
+                FileConnector(root_dir=str(sources))['users'], primary_key='id'
+            )
+        ]
+    )
 
     with pytest.warns(UserWarning, match=f'{scratch} is on Amazon EBS'):
         graph.snapshot()

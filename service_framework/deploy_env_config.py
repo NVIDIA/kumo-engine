@@ -64,8 +64,9 @@ log = logging.getLogger(__name__)
 # Identity env vars — not part of RawDeployConfig, read at construction.
 _INSTANCE_ID = EnvVar('INSTANCE_ID', str, required=False, default_value='')
 _REGION_SUFFIX = EnvVar('REGION_SUFFIX', str, required=False, default_value='')
-_DEVSERVER_INSTANCE_SUFFIX = EnvVar('DEVSERVER_INSTANCE_SUFFIX', str,
-                                    required=False, default_value='')
+_DEVSERVER_INSTANCE_SUFFIX = EnvVar(
+    'DEVSERVER_INSTANCE_SUFFIX', str, required=False, default_value=''
+)
 
 
 def _append_devserver_suffix(path: str, suffix: str) -> str:
@@ -81,8 +82,9 @@ def _append_devserver_suffix(path: str, suffix: str) -> str:
 
 # Default S3 root template (AWS). GCP and other platforms should set
 # CUSTOM_S3_DATA_PLANE_BUCKET explicitly or use PLATFORM_PRESET.
-_S3_ROOT_TEMPLATE = ('s3://kumo-{deploy_mode}{region_suffix}-dataplane-bucket/'
-                     '{instance_id}/')
+_S3_ROOT_TEMPLATE = (
+    's3://kumo-{deploy_mode}{region_suffix}-dataplane-bucket/{instance_id}/'
+)
 
 
 def _resolve_storage_roots(
@@ -110,10 +112,8 @@ def _resolve_storage_roots(
         # Expand single-tenant storage path templates.
         try:
             format_args: dict[str, object] = {
-                'instance_id':
-                instance_id,
-                'devserver_instance_suffix':
-                _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
+                'instance_id': instance_id,
+                'devserver_instance_suffix': _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
             }
             if '{kumo_home}' in data_root:
                 format_args['kumo_home'] = get_default_home_dir()
@@ -124,7 +124,8 @@ def _resolve_storage_roots(
                 f'placeholder: {e}; '
                 f'only {{instance_id}}, {{devserver_instance_suffix}}, '
                 f'and {{kumo_home}} '
-                f'are supported') from e
+                f'are supported'
+            ) from e
         if expanded != data_root:
             data_root = expanded
         elif is_legacy and deploy_mode == DeployStage.PREPROD:
@@ -153,10 +154,8 @@ def _resolve_storage_roots(
     if artifact_root is not None:
         try:
             format_args = {
-                'instance_id':
-                instance_id,
-                'devserver_instance_suffix':
-                _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
+                'instance_id': instance_id,
+                'devserver_instance_suffix': _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
             }
             if '{kumo_home}' in artifact_root:
                 format_args['kumo_home'] = get_default_home_dir()
@@ -166,7 +165,8 @@ def _resolve_storage_roots(
                 f'artifact_root contains unsupported placeholder: {e}; '
                 f'only {{instance_id}}, {{devserver_instance_suffix}}, '
                 f'and {{kumo_home}} '
-                f'are supported') from e
+                f'are supported'
+            ) from e
         if devserver_suffix:
             artifact_root = _append_devserver_suffix(
                 artifact_root,
@@ -194,15 +194,14 @@ def _resolve_data_compute_roots(
     instance_id: str,
 ) -> DiskgraphConfig:
     """Resolve local path templates embedded in data-compute config."""
+
     def resolve_path(path: Optional[str], field_name: str) -> Optional[str]:
         if path is None:
             return None
         try:
             format_args: dict[str, object] = {
-                'instance_id':
-                instance_id,
-                'devserver_instance_suffix':
-                _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
+                'instance_id': instance_id,
+                'devserver_instance_suffix': _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
             }
             if '{kumo_home}' in path:
                 format_args['kumo_home'] = get_default_home_dir()
@@ -212,13 +211,15 @@ def _resolve_data_compute_roots(
                 f'{field_name} contains unsupported placeholder: {e}; '
                 f'only {{instance_id}}, {{devserver_instance_suffix}}, '
                 f'and {{kumo_home}} '
-                f'are supported') from e
+                f'are supported'
+            ) from e
         return osp.expanduser(resolved)
 
     devserver_suffix = _DEVSERVER_INSTANCE_SUFFIX.parse_value()
     data_root = resolve_path(data_compute.data_root, 'data_compute.data_root')
-    local_ingest_root = resolve_path(data_compute.local_ingest_root,
-                                     'data_compute.local_ingest_root')
+    local_ingest_root = resolve_path(
+        data_compute.local_ingest_root, 'data_compute.local_ingest_root'
+    )
     if devserver_suffix:
         if data_root is not None:
             data_root = _append_devserver_suffix(data_root, devserver_suffix)
@@ -227,8 +228,9 @@ def _resolve_data_compute_roots(
                 local_ingest_root,
                 devserver_suffix,
             )
-    return dataclasses.replace(data_compute, data_root=data_root,
-                               local_ingest_root=local_ingest_root)
+    return dataclasses.replace(
+        data_compute, data_root=data_root, local_ingest_root=local_ingest_root
+    )
 
 
 def _resolve_secret_mount_path(
@@ -242,8 +244,7 @@ def _resolve_secret_mount_path(
     try:
         format_args: dict[str, object] = {
             'instance_id': instance_id,
-            'devserver_instance_suffix':
-            _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
+            'devserver_instance_suffix': _DEVSERVER_INSTANCE_SUFFIX.parse_value(),
         }
         if '{kumo_home}' in mount_path:
             format_args['kumo_home'] = get_default_home_dir()
@@ -253,7 +254,8 @@ def _resolve_secret_mount_path(
             f'secrets.mount_path contains unsupported placeholder: {e}; '
             f'only {{instance_id}}, {{devserver_instance_suffix}}, '
             f'and {{kumo_home}} '
-            f'are supported') from e
+            f'are supported'
+        ) from e
     return dataclasses.replace(secrets, mount_path=osp.expanduser(resolved))
 
 
@@ -283,14 +285,18 @@ class DeployEnvConfig:
 
     data_compute: DiskgraphConfig = Field(default_factory=DiskgraphConfig)
     orchestration: OrchestrationConfig = Field(
-        default_factory=TemporalCloudConfig, discriminator='type')
+        default_factory=TemporalCloudConfig, discriminator='type'
+    )
     secrets: SecretConfig = field(
-        default_factory=lambda: SecretConfig(backend=SecretBackend.AWS_SM))
+        default_factory=lambda: SecretConfig(backend=SecretBackend.AWS_SM)
+    )
     storage: FileStorageConfig = field(default_factory=FileStorageConfig)
     metadata_storage: MetadataStorageConfig = Field(
-        default_factory=SqliteMetadataStorageConfig, discriminator='type')
-    logging_config: LoggingConfig = field(default_factory=lambda: LoggingConfig(
-        backend=LoggingBackend.CLOUDWATCH))
+        default_factory=SqliteMetadataStorageConfig, discriminator='type'
+    )
+    logging_config: LoggingConfig = field(
+        default_factory=lambda: LoggingConfig(backend=LoggingBackend.CLOUDWATCH)
+    )
     azure_storage: Optional[AzureStorageConfig] = None
     auth: Optional[AuthConfig] = None
     ambient_s3: Optional[AmbientS3WorkloadConfig] = None
@@ -310,21 +316,25 @@ class DeployEnvConfig:
             warnings.warn(
                 'DEV_LOCAL with TemporalCloudConfig — this is likely a '
                 'misconfiguration. Set TEMPORAL_SERVER=localhost.',
-                stacklevel=2)
+                stacklevel=2,
+            )
         return v
 
     @field_validator('storage')
     @classmethod
-    def _production_s3_requires_https(cls, value: FileStorageConfig,
-                                      info: ValidationInfo):
+    def _production_s3_requires_https(
+        cls, value: FileStorageConfig, info: ValidationInfo
+    ):
         s3 = value.s3
         mode = info.data.get('deploy_mode')
-        if (s3 is not None and urlparse(s3.endpoint_url).scheme != 'https'
-                and mode in (DeployStage.PROD, DeployStage.STAGING,
-                             DeployStage.PREPROD)):
+        if (
+            s3 is not None
+            and urlparse(s3.endpoint_url).scheme != 'https'
+            and mode in (DeployStage.PROD, DeployStage.STAGING, DeployStage.PREPROD)
+        ):
             raise ValueError(
-                'storage.s3.endpoint_url must use https in production '
-                'deployment stages')
+                'storage.s3.endpoint_url must use https in production deployment stages'
+            )
         return value
 
     # ------------------------------------------------------------------
@@ -365,10 +375,12 @@ class DeployEnvConfig:
             raw = helper.build()
         else:
             temporal_address = os.environ.get('TEMPORAL_ADDRESS', '')
-            if temporal_address and isinstance(raw.orchestration,
-                                               CustomTemporalConfig):
-                server_address = (temporal_address if ':' in temporal_address
-                                  else temporal_address + ':7233')
+            if temporal_address and isinstance(raw.orchestration, CustomTemporalConfig):
+                server_address = (
+                    temporal_address
+                    if ':' in temporal_address
+                    else temporal_address + ':7233'
+                )
                 raw = dataclasses.replace(
                     raw,
                     orchestration=dataclasses.replace(
@@ -378,10 +390,10 @@ class DeployEnvConfig:
                 )
 
         # 3. Storage resolution
-        storage = _resolve_storage_roots(raw.storage, resolved_mode,
-                                         instance_id, is_legacy)
-        data_compute = _resolve_data_compute_roots(raw.data_compute,
-                                                   instance_id)
+        storage = _resolve_storage_roots(
+            raw.storage, resolved_mode, instance_id, is_legacy
+        )
+        data_compute = _resolve_data_compute_roots(raw.data_compute, instance_id)
         secrets = _resolve_secret_mount_path(raw.secrets, instance_id)
 
         # 4. Construct
@@ -429,7 +441,8 @@ class DeployEnvConfig:
         assert config.deploy_mode == DeployStage.TEST
 
         if temporal_target_host is not None and isinstance(
-                config.orchestration, CustomTemporalConfig):
+            config.orchestration, CustomTemporalConfig
+        ):
             config = dataclasses.replace(
                 config,
                 orchestration=dataclasses.replace(
@@ -443,7 +456,7 @@ class DeployEnvConfig:
         if not os.path.exists(test_db_path):
             conn = sqlite3.connect(test_db_path)
             conn.close()
-            log.info(f"Created SQLite test database at {test_db_path}")
+            log.info(f'Created SQLite test database at {test_db_path}')
 
         # Install as the process-global singleton so subsequent
         # deploy_env() callers observe the same object.
@@ -520,10 +533,12 @@ class DeployEnvConfig:
     @property
     def web_url(self) -> str:
         if isinstance(self.orchestration, TemporalCloudConfig):
-            return ('https://cloud.temporal.io/namespaces/'
-                    f'{self.temporal_namespace}/workflows'
-                    f'?search=advanced&query=instance_id%3D"{self.instance_id}"'
-                    '+and+rpc_service+is+null')
+            return (
+                'https://cloud.temporal.io/namespaces/'
+                f'{self.temporal_namespace}/workflows'
+                f'?search=advanced&query=instance_id%3D"{self.instance_id}"'
+                '+and+rpc_service+is+null'
+            )
         return 'localhost:7233'
 
     @property
@@ -538,9 +553,9 @@ class DeployEnvConfig:
         if pod_namespace:
             return pod_namespace
         if self.deploy_mode in [
-                DeployStage.PROD,
-                DeployStage.PREPROD,
-                DeployStage.STAGING,
+            DeployStage.PROD,
+            DeployStage.PREPROD,
+            DeployStage.STAGING,
         ]:
             return self.deploy_mode.value
         return 'kumo-dataplane-devtest'
@@ -551,16 +566,14 @@ class DeployEnvConfig:
         if self.deploy_mode in [DeployStage.PROD, DeployStage.STAGING]:
             return K8sDeployEnvLabel(self.deploy_mode.value)
         if self.deploy_mode == DeployStage.PREPROD:
-            return K8sDeployEnvLabel(
-                f'{self.deploy_mode.value}-{self.instance_id}')
+            return K8sDeployEnvLabel(f'{self.deploy_mode.value}-{self.instance_id}')
         return K8sDeployEnvLabel(f'{self.deploy_mode.value}-{self.instance_id}')
 
     @property
     def id_suffix(self) -> str:
         if self.deploy_mode in (DeployStage.STAGING, DeployStage.PROD):
             return f'-{self.instance_id}'
-        elif (self.deploy_mode == DeployStage.PREPROD
-              or self.deploy_mode.is_dev):
+        elif self.deploy_mode == DeployStage.PREPROD or self.deploy_mode.is_dev:
             return f'-{self.instance_id}'
         else:
             return f'-{self.instance_id}-test'
@@ -583,30 +596,31 @@ class DeployEnvConfig:
     def workflow_id(self, workflow_id: str) -> str:
         suffix = self.id_suffix
         if suffix and workflow_id.endswith(suffix):
-            workflow_id = workflow_id[:-len(suffix)]
-        return bounded_workflow_id(workflow_id, suffix,
-                                   self.max_workflow_id_length) + suffix
+            workflow_id = workflow_id[: -len(suffix)]
+        return (
+            bounded_workflow_id(workflow_id, suffix, self.max_workflow_id_length)
+            + suffix
+        )
 
     def strip_suffix(self, id: str) -> str:
         suffix = self.id_suffix
-        return id if not suffix or not id.endswith(
-            suffix) else id[:-len(suffix)]
+        return id if not suffix or not id.endswith(suffix) else id[: -len(suffix)]
 
     def _append_suffix_to_id(self, id: str) -> str:
         suffix = self.id_suffix
         return id if id.endswith(suffix) else id + suffix
 
     def __repr__(self) -> str:
-        return 'DeployEnvConfig' + json.dumps(asdict(self), indent=2,
-                                              default=str)
+        return 'DeployEnvConfig' + json.dumps(asdict(self), indent=2, default=str)
 
 
 # Temporal's Postgres store holds workflow ids in a VARCHAR(255) column.
 MAX_WORKFLOW_ID_LENGTH = 255
 
 
-def bounded_workflow_id(workflow_id: str, suffix: str = '',
-                        limit: Optional[int] = MAX_WORKFLOW_ID_LENGTH) -> str:
+def bounded_workflow_id(
+    workflow_id: str, suffix: str = '', limit: Optional[int] = MAX_WORKFLOW_ID_LENGTH
+) -> str:
     r"""``workflow_id`` shortened so that it plus ``suffix`` fits ``limit``.
 
     Ids that already fit, or any id when ``limit`` is None, are returned
@@ -641,10 +655,13 @@ def deploy_env() -> DeployEnvConfig:
         log.info(
             'deploy_env() initialized: deploy_mode=%s instance_id=%s '
             'id_suffix=%s data_plane_storage_root=%s '
-            'orchestration=%s', _deploy_env.deploy_mode.value,
-            _deploy_env.instance_id, _deploy_env.id_suffix,
+            'orchestration=%s',
+            _deploy_env.deploy_mode.value,
+            _deploy_env.instance_id,
+            _deploy_env.id_suffix,
             _deploy_env.data_plane_storage_root,
-            type(_deploy_env.orchestration).__name__)
+            type(_deploy_env.orchestration).__name__,
+        )
     return _deploy_env
 
 

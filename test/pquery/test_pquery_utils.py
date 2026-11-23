@@ -21,68 +21,119 @@ def weight_test_data(tempdir):
     parquet_dir = os.path.join(tempdir.name, 'weight_test')
     fsutil.makedirs(parquet_dir, exist_ok=True)
     parquet_path = os.path.join(parquet_dir, 'weight_test.parquet')
-    df = pd.DataFrame({
-        'weight_float': [1.0, 2.0, 3.0],
-        'weight_int': [1, 2, 3],
-        'weight_list': [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
-        'weight_str': ['1.0', '2.0', '3.0'],
-        'weight_decimal': [
-            decimal.Decimal('1.0'),
-            decimal.Decimal('2.0'),
-            decimal.Decimal('3.0')
-        ],
-    })
+    df = pd.DataFrame(
+        {
+            'weight_float': [1.0, 2.0, 3.0],
+            'weight_int': [1, 2, 3],
+            'weight_list': [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+            'weight_str': ['1.0', '2.0', '3.0'],
+            'weight_decimal': [
+                decimal.Decimal('1.0'),
+                decimal.Decimal('2.0'),
+                decimal.Decimal('3.0'),
+            ],
+        }
+    )
     df.to_parquet(parquet_path)
     return parquet_dir
 
 
 @pytest.mark.parametrize(
-    "weight_column, task_type, is_array_target, expected_name, expected_dtype",
+    'weight_column, task_type, is_array_target, expected_name, expected_dtype',
     [
-        ('weight_decimal', TaskType.REGRESSION, False, 'weight_decimal',
-         Dtype.float),
-        ('weight_float', TaskType.REGRESSION, False, 'weight_float',
-         Dtype.float),
-        ('weight_int', TaskType.BINARY_CLASSIFICATION, False, 'weight_int',
-         Dtype.float),
-        ('weight_list', TaskType.MULTILABEL_RANKING, True, 'weight_list',
-         Dtype.floatlist),
-        ('weight_float', TaskType.MULTILABEL_RANKING, False, 'weight_float',
-         Dtype.float),
-        ('weight_list', TaskType.MULTILABEL_CLASSIFICATION, True, 'weight_list',
-         Dtype.floatlist),
-        ('weight_list', TaskType.STATIC_LINK_PREDICTION, True, 'weight_list',
-         Dtype.floatlist),
-    ])
-def test_validate_weight_column_success(weight_test_data, weight_column,
-                                        task_type, is_array_target,
-                                        expected_name, expected_dtype):
-    weight_col = validate_weight_column(weight_column, weight_test_data,
-                                        task_type, is_array_target)
+        ('weight_decimal', TaskType.REGRESSION, False, 'weight_decimal', Dtype.float),
+        ('weight_float', TaskType.REGRESSION, False, 'weight_float', Dtype.float),
+        (
+            'weight_int',
+            TaskType.BINARY_CLASSIFICATION,
+            False,
+            'weight_int',
+            Dtype.float,
+        ),
+        (
+            'weight_list',
+            TaskType.MULTILABEL_RANKING,
+            True,
+            'weight_list',
+            Dtype.floatlist,
+        ),
+        (
+            'weight_float',
+            TaskType.MULTILABEL_RANKING,
+            False,
+            'weight_float',
+            Dtype.float,
+        ),
+        (
+            'weight_list',
+            TaskType.MULTILABEL_CLASSIFICATION,
+            True,
+            'weight_list',
+            Dtype.floatlist,
+        ),
+        (
+            'weight_list',
+            TaskType.STATIC_LINK_PREDICTION,
+            True,
+            'weight_list',
+            Dtype.floatlist,
+        ),
+    ],
+)
+def test_validate_weight_column_success(
+    weight_test_data,
+    weight_column,
+    task_type,
+    is_array_target,
+    expected_name,
+    expected_dtype,
+):
+    weight_col = validate_weight_column(
+        weight_column, weight_test_data, task_type, is_array_target
+    )
     assert weight_col.name == expected_name
     assert weight_col.dtype == expected_dtype
 
 
 @pytest.mark.parametrize(
-    "weight_column, task_type, is_array_target, error_pattern",
-    [('nonexistent_col', TaskType.REGRESSION, False,
-      "Weight column 'nonexistent_col' not found in training table"),
-     ('weight_str', TaskType.REGRESSION, False,
-      "Weight column 'weight_str' must be a numerical type"),
-     ('weight_float', TaskType.MULTILABEL_RANKING, True,
-      "Weight column 'weight_float' must be an array type"),
-     ("weight_list", TaskType.LINK_PREDICTION, False,
-      "Weight column 'weight_list' must be a numerical type")])
-def test_validate_weight_column_errors(weight_test_data, weight_column,
-                                       task_type, is_array_target,
-                                       error_pattern):
+    'weight_column, task_type, is_array_target, error_pattern',
+    [
+        (
+            'nonexistent_col',
+            TaskType.REGRESSION,
+            False,
+            "Weight column 'nonexistent_col' not found in training table",
+        ),
+        (
+            'weight_str',
+            TaskType.REGRESSION,
+            False,
+            "Weight column 'weight_str' must be a numerical type",
+        ),
+        (
+            'weight_float',
+            TaskType.MULTILABEL_RANKING,
+            True,
+            "Weight column 'weight_float' must be an array type",
+        ),
+        (
+            'weight_list',
+            TaskType.LINK_PREDICTION,
+            False,
+            "Weight column 'weight_list' must be a numerical type",
+        ),
+    ],
+)
+def test_validate_weight_column_errors(
+    weight_test_data, weight_column, task_type, is_array_target, error_pattern
+):
     with pytest.raises(ValidationException, match=error_pattern):
-        validate_weight_column(weight_column, weight_test_data, task_type,
-                               is_array_target)
+        validate_weight_column(
+            weight_column, weight_test_data, task_type, is_array_target
+        )
 
 
-def test_get_train_table_schema_routes_s3_through_arrow_cloud_filesystem(
-        monkeypatch):
+def test_get_train_table_schema_routes_s3_through_arrow_cloud_filesystem(monkeypatch):
     # The S3 / GCS branch builds a ParquetDataset from the credentialed choke
     # point with a scheme-stripped path.
     from kumo.pquery import utils as pquery_utils
@@ -134,12 +185,10 @@ def test_get_train_table_schema_accepts_single_s3_parquet(monkeypatch):
 
     monkeypatch.setattr(pquery_utils.fsutil, 'listdir', fail_listdir)
     monkeypatch.setattr(pquery_utils.fsutil, 'isdir', lambda _p: False)
-    monkeypatch.setattr(pquery_utils, 'arrow_cloud_filesystem',
-                        lambda _p: sentinel_fs)
+    monkeypatch.setattr(pquery_utils, 'arrow_cloud_filesystem', lambda _p: sentinel_fs)
     monkeypatch.setattr(pquery_utils.pq, 'ParquetDataset', _FakeDataset)
 
-    schema = pquery_utils.get_train_table_schema(
-        's3://bucket/immutable/tt.parquet')
+    schema = pquery_utils.get_train_table_schema('s3://bucket/immutable/tt.parquet')
 
     assert schema == 'schema-sentinel'
     assert seen['path'] == 'bucket/immutable/tt.parquet'

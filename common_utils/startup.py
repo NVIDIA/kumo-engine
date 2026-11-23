@@ -15,4 +15,4 @@ def log_app_startup() -> None:
     Intended to be called once at startup from long-running service entry points
     (REST API, Temporal workers, monitoring).
     """
-    logger.info("App startup: image_version=%s", get_kumo_version())
+    logger.info('App startup: image_version=%s', get_kumo_version())

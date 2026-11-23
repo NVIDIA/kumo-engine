@@ -26,6 +26,7 @@ def normalize_timestamp_like_value(value: Any) -> Any:
         return None
     try:
         import pandas as pd
+
         if pd.isna(value):
             return None
     except (TypeError, ValueError):
@@ -69,7 +70,7 @@ def normalize_timestamp_like_value(value: Any) -> Any:
     if isinstance(value, str):
         s = value.strip()
         if s.startswith('kumo_timestamp_'):
-            s = s[len('kumo_timestamp_'):].strip()
+            s = s[len('kumo_timestamp_') :].strip()
         if s == '' or s.lower() in {'nat', 'none', 'null'}:
             return None
         if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
@@ -151,8 +152,7 @@ def _inspect_parquet_artifact_details(path: str) -> tuple[int, int, Any]:
         if row_group.num_rows < 0:
             raise RuntimeError('train-table parquet row group has negative rows')
         if row_group.num_columns != metadata.num_columns:
-            raise RuntimeError(
-                'train-table parquet row-group/schema column mismatch')
+            raise RuntimeError('train-table parquet row-group/schema column mismatch')
         row_group_rows += row_group.num_rows
 
         for column_index in range(row_group.num_columns):
@@ -164,23 +164,26 @@ def _inspect_parquet_artifact_details(path: str) -> tuple[int, int, Any]:
             if dictionary_offset is not None:
                 offsets.append(int(dictionary_offset))
             if compressed_size < 0 or any(
-                    offset < 4 or offset >= footer_start for offset in offsets):
+                offset < 4 or offset >= footer_start for offset in offsets
+            ):
                 raise RuntimeError(
-                    'train-table parquet row-group column bounds are invalid')
+                    'train-table parquet row-group column bounds are invalid'
+                )
             first_page_offset = min(offsets)
             if first_page_offset + compressed_size > footer_start:
                 raise RuntimeError(
-                    'train-table parquet row-group column exceeds data region')
+                    'train-table parquet row-group column exceeds data region'
+                )
 
     if row_group_rows != metadata.num_rows:
-        raise RuntimeError(
-            'parquet row-group rows do not match footer row_count')
+        raise RuntimeError('parquet row-group rows do not match footer row_count')
     return actual_size_bytes, int(metadata.num_rows), schema
 
 
 def _inspect_parquet_artifact(path: str) -> tuple[int, int]:
-    actual_size_bytes, actual_row_count, _schema = \
-        _inspect_parquet_artifact_details(path)
+    actual_size_bytes, actual_row_count, _schema = _inspect_parquet_artifact_details(
+        path
+    )
     return actual_size_bytes, actual_row_count
 
 
@@ -195,11 +198,13 @@ def _validate_train_table_parquet(
     if actual_size_bytes != expected_size_bytes:
         raise RuntimeError(
             'train-table size mismatch: '
-            f'expected={expected_size_bytes} actual={actual_size_bytes}')
+            f'expected={expected_size_bytes} actual={actual_size_bytes}'
+        )
     if actual_row_count != expected_row_count:
         raise RuntimeError(
             'train-table parquet row_count mismatch: '
-            f'expected={expected_row_count} actual={actual_row_count}')
+            f'expected={expected_row_count} actual={actual_row_count}'
+        )
 
 
 def _dataset_entry_names(path: str) -> list[str]:
@@ -209,11 +214,10 @@ def _dataset_entry_names(path: str) -> list[str]:
             root_stat = os.lstat(path)
         except OSError as error:
             raise RuntimeError(
-                f'train-table dataset cannot be inspected: {path}') from error
-        if (stat.S_ISLNK(root_stat.st_mode)
-                or not stat.S_ISDIR(root_stat.st_mode)):
-            raise RuntimeError(
-                'train-table path must be a non-symlink directory')
+                f'train-table dataset cannot be inspected: {path}'
+            ) from error
+        if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+            raise RuntimeError('train-table path must be a non-symlink directory')
         names = os.listdir(path)
         for name in names:
             entry_path = os.path.join(path, name)
@@ -221,13 +225,12 @@ def _dataset_entry_names(path: str) -> list[str]:
                 entry = os.lstat(entry_path)
             except OSError as error:
                 raise RuntimeError(
-                    f'train-table dataset entry cannot be inspected: '
-                    f'{entry_path}') from error
-            if (stat.S_ISLNK(entry.st_mode)
-                    or not stat.S_ISREG(entry.st_mode)):
+                    f'train-table dataset entry cannot be inspected: {entry_path}'
+                ) from error
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISREG(entry.st_mode):
                 raise RuntimeError(
-                    'train-table dataset entries must be regular files: '
-                    f'{entry_path}')
+                    f'train-table dataset entries must be regular files: {entry_path}'
+                )
         return names
 
     if not fsutil.isdir(path):
@@ -243,16 +246,16 @@ def _dataset_entry_names(path: str) -> list[str]:
                 entry_path = os.path.join(path, entry_path)
             if fsutil.isdir(entry_path):
                 raise RuntimeError(
-                    'train-table dataset entries must be files: '
-                    f'{entry_path}')
+                    f'train-table dataset entries must be files: {entry_path}'
+                )
         return names
 
     names = []
     for entry in entries:
         if entry.is_directory:
             raise RuntimeError(
-                'train-table dataset entries must be files: '
-                f'{entry.path}')
+                f'train-table dataset entries must be files: {entry.path}'
+            )
         names.append(os.path.basename(entry.path.rstrip('/')))
     return names
 
@@ -261,71 +264,85 @@ def _validate_train_table_dataset(train_table: dict[str, Any]) -> None:
     path = train_table['path']
     parts = train_table.get('parts')
     if not isinstance(parts, list):
-        raise RuntimeError(
-            'diskgraph manifest train_table.parts must be a list')
+        raise RuntimeError('diskgraph manifest train_table.parts must be a list')
 
-    expected_names = [f'part-{index:05}.parquet'
-                      for index in range(len(parts))]
+    expected_names = [f'part-{index:05}.parquet' for index in range(len(parts))]
     actual_names = _dataset_entry_names(path)
     if len(actual_names) != len(set(actual_names)):
         raise RuntimeError('train-table dataset contains duplicate entries')
     if set(actual_names) != set(expected_names):
         raise RuntimeError(
             'train-table dataset inventory mismatch: '
-            f'expected={expected_names!r} actual={sorted(actual_names)!r}')
+            f'expected={expected_names!r} actual={sorted(actual_names)!r}'
+        )
 
     total_rows = 0
     total_bytes = 0
     dataset_schema = None
     for index, (part, expected_name) in enumerate(zip(parts, expected_names)):
         if not isinstance(part, dict) or set(part) != {
-                'path', 'row_count', 'size_bytes'}:
+            'path',
+            'row_count',
+            'size_bytes',
+        }:
             raise RuntimeError(
                 f'train-table part {index} must contain exactly '
-                'path/row_count/size_bytes')
+                'path/row_count/size_bytes'
+            )
         expected_path = os.path.join(path, expected_name)
         if part.get('path') != expected_path:
             raise RuntimeError(
-                f'train-table part {index} path is not canonical: '
-                f'{part.get("path")!r}')
+                f'train-table part {index} path is not canonical: {part.get("path")!r}'
+            )
         row_count = part.get('row_count')
         size_bytes = part.get('size_bytes')
-        if (isinstance(row_count, bool) or not isinstance(row_count, int)
-                or row_count < 0):
+        if (
+            isinstance(row_count, bool)
+            or not isinstance(row_count, int)
+            or row_count < 0
+        ):
             raise RuntimeError(
-                f'train-table part {index} row_count must be a '
-                'non-negative int')
-        if (isinstance(size_bytes, bool) or not isinstance(size_bytes, int)
-                or size_bytes <= 0):
+                f'train-table part {index} row_count must be a non-negative int'
+            )
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes <= 0
+        ):
             raise RuntimeError(
-                f'train-table part {index} size_bytes must be a positive int')
+                f'train-table part {index} size_bytes must be a positive int'
+            )
 
-        actual_size, actual_rows, actual_schema = \
-            _inspect_parquet_artifact_details(expected_path)
+        actual_size, actual_rows, actual_schema = _inspect_parquet_artifact_details(
+            expected_path
+        )
         if actual_size != size_bytes:
             raise RuntimeError(
                 f'train-table part {index} size mismatch: '
-                f'expected={size_bytes} actual={actual_size}')
+                f'expected={size_bytes} actual={actual_size}'
+            )
         if actual_rows != row_count:
             raise RuntimeError(
                 f'train-table part {index} row_count mismatch: '
-                f'expected={row_count} actual={actual_rows}')
+                f'expected={row_count} actual={actual_rows}'
+            )
         if dataset_schema is None:
             dataset_schema = actual_schema
         elif not actual_schema.equals(dataset_schema, check_metadata=True):
-            raise RuntimeError(
-                f'train-table part {index} schema differs from part 0')
+            raise RuntimeError(f'train-table part {index} schema differs from part 0')
         total_rows += actual_rows
         total_bytes += actual_size
 
     if total_rows != train_table['row_count']:
         raise RuntimeError(
             'train-table aggregate row_count mismatch: '
-            f'expected={train_table["row_count"]} actual={total_rows}')
+            f'expected={train_table["row_count"]} actual={total_rows}'
+        )
     if total_bytes != train_table['size_bytes']:
         raise RuntimeError(
             'train-table aggregate size mismatch: '
-            f'expected={train_table["size_bytes"]} actual={total_bytes}')
+            f'expected={train_table["size_bytes"]} actual={total_bytes}'
+        )
 
 
 def _sha256_path(path: str) -> str:
@@ -349,7 +366,7 @@ def _sha256_path(path: str) -> str:
     hasher = hashlib.sha256()
     prefix = path.rstrip('/') + '/'
     for file_path in files:
-        rel = file_path[len(prefix):] if file_path.startswith(prefix) else file_path
+        rel = file_path[len(prefix) :] if file_path.startswith(prefix) else file_path
         hasher.update(rel.encode())
         hasher.update(b'\0')
         hasher.update(_sha256_file(file_path).encode())
@@ -369,7 +386,8 @@ def load_manifest(manifest_path: str) -> dict[str, Any]:
         raise RuntimeError(
             'diskgraph manifest version mismatch: '
             f'expected={expected} got={version}; '
-            'version 4 requires fact visibility support')
+            'version 4 requires fact visibility support'
+        )
     return payload
 
 
@@ -383,7 +401,8 @@ def parse_stats_artifact(path: str) -> dict[str, Any]:
     if (version, kind) != (2, 'tt_stats'):
         raise RuntimeError(
             'stats artifact version/kind mismatch: '
-            f'got version={version!r} kind={kind!r}')
+            f'got version={version!r} kind={kind!r}'
+        )
 
     required_ints = ('num_total_rows', 'num_train_rows', 'num_entities', 'num_targets')
     for field in required_ints:
@@ -407,7 +426,8 @@ def parse_split_stats_artifact(path: str) -> dict[str, Any]:
     if (version, kind) != (1, 'tt_split_stats'):
         raise RuntimeError(
             'split_stats artifact version/kind mismatch: '
-            f'got version={version!r} kind={kind!r}')
+            f'got version={version!r} kind={kind!r}'
+        )
 
     train_stats = payload.get('train_table_stats')
     if not isinstance(train_stats, dict):
@@ -419,7 +439,9 @@ def parse_split_stats_artifact(path: str) -> dict[str, Any]:
         if not isinstance(stage_payload, dict):
             raise RuntimeError(f'split_stats {stage_name} must be dict or null')
         if not isinstance(stage_payload.get('num_train_rows'), int):
-            raise RuntimeError(f'split_stats {stage_name} missing integer num_train_rows')
+            raise RuntimeError(
+                f'split_stats {stage_name} missing integer num_train_rows'
+            )
         if not isinstance(stage_payload.get('num_entities'), int):
             raise RuntimeError(f'split_stats {stage_name} missing integer num_entities')
 
@@ -440,11 +462,13 @@ def parse_train_table_col_stats_artifact(path: str) -> dict[str, Any]:
     if (version, kind) != (1, 'tt_train_table_col_stats'):
         raise RuntimeError(
             'train_table_col_stats artifact version/kind mismatch: '
-            f'got version={version!r} kind={kind!r}')
+            f'got version={version!r} kind={kind!r}'
+        )
     if stats_format != 'kumo_col_stats_v1':
         raise RuntimeError(
             'train_table_col_stats artifact format mismatch: '
-            f'got stats_format={stats_format!r}')
+            f'got stats_format={stats_format!r}'
+        )
 
     stats = payload.get('stats')
     if not isinstance(stats, dict):
@@ -452,13 +476,17 @@ def parse_train_table_col_stats_artifact(path: str) -> dict[str, Any]:
 
     for key, value in stats.items():
         if not isinstance(key, str) or not key:
-            raise RuntimeError('train_table_col_stats artifact contains invalid stat key')
+            raise RuntimeError(
+                'train_table_col_stats artifact contains invalid stat key'
+            )
         if not isinstance(value, dict):
             raise RuntimeError(
-                'train_table_col_stats artifact stat payload must be an object')
+                'train_table_col_stats artifact stat payload must be an object'
+            )
         if 'value' not in value:
             raise RuntimeError(
-                f'train_table_col_stats artifact stat {key!r} missing value')
+                f'train_table_col_stats artifact stat {key!r} missing value'
+            )
 
     return payload
 
@@ -470,11 +498,15 @@ def parse_train_table_edges_artifact(payload: dict[str, Any]) -> dict[str, Any]:
     version = payload.get('version')
     kind = payload.get('kind')
     edges_format = payload.get('format')
-    if (version, kind, edges_format) != (1, 'tt_train_table_edges',
-                                         'tt_edge_bundle_v1'):
+    if (version, kind, edges_format) != (
+        1,
+        'tt_train_table_edges',
+        'tt_edge_bundle_v1',
+    ):
         raise RuntimeError(
             'train_table_edges artifact version/kind/format mismatch: '
-            f'got version={version!r} kind={kind!r} format={edges_format!r}')
+            f'got version={version!r} kind={kind!r} format={edges_format!r}'
+        )
 
     enabled = payload.get('enabled', True)
     if not isinstance(enabled, bool):
@@ -491,23 +523,29 @@ def parse_train_table_edges_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError('train_table_edges artifact missing reverse_edges map')
     if not enabled and reverse_edges and not has_declared_fkeys:
         raise RuntimeError(
-            'train_table_edges artifact has reverse_edges even though enabled=false')
+            'train_table_edges artifact has reverse_edges even though enabled=false'
+        )
 
     for edge_key, edge_info in reverse_edges.items():
         if not isinstance(edge_key, str) or not edge_key:
-            raise RuntimeError('train_table_edges artifact has invalid reverse edge key')
+            raise RuntimeError(
+                'train_table_edges artifact has invalid reverse edge key'
+            )
         if not isinstance(edge_info, dict):
             raise RuntimeError(
-                f'train_table_edges artifact reverse edge {edge_key!r} must be an object')
+                f'train_table_edges artifact reverse edge {edge_key!r} must be an object'
+            )
         edge_path = edge_info.get('path')
         edge_format = edge_info.get('format')
         if not isinstance(edge_path, str) or not edge_path:
             raise RuntimeError(
-                f'train_table_edges artifact reverse edge {edge_key!r} missing path')
+                f'train_table_edges artifact reverse edge {edge_key!r} missing path'
+            )
         if edge_format != 'edge_parquet':
             raise RuntimeError(
                 f'train_table_edges artifact reverse edge {edge_key!r} '
-                f'format unsupported: {edge_format!r}')
+                f'format unsupported: {edge_format!r}'
+            )
 
     fkey_cols = payload.get('fkey_cols')
     if reverse_edges:
@@ -517,9 +555,13 @@ def parse_train_table_edges_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(fkey_cols_path, str) or not fkey_cols_path:
             raise RuntimeError('train_table_edges artifact has invalid fkey_cols.path')
         if fkey_cols.get('format') != 'fkey_cols_parquet':
-            raise RuntimeError('train_table_edges artifact fkey_cols format unsupported')
+            raise RuntimeError(
+                'train_table_edges artifact fkey_cols format unsupported'
+            )
     elif fkey_cols is not None and not isinstance(fkey_cols, dict):
-        raise RuntimeError('train_table_edges artifact fkey_cols must be object when present')
+        raise RuntimeError(
+            'train_table_edges artifact fkey_cols must be object when present'
+        )
 
     mask = payload.get('mask')
     if reverse_edges:
@@ -534,19 +576,25 @@ def parse_train_table_edges_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             if mask.get('format') != 'mask_parquet':
                 raise RuntimeError('train_table_edges artifact mask format unsupported')
     elif mask is not None and not isinstance(mask, dict):
-        raise RuntimeError('train_table_edges artifact mask must be object when present')
+        raise RuntimeError(
+            'train_table_edges artifact mask must be object when present'
+        )
 
     return payload
 
 
 def _resolve_bundle_relative_path(path: str, manifest_dir: str) -> str:
     relative = PurePosixPath(path)
-    if (relative.is_absolute() or '://' in path or '\\' in path
-            or relative.as_posix() != path
-            or any(part in {'.', '..'} for part in relative.parts)):
+    if (
+        relative.is_absolute()
+        or '://' in path
+        or '\\' in path
+        or relative.as_posix() != path
+        or any(part in {'.', '..'} for part in relative.parts)
+    ):
         raise RuntimeError(
-            'native artifact path must be normalized and bundle-relative: '
-            f'{path!r}')
+            f'native artifact path must be normalized and bundle-relative: {path!r}'
+        )
     return os.path.join(manifest_dir, *relative.parts)
 
 
@@ -564,12 +612,12 @@ def resolve_manifest_artifact_paths(
 ) -> None:
     """Resolve only path fields declared by the native manifest schema."""
     for section_name in (
-            'train_table',
-            'stats',
-            'split_stats',
-            'train_table_col_stats',
-            'split',
-            'fact_pseudo_time',
+        'train_table',
+        'stats',
+        'split_stats',
+        'train_table_col_stats',
+        'split',
+        'fact_pseudo_time',
     ):
         _resolve_section_path(manifest.get(section_name), manifest_dir)
 
@@ -602,16 +650,19 @@ def parse_split_assignment_artifact(path: str) -> dict[str, Any]:
     version, row_count = struct.unpack('<IQ', payload[8:20])
     if version != 1:
         raise RuntimeError(
-            f'split assignment artifact version mismatch: expected=1 got={version}')
+            f'split assignment artifact version mismatch: expected=1 got={version}'
+        )
     assignments = payload[20:]
     if len(assignments) != row_count:
         raise RuntimeError(
-            'split assignment artifact length mismatch with declared row_count')
+            'split assignment artifact length mismatch with declared row_count'
+        )
     counts = Counter(assignments)
     unsupported = sorted(v for v in counts if v not in (0, 1, 2, 255))
     if unsupported:
         raise RuntimeError(
-            f'split assignment artifact has unsupported stage ids: {unsupported}')
+            f'split assignment artifact has unsupported stage ids: {unsupported}'
+        )
     return {
         'version': version,
         'row_count': row_count,
@@ -627,15 +678,16 @@ def parse_split_assignment_artifact(path: str) -> dict[str, Any]:
 
 def _validate_fact_pseudo_time(section: Any) -> None:
     """Header-only check; the payload is one byte per fact row."""
-    if (not isinstance(section, dict)
-            or section.get('format') != 'tt_fact_pseudo_time_v1'):
+    if (
+        not isinstance(section, dict)
+        or section.get('format') != 'tt_fact_pseudo_time_v1'
+    ):
         raise RuntimeError(
-            'diskgraph manifest fact_pseudo_time format unsupported: '
-            f'{section!r}')
+            f'diskgraph manifest fact_pseudo_time format unsupported: {section!r}'
+        )
     path = section.get('path')
     if not isinstance(path, str) or not fsutil.exists(path):
-        raise RuntimeError(
-            f'diskgraph manifest references missing artifact: {path}')
+        raise RuntimeError(f'diskgraph manifest references missing artifact: {path}')
     with fsutil.get_binary_handle(path, 'rb') as handle:
         header = handle.read(24)
     if len(header) != 24 or header[:8] != b'DGPTIME\x00':
@@ -644,7 +696,8 @@ def _validate_fact_pseudo_time(section: Any) -> None:
     if (version, dtype) != (1, 1):
         raise RuntimeError(
             'fact_pseudo_time artifact version mismatch: '
-            f'version={version} dtype={dtype}')
+            f'version={version} dtype={dtype}'
+        )
     if artifact_file_size(path) != 24 + row_count:
         raise RuntimeError('fact_pseudo_time artifact size mismatch')
 
@@ -675,36 +728,49 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
 
     train_table_path = train_table.get('path')
     stats_path = stats.get('path')
-    split_stats_path = split_stats.get('path') if isinstance(split_stats, dict) else None
+    split_stats_path = (
+        split_stats.get('path') if isinstance(split_stats, dict) else None
+    )
     train_table_col_stats_path = (
-        train_table_col_stats.get('path') if isinstance(train_table_col_stats, dict) else None)
+        train_table_col_stats.get('path')
+        if isinstance(train_table_col_stats, dict)
+        else None
+    )
     if not isinstance(train_table_path, str) or not train_table_path:
         raise RuntimeError('diskgraph manifest has invalid train_table.path')
     if train_table.get('format') != 'tt_parquet_dataset_v1':
         raise RuntimeError(
             'diskgraph manifest train_table format unsupported: '
-            f'{train_table.get("format")!r}')
+            f'{train_table.get("format")!r}'
+        )
     train_table_size_bytes = train_table.get('size_bytes')
-    if (isinstance(train_table_size_bytes, bool)
-            or not isinstance(train_table_size_bytes, int)
-            or train_table_size_bytes < 0):
+    if (
+        isinstance(train_table_size_bytes, bool)
+        or not isinstance(train_table_size_bytes, int)
+        or train_table_size_bytes < 0
+    ):
         raise RuntimeError(
-            'diskgraph manifest train_table.size_bytes must be a '
-            'non-negative int')
+            'diskgraph manifest train_table.size_bytes must be a non-negative int'
+        )
     train_table_row_count = train_table.get('row_count')
-    if (isinstance(train_table_row_count, bool)
-            or not isinstance(train_table_row_count, int)
-            or train_table_row_count < 0):
+    if (
+        isinstance(train_table_row_count, bool)
+        or not isinstance(train_table_row_count, int)
+        or train_table_row_count < 0
+    ):
         raise RuntimeError(
-            'diskgraph manifest train_table.row_count must be a '
-            'non-negative int')
+            'diskgraph manifest train_table.row_count must be a non-negative int'
+        )
     if not isinstance(stats_path, str) or not stats_path:
         raise RuntimeError('diskgraph manifest has invalid stats.path')
-    if split_stats is not None and (not isinstance(split_stats_path, str) or not split_stats_path):
+    if split_stats is not None and (
+        not isinstance(split_stats_path, str) or not split_stats_path
+    ):
         raise RuntimeError('diskgraph manifest has invalid split_stats.path')
     if train_table_col_stats is not None and (
-            not isinstance(train_table_col_stats_path, str)
-            or not train_table_col_stats_path):
+        not isinstance(train_table_col_stats_path, str)
+        or not train_table_col_stats_path
+    ):
         raise RuntimeError('diskgraph manifest has invalid train_table_col_stats.path')
 
     required_paths = [stats_path]
@@ -733,48 +799,52 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
     for required_path in required_paths:
         if not fsutil.exists(required_path):
             raise RuntimeError(
-                f'diskgraph manifest references missing artifact: {required_path}')
+                f'diskgraph manifest references missing artifact: {required_path}'
+            )
 
     stats_format = stats.get('format')
     if stats_format != 'tt_stats_json':
         raise RuntimeError(
-            'diskgraph manifest stats format unsupported: '
-            f'{stats_format}')
+            f'diskgraph manifest stats format unsupported: {stats_format}'
+        )
     if split_stats is not None:
         split_stats_format = split_stats.get('format')
         if split_stats_format != 'tt_split_stats_json':
             raise RuntimeError(
                 'diskgraph manifest split_stats format unsupported: '
-                f'{split_stats_format}')
+                f'{split_stats_format}'
+            )
     if train_table_col_stats is not None:
         train_table_col_stats_format = train_table_col_stats.get('format')
         if train_table_col_stats_format != 'tt_train_table_col_stats_json':
             raise RuntimeError(
                 'diskgraph manifest train_table_col_stats format unsupported: '
-                f'{train_table_col_stats_format}')
+                f'{train_table_col_stats_format}'
+            )
 
     parsed_stats = parse_stats_artifact(stats_path)
     parsed_split_stats = (
         parse_split_stats_artifact(split_stats_path)
-        if isinstance(split_stats_path, str) else None
+        if isinstance(split_stats_path, str)
+        else None
     )
     parsed_train_table_col_stats = (
         parse_train_table_col_stats_artifact(train_table_col_stats_path)
-        if isinstance(train_table_col_stats_path, str) else None
+        if isinstance(train_table_col_stats_path, str)
+        else None
     )
     manifest_row_count = manifest.get('row_count')
-    if (isinstance(manifest_row_count, bool)
-            or not isinstance(manifest_row_count, int)
-            or manifest_row_count < 0):
-        raise RuntimeError(
-            'diskgraph manifest row_count must be a non-negative int')
+    if (
+        isinstance(manifest_row_count, bool)
+        or not isinstance(manifest_row_count, int)
+        or manifest_row_count < 0
+    ):
+        raise RuntimeError('diskgraph manifest row_count must be a non-negative int')
     if parsed_stats['num_total_rows'] != manifest_row_count:
-        raise RuntimeError(
-            'stats num_total_rows mismatch with manifest row_count')
+        raise RuntimeError('stats num_total_rows mismatch with manifest row_count')
 
     if train_table_row_count != manifest_row_count:
-        raise RuntimeError(
-            'train_table row_count mismatch with manifest row_count')
+        raise RuntimeError('train_table row_count mismatch with manifest row_count')
     _validate_train_table_dataset(train_table)
 
     checksums = manifest.get('checksums')
@@ -787,32 +857,46 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
     expected_train_table_edges = checksums.get('train_table_edges_sha256')
     if not isinstance(expected_stats, str) or not expected_stats:
         raise RuntimeError('diskgraph manifest stats checksum missing')
-    if split_stats is not None and not (isinstance(expected_split_stats, str) and expected_split_stats):
+    if split_stats is not None and not (
+        isinstance(expected_split_stats, str) and expected_split_stats
+    ):
         raise RuntimeError('diskgraph manifest split_stats checksum missing')
     if train_table_col_stats is not None and not (
-            isinstance(expected_train_table_col_stats, str)
-            and expected_train_table_col_stats):
+        isinstance(expected_train_table_col_stats, str)
+        and expected_train_table_col_stats
+    ):
         raise RuntimeError('diskgraph manifest train_table_col_stats checksum missing')
-    parsed_reverse_edges = parsed_train_table_edges.get('reverse_edges') if isinstance(
-        parsed_train_table_edges, dict) else None
-    has_reverse_edges = isinstance(parsed_reverse_edges, dict) and len(parsed_reverse_edges) > 0
+    parsed_reverse_edges = (
+        parsed_train_table_edges.get('reverse_edges')
+        if isinstance(parsed_train_table_edges, dict)
+        else None
+    )
+    has_reverse_edges = (
+        isinstance(parsed_reverse_edges, dict) and len(parsed_reverse_edges) > 0
+    )
     if has_reverse_edges and not (
-            isinstance(expected_train_table_edges, str)
-            and expected_train_table_edges):
+        isinstance(expected_train_table_edges, str) and expected_train_table_edges
+    ):
         raise RuntimeError('diskgraph manifest train_table_edges checksum missing')
 
     actual_stats = _sha256_file(stats_path)
-    actual_split_stats = _sha256_file(split_stats_path) if isinstance(split_stats_path, str) else None
+    actual_split_stats = (
+        _sha256_file(split_stats_path) if isinstance(split_stats_path, str) else None
+    )
     actual_train_table_col_stats = (
         _sha256_file(train_table_col_stats_path)
-        if isinstance(train_table_col_stats_path, str) else None)
+        if isinstance(train_table_col_stats_path, str)
+        else None
+    )
 
     if actual_stats != expected_stats:
         raise RuntimeError('diskgraph manifest stats checksum mismatch')
     if split_stats is not None and actual_split_stats != expected_split_stats:
         raise RuntimeError('diskgraph manifest split_stats checksum mismatch')
-    if (train_table_col_stats is not None
-            and actual_train_table_col_stats != expected_train_table_col_stats):
+    if (
+        train_table_col_stats is not None
+        and actual_train_table_col_stats != expected_train_table_col_stats
+    ):
         raise RuntimeError('diskgraph manifest train_table_col_stats checksum mismatch')
     if isinstance(parsed_train_table_edges, dict):
         reverse_edges = parsed_train_table_edges.get('reverse_edges')
@@ -824,7 +908,9 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
                 raise RuntimeError('train_table_edges artifact missing checksums map')
             expected_fkey_cols = edge_checksums.get('fkey_cols_sha256')
             if not isinstance(expected_fkey_cols, str) or not expected_fkey_cols:
-                raise RuntimeError('train_table_edges checksum missing fkey_cols_sha256')
+                raise RuntimeError(
+                    'train_table_edges checksum missing fkey_cols_sha256'
+                )
             fkey_cols_path = parsed_train_table_edges['fkey_cols']['path']
             if _sha256_path(fkey_cols_path) != expected_fkey_cols:
                 raise RuntimeError('train_table_edges fkey_cols checksum mismatch')
@@ -835,7 +921,10 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
                 if not isinstance(expected_mask, str) or not expected_mask:
                     raise RuntimeError('train_table_edges checksum missing mask_sha256')
                 mask_path = mask_payload.get('path')
-                if not isinstance(mask_path, str) or _sha256_path(mask_path) != expected_mask:
+                if (
+                    not isinstance(mask_path, str)
+                    or _sha256_path(mask_path) != expected_mask
+                ):
                     raise RuntimeError('train_table_edges mask checksum mismatch')
 
             for edge_key, edge_info in reverse_edges.items():
@@ -846,19 +935,28 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
                 expected_edge = edge_checksums.get(checksum_key)
                 if not isinstance(expected_edge, str) or not expected_edge:
                     raise RuntimeError(
-                        f'train_table_edges checksum missing {checksum_key}')
-                if not isinstance(edge_path, str) or _sha256_path(edge_path) != expected_edge:
+                        f'train_table_edges checksum missing {checksum_key}'
+                    )
+                if (
+                    not isinstance(edge_path, str)
+                    or _sha256_path(edge_path) != expected_edge
+                ):
                     raise RuntimeError(
-                        f'train_table_edges reverse edge checksum mismatch for {edge_key}')
+                        f'train_table_edges reverse edge checksum mismatch for {edge_key}'
+                    )
 
             edge_attrs = parsed_train_table_edges.get('edge_attrs')
             if isinstance(edge_attrs, dict):
                 edge_attrs_path = edge_attrs.get('path')
                 expected_edge_attrs = edge_checksums.get('edge_attrs_sha256')
                 if not isinstance(expected_edge_attrs, str) or not expected_edge_attrs:
-                    raise RuntimeError('train_table_edges checksum missing edge_attrs_sha256')
-                if (not isinstance(edge_attrs_path, str)
-                        or _sha256_path(edge_attrs_path) != expected_edge_attrs):
+                    raise RuntimeError(
+                        'train_table_edges checksum missing edge_attrs_sha256'
+                    )
+                if (
+                    not isinstance(edge_attrs_path, str)
+                    or _sha256_path(edge_attrs_path) != expected_edge_attrs
+                ):
                     raise RuntimeError('train_table_edges edge_attrs checksum mismatch')
 
     # Only legacy DiskGraph manifests carry a `split` section; TT-NG has none
@@ -872,16 +970,21 @@ def validate_artifact_bundle(manifest_path: str) -> dict[str, Any]:
             raise RuntimeError('diskgraph manifest has invalid split.path')
         if not fsutil.exists(split_path):
             raise RuntimeError(
-                f'diskgraph manifest references missing artifact: {split_path}')
+                f'diskgraph manifest references missing artifact: {split_path}'
+            )
         split_format = split.get('format')
         if split_format != 'split_assignment_row_stage_bin':
             raise RuntimeError(
-                f'diskgraph manifest split format unsupported: {split_format}')
+                f'diskgraph manifest split format unsupported: {split_format}'
+            )
         parsed_split = parse_split_assignment_artifact(split_path)
-        if (isinstance(manifest_row_count, int)
-                and parsed_split['row_count'] != manifest_row_count):
+        if (
+            isinstance(manifest_row_count, int)
+            and parsed_split['row_count'] != manifest_row_count
+        ):
             raise RuntimeError(
-                'split assignment row_count mismatch with manifest row_count')
+                'split assignment row_count mismatch with manifest row_count'
+            )
         expected_split = checksums.get('split_sha256')
         if not isinstance(expected_split, str) or not expected_split:
             raise RuntimeError('diskgraph manifest split checksum missing')

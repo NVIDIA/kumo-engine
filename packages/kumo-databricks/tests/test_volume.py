@@ -38,7 +38,7 @@ def volume_sink():
 def write(fs, path, body, piece=700):
     with fs.open_output_stream(path) as writer:
         for start in range(0, len(body), piece):
-            writer.write(body[start:start + piece])
+            writer.write(body[start : start + piece])
 
 
 def test_reads_cross_part_boundaries():
@@ -59,8 +59,10 @@ def test_sized_writes_stay_plain_up_to_a_part():
             assert reader.readall() == body
     assert volume.objects[f'{ROOT}/plain'] == BODY[:1000]
     assert f'{ROOT}/parts' not in volume.objects
-    assert any(path.startswith(f'{ROOT}/parts.chunks/')
-               and path.endswith('/_SUCCESS') for path in volume.objects)
+    assert any(
+        path.startswith(f'{ROOT}/parts.chunks/') and path.endswith('/_SUCCESS')
+        for path in volume.objects
+    )
 
 
 def test_unsized_writes_stay_plain_through_a_part():
@@ -76,8 +78,15 @@ def test_uploads_bound_the_sdk_part_buffers():
     fs, volume = filesystem(part_bytes=1000)
     calls = []
 
-    def upload(path, contents, *, overwrite, part_size=None,
-               use_parallel=True, parallelism=None):
+    def upload(
+        path,
+        contents,
+        *,
+        overwrite,
+        part_size=None,
+        use_parallel=True,
+        parallelism=None,
+    ):
         calls.append((part_size, parallelism))
         volume.objects[path] = contents.read()
 
@@ -108,7 +117,7 @@ def test_a_failed_upload_raises_without_the_signed_url():
     with pytest.raises(OSError) as raised:
         with open_sized(fs, f'{ROOT}/x', len(BODY)) as writer:
             for start in range(0, len(BODY), 64):
-                writer.write(BODY[start:start + 64])
+                writer.write(BODY[start : start + 64])
     assert 'Signature' not in str(raised.value)
     assert raised.value.__cause__ is None
 
@@ -146,12 +155,18 @@ def test_a_read_after_a_dropped_download_starts_where_asked():
 
 
 def test_directories_and_missing_paths():
-    fs, volume = filesystem({
-        f'{ROOT}/s/kumo_snapshot.json': b'{}',
-        f'{ROOT}/s/index/sub/b': b'de',
-    })
-    kinds = [info.type for info in fs.get_file_info(
-        [f'{ROOT}/s/kumo_snapshot.json', f'{ROOT}/s/index/', f'{ROOT}/s/no'])]
+    fs, volume = filesystem(
+        {
+            f'{ROOT}/s/kumo_snapshot.json': b'{}',
+            f'{ROOT}/s/index/sub/b': b'de',
+        }
+    )
+    kinds = [
+        info.type
+        for info in fs.get_file_info(
+            [f'{ROOT}/s/kumo_snapshot.json', f'{ROOT}/s/index/', f'{ROOT}/s/no']
+        )
+    ]
     assert kinds == [FileType.File, FileType.Directory, FileType.NotFound]
     with pytest.raises(FileNotFoundError):
         fs.open_input_stream(f'{ROOT}/s/no')
@@ -178,8 +193,13 @@ def test_sink_filesystem_only_takes_volume_paths():
     write(fs, f'{path}/x', b'1')
     assert volume.objects == {f'{path}/x': b'1'}
     assert sink.holds_files(connector, f'{ROOT}/exports/')
-    for bad in ('s3://bucket/x', '/Volumes/main/analytics', 'users_scores',
-                f'{ROOT}/../other/x', 'dbfs:/Volumes/main/analytics/v'):
+    for bad in (
+        's3://bucket/x',
+        '/Volumes/main/analytics',
+        'users_scores',
+        f'{ROOT}/../other/x',
+        'dbfs:/Volumes/main/analytics/v',
+    ):
         assert not sink.holds_files(connector, bad)
         with pytest.raises(ValueError, match='volume path'):
             sink.filesystem(connector, bad)
@@ -191,30 +211,33 @@ def test_bundle_publish_and_fetch_through_a_volume_path(tmp_path):
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'training-spec.json').write_text('{}')
     (bundle / 'model' / 'weights.pt').write_bytes(BODY)
-    published = sink.publish_model(SimpleNamespace(), str(bundle),
-                                   path=f'{ROOT}/models/b1')
+    published = sink.publish_model(
+        SimpleNamespace(), str(bundle), path=f'{ROOT}/models/b1'
+    )
     assert published.uri == f'{ROOT}/models/b1'
     assert volume.objects[f'{ROOT}/models/b1/model/weights.pt'] == BODY
     fetched = tmp_path / 'fetched'
     sink.fetch_model(SimpleNamespace(), str(fetched), path=f'{ROOT}/models/b1')
     assert (fetched / 'model' / 'weights.pt').read_bytes() == BODY
     with pytest.raises(ValueError, match='Nothing is published'):
-        sink.fetch_model(SimpleNamespace(), str(fetched),
-                         path=f'{ROOT}/models/none')
+        sink.fetch_model(SimpleNamespace(), str(fetched), path=f'{ROOT}/models/none')
 
 
 def test_predictions_and_frames_written_to_a_volume_path(tmp_path):
     sink, volume = volume_sink()
     part = tmp_path / 'part-0.parquet'
     pq.write_table(pa.table({'users': [1, 2], 'score': [0.1, 0.9]}), part)
-    written = sink.write_files(SimpleNamespace(), f'{ROOT}/predictions/',
-                               [str(part)], export_id='run-1')
+    written = sink.write_files(
+        SimpleNamespace(), f'{ROOT}/predictions/', [str(part)], export_id='run-1'
+    )
     assert written == f'{ROOT}/predictions/'
     names = {path.rsplit('/', 1)[-1] for path in volume.objects}
     assert {'part-0.parquet', '_SUCCESS'} <= names
     frame = pa.table({'users': [3]}).to_pandas()
-    assert sink.write_table(SimpleNamespace(), f'{ROOT}/one',
-                            frame) == f'{ROOT}/one.parquet'
+    assert (
+        sink.write_table(SimpleNamespace(), f'{ROOT}/one', frame)
+        == f'{ROOT}/one.parquet'
+    )
 
 
 def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
@@ -227,7 +250,6 @@ def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
 
     for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict, match='/predictions/'):
-            sink.preflight_write_files(SimpleNamespace(), target,
-                                       write_mode=mode)
+            sink.preflight_write_files(SimpleNamespace(), target, write_mode=mode)
     sink.preflight_write_files(SimpleNamespace(), f'{ROOT}/other/')
     sink.preflight_write_files(SimpleNamespace(), 'main.ml.scores')

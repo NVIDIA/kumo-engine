@@ -20,6 +20,7 @@ from rest.config.table_v2 import TableDefinition
 @dataclass(frozen=True)
 class DiskgraphIngestArgs:
     """Daemon ``ensure_snapshot`` inputs."""
+
     graph_definition: GraphDefinition
     graph_display_name: str
     data_persist_dir: str

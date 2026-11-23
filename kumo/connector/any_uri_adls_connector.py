@@ -13,8 +13,9 @@ from kumo.utils import to_dataclass
 
 class AnyURIADLSConnector(AnyURIFileConnector):
     def __init__(self, name: str):
-        super().__init__(name, normalizer=self._normalize_source_uri,
-                         provider_name='ADLS')
+        super().__init__(
+            name, normalizer=self._normalize_source_uri, provider_name='ADLS'
+        )
 
     def _normalize_source_uri(self, table_name: str) -> str:
         uri = normalize_adls_source_uri(table_name)
@@ -24,11 +25,10 @@ class AnyURIADLSConnector(AnyURIFileConnector):
             raise ValueError('Custom ADLS source requires an ADLS URI')
         if expected and parsed.endpoint_suffix != expected:
             raise ValueError(
-                'ADLS source endpoint does not match the selected identity '
-                'cloud')
+                'ADLS source endpoint does not match the selected identity cloud'
+            )
         return uri
 
 
-AnyURIADLSConnectorConfig = to_dataclass(AnyURIADLSConnector,
-                                         base_cls=ConnectorConfig)
+AnyURIADLSConnectorConfig = to_dataclass(AnyURIADLSConnector, base_cls=ConnectorConfig)
 register(AnyURIADLSConnector, AnyURIADLSConnectorConfig, group='connector')

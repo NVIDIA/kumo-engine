@@ -8,6 +8,7 @@ Extracted into a leaf module so both ``rest.config.jobs`` and
 importing one another. This breaks the jobs <-> batch_prediction_job import
 cycle: the shared low-level output types now live below both modules.
 """
+
 import copy
 import os
 from typing import Optional, Union
@@ -21,20 +22,19 @@ from io_utils import fsutil, kumo_dataclass
 from rest.config.connector import ConnectorResourceConfigDB
 from rest.config.file_type import FileType
 from statedb.config import jobs as serialized_jobs
-from statedb.config.jobs import \
-    ADLSPredictionOutput as SerializedADLSPredictionOutput
-from statedb.config.jobs import \
-    BigQueryPredictionOutput as SerializedBigQueryPredictionOutput
-from statedb.config.jobs import \
-    DatabricksPredictionOutput as SerializedDatabricksPredictionOutput
-from statedb.config.jobs import \
-    GCSPredictionOutput as SerializedGCSPredictionOutput
-from statedb.config.jobs import \
-    LocalPredictionOutput as SerializedLocalPredictionOutput
-from statedb.config.jobs import \
-    S3PredictionOutput as SerializedS3PredictionOutput
-from statedb.config.jobs import \
-    SnowflakePredictionOutput as SerializedSnowflakePredictionOutput
+from statedb.config.jobs import ADLSPredictionOutput as SerializedADLSPredictionOutput
+from statedb.config.jobs import (
+    BigQueryPredictionOutput as SerializedBigQueryPredictionOutput,
+)
+from statedb.config.jobs import (
+    DatabricksPredictionOutput as SerializedDatabricksPredictionOutput,
+)
+from statedb.config.jobs import GCSPredictionOutput as SerializedGCSPredictionOutput
+from statedb.config.jobs import LocalPredictionOutput as SerializedLocalPredictionOutput
+from statedb.config.jobs import S3PredictionOutput as SerializedS3PredictionOutput
+from statedb.config.jobs import (
+    SnowflakePredictionOutput as SerializedSnowflakePredictionOutput,
+)
 
 PredictionStorageType = serialized_jobs.PredictionStorageType
 
@@ -111,16 +111,16 @@ class S3PredictionOutput(SerializedS3PredictionOutput):
         excessively large file sizes. is_partitioned False is still supported
         through the UI for convenience, where reliability is less of a concern.
         """
-        return _require_partitioned_file_output(self,
-                                                fsutil.is_s3(self.file_path))
+        return _require_partitioned_file_output(self, fsutil.is_s3(self.file_path))
 
     @property
     def directory_name(self) -> str:
         return _file_output_directory(self.file_path)
 
 
-def _validated_prediction_file_type(file_type: Optional[FileType],
-                                    file_path: str) -> FileType:
+def _validated_prediction_file_type(
+    file_type: Optional[FileType], file_path: str
+) -> FileType:
     if file_type is not None:
         return file_type
     try:
@@ -140,8 +140,7 @@ def _require_partitioned_file_output(output, is_provider_path: bool):
 
 
 def _file_output_directory(file_path: str) -> str:
-    return file_path if file_path.endswith(
-        '/') else os.path.dirname(file_path) + '/'
+    return file_path if file_path.endswith('/') else os.path.dirname(file_path) + '/'
 
 
 @kumo_dataclass
@@ -178,8 +177,7 @@ class GCSPredictionOutput(SerializedGCSPredictionOutput):
         excessively large file sizes. is_partitioned False is still supported
         through the UI for convenience, where reliability is less of a concern.
         """
-        return _require_partitioned_file_output(self,
-                                                fsutil.is_gcs(self.file_path))
+        return _require_partitioned_file_output(self, fsutil.is_gcs(self.file_path))
 
     @property
     def directory_name(self) -> str:
@@ -214,8 +212,8 @@ class ADLSPredictionOutput(SerializedADLSPredictionOutput):
     def require_partitioned(self) -> 'ADLSPredictionOutput':
         """Require directory outputs for ADLS paths unless a file is explicit."""
         return _require_partitioned_file_output(
-            self,
-            fsutil.get_scheme(self.file_path) in ('abfss', 'abfs'))
+            self, fsutil.get_scheme(self.file_path) in ('abfss', 'abfs')
+        )
 
     @property
     def directory_name(self) -> str:
@@ -227,14 +225,18 @@ class LocalPredictionOutput(SerializedLocalPredictionOutput):
     pass
 
 
-PredictionOutputConfig = Annotated[Union[BigQueryPredictionOutput,
-                                         SnowflakePredictionOutput,
-                                         DatabricksPredictionOutput,
-                                         S3PredictionOutput,
-                                         GCSPredictionOutput,
-                                         ADLSPredictionOutput,
-                                         LocalPredictionOutput],
-                                   Field(discriminator='storage_type')]
+PredictionOutputConfig = Annotated[
+    Union[
+        BigQueryPredictionOutput,
+        SnowflakePredictionOutput,
+        DatabricksPredictionOutput,
+        S3PredictionOutput,
+        GCSPredictionOutput,
+        ADLSPredictionOutput,
+        LocalPredictionOutput,
+    ],
+    Field(discriminator='storage_type'),
+]
 
 validate_prediction_outputs = serialized_jobs.validate_prediction_outputs
 
@@ -254,20 +256,22 @@ def normalize_object_prediction_output(
     if isinstance(output, S3PredictionOutput):
         if connector_config.type != data_source_api.ConnectorType.S3:
             raise ValueError('S3 prediction output requires an S3 connector')
-        output.file_path = normalize_file_destination(connector_config,
-                                                      output.file_path)
+        output.file_path = normalize_file_destination(
+            connector_config, output.file_path
+        )
         return
     if isinstance(output, GCSPredictionOutput):
         if connector_config.type != data_source_api.ConnectorType.GCS:
             raise ValueError('GCS prediction output requires a GCS connector')
-        output.file_path = normalize_file_destination(connector_config,
-                                                      output.file_path)
+        output.file_path = normalize_file_destination(
+            connector_config, output.file_path
+        )
         return
     if isinstance(output, ADLSPredictionOutput):
         if connector_config.type != data_source_api.ConnectorType.ADLS:
-            raise ValueError(
-                'ADLS prediction output requires an ADLS connector')
-        output.file_path = normalize_file_destination(connector_config,
-                                                      output.file_path)
+            raise ValueError('ADLS prediction output requires an ADLS connector')
+        output.file_path = normalize_file_destination(
+            connector_config, output.file_path
+        )
         return
     raise TypeError(f'Unsupported object prediction output: {type(output)}')

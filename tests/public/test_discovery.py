@@ -11,18 +11,23 @@ import pytest
 from scripts import test_public_connectors
 
 
-@pytest.mark.parametrize('keyword, expected',
-                         [(None, 1), ('keep', 0), ('fail', 1), ('missing', 5)])
+@pytest.mark.parametrize(
+    'keyword, expected', [(None, 1), ('keep', 0), ('fail', 1), ('missing', 5)]
+)
 def test_focused_file_preserves_fixtures_and_exit_codes(
-        tmp_path, monkeypatch, keyword, expected):
+    tmp_path, monkeypatch, keyword, expected
+):
     (tmp_path / 'conftest.py').write_text(
-        'import pytest\n@pytest.fixture\ndef value(): return 42\n')
+        'import pytest\n@pytest.fixture\ndef value(): return 42\n'
+    )
     selected = tmp_path / 'test_selected.py'
-    selected.write_text('def test_keep(value): assert value == 42\n'
-                        'def test_fail(): assert False\n')
+    selected.write_text(
+        'def test_keep(value): assert value == 42\ndef test_fail(): assert False\n'
+    )
     (tmp_path / 'test_other.py').write_text(
-        'raise RuntimeError("Unselected file was imported")\n')
-    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(tmp_path), ))
+        'raise RuntimeError("Unselected file was imported")\n'
+    )
+    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(tmp_path),))
     arguments = ['test_public_connectors.py', '--test-file', str(selected)]
     if keyword is not None:
         arguments += ['-k', keyword]
@@ -36,14 +41,17 @@ def test_focused_file_preserves_fixtures_and_exit_codes(
 
 def test_keyword_filter_keeps_cloud_modules_unloaded(tmp_path, monkeypatch):
     (tmp_path / 'test_local.py').write_text(
-        'def test_keep(): assert True\ndef test_drop(): assert False\n')
+        'def test_keep(): assert True\ndef test_drop(): assert False\n'
+    )
     for tier in ('live', 'native'):
         (tmp_path / tier).mkdir()
         (tmp_path / tier / 'test_cloud.py').write_text(
-            'raise RuntimeError("Excluded module was imported")\n')
-    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(tmp_path), ))
-    monkeypatch.setattr(sys, 'argv',
-                        ['test_public_connectors.py', '-k', 'keep and not drop'])
+            'raise RuntimeError("Excluded module was imported")\n'
+        )
+    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(tmp_path),))
+    monkeypatch.setattr(
+        sys, 'argv', ['test_public_connectors.py', '-k', 'keep and not drop']
+    )
     try:
         result = test_public_connectors.main()
     except SystemExit as error:
@@ -52,8 +60,9 @@ def test_keyword_filter_keeps_cloud_modules_unloaded(tmp_path, monkeypatch):
 
 
 def test_focused_reader_run_requires_one_suite(monkeypatch):
-    monkeypatch.setattr(sys, 'argv',
-                        ['test_public_connectors.py', '--suite', 'all', '-k', 'keep'])
+    monkeypatch.setattr(
+        sys, 'argv', ['test_public_connectors.py', '--suite', 'all', '-k', 'keep']
+    )
     with patch.object(test_public_connectors.subprocess, 'run') as run:
         with pytest.raises(SystemExit) as error:
             test_public_connectors.main()
@@ -61,8 +70,9 @@ def test_focused_reader_run_requires_one_suite(monkeypatch):
         run.assert_not_called()
 
 
-@pytest.mark.parametrize('case',
-                         ['live', 'native', 'symlink', 'outside', 'directory', 'missing'])
+@pytest.mark.parametrize(
+    'case', ['live', 'native', 'symlink', 'outside', 'directory', 'missing']
+)
 def test_focused_file_cannot_select_excluded_paths(tmp_path, monkeypatch, case):
     suite = tmp_path / 'suite'
     suite.mkdir()
@@ -76,12 +86,18 @@ def test_focused_file_cannot_select_excluded_paths(tmp_path, monkeypatch, case):
     alias.symlink_to(cloud)
     outside = tmp_path / 'test_outside.py'
     outside.write_text('raise RuntimeError("Outside code must not be imported")\n')
-    target = {'live': cloud, 'native': native, 'symlink': alias,
-              'outside': outside, 'directory': suite,
-              'missing': suite / 'test_missing.py'}[case]
-    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(suite), ))
-    monkeypatch.setattr(sys, 'argv',
-                        ['test_public_connectors.py', '--test-file', str(target)])
+    target = {
+        'live': cloud,
+        'native': native,
+        'symlink': alias,
+        'outside': outside,
+        'directory': suite,
+        'missing': suite / 'test_missing.py',
+    }[case]
+    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(suite),))
+    monkeypatch.setattr(
+        sys, 'argv', ['test_public_connectors.py', '--test-file', str(target)]
+    )
     with patch.object(test_public_connectors.subprocess, 'run') as run:
         with pytest.raises(SystemExit) as error:
             test_public_connectors.main()
@@ -90,17 +106,21 @@ def test_focused_file_cannot_select_excluded_paths(tmp_path, monkeypatch, case):
 
 
 def test_new_test_runs_with_local_setup_and_cloud_files_stay_unloaded(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     suite = tmp_path / 'tests'
     suite.mkdir()
     (suite / 'conftest.py').write_text(
-        'import pytest\n@pytest.fixture\ndef local_value(): return 42\n')
+        'import pytest\n@pytest.fixture\ndef local_value(): return 42\n'
+    )
     (suite / 'test_existing.py').write_text(
-        'def test_existing(local_value): assert local_value == 42\n')
+        'def test_existing(local_value): assert local_value == 42\n'
+    )
     live = suite / 'live'
     live.mkdir()
     (live / 'test_cloud.py').write_text(
-        'raise RuntimeError("Live code must not be imported")\n')
+        'raise RuntimeError("Live code must not be imported")\n'
+    )
     monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(suite),))
     monkeypatch.setattr(sys, 'argv', ['test_public_connectors.py'])
     assert test_public_connectors.main() == 0
@@ -114,9 +134,10 @@ def test_new_test_runs_with_local_setup_and_cloud_files_stay_unloaded(
 
 
 def test_loopback_can_run_first_without_enabling_external_connections(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     probe = tmp_path / 'test_socket_policy.py'
-    probe.write_text('''
+    probe.write_text("""
 import socket
 import pytest
 import pytest_socket
@@ -141,7 +162,7 @@ def test_first_loopback():
 def test_unmarked_still_blocks_sockets():
     with pytest.raises(pytest_socket.SocketBlockedError):
         socket.socket()
-''')
-    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(tmp_path), ))
+""")
+    monkeypatch.setitem(test_public_connectors.SUITES, 'csv', (str(tmp_path),))
     monkeypatch.setattr(sys, 'argv', ['test_public_connectors.py'])
     assert test_public_connectors.main() == 0

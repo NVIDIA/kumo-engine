@@ -6,7 +6,6 @@ import json
 import os
 import os.path as osp
 import shutil
-from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,6 +30,7 @@ from rest.backends.ml_backend.workflows.artifact_export_workflow import (
 from rest.config.artifact_export import ArtifactExportInput
 from rest.config.batch_prediction_job import OutputArtifactStats
 from rest.config.file_type import FileType
+from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 
 _TABLE = TrainingTableArtifactType.FULL_TRAIN_TABLE
 _WORKFLOW = 'rest.backends.ml_backend.workflows.artifact_export_workflow.workflow'
@@ -38,13 +38,16 @@ _STAGES = {'train': [[1, 2], [3]], 'val': [[4]], 'test': [[5, 6]]}
 
 
 def _part(entities):
-    return pa.table({
-        'ENTITY1': pa.array(entities, pa.int64()),
-        'TARGET1': pa.array([float(e) for e in entities], pa.float64()),
-        'TIMESTAMP': pa.array([e * 10 for e in entities], pa.int64()),
-        'exclude_target_keys': pa.array([[e] for e in entities],
-                                        pa.list_(pa.int64())),
-    })
+    return pa.table(
+        {
+            'ENTITY1': pa.array(entities, pa.int64()),
+            'TARGET1': pa.array([float(e) for e in entities], pa.float64()),
+            'TIMESTAMP': pa.array([e * 10 for e in entities], pa.int64()),
+            'exclude_target_keys': pa.array(
+                [[e] for e in entities], pa.list_(pa.int64())
+            ),
+        }
+    )
 
 
 @pytest.fixture
@@ -71,8 +74,7 @@ def layout(tmp_path):
 
 def _rows(path):
     table = pq.read_table(path)
-    return sorted(
-        zip(table['ENTITY1'].to_pylist(), table['SPLIT'].to_pylist()))
+    return sorted(zip(table['ENTITY1'].to_pylist(), table['SPLIT'].to_pylist()))
 
 
 def _export_dir(root):
@@ -80,8 +82,7 @@ def _export_dir(root):
 
 
 def _prepare(bundle):
-    return pio.prepare_training_table_export.__wrapped__(
-        osp.join(bundle, 'tt.parquet'))
+    return pio.prepare_training_table_export.__wrapped__(osp.join(bundle, 'tt.parquet'))
 
 
 def test_hosted_export_rows_equal_engine_export(layout, tmp_path):
@@ -92,7 +93,9 @@ def test_hosted_export_rows_equal_engine_export(layout, tmp_path):
     assert osp.basename(out).startswith('tt-export-v1-')
     assert pa.concat_tables([pq.read_table(f) for f in engine]).equals(
         pa.concat_tables(
-            [pq.read_table(osp.join(out, f)) for f in sorted(os.listdir(out))]))
+            [pq.read_table(osp.join(out, f)) for f in sorted(os.listdir(out))]
+        )
+    )
     assert _rows(out) == [(1, 0), (2, 0), (3, 0), (4, 1), (5, 2), (6, 2)]
     assert 'exclude_target_keys' not in pq.read_table(out).column_names
 
@@ -145,8 +148,12 @@ def _supplied(tmp_path, table, drop_row=False):
 
 def _validate(bundle, supplied, split_col_name='SPLIT'):
     return _validate_supplied_train_table(
-        osp.join(bundle, 'tt.parquet'), supplied, 'WEIGHT',
-        TaskType.BINARY_CLASSIFICATION, split_col_name=split_col_name)
+        osp.join(bundle, 'tt.parquet'),
+        supplied,
+        'WEIGHT',
+        TaskType.BINARY_CLASSIFICATION,
+        split_col_name=split_col_name,
+    )
 
 
 def test_validation_compares_against_export_rows(layout, tmp_path):
@@ -163,8 +170,7 @@ def test_validation_rejects_missing_export_row(layout, tmp_path):
     assert 'Row count mismatch' in [e.title for e in response.errors]
 
 
-def test_validation_without_split_compares_against_tt_parquet(
-        layout, tmp_path):
+def test_validation_without_split_compares_against_tt_parquet(layout, tmp_path):
     _, bundle = layout
     tt = pq.read_table(osp.join(bundle, 'tt.parquet'))
     assert tt.num_rows != 6
@@ -180,9 +186,15 @@ def test_validation_honors_configured_split_column(layout, tmp_path):
     table = pq.read_table(_prepare(bundle)).rename_columns({'SPLIT': 'stage'})
     supplied = _supplied(tmp_path, table)
     assert _validate(bundle, supplied, 'stage').ok
-    assert missing_source_column_errors(
-        table.column_names + ['WEIGHT'], osp.join(bundle, 'tt.parquet'),
-        'WEIGHT', 'stage') == []
+    assert (
+        missing_source_column_errors(
+            table.column_names + ['WEIGHT'],
+            osp.join(bundle, 'tt.parquet'),
+            'WEIGHT',
+            'stage',
+        )
+        == []
+    )
 
 
 def test_unrelated_split_column_keeps_tt_parquet_reference(layout, tmp_path):
@@ -198,23 +210,34 @@ async def _extensive(bundle, split_col, num_rows):
         TableStatType.NUM_ROWS: SimpleNamespace(value=num_rows)
     }
     names = ['ENTITY1', 'TIMESTAMP', 'TARGET1', 'WEIGHT'] + (
-        [split_col] if split_col else [])
-    metadata = SimpleNamespace(
-        cols=[SimpleNamespace(name=name) for name in names])
-    source = S3SourceTable(source={'mode': 'relative', 'path': 'weighted'},
-                           connector_id='connector_' + 'a' * 32,
-                           file_type=FileType.PARQUET,
-                           data_source_type=DataSourceType.S3)
+        [split_col] if split_col else []
+    )
+    metadata = SimpleNamespace(cols=[SimpleNamespace(name=name) for name in names])
+    source = S3SourceTable(
+        source={'mode': 'relative', 'path': 'weighted'},
+        connector_id='connector_' + 'a' * 32,
+        file_type=FileType.PARQUET,
+        data_source_type=DataSourceType.S3,
+    )
     module = 'rest.backends.data_backend.activities.custom_table_validation'
-    with patch(f'{module}.get_connector_from_spec_async',
-               new=AsyncMock(return_value=connector)), \
-            patch(f'{module}._get_source_table_metadata',
-                  new=SimpleNamespace(coroutine=AsyncMock(
-                      return_value=metadata))):
-        return await (
-            custom_table_validation.validate_custom_train_table_activity(
-                MagicMock(), source, 'WEIGHT',
-                osp.join(bundle, 'tt.parquet'), True, split_col))
+    with (
+        patch(
+            f'{module}.get_connector_from_spec_async',
+            new=AsyncMock(return_value=connector),
+        ),
+        patch(
+            f'{module}._get_source_table_metadata',
+            new=SimpleNamespace(coroutine=AsyncMock(return_value=metadata)),
+        ),
+    ):
+        return await custom_table_validation.validate_custom_train_table_activity(
+            MagicMock(),
+            source,
+            'WEIGHT',
+            osp.join(bundle, 'tt.parquet'),
+            True,
+            split_col,
+        )
 
 
 @pytest.mark.asyncio
@@ -228,8 +251,9 @@ async def test_extensive_validation_counts_exported_rows(layout):
 
 
 def _stats(kind, path):
-    return OutputArtifactStats(artifact_type=kind, num_rows=1, num_cols=1,
-                               size_bytes=1, output_path=path)
+    return OutputArtifactStats(
+        artifact_type=kind, num_rows=1, num_cols=1, size_bytes=1, output_path=path
+    )
 
 
 @pytest.mark.asyncio
@@ -246,14 +270,15 @@ async def test_workflow_exports_training_table_before_stats_and_write():
         return []
 
     input = ArtifactExportInput(
-        artifact_paths={_TABLE: '/root/_bundles/tt-1/tt.parquet'},
-        output_config={})
+        artifact_paths={_TABLE: '/root/_bundles/tt-1/tt.parquet'}, output_config={}
+    )
     with patch(f'{_WORKFLOW}.execute_activity', new=execute_activity):
         await ArtifactExportWorkflow()._run(input)
 
     assert [name for name, _ in calls] == [
-        'prepare_training_table_export', 'get_artifact_stats',
-        'write_artifacts_to_customer'
+        'prepare_training_table_export',
+        'get_artifact_stats',
+        'write_artifacts_to_customer',
     ]
     assert calls[0][1] == ['/root/_bundles/tt-1/tt.parquet']
     assert calls[1][1][0] == {_TABLE: exported}

@@ -53,26 +53,28 @@ def get_tf_and_col_encoder_dict() -> tuple[TensorFrame, dict[str, Encoder]]:
     feat_dict = {
         numerical: torch.randn(num_rows, 3),
         categorical: torch.arange(num_rows).unsqueeze(1).repeat(1, 2),
-        timestamp: torch.stack([
-            torch.randint(0, 60, (num_rows, 1)),
-            torch.randint(0, 24, (num_rows, 1)),
-            torch.randint(1990, 2023, (num_rows, 1)),
-            torch.randint(0, 7, (num_rows, 1)),
-            torch.randint(0, 28, (num_rows, 1)),
-            torch.randint(0, 365, (num_rows, 1)),
-            torch.randint(28, 31, (num_rows, 1)),
-            torch.randint(365, 366, (num_rows, 1)),
-            torch.randint(52, 53, (num_rows, 1)),
-            torch.randint(0, 12, (num_rows, 1)),
-            torch.randint(0, 52, (num_rows, 1)),
-            torch.randint(0, 10, (num_rows, 1)),
-            torch.randint(0, 10, (num_rows, 1)),
-            torch.randint(0, 10, (num_rows, 1)),
-            torch.randint(0, 10, (num_rows, 1)),
-            torch.randint(0, 1000000000, (num_rows, 1)),
-        ], dim=-1),
-        sequence: MultiEmbeddingTensor.from_tensor_list(
-            [torch.randn(num_rows, 11)]),
+        timestamp: torch.stack(
+            [
+                torch.randint(0, 60, (num_rows, 1)),
+                torch.randint(0, 24, (num_rows, 1)),
+                torch.randint(1990, 2023, (num_rows, 1)),
+                torch.randint(0, 7, (num_rows, 1)),
+                torch.randint(0, 28, (num_rows, 1)),
+                torch.randint(0, 365, (num_rows, 1)),
+                torch.randint(28, 31, (num_rows, 1)),
+                torch.randint(365, 366, (num_rows, 1)),
+                torch.randint(52, 53, (num_rows, 1)),
+                torch.randint(0, 12, (num_rows, 1)),
+                torch.randint(0, 52, (num_rows, 1)),
+                torch.randint(0, 10, (num_rows, 1)),
+                torch.randint(0, 10, (num_rows, 1)),
+                torch.randint(0, 10, (num_rows, 1)),
+                torch.randint(0, 10, (num_rows, 1)),
+                torch.randint(0, 1000000000, (num_rows, 1)),
+            ],
+            dim=-1,
+        ),
+        sequence: MultiEmbeddingTensor.from_tensor_list([torch.randn(num_rows, 11)]),
     }
     tf = TensorFrame(
         feat_dict=feat_dict,
@@ -124,8 +126,7 @@ def get_tf_and_col_encoder_dict() -> tuple[TensorFrame, dict[str, Encoder]]:
 
 
 def _rhs_lookup_model(index_map: pd.DataFrame):
-    num_rhs_nodes = (int(index_map[NODE_INDEX_COLUMN].max()) +
-                     1 if len(index_map) else 0)
+    num_rhs_nodes = int(index_map[NODE_INDEX_COLUMN].max()) + 1 if len(index_map) else 0
     return ShallowRHSLinkGNNLightningModule(
         encoder=HeteroTensorFrameEncoder(
             table_encoder_dict={'RHS': {}},
@@ -138,8 +139,9 @@ def _rhs_lookup_model(index_map: pd.DataFrame):
             num_mp_layers=0,
             metadata=(['LHS', 'RHS'], []),
         ),
-        head=LinkPredHead(in_channels=2, embedding_dim=2,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=2, embedding_dim=2, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -156,28 +158,33 @@ def test_ttng_rhs_sparse_canonical_ids_filter_static_mips() -> None:
     )
     model = _rhs_lookup_model(index_map)
     model.task_type = TaskType.STATIC_LINK_PREDICTION
-    model.register_buffer('canonical_rhs_node_idx', torch.tensor([0, 2, 4]),
-                          persistent=False)
+    model.register_buffer(
+        'canonical_rhs_node_idx', torch.tensor([0, 2, 4]), persistent=False
+    )
 
     model.on_evaluation_start(TrainingStage.VAL)
 
     assert model.valid_rhs_node_idx.tolist() == [0, 2, 4]
-    assert model._canonical_rhs_node_ids(
-        model.device).data_ptr() == model.canonical_rhs_node_idx.data_ptr()
+    assert (
+        model._canonical_rhs_node_ids(model.device).data_ptr()
+        == model.canonical_rhs_node_idx.data_ptr()
+    )
     assert model.rhs_embedding().shape == (3, 2)
     assert model._mips_index.num_keys == 3
 
 
 def test_ttng_rhs_temporal_validity_intersects_canonical_ids() -> None:
     model = _rhs_lookup_model(_ttng_rhs_index(['a', 'b', 'c', 'd', 'e']))
-    model.register_buffer('canonical_rhs_node_idx', torch.tensor([0, 2, 4]),
-                          persistent=False)
+    model.register_buffer(
+        'canonical_rhs_node_idx', torch.tensor([0, 2, 4]), persistent=False
+    )
     lp_train_table = SimpleNamespace(
         valid_rhs_idx_dict={1: torch.tensor([1, 2, 4])},
         get_valid_rhs_idx=lambda _seed_time: torch.tensor([1, 2, 4]),
     )
-    model._trainer = SimpleNamespace(datamodule=SimpleNamespace(
-        lp_train_table=lp_train_table))
+    model._trainer = SimpleNamespace(
+        datamodule=SimpleNamespace(lp_train_table=lp_train_table)
+    )
 
     with patch.object(torch, 'isin', side_effect=AssertionError):
         valid = model._get_valid_rhs_idx_for_seed_time(1)
@@ -192,8 +199,9 @@ def test_temporal_batch_takes_valid_rhs_at_its_earliest_anchor() -> None:
         valid_rhs_idx_dict={},
         get_valid_rhs_idx=Mock(return_value=torch.tensor([0, 1, 2])),
     )
-    model._trainer = SimpleNamespace(datamodule=SimpleNamespace(
-        lp_train_table=lp_train_table))
+    model._trainer = SimpleNamespace(
+        datamodule=SimpleNamespace(lp_train_table=lp_train_table)
+    )
     batch = HeteroData()
     batch['LHS'].seed_time = torch.tensor([1_500, 1_250, 1_999])
 
@@ -212,8 +220,9 @@ def test_evaluation_end_restores_canonical_rhs_features_for_training() -> None:
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=2, num_mp_layers=0),
-        head=LinkPredHead(in_channels=2, embedding_dim=2,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=2, embedding_dim=2, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.STATIC_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -221,8 +230,7 @@ def test_evaluation_end_restores_canonical_rhs_features_for_training() -> None:
         rhs_emb_mode=RHSEmbeddingMode.FEATURE,
     )
     canonical = torch.tensor([0, 2])
-    model.register_buffer('canonical_rhs_node_idx', canonical,
-                          persistent=False)
+    model.register_buffer('canonical_rhs_node_idx', canonical, persistent=False)
 
     class _FeatureStore:
         def __getitem__(self, key):
@@ -238,8 +246,9 @@ def test_evaluation_end_restores_canonical_rhs_features_for_training() -> None:
 
     with (
         patch.object(BaseLinkLightningModule, 'evaluation_epoch_end'),
-        patch.object(type(model), 'datamodule', new_callable=PropertyMock)
-        as datamodule,
+        patch.object(
+            type(model), 'datamodule', new_callable=PropertyMock
+        ) as datamodule,
     ):
         datamodule.return_value = SimpleNamespace(feature_store=feature_store)
         model.evaluation_epoch_end(TrainingStage.VAL, [])
@@ -260,7 +269,8 @@ def _ttng_rhs_index(keys: list[str]) -> pd.DataFrame:
 def test_ttng_rhs_checkpoint_reorders_by_raw_primary_key() -> None:
     old_model = _rhs_lookup_model(_ttng_rhs_index(['a', 'b']))
     old_model.rhs_embedding.lookup_embedding.weight.data.copy_(
-        torch.tensor([[1.0, 10.0], [2.0, 20.0]]))
+        torch.tensor([[1.0, 10.0], [2.0, 20.0]])
+    )
     state = old_model.state_dict()
 
     new_index = _ttng_rhs_index(['b', 'c', 'a'])
@@ -274,8 +284,7 @@ def test_ttng_rhs_checkpoint_reorders_by_raw_primary_key() -> None:
     assert torch.equal(weight[1], weight[[0, 2]].mean(dim=0))
 
 
-def test_ttng_rhs_checkpoint_reorders_decimal_primary_keys_and_sparse_ids(
-) -> None:
+def test_ttng_rhs_checkpoint_reorders_decimal_primary_keys_and_sparse_ids() -> None:
     old_index = pd.DataFrame(
         {NODE_INDEX_COLUMN: [0, 2, 5]},
         index=pd.Index(
@@ -306,7 +315,14 @@ def test_ttng_rhs_checkpoint_reorders_decimal_primary_keys_and_sparse_ids(
     assert torch.equal(weight[7], old_weight[0])
     assert torch.equal(weight[4], expected_mean)
     assert new_model.rhs_embedding.lookup_embedding.mask.tolist() == [
-        True, False, True, True, True, True, True, False
+        True,
+        False,
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
     ]
 
 
@@ -321,8 +337,8 @@ def test_ttng_rhs_checkpoint_reorders_decimal_primary_keys_and_sparse_ids(
     ],
 )
 def test_ttng_rhs_checkpoint_reorders_sparse_optimizer_state(
-        tmp_path: Path, old_keys: list[object],
-        new_keys: list[object]) -> None:
+    tmp_path: Path, old_keys: list[object], new_keys: list[object]
+) -> None:
     old_index = pd.DataFrame(
         {NODE_INDEX_COLUMN: [0, 2, 4]},
         index=pd.Index(old_keys, name=TTNG_RHS_PRIMARY_KEY_INDEX_NAME),
@@ -346,10 +362,10 @@ def test_ttng_rhs_checkpoint_reorders_sparse_optimizer_state(
     checkpoint_path = tmp_path / 'sparse-rhs.ckpt'
     torch.save(
         {
-            'state_dict':
-            old_model.state_dict(),
-            'optimizer_states':
-            [config['optimizer'].state_dict() for config in old_configs],
+            'state_dict': old_model.state_dict(),
+            'optimizer_states': [
+                config['optimizer'].state_dict() for config in old_configs
+            ],
         },
         checkpoint_path,
     )
@@ -417,8 +433,9 @@ def test_sampled_postprocess_step(
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -434,16 +451,20 @@ def test_sampled_postprocess_step(
 
     assert model.rhs_sample_size == expected_rhs_sample_size
     if model.rhs_sample_size is not None:
-        assert isinstance(model.rhs_embedding.lookup_embedding,
-                          torch.nn.Embedding)
+        assert isinstance(model.rhs_embedding.lookup_embedding, torch.nn.Embedding)
         assert model.rhs_embedding.lookup_embedding.sparse is True
         for edge_weights in [None, torch.rand(len(lhs_y_batch))]:
-            (_, rhs_y_index_sampled, lhs_y_batch_sampled, rhs_emb_sampled,
-             edge_weights_sampled,
-             _) = model.sampled_postprocess_step(lhs_emb, rhs_y_index,
-                                                 lhs_y_batch, edge_weights)
-            assert (rhs_y_index_sampled.min() == 0
-                    and rhs_y_index_sampled.max() == 3)
+            (
+                _,
+                rhs_y_index_sampled,
+                lhs_y_batch_sampled,
+                rhs_emb_sampled,
+                edge_weights_sampled,
+                _,
+            ) = model.sampled_postprocess_step(
+                lhs_emb, rhs_y_index, lhs_y_batch, edge_weights
+            )
+            assert rhs_y_index_sampled.min() == 0 and rhs_y_index_sampled.max() == 3
             assert lhs_y_batch_sampled.tolist() == [0, 0, 1, 1, 2]
             assert rhs_emb_sampled.size() == (5, 8)
             if edge_weights is None:
@@ -452,11 +473,14 @@ def test_sampled_postprocess_step(
 
 @pytest.mark.parametrize('rhs_sample_size', [None, 10, 5_000_000])
 @pytest.mark.parametrize('num_rhs_nodes', [100, 500_001, 1_000_001])
-@pytest.mark.parametrize('rhs_emb_mode', [
-    RHSEmbeddingMode.FEATURE,
-    RHSEmbeddingMode.SHALLOW_FEATURE,
-    RHSEmbeddingMode.FUSION,
-])
+@pytest.mark.parametrize(
+    'rhs_emb_mode',
+    [
+        RHSEmbeddingMode.FEATURE,
+        RHSEmbeddingMode.SHALLOW_FEATURE,
+        RHSEmbeddingMode.FUSION,
+    ],
+)
 def test_enabling_sampled_for_many_rhs_nodes(
     rhs_sample_size: int | None,
     num_rhs_nodes: int,
@@ -470,8 +494,9 @@ def test_enabling_sampled_for_many_rhs_nodes(
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=2, num_mp_layers=0),
-        head=LinkPredHead(in_channels=2, embedding_dim=2,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=2, embedding_dim=2, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -485,7 +510,7 @@ def test_enabling_sampled_for_many_rhs_nodes(
             if num_rhs_nodes < MAX_RHS_SAMPLE_SIZE:
                 assert model.rhs_sample_size is None
             else:
-                assert (model.rhs_sample_size == MAX_RHS_SAMPLE_SIZE)
+                assert model.rhs_sample_size == MAX_RHS_SAMPLE_SIZE
         else:
             rhs_sample_size = min(rhs_sample_size, MAX_RHS_SAMPLE_SIZE)
             if num_rhs_nodes <= rhs_sample_size:
@@ -497,7 +522,7 @@ def test_enabling_sampled_for_many_rhs_nodes(
             if num_rhs_nodes < 1_000_000:
                 assert model.rhs_sample_size is None
             else:
-                assert (model.rhs_sample_size == MAX_RHS_SAMPLE_SIZE)
+                assert model.rhs_sample_size == MAX_RHS_SAMPLE_SIZE
         else:
             rhs_sample_size = min(rhs_sample_size, MAX_RHS_SAMPLE_SIZE)
             if num_rhs_nodes <= rhs_sample_size:
@@ -515,8 +540,9 @@ def test_sampled_and_full_equality():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -537,16 +563,23 @@ def test_sampled_and_full_equality():
     for edge_weights in [None, torch.rand(len(lhs_y_batch))]:
         # Full softmax
         full_logits = lhs_emb @ model.rhs_embedding().t()
-        full_loss = model.compute_loss(lhs_emb, model.rhs_embedding(),
-                                       full_logits, rhs_y_index, lhs_y_batch,
-                                       edge_weights)
+        full_loss = model.compute_loss(
+            lhs_emb,
+            model.rhs_embedding(),
+            full_logits,
+            rhs_y_index,
+            lhs_y_batch,
+            edge_weights,
+        )
 
         # Sampled softmax
-        out = model.sampled_postprocess_step(lhs_emb, rhs_y_index, lhs_y_batch,
-                                             edge_weights)
+        out = model.sampled_postprocess_step(
+            lhs_emb, rhs_y_index, lhs_y_batch, edge_weights
+        )
         sampled_logits, rhs_y_index, lhs_y_batch, rhs_emb, weight, _ = out
-        sampled_loss = model.compute_loss(lhs_emb, rhs_emb, sampled_logits,
-                                          rhs_y_index, lhs_y_batch, weight)
+        sampled_loss = model.compute_loss(
+            lhs_emb, rhs_emb, sampled_logits, rhs_y_index, lhs_y_batch, weight
+        )
 
         assert torch.allclose(full_loss, sampled_loss)
 
@@ -562,8 +595,9 @@ def test_temporal_valid_rhs_node_idx(rhs_sample_size: int):
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -583,8 +617,9 @@ def test_temporal_valid_rhs_node_idx(rhs_sample_size: int):
 
     assert out.shape == (3, len(valid_rhs_node_idx))
 
-    out = model.sampled_postprocess_step(lhs_emb, rhs_y_index, lhs_y_batch,
-                                         None, valid_rhs_node_idx)
+    out = model.sampled_postprocess_step(
+        lhs_emb, rhs_y_index, lhs_y_batch, None, valid_rhs_node_idx
+    )
     assert out[0].shape == (3, min(rhs_sample_size, len(valid_rhs_node_idx)))
 
 
@@ -597,8 +632,9 @@ def test_cosine_rhs():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -628,8 +664,9 @@ def test_reset_embedding_hook():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=False
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -641,8 +678,7 @@ def test_reset_embedding_hook():
     assert model.has_embedding_hook()
 
     # Attempting to register another hook should raise RuntimeError
-    with pytest.raises(RuntimeError,
-                       match="Cannot register a new embedding hook"):
+    with pytest.raises(RuntimeError, match='Cannot register a new embedding hook'):
         model.register_embedding_hook(TrainingStage.VAL)
 
     assert model.has_embedding_hook()
@@ -678,8 +714,12 @@ def test_predict_step_xai_with_valid_rhs_node_idx():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=embedding_dim,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=16,
+            embedding_dim=embedding_dim,
+            use_rhs_projector=False,
+            use_mlp_head=False,
+        ),
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
@@ -795,8 +835,7 @@ def test_get_embedding_lhs_parity_with_predict_step():
 
 
 def test_get_embedding_rhs_parity():
-    """get_embedding(side='rhs') must match rhs_embedding(node_ids),
-    """
+    """get_embedding(side='rhs') must match rhs_embedding(node_ids),"""
     num_rhs_nodes = 15
     embedding_dim = 8
     batch_size = 3
@@ -856,8 +895,12 @@ def test_static_eval_skips_past_visit_ground_truth():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=channels, num_mp_layers=0, metadata=metadata),
-        head=LinkPredHead(in_channels=channels, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=False),
+        head=LinkPredHead(
+            in_channels=channels,
+            embedding_dim=8,
+            use_rhs_projector=False,
+            use_mlp_head=False,
+        ),
         task_type=TaskType.STATIC_LINK_PREDICTION,
         train_table_name='TRAIN_TABLE',
         entity_table_names=('LHS', 'RHS'),
@@ -888,12 +931,16 @@ def test_static_eval_skips_past_visit_ground_truth():
         captured['exclude_lhs_batch'] = ex_lhs
         return score, index
 
-    with patch.object(model, 'common_step', return_value=torch.randn(2, 8)), \
-         patch.object(model, 'get_ground_truth',
-                      return_value=(rhs_y_index, lhs_y_batch, None)), \
-         patch.object(model, 'get_rhs_pred_index_mat', side_effect=spy_pred), \
-         patch.object(model, 'get_past_visit_ground_truth',
-                      return_value=(None, None)) as past_visit:
+    with (
+        patch.object(model, 'common_step', return_value=torch.randn(2, 8)),
+        patch.object(
+            model, 'get_ground_truth', return_value=(rhs_y_index, lhs_y_batch, None)
+        ),
+        patch.object(model, 'get_rhs_pred_index_mat', side_effect=spy_pred),
+        patch.object(
+            model, 'get_past_visit_ground_truth', return_value=(None, None)
+        ) as past_visit,
+    ):
         out = model.evaluation_step(batch, stage=TrainingStage.VAL, batch_idx=0)
 
     assert out == {}

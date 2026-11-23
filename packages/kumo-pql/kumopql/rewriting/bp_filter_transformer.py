@@ -23,6 +23,7 @@ from kumoapi.pquery.AST import (
 )
 from kumoapi.task import TaskType
 from kumoapi.typing import AggregationType, BoolOp, Dtype, ProblemType, Stype
+
 from kumopql.parser import PQLParser
 from kumopql.rewriting.filter_splitter import FilterSplitter, SplitFilter
 from kumopql.validator import PredictiveQueryValidator
@@ -50,6 +51,7 @@ class EditableField:
         bold_text_position: Position in `query.text` to be
             displayed in bold text.
     """
+
     field_name: str
     text: str
     position: tuple[int, int]
@@ -67,10 +69,12 @@ class EditableQuery:
     rewriting - a warning if rewriting took place, an error if MAX_N_CONDITIONS
     were exceeded.
     """
+
     text: str
     editable_fields: list[EditableField]
     validation_response: ValidationResponse = field(
-        default_factory=ValidationResponse())
+        default_factory=ValidationResponse()
+    )
 
 
 @dataclass
@@ -83,6 +87,7 @@ class EditableQueryResponse:
         user_changes: A dict of user overwrites, given as
             a mapping from a field_name to a user_change.
     """
+
     editable_query: EditableQuery
     user_changes: dict[str, str] = field(default_factory=dict)
 
@@ -93,6 +98,7 @@ class BPFilterTransformer(FilterSplitter):
     This involves overriding entity and target filters and validating the
     replacements.
     """
+
     def generate_bp_query(
         self,
         query: ValidatedPredictiveQuery,
@@ -122,8 +128,9 @@ class BPFilterTransformer(FilterSplitter):
         lhs_table = table_name(query.entity_column)
         rhs_table = get_rhs_lp_table(query, graph)
 
-        split_target_filter = self.split_target_filter(query.target_ast,
-                                                       lhs_table, rhs_table)
+        split_target_filter = self.split_target_filter(
+            query.target_ast, lhs_table, rhs_table
+        )
         new_filter = split_target_filter.applicable_filter
 
         assert isinstance(query.target_ast, Join)
@@ -152,17 +159,22 @@ class BPFilterTransformer(FilterSplitter):
         if isinstance(entity, Column):
             query_repr = ''
             strlen = len(str(entity))
-            return EditableField(field_name='Entity filter', text=query_repr,
-                                 position=(strlen, strlen),
-                                 bold_text_position=(strlen, strlen))
+            return EditableField(
+                field_name='Entity filter',
+                text=query_repr,
+                position=(strlen, strlen),
+                bold_text_position=(strlen, strlen),
+            )
         assert isinstance(entity, Filter)
         query_repr = str(entity.condition)
         filter_start = len(str(entity.target))
         filter_end = filter_start + len(' WHERE ') + len(query_repr)
         return EditableField(
-            field_name='Entity filter', text=query_repr,
+            field_name='Entity filter',
+            text=query_repr,
             position=(filter_start, filter_end),
-            bold_text_position=(filter_start + len(' WHERE '), filter_end))
+            bold_text_position=(filter_start + len(' WHERE '), filter_end),
+        )
 
     def _get_editable_split_filter(
         self, target: ASTNode, split_filter: SplitFilter
@@ -179,15 +191,17 @@ class BPFilterTransformer(FilterSplitter):
         editable_field = self._get_editable_entity(target.target)
         editable_field.field_name = 'Target filter'
         prefix_len = len(target.aggr.value) + 1
-        editable_field.position = _tuple_inc(editable_field.position,
-                                             prefix_len)
+        editable_field.position = _tuple_inc(editable_field.position, prefix_len)
         editable_field.bold_text_position = _tuple_inc(
-            editable_field.bold_text_position, prefix_len)
+            editable_field.bold_text_position, prefix_len
+        )
         assert split_filter.non_applicable_is_valid
         response = ValidationResponse()
         full_target_str = str(target)
-        if (split_filter.applicable_filter is None
-                and split_filter.non_applicable_filter is None):
+        if (
+            split_filter.applicable_filter is None
+            and split_filter.non_applicable_filter is None
+        ):
             # other fields are handled by default values
             editable_field.text = ''
         elif split_filter.applicable_filter is None:
@@ -195,9 +209,9 @@ class BPFilterTransformer(FilterSplitter):
             # untouched text instead of the possibly-rewritten version in
             # split_fitler.bp_non_applicable_filter
             editable_field.full_filter_format_string = (
-                f' WHERE ({editable_field.text}) AND ({{0}})')
-            editable_field.empty_filter_default = (
-                f' WHERE {editable_field.text}')
+                f' WHERE ({editable_field.text}) AND ({{0}})'
+            )
+            editable_field.empty_filter_default = f' WHERE {editable_field.text}'
             editable_field.text = ''
             editable_field.bold_text_position = (0, 0)  # No bold text
         elif split_filter.non_applicable_filter is None:
@@ -211,27 +225,39 @@ class BPFilterTransformer(FilterSplitter):
                     message='The target filter did not contain references to '
                     'any columns with unavailable data at prediction '
                     'time. Kumo can therefore guarantee that bolded '
-                    'conditions are met by all predicted links.'))
+                    'conditions are met by all predicted links.',
+                )
+            )
         else:
             editable_field.full_filter_format_string = (
-                f' WHERE ({split_filter.non_applicable_filter}) AND ({{0}})')
+                f' WHERE ({split_filter.non_applicable_filter}) AND ({{0}})'
+            )
             editable_field.empty_filter_default = (
-                f' WHERE {split_filter.non_applicable_filter}')
+                f' WHERE {split_filter.non_applicable_filter}'
+            )
             editable_field.text = str(split_filter.applicable_filter)
-            new_filter = (f' WHERE ({split_filter.non_applicable_filter}) '
-                          f'AND ({split_filter.applicable_filter})')
-            full_target_str = (full_target_str[:editable_field.position[0]] +
-                               new_filter +
-                               full_target_str[editable_field.position[1]:])
-            editable_field.position = (editable_field.position[0],
-                                       editable_field.position[0] +
-                                       len(new_filter))
+            new_filter = (
+                f' WHERE ({split_filter.non_applicable_filter}) '
+                f'AND ({split_filter.applicable_filter})'
+            )
+            full_target_str = (
+                full_target_str[: editable_field.position[0]]
+                + new_filter
+                + full_target_str[editable_field.position[1] :]
+            )
+            editable_field.position = (
+                editable_field.position[0],
+                editable_field.position[0] + len(new_filter),
+            )
             non_bold_prefix_len = len(
-                f' WHERE ({split_filter.non_applicable_filter}) AND (')
+                f' WHERE ({split_filter.non_applicable_filter}) AND ('
+            )
             editable_field.bold_text_position = (
                 editable_field.position[0] + non_bold_prefix_len,
-                editable_field.position[0] + non_bold_prefix_len +
-                len(str(split_filter.applicable_filter)))
+                editable_field.position[0]
+                + non_bold_prefix_len
+                + len(str(split_filter.applicable_filter)),
+            )
             # TODO (vid) Make this info-level if possible.
             response.warnings.append(
                 ValidationWarning(
@@ -241,7 +267,9 @@ class BPFilterTransformer(FilterSplitter):
                     'available at prediction time. '
                     'Kumo can therefore guarantee that bolded '
                     'conditions are all met by all '
-                    'predicted links.'))
+                    'predicted links.',
+                )
+            )
             if split_filter.rewritten:
                 response.warnings.append(
                     ValidationWarning(
@@ -250,7 +278,9 @@ class BPFilterTransformer(FilterSplitter):
                         'target filter that could be explicitly guaranteed '
                         'during prediction, the logical expression has '
                         'been rewritten. The new expression is equivalent '
-                        'to the one in your input query.'))
+                        'to the one in your input query.',
+                    )
+                )
         return full_target_str, editable_field, response
 
     def get_bp_editable_query(
@@ -294,11 +324,13 @@ class BPFilterTransformer(FilterSplitter):
         if task_type.is_link_pred:
             rhs_table = get_rhs_lp_table(query, graph)
             split_target_filter = self.split_target_filter(
-                query.target_ast, lhs_table, rhs_table)
+                query.target_ast, lhs_table, rhs_table
+            )
             if not split_target_filter.non_applicable_is_valid:
                 number_of_terms = (
-                    split_target_filter.n_applicable_conditions +
-                    split_target_filter.n_non_applicable_conditions)
+                    split_target_filter.n_applicable_conditions
+                    + split_target_filter.n_non_applicable_conditions
+                )
                 response.warnings.append(
                     ValidationWarning(
                         title='Rewritten target filter too large.',
@@ -310,21 +342,27 @@ class BPFilterTransformer(FilterSplitter):
                         f'({number_of_terms} conditions). To this end, filter '
                         f'overrides will not be supported for this query. '
                         f'Contact Kumo for further assistance with this if '
-                        f'required.'))
+                        f'required.',
+                    )
+                )
                 target_repr = 'PREDICT ' + str(query.target_ast)
             else:
-                (target_repr, target_field,
-                 edit_response) = self._get_editable_split_filter(
-                     query.target_ast, split_target_filter)
+                (target_repr, target_field, edit_response) = (
+                    self._get_editable_split_filter(
+                        query.target_ast, split_target_filter
+                    )
+                )
                 # edit_response should only contain warnings, and even these
                 # are info-level, rather than actual warnings
                 assert edit_response.ok
                 response = merge(response, edit_response)
                 predict_prefix = 'PREDICT '
-                target_field.position = _tuple_inc(target_field.position,
-                                                   len(predict_prefix))
+                target_field.position = _tuple_inc(
+                    target_field.position, len(predict_prefix)
+                )
                 target_field.bold_text_position = _tuple_inc(
-                    target_field.bold_text_position, len(predict_prefix))
+                    target_field.bold_text_position, len(predict_prefix)
+                )
                 target_repr = predict_prefix + target_repr
                 editable_fields.append(target_field)
         else:
@@ -342,7 +380,8 @@ class BPFilterTransformer(FilterSplitter):
         entity_field = self._get_editable_entity(query.entity_ast)
         entity_field.position = _tuple_inc(entity_field.position, prefix_len)
         entity_field.bold_text_position = _tuple_inc(
-            entity_field.bold_text_position, prefix_len)
+            entity_field.bold_text_position, prefix_len
+        )
         editable_fields.append(entity_field)
         query_repr = target_repr + str(query.entity_ast)
         return EditableQuery(query_repr, editable_fields, response)
@@ -384,38 +423,42 @@ class BPFilterTransformer(FilterSplitter):
 
         # We process fields from left to right to keep track of the position
         # changes
-        for edit_field in sorted(editable_query.editable_fields,
-                                 key=lambda x: x.position):
-            edit_field.position = _tuple_inc(edit_field.position,
-                                             prefix_len_delta)
+        for edit_field in sorted(
+            editable_query.editable_fields, key=lambda x: x.position
+        ):
+            edit_field.position = _tuple_inc(edit_field.position, prefix_len_delta)
             edit_field.bold_text_position = _tuple_inc(
-                edit_field.bold_text_position, prefix_len_delta)
+                edit_field.bold_text_position, prefix_len_delta
+            )
             if edit_field.field_name not in user_edits.user_changes:
                 if len(edit_field.text) != 0:
                     # edit_field.text is the applicable/user editable text
                     # insert that instead of the original query
                     new_applicable_text = f' WHERE {edit_field.text}'
                     applicable_text = (
-                        applicable_text[:edit_field.position[0] + appl_delta] +
-                        new_applicable_text +
-                        applicable_text[edit_field.position[1] + appl_delta:])
+                        applicable_text[: edit_field.position[0] + appl_delta]
+                        + new_applicable_text
+                        + applicable_text[edit_field.position[1] + appl_delta :]
+                    )
                     appl_delta += len(new_applicable_text) - (
-                        edit_field.position[1] - edit_field.position[0])
+                        edit_field.position[1] - edit_field.position[0]
+                    )
                 continue
             user_change = user_edits.user_changes[edit_field.field_name]
             if user_change == '':
                 bold_text_offset = 0
                 new_text = edit_field.empty_filter_default
             else:
-                bold_text_offset = edit_field.full_filter_format_string.find(
-                    '{0}')
-                new_text = edit_field.full_filter_format_string.format(
-                    user_change)
+                bold_text_offset = edit_field.full_filter_format_string.find('{0}')
+                new_text = edit_field.full_filter_format_string.format(user_change)
             editable_query.text = (
-                editable_query.text[:edit_field.position[0]] + new_text +
-                editable_query.text[edit_field.position[1]:])
-            prefix_len_delta += len(new_text) - (edit_field.position[1] -
-                                                 edit_field.position[0])
+                editable_query.text[: edit_field.position[0]]
+                + new_text
+                + editable_query.text[edit_field.position[1] :]
+            )
+            prefix_len_delta += len(new_text) - (
+                edit_field.position[1] - edit_field.position[0]
+            )
             edit_field.text = user_change
             # Applicable query is only updated with the user change, the
             # non-applicable part is not inserted since it's ... non-applicable
@@ -423,51 +466,57 @@ class BPFilterTransformer(FilterSplitter):
             if len(user_change) > 0:
                 new_applicable_text = f' WHERE {user_change}'
             applicable_text = (
-                applicable_text[:edit_field.position[0] + appl_delta] +
-                new_applicable_text +
-                applicable_text[edit_field.position[1] + appl_delta:])
+                applicable_text[: edit_field.position[0] + appl_delta]
+                + new_applicable_text
+                + applicable_text[edit_field.position[1] + appl_delta :]
+            )
             appl_delta += len(new_applicable_text) - len(new_text)
 
-            edit_field.position = (edit_field.position[0],
-                                   edit_field.position[0] + len(new_text))
-            edit_field.bold_text_position = (edit_field.position[0] +
-                                             bold_text_offset,
-                                             edit_field.position[0] +
-                                             bold_text_offset +
-                                             len(user_change))
+            edit_field.position = (
+                edit_field.position[0],
+                edit_field.position[0] + len(new_text),
+            )
+            edit_field.bold_text_position = (
+                edit_field.position[0] + bold_text_offset,
+                edit_field.position[0] + bold_text_offset + len(user_change),
+            )
         # We've got two queries, the user-displayed one and the actually
         # applicable one from which we've removed the non-applicable bits.
         # We parse the first one for validation, since that's what user sees
         # The second one is parsed for execution.
         parser = PQLParser()
         try:
-            parsed_query = parser.to_parsed_predictive_query(
-                editable_query.text)
+            parsed_query = parser.to_parsed_predictive_query(editable_query.text)
         except ValueError as e:
             editable_query.validation_response.errors.append(
-                ValidationError(title='Invalid query syntax.', message=str(e)))
+                ValidationError(title='Invalid query syntax.', message=str(e))
+            )
             return editable_query, None
-        parsed_applicable_query = parser.to_parsed_predictive_query(
-            applicable_text)
+        parsed_applicable_query = parser.to_parsed_predictive_query(applicable_text)
         validator = PredictiveQueryValidator(graph)
         _, response = validator.validate_predictive_query(parsed_query)
         editable_query.validation_response = merge(
-            editable_query.validation_response, response)
-        (validated_applicable_query, appl_response
-         ) = validator.validate_predictive_query(parsed_applicable_query)
+            editable_query.validation_response, response
+        )
+        (validated_applicable_query, appl_response) = (
+            validator.validate_predictive_query(parsed_applicable_query)
+        )
         if response.ok:
             assert appl_response.ok
             assert validated_applicable_query is not None
             editable_query.validation_response = merge(
                 editable_query.validation_response,
                 validator.validate_bp_filter_overrides(
-                    validated_applicable_query, task_type))
+                    validated_applicable_query, task_type
+                ),
+            )
             if not editable_query.validation_response.ok:
                 validated_applicable_query = None
         return editable_query, validated_applicable_query
 
-    def split_target_filter(self, node: ASTNode, lhs_table: str,
-                            rhs_table: str) -> SplitFilter:
+    def split_target_filter(
+        self, node: ASTNode, lhs_table: str, rhs_table: str
+    ) -> SplitFilter:
         r"""Splits the target ast defined by `node` in the following way:
         If there are any references to the `lhs_table`, the method raises
         an error. Such references are not allowed in the target filter because
@@ -512,11 +561,13 @@ class BPFilterTransformer(FilterSplitter):
         # fkey that's not the target column - it should be dropped.
         if isinstance(node, Filter):
             return self._recursively_split_filter(
-                node=node.condition, original_filter=node.condition,
-                lhs_table=lhs_table, rhs_table=rhs_table)
+                node=node.condition,
+                original_filter=node.condition,
+                lhs_table=lhs_table,
+                rhs_table=rhs_table,
+            )
         if isinstance(node, Join):
-            return self.split_target_filter(node.rhs_target, lhs_table,
-                                            rhs_table)
+            return self.split_target_filter(node.rhs_target, lhs_table, rhs_table)
         if isinstance(node, Aggregation):
             # must be the target aggregation
             assert node.aggr == AggregationType.LIST_DISTINCT
@@ -531,7 +582,7 @@ class BPFilterTransformer(FilterSplitter):
                 non_applicable_is_valid=True,
                 original_filter=None,
             )
-        raise AssertionError(f"Unknown node type {type(node)}.")
+        raise AssertionError(f'Unknown node type {type(node)}.')
 
     def _condition_base_case(  # type: ignore
         self,
@@ -574,10 +625,12 @@ class BPFilterTransformer(FilterSplitter):
         assert isinstance(target, Column)
         if table_name(target.fqn) == lhs_table:
             # Should be handled by the PredictiveQueryValidator already.
-            raise ValueError(f'Target filter condition {node} contains a '
-                             f'reference to the entity table. Entity table '
-                             f'references in target filters are not '
-                             f'supported, please use entity filter instead.')
+            raise ValueError(
+                f'Target filter condition {node} contains a '
+                f'reference to the entity table. Entity table '
+                f'references in target filters are not '
+                f'supported, please use entity filter instead.'
+            )
         if table_name(target.fqn) != rhs_table:
             return SplitFilter(
                 applicable_filter=None,
@@ -652,23 +705,30 @@ class BPFilterTransformer(FilterSplitter):
         # given in "connector.table_name" format
         rhs_table = get_rhs_lp_table(training_query, graph)
         split_training_filter = self.split_target_filter(
-            training_query.target_ast, entity_table, rhs_table)
+            training_query.target_ast, entity_table, rhs_table
+        )
         split_prediction_filter = self.split_target_filter(
-            prediction_query.target_ast, entity_table, rhs_table)
+            prediction_query.target_ast, entity_table, rhs_table
+        )
         combined_target = None
-        if (split_prediction_filter.applicable_filter ==
-                split_training_filter.applicable_filter):
+        if (
+            split_prediction_filter.applicable_filter
+            == split_training_filter.applicable_filter
+        ):
             # No overrides happened, we can use the original target
             # This thus works even if `non_applicable_is_valid` is False.
             combined_target = training_query.target_ast
         elif not split_training_filter.non_applicable_is_valid:
             raise ValueError(
-                f"Backtesting not supported for this query because of the "
-                f"complicated filter in the target. Target contains "
-                f"{split_training_filter.n_non_applicable_conditions} "
-                f"conditions after splitting.")
-        elif (split_prediction_filter.applicable_filter is None
-              and split_training_filter.non_applicable_filter is None):
+                f'Backtesting not supported for this query because of the '
+                f'complicated filter in the target. Target contains '
+                f'{split_training_filter.n_non_applicable_conditions} '
+                f'conditions after splitting.'
+            )
+        elif (
+            split_prediction_filter.applicable_filter is None
+            and split_training_filter.non_applicable_filter is None
+        ):
             # This can only happen if the training filter only contained a
             # bp_applicable bit and it got deleted for target filter, resulting
             # in an empty filter.
@@ -699,8 +759,7 @@ class BPFilterTransformer(FilterSplitter):
             # locate the original filter and overwrite it
             assert isinstance(combined_target, Join)
             assert isinstance(combined_target.rhs_target, Aggregation)
-            assert (combined_target.rhs_target.aggr ==
-                    AggregationType.LIST_DISTINCT)
+            assert combined_target.rhs_target.aggr == AggregationType.LIST_DISTINCT
             assert isinstance(combined_target.rhs_target.target, Filter)
             assert combined_filter is not None
             combined_target.rhs_target.target.condition = combined_filter

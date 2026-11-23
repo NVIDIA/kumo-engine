@@ -88,7 +88,8 @@ async def _file_graph_runtime(
     if state_services is not None and len(graph_config.data_source_dict) != 1:
         raise ValueError(
             'StateDB-backed local graph fixtures require one project upload '
-            'source; use supported external connectors for multiple sources')
+            'source; use supported external connectors for multiple sources'
+        )
     for name, connector in graph_config.data_source_dict.items():
         root_dir = connector.root_dir
         if state_services is None:
@@ -106,39 +107,45 @@ async def _file_graph_runtime(
                 raise_on_exists=False,
             )
             connector_id = (
-                await
-                state_services.connectors.register_project_upload_connector(
-                    project_id, upload_root))
+                await state_services.connectors.register_project_upload_connector(
+                    project_id, upload_root
+                )
+            )
             root_dir = upload_root
         connector_configs[name] = (
             connector_id,
             FileConnectorResourceConfig(name=name, root_dir=root_dir),
         )
         if state_services is not None:
-            connector_specs[connector_id] = await (
-                state_services.connectors.execution_ref_for_project(
-                    principal,
-                    project_id,
-                    connector_id,
-                    CONNECTOR_GRAPH_ACTIONS,
-                ))
+            connector_specs[
+                connector_id
+            ] = await state_services.connectors.execution_ref_for_project(
+                principal,
+                project_id,
+                connector_id,
+                CONNECTOR_GRAPH_ACTIONS,
+            )
         else:
             connector_specs[connector_id] = ConnectorExecutionRef(
                 connector_id=connector_id,
                 project_id=project_id,
             )
-    graph_definition = export_kumo_graph_to_fixture(graph_config,
-                                                    connector_configs)
+    graph_definition = export_kumo_graph_to_fixture(graph_config, connector_configs)
     runtime_graph = Graph(graph_config.name)
     for connector_id, reference in connector_specs.items():
-        persisted_config = connector_configs[next(
-            name for name, value in connector_configs.items()
-            if value[0] == connector_id)][1]
+        persisted_config = connector_configs[
+            next(
+                name
+                for name, value in connector_configs.items()
+                if value[0] == connector_id
+            )
+        ][1]
         runtime_graph.connect(
             FileConnectorResourceConfig(
                 name=str(reference.connector_id),
                 root_dir=persisted_config.root_dir,
-            ).as_connector())
+            ).as_connector()
+        )
     _add_tables_to_graph_v2(
         runtime_graph,
         graph_definition.tables,
@@ -170,8 +177,8 @@ async def test_serialize_advanced_options(tmp_path):
     await graph.infer_stypes.coroutine()
     await graph.infer_links.coroutine()
     runtime_graph, graph_input = await _file_graph_runtime(graph)
-    pqid = PredictiveQueryID("p")
-    advanced_options = model_plan_from_yaml("")
+    pqid = PredictiveQueryID('p')
+    advanced_options = model_plan_from_yaml('')
     pquery_config = await make_predictive_config_with_graph.coroutine(
         name=pqid,
         query_yaml="""
@@ -187,7 +194,7 @@ FOR EACH TRANS.TRANS_ID
         predictive_query=pquery_config,
         advanced_options=advanced_options,
         predictive_query_id=PredictiveQueryID(pqid),
-        graph_id=GraphIDv1("g"),
+        graph_id=GraphIDv1('g'),
         split=pquery_config.split,
         stop_after_materialization=True,
     )
@@ -200,10 +207,12 @@ FOR EACH TRANS.TRANS_ID
         start_time=now_utc(),
     )
     assert isinstance(training_job_input.spec.advanced_options, ModelPlan)
-    await save_json.coroutine(training_job_input,
-                              os.path.join(tmp_path, 'job_input.json'))
+    await save_json.coroutine(
+        training_job_input, os.path.join(tmp_path, 'job_input.json')
+    )
     training_job_input = await load_json_async(
-        os.path.join(tmp_path, 'job_input.json'), TrainingJobInput)
+        os.path.join(tmp_path, 'job_input.json'), TrainingJobInput
+    )
     assert isinstance(training_job_input.spec.advanced_options, ModelPlan)
 
 
@@ -214,8 +223,8 @@ async def test_serialize_model_plan(tmp_path):
     await graph.infer_stypes.coroutine()
     await graph.infer_links.coroutine()
     runtime_graph, graph_input = await _file_graph_runtime(graph)
-    pqid = PredictiveQueryID("p")
-    model_planner_yaml = ("""training_table_generation:
+    pqid = PredictiveQueryID('p')
+    model_planner_yaml = """training_table_generation:
   split: RandomSplit([0.8, 0.1, 0.1])
   train_start_offset: 360
   train_end_offset: 0
@@ -312,7 +321,7 @@ model_architecture:
   - layer_norm
   use_seq_id:
   - false
-""")
+"""
     advanced_options = model_plan_from_yaml(model_planner_yaml)
     pquery_config = await make_predictive_config_with_graph.coroutine(
         name=pqid,
@@ -329,7 +338,7 @@ FOR EACH TRANS.TRANS_ID
         predictive_query=pquery_config,
         advanced_options=advanced_options,
         predictive_query_id=PredictiveQueryID(pqid),
-        graph_id=GraphIDv1("g"),
+        graph_id=GraphIDv1('g'),
         stop_after_materialization=True,
         split=pquery_config.split,
     )
@@ -342,23 +351,27 @@ FOR EACH TRANS.TRANS_ID
         start_time=now_utc(),
     )
     assert isinstance(training_job_input.spec.advanced_options, ModelPlan)
-    await save_json.coroutine(training_job_input,
-                              os.path.join(tmp_path, 'job_input.json'))
+    await save_json.coroutine(
+        training_job_input, os.path.join(tmp_path, 'job_input.json')
+    )
     training_job_input = await load_json_async(
-        os.path.join(tmp_path, 'job_input.json'), TrainingJobInput)
+        os.path.join(tmp_path, 'job_input.json'), TrainingJobInput
+    )
     assert isinstance(training_job_input.spec.advanced_options, ModelPlan)
 
 
 # DiskGraph materialization routes through DiskgraphIngestWorkflow, which uses
 # the pool controller/worker for snapshot placement. Pin this test to the local
 # pool backend so it does not wait on an unserved pool AutoRPC queue in CI.
-@pytest.mark.usefixtures("_pool_subprocesses")
-@pytest.mark.parametrize("storage_backend", ["local"], indirect=True)
+@pytest.mark.usefixtures('_pool_subprocesses')
+@pytest.mark.parametrize('storage_backend', ['local'], indirect=True)
 @pytest.mark.asyncio
-async def test_make_materialization_info(ml_backend: MLJobBackend,
-                                         temporal_client: TemporalClient,
-                                         state_services: StateServices,
-                                         ctx: RequestContext):
+async def test_make_materialization_info(
+    ml_backend: MLJobBackend,
+    temporal_client: TemporalClient,
+    state_services: StateServices,
+    ctx: RequestContext,
+):
     """Test that the materialization info is available after materialization.
 
     TODO(zack): This test was added in order to test the K8s materialization
@@ -375,15 +388,16 @@ async def test_make_materialization_info(ml_backend: MLJobBackend,
     await graph.infer_stypes.coroutine()
     await graph.infer_links.coroutine()
     runtime_graph, graph_data_compute_input = await _file_graph_runtime(
-        graph, state_services, ctx.user_authorization)
-    pqid = PredictiveQueryID("p")
+        graph, state_services, ctx.user_authorization
+    )
+    pqid = PredictiveQueryID('p')
     pquery_config = await make_predictive_config_with_graph.coroutine(
         name=pqid,
         query_yaml="""
 PREDICT TRANS.K_SYMBOL = 'DUCHOD'
 FOR EACH TRANS.TRANS_ID
 """,
-        train_options=model_plan_from_yaml("").training_table_generation,
+        train_options=model_plan_from_yaml('').training_table_generation,
         train_options_provided=False,
         graph=runtime_graph,
     )
@@ -395,22 +409,25 @@ FOR EACH TRANS.TRANS_ID
         run_mode=RunMode.DEBUG,
     )
 
-    project_id = next(iter(
-        graph_data_compute_input.connectors.values())).project_id
+    project_id = next(iter(graph_data_compute_input.connectors.values())).project_id
 
     spec = TrainingSpec(
         predictive_query=pquery_config,
         advanced_options=advanced_options,
         predictive_query_id=PredictiveQueryID(pqid),
-        graph_id=GraphIDv1("g"),
+        graph_id=GraphIDv1('g'),
         stop_after_materialization=True,
         split=pquery_config.split,
     )
     training_job_id = await ml_backend.start_training(
-        pquery_def_fpid=None, graph_data_compute_input=graph_data_compute_input,
-        training_spec=spec, project_id=project_id)
-    await temporal_client.result(_training_workflow_id(training_job_id),
-                                 disable_backoff=True)
+        pquery_def_fpid=None,
+        graph_data_compute_input=graph_data_compute_input,
+        training_spec=spec,
+        project_id=project_id,
+    )
+    await temporal_client.result(
+        _training_workflow_id(training_job_id), disable_backoff=True
+    )
     info = await ml_backend.get_materialization_info(training_job_id)
 
     assert info is not None
@@ -452,7 +469,7 @@ FOR EACH TRANS.TRANS_ID
             col_stat = col_map[col.name]
             assert col_stat.dtype
             assert col_stat.stype
-            if table.name == "TRANS" and col.name == "ACCOUNT":
+            if table.name == 'TRANS' and col.name == 'ACCOUNT':
                 assert col_stat.num_empty == 50
 
 
@@ -485,15 +502,19 @@ class MockTrainingWorkflow:
             await dequeue_job(job_id)
 
 
-async def _mock_launch_jobs(client: Client, state_services: StateServices,
-                            num_jobs: int = 1) -> List[TrainingJobID]:
+async def _mock_launch_jobs(
+    client: Client, state_services: StateServices, num_jobs: int = 1
+) -> List[TrainingJobID]:
     job_ids = []
     for _ in range(num_jobs):
         job_id, _ = await state_services.ml_jobs.create_training_job(
-            pquery_id=PredictiveQueryID('dummy_pquery'), pquery_def_fpid=None,
-            graph_id=to_graph_id('dummy_graph'), now=now_utc(),
+            pquery_id=PredictiveQueryID('dummy_pquery'),
+            pquery_def_fpid=None,
+            graph_id=to_graph_id('dummy_graph'),
+            now=now_utc(),
             advanced_options=ModelPlan(),
-            project_id=ProjectID(DEFAULT_PROJECT_ID))
+            project_id=ProjectID(DEFAULT_PROJECT_ID),
+        )
         await client.start_workflow(
             MockTrainingWorkflow.run,
             args=[job_id],
@@ -505,9 +526,9 @@ async def _mock_launch_jobs(client: Client, state_services: StateServices,
 
 
 @pytest.mark.asyncio
-async def test_ml_backend_with_job_queue(tmp_path: pathlib.Path,
-                                         ctx: RequestContext,
-                                         monkeypatch: pytest.MonkeyPatch):
+async def test_ml_backend_with_job_queue(
+    tmp_path: pathlib.Path, ctx: RequestContext, monkeypatch: pytest.MonkeyPatch
+):
     deploy_env_config = dataclasses.replace(
         DeployEnvConfig.for_test(),
         # Use a unique instance_id so this test's ML backend worker doesn't
@@ -524,8 +545,7 @@ async def test_ml_backend_with_job_queue(tmp_path: pathlib.Path,
     temporal_client = TemporalClient(deploy_env_config)
     client = await temporal_client.get()
 
-    job_id1, job_id2 = await _mock_launch_jobs(client, state_services,
-                                               num_jobs=2)
+    job_id1, job_id2 = await _mock_launch_jobs(client, state_services, num_jobs=2)
     entry2 = await state_services.ml_jobs.get_training_job(job_id2)
     assert entry2 is not None
     entry2.execution.status = JobStatus.RUNNING
@@ -550,29 +570,30 @@ async def test_ml_backend_with_job_queue(tmp_path: pathlib.Path,
             {},
             [],  # activities override
             [MockTrainingWorkflow],  # workflows override
-        ])
+        ],
+    )
     print('Starting worker thread')
     worker_daemon_thread.start()
     print('ML Job backend workers have started!')
     start_event.wait()
     if not start_exceptions.empty():
         raise RuntimeError(
-            'Failed to start temporal worker') from start_exceptions.get()
+            'Failed to start temporal worker'
+        ) from start_exceptions.get()
     print('Running test against ML Job Backend worker.')
     # In-process MLJobBackend over the same StateDB the e2e workers use (no
     # AutoRPC client). Used for read accessors only; the ml-workflow-worker
     # started by run_server_until_stop owns the lifecycle (reconcile +
     # admission/drain) the queue assertions below depend on.
-    ml_backend = MLJobBackend(MLBackendSettings.parse_from_env(),
-                              temporal_client, state_db)
+    ml_backend = MLJobBackend(
+        MLBackendSettings.parse_from_env(), temporal_client, state_db
+    )
     await ml_backend.start(read_only=True)
     print('ML Job backend started.')
 
     # Verify child jobs are initially QUEUED
     child_jobs = await ml_backend.get_generate_train_table_jobs(
-        set(
-            GenerateTrainTableJobID.as_child_of(id)
-            for id in [job_id1, job_id2]),
+        set(GenerateTrainTableJobID.as_child_of(id) for id in [job_id1, job_id2]),
         project_ids=None,
     )
     assert len(child_jobs) == 2
@@ -595,9 +616,13 @@ async def test_ml_backend_with_job_queue(tmp_path: pathlib.Path,
     # Create only the job *row* (no workflow), so nothing later re-submits it
     # and races the terminal-state assertions below.
     job_id3, job_id3_child = await state_services.ml_jobs.create_training_job(
-        pquery_id=PredictiveQueryID('dummy_pquery'), pquery_def_fpid=None,
-        graph_id=to_graph_id('dummy_graph'), now=now_utc(),
-        advanced_options=ModelPlan(), project_id=ProjectID(DEFAULT_PROJECT_ID))
+        pquery_id=PredictiveQueryID('dummy_pquery'),
+        pquery_def_fpid=None,
+        graph_id=to_graph_id('dummy_graph'),
+        now=now_utc(),
+        advanced_options=ModelPlan(),
+        project_id=ProjectID(DEFAULT_PROJECT_ID),
+    )
     with pytest.raises(JobConcurrencyLimitError):
         await job_queue.submit_job(job_id3)
 
@@ -608,8 +633,7 @@ async def test_ml_backend_with_job_queue(tmp_path: pathlib.Path,
     assert job2 and job2.execution.status == JobStatus.RUNNING
 
     # Allow job2 to complete (and will be removed from queue).
-    wf_hdl2 = await temporal_client.get_workflow_handle(
-        _training_workflow_id(job_id2))
+    wf_hdl2 = await temporal_client.get_workflow_handle(_training_workflow_id(job_id2))
     await wf_hdl2.signal(MockTrainingWorkflow.finish_wf)
     await wf_hdl2.result()
 
@@ -618,8 +642,7 @@ async def test_ml_backend_with_job_queue(tmp_path: pathlib.Path,
     assert job1 and job1.execution.status == JobStatus.RUNNING
 
     # Allow job1 to complete, then there should be no running or queued job.
-    wf_hdl1 = await temporal_client.get_workflow_handle(
-        _training_workflow_id(job_id1))
+    wf_hdl1 = await temporal_client.get_workflow_handle(_training_workflow_id(job_id1))
     await wf_hdl1.signal(MockTrainingWorkflow.finish_wf)
     await wf_hdl1.result()
     # job3 (and its auto-created child gen-train-table job) were created above

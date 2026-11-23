@@ -58,18 +58,17 @@ log = logging.getLogger(__name__)
 
 def _submission_time(job_response: Any) -> datetime:
     """Return submission time for StateDB entries and backend responses."""
-    timestamps = getattr(job_response, "timestamps", None)
+    timestamps = getattr(job_response, 'timestamps', None)
     if timestamps is not None:
         return timestamps.created_at
 
-    created_at = getattr(job_response, "created_at", None)
+    created_at = getattr(job_response, 'created_at', None)
     if created_at is not None:
         return created_at
 
     # Compatibility for hand-built legacy response objects without either
     # submission-time representation.
-    return (job_response.execution.start_time
-            or job_response.execution.last_updated_at)
+    return job_response.execution.start_time or job_response.execution.last_updated_at
 
 
 class TrainingRouterV1:
@@ -86,7 +85,7 @@ class TrainingRouterV1:
 
         self.router = APIRouter(
             prefix='/training_jobs',
-            tags=["API v1 (Under Development): Training Jobs"],
+            tags=['API v1 (Under Development): Training Jobs'],
             dependencies=[Depends(api_key_auth)],
         )
         self.router.add_api_route(
@@ -98,14 +97,13 @@ class TrainingRouterV1:
             description=desc.start_training,
             responses={
                 HTTPStatus.BAD_REQUEST: {
-                    'description':
-                    "Cannot start a new training while one is still running."
+                    'description': 'Cannot start a new training while one is still running.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.list,
             response_model=List[api.TrainingJobResource],
             methods=['GET'],
@@ -114,7 +112,7 @@ class TrainingRouterV1:
             response_description='List of TrainingJobResource objects.',
         )
         self.router.add_api_route(
-            "/{training_job_id}",
+            '/{training_job_id}',
             self.get,
             response_model=api.TrainingJobResource,
             methods=['GET'],
@@ -131,10 +129,11 @@ class TrainingRouterV1:
             methods=['GET'],
             summary=(
                 'Get holdout dataset URL for a successfully completed model '
-                'training job.'),
+                'training job.'
+            ),
         )
         self.router.add_api_route(
-            "/{training_job_id}/cancel",
+            '/{training_job_id}/cancel',
             self.cancel,
             response_model=api.CancelTrainingJobResponse,
             methods=['POST'],
@@ -143,7 +142,7 @@ class TrainingRouterV1:
             response_description='Empty',
         )
         self.router.add_api_route(
-            "/{training_job_id}",
+            '/{training_job_id}',
             self.delete,
             response_model=EmptyResponse,
             methods=['DELETE'],
@@ -169,51 +168,50 @@ class TrainingRouterV1:
         )
 
         self.router.add_api_route(
-            "/{training_job_id}/encoders",
+            '/{training_job_id}/encoders',
             self.get_encoders_for_training_job,
             response_model=Optional[Dict[str, str]],
             methods=['GET'],
             responses={
                 **nullable_response(),
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "The training job does not exist, or it failed or was "
-                    "cancelled without producing encoders."
+                    'description': 'The training job does not exist, or it failed or was '
+                    'cancelled without producing encoders.'
                 },
             },
         )
 
     async def get_progress(
-            self,
-            training_job_id: TrainingJobID,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> api.AutoTrainerProgress:
         with wrap_driver_errors():
             return await self._driver.get_training_progress(
-                ctx, training_job_id, ProjectID(project_id))
+                ctx, training_job_id, ProjectID(project_id)
+            )
 
     async def create(
-            self,
-            request: api.TrainingJobRequest,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: api.TrainingJobRequest,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> IDResponse:
         validate_custom_job_tags(request.job_tags)
         require_project_id_valid(ctx, project_id)
         reserved_training_job_id = TrainingJobID.make_random_id()
-        with wrap_driver_errors({
-                PredictiveQueryDoesNotExistError:
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                ModelPlanValueError:
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-        }):
+        with wrap_driver_errors(
+            {
+                PredictiveQueryDoesNotExistError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                ModelPlanValueError: HTTPStatus.UNPROCESSABLE_ENTITY,
+            }
+        ):
             job_id = await self._driver.start_training_job_v2(
                 ctx=ctx,
                 request=TrainingJobInternalRequest(
                     pquery_id=request.pquery_id,
-                    model_plan=internal_model_plan_from_public(
-                        request.model_plan),
+                    model_plan=internal_model_plan_from_public(request.model_plan),
                     job_tags=request.job_tags,
                     graph_snapshot_id=request.graph_snapshot_id,
                     train_table_job_id=request.train_table_job_id,
@@ -228,24 +226,23 @@ class TrainingRouterV1:
         return IDResponse(job_id)
 
     async def get(
-            self,
-            training_job_id: TrainingJobID,
-            project_id: Annotated[Optional[str], Query()] = None,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        project_id: Annotated[Optional[str], Query()] = None,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> api.TrainingJobResource:
         with wrap_driver_errors():
             training_job = await self._driver.get_training_job(
                 ctx,
                 training_job_id,
                 strip_expensive_fields=False,
-                project_id=(ProjectID(project_id)
-                            if project_id is not None else None),
+                project_id=(ProjectID(project_id) if project_id is not None else None),
             )
 
         if training_job is None:
             raise HTTPException(
-                HTTPStatus.NOT_FOUND,
-                f'Training job {training_job_id} is not found.')
+                HTTPStatus.NOT_FOUND, f'Training job {training_job_id} is not found.'
+            )
 
         tags = JobTags(
             timestamps=get_current_timestamps(),
@@ -254,9 +251,9 @@ class TrainingRouterV1:
         return self._make_training_job_resource_v1(training_job, tags)
 
     async def get_holdout_df(
-            self,
-            training_job_id: TrainingJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> str:
         training_job = await self.get(training_job_id, ctx=ctx)
 
@@ -264,23 +261,23 @@ class TrainingRouterV1:
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 f'Unable to access holdout data for training job in status: '
-                f'{training_job.job_status_report.status}')
+                f'{training_job.job_status_report.status}',
+            )
 
         with wrap_rpc_error():
-            job_home_dir = await self._ml_job_backend.get_job_home_dir(
-                training_job_id)
+            job_home_dir = await self._ml_job_backend.get_job_home_dir(training_job_id)
 
         home_dir_mgr = HomeDirManager(job_home_dir)
         task_name = training_job.tags.get(TAG_KEY_PQUERY_NAME) or 'NA'
-        best_trainer_dir = await home_dir_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_dir_mgr.get_best_trainer_dir.coroutine(task_name)
         holdout_df_path = os.path.join(best_trainer_dir, 'test_df.parquet')
         if not await fsutil.exists_async(holdout_df_path):
             log.error('Holdout df does not exist: %s', holdout_df_path)
             raise HTTPException(
                 HTTPStatus.NOT_FOUND,
                 f'Holdout dataset is missing for model training job, '
-                f'id={training_job_id}')
+                f'id={training_job_id}',
+            )
 
         helper = fsutil.get_presigned_helper(holdout_df_path)
         if helper is not None:
@@ -296,21 +293,21 @@ class TrainingRouterV1:
         log.info('Send cancellation request for job: %s', training_job_id)
         with wrap_driver_errors():
             is_cancelled = await self._driver.cancel_training_job(
-                ctx, training_job_id, ProjectID(project_id))
+                ctx, training_job_id, ProjectID(project_id)
+            )
             return api.CancelTrainingJobResponse(is_cancelled)
 
     async def delete(
-            self,
-            training_job_id: TrainingJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EmptyResponse:
         log.info('Deleting job: %s', training_job_id)
         job = await self.get(training_job_id, ctx=ctx)
         with wrap_driver_errors():
             await self._driver.delete_training_job(
-                ctx,
-                PredictiveQueryID.parse(job.config.pquery_id)[0],
-                training_job_id)
+                ctx, PredictiveQueryID.parse(job.config.pquery_id)[0], training_job_id
+            )
         return EmptyResponse()
 
     async def list(
@@ -325,9 +322,11 @@ class TrainingRouterV1:
         ctx: RequestContext = Depends(get_ctx),
     ) -> List[api.TrainingJobResource]:
         requested_project, project_scope_matches = await resolve_requested_project(
-            ctx, self._driver, project_id)
-        job_tags = await list_job_tags(JobType.TRAINING_JOB, request,
-                                       self._driver, response)
+            ctx, self._driver, project_id
+        )
+        job_tags = await list_job_tags(
+            JobType.TRAINING_JOB, request, self._driver, response
+        )
         if not project_scope_matches:
             return []
 
@@ -342,8 +341,9 @@ class TrainingRouterV1:
                 project_id=requested_project,
             )
 
-        filtered_jobs = filter_by_project(list(raw_jobs.values()), ctx,
-                                          lambda j: j.project_id)
+        filtered_jobs = filter_by_project(
+            list(raw_jobs.values()), ctx, lambda j: j.project_id
+        )
         jobs = [
             self._make_training_job_resource_v1(job, job_tags[job.id])
             for job in filtered_jobs
@@ -352,8 +352,8 @@ class TrainingRouterV1:
         return jobs
 
     def _make_training_job_resource_v1(
-            self, job_response: TrainingJobResponse,
-            tags: JobTags) -> api.TrainingJobResource:
+        self, job_response: TrainingJobResponse, tags: JobTags
+    ) -> api.TrainingJobResource:
         # Convert internal TrainingJobOutput to public TrainingJobResource
         created_at = _submission_time(job_response)
         job_response.pquery_id = job_response.pquery_id or tags.pquery_name
@@ -367,10 +367,10 @@ class TrainingRouterV1:
             job_summary = api.TrainingJobSummary(
                 total_elapsed_time=job.last_updated_at - job.start_time,
                 automl_experiments_completed=job.results.total_iterations,
-                eval_metrics=export_training_metrics(job.results))
+                eval_metrics=export_training_metrics(job.results),
+            )
 
-        tracking_url = (f'{get_base_kumo_url()}/'
-                        f'jobs/training/{job_response.id}')
+        tracking_url = f'{get_base_kumo_url()}/jobs/training/{job_response.id}'
 
         model_plan = ModelPlan()
         if isinstance(job_response.advanced_options, ModelPlan):
@@ -391,8 +391,9 @@ class TrainingRouterV1:
         else:
             if job_response.pquery_id is None:
                 raise ValueError(
-                    f"Job {job_response} does not have a query name "
-                    f"or frozen predictive query (definition) fingerprint ID.")
+                    f'Job {job_response} does not have a query name '
+                    f'or frozen predictive query (definition) fingerprint ID.'
+                )
             pq_id = job_response.pquery_id
 
         return api.TrainingJobResource(
@@ -407,37 +408,37 @@ class TrainingRouterV1:
                 warm_start_job_id=job_response.warm_start_job_id,
             ),
             job_status_report=api.JobStatusReport(
-                status=job.status, tracking_url=tracking_url,
+                status=job.status,
+                tracking_url=tracking_url,
                 # The public API schema currently requires this timestamp.
                 # Preserve its legacy submission-time value until kumo-api
                 # supports an optional execution-start field.
-                start_time=(job.start_time
-                            or created_at
-                            or job.last_updated_at),
-                end_time=(job.last_updated_at if job.status.is_terminal else
-                          None), event_log=[job.log],
+                start_time=(job.start_time or created_at or job.last_updated_at),
+                end_time=(job.last_updated_at if job.status.is_terminal else None),
+                event_log=[job.log],
                 validation_response=public_job_failure_validation(
                     job_response.execution.failure_info,
                     title='Training failed',
-                )),
+                ),
+            ),
             result=job_summary,
             created_at=created_at,
             tags=tags.tags,
         )
 
     async def update_tags(
-            self,
-            training_job_id: TrainingJobID,
-            request: Request,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        request: Request,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> PatchResponse:
         job = await self.get(training_job_id, ctx=ctx)
-        return await update_job_tags(JobType.TRAINING_JOB, training_job_id,
-                                     job.project_id, request, self._driver)
+        return await update_job_tags(
+            JobType.TRAINING_JOB, training_job_id, job.project_id, request, self._driver
+        )
 
     async def get_encoders_for_training_job(
-        self, training_job_id: TrainingJobID,
-        ctx: RequestContext = Depends(get_ctx)
+        self, training_job_id: TrainingJobID, ctx: RequestContext = Depends(get_ctx)
     ) -> Optional[Dict[str, str]]:
         """
         Returns the encoders used for a specific training job.
@@ -460,4 +461,5 @@ class TrainingRouterV1:
         """
         with wrap_driver_errors():
             return await self._driver.get_encoders_for_training_job(
-                ctx, training_job_id)
+                ctx, training_job_id
+            )

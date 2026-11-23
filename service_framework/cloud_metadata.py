@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 
 class CloudMetadataProvider(ABC):
     """Abstract interface for cloud provider metadata services."""
+
     @abstractmethod
     def get_instance_id(self) -> str:
         """Get the current instance/node ID."""
@@ -32,6 +33,7 @@ class AWSMetadataProvider(CloudMetadataProvider):
         self._is_available = None  # Cache availability check
         try:
             from ec2_metadata import ec2_metadata
+
             self._ec2_metadata = ec2_metadata
         except ImportError:
             pass
@@ -72,6 +74,7 @@ class AWSMetadataProvider(CloudMetadataProvider):
 
 class GCPMetadataProvider(CloudMetadataProvider):
     """GCP-specific metadata provider (minimal placeholder)."""
+
     def get_instance_id(self) -> str:
         """Get GCP instance ID or fallback to hostname."""
         # TODO: Implement when GCP support is needed
@@ -85,6 +88,7 @@ class GCPMetadataProvider(CloudMetadataProvider):
 
 class AzureMetadataProvider(CloudMetadataProvider):
     """Azure-specific metadata provider (minimal placeholder)."""
+
     def get_instance_id(self) -> str:
         """Get Azure instance ID or fallback to hostname."""
         # TODO: Implement when Azure support is needed
@@ -98,6 +102,7 @@ class AzureMetadataProvider(CloudMetadataProvider):
 
 class LocalMetadataProvider(CloudMetadataProvider):
     """Fallback metadata provider for local/development environments."""
+
     def get_instance_id(self) -> str:
         """Return hostname as instance ID."""
         return socket.gethostname()
@@ -125,13 +130,11 @@ class CloudMetadataFactory:
             provider = provider_cls()
             provider_name = provider_cls.__name__
             if provider.is_available():
-                logger.info(f"Using cloud metadata provider: {provider_name}")
+                logger.info(f'Using cloud metadata provider: {provider_name}')
                 return provider
             else:
-                logger.debug(
-                    f"Cloud metadata provider {provider_name} not available")
+                logger.debug(f'Cloud metadata provider {provider_name} not available')
 
         # Fallback to local provider
-        logger.info(
-            "Using fallback LocalMetadataProvider (no cloud service detected)")
+        logger.info('Using fallback LocalMetadataProvider (no cloud service detected)')
         return LocalMetadataProvider()

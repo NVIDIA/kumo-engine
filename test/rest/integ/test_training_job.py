@@ -48,33 +48,37 @@ def _training_spec() -> TrainingSpec:
     return TrainingSpec(
         predictive_query=PredictiveQueryV2Config(
             graph=GraphConfig(),
-            name="name",
+            name='name',
             validated_predictive_query=ValidatedPredictiveQuery(
-                entity_ast=Column(fqn="entity.entity"),
-                target_ast=Column(fqn="entity.target"),
+                entity_ast=Column(fqn='entity.entity'),
+                target_ast=Column(fqn='entity.target'),
             ),
         ),
         advanced_options=ModelPlan(),
-        graph_id=GraphIDv1("graph_name"),
-        predictive_query_id=PredictiveQueryID("name"),
+        graph_id=GraphIDv1('graph_name'),
+        predictive_query_id=PredictiveQueryID('name'),
         split=RandomSplit([0.8, 0.1, 0.1]).config(),
     )
 
 
 @pytest.mark.asyncio
-async def test_error_handling(temporal_workers_ready: bool, ctx: RequestContext,
-                              deploy_env_config: DeployEnvConfig,
-                              ml_backend: MLJobBackend,
-                              temporal_client: TemporalClient,
-                              default_project_id: str):
+async def test_error_handling(
+    temporal_workers_ready: bool,
+    ctx: RequestContext,
+    deploy_env_config: DeployEnvConfig,
+    ml_backend: MLJobBackend,
+    temporal_client: TemporalClient,
+    default_project_id: str,
+):
     # Test that an error during job execution will result in the job entering
     # the FAILED state, and capture the error message and stacktrace
     spec = _training_spec()
-    job_settings = MLJobSettings(raise_fake_error=True,
-                                 use_fake_job_backend=True)
+    job_settings = MLJobSettings(raise_fake_error=True, use_fake_job_backend=True)
     from rest.config.graph_v2 import GraphDefinition
+
     dummy_graph_compute_input = GraphDataComputeInput(
-        'graph', 'graph', {}, {}, {}, GraphDefinition(tables={}, col_groups=[]))
+        'graph', 'graph', {}, {}, {}, GraphDefinition(tables={}, col_groups=[])
+    )
     job_id = await ml_backend.start_training(
         None,
         dummy_graph_compute_input,
@@ -93,8 +97,7 @@ async def test_error_handling(temporal_workers_ready: bool, ctx: RequestContext,
     client = await temporal_client.get()
     with TemporaryDirectory() as dir:
         job_config_path = os.path.join(dir, 'job_config.json')
-        await save_json.coroutine(JobConfig('home_dir', 'task_name'),
-                                  job_config_path)
+        await save_json.coroutine(JobConfig('home_dir', 'task_name'), job_config_path)
         await client.execute_workflow(
             TrainingJobWorkflow.run,
             id=TrainingJobWorkflow.generate_wf_id(job_id),
@@ -121,20 +124,19 @@ def test_create_train_job(
     # the activity-side authority resolver in that same mode.
     monkeypatch.setenv('DISABLE_AUTH', 'true')
     graph_definition_internal = GraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
 
     # Even though the training job will create the graph, we need to create it
     # upfront so that model_plan request can work.
     graph_id = post_and_expect_success(
         client,
-        (f'/v1/graphs/?project_id={default_project_id}'
-         '&skip_validation=true'),
+        (f'/v1/graphs/?project_id={default_project_id}&skip_validation=true'),
         graph_definition_v2,
         IDResponse,
     )
 
-    pquery_str = (
-        'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id')
+    pquery_str = 'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id'
     payload = plan_api.SuggestModelPlanRequest(
         query_string=pquery_str,
         graph_id=graph_id.id,
@@ -144,8 +146,7 @@ def test_create_train_job(
 
     model_plan = post_and_expect_success(
         client=client,
-        path=(f'/v1/predictive_queries/model_plan?project_id='
-              f'{default_project_id}'),
+        path=(f'/v1/predictive_queries/model_plan?project_id={default_project_id}'),
         payload=payload,
         response_type=ModelPlanResponse,
     )
@@ -154,8 +155,7 @@ def test_create_train_job(
         tags=['training_job', 'ltv'],
         predictive_query=pquery_str,
         graph_definition=graph_definition_internal,
-        training_table_gen_plan=model_plan.suggested_model_plan.model_plan.
-        training_table_generation,
+        training_table_gen_plan=model_plan.suggested_model_plan.model_plan.training_table_generation,
         model_plan=model_plan.suggested_model_plan.model_plan,
         project_id=default_project_id,
     )
@@ -169,8 +169,7 @@ def test_create_train_job(
 
     assert response is not None
 
-    jobs_request = ListJobsQuery(project_id=default_project_id, limit=20,
-                                 page=0)
+    jobs_request = ListJobsQuery(project_id=default_project_id, limit=20, page=0)
     jobs_response = post_and_expect_success(
         client,
         '/v0/jobs/',
@@ -182,13 +181,13 @@ def test_create_train_job(
     # Note that list jobs doesn't return graph snapshot job
     assert len(jobs_response.jobs) == 2
     assert any(
-        job.job_id.startswith('gen-traintable-job')
-        for job in jobs_response.jobs)
-    assert any(
-        job.job_id.startswith('trainingjob') for job in jobs_response.jobs)
+        job.job_id.startswith('gen-traintable-job') for job in jobs_response.jobs
+    )
+    assert any(job.job_id.startswith('trainingjob') for job in jobs_response.jobs)
     assert jobs_response.jobs[0].source == 'UI'
     job_with_tags = [
-        job for job in jobs_response.jobs
+        job
+        for job in jobs_response.jobs
         if 'training_job' in job.metadata.tags and 'ltv' in job.metadata.tags
     ]
     assert job_with_tags is not None

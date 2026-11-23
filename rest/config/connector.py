@@ -34,23 +34,27 @@ from kumo.connector import (
 )
 from kumo.validation import ValidationResponse
 from statedb.config.common import SourceColumn, TableLink
-from statedb.config.connector import \
-    ADLSConnectorResourceConfig as SerializedADLSConnectorResourceConfig
-from statedb.config.connector import \
-    BigQueryConnectorResourceConfig as \
-    SerializedBigQueryConnectorResourceConfig
-from statedb.config.connector import \
-    DatabricksConnectorResourceConfig as \
-    SerializedDatabricksConnectorResourceConfig
-from statedb.config.connector import \
-    FileConnectorResourceConfig as SerializedFileConnectorResourceConfig
-from statedb.config.connector import \
-    GCSConnectorResourceConfig as SerializedGCSConnectorResourceConfig
-from statedb.config.connector import \
-    S3ConnectorResourceConfig as SerializedS3ConnectorResourceConfig
-from statedb.config.connector import \
-    SnowflakeConnectorResourceConfig as \
-    SerializedSnowflakeConnectorResourceConfig
+from statedb.config.connector import (
+    ADLSConnectorResourceConfig as SerializedADLSConnectorResourceConfig,
+)
+from statedb.config.connector import (
+    BigQueryConnectorResourceConfig as SerializedBigQueryConnectorResourceConfig,
+)
+from statedb.config.connector import (
+    DatabricksConnectorResourceConfig as SerializedDatabricksConnectorResourceConfig,
+)
+from statedb.config.connector import (
+    FileConnectorResourceConfig as SerializedFileConnectorResourceConfig,
+)
+from statedb.config.connector import (
+    GCSConnectorResourceConfig as SerializedGCSConnectorResourceConfig,
+)
+from statedb.config.connector import (
+    S3ConnectorResourceConfig as SerializedS3ConnectorResourceConfig,
+)
+from statedb.config.connector import (
+    SnowflakeConnectorResourceConfig as SerializedSnowflakeConnectorResourceConfig,
+)
 
 
 def _relative_path_within_root(path: str, prefix: str) -> str:
@@ -59,21 +63,24 @@ def _relative_path_within_root(path: str, prefix: str) -> str:
         return path
     if not path.startswith(root + '/'):
         raise ValueError('Full URI is outside the selected connector target')
-    relative = path[len(root) + 1:]
+    relative = path[len(root) + 1 :]
     if not relative:
         raise ValueError('Object coordinate must identify a path below root')
     return relative
 
 
 def object_store_source_for_connector(
-    config: api.S3ConnectorResourceConfig | api.GCSConnectorResourceConfig
+    config: api.S3ConnectorResourceConfig
+    | api.GCSConnectorResourceConfig
     | api.ADLSConnectorResourceConfig,
-    source: str | source_api.S3Source | source_api.GCSSource
-    | source_api.ADLSSource,
+    source: str | source_api.S3Source | source_api.GCSSource | source_api.ADLSSource,
 ) -> source_api.S3Source | source_api.GCSSource | source_api.ADLSSource:
     """Normalize one source coordinate against its authorized target mode."""
-    coordinate = (source if isinstance(source, str) else getattr(
-        source, 'path', getattr(source, 'uri', None)))
+    coordinate = (
+        source
+        if isinstance(source, str)
+        else getattr(source, 'path', getattr(source, 'uri', None))
+    )
     if coordinate is None:
         raise TypeError(f'Unsupported object-store source: {source}')
     target = config.target
@@ -105,10 +112,12 @@ def object_store_source_for_connector(
         if '://' not in coordinate:
             return source_api.ADLSRelativeSource(path=coordinate)
         uri = ParseURI(normalize_adls_source_uri(coordinate))
-        if (not isinstance(uri, ADLSURI)
-                or uri.storage_account != target.storage_account
-                or uri.container != target.filesystem
-                or uri.endpoint_suffix != target.endpoint_suffix):
+        if (
+            not isinstance(uri, ADLSURI)
+            or uri.storage_account != target.storage_account
+            or uri.container != target.filesystem
+            or uri.endpoint_suffix != target.endpoint_suffix
+        ):
             raise ValueError('Full ADLS URI is outside the selected connector')
         relative = _relative_path_within_root(uri.path, target.prefix)
         return source_api.ADLSRelativeSource(path=relative)
@@ -125,24 +134,23 @@ def object_store_source_for_runtime_connector(
         raise TypeError(f'Unsupported object-store source: {source}')
 
     if isinstance(connector, AnyURIS3Connector):
-        config = api.S3ConnectorResourceConfig(
-            target=api.S3AnyURIConnectorTarget())
+        config = api.S3ConnectorResourceConfig(target=api.S3AnyURIConnectorTarget())
     elif isinstance(connector, AnyURIGCSConnector):
-        config = api.GCSConnectorResourceConfig(
-            target=api.GCSAnyURIConnectorTarget())
+        config = api.GCSConnectorResourceConfig(target=api.GCSAnyURIConnectorTarget())
     elif isinstance(connector, AnyURIADLSConnector):
-        config = api.ADLSConnectorResourceConfig(
-            target=api.ADLSAnyURIConnectorTarget())
+        config = api.ADLSConnectorResourceConfig(target=api.ADLSAnyURIConnectorTarget())
     else:
         root = ParseURI(connector.root_dir)
         if isinstance(root, S3URI):
             config = api.S3ConnectorResourceConfig(
-                target=api.S3RootedConnectorTarget(bucket=root.bucket,
-                                                   prefix=root.path))
+                target=api.S3RootedConnectorTarget(bucket=root.bucket, prefix=root.path)
+            )
         elif isinstance(root, GCSURI):
             config = api.GCSConnectorResourceConfig(
-                target=api.GCSRootedConnectorTarget(bucket=root.bucket,
-                                                    prefix=root.path))
+                target=api.GCSRootedConnectorTarget(
+                    bucket=root.bucket, prefix=root.path
+                )
+            )
         elif isinstance(root, ADLSURI):
             config = api.ADLSConnectorResourceConfig(
                 target=api.ADLSRootedConnectorTarget(
@@ -150,10 +158,12 @@ def object_store_source_for_runtime_connector(
                     filesystem=root.container,
                     prefix=root.path,
                     endpoint_suffix=root.endpoint_suffix,
-                ))
+                )
+            )
         else:
-            raise ValueError('Custom prediction source requires an '
-                             'object-store connector')
+            raise ValueError(
+                'Custom prediction source requires an object-store connector'
+            )
 
     try:
         normalized = object_store_source_for_connector(config, source)
@@ -162,25 +172,28 @@ def object_store_source_for_runtime_connector(
             'Prediction source type or mode does not match its connector'
         ) from None
     if normalized != source:
-        raise ValueError(
-            'Prediction source type or mode does not match its connector')
+        raise ValueError('Prediction source type or mode does not match its connector')
     return coordinate
 
 
 def normalize_file_destination(
-    config: api.S3ConnectorResourceConfig | api.GCSConnectorResourceConfig
+    config: api.S3ConnectorResourceConfig
+    | api.GCSConnectorResourceConfig
     | api.ADLSConnectorResourceConfig,
     coordinate: str,
 ) -> str:
     """Normalize an object-store coordinate against its connector target."""
     target = config.target
-    rootless_targets = (api.S3AnyURIConnectorTarget,
-                        api.GCSAnyURIConnectorTarget,
-                        api.ADLSAnyURIConnectorTarget)
+    rootless_targets = (
+        api.S3AnyURIConnectorTarget,
+        api.GCSAnyURIConnectorTarget,
+        api.ADLSAnyURIConnectorTarget,
+    )
     if isinstance(target, rootless_targets):
         if '://' not in coordinate:
             raise ValueError(
-                'Rootless connectors require an exact full destination URI')
+                'Rootless connectors require an exact full destination URI'
+            )
         source = object_store_source_for_connector(config, coordinate)
         return source.uri
     source = object_store_source_for_connector(config, coordinate)
@@ -194,47 +207,50 @@ def normalize_file_destination(
 
 
 @kumo_dataclass
-class SnowflakeConnectorResourceConfig(
-        SerializedSnowflakeConnectorResourceConfig):
+class SnowflakeConnectorResourceConfig(SerializedSnowflakeConnectorResourceConfig):
     def as_connector(
         self,
         account: str,
         require_explicit_credentials: bool = False,
     ) -> SnowflakeConnector:
-        connector = SnowflakeConnector(name=self.name, account=account,
-                                       warehouse=self.warehouse,
-                                       database=self.database,
-                                       schema_name=self.schema_name,
-                                       role=self.role)
+        connector = SnowflakeConnector(
+            name=self.name,
+            account=account,
+            warehouse=self.warehouse,
+            database=self.database,
+            schema_name=self.schema_name,
+            role=self.role,
+        )
         if require_explicit_credentials:
             connector.require_explicit_credentials()
         return connector
 
     def get_snowflake_table_name(self, table_name: str) -> str:
-        return f"{self.database}.{self.schema_name}.{table_name}"
+        return f'{self.database}.{self.schema_name}.{table_name}'
 
 
 @kumo_dataclass
-class DatabricksConnectorResourceConfig(
-        SerializedDatabricksConnectorResourceConfig):
+class DatabricksConnectorResourceConfig(SerializedDatabricksConnectorResourceConfig):
     def as_connector(
         self,
         host: str,
         require_explicit_credentials: bool = False,
     ) -> DatabricksConnector:
-        connector = DatabricksConnector(name=self.name, host=host,
-                                        cluster_id=self.cluster_id or '',
-                                        warehouse_id=self.warehouse_id or '',
-                                        catalog=self.catalog,
-                                        schema_name=self.schema_name)
+        connector = DatabricksConnector(
+            name=self.name,
+            host=host,
+            cluster_id=self.cluster_id or '',
+            warehouse_id=self.warehouse_id or '',
+            catalog=self.catalog,
+            schema_name=self.schema_name,
+        )
         if require_explicit_credentials:
             connector.require_explicit_credentials()
         return connector
 
 
 @kumo_dataclass
-class BigQueryConnectorResourceConfig(SerializedBigQueryConnectorResourceConfig
-                                      ):
+class BigQueryConnectorResourceConfig(SerializedBigQueryConnectorResourceConfig):
     def as_connector(
         self,
         require_explicit_credentials: bool = False,
@@ -251,7 +267,7 @@ class BigQueryConnectorResourceConfig(SerializedBigQueryConnectorResourceConfig
         return connector
 
     def get_bigquery_table_name(self, table_name: str) -> str:
-        return f"{self.project_id}.{self.dataset_id}.{table_name}"
+        return f'{self.project_id}.{self.dataset_id}.{table_name}'
 
 
 @kumo_dataclass
@@ -261,11 +277,10 @@ class S3ConnectorResourceConfig(SerializedS3ConnectorResourceConfig):
         require_explicit_credentials: bool = False,
     ) -> CompositeFileConnector:
         if isinstance(self.target, api.S3RootedConnectorTarget):
-            root_dir = f"s3://{self.target.bucket}"
+            root_dir = f's3://{self.target.bucket}'
             if self.target.prefix:
-                root_dir = f"{root_dir}/{self.target.prefix.strip('/')}"
-            connector = CompositeFileConnector(name=self.name,
-                                               root_dir=root_dir)
+                root_dir = f'{root_dir}/{self.target.prefix.strip("/")}'
+            connector = CompositeFileConnector(name=self.name, root_dir=root_dir)
         elif isinstance(self.target, api.S3AnyURIConnectorTarget):
             connector = AnyURIS3Connector(name=self.name)
         else:
@@ -288,11 +303,10 @@ class GCSConnectorResourceConfig(SerializedGCSConnectorResourceConfig):
         require_explicit_credentials: bool = False,
     ) -> CompositeFileConnector:
         if isinstance(self.target, api.GCSRootedConnectorTarget):
-            root_dir = f"gs://{self.target.bucket}"
+            root_dir = f'gs://{self.target.bucket}'
             if self.target.prefix:
-                root_dir = f"{root_dir}/{self.target.prefix.strip('/')}"
-            connector = CompositeFileConnector(name=self.name,
-                                               root_dir=root_dir)
+                root_dir = f'{root_dir}/{self.target.prefix.strip("/")}'
+            connector = CompositeFileConnector(name=self.name, root_dir=root_dir)
         elif isinstance(self.target, api.GCSAnyURIConnectorTarget):
             connector = AnyURIGCSConnector(name=self.name)
         else:
@@ -309,13 +323,14 @@ class ADLSConnectorResourceConfig(SerializedADLSConnectorResourceConfig):
         require_explicit_credentials: bool = False,
     ) -> CompositeFileConnector:
         if isinstance(self.target, api.ADLSRootedConnectorTarget):
-            root_dir = (f"abfss://{self.target.filesystem}@"
-                        f"{self.target.storage_account}."
-                        f"{self.target.endpoint_suffix}")
+            root_dir = (
+                f'abfss://{self.target.filesystem}@'
+                f'{self.target.storage_account}.'
+                f'{self.target.endpoint_suffix}'
+            )
             if self.target.prefix:
-                root_dir = f"{root_dir}/{self.target.prefix.strip('/')}"
-            connector = CompositeFileConnector(name=self.name,
-                                               root_dir=root_dir)
+                root_dir = f'{root_dir}/{self.target.prefix.strip("/")}'
+            connector = CompositeFileConnector(name=self.name, root_dir=root_dir)
         elif isinstance(self.target, api.ADLSAnyURIConnectorTarget):
             connector = AnyURIADLSConnector(name=self.name)
         else:
@@ -338,6 +353,7 @@ class FileWithDepth:
 @kumo_dataclass
 class FileConnectorResourceConfig(SerializedFileConnectorResourceConfig):
     """Configuration for a project-owned internal file connector."""
+
     def as_connector(self) -> CompositeFileConnector:
         return CompositeFileConnector(name=self.name, root_dir=self.root_dir)
 
@@ -397,7 +413,7 @@ class SourceTable:
     downstream_table_ids: List[TableLink] = field(default_factory=list)
     # A source table can be invalid in case it violate our limits.
     valid: bool = True
-    reason: str = ""
+    reason: str = ''
     path: Optional[str] = None
 
 
@@ -412,7 +428,7 @@ class S3Policy:
     policy: str
 
 
-TEST_KUMO_FILE = "_TEST_KUMO_FILE"
+TEST_KUMO_FILE = '_TEST_KUMO_FILE'
 
 
 # S3PathArgs
@@ -435,7 +451,7 @@ class S3File:
     details: str  # Used to send reason for ignoring this file
 
     def startswith(self, prefix: str) -> Boolean:
-        return (self.file_name.startswith(prefix))
+        return self.file_name.startswith(prefix)
 
 
 # Data class to store Table name and other details for files in S3 path.

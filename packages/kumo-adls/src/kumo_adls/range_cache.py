@@ -16,8 +16,13 @@ class RangeBytes:
     Budgets cover payload bytes and entry count. Python key/container overhead
     is additional; filesystem namespaces prevent sharing across principals.
     """
-    def __init__(self, max_bytes=MAX_BYTES, max_entries=MAX_ENTRIES,
-                 max_entry_bytes=MAX_ENTRY_BYTES):
+
+    def __init__(
+        self,
+        max_bytes=MAX_BYTES,
+        max_entries=MAX_ENTRIES,
+        max_entry_bytes=MAX_ENTRY_BYTES,
+    ):
         self.max_bytes = max_bytes
         self.max_entries = max_entries
         self.max_entry_bytes = max_entry_bytes
@@ -35,10 +40,13 @@ class RangeBytes:
     def put(self, key, value):
         # Admit immutable, complete successful ranges only. Empty/error/short
         # responses must never turn into a later successful cache hit.
-        if (not isinstance(value, bytes) or not value
-                or len(value) > self.max_entry_bytes
-                or len(value) > self.max_bytes
-                or len(value) != key[-1] - key[-2]):
+        if (
+            not isinstance(value, bytes)
+            or not value
+            or len(value) > self.max_entry_bytes
+            or len(value) > self.max_bytes
+            or len(value) != key[-1] - key[-2]
+        ):
             return
         with self._lock:
             previous = self._entries.pop(key, None)
@@ -46,8 +54,7 @@ class RangeBytes:
                 self._bytes -= len(previous)
             self._entries[key] = value
             self._bytes += len(value)
-            while (self._bytes > self.max_bytes
-                   or len(self._entries) > self.max_entries):
+            while self._bytes > self.max_bytes or len(self._entries) > self.max_entries:
                 _, removed = self._entries.popitem(last=False)
                 self._bytes -= len(removed)
 

@@ -41,19 +41,24 @@ def _detailed_listing(children, listed=None):
             PathDetail(
                 path=entry,
                 is_directory=entry.rstrip('/') in children,
-            ) for entry in entries
+            )
+            for entry in entries
         ]
 
     return listdir
 
 
-@pytest.fixture(params=[
-    (AnyURIS3Connector, 's3', 's3://company-data/events/table.parquet'),
-    (AnyURIGCSConnector, 'gcs', 'gs://company-data/events/table.parquet'),
-    (AnyURIADLSConnector, 'adls',
-     ('abfss://events@company.dfs.core.windows.net/'
-      'tables/table.parquet')),
-])
+@pytest.fixture(
+    params=[
+        (AnyURIS3Connector, 's3', 's3://company-data/events/table.parquet'),
+        (AnyURIGCSConnector, 'gcs', 'gs://company-data/events/table.parquet'),
+        (
+            AnyURIADLSConnector,
+            'adls',
+            ('abfss://events@company.dfs.core.windows.net/tables/table.parquet'),
+        ),
+    ]
+)
 def connector_case(request):
     connector_type, provider, uri = request.param
     connector = connector_type(name=f'rootless_{provider}')
@@ -63,7 +68,8 @@ def connector_case(request):
 
 
 def test_exact_resolution_runs_only_under_attested_identity(
-        connector_case, monkeypatch):
+    connector_case, monkeypatch
+):
     connector, provider, uri = connector_case
 
     def exists(path):
@@ -81,8 +87,7 @@ def test_exact_resolution_runs_only_under_attested_identity(
     assert credentials_for_provider(provider) is None
 
 
-def test_exact_missing_uri_never_probes_suffixed_neighbor(
-        connector_case, monkeypatch):
+def test_exact_missing_uri_never_probes_suffixed_neighbor(connector_case, monkeypatch):
     connector, _provider, uri = connector_case
     coordinate = uri.rsplit('.', 1)[0]
     isdir = Mock(return_value=False)
@@ -94,23 +99,27 @@ def test_exact_missing_uri_never_probes_suffixed_neighbor(
         connector._get_path(coordinate)
 
     exists.assert_called_once_with(coordinate)
-    assert all(not call.args[0].endswith(('.csv', '.parquet'))
-               for call in exists.call_args_list)
+    assert all(
+        not call.args[0].endswith(('.csv', '.parquet'))
+        for call in exists.call_args_list
+    )
 
 
 @pytest.mark.parametrize(
     ('connector_type', 'provider', 'uri'),
     [
-        (AnyURIGCSConnector, 'gcs',
-         'gs://company-data/events/partitioned.parquet/'),
-        (AnyURIADLSConnector, 'adls',
-         ('abfss://events@company.dfs.core.windows.net/'
-          'tables/partitioned.parquet/')),
+        (AnyURIGCSConnector, 'gcs', 'gs://company-data/events/partitioned.parquet/'),
+        (
+            AnyURIADLSConnector,
+            'adls',
+            ('abfss://events@company.dfs.core.windows.net/tables/partitioned.parquet/'),
+        ),
     ],
     ids=['gcs', 'adls'],
 )
 def test_exact_partitioned_directory_preserves_one_trailing_slash(
-        connector_type, provider, uri, monkeypatch):
+    connector_type, provider, uri, monkeypatch
+):
     connector = connector_type(name=f'rootless_{provider}')
     connector.set_credentials({'provider': provider, 'credential': object()})
     connector.require_explicit_credentials()
@@ -118,9 +127,11 @@ def test_exact_partitioned_directory_preserves_one_trailing_slash(
     monkeypatch.setattr(
         fsutil,
         'listdir',
-        _detailed_listing({
-            uri.rstrip('/'): [f'{uri}part-0.parquet'],
-        }),
+        _detailed_listing(
+            {
+                uri.rstrip('/'): [f'{uri}part-0.parquet'],
+            }
+        ),
     )
 
     assert connector._get_path(uri) == uri
@@ -132,37 +143,39 @@ def test_exact_partitioned_directory_preserves_one_trailing_slash(
     [
         (AnyURIS3Connector, 's3', 's3://company-data/events'),
         (AnyURIGCSConnector, 'gcs', 'gs://company-data/events'),
-        (AnyURIADLSConnector, 'adls',
-         'abfss://events@company.dfs.core.windows.net/tables'),
+        (
+            AnyURIADLSConnector,
+            'adls',
+            'abfss://events@company.dfs.core.windows.net/tables',
+        ),
     ],
     ids=['s3', 'gcs', 'adls'],
 )
 @pytest.mark.parametrize('mode', ['rooted', 'any-uri'])
 def test_partitioned_dataset_infers_nested_parquet_via_bounded_discovery(
-        connector_type, provider, root, mode, monkeypatch):
+    connector_type, provider, root, mode, monkeypatch
+):
     dataset = f'{root}/partitioned'
     partitions = [f'{dataset}/year={year}' for year in (2025, 2026)]
     children = {
         dataset: partitions,
-        **{
-            partition: [f'{partition}/part-000.parquet']
-            for partition in partitions
-        },
+        **{partition: [f'{partition}/part-000.parquet'] for partition in partitions},
     }
     listed = []
 
-    monkeypatch.setattr(fsutil, 'isdir',
-                        lambda path: path.rstrip('/') in children)
+    monkeypatch.setattr(fsutil, 'isdir', lambda path: path.rstrip('/') in children)
     monkeypatch.setattr(fsutil, 'listdir', _detailed_listing(children, listed))
     if mode == 'rooted':
         connector = CompositeFileConnector('rooted', root_dir=root)
         table_name = 'partitioned'
     else:
         connector = connector_type(name=f'rootless_{provider}')
-        connector.set_credentials({
-            'provider': provider,
-            'credential': object(),
-        })
+        connector.set_credentials(
+            {
+                'provider': provider,
+                'credential': object(),
+            }
+        )
         connector.require_explicit_credentials()
         table_name = dataset
 
@@ -173,10 +186,11 @@ def test_partitioned_dataset_infers_nested_parquet_via_bounded_discovery(
     load = Mock(return_value=pd.DataFrame({'id': [1]}))
     monkeypatch.setattr(connector, '_load', load)
     monkeypatch.setattr(
-        fsutil, 'contains_subdir',
-        Mock(side_effect=AssertionError('Parquet traversal is supported')))
-    sample = connector._read_table_sample(None, table_name, num_rows=1,
-                                          frac=None)
+        fsutil,
+        'contains_subdir',
+        Mock(side_effect=AssertionError('Parquet traversal is supported')),
+    )
+    sample = connector._read_table_sample(None, table_name, num_rows=1, frac=None)
     assert sample['id'].tolist() == [1]
     load.assert_called_once()
 
@@ -189,8 +203,7 @@ def test_nested_csv_dataset_remains_unsupported(monkeypatch):
         dataset: [partition],
         partition: [f'{partition}/part-000.csv'],
     }
-    monkeypatch.setattr(fsutil, 'isdir',
-                        lambda path: path.rstrip('/') in children)
+    monkeypatch.setattr(fsutil, 'isdir', lambda path: path.rstrip('/') in children)
     monkeypatch.setattr(fsutil, 'listdir', _detailed_listing(children))
     monkeypatch.setattr(fsutil, 'contains_subdir', lambda path: path == dataset)
     connector = CompositeFileConnector('rooted', root_dir=root)
@@ -210,8 +223,7 @@ def test_nested_dataset_rejects_mixed_csv_and_parquet(monkeypatch):
             f'{partition}/part-001.parquet',
         ],
     }
-    monkeypatch.setattr(fsutil, 'isdir',
-                        lambda path: path.rstrip('/') in children)
+    monkeypatch.setattr(fsutil, 'isdir', lambda path: path.rstrip('/') in children)
     monkeypatch.setattr(fsutil, 'listdir', _detailed_listing(children))
     connector = CompositeFileConnector('rooted', root_dir=root)
 
@@ -221,15 +233,19 @@ def test_nested_dataset_rejects_mixed_csv_and_parquet(monkeypatch):
 
 @pytest.mark.parametrize('layout', ['single-file', 'flat', 'hive-nested'])
 def test_adls_parquet_dataset_range_reads_instead_of_localizing(
-        monkeypatch, layout, tmp_path):
+    monkeypatch, layout, tmp_path
+):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
     root = 'abfss://events@company.dfs.core.windows.net/tables/partitioned'
     relative = 'tables/partitioned'
-    parts = ([f'{relative}/year={year}/part.parquet' for year in (2024, 2025)]
-             if layout == 'hive-nested' else [f'{relative}/part.parquet'])
+    parts = (
+        [f'{relative}/year={year}/part.parquet' for year in (2024, 2025)]
+        if layout == 'hive-nested'
+        else [f'{relative}/part.parquet']
+    )
     for name in parts:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -247,8 +263,7 @@ def test_adls_parquet_dataset_range_reads_instead_of_localizing(
     copy_file.assert_not_called()
 
 
-def test_rootless_connector_never_attempts_discovery(connector_case,
-                                                     monkeypatch):
+def test_rootless_connector_never_attempts_discovery(connector_case, monkeypatch):
     connector, _provider, _uri = connector_case
     listdir = Mock(side_effect=AssertionError('must not discover storage'))
     monkeypatch.setattr(fsutil, 'listdir', listdir)
@@ -258,7 +273,8 @@ def test_rootless_connector_never_attempts_discovery(connector_case,
 
 
 def test_identity_scope_is_cleared_after_provider_exception(
-        connector_case, monkeypatch):
+    connector_case, monkeypatch
+):
     connector, provider, uri = connector_case
 
     def fail(_path):
@@ -271,27 +287,32 @@ def test_identity_scope_is_cleared_after_provider_exception(
     assert credentials_for_provider(provider) is None
 
 
-def test_rootless_connector_propagates_identity_to_file_delegates(
-        connector_case):
+def test_rootless_connector_propagates_identity_to_file_delegates(connector_case):
     connector, _provider, _uri = connector_case
     for child in connector.connectors.values():
         assert child._credentials is connector._credentials
         assert child._require_explicit_credentials is True
 
 
-@pytest.mark.parametrize('uri', [
-    'abfss://events@company.dfs.core.windows.net/table.parquet',
-    ('abfss://events@company.dfs.core.windows.net/path/'
-     'dfs.core.usgovcloudapi.net/table.parquet'),
-])
-def test_adls_identity_cloud_mismatch_rejected_before_filesystem_io(
-        monkeypatch, uri):
+@pytest.mark.parametrize(
+    'uri',
+    [
+        'abfss://events@company.dfs.core.windows.net/table.parquet',
+        (
+            'abfss://events@company.dfs.core.windows.net/path/'
+            'dfs.core.usgovcloudapi.net/table.parquet'
+        ),
+    ],
+)
+def test_adls_identity_cloud_mismatch_rejected_before_filesystem_io(monkeypatch, uri):
     connector = AnyURIADLSConnector(name='government_cloud')
-    connector.set_credentials({
-        'provider': 'adls',
-        'credential': object(),
-        'endpoint_suffix': 'dfs.core.usgovcloudapi.net',
-    })
+    connector.set_credentials(
+        {
+            'provider': 'adls',
+            'credential': object(),
+            'endpoint_suffix': 'dfs.core.usgovcloudapi.net',
+        }
+    )
     provider_io = Mock(side_effect=AssertionError('must not reach fsutil'))
     monkeypatch.setattr(fsutil, 'isdir', provider_io)
     monkeypatch.setattr(fsutil, 'exists', provider_io)
@@ -309,7 +330,8 @@ def test_adls_identity_cloud_mismatch_rejected_before_filesystem_io(
             GCSConnectorResourceConfig(
                 name='gcs',
                 target=data_source_api.GCSRootedConnectorTarget(
-                    bucket='customer-data', prefix='root'),
+                    bucket='customer-data', prefix='root'
+                ),
             ),
             'gs://customer-data/root/tables/orders.parquet',
             'tables/orders.parquet',
@@ -324,8 +346,10 @@ def test_adls_identity_cloud_mismatch_rejected_before_filesystem_io(
                     prefix='root',
                 ),
             ),
-            ('abfss://filesystem@account.dfs.core.windows.net/'
-             'root/tables/orders.parquet'),
+            (
+                'abfss://filesystem@account.dfs.core.windows.net/'
+                'root/tables/orders.parquet'
+            ),
             'tables/orders.parquet',
             ADLSSourceTable,
         ),
@@ -333,52 +357,56 @@ def test_adls_identity_cloud_mismatch_rejected_before_filesystem_io(
     ids=['gcs', 'adls'],
 )
 def test_rooted_full_source_canonicalizes_to_relative_fingerprint(
-        config, full_path, relative_path, table_type):
+    config, full_path, relative_path, table_type
+):
     full_source = object_store_source_for_connector(config, full_path)
     relative_source = object_store_source_for_connector(config, relative_path)
 
     assert full_source == relative_source
-    assert table_type(
-        connector_id=config.name,
-        source=full_source,
-        file_type=source_api.FileType.PARQUET,
-    ).fpid == table_type(
-        connector_id=config.name,
-        source=relative_source,
-        file_type=source_api.FileType.PARQUET,
-    ).fpid
+    assert (
+        table_type(
+            connector_id=config.name,
+            source=full_source,
+            file_type=source_api.FileType.PARQUET,
+        ).fpid
+        == table_type(
+            connector_id=config.name,
+            source=relative_source,
+            file_type=source_api.FileType.PARQUET,
+        ).fpid
+    )
 
 
 @pytest.mark.parametrize(
     ('table_type', 'first', 'second'),
     [
-        (GCSSourceTable, 'gs://first/table.parquet',
-         'gs://second/table.parquet'),
-        (GCSSourceTable, 'gs://bucket/first.parquet',
-         'gs://bucket/second.parquet'),
-        (ADLSSourceTable,
-         'abfss://data@first.dfs.core.windows.net/table.parquet',
-         'abfss://data@second.dfs.core.windows.net/table.parquet'),
-        (ADLSSourceTable,
-         'abfss://first@account.dfs.core.windows.net/table.parquet',
-         'abfss://second@account.dfs.core.windows.net/table.parquet'),
-        (ADLSSourceTable,
-         'abfss://data@account.dfs.core.windows.net/first.parquet',
-         'abfss://data@account.dfs.core.windows.net/second.parquet'),
+        (GCSSourceTable, 'gs://first/table.parquet', 'gs://second/table.parquet'),
+        (GCSSourceTable, 'gs://bucket/first.parquet', 'gs://bucket/second.parquet'),
+        (
+            ADLSSourceTable,
+            'abfss://data@first.dfs.core.windows.net/table.parquet',
+            'abfss://data@second.dfs.core.windows.net/table.parquet',
+        ),
+        (
+            ADLSSourceTable,
+            'abfss://first@account.dfs.core.windows.net/table.parquet',
+            'abfss://second@account.dfs.core.windows.net/table.parquet',
+        ),
+        (
+            ADLSSourceTable,
+            'abfss://data@account.dfs.core.windows.net/first.parquet',
+            'abfss://data@account.dfs.core.windows.net/second.parquet',
+        ),
     ],
-    ids=[
-        'gcs-bucket', 'gcs-path', 'adls-account', 'adls-filesystem', 'adls-path'
-    ],
+    ids=['gcs-bucket', 'gcs-path', 'adls-account', 'adls-filesystem', 'adls-path'],
 )
 def test_any_uri_fingerprint_distinguishes_storage_coordinates(
-        table_type, first, second):
+    table_type, first, second
+):
     def fingerprint(uri):
         return table_type(
             connector_id='connector',
-            source={
-                'mode': 'uri',
-                'uri': uri
-            },
+            source={'mode': 'uri', 'uri': uri},
             file_type=source_api.FileType.PARQUET,
         ).fpid
 
@@ -390,13 +418,14 @@ def test_any_uri_fingerprint_distinguishes_storage_coordinates(
     [
         (
             GCSConnectorResourceConfig(
-                name='gcs', target=data_source_api.GCSAnyURIConnectorTarget()),
+                name='gcs', target=data_source_api.GCSAnyURIConnectorTarget()
+            ),
             'tables/orders.parquet',
         ),
         (
             ADLSConnectorResourceConfig(
-                name='adls',
-                target=data_source_api.ADLSAnyURIConnectorTarget()),
+                name='adls', target=data_source_api.ADLSAnyURIConnectorTarget()
+            ),
             'tables/orders.parquet',
         ),
     ],
@@ -407,26 +436,40 @@ def test_any_uri_source_requires_exact_full_coordinate(config, coordinate):
         object_store_source_for_connector(config, coordinate)
 
 
-@pytest.mark.parametrize(('connector_type', 'provider', 'uris'), [
-    (AnyURIGCSConnector, 'gcs',
-     ('gs://first/table.parquet', 'gs://second/table.parquet')),
-    (AnyURIADLSConnector, 'adls',
-     ('abfss://filesystem@first.dfs.core.windows.net/table.parquet',
-      'abfss://filesystem@second.dfs.core.windows.net/table.parquet')),
-])
+@pytest.mark.parametrize(
+    ('connector_type', 'provider', 'uris'),
+    [
+        (
+            AnyURIGCSConnector,
+            'gcs',
+            ('gs://first/table.parquet', 'gs://second/table.parquet'),
+        ),
+        (
+            AnyURIADLSConnector,
+            'adls',
+            (
+                'abfss://filesystem@first.dfs.core.windows.net/table.parquet',
+                'abfss://filesystem@second.dfs.core.windows.net/table.parquet',
+            ),
+        ),
+    ],
+)
 def test_concurrent_exact_uri_operations_cannot_observe_other_identity(
-        connector_type, provider, uris, monkeypatch):
+    connector_type, provider, uris, monkeypatch
+):
     barrier = threading.Barrier(2)
     connectors = []
     expected = {}
     for index, uri in enumerate(uris):
         connector = connector_type(name=f'connector_{index}')
         marker = f'identity-{index}'
-        connector.set_credentials({
-            'provider': provider,
-            'credential': object(),
-            'marker': marker,
-        })
+        connector.set_credentials(
+            {
+                'provider': provider,
+                'credential': object(),
+                'marker': marker,
+            }
+        )
         connector.require_explicit_credentials()
         connectors.append(connector)
         expected[uri] = marker
@@ -451,5 +494,6 @@ def test_concurrent_exact_uri_operations_cannot_observe_other_identity(
             executor.map(
                 lambda pair: pair[0]._get_path(pair[1]),
                 zip(connectors, uris),
-            ))
+            )
+        )
     assert results == list(uris)

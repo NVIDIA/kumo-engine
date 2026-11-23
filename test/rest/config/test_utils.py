@@ -11,10 +11,10 @@ def test_utils():
         Metric('train_error', 0.5),
         Metric('val_error', 0.5),
         Metric('test_auc', 0.5),
-        Metric('test_error', 0.5)
+        Metric('test_error', 0.5),
     ]
 
-    metrics_filtered = filter_metrics(metrics, ["train_.*", "val_.*"])
+    metrics_filtered = filter_metrics(metrics, ['train_.*', 'val_.*'])
     assert len(metrics_filtered) == 2
     assert all('test_' in metric.name for metric in metrics_filtered)
 

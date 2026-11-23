@@ -27,23 +27,24 @@ def measure_time_and_memory(num_iters: int = 1):
     torch.cuda.synchronize()
     gpu_time = start.elapsed_time(end)
     gpu_time_in_s = gpu_time / 1000
-    print(f"total time: {gpu_time_in_s:.3f} s, "
-          f"average per-iter time: {gpu_time / num_iters:.3f} ms, "
-          f"peakmem: {torch.cuda.max_memory_allocated() / 2**30:.3f} GB")
+    print(
+        f'total time: {gpu_time_in_s:.3f} s, '
+        f'average per-iter time: {gpu_time / num_iters:.3f} ms, '
+        f'peakmem: {torch.cuda.max_memory_allocated() / 2**30:.3f} GB'
+    )
 
 
 def _get_filename_prefix() -> str:
     hostname = socket.gethostname()
-    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    return f"{hostname}_{timestamp}"
+    timestamp = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+    return f'{hostname}_{timestamp}'
 
 
 def _trace_handler(prof: torch.profiler.profile):
     """Hook to be called when the profiler is done profiling."""
     filename_prefix = _get_filename_prefix()
-    prof.export_chrome_trace(f"{filename_prefix}.json")
-    logger.warning(
-        f"Open '{filename_prefix}.json' in 'https://ui.perfetto.dev'.")
+    prof.export_chrome_trace(f'{filename_prefix}.json')
+    logger.warning(f"Open '{filename_prefix}.json' in 'https://ui.perfetto.dev'.")
 
 
 # Alias to PyTorch profiler but with a callback hook saving a trace file.
@@ -69,7 +70,7 @@ def profile_memory():
     torch.cuda.memory._record_memory_history(max_entries=100_000)
     yield
     filename_prefix = _get_filename_prefix()
-    torch.cuda.memory._dump_snapshot(f"{filename_prefix}.pickle")
+    torch.cuda.memory._dump_snapshot(f'{filename_prefix}.pickle')
     torch.cuda.memory._record_memory_history(enabled=None)  # type: ignore
     logger.warning(
         f"Open '{filename_prefix}.pickle' in 'https://pytorch.org/memory_viz'."

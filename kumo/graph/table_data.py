@@ -57,6 +57,7 @@ class TableData:
         data_version (str, optional): The version number of the data that is
             used for materialization of this table. (default: :obj:`"-1"`)
     """
+
     def __init__(
         self,
         table: Table,
@@ -87,10 +88,11 @@ class TableData:
             assert fkey.dst_table is not None
             if not is_fully_qualified_name(fkey.dst_table):
                 raise ValueError(
-                    f"The destination table of the foreign key {fkey} is not "
-                    f"fully qualified (got {fkey.dst_table}).")
+                    f'The destination table of the foreign key {fkey} is not '
+                    f'fully qualified (got {fkey.dst_table}).'
+                )
 
-        logger.info(f"Materializing table {self.name} (in-memory).")
+        logger.info(f'Materializing table {self.name} (in-memory).')
 
         # TODO(manan): this is currently required, since we `read_parquet`
         # to get foreign key data from the pointed-to table. Ensure that
@@ -98,7 +100,7 @@ class TableData:
         assert isinstance(table.connector, ParquetConnector)
         self.persist_table(table)
 
-        logger.info(f"Completed materializing table {self.name}.")
+        logger.info(f'Completed materializing table {self.name}.')
 
     def persist_table(self, table: Table):
         r"""Initializes the TableData object with attributes derived from the
@@ -127,9 +129,11 @@ class TableData:
             self.in_memory_attrs.weight_col = getattr(table, 'weight_col', None)
 
         self.in_memory_attrs.entity_include_bit_col = getattr(
-            table, 'entity_include_bit_col', None)
-        self.in_memory_attrs.is_pred = (isinstance(table, TrainingTable)
-                                        and table.is_pred)
+            table, 'entity_include_bit_col', None
+        )
+        self.in_memory_attrs.is_pred = (
+            isinstance(table, TrainingTable) and table.is_pred
+        )
 
         path = table.connector._get_path(table.source_name)  # type: ignore
         for fkey in self._fkey_data:
@@ -155,12 +159,14 @@ class TableData:
         return self.in_memory_attrs.is_pred
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}(\n'
-                f'  name={self.name},\n'
-                f'  data_version={self.data_version},\n'
-                f'  persist_dir=MEMORY,\n'
-                f'  num_nodes={self.num_nodes}\n'
-                f')')
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  name={self.name},\n'
+            f'  data_version={self.data_version},\n'
+            f'  persist_dir=MEMORY,\n'
+            f'  num_nodes={self.num_nodes}\n'
+            f')'
+        )
 
     # Lazily Loaded In-Memory Properties ######################################
     #
@@ -182,8 +188,9 @@ class TableData:
             return self._data  # pylint: disable-all
 
         logger.info(
-            f"Reading raw table data for table {self.name} into memory. "
-            f"Please ensure this is intended.")
+            f'Reading raw table data for table {self.name} into memory. '
+            f'Please ensure this is intended.'
+        )
 
         assert self.in_memory_attrs.connector is not None
         assert self.table_metadata_config is not None
@@ -195,13 +202,10 @@ class TableData:
         if self.in_memory_attrs.weight_col is not None:
             cols.append(self.in_memory_attrs.weight_col.base_config())
         if self.in_memory_attrs.target_col is not None:
-            assert self.in_memory_attrs.target_col.name in [
-                c.name for c in cols
-            ]
+            assert self.in_memory_attrs.target_col.name in [c.name for c in cols]
         # NOTE: `entity_include_bit_col` is not stored in the
         # table metadata config, so we need to add it as well.
-        if (self.in_memory_attrs.entity_include_bit_col is not None
-                and not self.is_pred):
+        if self.in_memory_attrs.entity_include_bit_col is not None and not self.is_pred:
             cols.append(self.in_memory_attrs.entity_include_bit_col.config())
 
         targets_df: pd.DataFrame | None = None
@@ -209,8 +213,9 @@ class TableData:
             target_col_name = self.table_metadata_config.fkeys[-1].name
             logger.info(
                 f"Dropping target column name '{target_col_name}' "
-                f"from {[c.name for c in cols]} since the column is not in "
-                f"the prediction table with `ALLOW_ARRAY_TARGETS=1`.")
+                f'from {[c.name for c in cols]} since the column is not in '
+                f'the prediction table with `ALLOW_ARRAY_TARGETS=1`.'
+            )
             cols = [c for c in cols if c.name != target_col_name]
             targets_df = self.in_memory_attrs.connector.read_table(
                 TARGET_FILE_NAME,
@@ -260,11 +265,10 @@ class TableData:
                 # Only read the weight column:
                 assert self.in_memory_attrs.connector is not None
                 weight = self.in_memory_attrs.connector.read_table(
-                    self.table_name,
-                    cols=[weight_col.base_config()])[weight_col.name]
+                    self.table_name, cols=[weight_col.base_config()]
+                )[weight_col.name]
             if getattr(self, 'count', None) is not None:
-                self._weight = torch.from_numpy(
-                    weight.explode().astype(float).values)
+                self._weight = torch.from_numpy(weight.explode().astype(float).values)
             else:
                 self._weight = torch.from_numpy(weight.values)
         return self._weight
@@ -285,13 +289,16 @@ class TableData:
                 # Only read the target column:
                 assert self.in_memory_attrs.connector is not None
                 target = self.in_memory_attrs.connector.read_table(
-                    self.table_name,
-                    cols=[target_col.base_config()])[target_col.name]
+                    self.table_name, cols=[target_col.base_config()]
+                )[target_col.name]
             target = target.values
-            if isinstance(target, (
+            if isinstance(
+                target,
+                (
                     pd.arrays.BooleanArray,
                     pd.arrays.IntegerArray,
-            )):
+                ),
+            ):
                 target = target._data
             target = torch.from_numpy(target)
             if target.is_floating_point():  # Cast to `torch.float32`:
@@ -315,8 +322,8 @@ class TableData:
                 # Only read the time column:
                 assert self.in_memory_attrs.connector is not None
                 time = self.in_memory_attrs.connector.read_table(
-                    self.table_name,
-                    cols=[time_col.base_config()])[time_col.name]
+                    self.table_name, cols=[time_col.base_config()]
+                )[time_col.name]
             if time_col.is_pseudo:
                 # pseudo time is guaranteed to have no NA timestamp.
                 # Force ns resolution before int64: under pandas >= 2
@@ -324,14 +331,16 @@ class TableData:
                 # (a ``datetime64[s]`` column would yield SECONDS, ~1e9x off),
                 # whereas Kumo treats every timestamp tensor as nanoseconds.
                 time = torch.from_numpy(
-                    time.astype('datetime64[ns]').astype('int64').values)
+                    time.astype('datetime64[ns]').astype('int64').values
+                )
             else:
                 # Normalize missing timestamps to the sentinel expected by
                 # downstream tensor consumers.
                 mask = torch.from_numpy(time.isna().values)
                 # Resolution-stable ns conversion (see pseudo branch above).
                 time = torch.from_numpy(
-                    time.astype('datetime64[ns]').astype('int64').values)
+                    time.astype('datetime64[ns]').astype('int64').values
+                )
                 time[mask] = torch.iinfo(time.dtype).max
             self._time = time
         return self._time
@@ -352,9 +361,8 @@ class TableData:
                 # Only read the time column:
                 assert self.in_memory_attrs.connector is not None
                 entity_include_bit = self.in_memory_attrs.connector.read_table(
-                    self.table_name,
-                    cols=[entity_include_bit_col.base_config()
-                          ])[entity_include_bit_col.name]
+                    self.table_name, cols=[entity_include_bit_col.base_config()]
+                )[entity_include_bit_col.name]
             self._entity_include_bit = entity_include_bit
         return self._entity_include_bit
 
@@ -381,7 +389,8 @@ class TableData:
             num_nodes=self.num_nodes,
             data_version=self.data_version,
             in_memory_attrs=self.in_memory_attrs.config(
-                data_cls=InMemoryDataAttributesConfig),
+                data_cls=InMemoryDataAttributesConfig
+            ),
             table_metadata_config=self.table_metadata_config,
             time_periods=self.time_periods,
         )
@@ -403,7 +412,8 @@ class TableData:
         # attributes:
         if not hasattr(self, 'in_memory_attrs'):
             self.in_memory_attrs = InMemoryDataAttributes.from_config(
-                attributes.in_memory_attrs)
+                attributes.in_memory_attrs
+            )
 
     def save_data(self, root_dir: str):
         r"""Persists the data of a `TableData` object to disk.
@@ -452,7 +462,7 @@ class TableData:
                 used to populate ``_fkey_data`` for lazy loading.
         """
         del pkey  # Unused; retained for API compat.
-        logger.info(f"Loading TableData object from directory {root_dir}")
+        logger.info(f'Loading TableData object from directory {root_dir}')
 
         # Basic class attributes:
         self.load_attributes(osp.join(root_dir, 'attributes.json'))
@@ -462,7 +472,7 @@ class TableData:
 
         # Store foreign key path:
         path = self.in_memory_attrs.connector._get_path(self.table_name)
-        for fkey in (fkeys or {}):
+        for fkey in fkeys or {}:
             self._fkey_data[fkey] = (path, fkey.name)
 
         # Training/prediction table only ######################################
@@ -506,6 +516,7 @@ class InMemoryDataAttributes(ConfigMixin):
     data stored in-memory. This is currently necessary for the storage of the
     training and prediction tables, which are not stored behind the feature
     and graph store."""
+
     connector: Optional[Any] = None
     time_col: Optional[TimeColumn] = None  # type: ignore
     weight_col: Optional[BaseColumn] = None  # type: ignore
@@ -555,10 +566,10 @@ def build_in_memory_attrs(
 @kumo_dataclass
 class TableDataAttributes:
     r"""Type-safe dataclass for serializing TableData attributes to JSON."""
-    name: str = ""
+
+    name: str = ''
     num_nodes: int = 0
     data_version: str = DEFAULT_DATA_VERSION
-    in_memory_attrs: Optional[
-        InMemoryDataAttributesConfig] = None  # pyright: ignore
+    in_memory_attrs: Optional[InMemoryDataAttributesConfig] = None  # pyright: ignore
     table_metadata_config: Optional[TableOrViewMetadataConfig] = None
     time_periods: Dict[TrainingStage, TimePeriod] = field(default_factory=dict)

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for custom training-table workflow helpers and dispatch."""
+
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -12,8 +13,7 @@ import pytest
 from pool.activities import SnapshotActivities
 from pool.dataclasses import SnapshotActivity
 from rest.backends.ml_backend.validation import ValidationResponse
-from rest.backends.ml_backend.workflows import \
-    custom_train_table_workflow as mod
+from rest.backends.ml_backend.workflows import custom_train_table_workflow as mod
 from rest.backends.ml_backend.workflows.custom_train_table_workflow import (
     _resolve_entity_time_col,
 )
@@ -22,8 +22,7 @@ from rest.backends.ml_backend.workflows.custom_train_table_workflow import (
 def _table(name, time_col=None):
     return SimpleNamespace(
         table_name=name,
-        time_col=(SimpleNamespace(
-            name=time_col) if time_col is not None else None),
+        time_col=(SimpleNamespace(name=time_col) if time_col is not None else None),
     )
 
 
@@ -32,8 +31,7 @@ def _table(name, time_col=None):
     [
         (
             'users',
-            [_table('orders', 'order_ts'),
-             _table('users', 'created_at')],
+            [_table('orders', 'order_ts'), _table('users', 'created_at')],
             'created_at',
         ),
         ('users', [_table('users')], None),
@@ -49,8 +47,9 @@ def test_resolve_entity_time_col(entity_table, tables, expected):
 
 
 def test_resolve_entity_time_col_handles_incomplete_config():
-    config = SimpleNamespace(validated_predictive_query=SimpleNamespace(
-        entity_table='users'))
+    config = SimpleNamespace(
+        validated_predictive_query=SimpleNamespace(entity_table='users')
+    )
     assert _resolve_entity_time_col(config) is None
 
 
@@ -69,7 +68,8 @@ def _job_input():
         ),
         weight_col_name='WEIGHT',
         graph_data_compute_input=SimpleNamespace(
-            graph_key='NA-11111111111111111111111111111111'),
+            graph_key='NA-11111111111111111111111111111111'
+        ),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
@@ -98,13 +98,14 @@ async def test_custom_bundle_dispatch_and_materialization(
         # specification's, per table, on both backends.
         split_col_name='SPLIT',
     )
-    execute_activity = AsyncMock(side_effect=[
-        (custom_path, validation),
-        validation,
-        ('materialized', validation),
-    ])
-    published_path = (
-        's3://bucket/custom_tt.ttng_staging/_bundles/bundle-1/tt.parquet')
+    execute_activity = AsyncMock(
+        side_effect=[
+            (custom_path, validation),
+            validation,
+            ('materialized', validation),
+        ]
+    )
+    published_path = 's3://bucket/custom_tt.ttng_staging/_bundles/bundle-1/tt.parquet'
     run_pooled = AsyncMock(return_value=published_path)
     monkeypatch.setattr(mod.workflow, 'execute_activity', execute_activity)
     monkeypatch.setattr(mod, 'run_pooled_activity', run_pooled)
@@ -122,8 +123,9 @@ async def test_custom_bundle_dispatch_and_materialization(
     assert result.train_table_materialization_path == 'materialized'
     pooled = run_pooled.await_args.kwargs
     assert pooled['activity'] == SnapshotActivity.GEN_CUSTOM_TT
-    assert (pooled['activity_fn']
-            is SnapshotActivities.build_ttng_custom_train_table_bundle)
+    assert (
+        pooled['activity_fn'] is SnapshotActivities.build_ttng_custom_train_table_bundle
+    )
     assert pooled['args'][0] == ('graph-11111111111111111111111111111111@v1')
     materialize = execute_activity.await_args_list[-1]
     assert materialize.args[0] is mod.materialize_training_table
@@ -159,11 +161,11 @@ async def test_a_registered_table_reuses_its_own_copy_without_reingesting(
     registered_copy_path = 's3://bucket/registered_tt'
     connector_spec = SimpleNamespace(connector_id='databricks')
     source = SimpleNamespace(data_source_type='s3', table='weighted_training')
-    custom_spec = SimpleNamespace(source_table=source,
-                                  connector_spec=connector_spec)
+    custom_spec = SimpleNamespace(source_table=source, connector_spec=connector_spec)
     execute_activity = AsyncMock(side_effect=[('materialized', validation)])
     published_path = (
-        's3://bucket/registered_tt.ttng_staging/_bundles/bundle-1/tt.parquet')
+        's3://bucket/registered_tt.ttng_staging/_bundles/bundle-1/tt.parquet'
+    )
     run_pooled = AsyncMock(return_value=published_path)
     monkeypatch.setattr(mod.workflow, 'execute_activity', execute_activity)
     monkeypatch.setattr(mod, 'run_pooled_activity', run_pooled)

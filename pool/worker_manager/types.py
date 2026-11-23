@@ -8,6 +8,7 @@ expected to churn once controller-side design (Block B / An) settles.
 Keep this module import-cheap: no kubernetes, no asyncio.
 
 """
+
 from typing import Literal, Optional
 
 from io_utils import kumo_dataclass
@@ -20,8 +21,9 @@ from io_utils import kumo_dataclass
 # HEALTH (READY / STALE / DEAD) which is owned by the pool controller and
 # combines this with heartbeat freshness and k8s node.Ready. The pool
 # controller composes both views into its own inventory record.
-PodStatus = Literal['Pending', 'Running', 'Registered', 'Succeeded',
-                    'Terminating', 'Failed']
+PodStatus = Literal[
+    'Pending', 'Running', 'Registered', 'Succeeded', 'Terminating', 'Failed'
+]
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -35,6 +37,7 @@ class SecretKeyRef:
     ``secret_name`` is the Secret object, ``key`` the data entry within
     it — the same two coordinates a ``V1SecretKeySelector`` takes.
     """
+
     secret_name: str
     key: str
 
@@ -66,6 +69,7 @@ class PvcSpec:
     nodeSelectors so the pod lands on a cache node of that capacity. They stay
     on rebind because portable storage may constrain only a zone.
     """
+
     size_gib: int
     gpu_count: int = 1
 
@@ -96,6 +100,7 @@ class ResourceSpec:
     ``"100m"``, ``"4Gi"``) — manager doesn't parse them, just passes
     them through to the K8s API.
     """
+
     cpu_request: Optional[str] = None
     cpu_limit: Optional[str] = None
     memory_request: Optional[str] = None
@@ -119,6 +124,7 @@ class PoolWorkerInfo:
     Prototype: expect additional fields (e.g. last-heartbeat, snapshot
     inventory) once the controller-side design is finalized.
     """
+
     pool_worker_uid: str
     pvc_name: str
     # Optional: pre-scheduling, the daemon pod is not yet bound to a
@@ -154,6 +160,7 @@ class ActivityPodInfo:
     as ``(pool_worker_uid, job_id)`` tuples for orphan cleanup and
     rebind relaunch (design §6.1).
     """
+
     pod_name: str
     pool_worker_uid: Optional[str]
     job_id: Optional[str]

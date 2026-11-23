@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 def _get_active_cache():
     # Keep the Connector ABC importable while ``kumo.data`` initializes.
     from kumo.data import get_active_cache
+
     return get_active_cache()
 
 
@@ -96,6 +97,7 @@ class ExportMetrics:
     retain stored input bytes, even when acquisition materializes partitions.
     Direct sources may report an estimate until ingestion completes.
     """
+
     num_rows: Optional[int]
     source_size: int
     approx: bool = False
@@ -117,13 +119,17 @@ def _compute_col_stats_from_sample(
             continue
         ser = df[col_cfg.name]
         if col_cfg.dtype == Dtype.binary:
-            ser = ser.map(lambda value: value.hex() if isinstance(
-                value, (bytes, bytearray, memoryview)) else value)
+            ser = ser.map(
+                lambda value: (
+                    value.hex()
+                    if isinstance(value, (bytes, bytearray, memoryview))
+                    else value
+                )
+            )
         # A ``timestamp``-stype column read raw (cast_response=False) can
         # arrive as a bare epoch integer/float; coerce it to datetime so
         # the MIN/MAX col-stats are typed ``pd.Timestamp`` values.
-        ser = coerce_timestamp_stype_series_for_stats(ser, col_cfg,
-                                                      timestamp_precision)
+        ser = coerce_timestamp_stype_series_for_stats(ser, col_cfg, timestamp_precision)
         # A warehouse decimal arrives as an object column of `decimal.Decimal`,
         # which the gate below reads as `string` and strips every numerical
         # stat from -- leaving a `numerical` column without the stats
@@ -164,6 +170,7 @@ class MissingColumnError(ValueError):
 
 class UnreadableColumnError(ValueError):
     r"""Thrown when a datatype prevents the table from being read"""
+
     def __init__(self, message, unreadable_column=None):
         super().__init__(message)
         self.unreadable_column = unreadable_column
@@ -171,12 +178,14 @@ class UnreadableColumnError(ValueError):
 
 class DuplicateColumnsError(ValueError):
     r"""Thrown when a table (usually a csv file) has a duplicate column name"""
+
     def __init__(self, message):
         super().__init__(message)
 
 
 class ConnectorError(ProviderBackendError):
     """User-facing error class for connector operation failures."""
+
     def __init__(
         self,
         *args: Any,
@@ -201,13 +210,22 @@ class SourceTableNotFoundError(ConnectorError):
     boundaries. API surfaces may expose it as a typed 422 or translate it to
     their established source-table-not-found 404 contract.
     """
-    template = ("Source table '{table_name}' does not exist in connector "
-                "'{connector_name}'.")
 
-    def __init__(self, table_name: str, connector_name: str,
-                 related_errors: Optional[List[Exception]] = None) -> None:
-        super().__init__(table_name=table_name, connector_name=connector_name,
-                         related_errors=related_errors)
+    template = (
+        "Source table '{table_name}' does not exist in connector '{connector_name}'."
+    )
+
+    def __init__(
+        self,
+        table_name: str,
+        connector_name: str,
+        related_errors: Optional[List[Exception]] = None,
+    ) -> None:
+        super().__init__(
+            table_name=table_name,
+            connector_name=connector_name,
+            related_errors=related_errors,
+        )
 
 
 class SourceTableUnavailableError(ConnectorError):
@@ -218,13 +236,23 @@ class SourceTableUnavailableError(ConnectorError):
     names. Connector discovery translates it to the same 404 contract as a
     definitively missing source.
     """
-    template = ("Source table '{table_name}' could not be found or accessed "
-                "in connector '{connector_name}'.")
 
-    def __init__(self, table_name: str, connector_name: str,
-                 related_errors: Optional[List[Exception]] = None) -> None:
-        super().__init__(table_name=table_name, connector_name=connector_name,
-                         related_errors=related_errors)
+    template = (
+        "Source table '{table_name}' could not be found or accessed "
+        "in connector '{connector_name}'."
+    )
+
+    def __init__(
+        self,
+        table_name: str,
+        connector_name: str,
+        related_errors: Optional[List[Exception]] = None,
+    ) -> None:
+        super().__init__(
+            table_name=table_name,
+            connector_name=connector_name,
+            related_errors=related_errors,
+        )
 
 
 _IGNORABLE_SOURCE_TABLE_ERRORS = (
@@ -268,16 +296,18 @@ class Connector(ConfigMixin, ABC):
     through an open call, as `connector.open(credentials=...)`, or through
     `connector.set_credentials() before connection is established.`.
     """
+
     def __init__(
         self,
         name: str,
         credentials: Optional[Dict] = None,
     ):
-        string.validate_id(name, "Connector")
+        string.validate_id(name, 'Connector')
         self._name = name
         self._credentials = credentials
-        self._table_metadata_cache: Dict[Tuple[str, str, str],
-                                         TableOrViewMetadataConfig] = {}
+        self._table_metadata_cache: Dict[
+            Tuple[str, str, str], TableOrViewMetadataConfig
+        ] = {}
         self._context = None
         self._require_explicit_credentials = False
         # Serializes open() / close() so _context can't be set by
@@ -389,8 +419,10 @@ class Connector(ConfigMixin, ABC):
                 weakref.finalize(context, self.close)
             except TypeError:
                 pass
-            logger.info("Successfully connected to a data source via %s",
-                        self.__class__.__name__)
+            logger.info(
+                'Successfully connected to a data source via %s',
+                self.__class__.__name__,
+            )
         return self
 
     def close(self) -> 'Connector':
@@ -482,7 +514,8 @@ class Connector(ConfigMixin, ABC):
                 table_names=[table_name],
                 skip_cache=True,
                 skip_inferral=True,
-            ))
+            )
+        )
 
     def _get_table_metadata(
         self,
@@ -492,22 +525,24 @@ class Connector(ConfigMixin, ABC):
         schema_name: Optional[str] = None,
         ignore_errors: bool = False,
     ) -> List[TableMetadataConfig]:
-        r""" Default implementation """
+        r"""Default implementation"""
         if table_names is None:
             table_names = self.list_tables()
-        logger.info(f"Fetching metadata for tables: {table_names=}")
+        logger.info(f'Fetching metadata for tables: {table_names=}')
         table_metadata_list = []
         for table_name in table_names:
             try:
                 metadata = self._get_table_cols_metadata(
-                    table_name, skip_cache=skip_cache,
-                    skip_inferral=skip_inferral)
+                    table_name, skip_cache=skip_cache, skip_inferral=skip_inferral
+                )
             except _IGNORABLE_SOURCE_TABLE_ERRORS as error:
                 if not ignore_errors:
                     raise
-                logger.warning('Table %r failed to load (error_type=%s)',
-                               table_name,
-                               type(error).__name__)
+                logger.warning(
+                    'Table %r failed to load (error_type=%s)',
+                    table_name,
+                    type(error).__name__,
+                )
                 metadata = None
 
             if metadata:  # None if the table could not be read
@@ -557,9 +592,11 @@ class Connector(ConfigMixin, ABC):
                     desired_dtype = Dtype.date
 
                 from kumo.connector import CompositeFileConnector, CSVConnector
-                if ((isinstance(self, CSVConnector)
-                     or isinstance(self, CompositeFileConnector))
-                        and (desired_dtype and col.dtype != desired_dtype)):
+
+                if (
+                    isinstance(self, CSVConnector)
+                    or isinstance(self, CompositeFileConnector)
+                ) and (desired_dtype and col.dtype != desired_dtype):
                     table_sample = None
                     try:
                         # This function can be called on any of the tables in
@@ -574,23 +611,29 @@ class Connector(ConfigMixin, ABC):
                         # stale so as to match latest table metadata, if
                         # `skip_cache` is True.
                         table_sample = self.read_table_sample(
-                            table_metadata.source_name, skip_cache=skip_cache)
-                    except (ConnectorError) as e:
+                            table_metadata.source_name, skip_cache=skip_cache
+                        )
+                    except ConnectorError as e:
                         logger.warning(
-                            "Failed to read samples for table %r "
-                            "(error_type=%s)", table_metadata.source_name,
-                            type(e).__name__)
+                            'Failed to read samples for table %r (error_type=%s)',
+                            table_metadata.source_name,
+                            type(e).__name__,
+                        )
 
                     if table_sample is not None:
                         if name_inference_temporal_supported(
-                                table_sample[col.name], desired_dtype):
+                            table_sample[col.name], desired_dtype
+                        ):
                             col.dtype = desired_dtype
                         else:
                             logger.warning(
-                                "Column %r name suggests %s but DiskGraph "
-                                "could not parse enough sampled values; "
-                                "keeping dtype %s.", col.name, desired_dtype,
-                                col.dtype)
+                                'Column %r name suggests %s but DiskGraph '
+                                'could not parse enough sampled values; '
+                                'keeping dtype %s.',
+                                col.name,
+                                desired_dtype,
+                                col.dtype,
+                            )
 
     def _infer_cols_dtype_by_values(
         self,
@@ -599,8 +642,9 @@ class Connector(ConfigMixin, ABC):
         # TODO(Dulloor): infer dtype based on values in the string columns
         pass
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     @with_filesystem_credentials
     def get_table_metadata(
         self,
@@ -631,6 +675,7 @@ class Connector(ConfigMixin, ABC):
             SourceTableUnavailableError: If a requested source is missing or
                 inaccessible and ``ignore_errors`` is :obj:`False`.
         """
+
         def _filter_missing_metadata(table_names: str):
             # return names of tables with missing metadata
             ret = []
@@ -641,8 +686,11 @@ class Connector(ConfigMixin, ABC):
                     if ignore_errors:
                         continue
                     raise
-                if (self.name, table_name,
-                        data_version) not in self._table_metadata_cache:
+                if (
+                    self.name,
+                    table_name,
+                    data_version,
+                ) not in self._table_metadata_cache:
                     ret.append(table_name)
             return ret
 
@@ -651,22 +699,26 @@ class Connector(ConfigMixin, ABC):
         if table_names is None:
             if self.skip_list_table() and skip_cache and skip_inferral:
                 table_metadata = self._get_table_metadata(
-                    table_names, skip_cache=skip_cache,
-                    skip_inferral=skip_inferral, schema_name=schema_name,
-                    ignore_errors=ignore_errors)
+                    table_names,
+                    skip_cache=skip_cache,
+                    skip_inferral=skip_inferral,
+                    schema_name=schema_name,
+                    ignore_errors=ignore_errors,
+                )
                 if not table_metadata:
                     raise ConnectorError(
                         f"Connector '{self.name}' found no accessible tables. "
-                        "Please verify that the database/schema contains tables "
-                        "and that your credentials have permission to list them."
+                        'Please verify that the database/schema contains tables '
+                        'and that your credentials have permission to list them.'
                     )
                 return table_metadata
             table_names = self.list_tables(schema_name)
             if table_names is None:
                 raise ConnectorError(
                     f"Connector '{self.name}' found no accessible tables. "
-                    "Please verify that the database/schema contains tables "
-                    "and that your credentials have permission to list them.")
+                    'Please verify that the database/schema contains tables '
+                    'and that your credentials have permission to list them.'
+                )
             return self.get_table_metadata(
                 table_names,
                 skip_cache=skip_cache,
@@ -683,12 +735,15 @@ class Connector(ConfigMixin, ABC):
             tables_to_fetch_metadata = _filter_missing_metadata(table_names)
 
         missing_tables_metadata: List[TableMetadataConfig] = []
-        if (len(tables_to_fetch_metadata) > 0):
+        if len(tables_to_fetch_metadata) > 0:
             try:
                 missing_tables_metadata = self._get_table_metadata(
-                    tables_to_fetch_metadata, skip_cache=skip_cache,
-                    skip_inferral=skip_inferral, schema_name=schema_name,
-                    ignore_errors=ignore_errors)
+                    tables_to_fetch_metadata,
+                    skip_cache=skip_cache,
+                    skip_inferral=skip_inferral,
+                    schema_name=schema_name,
+                    ignore_errors=ignore_errors,
+                )
             except _IGNORABLE_SOURCE_TABLE_ERRORS:
                 if not ignore_errors:
                     raise
@@ -712,14 +767,15 @@ class Connector(ConfigMixin, ABC):
                 # data_version in _get_table_metadata above
                 try:
                     data_version = self.get_data_version(
-                        table_metadata.source_name, skip_cache=skip_cache)
+                        table_metadata.source_name, skip_cache=skip_cache
+                    )
                 except _IGNORABLE_SOURCE_TABLE_ERRORS:
                     if ignore_errors:
                         continue
                     raise
-                self._table_metadata_cache[(self.name,
-                                            table_metadata.source_name,
-                                            data_version)] = table_metadata
+                self._table_metadata_cache[
+                    (self.name, table_metadata.source_name, data_version)
+                ] = table_metadata
                 readable_tables_metadata.append(table_metadata)
             missing_tables_metadata = readable_tables_metadata
 
@@ -748,20 +804,19 @@ class Connector(ConfigMixin, ABC):
                     if ignore_errors:
                         continue
                     raise
-                if (self.name, table_name,
-                        data_version) in self._table_metadata_cache:
-                    table_metadata = self._table_metadata_cache[(self.name,
-                                                                 table_name,
-                                                                 data_version)]
+                if (self.name, table_name, data_version) in self._table_metadata_cache:
+                    table_metadata = self._table_metadata_cache[
+                        (self.name, table_name, data_version)
+                    ]
             if table_metadata:
                 tables_metadata.append(copy.deepcopy(table_metadata))
             else:
                 missing_table_names.append(table_name)
 
         if not missing_tables_metadata and len(missing_table_names) > 0:
-            logger.warning(f"Some tables were not read: {missing_table_names}")
+            logger.warning(f'Some tables were not read: {missing_table_names}')
 
-        logger.info(f"Returning metadata {tables_metadata=}")
+        logger.info(f'Returning metadata {tables_metadata=}')
         return tables_metadata
 
     # Reading raw table data ##################################################
@@ -809,8 +864,9 @@ class Connector(ConfigMixin, ABC):
                 data_version=data_version,
             )
 
-        return _compute_col_stats_from_sample(stats_dict, df, approx=approx,
-                                              data_version=data_version)
+        return _compute_col_stats_from_sample(
+            stats_dict, df, approx=approx, data_version=data_version
+        )
 
     @staticmethod
     def _cast_unsupported_to_str(col: BaseColumnConfig) -> BaseColumnConfig:
@@ -892,13 +948,16 @@ class Connector(ConfigMixin, ABC):
         self.open()
 
         if num_rows is None or num_rows < 0:
-            with Timer(logging_prefix=f"{table_name}.read_table",
-                       metric_name=Metrics.TABLE_READ_TIME,
-                       metric_labels={"table_name": table_name}):
+            with Timer(
+                logging_prefix=f'{table_name}.read_table',
+                metric_name=Metrics.TABLE_READ_TIME,
+                metric_labels={'table_name': table_name},
+            ):
                 df = self._read_table(self._context, table_name, pkey, cols)
         else:
-            df = self._read_table_chunk(self._context, table_name, num_rows,
-                                        offset, pkey, cols)
+            df = self._read_table_chunk(
+                self._context, table_name, num_rows, offset, pkey, cols
+            )
 
         return fillna(df, cols or [])
 
@@ -911,8 +970,9 @@ class Connector(ConfigMixin, ABC):
         frac: Optional[float] = None,
     ) -> pd.DataFrame:
         if num_rows is None or num_rows < len(table_sample):
-            table_sample = table_sample.sample(n=num_rows, frac=frac,
-                                               random_state=SAMPLING_SEED)
+            table_sample = table_sample.sample(
+                n=num_rows, frac=frac, random_state=SAMPLING_SEED
+            )
 
         dtypes: Dict[str, Dtype] = {}
         selected_cols: List[str] = []
@@ -987,7 +1047,8 @@ class Connector(ConfigMixin, ABC):
             frac = None
             logger.warning(
                 f"Cannot set 'num_rows' and 'frac' in a call to read a table "
-                f"sample. 'frac' (set to {frac}) will be ignored.")
+                f"sample. 'frac' (set to {frac}) will be ignored."
+            )
 
         if num_rows is None and frac is None:
             num_rows = NUM_SAMPLE_ROWS
@@ -995,26 +1056,28 @@ class Connector(ConfigMixin, ABC):
         if num_rows is not None and num_rows > NUM_SAMPLE_ROWS:
             num_rows = NUM_SAMPLE_ROWS
             logger.warning(
-                f"Reducing the maxinum number of rows that can be sampled "
-                f"from the requested {num_rows} to the maximum "
-                f"{NUM_SAMPLE_ROWS}.")
+                f'Reducing the maxinum number of rows that can be sampled '
+                f'from the requested {num_rows} to the maximum '
+                f'{NUM_SAMPLE_ROWS}.'
+            )
 
         # NOTE: we currently support two ways of obtaining the table data
         # version; either passed down or fetched from the backend cache. The
         # goal is to deprecate the second option, and only support fetching
         # from the backend cache:
-        table_data_version = kwargs.get('data_version',
-                                        None) or self.get_data_version(
-                                            table_name, skip_cache=skip_cache)
+        table_data_version = kwargs.get('data_version', None) or self.get_data_version(
+            table_name, skip_cache=skip_cache
+        )
 
         backend_cache = _get_active_cache()
 
         # Fetch table sample from source data.
         def _fetch_table_sample() -> pd.DataFrame:
             logger.info(
-                f"Reading a table sample for table {table_name} directly from "
-                f"source data, bypassing the backend cache. Debug info: "
-                f"skip_cache={skip_cache}, data_version={table_data_version}.")
+                f'Reading a table sample for table {table_name} directly from '
+                f'source data, bypassing the backend cache. Debug info: '
+                f'skip_cache={skip_cache}, data_version={table_data_version}.'
+            )
 
             # Always store the max number of sample rows in the cache in
             # case more samples are requested the next time this function
@@ -1033,9 +1096,9 @@ class Connector(ConfigMixin, ABC):
                 # not cached in the backend cache (non-local). This is because
                 # if a customer modifies the table columns, it will diverge
                 # from the samples we have stored in the backend cache.
-                backend_cache.table_samples_cache.put(self.name, table_name,
-                                                      table_data_version,
-                                                      table_sample)
+                backend_cache.table_samples_cache.put(
+                    self.name, table_name, table_data_version, table_sample
+                )
             return table_sample
 
         # Check if the table sample is valid.
@@ -1044,45 +1107,51 @@ class Connector(ConfigMixin, ABC):
                 raise ConnectorError(
                     f"Failed to read any rows from table '{table_name}' "
                     f"in connector '{self._name}'. "
-                    f"Please check whether table was "
-                    f"accidentally dropped, renamed or emptied "
-                    f"since it was first imported into Kumo and "
-                    f"has valid timestamp data")
+                    f'Please check whether table was '
+                    f'accidentally dropped, renamed or emptied '
+                    f'since it was first imported into Kumo and '
+                    f'has valid timestamp data'
+                )
             # If the user removed a column from the underlying data source
             # this may error out:
             if cols:
                 for col in cols + [pkey]:
-                    if (col is not None
-                            and col.name not in table_sample.columns):
+                    if col is not None and col.name not in table_sample.columns:
                         logger.warning(
-                            f"Column {col.name} could not be read from the "
-                            f"table sample for table {table_name}.")
+                            f'Column {col.name} could not be read from the '
+                            f'table sample for table {table_name}.'
+                        )
                         raise MissingColumnError(
                             f'We found a misconfiguration in the '
                             f'"{table_name}" table. If you removed'
                             f'column "{col.name}" from your data source,'
-                            f'please edit your Kumo Table and remove it')
+                            f'please edit your Kumo Table and remove it'
+                        )
 
         table_sample_checked = False
-        if (not backend_cache or not backend_cache.table_samples_cache.has(
-                self.name, table_name, table_data_version)):
+        if not backend_cache or not backend_cache.table_samples_cache.has(
+            self.name, table_name, table_data_version
+        ):
             table_sample = _fetch_table_sample()
         else:
             logger.info(
-                f"Obtaining a table sample for table {table_name} from the "
-                f"data backend cache, avoiding connector access. Debug info: "
-                f"data_version={table_data_version}.")
+                f'Obtaining a table sample for table {table_name} from the '
+                f'data backend cache, avoiding connector access. Debug info: '
+                f'data_version={table_data_version}.'
+            )
             table_sample = backend_cache.table_samples_cache.get_v1(
-                self.name, table_name, table_data_version)
+                self.name, table_name, table_data_version
+            )
             try:
                 _check_table_sample(table_sample)
                 table_sample_checked = True
             except Exception as e:
                 logger.warning(
-                    "Failed to read table sample for table %r from the backend "
-                    "cache (error_type=%s); fetching directly from the source",
+                    'Failed to read table sample for table %r from the backend '
+                    'cache (error_type=%s); fetching directly from the source',
                     table_name,
-                    type(e).__name__)
+                    type(e).__name__,
+                )
                 table_sample = _fetch_table_sample()
 
         # Always ensure that table sample is valid.
@@ -1101,13 +1170,16 @@ class Connector(ConfigMixin, ABC):
         return table_sample
 
     def _get_iterator(
-        self, context: Any, table_name: str,
+        self,
+        context: Any,
+        table_name: str,
         pkey: Optional[BaseColumnConfig] = None,
-        cols: Optional[List[BaseColumnConfig]] = None
+        cols: Optional[List[BaseColumnConfig]] = None,
     ) -> Iterator[pd.DataFrame]:
         r"""Internal method to return the iterator of a table."""
         raise NotImplementedError(
-            f"Get iterator is not implemented for {self.__class__.__name__}.")
+            f'Get iterator is not implemented for {self.__class__.__name__}.'
+        )
 
     @with_filesystem_credentials
     def get_iterator(
@@ -1137,15 +1209,18 @@ class Connector(ConfigMixin, ABC):
 
     # Writing table data ######################################################
 
-    def _write_pandas(self, context: Any, table_name: str, df: pd.DataFrame,
-                      replace: bool = False) -> None:
+    def _write_pandas(
+        self, context: Any, table_name: str, df: pd.DataFrame, replace: bool = False
+    ) -> None:
         r"""Write dataframe to data source."""
         raise NotImplementedError(
-            f"Write df is not implemented for {self.__class__.__name__}.")
+            f'Write df is not implemented for {self.__class__.__name__}.'
+        )
 
     @with_filesystem_credentials
-    def write_pandas(self, table_name: str, df: pd.DataFrame,
-                     replace: bool = False) -> None:
+    def write_pandas(
+        self, table_name: str, df: pd.DataFrame, replace: bool = False
+    ) -> None:
         r"""
         Write a :class:`pandas.DataFrame` to the data source.
 
@@ -1204,8 +1279,9 @@ class Connector(ConfigMixin, ABC):
         # NOTE: The default implementation might be an expensive op depending
         # on the table size. Connector implementations should override this
         # functionality whenever applicable.
-        return self._get_col_stats(table_name=table_name, approx=False,
-                                   stats_dict=stats_dict, **kwargs)
+        return self._get_col_stats(
+            table_name=table_name, approx=False, stats_dict=stats_dict, **kwargs
+        )
 
     def _get_approx_col_stats(
         self,
@@ -1218,8 +1294,9 @@ class Connector(ConfigMixin, ABC):
         column(s) into memory and applying standard functions. Connectors are
         not expected to override this function.
         """
-        return self._get_col_stats(table_name=table_name, approx=True,
-                                   stats_dict=stats_dict, **kwargs)
+        return self._get_col_stats(
+            table_name=table_name, approx=True, stats_dict=stats_dict, **kwargs
+        )
 
     @trace(TraceOptions(trace_params=['table_name', 'approx']))
     def _get_col_stats(
@@ -1232,8 +1309,9 @@ class Connector(ConfigMixin, ABC):
         stats_dict = copy.deepcopy(stats_dict)
         # TODO(min) support approx col stats on the specified version of an
         # ingested table
-        data_version = (kwargs.get('data_version', None)
-                        or self.get_data_version(table_name))
+        data_version = kwargs.get('data_version', None) or self.get_data_version(
+            table_name
+        )
         kwargs.pop('data_version', None)
 
         # compute requested stats
@@ -1257,8 +1335,7 @@ class Connector(ConfigMixin, ABC):
         for col, stats in stats_dict.items():
             if ColStatType.INVALID_FRACTION in stats:
                 stats_dict[col] = [
-                    stat for stat in stats
-                    if stat != ColStatType.INVALID_FRACTION
+                    stat for stat in stats if stat != ColStatType.INVALID_FRACTION
                 ]
                 cols_invalid_frac.append(col)
 
@@ -1291,8 +1368,9 @@ class Connector(ConfigMixin, ABC):
         return out
 
     @abstractmethod
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None) -> int:
+    def _get_table_num_rows(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         r"""Internal method to compute number of rows in a table.
 
         Note: data_version is only supported for parquet connector. For other
@@ -1300,8 +1378,9 @@ class Connector(ConfigMixin, ABC):
         """
 
     @abstractmethod
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         r"""Internal method to compute disk usage of table at source.
 
         Note: data_version is only supported for parquet connector. For other
@@ -1313,11 +1392,11 @@ class Connector(ConfigMixin, ABC):
         table_name: str,
         cols: List[BaseColumnConfig],
     ) -> int:
-        r"""Internal method to compute disk usage of selected table at source.
-        """
+        r"""Internal method to compute disk usage of selected table at source."""
         raise NotImplementedError(
-            "Get selected table source size is not implemented for "
-            f"{self.__class__.__name__}.")
+            'Get selected table source size is not implemented for '
+            f'{self.__class__.__name__}.'
+        )
 
     def _get_table_stats(
         self,
@@ -1331,8 +1410,7 @@ class Connector(ConfigMixin, ABC):
         # ingested table
         data_version = data_version or self.get_data_version(table_name)
         if TableStatType.NUM_ROWS in table_stat_types:
-            rows_value = self._get_table_num_rows(table_name,
-                                                  data_version=data_version)
+            rows_value = self._get_table_num_rows(table_name, data_version=data_version)
             return_dict[TableStatType.NUM_ROWS] = Stats(
                 value=rows_value,
                 approx=False,
@@ -1341,7 +1419,8 @@ class Connector(ConfigMixin, ABC):
 
         if TableStatType.SOURCE_SIZE in table_stat_types:
             source_size_value = self._get_table_source_size(
-                table_name, data_version=data_version)
+                table_name, data_version=data_version
+            )
             return_dict[TableStatType.SOURCE_SIZE] = Stats(
                 value=source_size_value,
                 approx=False,
@@ -1350,8 +1429,9 @@ class Connector(ConfigMixin, ABC):
 
         return return_dict
 
-    @blocking_method(tracing_options=TraceOptions(
-        trace_params=['table_name', 'table_stat_types']))
+    @blocking_method(
+        tracing_options=TraceOptions(trace_params=['table_name', 'table_stat_types'])
+    )
     @with_filesystem_credentials
     def get_table_stats(
         self,
@@ -1370,8 +1450,9 @@ class Connector(ConfigMixin, ABC):
             computed statistics.
         """
         self.open()
-        data_version = (kwargs.get('data_version', None)
-                        or self.get_data_version(table_name))
+        data_version = kwargs.get('data_version', None) or self.get_data_version(
+            table_name
+        )
         return self._get_table_stats(table_name, table_stat_types, data_version)
 
     # TODO: Link-level statistics
@@ -1391,11 +1472,12 @@ class Connector(ConfigMixin, ABC):
         Returns:
             str: The data version of the provided table.
         """
-        logger.info(f"Using default data version for table {table_name}")
+        logger.info(f'Using default data version for table {table_name}')
         return DEFAULT_DATA_VERSION
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     @with_filesystem_credentials
     def get_data_version(
         self,
@@ -1422,7 +1504,8 @@ class Connector(ConfigMixin, ABC):
         """
         if not skip_cache:
             data_version = _get_active_cache().table_version_cache.get(
-                self.name, table_name)
+                self.name, table_name
+            )
             if data_version:
                 return data_version
 
@@ -1430,7 +1513,8 @@ class Connector(ConfigMixin, ABC):
         data_version = self._get_data_version(table_name)
         if save_to_cache:
             _get_active_cache().table_version_cache.save_in_memory(
-                self.name, table_name, data_version)
+                self.name, table_name, data_version
+            )
         return data_version
 
     # Query pushdown ##########################################################
@@ -1464,8 +1548,9 @@ class Connector(ConfigMixin, ABC):
 
         Default raises; SQL warehouse connectors override.
         """
-        raise NotImplementedError("get_query_metadata is not supported for "
-                                  f"{self.__class__.__name__}.")
+        raise NotImplementedError(
+            f'get_query_metadata is not supported for {self.__class__.__name__}.'
+        )
 
     def sample_query(self, sql: str, num_rows: int) -> pd.DataFrame:
         r"""Return a bounded preview of a read-only SELECT's result.
@@ -1478,7 +1563,8 @@ class Connector(ConfigMixin, ABC):
         Default raises; SQL warehouse connectors override.
         """
         raise NotImplementedError(
-            f"sample_query is not supported for {self.__class__.__name__}.")
+            f'sample_query is not supported for {self.__class__.__name__}.'
+        )
 
     #: Whether :meth:`get_query_scan_estimate_bytes` is asked before a Custom
     #: SQL sample runs; read with the estimate by
@@ -1529,7 +1615,8 @@ class Connector(ConfigMixin, ABC):
         callers can rely on them being present.
         """
         raise NotImplementedError(
-            f"export_table is not implemented for {self.__class__.__name__}.")
+            f'export_table is not implemented for {self.__class__.__name__}.'
+        )
 
     def export_query(
         self,
@@ -1552,7 +1639,8 @@ class Connector(ConfigMixin, ABC):
         Default raises NotImplementedError; SQL warehouse connectors override.
         """
         raise NotImplementedError(
-            f"export_query is not implemented for {self.__class__.__name__}.")
+            f'export_query is not implemented for {self.__class__.__name__}.'
+        )
 
     def download(
         self,
@@ -1613,8 +1701,9 @@ def fillna(df: pd.DataFrame, cols: BaseColumnConfig) -> pd.DataFrame:
     for col in cols:
         if col.na_values is not None:
             if not isinstance(col.na_values, (list, tuple)):
-                raise ValueError(f"Expected a list of 'na_values' (got "
-                                 f"'{col.na_values}')")
+                raise ValueError(
+                    f"Expected a list of 'na_values' (got '{col.na_values}')"
+                )
             mapping = {
                 pd.Series(v, dtype=df[col.name].dtype).values[0]: pd.NA
                 for v in col.na_values

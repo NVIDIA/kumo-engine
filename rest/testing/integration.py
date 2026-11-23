@@ -21,7 +21,9 @@ from rest.backends.data_backend.worker import DATA_BACKEND_WORKER_NAME
 
 # isort: off
 from rest.backends.ml_backend.activities.ml_backend_activities import (
-    _bp_col_stat_workflow_id, )
+    _bp_col_stat_workflow_id,
+)
+
 # isort: on
 from rest.backends.ml_backend.ml_job_backend import (
     _batch_prediction_workflow_id,
@@ -42,7 +44,8 @@ from temporalio_commons.worker_registry import WorkerEnv
 # Therefore we set a large rpc timeout in the e2e test to avoid workflow
 # timeout error.
 TEST_RPC_TIMEOUT_CONFIG = auto_rpc_config.AutoRpcTimeoutConfig(
-    rpc_timeout=timedelta(minutes=1))
+    rpc_timeout=timedelta(minutes=1)
+)
 
 log = logging.getLogger(__name__)
 
@@ -62,20 +65,25 @@ async def build_test_worker(
     workflows_override: Sequence[Type] = [],
 ) -> Tuple[List[Worker], WorkerEnv]:
     workers, worker_envs = await build_workers(
-        deploy_env_config, worker_names=[worker_name],
+        deploy_env_config,
+        worker_names=[worker_name],
         env_var_test_override=env_vars,
         activities_override=activities_override,
-        workflows_override=workflows_override)
+        workflows_override=workflows_override,
+    )
     assert len(worker_envs) == 1
     return workers, worker_envs[0]
 
 
-def run_server_until_stop(start_event: Event, stop_event: Event,
-                          deploy_env_config: DeployEnvConfig,
-                          exceptions: Queue[BaseException],
-                          ml_backend_env_vars: Dict[str, Any] | None = None,
-                          activities_override: Sequence[Callable] = [],
-                          workflows_override: Sequence[Type] = []):
+def run_server_until_stop(
+    start_event: Event,
+    stop_event: Event,
+    deploy_env_config: DeployEnvConfig,
+    exceptions: Queue[BaseException],
+    ml_backend_env_vars: Dict[str, Any] | None = None,
+    activities_override: Sequence[Callable] = [],
+    workflows_override: Sequence[Type] = [],
+):
     ml_backend_env_vars = ml_backend_env_vars or {}
     worker_tasks: list[asyncio.Task] = []
 
@@ -93,13 +101,21 @@ def run_server_until_stop(start_event: Event, stop_event: Event,
         ml_workflow_env_vars = ml_backend_full_env
         try:
             data_worker, data_worker_env = await build_test_worker(
-                DATA_BACKEND_WORKER_NAME, deploy_env_config,
-                ml_backend_full_env, activities_override, workflows_override)
+                DATA_BACKEND_WORKER_NAME,
+                deploy_env_config,
+                ml_backend_full_env,
+                activities_override,
+                workflows_override,
+            )
             ml_wf_worker, ml_wf_worker_env = await build_test_worker(
-                ML_WORKFLOW_WORKER, deploy_env_config, ml_workflow_env_vars,
-                activities_override, workflows_override)
+                ML_WORKFLOW_WORKER,
+                deploy_env_config,
+                ml_workflow_env_vars,
+                activities_override,
+                workflows_override,
+            )
 
-            workers = (data_worker + ml_wf_worker)
+            workers = data_worker + ml_wf_worker
             worker_envs = [
                 data_worker_env,
                 ml_wf_worker_env,
@@ -119,7 +135,8 @@ def run_server_until_stop(start_event: Event, stop_event: Event,
         # Keep workers running until stop_event is set from main thread.
         await asyncio.get_event_loop().run_in_executor(
             None,  # use the default executor thread pool
-            stop_event.wait)
+            stop_event.wait,
+        )
         log.info('Received stop signal, shutting down workers...')
 
         async def _shutdown_worker(worker: Worker):
@@ -135,10 +152,14 @@ def run_server_until_stop(start_event: Event, stop_event: Event,
                 )
             except asyncio.TimeoutError:
                 raise RuntimeError(
-                    f"Worker {worker.config().get('identity')} did not "
-                    'complete bounded test shutdown') from None
-            log.info('Completed shutdown of %s worker (%s)',
-                     worker.config().get('identity'), worker.task_queue)
+                    f'Worker {worker.config().get("identity")} did not '
+                    'complete bounded test shutdown'
+                ) from None
+            log.info(
+                'Completed shutdown of %s worker (%s)',
+                worker.config().get('identity'),
+                worker.task_queue,
+            )
 
         # After receiving the stop event, shutdown all workers before closing
         # their executors or the event loop. Retain and drain the run tasks so
@@ -148,7 +169,8 @@ def run_server_until_stop(start_event: Event, stop_event: Event,
             return_exceptions=True,
         )
         worker_errors = [
-            result for result in shutdown_results
+            result
+            for result in shutdown_results
             if isinstance(result, BaseException)
             and not isinstance(result, asyncio.CancelledError)
         ]
@@ -163,12 +185,13 @@ def run_server_until_stop(start_event: Event, stop_event: Event,
                 timeout=5,
             )
         except asyncio.TimeoutError:
-            worker_results = [
-                RuntimeError('Temporal worker run tasks did not drain')]
+            worker_results = [RuntimeError('Temporal worker run tasks did not drain')]
         worker_errors.extend(
-            result for result in worker_results
+            result
+            for result in worker_results
             if isinstance(result, BaseException)
-            and not isinstance(result, asyncio.CancelledError))
+            and not isinstance(result, asyncio.CancelledError)
+        )
 
         log.info('Start shutting down all worker environments...')
         try:
@@ -181,8 +204,7 @@ def run_server_until_stop(start_event: Event, stop_event: Event,
                     wait=all_workers_stopped,
                     cancel_futures=True,
                 )
-                log.info('Worker env %s shutdown is completed.',
-                         worker_env.name)
+                log.info('Worker env %s shutdown is completed.', worker_env.name)
         except BaseException as ex:
             worker_errors.append(ex)
 
@@ -220,11 +242,15 @@ async def terminate_and_confirm_no_open_workflows(
 
     task_queue_suffix = deploy_env_config.task_queue('')
     instance_id = deploy_env_config.instance_id
-    if (not instance_id or not instance_id.startswith('pytest-')
-            or task_queue_suffix != deploy_env_config.id_suffix
-            or instance_id not in task_queue_suffix):
+    if (
+        not instance_id
+        or not instance_id.startswith('pytest-')
+        or task_queue_suffix != deploy_env_config.id_suffix
+        or instance_id not in task_queue_suffix
+    ):
         raise RuntimeError(
-            'Workflow cleanup requires a unique pytest task-queue suffix')
+            'Workflow cleanup requires a unique pytest task-queue suffix'
+        )
 
     deadline = time.monotonic() + timeout_seconds
 
@@ -249,48 +275,46 @@ async def terminate_and_confirm_no_open_workflows(
             executions = []
             next_page_token = b''
             while True:
+
                 async def list_open_page():
-                    return await (
-                        client.workflow_service.list_open_workflow_executions(
-                            wsv1.ListOpenWorkflowExecutionsRequest(
-                                namespace=(deploy_env_config.
-                                           temporal_namespace),
-                                next_page_token=next_page_token,
-                            ),
-                            retry=True,
-                        )
+                    return await client.workflow_service.list_open_workflow_executions(
+                        wsv1.ListOpenWorkflowExecutionsRequest(
+                            namespace=(deploy_env_config.temporal_namespace),
+                            next_page_token=next_page_token,
+                        ),
+                        retry=True,
                     )
 
                 response = await bounded(list_open_page)
                 executions.extend(
-                    execution for execution in response.executions
-                    if execution.task_queue.endswith(task_queue_suffix))
+                    execution
+                    for execution in response.executions
+                    if execution.task_queue.endswith(task_queue_suffix)
+                )
                 next_page_token = response.next_page_token
                 if not next_page_token:
                     return executions
 
         open_workflows = await scoped_open_workflows()
         for workflow_execution in open_workflows:
+
             async def terminate():
-                return await (
-                    client.workflow_service.terminate_workflow_execution(
-                        wsv1.TerminateWorkflowExecutionRequest(
-                            namespace=deploy_env_config.temporal_namespace,
-                            workflow_execution=workflow_execution.execution,
-                            reason=(
-                                'Test session cleanup before worker shutdown'),
-                        ),
-                        retry=True,
-                    )
+                return await client.workflow_service.terminate_workflow_execution(
+                    wsv1.TerminateWorkflowExecutionRequest(
+                        namespace=deploy_env_config.temporal_namespace,
+                        workflow_execution=workflow_execution.execution,
+                        reason=('Test session cleanup before worker shutdown'),
+                    ),
+                    retry=True,
                 )
 
             try:
                 await bounded(terminate)
             except RPCError as error:
-                already_completed = ('workflow execution already completed'
-                                     in str(error).lower())
-                if (error.status == RPCStatusCode.NOT_FOUND
-                        or already_completed):
+                already_completed = (
+                    'workflow execution already completed' in str(error).lower()
+                )
+                if error.status == RPCStatusCode.NOT_FOUND or already_completed:
                     continue
                 raise
 
@@ -298,8 +322,7 @@ async def terminate_and_confirm_no_open_workflows(
             open_workflows = await scoped_open_workflows()
             if not open_workflows:
                 return
-            await asyncio.sleep(
-                min(_TEST_WORKFLOW_CLEANUP_POLL_SECONDS, remaining()))
+            await asyncio.sleep(min(_TEST_WORKFLOW_CLEANUP_POLL_SECONDS, remaining()))
 
     cleanup_error: BaseException | None = None
     try:
@@ -338,8 +361,7 @@ def run_temporal_workers(
     worker_daemon_thread.start()
     start_event.wait()
     if not exceptions.empty():
-        raise RuntimeError(
-            'Temporal worker failed to start') from exceptions.get()
+        raise RuntimeError('Temporal worker failed to start') from exceptions.get()
 
     cleanup_error: BaseException | None = None
     worker_error: BaseException | None = None
@@ -353,12 +375,12 @@ def run_temporal_workers(
                 cleanup_error = ex
 
         stop_event.set()
-        worker_daemon_thread.join(
-            timeout=_TEST_WORKER_THREAD_JOIN_TIMEOUT_SECONDS)
+        worker_daemon_thread.join(timeout=_TEST_WORKER_THREAD_JOIN_TIMEOUT_SECONDS)
         if worker_daemon_thread.is_alive():
             worker_error = RuntimeError(
                 'Temporal test worker thread did not stop within the '
-                'bounded shutdown deadline')
+                'bounded shutdown deadline'
+            )
         elif not exceptions.empty():
             worker_error = exceptions.get()
 
@@ -373,14 +395,16 @@ def run_temporal_workers(
             raise worker_error
 
 
-async def wait_for_training_job_to_finish(training_job_id: TrainingJobID,
-                                          temporal_client: TemporalClient):
+async def wait_for_training_job_to_finish(
+    training_job_id: TrainingJobID, temporal_client: TemporalClient
+):
     training_wf_id = _training_workflow_id(training_job_id)
     try:
         await temporal_client.result(training_wf_id)
     except WorkflowFailureError as e:
-        log.error('Unexpected error while waiting for training job wf_id=%s',
-                  training_wf_id)
+        log.error(
+            'Unexpected error while waiting for training job wf_id=%s', training_wf_id
+        )
         log.exception(e)
 
 
@@ -423,7 +447,8 @@ async def wait_for_prediction_job_to_finish(
 
 
 async def wait_for_prediction_stats_to_finish(
-        predict_job_id: BatchPredictionJobID, temporal_client: TemporalClient):
+    predict_job_id: BatchPredictionJobID, temporal_client: TemporalClient
+):
     prediction_stats_wf_id = _bp_col_stat_workflow_id(predict_job_id)
     try:
         await temporal_client.result(prediction_stats_wf_id)
@@ -433,9 +458,10 @@ async def wait_for_prediction_stats_to_finish(
 
 
 async def wait_for_workflow_to_end(
-    wf_id: str, temporal_client: TemporalClient,
-    expected_end_status: WorkflowExecutionStatus = WorkflowExecutionStatus.
-    COMPLETED):
+    wf_id: str,
+    temporal_client: TemporalClient,
+    expected_end_status: WorkflowExecutionStatus = WorkflowExecutionStatus.COMPLETED,
+):
     try:
         await temporal_client.result(wf_id)
     except WorkflowFailureError:
@@ -447,4 +473,5 @@ async def wait_for_workflow_to_end(
     assert wf_desc
     assert wf_desc.status == expected_end_status, (
         f'Workflow {wf_id} ended in status {wf_desc.status} but '
-        f'{expected_end_status} is expected')
+        f'{expected_end_status} is expected'
+    )

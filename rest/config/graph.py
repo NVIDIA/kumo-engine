@@ -119,11 +119,10 @@ class EdgeHealthStats:
 class Edge(api.Edge):
     @property
     def fully_qualified_name(self) -> str:
-        return f"{self.src_table}.{self.fkey}.{self.dst_table}"
+        return f'{self.src_table}.{self.fkey}.{self.dst_table}'
 
 
-def get_connector_ids_from_graph(
-        graph: Union[GraphConfig, Graph]) -> List[ConnectorID]:
+def get_connector_ids_from_graph(graph: Union[GraphConfig, Graph]) -> List[ConnectorID]:
     connector_names = graph.data_source_dict.keys()
     return [ConnectorID(name) for name in connector_names]
 
@@ -133,14 +132,17 @@ class ValidateGraphResponse:
     """Describes the predictive queries that will be impacted
     by a given graph edit.
     """
+
     graph_error_message: Optional[str]
 
     # The following lists are empty if graph_error_message is provided
-    modified_predictive_queries: List[PredictiveQueryLink] = field(
-        default_factory=list)
+    modified_predictive_queries: List[PredictiveQueryLink] = field(default_factory=list)
     broken_predictive_queries: List[EntityValidationMessage] = field(
-        default_factory=list)
-    modified_batch_prediction_workflows: List[
-        BatchPredictionWorkflowLink] = field(default_factory=list)
+        default_factory=list
+    )
+    modified_batch_prediction_workflows: List[BatchPredictionWorkflowLink] = field(
+        default_factory=list
+    )
     broken_batch_prediction_workflows: List[EntityValidationMessage] = field(
-        default_factory=list)
+        default_factory=list
+    )

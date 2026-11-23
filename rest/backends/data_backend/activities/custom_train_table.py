@@ -67,15 +67,17 @@ def _synthesize_sentinel_timestamp(
     weighted-TT validator's schema-parity check matches. Per-part
     atomic via tmp + os.replace.
     """
-    if not anchor_is_sentinel(task_type, query_type,
-                              list_distinct_target_is_array, entity_time_col):
+    if not anchor_is_sentinel(
+        task_type, query_type, list_distinct_target_is_array, entity_time_col
+    ):
         return
 
     parquet_files = _list_parquet_files(parquet_dir)
     if not parquet_files:
         log.info(
-            "Sentinel-TIMESTAMP synthesis: no parquet files under %s; "
-            "skipping.", parquet_dir)
+            'Sentinel-TIMESTAMP synthesis: no parquet files under %s; skipping.',
+            parquet_dir,
+        )
         return
 
     # Footer-read to skip parts that already have TIMESTAMP, then
@@ -84,10 +86,11 @@ def _synthesize_sentinel_timestamp(
     for parquet_path in parquet_files:
         if not _append_zero_timestamp_supported(parquet_path):
             raise UnsupportedInDiskgraphError(
-                f"Sentinel-TIMESTAMP synthesis is only supported for "
-                f"local, S3, GCS, and ADLS parquet paths; got {parquet_path}. "
-                f"UCV-backed custom training tables must be staged to "
-                f"one of the supported backends before ingest.")
+                f'Sentinel-TIMESTAMP synthesis is only supported for '
+                f'local, S3, GCS, and ADLS parquet paths; got {parquet_path}. '
+                f'UCV-backed custom training tables must be staged to '
+                f'one of the supported backends before ingest.'
+            )
         schema_names = set(_read_parquet_schema([parquet_path]).names)
         if custom_table.timestamp_column() not in schema_names:
             targets.append(parquet_path)
@@ -96,10 +99,15 @@ def _synthesize_sentinel_timestamp(
         return
 
     log.info(
-        "Sentinel-TIMESTAMP synthesis: appending zero-filled TIMESTAMP to "
-        "%d part(s) under %s (task_type=%s, query_type=%s, "
-        "list_distinct_target_is_array=%s)", len(targets), parquet_dir,
-        task_type, query_type, list_distinct_target_is_array)
+        'Sentinel-TIMESTAMP synthesis: appending zero-filled TIMESTAMP to '
+        '%d part(s) under %s (task_type=%s, query_type=%s, '
+        'list_distinct_target_is_array=%s)',
+        len(targets),
+        parquet_dir,
+        task_type,
+        query_type,
+        list_distinct_target_is_array,
+    )
     _SYNTHESIZE_MAX_WORKERS = min(16, len(targets))
     if _SYNTHESIZE_MAX_WORKERS <= 1:
         for parquet_path in targets:
@@ -107,9 +115,7 @@ def _synthesize_sentinel_timestamp(
         return
 
     with ThreadPoolExecutor(max_workers=_SYNTHESIZE_MAX_WORKERS) as pool:
-        futures = [
-            pool.submit(_append_zero_timestamp_column, p) for p in targets
-        ]
+        futures = [pool.submit(_append_zero_timestamp_column, p) for p in targets]
         for fut in futures:
             fut.result()
 
@@ -118,8 +124,12 @@ def _append_zero_timestamp_supported(parquet_path: str) -> bool:
     """Whether :func:`_append_zero_timestamp_column` can rewrite ``parquet_path``
     in place. Local / S3 / GCS / ADLS are supported.
     """
-    return (fsutil.is_local(parquet_path) or fsutil.is_s3(parquet_path)
-            or fsutil.is_gcs(parquet_path) or fsutil.is_adls(parquet_path))
+    return (
+        fsutil.is_local(parquet_path)
+        or fsutil.is_s3(parquet_path)
+        or fsutil.is_gcs(parquet_path)
+        or fsutil.is_adls(parquet_path)
+    )
 
 
 def _append_zero_timestamp_column(parquet_path: str) -> None:
@@ -190,8 +200,7 @@ def _stream_append_zero_timestamp(
         for rg_idx in range(pf.num_row_groups):
             rg_table = pf.read_row_group(rg_idx, use_threads=True)
             zero_col = pa.array([0] * rg_table.num_rows, type=pa.int64())
-            rg_table = rg_table.append_column(custom_table.timestamp_column(),
-                                              zero_col)
+            rg_table = rg_table.append_column(custom_table.timestamp_column(), zero_col)
             writer.write_table(rg_table)
 
 
@@ -207,10 +216,16 @@ def read_only_custom_sql(source_table, connector) -> str:
         subquery_safe_sql,
         validate_connector_sql_scope,
     )
+
     connector_type = ConnectorType(
         str(
-            getattr(connector._get_connector_type(), 'value',
-                    connector._get_connector_type())).casefold())
+            getattr(
+                connector._get_connector_type(),
+                'value',
+                connector._get_connector_type(),
+            )
+        ).casefold()
+    )
     advisory_read_only_check(source_table.sql, connector_type)
     validate_connector_sql_scope(source_table.sql, connector_type, connector)
     return subquery_safe_sql(source_table.sql, connector_type)
@@ -244,20 +259,21 @@ def require_custom_sql_support(source_table, connector) -> None:
         return
     raise UnsupportedInDiskgraphError(
         'Custom SQL sources are currently supported only for Databricks '
-        f'connectors; {type(connector).__name__} cannot export a query.')
+        f'connectors; {type(connector).__name__} cannot export a query.'
+    )
 
 
 @connector_authorized_activity
 @auto_heartbeater
 def ingest_custom_train_table(
-        custom_train_table_spec: CustomTrainingTable,
-        custom_train_table_path: str,
-        deploy_config: DeployEnvConfig,  # noqa: ARG001 — workflow signature
-        id: str,  # noqa: ARG001 — workflow signature
-        task_type: TaskType,
-        query_type: QueryType,
-        list_distinct_target_is_array: bool,
-        entity_time_col: Optional[str] = None,  # noqa: ARG001
+    custom_train_table_spec: CustomTrainingTable,
+    custom_train_table_path: str,
+    deploy_config: DeployEnvConfig,  # noqa: ARG001 — workflow signature
+    id: str,  # noqa: ARG001 — workflow signature
+    task_type: TaskType,
+    query_type: QueryType,
+    list_distinct_target_is_array: bool,
+    entity_time_col: Optional[str] = None,  # noqa: ARG001
 ) -> Tuple[str, ValidationResponse]:
     """Stage a customer-supplied training table for diskgraph rehydration.
 
@@ -276,24 +292,29 @@ def ingest_custom_train_table(
     """
     response = ValidationResponse()
     from rest.utils.driver_common import extract_source_table_type
+
     source_table, table_name, _ = extract_source_table_type(
-        custom_train_table_spec.source_table)
-    log.info("Ingesting custom training table %s into %s", table_name,
-             custom_train_table_path)
+        custom_train_table_spec.source_table
+    )
+    log.info(
+        'Ingesting custom training table %s into %s',
+        table_name,
+        custom_train_table_path,
+    )
 
     try:
-        connector = get_connector_from_spec(
-            custom_train_table_spec.connector_spec)
+        connector = get_connector_from_spec(custom_train_table_spec.connector_spec)
     except Exception as error:
         log.error(
-            'Custom training table connector resolution failed '
-            '(error_type=%s)',
-            type(error).__name__)
+            'Custom training table connector resolution failed (error_type=%s)',
+            type(error).__name__,
+        )
         response.errors.append(
             ValidationError(
-                title="Failed to ingest custom training table",
+                title='Failed to ingest custom training table',
                 message=SAFE_TABLE_INGESTION_ERROR_MESSAGE,
-            ))
+            )
+        )
         return custom_train_table_path, response
 
     try:
@@ -304,6 +325,7 @@ def ingest_custom_train_table(
             try:
                 with connector._local_source(table_name) as (staged, _):
                     from kumo.connector.source_bridge import publish_source
+
                     publish_source(staged, custom_train_table_path)
                 _synthesize_sentinel_timestamp(
                     custom_train_table_path,
@@ -314,22 +336,23 @@ def ingest_custom_train_table(
                 )
             except Exception as error:
                 log.error(
-                    'Custom training table file ingest failed '
-                    '(error_type=%s)',
-                    type(error).__name__)
+                    'Custom training table file ingest failed (error_type=%s)',
+                    type(error).__name__,
+                )
                 response.errors.append(
                     ValidationError(
-                        title="Failed to ingest custom training table",
+                        title='Failed to ingest custom training table',
                         message=SAFE_TABLE_INGESTION_ERROR_MESSAGE,
-                    ))
+                    )
+                )
             return custom_train_table_path, response
 
         read_only_export = getattr(connector, 'export_table_read_only', None)
-        warehouse_export = getattr(connector, 'export_table_to_blob_storage',
-                                   None)
+        warehouse_export = getattr(connector, 'export_table_to_blob_storage', None)
         if read_only_export is not None or warehouse_export is not None:
-            export = (read_only_export
-                      if read_only_export is not None else warehouse_export)
+            export = (
+                read_only_export if read_only_export is not None else warehouse_export
+            )
             # Outside the try: an exporter that cannot read a query is a
             # configuration error the user can act on, not a warehouse
             # failure to sanitize.
@@ -340,18 +363,24 @@ def ingest_custom_train_table(
                 # Passed only when the source is a query and the exporter
                 # accepts one; `require_custom_sql_support` has already
                 # refused the combination that cannot be served.
-                optional = ({
-                    'sql': read_only_custom_sql(source_table, connector)
-                } if getattr(source_table, 'sql', None) else {})
+                optional = (
+                    {'sql': read_only_custom_sql(source_table, connector)}
+                    if getattr(source_table, 'sql', None)
+                    else {}
+                )
                 fsutil.rm(custom_train_table_path, ignore_errors=True)
                 connector.open()
                 export(table_name, custom_train_table_path, **optional)
                 if not _list_parquet_files(custom_train_table_path):
                     response.errors.append(
                         ValidationError(
-                            title="Custom training table is empty",
-                            message=(f"The custom training table {table_name!r} "
-                                     "produced no parquet files.")))
+                            title='Custom training table is empty',
+                            message=(
+                                f'The custom training table {table_name!r} '
+                                'produced no parquet files.'
+                            ),
+                        )
+                    )
                     return custom_train_table_path, response
                 _synthesize_sentinel_timestamp(
                     custom_train_table_path,
@@ -362,28 +391,29 @@ def ingest_custom_train_table(
                 )
             except Exception as error:
                 log.error(
-                    'Custom training table warehouse ingest failed '
-                    '(error_type=%s)',
-                    type(error).__name__)
+                    'Custom training table warehouse ingest failed (error_type=%s)',
+                    type(error).__name__,
+                )
                 response.errors.append(
                     ValidationError(
-                        title="Failed to ingest custom training table",
+                        title='Failed to ingest custom training table',
                         message=SAFE_TABLE_INGESTION_ERROR_MESSAGE,
-                    ))
+                    )
+                )
             return custom_train_table_path, response
 
         raise UnsupportedInDiskgraphError(
-            f"Custom training table ingest is not supported for connector "
-            f"type {type(connector).__name__}. Use a FileConnector "
-            f"(Parquet/CSV) or a warehouse connector "
-            f"(Snowflake/BigQuery/Databricks).")
+            f'Custom training table ingest is not supported for connector '
+            f'type {type(connector).__name__}. Use a FileConnector '
+            f'(Parquet/CSV) or a warehouse connector '
+            f'(Snowflake/BigQuery/Databricks).'
+        )
     finally:
         try:
             connector.close()
         except Exception as error:
             log.warning(
-                'Custom training table connector close failed '
-                '(error_type=%s)',
+                'Custom training table connector close failed (error_type=%s)',
                 type(error).__name__,
             )
 
@@ -425,14 +455,19 @@ def _materialized_parquet_files(path: str) -> Iterator[List[str]]:
             yield _list_parquet_files(temp_dir)
         return
 
-    if (fsutil.is_local(path) or fsutil.is_s3(path) or fsutil.is_gcs(path)
-            or fsutil.is_adls(path)):
+    if (
+        fsutil.is_local(path)
+        or fsutil.is_s3(path)
+        or fsutil.is_gcs(path)
+        or fsutil.is_adls(path)
+    ):
         yield _list_parquet_files(path)
         return
 
     raise ValueError(
         f"Unsupported train table path '{path}'. Operation only supports "
-        "local, S3, GCS, ADLS, and UCV paths.")
+        'local, S3, GCS, ADLS, and UCV paths.'
+    )
 
 
 def exported_reference(
@@ -447,8 +482,9 @@ def exported_reference(
     return _generated_export(path)
 
 
-def exported_reference_rows(path: str, split_col: Optional[str],
-                            column_names: List[str]) -> Optional[int]:
+def exported_reference_rows(
+    path: str, split_col: Optional[str], column_names: List[str]
+) -> Optional[int]:
     exported = exported_reference(path, split_col, column_names)
     return None if exported is None else _count_parquet_rows(exported[0])
 
@@ -459,13 +495,12 @@ def _generated_export(path: str) -> Optional[Tuple[List[str], pa.Schema]]:
     spec = osp.join(bundle, training_table_export.INGEST_SPEC)
     if fsutil.is_ucv(path) or not fsutil.exists(spec):
         return None
-    stages = training_table_export.stage_parts(
-        json.loads(fsutil.read_text(spec)))
-    files = [osp.join(bundle, part) for parts in stages.values()
-             for part in parts]
+    stages = training_table_export.stage_parts(json.loads(fsutil.read_text(spec)))
+    files = [osp.join(bundle, part) for parts in stages.values() for part in parts]
     schema = training_table_export.export_schema(_read_parquet_schema(files))
     return files, schema.remove(
-        schema.get_field_index(training_table_export.SPLIT_COLUMN))
+        schema.get_field_index(training_table_export.SPLIT_COLUMN)
+    )
 
 
 def _filesystem_and_path(path: str) -> Tuple[Optional[FileSystem], str]:
@@ -476,7 +511,7 @@ def _filesystem_and_path(path: str) -> Tuple[Optional[FileSystem], str]:
         # Route S3 / GCS through the credentialed, fork-safe choke point.
         # Normalize s3a first so the strip and filesystem both see s3://.
         path = fsutil.s3a_as_s3(path)
-        bare = path.removeprefix("s3://").removeprefix("gs://")
+        bare = path.removeprefix('s3://').removeprefix('gs://')
         return arrow_cloud_filesystem(path), bare
     if fsutil.is_adls(path):
         fs, bare = FileSystem.from_uri(path)
@@ -501,15 +536,13 @@ def _read_parquet_schema(parquet_files: List[str]) -> pa.Schema:
     in-process backend reads the same footer the same way.
     """
     parquet = _open_parquet_file(parquet_files[0])
-    return custom_table.stored_schema(parquet.schema_arrow,
-                                      parquet.metadata.metadata)
+    return custom_table.stored_schema(parquet.schema_arrow, parquet.metadata.metadata)
 
 
 _DIVERGENCE_SAMPLE = 5
 
 
-def _schema_divergence_errors(first: pa.Schema,
-                              parquet_files: List[str]) -> list:
+def _schema_divergence_errors(first: pa.Schema, parquet_files: List[str]) -> list:
     """Refuses parts that do not store what :obj:`first` says they do.
 
     Every gate here reads part zero's footer while the row scan reads them
@@ -531,20 +564,26 @@ def _schema_divergence_errors(first: pa.Schema,
             if field_.name not in schema.names:
                 part_errors.append(
                     ValidationError(
-                        title="Column missing in a part of the supplied table",
+                        title='Column missing in a part of the supplied table',
                         message=(
-                            f"Part {path} does not carry {field_.name!r}, "
-                            f"which the other parts do. Every part of a "
-                            f"supplied training table has to store the same "
-                            f"columns.")))
+                            f'Part {path} does not carry {field_.name!r}, '
+                            f'which the other parts do. Every part of a '
+                            f'supplied training table has to store the same '
+                            f'columns.'
+                        ),
+                    )
+                )
             elif schema.field(field_.name).type != field_.type:
                 part_errors.append(
                     ValidationError(
-                        title="Column type differs between parts",
-                        message=(f"Part {path} stores {field_.name!r} as "
-                                 f"{schema.field(field_.name).type}, and "
-                                 f"another part stores it as {field_.type}."),
-                    ))
+                        title='Column type differs between parts',
+                        message=(
+                            f'Part {path} stores {field_.name!r} as '
+                            f'{schema.field(field_.name).type}, and '
+                            f'another part stores it as {field_.type}.'
+                        ),
+                    )
+                )
         if not part_errors:
             continue
         affected += 1
@@ -553,10 +592,14 @@ def _schema_divergence_errors(first: pa.Schema,
     if affected > _DIVERGENCE_SAMPLE:
         errors.append(
             ValidationError(
-                title="More parts diverge from the first",
-                message=(f"{affected} parts of the supplied table diverge from "
-                         f"the first; only the first {_DIVERGENCE_SAMPLE} are "
-                         f"listed above.")))
+                title='More parts diverge from the first',
+                message=(
+                    f'{affected} parts of the supplied table diverge from '
+                    f'the first; only the first {_DIVERGENCE_SAMPLE} are '
+                    f'listed above.'
+                ),
+            )
+        )
     return errors
 
 
@@ -577,10 +620,11 @@ def missing_source_column_errors(
     so a source is not expected to carry one yet.
     """
     with restricted_diagnostic_boundary(
-            safe_message='Custom training table schema read failed',
-            exception_types=OSError):
-        exported = exported_reference(generated_table_path, split_col_name,
-                                      source_column_names)
+        safe_message='Custom training table schema read failed', exception_types=OSError
+    ):
+        exported = exported_reference(
+            generated_table_path, split_col_name, source_column_names
+        )
         if exported is not None:
             generated_schema = exported[1]
         else:
@@ -592,7 +636,8 @@ def missing_source_column_errors(
     return custom_table.missing_column_errors(
         source_column_names,
         required=custom_table.generated_required_columns(
-            generated_schema.names, anchor_optional=True),
+            generated_schema.names, anchor_optional=True
+        ),
         weight_col=weight_col_name,
         split_col=split_col_name,
     )
@@ -624,23 +669,34 @@ def _validate_supplied_train_table(
 
     with contextlib.ExitStack() as stack:
         supplied_files = stack.enter_context(
-            _materialized_parquet_files(supplied_table_path))
-        gen_files = (None
-                     if generated_table_path is None else stack.enter_context(
-                         _materialized_parquet_files(generated_table_path)))
+            _materialized_parquet_files(supplied_table_path)
+        )
+        gen_files = (
+            None
+            if generated_table_path is None
+            else stack.enter_context(_materialized_parquet_files(generated_table_path))
+        )
         if not supplied_files:
             response.errors.append(
                 ValidationError(
-                    title="Supplied training table is empty", message=(
-                        f"Supplied training table at {supplied_table_path} "
-                        "contains no parquet files.")))
+                    title='Supplied training table is empty',
+                    message=(
+                        f'Supplied training table at {supplied_table_path} '
+                        'contains no parquet files.'
+                    ),
+                )
+            )
             return response
         if gen_files is not None and not gen_files:
             response.errors.append(
                 ValidationError(
-                    title="Generated training table is empty", message=(
-                        f"Generated training table at {generated_table_path} "
-                        "contains no parquet files.")))
+                    title='Generated training table is empty',
+                    message=(
+                        f'Generated training table at {generated_table_path} '
+                        'contains no parquet files.'
+                    ),
+                )
+            )
             return response
 
         schema = _read_parquet_schema(supplied_files)
@@ -649,23 +705,27 @@ def _validate_supplied_train_table(
             response.errors.extend(divergent)
             return response
 
-        exported = (None if generated_table_path is None else
-                    exported_reference(generated_table_path, split_col_name,
-                                       schema.names))
+        exported = (
+            None
+            if generated_table_path is None
+            else exported_reference(generated_table_path, split_col_name, schema.names)
+        )
         if exported is not None:
             gen_files, generated_schema = exported
         else:
-            generated_schema = (None if gen_files is None else
-                                _read_parquet_schema(gen_files))
+            generated_schema = (
+                None if gen_files is None else _read_parquet_schema(gen_files)
+            )
         rules = custom_table.SuppliedTableRules(
             task_type=task_type,
             weight_col=weight_col_name,
             split_col=(split_col_name or '').strip() or None,
-            anchored=(anchored if generated_schema is None else
-                      custom_table.timestamp_column()
-                      in generated_schema.names),
-            allow_row_count_mismatch=(
-                CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.parse_value()),
+            anchored=(
+                anchored
+                if generated_schema is None
+                else custom_table.timestamp_column() in generated_schema.names
+            ),
+            allow_row_count_mismatch=(CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.parse_value()),
         )
 
         # The contract's names here; a generated column that went missing is
@@ -692,13 +752,16 @@ def _validate_supplied_train_table(
             rows=_count_parquet_rows(gen_files),
         )
         errors, warnings = custom_table.correspondence_errors(
-            schema, supplied_rows, generated, rules)
+            schema, supplied_rows, generated, rules
+        )
         if rules.allow_row_count_mismatch and supplied_rows != generated.rows:
             log.warning(
-                "Custom training table row count mismatch allowed by %s: "
-                "supplied table has %d rows, generated table has %d rows.",
-                CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.name, supplied_rows,
-                generated.rows)
+                'Custom training table row count mismatch allowed by %s: '
+                'supplied table has %d rows, generated table has %d rows.',
+                CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.name,
+                supplied_rows,
+                generated.rows,
+            )
         response.errors.extend(errors)
         response.warnings.extend(warnings)
 
@@ -719,8 +782,8 @@ def validate_weighted_train_table(
 ) -> ValidationResponse:
     """Validate the supplied training table a connector has just produced."""
     with restricted_diagnostic_boundary(
-            safe_message='Supplied training table read failed',
-            exception_types=OSError):
+        safe_message='Supplied training table read failed', exception_types=OSError
+    ):
         return _validate_supplied_train_table(
             generated_table_path=original_train_table_path,
             supplied_table_path=custom_train_table_path,

@@ -69,29 +69,37 @@ class MLOps:
         if not self.artifact_root:
             raise ValueError('MLOps needs an artifact_root.')
         if self.on_error not in ('warn', 'raise'):
-            raise ValueError(f"on_error must be 'warn' or 'raise', not "
-                             f"{self.on_error!r}.")
+            raise ValueError(
+                f"on_error must be 'warn' or 'raise', not {self.on_error!r}."
+            )
         if isinstance(self.artifact_root, str):
             if self.artifact_root.startswith('@'):
                 raise ValueError(
                     'A stage artifact_root needs its connector: pass '
-                    f'(SnowflakeConnector(...), {self.artifact_root!r}).')
-            root = _Root(connector_for_root(self.artifact_root), '',
-                         self.artifact_root)
+                    f'(SnowflakeConnector(...), {self.artifact_root!r}).'
+                )
+            root = _Root(connector_for_root(self.artifact_root), '', self.artifact_root)
         else:
             connector, path = self.artifact_root
             if not is_file_destination(connector, path):
                 raise ValueError(
                     f'{type(connector).__name__} cannot hold files at '
-                    f'{path!r}; artifact_root needs a file location.')
+                    f'{path!r}; artifact_root needs a file location.'
+                )
             _require_within_root(connector, path)
             root = _Root(connector, path, path)
-        kinds = (frozenset(KINDS) if self.store is True else
-                 frozenset() if self.store is False else frozenset(self.store))
+        kinds = (
+            frozenset(KINDS)
+            if self.store is True
+            else frozenset()
+            if self.store is False
+            else frozenset(self.store)
+        )
         unknown = sorted(kinds - set(KINDS))
         if unknown:
-            raise ValueError(f'Unknown store kinds {unknown}; choose from '
-                             f'{list(KINDS)}.')
+            raise ValueError(
+                f'Unknown store kinds {unknown}; choose from {list(KINDS)}.'
+            )
         if kinds:
             _require_writable(root)
         from kumo.engine._tracking import as_tracking
@@ -114,19 +122,23 @@ class MLOps:
         if not isinstance(registry, ModelRegistryLocation):
             raise TypeError(
                 f'registry takes a ModelRegistryLocation, not '
-                f'{type(registry).__name__}; the tracker registers it.')
+                f'{type(registry).__name__}; the tracker registers it.'
+            )
         if registry.alias is not None:
             check_model_alias(registry.alias)
         if tracker is not None and tracker.log_model is not None:
             if registry.version is not None:
-                raise ValueError('the tracker assigns registered model '
-                                 'versions; leave ModelRegistryLocation.version unset.')
+                raise ValueError(
+                    'the tracker assigns registered model '
+                    'versions; leave ModelRegistryLocation.version unset.'
+                )
             return
         connector = None if tracker is None else tracker.connector
         if connector is None:
             raise ValueError(
                 'registry= needs tracking=MlflowTracking(...) or '
-                'SnowflakeTracking(connector, ...).')
+                'SnowflakeTracking(connector, ...).'
+            )
         check_model_location(ModelOutputConfig(connector, location=registry))
 
     def snapshot_uri(self, snapshot: Any) -> str:
@@ -156,12 +168,15 @@ def _require_within_root(connector: Any, path: str) -> None:
         sink._resolved_directory(connector, path)
     except ValueError as error:
         target = sink._root_for(connector)
-        within = (f'root_dir {sink.scheme}://{target.path}'
-                  if target is not None else 'target')
+        within = (
+            f'root_dir {sink.scheme}://{target.path}'
+            if target is not None
+            else 'target'
+        )
         name = type(connector).__name__
         raise ValueError(
-            f'Invalid artifact_root {path!r} for {name} ({within}): '
-            f'{error}') from error
+            f'Invalid artifact_root {path!r} for {name} ({within}): {error}'
+        ) from error
 
 
 def _require_writable(root: _Root) -> None:
@@ -169,8 +184,9 @@ def _require_writable(root: _Root) -> None:
 
     from kumo.engine.connector import file_store
 
-    store = file_store(root.connector,
-                       root.location(f'.kumo-write-check-{uuid4().hex}'))
+    store = file_store(
+        root.connector, root.location(f'.kumo-write-check-{uuid4().hex}')
+    )
     if store is None:
         return
     filesystem, probe = store
@@ -183,7 +199,8 @@ def _require_writable(root: _Root) -> None:
         raise PermissionError(
             f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
             f'({type(error).__name__}: {error}); grant write and delete '
-            f'rights or pick another root.') from error
+            f'rights or pick another root.'
+        ) from error
 
 
 def _require_local_writable(probe: str) -> None:
@@ -208,7 +225,8 @@ def _write_and_delete(filesystem: Any, connector: Any, probe: str) -> None:
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
-    'kumo_mlops', default=None)
+    'kumo_mlops', default=None
+)
 
 
 @contextlib.contextmanager
@@ -227,8 +245,12 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
     return settings if settings is not None else _CURRENT.get()
 
 
-def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
-                   call: str, stacklevel: int = 2) -> None:
+def raise_on_error(
+    settings: Optional[MLOps],
+    error: Optional[BaseException],
+    call: str,
+    stacklevel: int = 2,
+) -> None:
     if error is None or settings is None:
         return
     message = f'{call} finished, but MLOps failed: {full_error(error)}'
@@ -241,8 +263,12 @@ def full_error(error: BaseException) -> str:
     return f'{type(error).__name__}: {error}'
 
 
-def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
-                 also: Optional[BaseException] = None) -> None:
+def warn_failure(
+    message: str,
+    error: BaseException,
+    stacklevel: int = 2,
+    also: Optional[BaseException] = None,
+) -> None:
     r"""Warns ``message`` once per ``error`` (and ``also``)."""
     if getattr(error, '_kumo_warned', False):
         return
@@ -268,15 +294,16 @@ def snapshot_path(snapshot: Any) -> str:
 _SNAPSHOT_ID = re.compile(r'[0-9a-f]+@[0-9a-f]+')
 
 
-def snapshot_uri(snapshot: Any,
-                 settings: Optional[MLOps] = None) -> Optional[str]:
+def snapshot_uri(snapshot: Any, settings: Optional[MLOps] = None) -> Optional[str]:
     r"""A snapshot location; an object or id is read from the root."""
-    if snapshot is None or (isinstance(snapshot, str)
-                            and not _SNAPSHOT_ID.fullmatch(snapshot)):
+    if snapshot is None or (
+        isinstance(snapshot, str) and not _SNAPSHOT_ID.fullmatch(snapshot)
+    ):
         return snapshot
     settings = resolve(settings)
     if settings is None:
         raise ValueError(
             'A snapshot object or id needs a kumo.mlops block; otherwise '
-            'pass the URI snapshot.export(...) returned.')
+            'pass the URI snapshot.export(...) returned.'
+        )
     return settings.snapshot_uri(snapshot)

@@ -50,10 +50,10 @@ from statedb.utils.errors import (
 log = logging.getLogger(__name__)
 
 # CTA urls
-TABLE_SUMMARY = "/tables/tablesummary/"
-TRAIN_QUERY = "/queries/trainquery/"
-GRAPH_SUMMARY = "/graphs/summary/"
-EDGE_HEALTH_URL = "/graphs/edgehealth/"
+TABLE_SUMMARY = '/tables/tablesummary/'
+TRAIN_QUERY = '/queries/trainquery/'
+GRAPH_SUMMARY = '/graphs/summary/'
+EDGE_HEALTH_URL = '/graphs/edgehealth/'
 
 # Validator timeouts in secs, for different validator types.
 TABLE_VALIDATOR_TIMEOUT = 10.0
@@ -68,19 +68,29 @@ class Validator:
     """
     Base class for all types of validators ( table, graph, PQ, BP)
     """
-    def __init__(self, data_backend_ctx: DataBackendContext, timeout: float,
-                 job_base_dir: str,
-                 state_services: Optional[StateServices] = None):
+
+    def __init__(
+        self,
+        data_backend_ctx: DataBackendContext,
+        timeout: float,
+        job_base_dir: str,
+        state_services: Optional[StateServices] = None,
+    ):
         self._data_backend_ctx = data_backend_ctx
         self._state_services = state_services
         self._timeout = timeout
         self._job_base_dir = job_base_dir
 
     async def run_validator_with_timeout(
-            self, ids: Union[List[TableID], List[GraphID],
-                             List[PredictiveQueryID],
-                             List[BatchPredictionJobID] | List[TrainingJobID]],
-            func: ValidatorFunc) -> List[List[ErrWarnDetails]]:
+        self,
+        ids: Union[
+            List[TableID],
+            List[GraphID],
+            List[PredictiveQueryID],
+            List[BatchPredictionJobID] | List[TrainingJobID],
+        ],
+        func: ValidatorFunc,
+    ) -> List[List[ErrWarnDetails]]:
         """
         A helper co-routine that runs a given validator function for a given
         ID. If the validator generates an exception ( timeout ), then it is
@@ -99,8 +109,13 @@ class Validator:
         return errs
 
     async def run_batch_validators(
-        self, ids: Union[List[TableID], List[GraphID], List[PredictiveQueryID],
-                         List[BatchPredictionJobID] | List[TrainingJobID]]
+        self,
+        ids: Union[
+            List[TableID],
+            List[GraphID],
+            List[PredictiveQueryID],
+            List[BatchPredictionJobID] | List[TrainingJobID],
+        ],
     ) -> List[List[ErrWarnDetails]]:
         """
         A co-routine that runs all validator functions for all the given IDs.
@@ -119,7 +134,7 @@ class Validator:
                 errs_lists = await task
             except Exception:
                 # Skip over failed validators, but log exception
-                log.exception("Failure when running validator.")
+                log.exception('Failure when running validator.')
                 continue
 
             for i, errs in enumerate(errs_lists):
@@ -139,8 +154,13 @@ class Validator:
         pass
 
     async def get_warnings(
-        self, ids: Union[List[TableID], List[GraphID], List[PredictiveQueryID],
-                         List[BatchPredictionJobID] | List[TrainingJobID]]
+        self,
+        ids: Union[
+            List[TableID],
+            List[GraphID],
+            List[PredictiveQueryID],
+            List[BatchPredictionJobID] | List[TrainingJobID],
+        ],
     ) -> Dict[str, ErrWarnResponse]:
         """
         Run validators and fetch warnings
@@ -152,10 +172,15 @@ class Validator:
         return self.gen_warn_response(ids, results)
 
     def gen_warn_response(
-            self, ids: Union[List[TableID], List[GraphID],
-                             List[PredictiveQueryID],
-                             List[BatchPredictionJobID] | List[TrainingJobID]],
-            err_warn: List[List[ErrWarnDetails]]) -> Dict[str, ErrWarnResponse]:
+        self,
+        ids: Union[
+            List[TableID],
+            List[GraphID],
+            List[PredictiveQueryID],
+            List[BatchPredictionJobID] | List[TrainingJobID],
+        ],
+        err_warn: List[List[ErrWarnDetails]],
+    ) -> Dict[str, ErrWarnResponse]:
         """
         Generates a proper REST response of type Dict[str, ErrWarnResponse]
         from the outputs of validators ( containing List[ErrWarnDetails] )
@@ -190,33 +215,46 @@ class TableValidator(Validator):
     TableValidator class that has co-routines to check table specific
     errors/warnings.
     """
-    def __init__(self, data_backend_ctx: DataBackendContext, job_base_dir: str,
-                 state_services: Optional[StateServices] = None, *,
-                 project_id: ProjectID):
 
-        super().__init__(data_backend_ctx, TABLE_VALIDATOR_TIMEOUT,
-                         job_base_dir, state_services)
+    def __init__(
+        self,
+        data_backend_ctx: DataBackendContext,
+        job_base_dir: str,
+        state_services: Optional[StateServices] = None,
+        *,
+        project_id: ProjectID,
+    ):
+
+        super().__init__(
+            data_backend_ctx, TABLE_VALIDATOR_TIMEOUT, job_base_dir, state_services
+        )
         self._project_id = project_id
 
     def _require_table_service(self):
         if self._state_services is None:
-            raise RuntimeError("TableValidator requires StateServices.tables.")
+            raise RuntimeError('TableValidator requires StateServices.tables.')
         return self._state_services.tables
 
     def check_ids_exist(self, table_ids: List[TableID]) -> None:
         """
         Checks if table ids exist in db
         """
-        raise RuntimeError("TableValidator requires StateServices.tables.")
+        raise RuntimeError('TableValidator requires StateServices.tables.')
 
     async def check_ids_exist_async(self, table_ids: List[TableID]) -> None:
         fpid_by_table_id = await self._table_fpid_by_id(table_ids)
         fpids = [
-            fpid for table_id in table_ids
+            fpid
+            for table_id in table_ids
             if (fpid := fpid_by_table_id[table_id]) is not None
         ]
-        entries = (await self._require_table_service().get_table_entries(
-            self._project_id, fpids) if fpids else {})
+        entries = (
+            await self._require_table_service().get_table_entries(
+                self._project_id, fpids
+            )
+            if fpids
+            else {}
+        )
         for table_id in table_ids:
             fpid = fpid_by_table_id[table_id]
             if fpid is None or fpid not in entries:
@@ -246,7 +284,8 @@ class TableValidator(Validator):
 
         if alias_by_table_id:
             entries_by_alias = await table_service.get_table_entries_by_aliases(
-                self._project_id, alias_by_table_id.values())
+                self._project_id, alias_by_table_id.values()
+            )
             for table_id, table_name in alias_by_table_id.items():
                 entry = entries_by_alias.get(table_name)
                 result[table_id] = entry.id if entry is not None else None
@@ -266,8 +305,7 @@ class TableValidator(Validator):
     ) -> List[TableDefinition | Exception]:
         table_service = self._require_table_service()
 
-        result: List[TableDefinition | Exception
-                     | None] = [None for _ in table_ids]
+        result: List[TableDefinition | Exception | None] = [None for _ in table_ids]
         fpid_by_table_id = await self._table_fpid_by_id(table_ids)
         fpid_by_index: Dict[int, FPID] = {
             i: fpid
@@ -277,11 +315,15 @@ class TableValidator(Validator):
 
         if fpid_by_index:
             entries = await table_service.get_table_entries(
-                self._project_id, list(fpid_by_index.values()))
+                self._project_id, list(fpid_by_index.values())
+            )
             for i, fpid in fpid_by_index.items():
                 entry = entries.get(fpid)
-                result[i] = (entry.config if entry is not None else
-                             TableDoesNotExistError(table_ids[i]))
+                result[i] = (
+                    entry.config
+                    if entry is not None
+                    else TableDoesNotExistError(table_ids[i])
+                )
 
         return [
             item if item is not None else TableDoesNotExistError(table_id)
@@ -289,7 +331,8 @@ class TableValidator(Validator):
         ]
 
     async def validate_tables(
-            self, table_ids: List[TableID]) -> List[List[ErrWarnDetails]]:
+        self, table_ids: List[TableID]
+    ) -> List[List[ErrWarnDetails]]:
         """Performs validations on all tables, including based on col type
         selection and based on data computed by the table ingestion pipeline
         (method does both to reuse the args retrieved from the db).
@@ -307,19 +350,25 @@ class TableValidator(Validator):
         # Get the most recent version of each table (including failed ingested
         # versions), skipping over uningested tables.
         cache = get_active_cache()
-        success_and_failed_versions: List[Optional[VersionedSourceTableID]] = (
-            await cache.table_version_cache.get_many.coroutine(
-                source_ids, TableIngestionStatus.COMPLETED))
+        success_and_failed_versions: List[
+            Optional[VersionedSourceTableID]
+        ] = await cache.table_version_cache.get_many.coroutine(
+            source_ids, TableIngestionStatus.COMPLETED
+        )
 
         versions, nones_2 = batch_ops.remove_nones(success_and_failed_versions)
 
         # Full table refresh results in data backend cache are saved under the
         # table cache key.
-        refresh_results: List[Optional[TableDataTaskResult]] = \
-            await cache.table_refresh_result.get_many.coroutine(
-                [(v.connector_name, t.cache_key(), v.version)
-                 for t, v in zip(tables, versions)],
-                TableDataTaskResult)
+        refresh_results: List[
+            Optional[TableDataTaskResult]
+        ] = await cache.table_refresh_result.get_many.coroutine(
+            [
+                (v.connector_name, t.cache_key(), v.version)
+                for t, v in zip(tables, versions)
+            ],
+            TableDataTaskResult,
+        )
 
         # Run validations on the fetched data
         results: List[Optional[List[ErrWarnDetails]]] = []
@@ -341,55 +390,80 @@ class TableValidator(Validator):
         return all_results
 
     def _check_refresh_result(
-            self, refresh_result: TableDataTaskResult) -> List[ErrWarnDetails]:
+        self, refresh_result: TableDataTaskResult
+    ) -> List[ErrWarnDetails]:
         result: List[ErrWarnDetails] = []
         for info_item in refresh_result.validation.info_items:
             result.append(
-                ErrWarnDetails(is_error=False, title=info_item.title,
-                               id=info_item.id, description=info_item.message,
-                               is_dismissible=True))
+                ErrWarnDetails(
+                    is_error=False,
+                    title=info_item.title,
+                    id=info_item.id,
+                    description=info_item.message,
+                    is_dismissible=True,
+                )
+            )
         for warning in refresh_result.validation.warnings:
             result.append(
-                ErrWarnDetails(is_error=False, title=warning.title,
-                               description=warning.message,
-                               is_dismissible=True))
+                ErrWarnDetails(
+                    is_error=False,
+                    title=warning.title,
+                    description=warning.message,
+                    is_dismissible=True,
+                )
+            )
         for error in refresh_result.validation.errors:
             result.append(
-                ErrWarnDetails(is_error=True, title=error.title,
-                               description=error.message, is_dismissible=False))
+                ErrWarnDetails(
+                    is_error=True,
+                    title=error.title,
+                    description=error.message,
+                    is_dismissible=False,
+                )
+            )
 
         # If table ingestion failed, but the root cause was not provided, then
         # tell the customer to contact Kumo support. This should rarely happen,
         # as whenever table ingestion fails, a human-fixable error message is
         # supposed to be returned in validation.errors.
-        if (refresh_result.status == AsyncDataTaskStatus.FAILED
-                and len(refresh_result.validation.errors) == 0):
+        if (
+            refresh_result.status == AsyncDataTaskStatus.FAILED
+            and len(refresh_result.validation.errors) == 0
+        ):
             result.append(
                 ErrWarnDetails(
-                    is_error=True, title="Fatal error while ingesting table",
+                    is_error=True,
+                    title='Fatal error while ingesting table',
                     description=(
-                        "An unexpected error was encountered while "
-                        "ingesting this table. If this issue persists "
-                        "after refreshing the table, please contact your "
-                        "point of contact at Kumo to understand and "
-                        "fix the root cause."), is_dismissible=False))
+                        'An unexpected error was encountered while '
+                        'ingesting this table. If this issue persists '
+                        'after refreshing the table, please contact your '
+                        'point of contact at Kumo to understand and '
+                        'fix the root cause.'
+                    ),
+                    is_dismissible=False,
+                )
+            )
 
         return result
 
-    def _check_col_types(self,
-                         table_args: TableDefinition) -> List[ErrWarnDetails]:
+    def _check_col_types(self, table_args: TableDefinition) -> List[ErrWarnDetails]:
         result: List[ErrWarnDetails] = []
         for column in table_args.cols:
-            if (column.dtype and column.dtype.is_float()
-                    and column.stype == Stype.ID):
+            if column.dtype and column.dtype.is_float() and column.stype == Stype.ID:
                 result.append(
                     ErrWarnDetails(
-                        is_error=False, title="Column type precision risk",
+                        is_error=False,
+                        title='Column type precision risk',
                         description=(
-                            f"Column {column.name} has source data of type "
-                            " float but is being used as an ID. This may lead"
-                            " to errors when joining with an ID column with "
-                            " integer data."), is_dismissible=False))
+                            f'Column {column.name} has source data of type '
+                            ' float but is being used as an ID. This may lead'
+                            ' to errors when joining with an ID column with '
+                            ' integer data.'
+                        ),
+                        is_dismissible=False,
+                    )
+                )
 
         return result
 
@@ -399,24 +473,31 @@ class GraphValidator(Validator):
     GraphValidator class that has co-routines to check graph specific
     errors/warnings.
     """
-    def __init__(self, data_backend_ctx: DataBackendContext, job_base_dir: str,
-                 state_services: Optional[StateServices] = None, *,
-                 project_id: ProjectID):
 
-        super().__init__(data_backend_ctx, GRAPH_VALIDATOR_TIMEOUT,
-                         job_base_dir, state_services)
+    def __init__(
+        self,
+        data_backend_ctx: DataBackendContext,
+        job_base_dir: str,
+        state_services: Optional[StateServices] = None,
+        *,
+        project_id: ProjectID,
+    ):
+
+        super().__init__(
+            data_backend_ctx, GRAPH_VALIDATOR_TIMEOUT, job_base_dir, state_services
+        )
         self._project_id = project_id
 
     def _require_state_services(self):
         if self._state_services is None:
-            raise RuntimeError("GraphValidator requires StateServices.")
+            raise RuntimeError('GraphValidator requires StateServices.')
         return self._state_services
 
     def check_ids_exist(self, graph_ids: List[GraphID]) -> None:
         """
         Checks if graph ids exist in db
         """
-        raise RuntimeError("GraphValidator requires StateServices.")
+        raise RuntimeError('GraphValidator requires StateServices.')
 
     async def check_ids_exist_async(self, graph_ids: List[GraphID]) -> None:
         await self._get_many_graph_inputs(graph_ids)
@@ -428,8 +509,7 @@ class GraphValidator(Validator):
             state_services=self._state_services,
             project_id=self._project_id,
         )
-        graph_inputs_or_exc = await graph_logic.get_many_data_compute_inputs(
-            graph_ids)
+        graph_inputs_or_exc = await graph_logic.get_many_data_compute_inputs(graph_ids)
         graph_inputs = []
         for graph_id, graph_input_or_exc in zip(graph_ids, graph_inputs_or_exc):
             if isinstance(graph_input_or_exc, Exception):
@@ -448,12 +528,12 @@ class GraphValidator(Validator):
         ]
 
     async def graph_has_errors_warnings(
-            self, graph_ids: List[GraphID]) -> List[List[ErrWarnDetails]]:
+        self, graph_ids: List[GraphID]
+    ) -> List[List[ErrWarnDetails]]:
         graph_inputs = await self._get_many_graph_inputs(graph_ids)
         graph_keys = [g.graph_key for g in graph_inputs]
         graph_id_dict = dict(zip(graph_keys, graph_ids))
-        validations = await DataBackend.get_many_graph_validations.coroutine(
-            graph_keys)
+        validations = await DataBackend.get_many_graph_validations.coroutine(graph_keys)
 
         return [
             _validation_to_warn_details(validation, graph_id_dict[graph_key])
@@ -461,7 +541,8 @@ class GraphValidator(Validator):
         ]
 
     async def table_has_errors_warnings(
-            self, graph_ids: List[GraphID]) -> List[List[ErrWarnDetails]]:
+        self, graph_ids: List[GraphID]
+    ) -> List[List[ErrWarnDetails]]:
         """
         Graph Validator co-routine that handles,
             Error : Graph contains table with one or more errors
@@ -479,8 +560,12 @@ class GraphValidator(Validator):
         table_ids_dedup = list(table_id_set)
 
         # Create TableValidator and validate the table_ids
-        tv = TableValidator(self._data_backend_ctx, self._job_base_dir,
-                            self._state_services, project_id=self._project_id)
+        tv = TableValidator(
+            self._data_backend_ctx,
+            self._job_base_dir,
+            self._state_services,
+            project_id=self._project_id,
+        )
         results = await tv.run_batch_validators(table_ids_dedup)
         warnings_by_table_id = dict(zip(table_ids_dedup, results))
 
@@ -501,12 +586,18 @@ class GraphValidator(Validator):
                     table_name = table_id.table_name
                     graph_warnings.append(
                         ErrWarnDetails(
-                            is_error=True, title="Graph contains errors",
+                            is_error=True,
+                            title='Graph contains errors',
                             description=(
                                 f'Table {table_name} in this graph has '
-                                'one or more errors.'), is_dismissible=False,
-                            cta=ErrWarnCTA(name="View Errors",
-                                           url=f'{TABLE_SUMMARY}{table_id}')))
+                                'one or more errors.'
+                            ),
+                            is_dismissible=False,
+                            cta=ErrWarnCTA(
+                                name='View Errors', url=f'{TABLE_SUMMARY}{table_id}'
+                            ),
+                        )
+                    )
             result.append(graph_warnings)
 
         assert len(result) == len(graph_ids)
@@ -518,6 +609,7 @@ class TrainingJobValidator(Validator):
     Training Job Validator class that has co-routines to check Training Job
     specific errors/warnings.
     """
+
     def __init__(
         self,
         data_backend_ctx: DataBackendContext,
@@ -526,8 +618,9 @@ class TrainingJobValidator(Validator):
         state_services: Optional[StateServices] = None,
     ):
 
-        super().__init__(data_backend_ctx, PQUERY_VALIDATOR_TIMEOUT,
-                         job_base_dir, state_services)
+        super().__init__(
+            data_backend_ctx, PQUERY_VALIDATOR_TIMEOUT, job_base_dir, state_services
+        )
 
         self._ml_backend = ml_backend
 
@@ -538,7 +631,7 @@ class TrainingJobValidator(Validator):
         data_backend_ctx: DataBackendContext,
         job_base_dir: str,
         ml_backend: MLJobBackend,
-    ) -> "TrainingJobValidator":
+    ) -> 'TrainingJobValidator':
         return cls(
             data_backend_ctx,
             job_base_dir,
@@ -548,7 +641,7 @@ class TrainingJobValidator(Validator):
 
     def _require_ml_job_service(self):
         if self._state_services is None:
-            raise RuntimeError("TrainingJobValidator requires StateServices")
+            raise RuntimeError('TrainingJobValidator requires StateServices')
         return self._state_services.ml_jobs
 
     def check_ids_exist(self, tj_ids: List[TrainingJobID]) -> None:
@@ -570,18 +663,16 @@ class TrainingJobValidator(Validator):
         Gets all the validator functions
         """
         # Update this when a new validator routine is added.
-        return [
-            self.check_graph_has_warnings, self.check_training_job_has_warnings
-        ]
+        return [self.check_graph_has_warnings, self.check_training_job_has_warnings]
 
     async def check_graph_has_warnings(
-            self, training_job_ids: List[TrainingJobID]
+        self, training_job_ids: List[TrainingJobID]
     ) -> List[List[ErrWarnDetails]]:
         # TODO(frg100): Fill this in to handle old graphs as well as snapshots
         return []
 
     async def check_training_job_has_warnings(
-            self, training_job_ids: List[TrainingJobID]
+        self, training_job_ids: List[TrainingJobID]
     ) -> List[List[ErrWarnDetails]]:
 
         paths: List[Optional[str]] = []
@@ -602,12 +693,22 @@ class BatchPredictionValidator(Validator):
     Batch Prediction Validator class that has co-routines to check BP specific
     errors/warnings.
     """
-    def __init__(self, data_backend_ctx: DataBackendContext, job_base_dir: str,
-                 ml_job_backend: MLJobBackend, ctx: RequestContext,
-                 state_services: Optional[StateServices] = None):
 
-        super().__init__(data_backend_ctx, BATCH_PREDICTION_VALIDATOR_TIMEOUT,
-                         job_base_dir, state_services)
+    def __init__(
+        self,
+        data_backend_ctx: DataBackendContext,
+        job_base_dir: str,
+        ml_job_backend: MLJobBackend,
+        ctx: RequestContext,
+        state_services: Optional[StateServices] = None,
+    ):
+
+        super().__init__(
+            data_backend_ctx,
+            BATCH_PREDICTION_VALIDATOR_TIMEOUT,
+            job_base_dir,
+            state_services,
+        )
 
         self._ctx = ctx
 
@@ -619,7 +720,7 @@ class BatchPredictionValidator(Validator):
         job_base_dir: str,
         ml_job_backend: MLJobBackend,
         ctx: RequestContext,
-    ) -> "BatchPredictionValidator":
+    ) -> 'BatchPredictionValidator':
         return cls(
             data_backend_ctx,
             job_base_dir,
@@ -630,8 +731,7 @@ class BatchPredictionValidator(Validator):
 
     def _require_ml_job_service(self):
         if self._state_services is None:
-            raise RuntimeError(
-                "BatchPredictionValidator requires StateServices")
+            raise RuntimeError('BatchPredictionValidator requires StateServices')
         return self._state_services.ml_jobs
 
     def check_ids_exist(self, bp_ids: List[BatchPredictionJobID]) -> None:
@@ -639,15 +739,14 @@ class BatchPredictionValidator(Validator):
         Checks if BP ids exist in db
         """
         raise RuntimeError(
-            "BatchPredictionValidator requires StateServices for batch "
-            "prediction existence checks.")
+            'BatchPredictionValidator requires StateServices for batch '
+            'prediction existence checks.'
+        )
 
-    async def check_ids_exist_async(self,
-                                    bp_ids: List[BatchPredictionJobID]) -> None:
+    async def check_ids_exist_async(self, bp_ids: List[BatchPredictionJobID]) -> None:
         rows = await self._require_ml_job_service().get_batch_prediction_rows(
             bp_ids,
-            project_ids=visible_project_ids_or_none(
-                self._ctx.user_authorization),
+            project_ids=visible_project_ids_or_none(self._ctx.user_authorization),
         )
         found_ids = {row.id for row in rows}
         for id in bp_ids:
@@ -662,8 +761,8 @@ class BatchPredictionValidator(Validator):
         return [self.check_prediction_job_has_warnings]
 
     async def check_prediction_job_has_warnings(
-            self,
-            bp_ids: List[BatchPredictionJobID]) -> List[List[ErrWarnDetails]]:
+        self, bp_ids: List[BatchPredictionJobID]
+    ) -> List[List[ErrWarnDetails]]:
 
         paths: List[Optional[str]] = []
         for job_id in bp_ids:
@@ -680,8 +779,8 @@ class BatchPredictionValidator(Validator):
 
 
 def _validation_to_warn_details(
-        validation: ValidationResponse,
-        graph_id: Optional[GraphID] = None) -> List[ErrWarnDetails]:
+    validation: ValidationResponse, graph_id: Optional[GraphID] = None
+) -> List[ErrWarnDetails]:
     errs: List[ErrWarnDetails] = []
     for error in validation.errors:
         errs.append(
@@ -690,7 +789,8 @@ def _validation_to_warn_details(
                 title=error.title,
                 description=error.message,
                 is_dismissible=False,
-            ))
+            )
+        )
     for warning in validation.warnings:
         warn_detail = ErrWarnDetails(
             is_error=False,
@@ -711,13 +811,16 @@ def _validation_to_warn_details(
     return errs
 
 
-async def _get_warn_details(
-        paths: List[Optional[str]]) -> List[List[ErrWarnDetails]]:
+async def _get_warn_details(paths: List[Optional[str]]) -> List[List[ErrWarnDetails]]:
     files = await fsutil.get_many_if_present.coroutine(paths)
     return [
         _validation_to_warn_details(
             json.fast_from_json(
                 file,
                 ValidationResponse,
-            )) if file is not None else [] for file in files
+            )
+        )
+        if file is not None
+        else []
+        for file in files
     ]

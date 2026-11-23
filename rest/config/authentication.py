@@ -29,8 +29,7 @@ class AuthenticationSettings:
     is_unit_test: bool = False
 
     direct_connect_login_method: Literal['oidc', 'password'] = 'oidc'
-    direct_connect_allowed_return_origins: List[str] = field(
-        default_factory=list)
+    direct_connect_allowed_return_origins: List[str] = field(default_factory=list)
     # A source-IP-wide password-login bucket is safe only when the deployment
     # can supply a distinct, trustworthy client address. Frontend-gateway
     # deployments behind an arbitrary customer edge disable this bucket while
@@ -63,7 +62,7 @@ class OrganizationMember:
     name: str
     email: str
     uid: str
-    roles: List[Literal["Admin", "User"]]
+    roles: List[Literal['Admin', 'User']]
 
 
 RequestsResponse = Dict[str, Any]

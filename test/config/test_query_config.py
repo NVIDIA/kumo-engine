@@ -74,7 +74,8 @@ def test_pquery_split_config_deserialization(tmp_path, create_graph):
     test_config_split_dict.pop('__pydantic_initialised__', None)
     assert test_config_split_dict == deserialized_test_config.split
     assert Split.from_config(test_config.split) == Split.from_config(
-        deserialized_test_config.split)
+        deserialized_test_config.split
+    )
     test_config.split = SplitConfig()
     deserialized_test_config.split = SplitConfig()
 
@@ -82,8 +83,7 @@ def test_pquery_split_config_deserialization(tmp_path, create_graph):
     assert test_config == deserialized_test_config
 
 
-def test_pqlv2_forecast_length_deserialization(tmp_path,
-                                               create_node_pred_graph):
+def test_pqlv2_forecast_length_deserialization(tmp_path, create_node_pred_graph):
     # Create the graph and "infer" encoders
     graph: Graph = create_node_pred_graph('test_temporal_graph', tmp_path.name)
     graph.infer_metadata()
@@ -100,7 +100,6 @@ def test_pqlv2_forecast_length_deserialization(tmp_path,
         target='COUNT(TRANSACTIONS.*, 0, 10)',
         split=split_config,
         forecast_length=1,
-        query_string=('PREDICT COUNT(TRANSACTIONS.*, 0, 10) '
-                      'FOR EACH USERS.USER_ID'),
+        query_string=('PREDICT COUNT(TRANSACTIONS.*, 0, 10) FOR EACH USERS.USER_ID'),
     ).to_predictive_query_v2_config()
     assert test_config.forecast_length == 1

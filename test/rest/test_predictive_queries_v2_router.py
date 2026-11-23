@@ -26,8 +26,7 @@ def _pquery_resource() -> PQueryResource:
         query_string='PREDICT responses.value FOR EACH responses.id',
         graph=graph_api.GraphDefinition(
             tables={
-                'responses':
-                table_api.TableDefinition(
+                'responses': table_api.TableDefinition(
                     cols=[
                         table_api.Column(
                             name='id',
@@ -42,7 +41,8 @@ def _pquery_resource() -> PQueryResource:
                     ],
                     pkey='id',
                     source_table=source_table_api.UnavailableSourceTable(
-                        table='responses'),
+                        table='responses'
+                    ),
                 ),
             },
             col_groups=[],
@@ -57,8 +57,9 @@ def _pquery_resource() -> PQueryResource:
 async def test_create_pquery_propagates_validated_project_to_driver():
     router = PredictiveQueryV2Router.__new__(PredictiveQueryV2Router)
     router._driver = AsyncMock()
-    router._driver.create_predictive_query_v2.return_value = (
-        PredictiveQueryID('project_scoped_query'))
+    router._driver.create_predictive_query_v2.return_value = PredictiveQueryID(
+        'project_scoped_query'
+    )
     router._projects_driver = AsyncMock()
     request = _pquery_resource()
 
@@ -68,11 +69,11 @@ async def test_create_pquery_propagates_validated_project_to_driver():
     )
 
     router._projects_driver._validate_project_for_creation.assert_awaited_once_with(
-        _PROJECT_ID)
+        _PROJECT_ID
+    )
     _, kwargs = router._driver.create_predictive_query_v2.await_args
     assert kwargs == {'project_id': ProjectID(_PROJECT_ID)}
-    assert router._driver.create_predictive_query_v2.await_args.args == (
-        request, )
+    assert router._driver.create_predictive_query_v2.await_args.args == (request,)
     assert response.id == 'project_scoped_query'
 
 
@@ -84,7 +85,8 @@ async def test_validate_pquery_propagates_project_to_driver():
     converted = MagicMock()
     router._driver.validate_predictive_query_v2.return_value = validation
     router._driver.convert_validation_response_to_error_details = MagicMock(
-        return_value=converted)
+        return_value=converted
+    )
     request = MagicMock()
 
     response = await router.validate_pquery(

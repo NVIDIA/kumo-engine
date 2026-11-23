@@ -45,15 +45,14 @@ _SCRYPT_N = 2**14
 _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_DKLEN = 32
-_API_KEY_HASH_VERSION = "v1"
-_API_KEY_HASH_ALGORITHM = "scrypt"
-_API_KEY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
-_DEFAULT_DEVTEST_API_KEY_PEPPER = "kumo-devtest-api-key-pepper"
+_API_KEY_HASH_VERSION = 'v1'
+_API_KEY_HASH_ALGORITHM = 'scrypt'
+_API_KEY_NAME_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_DEFAULT_DEVTEST_API_KEY_PEPPER = 'kumo-devtest-api-key-pepper'
 
 _FAILED_ATTEMPT_LIMIT = 10
 _FAILED_ATTEMPT_TTL_SECONDS = 300
-_FAILED_ATTEMPTS = cachetools.TTLCache(maxsize=1000,
-                                       ttl=_FAILED_ATTEMPT_TTL_SECONDS)
+_FAILED_ATTEMPTS = cachetools.TTLCache(maxsize=1000, ttl=_FAILED_ATTEMPT_TTL_SECONDS)
 _FAILED_ATTEMPTS_LOCK = Lock()
 _API_KEY_PEPPER_CACHE: dict[tuple[str, str], str] = {}
 _API_KEY_PEPPER_CACHE_LOCK = Lock()
@@ -65,14 +64,14 @@ def _build_api_key_value(
     secret: str,
 ) -> str:
     """Build the full on-wire API key value."""
-    return f"{user_hash}:{name}:{secret}"
+    return f'{user_hash}:{name}:{secret}'
 
 
 def _to_preview(key_value: str) -> str:
     """Return a redacted preview of a key value."""
     if len(key_value) <= 12:
         return key_value
-    return f"{key_value[:6]}...{key_value[-6:]}"
+    return f'{key_value[:6]}...{key_value[-6:]}'
 
 
 def _to_stub_record(record: APIKeyMetadataRecord) -> APIKeySummary:
@@ -103,8 +102,8 @@ def _clear_api_key_pepper_cache_for_test() -> None:
 
 def _get_api_key_pepper() -> str:
     """Return the pepper used for API key hashing."""
-    secret_name = os.getenv("API_KEY_PEPPER_SECRET_NAME", "kumo-secret-key")
-    pepper_field = os.getenv("API_KEY_PEPPER_SECRET_FIELD", "api_key_pepper")
+    secret_name = os.getenv('API_KEY_PEPPER_SECRET_NAME', 'kumo-secret-key')
+    pepper_field = os.getenv('API_KEY_PEPPER_SECRET_FIELD', 'api_key_pepper')
     cache_key = _get_api_key_pepper_cache_key(secret_name, pepper_field)
 
     with _API_KEY_PEPPER_CACHE_LOCK:
@@ -112,8 +111,7 @@ def _get_api_key_pepper() -> str:
         if cached_pepper is not None:
             return cached_pepper
 
-        env_pepper = os.getenv(
-            pepper_field.upper()) or os.getenv('API_KEY_PEPPER')
+        env_pepper = os.getenv(pepper_field.upper()) or os.getenv('API_KEY_PEPPER')
         if env_pepper:
             _API_KEY_PEPPER_CACHE[cache_key] = env_pepper
             return env_pepper
@@ -126,7 +124,8 @@ def _get_api_key_pepper() -> str:
         if not pepper:
             raise RuntimeError(
                 f"Missing API key pepper field '{pepper_field}' in secret "
-                f"'{secret_name}'")
+                f"'{secret_name}'"
+            )
 
         pepper_str = str(pepper)
         _API_KEY_PEPPER_CACHE[cache_key] = pepper_str
@@ -136,8 +135,8 @@ def _get_api_key_pepper() -> str:
 def _hash_api_key_value(key_value: str) -> tuple[str, str]:
     """Hash an API key using scrypt and the deployment pepper."""
     salt = secrets.token_bytes(16)
-    pepper = _get_api_key_pepper().encode("utf-8")
-    password = key_value.encode("utf-8") + b":" + pepper
+    pepper = _get_api_key_pepper().encode('utf-8')
+    password = key_value.encode('utf-8') + b':' + pepper
     digest = hashlib.scrypt(
         password,
         salt=salt,
@@ -147,8 +146,8 @@ def _hash_api_key_value(key_value: str) -> tuple[str, str]:
         dklen=_SCRYPT_DKLEN,
     )
     return (
-        base64.b64encode(salt).decode("utf-8"),
-        base64.b64encode(digest).decode("utf-8"),
+        base64.b64encode(salt).decode('utf-8'),
+        base64.b64encode(digest).decode('utf-8'),
     )
 
 
@@ -156,7 +155,9 @@ async def _run_api_key_crypto(func, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
 
 
-async def _hash_api_key_value_async(key_value: str, ) -> tuple[str, str]:
+async def _hash_api_key_value_async(
+    key_value: str,
+) -> tuple[str, str]:
     return await _run_api_key_crypto(_hash_api_key_value, key_value)
 
 
@@ -173,15 +174,15 @@ def _verify_api_key_value(
     except Exception:
         return False
 
-    pepper = _get_api_key_pepper().encode("utf-8")
-    password = api_key_value.encode("utf-8") + b":" + pepper
+    pepper = _get_api_key_pepper().encode('utf-8')
+    password = api_key_value.encode('utf-8') + b':' + pepper
     digest = hashlib.scrypt(
         password,
         salt=salt,
-        n=hash_params.get("n", _SCRYPT_N),
-        r=hash_params.get("r", _SCRYPT_R),
-        p=hash_params.get("p", _SCRYPT_P),
-        dklen=hash_params.get("dklen", _SCRYPT_DKLEN),
+        n=hash_params.get('n', _SCRYPT_N),
+        r=hash_params.get('r', _SCRYPT_R),
+        p=hash_params.get('p', _SCRYPT_P),
+        dklen=hash_params.get('dklen', _SCRYPT_DKLEN),
     )
     return hmac.compare_digest(digest, expected_digest)
 
@@ -210,7 +211,7 @@ def _normalize_type(api_key_type: APIKeyType | str) -> APIKeyType:
 
 def _compute_user_hash(user_id: str) -> str:
     """Compute the stable 8-hex owner hash used in serialized keys."""
-    return hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:8]
+    return hashlib.sha256(user_id.encode('utf-8')).hexdigest()[:8]
 
 
 def _validate_api_key_name(name: str) -> None:
@@ -218,14 +219,14 @@ def _validate_api_key_name(name: str) -> None:
     if not _API_KEY_NAME_PATTERN.fullmatch(name):
         raise HTTPException(
             HTTPStatus.BAD_REQUEST,
-            "API key name must match [A-Za-z0-9_-]+",
+            'API key name must match [A-Za-z0-9_-]+',
         )
 
 
 def _build_failed_attempt_key(parsed: ParsedAPIKey) -> str:
     """Build throttling key for failed verification attempts."""
     assert parsed.user_hash is not None
-    return f"{parsed.user_hash}:{parsed.name}"
+    return f'{parsed.user_hash}:{parsed.name}'
 
 
 def _get_failed_attempts(fail_key: str) -> int:
@@ -259,6 +260,7 @@ def _fail_invalid_api_key_verification(fail_key: str) -> NoReturn:
 
 class APIKeyVerificationError(Exception):
     """Raised when API key verification fails."""
+
     def __init__(self, detail: str):
         self.detail = detail
         super().__init__(detail)
@@ -266,6 +268,7 @@ class APIKeyVerificationError(Exception):
 
 class APIKeyDriver:
     """CRUD and verification logic for v2 DB-backed API keys."""
+
     def __init__(
         self,
         update_last_used_time: bool = True,
@@ -274,11 +277,12 @@ class APIKeyDriver:
         state_services: Optional[StateServices] = None,
     ) -> None:
         if state_db is not None and state_services is not None:
-            raise ValueError("Pass either state_db or state_services, not both")
+            raise ValueError('Pass either state_db or state_services, not both')
         self._update_last_used_time = update_last_used_time
         self._direct_connect_auth_store = direct_connect_auth_store
         self._state_services = state_services or (
-            StateServices(state_db) if state_db is not None else None)
+            StateServices(state_db) if state_db is not None else None
+        )
 
     def configure_state_db(self, state_db: StateDB) -> None:
         self.configure_state_services(StateServices(state_db))
@@ -289,7 +293,7 @@ class APIKeyDriver:
     @property
     def _api_key_service(self) -> APIKeyService:
         if self._state_services is None:
-            raise RuntimeError("APIKeyDriver StateServices is not configured")
+            raise RuntimeError('APIKeyDriver StateServices is not configured')
         return self._state_services.api_keys
 
     async def list_admin_api_keys(
@@ -311,7 +315,7 @@ class APIKeyDriver:
         name: str,
         type: APIKeyType | str,
         user_id: str,
-        user_name: str = "",
+        user_name: str = '',
     ) -> CreateAPIKeyResponse:
         """Create an admin/user API key via admin endpoint."""
         key_type = _normalize_type(type)
@@ -327,8 +331,9 @@ class APIKeyDriver:
         api_keys = self._api_key_service
         record = await api_keys.get_metadata(api_key_id)
         if record is None:
-            raise HTTPException(HTTPStatus.NOT_FOUND,
-                                f"API key not found: {api_key_id}")
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND, f'API key not found: {api_key_id}'
+            )
         await api_keys.delete_if(
             api_key_id,
             lambda record: True,
@@ -338,7 +343,8 @@ class APIKeyDriver:
         """List user-scoped API keys owned by the requesting user."""
         api_keys = self._api_key_service
         records = [
-            _to_stub_record(record) for record in await api_keys.list_metadata(
+            _to_stub_record(record)
+            for record in await api_keys.list_metadata(
                 type=APIKeyType.USER,
                 owner_user_id=user_id,
             )
@@ -349,7 +355,7 @@ class APIKeyDriver:
         self,
         name: str,
         user_id: str,
-        user_name: str = "",
+        user_name: str = '',
     ) -> CreateAPIKeyResponse:
         """Create a user-scoped API key."""
         return await self._create_api_key(
@@ -359,29 +365,30 @@ class APIKeyDriver:
             owner_user_name=user_name,
         )
 
-    async def delete_user_api_key(self, api_key_id: APIKeyID,
-                                  user_id: str) -> None:
+    async def delete_user_api_key(self, api_key_id: APIKeyID, user_id: str) -> None:
         """Delete a user-scoped API key when owned by requester."""
         api_keys = self._api_key_service
         record = await api_keys.delete_if(
             api_key_id,
-            lambda record: (record.owner_user_id == user_id and record.type ==
-                            APIKeyType.USER),
+            lambda record: (
+                record.owner_user_id == user_id and record.type == APIKeyType.USER
+            ),
         )
         if record is None:
-            raise HTTPException(HTTPStatus.NOT_FOUND,
-                                f"API key not found: {api_key_id}")
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND, f'API key not found: {api_key_id}'
+            )
 
     async def _create_api_key(
         self,
         name: str,
         type: APIKeyType,
         owner_user_id: str,
-        owner_user_name: str = "",
+        owner_user_name: str = '',
     ) -> CreateAPIKeyResponse:
         """Persist a new owner-bound API key and return plaintext once."""
         _validate_api_key_name(name)
-        key_id = APIKeyID(f"k-{uuid.uuid4().hex}")
+        key_id = APIKeyID(f'k-{uuid.uuid4().hex}')
         user_hash = _compute_user_hash(owner_user_id)
         key_secret = secrets.token_urlsafe(32)
         key_value = _build_api_key_value(user_hash, name, key_secret)
@@ -413,10 +420,10 @@ class APIKeyDriver:
             hash_version=_API_KEY_HASH_VERSION,
             hash_algorithm=_API_KEY_HASH_ALGORITHM,
             hash_params={
-                "n": _SCRYPT_N,
-                "r": _SCRYPT_R,
-                "p": _SCRYPT_P,
-                "dklen": _SCRYPT_DKLEN,
+                'n': _SCRYPT_N,
+                'r': _SCRYPT_R,
+                'p': _SCRYPT_P,
+                'dklen': _SCRYPT_DKLEN,
             },
             salt_b64=salt_b64,
             hash_b64=hash_b64,
@@ -432,14 +439,14 @@ class APIKeyDriver:
             except APIKeyNameAlreadyExistsError:
                 raise HTTPException(
                     HTTPStatus.BAD_REQUEST,
-                    f"API key name already exists: {name}",
+                    f'API key name already exists: {name}',
                 ) from None
         except HTTPException:
             raise
         except Exception as ex:
             raise HTTPException(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
-                "Failed to securely persist API key",
+                'Failed to securely persist API key',
             ) from ex
 
         return CreateAPIKeyResponse(
@@ -475,25 +482,30 @@ class APIKeyDriver:
         secret_record = candidate.secret
 
         current_time = now_utc()
-        if (secret_record.revoked_time is not None
-                and secret_record.revoked_time <= current_time):
+        if (
+            secret_record.revoked_time is not None
+            and secret_record.revoked_time <= current_time
+        ):
             _fail_invalid_api_key_verification(fail_key)
 
-        if (secret_record.expires_time is not None
-                and secret_record.expires_time <= current_time):
+        if (
+            secret_record.expires_time is not None
+            and secret_record.expires_time <= current_time
+        ):
             _fail_invalid_api_key_verification(fail_key)
 
         if not await _verify_api_key_value_async(
-                api_key, salt_b64=secret_record.salt_b64,
-                hash_b64=secret_record.hash_b64,
-                hash_params=secret_record.hash_params):
+            api_key,
+            salt_b64=secret_record.salt_b64,
+            hash_b64=secret_record.hash_b64,
+            hash_params=secret_record.hash_params,
+        ):
             _fail_invalid_api_key_verification(fail_key)
 
         _clear_failed_attempts(fail_key)
 
         if self._update_last_used_time:
-            await self._api_key_service.update_last_used_time(
-                metadata.id, now_utc())
+            await self._api_key_service.update_last_used_time(metadata.id, now_utc())
 
         # The key `type` is a privilege ceiling: a USER key can never be admin,
         # regardless of who owns it. An ADMIN key additionally requires that its
@@ -502,7 +514,8 @@ class APIKeyDriver:
         is_admin = metadata.type == APIKeyType.ADMIN
         if self._direct_connect_auth_store is not None:
             owner = await self._direct_connect_auth_store.get_user(
-                metadata.owner_user_id)
+                metadata.owner_user_id
+            )
             # Direct Connect principals must remain backed by an active local
             # user. Other authenticated principals (for example an external
             # OIDC user) legitimately have no Direct Connect user row, even
@@ -516,8 +529,7 @@ class APIKeyDriver:
             elif owner.disabled:
                 _fail_invalid_api_key_verification(fail_key)
             else:
-                is_admin = (metadata.type == APIKeyType.ADMIN
-                            and owner.role == 'admin')
+                is_admin = metadata.type == APIKeyType.ADMIN and owner.role == 'admin'
 
         return APIKeyAuthIdentity(
             user_id=metadata.owner_user_id,

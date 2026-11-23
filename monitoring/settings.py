@@ -5,8 +5,9 @@
 from io_utils import kumo_dataclass
 from service_framework.env_var import EnvVar
 
-_JAEGER_HOSTNAME = EnvVar('JAEGER_HOSTNAME', str, required=False,
-                          default_value='localhost')
+_JAEGER_HOSTNAME = EnvVar(
+    'JAEGER_HOSTNAME', str, required=False, default_value='localhost'
+)
 # Jaeger supports OTLP directly. The default port for OTLP/gRPC is 4317
 _JAEGER_PORT = EnvVar('JAEGER_PORT', int, required=False, default_value=4317)
 

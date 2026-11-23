@@ -28,10 +28,12 @@ from kumoapi.plugin import (
 @pytest.fixture
 def connector():
     return SimpleNamespace(
-        config=DatabricksConnectorResourceConfig(catalog='main',
-                                                 schema_name='analytics',
-                                                 warehouse_id='warehouse'),
-        id='dbx', identity='connector-identity')
+        config=DatabricksConnectorResourceConfig(
+            catalog='main', schema_name='analytics', warehouse_id='warehouse'
+        ),
+        id='dbx',
+        identity='connector-identity',
+    )
 
 
 @pytest.fixture
@@ -40,21 +42,31 @@ def bundle(tmp_path):
     root.mkdir()
     (root / 'training-spec.json').write_text(
         json.dumps(
-            dict(spec_version=1, predictive_query='PREDICT COUNT(*)',
-                 snapshot_id='snapshot')))
+            dict(
+                spec_version=1,
+                predictive_query='PREDICT COUNT(*)',
+                snapshot_id='snapshot',
+            )
+        )
+    )
     (root / 'metrics.json').write_text('{"auc":0.9}')
     (root / 'weights.bin').write_bytes(b'model weights')
     artifacts = [
-        dict(role=role, relative_path=name,
-             size_bytes=(root / name).stat().st_size, sha256=hashlib.sha256(
-                 (root / name).read_bytes()).hexdigest())
-        for role, name in [(
-            'training_spec',
-            'training-spec.json'), ('selected_checkpoint',
-                                    'weights.bin'), ('metrics', 'metrics.json')]
+        dict(
+            role=role,
+            relative_path=name,
+            size_bytes=(root / name).stat().st_size,
+            sha256=hashlib.sha256((root / name).read_bytes()).hexdigest(),
+        )
+        for role, name in [
+            ('training_spec', 'training-spec.json'),
+            ('selected_checkpoint', 'weights.bin'),
+            ('metrics', 'metrics.json'),
+        ]
     ]
     (root / 'publication-manifest.json').write_text(
-        json.dumps(dict(schema_version=1, artifacts=artifacts)))
+        json.dumps(dict(schema_version=1, artifacts=artifacts))
+    )
     return root
 
 
@@ -67,7 +79,8 @@ def test_sink_implements_registry_protocols():
 
 
 def test_publish_uses_connector_client_and_reports_assigned_version(
-        connector, bundle, monkeypatch):
+    connector, bundle, monkeypatch
+):
     sink = DatabricksSinkBackend(identity='fallback')
     client = object()
     calls = []
@@ -79,18 +92,31 @@ def test_publish_uses_connector_client_and_reports_assigned_version(
     def publish(resolved, name, bundle_dir, *, comment, metadata, metrics):
         assert resolved is client
         calls.append(
-            dict(name=name, bundle_dir=bundle_dir, comment=comment,
-                 metadata=metadata, metrics=metrics))
-        return PublishedModel(name='churn', version='7',
-                              uri='models:/main.analytics.churn/7',
-                              metadata=metadata, metrics=metrics)
+            dict(
+                name=name,
+                bundle_dir=bundle_dir,
+                comment=comment,
+                metadata=metadata,
+                metrics=metrics,
+            )
+        )
+        return PublishedModel(
+            name='churn',
+            version='7',
+            uri='models:/main.analytics.churn/7',
+            metadata=metadata,
+            metrics=metrics,
+        )
 
     monkeypatch.setattr(sink, '_client', resolve)
     monkeypatch.setattr(registry, 'publish_bundle', publish)
     published = sink.publish_model(
-        connector, str(bundle),
+        connector,
+        str(bundle),
         location=ModelRegistryLocation('churn', comment='GNN'),
-        metadata={'task': 'churn'}, metrics={'auc': 0.9})
+        metadata={'task': 'churn'},
+        metrics={'auc': 0.9},
+    )
     assert published.version == '7'
     assert published.metrics == {'auc': 0.9}
     assert calls[0]['name'] == 'main.analytics.churn'
@@ -100,62 +126,80 @@ def test_publish_uses_connector_client_and_reports_assigned_version(
 
 @pytest.mark.parametrize(
     'name',
-    ['other.analytics.churn', 'main.other.churn', 'other.churn', 'a.b.c.d', '',
-     'users churn', 'users/churn', 'x' * 256])
+    [
+        'other.analytics.churn',
+        'main.other.churn',
+        'other.churn',
+        'a.b.c.d',
+        '',
+        'users churn',
+        'users/churn',
+        'x' * 256,
+    ],
+)
 def test_cross_schema_or_invalid_names_are_refused(connector, name):
     with pytest.raises(ValueError):
         DatabricksSinkBackend().check_model_location(
-            connector, ModelRegistryLocation(name))
+            connector, ModelRegistryLocation(name)
+        )
 
 
-@pytest.mark.parametrize('name', ['users_churn', 'users-churn',
-                                  'main.analytics.Users-Churn'])
+@pytest.mark.parametrize(
+    'name', ['users_churn', 'users-churn', 'main.analytics.Users-Churn']
+)
 def test_unity_catalog_model_names_are_accepted(connector, name):
-    DatabricksSinkBackend().check_model_location(connector,
-                                                 ModelRegistryLocation(name))
+    DatabricksSinkBackend().check_model_location(connector, ModelRegistryLocation(name))
 
 
-@pytest.mark.parametrize('kwargs', [
-    dict(path='models/one'), {},
-    dict(location=ModelRegistryLocation('churn', version='7'))
-])
+@pytest.mark.parametrize(
+    'kwargs',
+    [
+        dict(path='models/one'),
+        {},
+        dict(location=ModelRegistryLocation('churn', version='7')),
+    ],
+)
 def test_invalid_publish_address_fails_before_authentication(
-        connector, bundle, kwargs, monkeypatch):
+    connector, bundle, kwargs, monkeypatch
+):
     sink = DatabricksSinkBackend()
-    monkeypatch.setattr(sink, '_client',
-                        lambda _: pytest.fail('resolved identity'))
+    monkeypatch.setattr(sink, '_client', lambda _: pytest.fail('resolved identity'))
     with pytest.raises(ValueError):
         sink.publish_model(connector, str(bundle), **kwargs)
 
 
-@pytest.mark.parametrize('marker',
-                         ['training-spec.json', 'publication-manifest.json'])
+@pytest.mark.parametrize('marker', ['training-spec.json', 'publication-manifest.json'])
 def test_incomplete_bundles_are_refused(connector, bundle, marker, monkeypatch):
     (bundle / marker).unlink()
     sink = DatabricksSinkBackend()
-    monkeypatch.setattr(sink, '_client',
-                        lambda _: pytest.fail('resolved identity'))
+    monkeypatch.setattr(sink, '_client', lambda _: pytest.fail('resolved identity'))
     with pytest.raises(ValueError, match=marker):
-        sink.publish_model(connector, str(bundle),
-                           location=ModelRegistryLocation('churn'))
+        sink.publish_model(
+            connector, str(bundle), location=ModelRegistryLocation('churn')
+        )
 
 
 @pytest.mark.parametrize('number', ['0', '-1', 'latest', '1.5'])
 def test_invalid_fetch_version_fails_before_authentication(
-        connector, tmp_path, number, monkeypatch):
+    connector, tmp_path, number, monkeypatch
+):
     sink = DatabricksSinkBackend()
-    monkeypatch.setattr(sink, '_client',
-                        lambda _: pytest.fail('resolved identity'))
+    monkeypatch.setattr(sink, '_client', lambda _: pytest.fail('resolved identity'))
     with pytest.raises(ValueError, match='positive integers'):
         sink.fetch_model(
-            connector, str(tmp_path),
-            location=ModelRegistryLocation('churn', version=number))
+            connector,
+            str(tmp_path),
+            location=ModelRegistryLocation('churn', version=number),
+        )
 
 
 def version(number, kumo=True, status='READY'):
     tags = {ENGINE_MARKER: '1'} if kumo else {}
-    return dict(version=number, status=status,
-                tags=[dict(key=k, value=v) for k, v in tags.items()])
+    return dict(
+        version=number,
+        status=status,
+        tags=[dict(key=k, value=v) for k, v in tags.items()],
+    )
 
 
 class Client:
@@ -164,8 +208,10 @@ class Client:
         self.registered_models = SimpleNamespace(create=self.create)
         self.model_versions = SimpleNamespace(delete=self.delete)
         self.files = SimpleNamespace(
-            upload=self.upload, list_directory_contents=self.list_directory,
-            download=self.download)
+            upload=self.upload,
+            list_directory_contents=self.list_directory,
+            download=self.download,
+        )
         self.objects = {}
         self.aliases = {}
         self.calls = []
@@ -174,11 +220,12 @@ class Client:
             version(2),
             version(10),
             version(11, kumo=False),
-            version(12, status='PENDING_REGISTRATION')
+            version(12, status='PENDING_REGISTRATION'),
         ]
 
     def create(self, **kwargs):
         from databricks.sdk.errors import ResourceAlreadyExists
+
         raise ResourceAlreadyExists('Already exists')
 
     def delete(self, name, number):
@@ -195,8 +242,8 @@ class Client:
         if method == 'POST':
             assert all(len(tag['value']) <= 256 for tag in body['tags'])
             self.versions.append(
-                dict(version=7, status='PENDING_REGISTRATION',
-                     tags=body['tags']))
+                dict(version=7, status='PENDING_REGISTRATION', tags=body['tags'])
+            )
             return self.versions[-1]
         if method == 'PATCH':
             self.versions[-1]['status'] = 'READY'
@@ -204,18 +251,21 @@ class Client:
         if path.endswith('/models'):
             assert query['catalog_name'] == 'main'
             assert query['schema_name'] == 'analytics'
-            return dict(registered_models=[
-                dict(full_name='main.analytics.churn'),
-                dict(full_name='main.other.foreign')
-            ])
+            return dict(
+                registered_models=[
+                    dict(full_name='main.analytics.churn'),
+                    dict(full_name='main.other.foreign'),
+                ]
+            )
         if path.endswith('/versions'):
             if not query.get('page_token'):
                 return dict(model_versions=[], next_page_token='second')
-            return dict(model_versions=[
-                dict(version=v['version']) for v in self.versions
-            ])
-        return next(v for v in self.versions
-                    if str(v['version']) == path.rsplit('/', 1)[-1])
+            return dict(
+                model_versions=[dict(version=v['version']) for v in self.versions]
+            )
+        return next(
+            v for v in self.versions if str(v['version']) == path.rsplit('/', 1)[-1]
+        )
 
     def upload(self, path, stream, **kwargs):
         self.objects[path] = stream.read()
@@ -224,12 +274,13 @@ class Client:
         children = {}
         for key in self.objects:
             if key.startswith(path + '/'):
-                relative = key[len(path) + 1:]
+                relative = key[len(path) + 1 :]
                 child = relative.split('/')[0]
                 directory = '/' in relative
                 children[child] = SimpleNamespace(
-                    path=f"{path}/{child}{'/' if directory else ''}",
-                    is_directory=directory)
+                    path=f'{path}/{child}{"/" if directory else ""}',
+                    is_directory=directory,
+                )
         return children.values()
 
     def download(self, path):
@@ -242,35 +293,34 @@ def client():
 
 
 def test_direct_publish_uploads_original_bundle_before_finalize(client, bundle):
-    result = registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                     comment='test', metadata={'task': 'churn'},
-                                     metrics={'auc': 0.9})
+    result = registry.publish_bundle(
+        client,
+        'main.analytics.churn',
+        bundle,
+        comment='test',
+        metadata={'task': 'churn'},
+        metrics={'auc': 0.9},
+    )
     assert result.version == '7'
     assert result.metadata == {'task': 'churn'}
     assert result.metrics == {'auc': 0.9}
-    assert client.objects[
-        '/Models/main/analytics/churn/7/weights.bin'] == b'model weights'
-    assert client.calls[0][:2] == ('POST',
-                                   '/api/2.1/unity-catalog/models/versions')
-    assert {
-        path.rsplit('/', 1)[-1]: data
-        for path, data in client.objects.items()
-    } == {
-        path.name: path.read_bytes()
-        for path in bundle.iterdir()
+    assert (
+        client.objects['/Models/main/analytics/churn/7/weights.bin'] == b'model weights'
+    )
+    assert client.calls[0][:2] == ('POST', '/api/2.1/unity-catalog/models/versions')
+    assert {path.rsplit('/', 1)[-1]: data for path, data in client.objects.items()} == {
+        path.name: path.read_bytes() for path in bundle.iterdir()
     }
     assert client.calls[0][3]['comment'] == 'test'
     assert client.calls[0][3]['source'] == bundle.as_uri()
     assert {t['key'] for t in client.calls[0][3]['tags']} == {'kumo_engine'}
     assert client.calls[1][0] == 'PATCH'
-    assert client.calls[1][3] == dict(full_name='main.analytics.churn',
-                                      version=7)
+    assert client.calls[1][3] == dict(full_name='main.analytics.churn', version=7)
     assert not client.deleted
 
 
 @pytest.mark.parametrize('stage', ['upload', 'finalize', 'not_ready'])
-def test_failed_publication_deletes_created_version(client, bundle, monkeypatch,
-                                                    stage):
+def test_failed_publication_deletes_created_version(client, bundle, monkeypatch, stage):
     def fail(*args, **kwargs):
         raise PermissionError('Registry access denied')
 
@@ -288,9 +338,14 @@ def test_failed_publication_deletes_created_version(client, bundle, monkeypatch,
 
         monkeypatch.setattr(client.api_client, 'do', do)
     with pytest.raises((PermissionError, RuntimeError)):
-        registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                comment='test', metadata={'task': 'churn'},
-                                metrics={'auc': 0.9})
+        registry.publish_bundle(
+            client,
+            'main.analytics.churn',
+            bundle,
+            comment='test',
+            metadata={'task': 'churn'},
+            metrics={'auc': 0.9},
+        )
     assert client.deleted == [('main.analytics.churn', 7)]
 
 
@@ -304,17 +359,27 @@ def test_cleanup_failure_preserves_original_error(client, bundle, monkeypatch):
     monkeypatch.setattr(client.files, 'upload', upload)
     monkeypatch.setattr(client.model_versions, 'delete', delete)
     with pytest.raises(PermissionError, match='upload failed'):
-        registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                comment='test', metadata={'task': 'churn'},
-                                metrics={'auc': 0.9})
+        registry.publish_bundle(
+            client,
+            'main.analytics.churn',
+            bundle,
+            comment='test',
+            metadata={'task': 'churn'},
+            metrics={'auc': 0.9},
+        )
 
 
 def test_publish_rejects_symlinks_before_creating_version(client, bundle):
     (bundle / 'link').symlink_to(bundle / 'weights.bin')
     with pytest.raises(ValueError, match='symbolic links'):
-        registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                comment='test', metadata={'task': 'churn'},
-                                metrics={'auc': 0.9})
+        registry.publish_bundle(
+            client,
+            'main.analytics.churn',
+            bundle,
+            comment='test',
+            metadata={'task': 'churn'},
+            metrics={'auc': 0.9},
+        )
     assert not client.calls
 
 
@@ -329,8 +394,9 @@ def test_fetch_resolves_latest_numeric_version(client, bundle, tmp_path):
     destination = tmp_path / 'restored'
     destination.mkdir()
     (destination / 'stale').write_text('old')
-    result = registry.fetch_bundle(client, name='main.analytics.churn',
-                                   local_dir=destination, version=None)
+    result = registry.fetch_bundle(
+        client, name='main.analytics.churn', local_dir=destination, version=None
+    )
     assert result.version == '10'
     assert (destination / 'weights.bin').read_bytes() == b'model weights'
     assert not (destination / 'stale').exists()
@@ -350,19 +416,25 @@ def test_failed_fetch_keeps_destination(client, tmp_path, monkeypatch, failure):
         monkeypatch.setattr(client.files, 'download', fail)
     elif failure == 'traversal':
         monkeypatch.setattr(
-            client.files, 'list_directory_contents', lambda _: [
-                SimpleNamespace(path='/Models/main/analytics/churn/2/../escape',
-                                is_directory=False)
-            ])
+            client.files,
+            'list_directory_contents',
+            lambda _: [
+                SimpleNamespace(
+                    path='/Models/main/analytics/churn/2/../escape', is_directory=False
+                )
+            ],
+        )
     with pytest.raises((OSError, ValueError)):
-        registry.fetch_bundle(client, name='main.analytics.churn',
-                              local_dir=destination, version='2')
+        registry.fetch_bundle(
+            client, name='main.analytics.churn', local_dir=destination, version='2'
+        )
     assert (destination / 'weights.bin').read_bytes() == b'previous'
 
 
 @pytest.mark.parametrize('failure', ['corruption', 'replace'])
 def test_verified_fetch_failure_preserves_previous_bundle(
-        client, bundle, tmp_path, monkeypatch, failure):
+    client, bundle, tmp_path, monkeypatch, failure
+):
     prefix = '/Models/main/analytics/churn/2/'
     client.objects = {prefix + p.name: p.read_bytes() for p in bundle.iterdir()}
     destination = tmp_path / 'restored'
@@ -380,30 +452,37 @@ def test_verified_fetch_failure_preserves_previous_bundle(
 
         monkeypatch.setattr(registry.os, 'replace', replace)
     with pytest.raises((ValueError, OSError)):
-        registry.fetch_bundle(client, name='main.analytics.churn',
-                              local_dir=destination, version='2')
+        registry.fetch_bundle(
+            client, name='main.analytics.churn', local_dir=destination, version='2'
+        )
     assert (destination / 'weights.bin').read_bytes() == b'previous'
 
 
 def test_corrupt_publication_fails_before_registry_calls(client, bundle):
     (bundle / 'weights.bin').write_bytes(b'broken model')
     with pytest.raises(ValueError, match='weights.bin'):
-        registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                comment='test', metadata={'task': 'churn'},
-                                metrics={'auc': 0.9})
+        registry.publish_bundle(
+            client,
+            'main.analytics.churn',
+            bundle,
+            comment='test',
+            metadata={'task': 'churn'},
+            metrics={'auc': 0.9},
+        )
     assert not client.calls
     assert not client.objects
 
 
-def test_full_catalog_data_roundtrips_without_oversized_tags(
-        client, bundle, tmp_path):
-    metadata = dict(spec_version='1', snapshot_id='snapshot-' + 'x' * 300,
-                    predictive_query='PREDICT COUNT(*) ' + 'x' * 300)
+def test_full_catalog_data_roundtrips_without_oversized_tags(client, bundle, tmp_path):
+    metadata = dict(
+        spec_version='1',
+        snapshot_id='snapshot-' + 'x' * 300,
+        predictive_query='PREDICT COUNT(*) ' + 'x' * 300,
+    )
     metrics = {f'test_metric_{i}': i / 100 for i in range(20)}
     (bundle / 'training-spec.json').write_text(
-        json.dumps({
-            **metadata, 'spec_version': 1
-        }))
+        json.dumps({**metadata, 'spec_version': 1})
+    )
     (bundle / 'metrics.json').write_text(json.dumps(metrics))
     manifest_path = bundle / 'publication-manifest.json'
     manifest = json.loads(manifest_path.read_text())
@@ -414,9 +493,13 @@ def test_full_catalog_data_roundtrips_without_oversized_tags(
     manifest_path.write_text(json.dumps(manifest))
     original = {p.name: p.read_bytes() for p in bundle.iterdir()}
     supplied_metadata = {**metadata, 'custom_label': 'not persisted'}
-    published = registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                        metadata=supplied_metadata,
-                                        metrics=metrics)
+    published = registry.publish_bundle(
+        client,
+        'main.analytics.churn',
+        bundle,
+        metadata=supplied_metadata,
+        metrics=metrics,
+    )
     tags = registry._tags(client.versions[-1])
     assert tags == {'kumo_engine': '1'}
     assert all(len(value) <= 256 for value in tags.values())
@@ -426,8 +509,9 @@ def test_full_catalog_data_roundtrips_without_oversized_tags(
     assert discovered.metadata == {}
     assert discovered.metrics == {}
     destination = tmp_path / 'restored'
-    fetched = registry.fetch_bundle(client, name='main.analytics.churn',
-                                    local_dir=destination, version='7')
+    fetched = registry.fetch_bundle(
+        client, name='main.analytics.churn', local_dir=destination, version='7'
+    )
     assert published.metadata == supplied_metadata
     assert fetched == replace(published, metadata=metadata)
     assert {p.name: p.read_bytes() for p in destination.iterdir()} == original
@@ -438,8 +522,10 @@ def test_full_catalog_data_roundtrips_without_oversized_tags(
 
 @pytest.mark.parametrize('operation', ['list', 'latest', 'explicit'])
 def test_disappearing_version_only_skipped_during_enumeration(
-        client, bundle, tmp_path, monkeypatch, operation):
+    client, bundle, tmp_path, monkeypatch, operation
+):
     from databricks.sdk.errors import NotFound
+
     original = client.api_client.do
 
     def do(method, path, **kwargs):
@@ -453,24 +539,28 @@ def test_disappearing_version_only_skipped_during_enumeration(
         assert [item.version for item in found] == ['2', '10']
     elif operation == 'latest':
         prefix = '/Models/main/analytics/churn/10/'
-        client.objects = {
-            prefix + p.name: p.read_bytes()
-            for p in bundle.iterdir()
-        }
-        fetched = registry.fetch_bundle(client, name='main.analytics.churn',
-                                        local_dir=tmp_path / 'restored',
-                                        version=None)
+        client.objects = {prefix + p.name: p.read_bytes() for p in bundle.iterdir()}
+        fetched = registry.fetch_bundle(
+            client,
+            name='main.analytics.churn',
+            local_dir=tmp_path / 'restored',
+            version=None,
+        )
         assert fetched.version == '10'
     else:
         with pytest.raises(NotFound):
-            registry.fetch_bundle(client, name='main.analytics.churn',
-                                  local_dir=tmp_path / 'restored', version='12')
+            registry.fetch_bundle(
+                client,
+                name='main.analytics.churn',
+                local_dir=tmp_path / 'restored',
+                version='12',
+            )
 
 
 @pytest.mark.parametrize('error_name', ['PermissionDenied', 'Unauthenticated'])
-def test_enumeration_propagates_authorization_errors(client, monkeypatch,
-                                                     error_name):
+def test_enumeration_propagates_authorization_errors(client, monkeypatch, error_name):
     from databricks.sdk import errors
+
     error = getattr(errors, error_name)
     original = client.api_client.do
 
@@ -485,88 +575,103 @@ def test_enumeration_propagates_authorization_errors(client, monkeypatch,
 
 
 @pytest.mark.parametrize('filename', ['training-spec.json', 'metrics.json'])
-def test_invalid_bundle_metadata_keeps_destination(client, bundle, tmp_path,
-                                                   filename):
-    registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                            comment='test', metadata={'task': 'churn'},
-                            metrics={'auc': 0.9})
+def test_invalid_bundle_metadata_keeps_destination(client, bundle, tmp_path, filename):
+    registry.publish_bundle(
+        client,
+        'main.analytics.churn',
+        bundle,
+        comment='test',
+        metadata={'task': 'churn'},
+        metrics={'auc': 0.9},
+    )
     prefix = '/Models/main/analytics/churn/7/'
     client.objects[prefix + filename] = b'[]'
     manifest = json.loads(client.objects[prefix + 'publication-manifest.json'])
-    entry = next(item for item in manifest['artifacts']
-                 if item['relative_path'] == filename)
+    entry = next(
+        item for item in manifest['artifacts'] if item['relative_path'] == filename
+    )
     entry['size_bytes'] = 2
     entry['sha256'] = hashlib.sha256(b'[]').hexdigest()
-    client.objects[prefix +
-                   'publication-manifest.json'] = json.dumps(manifest).encode()
+    client.objects[prefix + 'publication-manifest.json'] = json.dumps(manifest).encode()
     destination = tmp_path / 'restored'
     destination.mkdir()
     (destination / 'weights.bin').write_bytes(b'previous')
     with pytest.raises(ValueError):
-        registry.fetch_bundle(client, name='main.analytics.churn',
-                              local_dir=destination, version='7')
+        registry.fetch_bundle(
+            client, name='main.analytics.churn', local_dir=destination, version='7'
+        )
     assert (destination / 'weights.bin').read_bytes() == b'previous'
 
 
 def test_bundle_id_is_tagged_listed_and_fetched_by_version_and_alias(
-        connector, client, bundle, tmp_path, monkeypatch):
+    connector, client, bundle, tmp_path, monkeypatch
+):
     lineage = dict(kumo_bundle_id='ab' * 32)
     sink = DatabricksSinkBackend()
     monkeypatch.setattr(sink, '_client', lambda _: client)
     published = sink.publish_model(
-        connector, str(bundle), location=ModelRegistryLocation('churn'),
-        metadata=dict(spec_version='1', kumo_engine='0', kumo_run_id='run-1',
-                      **lineage))
-    assert registry._tags(client.versions[-1]) == {
-        'kumo_engine': '1',
-        **lineage
-    }
+        connector,
+        str(bundle),
+        location=ModelRegistryLocation('churn'),
+        metadata=dict(
+            spec_version='1', kumo_engine='0', kumo_run_id='run-1', **lineage
+        ),
+    )
+    assert registry._tags(client.versions[-1]) == {'kumo_engine': '1', **lineage}
     listed = registry.list_models(client, catalog='main', schema='analytics')
     assert next(m for m in listed if m.version == '7').metadata == lineage
 
     sink.set_model_alias(
-        connector, ModelRegistryLocation('churn', version=published.version),
-        'prod')
+        connector, ModelRegistryLocation('churn', version=published.version), 'prod'
+    )
     assert client.calls[-1] == (
         'PUT',
-        '/api/2.1/unity-catalog/models/main.analytics.churn/aliases/prod', None,
-        dict(version_num=7))
-    for location in (ModelRegistryLocation('churn', version='7'),
-                     ModelRegistryLocation('churn', alias='prod')):
-        fetched = sink.fetch_model(connector, str(tmp_path / 'restored'),
-                                   location=location)
+        '/api/2.1/unity-catalog/models/main.analytics.churn/aliases/prod',
+        None,
+        dict(version_num=7),
+    )
+    for location in (
+        ModelRegistryLocation('churn', version='7'),
+        ModelRegistryLocation('churn', alias='prod'),
+    ):
+        fetched = sink.fetch_model(
+            connector, str(tmp_path / 'restored'), location=location
+        )
         assert fetched.version == '7'
         assert fetched.metadata == {
             'spec_version': '1',
             'predictive_query': 'PREDICT COUNT(*)',
             'snapshot_id': 'snapshot',
-            **lineage
+            **lineage,
         }
 
 
 def test_set_alias_needs_a_positive_version(connector, monkeypatch):
     sink = DatabricksSinkBackend()
-    monkeypatch.setattr(sink, '_client',
-                        lambda _: pytest.fail('resolved identity'))
+    monkeypatch.setattr(sink, '_client', lambda _: pytest.fail('resolved identity'))
     with pytest.raises(ValueError, match='positive integer'):
-        sink.set_model_alias(connector,
-                             ModelRegistryLocation('churn', version='0'),
-                             'prod')
+        sink.set_model_alias(
+            connector, ModelRegistryLocation('churn', version='0'), 'prod'
+        )
 
 
 def test_publishing_a_registered_bundle_again_reuses_its_version(
-        client, bundle, caplog):
+    client, bundle, caplog
+):
     metadata = dict(kumo_bundle_id='ab' * 32)
-    first = registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                    metadata=metadata)
+    first = registry.publish_bundle(
+        client, 'main.analytics.churn', bundle, metadata=metadata
+    )
     posts = sum(call[0] == 'POST' for call in client.calls)
     with caplog.at_level('INFO', logger=registry.__name__):
-        again = registry.publish_bundle(client, 'main.analytics.churn',
-                                        bundle, metadata=metadata)
+        again = registry.publish_bundle(
+            client, 'main.analytics.churn', bundle, metadata=metadata
+        )
     assert again == first and again.version == '7'
     assert sum(call[0] == 'POST' for call in client.calls) == posts
     assert 'already holds bundle' in caplog.text
-    other = registry.publish_bundle(client, 'main.analytics.churn', bundle,
-                                    metadata=dict(kumo_bundle_id='cd' * 32))
+    other = registry.publish_bundle(
+        client, 'main.analytics.churn', bundle, metadata=dict(kumo_bundle_id='cd' * 32)
+    )
     assert sum(call[0] == 'POST' for call in client.calls) == posts + 1
     assert other.metadata == dict(kumo_bundle_id='cd' * 32)

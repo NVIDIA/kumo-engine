@@ -38,23 +38,22 @@ from pathlib import Path
 
 # Container/AMI-user identity the backend services run as. Secret files must
 # be owned by this uid so the read-only mounts are readable at runtime.
-OWNER_UID = int(os.environ.get("KUMO_BOOTSTRAP_OWNER_UID", "999"))
-OWNER_GID = int(os.environ.get("KUMO_BOOTSTRAP_OWNER_GID", "999"))
+OWNER_UID = int(os.environ.get('KUMO_BOOTSTRAP_OWNER_UID', '999'))
+OWNER_GID = int(os.environ.get('KUMO_BOOTSTRAP_OWNER_GID', '999'))
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 # Source assets (deploy config template, nginx variants, prometheus.yml) live
 # as siblings of the scripts dir under deploy/shared. SRC_ROOT is overridable
 # for wrappers that stage the tree at a different mount point.
-SRC_ROOT = Path(
-    os.environ.get("KUMO_BOOTSTRAP_SRC_ROOT", str(SCRIPT_DIR.parent)))
+SRC_ROOT = Path(os.environ.get('KUMO_BOOTSTRAP_SRC_ROOT', str(SCRIPT_DIR.parent)))
 
 
-def _env(name: str, default: str = "") -> str:
+def _env(name: str, default: str = '') -> str:
     return os.environ.get(name, default).strip()
 
 
 def _log(message: str) -> None:
-    print(f"[kumo-bootstrap] {message}", flush=True)
+    print(f'[kumo-bootstrap] {message}', flush=True)
 
 
 def _chown_best_effort(path: str) -> bool:
@@ -68,8 +67,10 @@ def _chown_best_effort(path: str) -> bool:
         os.chown(path, OWNER_UID, OWNER_GID)
         return True
     except OSError:
-        _log(f"warning: could not chown {path} to {OWNER_UID}:{OWNER_GID} "
-             "(not running as root)")
+        _log(
+            f'warning: could not chown {path} to {OWNER_UID}:{OWNER_GID} '
+            '(not running as root)'
+        )
         return False
 
 
@@ -96,8 +97,8 @@ def _write_secret_file(path: str, content: str, mode: int) -> None:
     ownership is set before the rename so the published inode is already owned
     by the runtime uid.
     """
-    dir_name = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=dir_name, prefix=".kumo-secret-")
+    dir_name = os.path.dirname(path) or '.'
+    fd, tmp = tempfile.mkstemp(dir=dir_name, prefix='.kumo-secret-')
     try:
         try:
             os.fchmod(fd, mode)
@@ -140,10 +141,10 @@ def generate_customer_secret(secrets_dir: str) -> None:
     the encryption material. Non-secret auth settings live in the deploy config
     instead and reference this file by name+key.
     """
-    secret_file = os.path.join(secrets_dir, "kumo-secret-key")
+    secret_file = os.path.join(secrets_dir, 'kumo-secret-key')
 
     if os.path.exists(secret_file):
-        with open(secret_file, encoding="utf-8") as f:
+        with open(secret_file, encoding='utf-8') as f:
             secret = json.load(f)
         original = dict(secret)
     else:
@@ -154,16 +155,16 @@ def generate_customer_secret(secrets_dir: str) -> None:
     # it only when the file predates these keys (older firstboot output) or is
     # brand new; an existing value is left exactly as-is.
     secret.setdefault(
-        "credentials_encryption_key",
+        'credentials_encryption_key',
         base64.urlsafe_b64encode(os.urandom(32)).decode(),
     )
-    secret.setdefault("api_key_pepper", secrets.token_urlsafe(32))
+    secret.setdefault('api_key_pepper', secrets.token_urlsafe(32))
 
     # Direct Connect secrets for the active mode: add the supplied values only
     # when missing, never overwriting anything already on disk.
     updates = {
-        "oidc_client_secret": _env("OIDC_CLIENT_SECRET"),
-        "local_admin_temp_password": _env("DIRECT_CONNECT_ADMIN_TEMP_PASSWORD"),
+        'oidc_client_secret': _env('OIDC_CLIENT_SECRET'),
+        'local_admin_temp_password': _env('DIRECT_CONNECT_ADMIN_TEMP_PASSWORD'),
     }
     for key, value in updates.items():
         if value:
@@ -176,36 +177,35 @@ def generate_customer_secret(secrets_dir: str) -> None:
         _chown_best_effort(secret_file)
         return
 
-    _write_secret_file(secret_file, json.dumps(secret) + "\n", 0o600)
-    _log(f"wrote customer secret {secret_file}")
+    _write_secret_file(secret_file, json.dumps(secret) + '\n', 0o600)
+    _log(f'wrote customer secret {secret_file}')
 
 
 def _write_postgres_dsn_secrets(secrets_dir: str, extra_env: dict) -> None:
-    state_file = os.path.join(secrets_dir, "STATE_DB_DSN")
-    temporal_file = os.path.join(secrets_dir, "TEMPORAL_DB_DSN")
-    visibility_file = os.path.join(secrets_dir, "TEMPORAL_VISIBILITY_DB_DSN")
-    if all(
-            os.path.exists(p)
-            for p in (state_file, temporal_file, visibility_file)):
+    state_file = os.path.join(secrets_dir, 'STATE_DB_DSN')
+    temporal_file = os.path.join(secrets_dir, 'TEMPORAL_DB_DSN')
+    visibility_file = os.path.join(secrets_dir, 'TEMPORAL_VISIBILITY_DB_DSN')
+    if all(os.path.exists(p) for p in (state_file, temporal_file, visibility_file)):
         return
 
     child_env = dict(os.environ)
     child_env.update(extra_env)
-    child_env.update({
-        "STATE_DB_DSN_FILE": state_file,
-        "TEMPORAL_DB_DSN_FILE": temporal_file,
-        "TEMPORAL_VISIBILITY_DB_DSN_FILE": visibility_file,
-    })
+    child_env.update(
+        {
+            'STATE_DB_DSN_FILE': state_file,
+            'TEMPORAL_DB_DSN_FILE': temporal_file,
+            'TEMPORAL_VISIBILITY_DB_DSN_FILE': visibility_file,
+        }
+    )
     subprocess.run(
-        [sys.executable,
-         str(SCRIPT_DIR / "write-postgres-secrets.py")],
+        [sys.executable, str(SCRIPT_DIR / 'write-postgres-secrets.py')],
         check=True,
         env=child_env,
     )
     for path in (state_file, temporal_file, visibility_file):
         os.chmod(path, 0o640)
         _chown_best_effort(path)
-    _log("generated structured Postgres DSN secrets")
+    _log('generated structured Postgres DSN secrets')
 
 
 def generate_postgres_secrets(secrets_dir: str) -> None:
@@ -214,16 +214,15 @@ def generate_postgres_secrets(secrets_dir: str) -> None:
     External mode: the caller supplies connection settings; only the DSN
     secrets are written (no bundled password is invented).
     """
-    mode = _env("KUMO_POSTGRES_MODE", "bundled").lower()
-    if mode == "external":
+    mode = _env('KUMO_POSTGRES_MODE', 'bundled').lower()
+    if mode == 'external':
         _write_postgres_dsn_secrets(secrets_dir, extra_env={})
         return
 
-    password_file = os.path.join(secrets_dir, "kumo-postgres-password")
+    password_file = os.path.join(secrets_dir, 'kumo-postgres-password')
     dsn_files = [
         os.path.join(secrets_dir, name)
-        for name in ("STATE_DB_DSN", "TEMPORAL_DB_DSN",
-                     "TEMPORAL_VISIBILITY_DB_DSN")
+        for name in ('STATE_DB_DSN', 'TEMPORAL_DB_DSN', 'TEMPORAL_VISIBILITY_DB_DSN')
     ]
     dsns_exist = all(os.path.exists(p) for p in dsn_files)
     password_exists = os.path.exists(password_file)
@@ -245,17 +244,18 @@ def generate_postgres_secrets(secrets_dir: str) -> None:
         # the supplied POSTGRES_PASSWORD (which must match the one embedded in
         # the DSNs); never invent a random password that would contradict the
         # existing DSNs.
-        supplied = _env("POSTGRES_PASSWORD")
+        supplied = _env('POSTGRES_PASSWORD')
         if not supplied:
             raise SystemExit(
-                "ERROR: bundled Postgres DSN secrets exist but the password "
-                f"file {password_file} is missing and POSTGRES_PASSWORD is not "
-                "set. Set POSTGRES_PASSWORD to the password baked into the "
-                "existing DSN secrets, or delete the DSN secrets (STATE_DB_DSN, "
-                "TEMPORAL_DB_DSN, TEMPORAL_VISIBILITY_DB_DSN) to regenerate the "
-                "full set.")
+                'ERROR: bundled Postgres DSN secrets exist but the password '
+                f'file {password_file} is missing and POSTGRES_PASSWORD is not '
+                'set. Set POSTGRES_PASSWORD to the password baked into the '
+                'existing DSN secrets, or delete the DSN secrets (STATE_DB_DSN, '
+                'TEMPORAL_DB_DSN, TEMPORAL_VISIBILITY_DB_DSN) to regenerate the '
+                'full set.'
+            )
         _write_file(password_file, supplied, 0o640, chown=True)
-        _log(f"restored bundled Postgres password file {password_file}")
+        _log(f'restored bundled Postgres password file {password_file}')
         return
 
     # DSNs are absent (fresh boot or partial state): settle on one bundled
@@ -268,88 +268,87 @@ def generate_postgres_secrets(secrets_dir: str) -> None:
     if password_exists:
         os.chmod(password_file, 0o640)
         _chown_best_effort(password_file)
-        password = Path(password_file).read_text(encoding="utf-8").strip()
+        password = Path(password_file).read_text(encoding='utf-8').strip()
     else:
-        password = _env("POSTGRES_PASSWORD") or secrets.token_urlsafe(32)
+        password = _env('POSTGRES_PASSWORD') or secrets.token_urlsafe(32)
         _write_file(password_file, password, 0o640, chown=True)
-        _log(f"generated bundled Postgres password {password_file}")
+        _log(f'generated bundled Postgres password {password_file}')
     _write_postgres_dsn_secrets(
         secrets_dir,
         extra_env={
-            "POSTGRES_USER": _env("POSTGRES_USER", "kumo"),
-            "POSTGRES_HOST": _env("POSTGRES_HOST", "postgres"),
-            "POSTGRES_PORT": _env("POSTGRES_PORT", "5432"),
-            "POSTGRES_PASSWORD": password,
+            'POSTGRES_USER': _env('POSTGRES_USER', 'kumo'),
+            'POSTGRES_HOST': _env('POSTGRES_HOST', 'postgres'),
+            'POSTGRES_PORT': _env('POSTGRES_PORT', '5432'),
+            'POSTGRES_PASSWORD': password,
             # Bundled Postgres never uses client TLS; make sure a stray sslmode in
             # the environment does not leak into the generated DSNs.
-            "POSTGRES_SSLMODE": "",
-            "POSTGRES_SSLROOTCERT": "",
-            "POSTGRES_PASSWORD_FILE": "",
-        })
+            'POSTGRES_SSLMODE': '',
+            'POSTGRES_SSLROOTCERT': '',
+            'POSTGRES_PASSWORD_FILE': '',
+        },
+    )
 
 
 class _EmptyDefault(dict):
     """Mapping that renders unset ${VAR} as empty, matching envsubst."""
+
     def __missing__(self, _key: str) -> str:  # noqa: D401
-        return ""
+        return ''
 
 
 def generate_deploy_config(config_file: str) -> None:
     """Render deploy config, refreshing the bootstrap-owned generated file."""
     config_exists = os.path.exists(config_file)
-    if config_exists and _env(
-            "KUMO_BOOTSTRAP_DEPLOY_CONFIG_SOURCE") != "kumo_config":
+    if config_exists and _env('KUMO_BOOTSTRAP_DEPLOY_CONFIG_SOURCE') != 'kumo_config':
         return
 
     candidate_file = config_file
     if config_exists:
         fd, candidate_file = tempfile.mkstemp(
-            dir=os.path.dirname(config_file) or ".",
-            prefix=".kumo-deploy-config-",
+            dir=os.path.dirname(config_file) or '.',
+            prefix='.kumo-deploy-config-',
         )
         os.close(fd)
 
     try:
-        template_path = SRC_ROOT / "configs" / "deploy_env_config.template.json"
-        template_text = template_path.read_text(encoding="utf-8")
+        template_path = SRC_ROOT / 'configs' / 'deploy_env_config.template.json'
+        template_text = template_path.read_text(encoding='utf-8')
 
         # Defaults for the render match firstboot's template-only variables.
         render_env = _EmptyDefault(os.environ)
-        render_env.setdefault("TEMPORAL_HOST", "temporal")
-        render_env.setdefault("TEMPORAL_PORT", "7233")
-        render_env.setdefault("TEMPORAL_NAMESPACE", "prod")
-        render_env.setdefault("METADATA_STORAGE_TYPE", "postgres")
-        render_env.setdefault("STATE_DB_DSN_SECRET_NAME", "STATE_DB_DSN")
-        render_env.setdefault("DISKGRAPH_DATA_ROOT", "/mnt/localssd")
-        render_env.setdefault("LIFECYCLE_READY", "false")
+        render_env.setdefault('TEMPORAL_HOST', 'temporal')
+        render_env.setdefault('TEMPORAL_PORT', '7233')
+        render_env.setdefault('TEMPORAL_NAMESPACE', 'prod')
+        render_env.setdefault('METADATA_STORAGE_TYPE', 'postgres')
+        render_env.setdefault('STATE_DB_DSN_SECRET_NAME', 'STATE_DB_DSN')
+        render_env.setdefault('DISKGRAPH_DATA_ROOT', '/mnt/localssd')
+        render_env.setdefault('LIFECYCLE_READY', 'false')
 
         rendered = string.Template(template_text).substitute(render_env)
 
         os.makedirs(os.path.dirname(candidate_file), exist_ok=True)
-        with open(candidate_file, "w", encoding="utf-8") as f:
+        with open(candidate_file, 'w', encoding='utf-8') as f:
             f.write(rendered)
 
-        if _env("DISABLE_AUTH", "false").lower() != "true":
+        if _env('DISABLE_AUTH', 'false').lower() != 'true':
             _inject_direct_connect_auth(candidate_file)
         # Non-secret config (references secrets by name); world-readable so the
         # uid-999 services can read the read-only mount.
         os.chmod(candidate_file, 0o644)
 
         if config_exists:
-            expected = json.loads(
-                Path(candidate_file).read_text(encoding="utf-8"))
+            expected = json.loads(Path(candidate_file).read_text(encoding='utf-8'))
             try:
-                actual = json.loads(
-                    Path(config_file).read_text(encoding="utf-8"))
+                actual = json.loads(Path(config_file).read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 actual = object()
             if actual == expected:
                 return
             os.replace(candidate_file, config_file)
             candidate_file = config_file
-            _log(f"updated generated deploy config {config_file}")
+            _log(f'updated generated deploy config {config_file}')
         else:
-            _log(f"rendered deploy config {config_file}")
+            _log(f'rendered deploy config {config_file}')
     finally:
         if config_exists and candidate_file != config_file:
             try:
@@ -359,58 +358,57 @@ def generate_deploy_config(config_file: str) -> None:
 
 
 def _inject_direct_connect_auth(config_file: str) -> None:
-    with open(config_file, encoding="utf-8") as f:
+    with open(config_file, encoding='utf-8') as f:
         config = json.load(f)
 
-    login_method = (_env("DIRECT_CONNECT_LOGIN_METHOD") or "oidc").lower()
+    login_method = (_env('DIRECT_CONNECT_LOGIN_METHOD') or 'oidc').lower()
     admin_emails = [
-        email.strip() for email in _env("ADMIN_EMAILS").split(",")
-        if email.strip()
+        email.strip() for email in _env('ADMIN_EMAILS').split(',') if email.strip()
     ]
-    public_url = _env("PUBLIC_URL").rstrip("/")
-    secret_name = "kumo-secret-key"
+    public_url = _env('PUBLIC_URL').rstrip('/')
+    secret_name = 'kumo-secret-key'
 
     direct_connect = {
-        "login_method": login_method,
-        "allowed_return_origins": [public_url] if public_url else [],
-        "admin_emails": admin_emails,
+        'login_method': login_method,
+        'allowed_return_origins': [public_url] if public_url else [],
+        'admin_emails': admin_emails,
     }
-    if login_method == "password":
-        direct_connect["password"] = {
-            "temporary_password_ref": {
-                "secret_name": secret_name,
-                "secret_key": "local_admin_temp_password",
+    if login_method == 'password':
+        direct_connect['password'] = {
+            'temporary_password_ref': {
+                'secret_name': secret_name,
+                'secret_key': 'local_admin_temp_password',
             },
         }
     else:
-        direct_connect["oidc"] = {
-            "issuer": _env("OIDC_ISSUER").rstrip("/"),
-            "client_id": _env("OIDC_CLIENT_ID"),
-            "groups_claim": _env("OIDC_GROUPS_CLAIM", "groups") or "groups",
-            "client_secret_ref": {
-                "secret_name": secret_name,
-                "secret_key": "oidc_client_secret",
+        direct_connect['oidc'] = {
+            'issuer': _env('OIDC_ISSUER').rstrip('/'),
+            'client_id': _env('OIDC_CLIENT_ID'),
+            'groups_claim': _env('OIDC_GROUPS_CLAIM', 'groups') or 'groups',
+            'client_secret_ref': {
+                'secret_name': secret_name,
+                'secret_key': 'oidc_client_secret',
             },
         }
 
-    config["auth"] = {
-        "enabled": True,
-        "backend": "direct_connect",
-        "direct_connect": direct_connect,
+    config['auth'] = {
+        'enabled': True,
+        'backend': 'direct_connect',
+        'direct_connect': direct_connect,
     }
-    with open(config_file, "w", encoding="utf-8") as f:
+    with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
-        f.write("\n")
+        f.write('\n')
 
 
 def generate_tls(tls_dir: str) -> None:
     """Self-signed cert for TLS-enabled installs (skipped when TLS is off)."""
-    if _env("ENABLE_TLS", "false").lower() != "true":
+    if _env('ENABLE_TLS', 'false').lower() != 'true':
         return
-    if _env("KUMO_BOOTSTRAP_GENERATE_TLS", "true").lower() != "true":
+    if _env('KUMO_BOOTSTRAP_GENERATE_TLS', 'true').lower() != 'true':
         return
-    crt = os.path.join(tls_dir, "server.crt")
-    key = os.path.join(tls_dir, "server.key")
+    crt = os.path.join(tls_dir, 'server.crt')
+    key = os.path.join(tls_dir, 'server.key')
     # Regenerate when either half is missing: a lone crt (or lone key) is
     # unusable, and openssl rewrites the pair atomically, so a half-present
     # state clobbers nothing usable. A complete pair is left untouched.
@@ -419,15 +417,26 @@ def generate_tls(tls_dir: str) -> None:
     os.makedirs(tls_dir, exist_ok=True)
     subprocess.run(
         [
-            "openssl", "req", "-x509", "-newkey", "rsa:4096", "-keyout", key,
-            "-out", crt, "-days", "365", "-nodes", "-subj",
-            "/CN=kumo-singlehost"
+            'openssl',
+            'req',
+            '-x509',
+            '-newkey',
+            'rsa:4096',
+            '-keyout',
+            key,
+            '-out',
+            crt,
+            '-days',
+            '365',
+            '-nodes',
+            '-subj',
+            '/CN=kumo-singlehost',
         ],
         check=True,
     )
     os.chmod(key, 0o600)
     os.chmod(crt, 0o644)
-    _log(f"generated self-signed TLS certificate in {tls_dir}")
+    _log(f'generated self-signed TLS certificate in {tls_dir}')
 
 
 def generate_nginx_config(nginx_file: str) -> None:
@@ -440,21 +449,25 @@ def generate_nginx_config(nginx_file: str) -> None:
     logged so a stale-variant state (for example TLS toggled after first boot)
     is visible without overwriting the file.
     """
-    variant = "nginx.conf" if _env("ENABLE_TLS", "false").lower() == "true" \
-        else "nginx.http.conf"
-    source = SRC_ROOT / "nginx" / variant
-    expected = source.read_text(encoding="utf-8")
+    variant = (
+        'nginx.conf'
+        if _env('ENABLE_TLS', 'false').lower() == 'true'
+        else 'nginx.http.conf'
+    )
+    source = SRC_ROOT / 'nginx' / variant
+    expected = source.read_text(encoding='utf-8')
     if os.path.exists(nginx_file):
-        if Path(nginx_file).read_text(encoding="utf-8") != expected:
+        if Path(nginx_file).read_text(encoding='utf-8') != expected:
             _log(
-                f"note: existing nginx config at {nginx_file} differs from the "
-                f"{variant} variant expected for the current TLS mode; leaving "
-                "the existing file in place (delete it to regenerate)")
+                f'note: existing nginx config at {nginx_file} differs from the '
+                f'{variant} variant expected for the current TLS mode; leaving '
+                'the existing file in place (delete it to regenerate)'
+            )
         return
     os.makedirs(os.path.dirname(nginx_file), exist_ok=True)
-    Path(nginx_file).write_text(expected, encoding="utf-8")
+    Path(nginx_file).write_text(expected, encoding='utf-8')
     os.chmod(nginx_file, 0o644)
-    _log(f"placed nginx config ({variant}) at {nginx_file}")
+    _log(f'placed nginx config ({variant}) at {nginx_file}')
 
 
 def place_config(source: Path, destination: str, mode: int) -> None:
@@ -464,17 +477,19 @@ def place_config(source: Path, destination: str, mode: int) -> None:
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     shutil.copyfile(source, destination)
     os.chmod(destination, mode)
-    _log(f"placed config at {destination}")
+    _log(f'placed config at {destination}')
 
 
 def main() -> int:
-    secrets_dir = _env("KUMO_BOOTSTRAP_SECRETS_DIR", "/opt/kumo/secrets")
-    deploy_config_file = _env("KUMO_BOOTSTRAP_DEPLOY_CONFIG_FILE",
-                              "/etc/kumo/config/deploy_env_config.json")
-    nginx_file = _env("KUMO_BOOTSTRAP_NGINX_FILE", "/etc/kumo/nginx/nginx.conf")
-    prometheus_file = _env("KUMO_BOOTSTRAP_PROMETHEUS_FILE",
-                           "/etc/kumo/prometheus/prometheus.yml")
-    tls_dir = _env("KUMO_BOOTSTRAP_TLS_DIR", "/etc/kumo/tls")
+    secrets_dir = _env('KUMO_BOOTSTRAP_SECRETS_DIR', '/opt/kumo/secrets')
+    deploy_config_file = _env(
+        'KUMO_BOOTSTRAP_DEPLOY_CONFIG_FILE', '/etc/kumo/config/deploy_env_config.json'
+    )
+    nginx_file = _env('KUMO_BOOTSTRAP_NGINX_FILE', '/etc/kumo/nginx/nginx.conf')
+    prometheus_file = _env(
+        'KUMO_BOOTSTRAP_PROMETHEUS_FILE', '/etc/kumo/prometheus/prometheus.yml'
+    )
+    tls_dir = _env('KUMO_BOOTSTRAP_TLS_DIR', '/etc/kumo/tls')
 
     # Secret material first. _write_file creates secrets with the final
     # restrictive mode via O_CREAT (perms before content), so there is no
@@ -486,20 +501,20 @@ def main() -> int:
     generate_deploy_config(deploy_config_file)
     generate_tls(tls_dir)
     generate_nginx_config(nginx_file)
-    place_config(SRC_ROOT / "prometheus/prometheus.yml", prometheus_file, 0o644)
+    place_config(SRC_ROOT / 'prometheus/prometheus.yml', prometheus_file, 0o644)
     place_config(
-        SRC_ROOT / "runtime-config/postgres-initdb/01-create-kumo-databases.sh",
-        _env("KUMO_BOOTSTRAP_POSTGRES_INIT_FILE"),
+        SRC_ROOT / 'runtime-config/postgres-initdb/01-create-kumo-databases.sh',
+        _env('KUMO_BOOTSTRAP_POSTGRES_INIT_FILE'),
         0o755,
     )
     place_config(
-        SRC_ROOT / "runtime-config/temporal/dynamicconfig/docker.yaml",
-        _env("KUMO_BOOTSTRAP_TEMPORAL_DYNAMIC_CONFIG_FILE"),
+        SRC_ROOT / 'runtime-config/temporal/dynamicconfig/docker.yaml',
+        _env('KUMO_BOOTSTRAP_TEMPORAL_DYNAMIC_CONFIG_FILE'),
         0o644,
     )
-    _log("bootstrap complete")
+    _log('bootstrap complete')
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())

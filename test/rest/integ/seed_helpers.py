@@ -26,10 +26,9 @@ Both run the real ``GraphRefreshWorkflow`` -> DiskGraph ingest -> index path
 through Temporal; they require the diskgraph pool/Temporal fixtures the
 calling module already activates (``_pool_subprocesses`` etc.).
 """
+
 from __future__ import annotations
 
-from test.rest.integ.fixture_connector_args import provision_fixture_connectors
-from test.rest.integ.training_budget import clamp_e2e_training_budget
 from typing import Optional, Tuple
 
 from fastapi.testclient import TestClient
@@ -48,6 +47,8 @@ from statedb.config.common import (
     ProjectID,
     TrainingJobID,
 )
+from test.rest.integ.fixture_connector_args import provision_fixture_connectors
+from test.rest.integ.training_budget import clamp_e2e_training_budget
 
 
 async def seed_connectors_and_pquery(
@@ -69,7 +70,8 @@ async def seed_connectors_and_pquery(
     """
     if provision_connectors:
         typed_project_id, _ = await provision_fixture_connectors(
-            client, fixture, project_id)
+            client, fixture, project_id
+        )
     else:
         if project_id is None:
             raise ValueError('project_id is required when connectors exist')
@@ -78,7 +80,7 @@ async def seed_connectors_and_pquery(
 
     pquery_resources = await fixture_to_pquery_resources_v2.coroutine(fixture)
     target = next((r for r in pquery_resources if r.name == pquery_name), None)
-    assert target is not None, f"Query {pquery_name} not found in fixture"
+    assert target is not None, f'Query {pquery_name} not found in fixture'
 
     # Register the predictive query so its v2 graph exists before downstream
     # graph and job operations.
@@ -118,7 +120,8 @@ async def seed_and_train(
     )
 
     query_args = next(
-        (q for q in fixture.queries if q.pquery_name == pquery_name), None)
+        (q for q in fixture.queries if q.pquery_name == pquery_name), None
+    )
     assert query_args is not None
 
     if len(query_args.model_planner_yaml) == 0:
@@ -136,8 +139,7 @@ async def seed_and_train(
             ModelPlanResponse,
             project_id=project_id,
         )
-        query_args.model_planner_yaml = (
-            model_plan_response.suggested_model_plan_yaml)
+        query_args.model_planner_yaml = model_plan_response.suggested_model_plan_yaml
 
     model_plan_obj = model_plan_from_yaml(query_args.model_planner_yaml)
     clamp_e2e_training_budget(model_plan_obj)

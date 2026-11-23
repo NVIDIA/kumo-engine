@@ -34,32 +34,36 @@ from temporalio_commons import TemporalClient
 # the diskgraph pool task queue. Bring up the pool worker subprocess for this
 # module (same as ``test_diskgraph_e2e``); without it the child workflow has no
 # worker and the graph refresh hangs.
-pytestmark = pytest.mark.usefixtures("_pool_subprocesses")
+pytestmark = pytest.mark.usefixtures('_pool_subprocesses')
 
 _SKIP_REASON_SCALE_LIMIT_ENV_NOT_VISIBLE_TO_SESSION_WORKER = (
-    "Scale-limit env vars (MAX_GRAPH_TOTAL_EDGES / MAX_GRAPH_TOTAL_ROWS) "
+    'Scale-limit env vars (MAX_GRAPH_TOTAL_EDGES / MAX_GRAPH_TOTAL_ROWS) '
     "injected per-test via ``set_graph_data_scale_limits``' "
-    "``monkeypatch.setenv`` do not reach the session-scoped "
-    "``_pool_subprocesses`` worker that actually runs graph validation. That "
-    "worker forks at session-spawn time (conftest ``_pool_subprocesses``) and "
-    "reads ``DataScaleLimits.parse_from_env()`` from its own captured "
-    "``os.environ``, so it never observes the test-process monkeypatch. The "
-    "validator therefore emits 0 warnings and ``_verify_graph_has_warning`` "
-    "fails ``assert len(graph_warnings.errors) >= 1`` (``assert 0 >= 1``). "
-    "This is an out-of-process env-injection incompatibility, NOT a DG "
-    "capability gap: migrating it needs per-test worker respawn or a runtime "
-    "limit-injection RPC into the pool worker, neither of which exists today.")
+    '``monkeypatch.setenv`` do not reach the session-scoped '
+    '``_pool_subprocesses`` worker that actually runs graph validation. That '
+    'worker forks at session-spawn time (conftest ``_pool_subprocesses``) and '
+    'reads ``DataScaleLimits.parse_from_env()`` from its own captured '
+    '``os.environ``, so it never observes the test-process monkeypatch. The '
+    'validator therefore emits 0 warnings and ``_verify_graph_has_warning`` '
+    'fails ``assert len(graph_warnings.errors) >= 1`` (``assert 0 >= 1``). '
+    'This is an out-of-process env-injection incompatibility, NOT a DG '
+    'capability gap: migrating it needs per-test worker respawn or a runtime '
+    'limit-injection RPC into the pool worker, neither of which exists today.'
+)
 
 
 # This overrides env variables that get parsed into DataScaleLimits in the data
 # backend/workflow worker. This should trigger validation error during async
 # graph refresh workflow.
 @pytest.fixture(
-    scope="function", autouse=True, params=[
+    scope='function',
+    autouse=True,
+    params=[
         {
             'MAX_GRAPH_TOTAL_EDGES': 1,
         },
-    ])
+    ],
+)
 def set_graph_data_scale_limits(request):
     with pytest.MonkeyPatch.context() as mp:
         for k, v in request.param.items():
@@ -73,14 +77,16 @@ def set_graph_data_scale_limits(request):
 @pytest.fixture(autouse=True)
 def reset_graph_validation(fake_predictive_query):
     yield
-    DataBackendTestUtil.delete_graph_validation_result(
-        fake_predictive_query.graph_id)
+    DataBackendTestUtil.delete_graph_validation_result(fake_predictive_query.graph_id)
 
 
 def _verify_graph_has_warning(client: TestClient, graph_id: str):
-    warnings = post_and_expect_success(client, '/v0/graphs/get_warnings',
-                                       ErrWarnArgs([graph_id]),
-                                       Dict[str, ErrWarnResponse])
+    warnings = post_and_expect_success(
+        client,
+        '/v0/graphs/get_warnings',
+        ErrWarnArgs([graph_id]),
+        Dict[str, ErrWarnResponse],
+    )
     graph_warnings = warnings[graph_id]
     # ``GraphRefreshWorkflow`` runs ``_validate_graph_table_stats_and_save``
     # at two stages — ``INGEST_TABLE`` and ``final_stage`` — saving each
@@ -102,12 +108,12 @@ def _verify_graph_has_warning(client: TestClient, graph_id: str):
     # the matching error by description rather than relying on order.
     descriptions = [e.description for e in graph_warnings.errors]
     if os.environ.get('MAX_GRAPH_TOTAL_EDGES') == '1':
-        assert any('Please reduce the number of edges' in d
-                   for d in descriptions), descriptions
+        assert any('Please reduce the number of edges' in d for d in descriptions), (
+            descriptions
+        )
 
 
-@pytest.mark.skip(
-    reason=_SKIP_REASON_SCALE_LIMIT_ENV_NOT_VISIBLE_TO_SESSION_WORKER)
+@pytest.mark.skip(reason=_SKIP_REASON_SCALE_LIMIT_ENV_NOT_VISIBLE_TO_SESSION_WORKER)
 @pytest.mark.asyncio
 async def test_graph_validation(
     client: TestClient,
@@ -143,10 +149,14 @@ async def test_graph_validation(
     graph_entry = await state_services.graphs.get_graph_entry(graph_fpid)
     assert graph_entry is not None
     await DataBackendTestUtil.delete_graph_validation_result.coroutine(
-        graph_entry.dedup_key)
-    warnings = post_and_expect_success(client, '/v0/graphs/get_warnings',
-                                       ErrWarnArgs([graph_id]),
-                                       Dict[str, ErrWarnResponse])
+        graph_entry.dedup_key
+    )
+    warnings = post_and_expect_success(
+        client,
+        '/v0/graphs/get_warnings',
+        ErrWarnArgs([graph_id]),
+        Dict[str, ErrWarnResponse],
+    )
     graph_warnings = warnings[graph_id]
     assert graph_warnings.errors == []
 
@@ -175,11 +185,12 @@ async def test_graph_validation(
                 model_plan=plan,
             ),
             TrainingJobID,
-        ))
+        )
+    )
     await wait_for_training_job_to_finish(training_job_id, temporal_client)
     training_job = get_and_expect_success(
-        client, f'/v0/training_jobs/{training_job_id}', {},
-        TrainingJobResponse)
+        client, f'/v0/training_jobs/{training_job_id}', {}, TrainingJobResponse
+    )
     # Training should fail due to graph data scale exceeding limit.
     assert training_job.execution.status == JobStatus.FAILED
     assert training_job.execution.failure_info is not None

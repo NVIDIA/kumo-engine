@@ -22,7 +22,7 @@ loaded = sorted(
 print(json.dumps(loaded))
 """
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, '-c', script],
         check=True,
         capture_output=True,
         text=True,

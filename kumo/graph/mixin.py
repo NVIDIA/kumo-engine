@@ -16,7 +16,7 @@ from io_utils import logging
 from kumo.connector import Connector
 
 logger = logging.getLogger(__name__)
-T = TypeVar("T")
+T = TypeVar('T')
 
 
 def raise_post_materialization(func):
@@ -25,13 +25,15 @@ def raise_post_materialization(func):
     public contract and is asserted by `test/graph/test_graph.py`; do not
     change the wording.
     """
+
     @functools.wraps(func)
     def _disallow_post_materialization(self, *args, **kwargs):
         if getattr(self, '_data', None) is not None:
             raise Exception(
                 f"'{type(self).__name__}' cannot be modified post "
-                "materialization. Tried calling "
-                f"'{type(self).__name__}.{func.__name__}'")
+                'materialization. Tried calling '
+                f"'{type(self).__name__}.{func.__name__}'"
+            )
         return func(self, *args, **kwargs)
 
     return _disallow_post_materialization
@@ -42,6 +44,7 @@ class _HasData(Generic[T]):
     accessor / introspection helpers (`has_data`, `data`, `clear_data`).
     Each concrete subclass owns its own `materialize(...)` implementation.
     """
+
     _data: Optional[T] = None
 
     @property
@@ -52,9 +55,10 @@ class _HasData(Generic[T]):
     def data(self) -> T:
         if not self.has_data:
             raise AttributeError(
-                f"Cannot access data because {self.__class__.__name__} has "
-                f"not been materialized yet. Please ensure that you run "
-                f"'materialize()' before accessing data.")
+                f'Cannot access data because {self.__class__.__name__} has '
+                f'not been materialized yet. Please ensure that you run '
+                f"'materialize()' before accessing data."
+            )
         assert self._data is not None
         return self._data
 

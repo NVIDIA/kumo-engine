@@ -26,15 +26,16 @@ from service_framework.env_var import EnvVar
 
 log = logging.getLogger(__name__)
 
-P = ParamSpec("P")
-R = TypeVar("R")
+P = ParamSpec('P')
+R = TypeVar('R')
 
 # Tracks whether we are already inside a @measure_blocking_code wrapper on the
 # current asyncio task. Used so a decorated child running inside a decorated
 # parent has its blocking time attributed to the child only (not double-counted
 # against the parent). See `measure_blocking_code` for details.
 _IN_MEASURE_BLOCKING: 'contextvars.ContextVar[bool]' = contextvars.ContextVar(
-    'in_measure_blocking', default=False)
+    'in_measure_blocking', default=False
+)
 
 _STRESS_TEST_MODE = EnvVar('STRESS_TEST_MODE', bool, default_value=False)
 BLOCKING_WARN_THRESHOLD_SEC = 0.2
@@ -43,8 +44,7 @@ BLOCKING_ALERT_THRESHOLD_SEC = 5
 
 def _stress_test_enabled() -> bool:
     deploy_stage = _DEPLOY_STAGE.parse_value()
-    return (deploy_stage != DeployStage.PROD
-            and _STRESS_TEST_MODE.parse_value())
+    return deploy_stage != DeployStage.PROD and _STRESS_TEST_MODE.parse_value()
 
 
 # TODO(siyang): move this to a common util library
@@ -55,13 +55,13 @@ def _notify_kumo_if_prod(log_msg: str) -> None:
         from service_framework.deploy_env import _SLACK_URL, send_slack_message
 
         slack_url = _SLACK_URL.parse_value()
-        msg = f"Critical error found in PROD: {log_msg}"
-        asyncio.get_running_loop().run_in_executor(None, send_slack_message,
-                                                   msg, slack_url)
+        msg = f'Critical error found in PROD: {log_msg}'
+        asyncio.get_running_loop().run_in_executor(
+            None, send_slack_message, msg, slack_url
+        )
 
 
-class EventLoopBlockedError(RuntimeError):
-    ...
+class EventLoopBlockedError(RuntimeError): ...
 
 
 def measure_blocking_code(
@@ -91,8 +91,7 @@ def measure_blocking_code(
     func_name = func_name or f.__qualname__
 
     @functools.wraps(f)
-    async def _measure_blocking_code_wrapper(*args: P.args,
-                                             **kwargs: P.kwargs) -> R:
+    async def _measure_blocking_code_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         if active_profiler_context_var.get():
             # When profiling is enabled and active, we don't apply the trick of
             # measure_blocking_code which would obscure the profiling result.
@@ -113,7 +112,8 @@ def measure_blocking_code(
                 f'{total_time} sec, awaited {num_futures_awaited} futures, '
                 f'total blocking time: {total_blocking_time:.3f} sec'
                 f'({blocking_ratio:.2%}), most recently blocked for '
-                f'{blocking_time:.3f} sec')
+                f'{blocking_time:.3f} sec'
+            )
 
             if blocking_time < BLOCKING_ALERT_THRESHOLD_SEC:
                 log.warning(log_msg)
@@ -123,8 +123,8 @@ def measure_blocking_code(
             _notify_kumo_if_prod(log_msg)
             if _stress_test_enabled():
                 raise EventLoopBlockedError(
-                    'FATAL blocking detected on asyncio event loop:\n' +
-                    log_msg)
+                    'FATAL blocking detected on asyncio event loop:\n' + log_msg
+                )
 
         # The wrapped coroutine is driven by manually stepping it via .send() /
         # .throw() and measuring how long each synchronous segment runs (the
@@ -167,8 +167,10 @@ def measure_blocking_code(
                     if num_futures_awaited:
                         log.warning(
                             'Received asyncio cancellation after awaiting %d '
-                            'futures, propagating into %s', num_futures_awaited,
-                            func_name)
+                            'futures, propagating into %s',
+                            num_futures_awaited,
+                            func_name,
+                        )
                     raise
                 blocking_time = time.perf_counter() - start_time
                 total_blocking_time += blocking_time
@@ -214,7 +216,7 @@ class _CoroutineDriver(Generic[R]):
     current task) and feeds results/exceptions back into the driver.
     """
 
-    __slots__ = ('_driver', )
+    __slots__ = ('_driver',)
 
     def __init__(self, driver: Generator[Any, Any, R]) -> None:
         self._driver = driver

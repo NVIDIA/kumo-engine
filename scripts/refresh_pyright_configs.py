@@ -13,17 +13,18 @@ import subprocess
 
 
 def try_current(data: dict) -> bool:
-    temp_fname = "tempconfig.json"
+    temp_fname = 'tempconfig.json'
     with open(temp_fname, 'w') as f:
         f.write(json.dumps(data, indent=4))
-    proc = subprocess.run(['pyright', '-p', temp_fname],
-                          stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc = subprocess.run(
+        ['pyright', '-p', temp_fname], stderr=subprocess.PIPE, stdout=subprocess.PIPE
+    )
     os.remove(temp_fname)
     return proc.returncode == 0
 
 
 def refresh_config(base_config: str):
-    print("refreshing", base_config)
+    print('refreshing', base_config)
     with open(base_config) as f:
         data = json.loads(f.read())
 
@@ -44,8 +45,8 @@ def refresh_config(base_config: str):
         f.write('\n')
 
 
-if __name__ == "__main__":
-    print("This script takes several hours, fyi")
+if __name__ == '__main__':
+    print('This script takes several hours, fyi')
     # cd to repo root
     os.chdir(osp.dirname(osp.dirname(osp.abspath(__file__))))
     for base_config in ['pyrightconfig.json', 'precommit-pyrightconfig.json']:

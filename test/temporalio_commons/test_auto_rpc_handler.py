@@ -68,13 +68,12 @@ def _activity_info() -> activity.Info:
 
 
 def _interceptor_for(monkeypatch, failure):
-    next_interceptor = SimpleNamespace(execute_activity=AsyncMock(
-        side_effect=failure))
-    interceptor = worker_interceptors.KumoActivityInboundInterceptor(
-        next_interceptor)
+    next_interceptor = SimpleNamespace(execute_activity=AsyncMock(side_effect=failure))
+    interceptor = worker_interceptors.KumoActivityInboundInterceptor(next_interceptor)
     interceptor._outbound = SimpleNamespace(track_last_heartbeat=False)
-    monkeypatch.setattr('temporalio_commons.worker_interceptors.activity.info',
-                        _activity_info)
+    monkeypatch.setattr(
+        'temporalio_commons.worker_interceptors.activity.info', _activity_info
+    )
     monkeypatch.setattr(
         'temporalio_commons.worker_interceptors._kumo_record_event',
         lambda *_args, **_kwargs: None,
@@ -142,8 +141,7 @@ async def test_async_autorpc_handler_preserves_trusted_error(kind: str) -> None:
     assert caught.value is failure
 
 
-def test_autorpc_retry_output_withholds_only_marked_detail(
-        caplog, capsys) -> None:
+def test_autorpc_retry_output_withholds_only_marked_detail(caplog, capsys) -> None:
     canary = 'provider response password=autorpc-retry-secret'
     failure = RuntimeError(canary)
     mark_exception_restricted(
@@ -170,7 +168,8 @@ def test_autorpc_retry_output_withholds_only_marked_detail(
 
 @pytest.mark.asyncio
 async def test_autorpc_public_error_reaches_public_activity_contract(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     failure = _SafePublicError('curated placement rejection')
 
     @activity.defn(name='test_autorpc_public_activity_contract')
@@ -190,13 +189,12 @@ async def test_autorpc_public_error_reaches_public_activity_contract(
     error = caught.value
     assert error.message == failure.message
     assert error.type == '_SafePublicError'
-    assert tuple(error.details) == (failure.to_dict(), )
+    assert tuple(error.details) == (failure.to_dict(),)
     assert error.non_retryable is True
 
 
 @pytest.mark.asyncio
-async def test_core_public_error_reaches_legacy_activity_contract(
-        monkeypatch) -> None:
+async def test_core_public_error_reaches_legacy_activity_contract(monkeypatch) -> None:
     failure = PublicTrainingError('curated training rejection')
     interceptor, activity_input = _interceptor_for(monkeypatch, failure)
 
@@ -206,14 +204,16 @@ async def test_core_public_error_reaches_legacy_activity_contract(
     error = caught.value
     assert error.message == failure.message
     assert error.type == PublicException.__name__
-    assert PublicException.from_dict(
-        error.details[0]).get_user_message() == (failure.get_user_message())
+    assert PublicException.from_dict(error.details[0]).get_user_message() == (
+        failure.get_user_message()
+    )
     assert error.non_retryable is True
 
 
 @pytest.mark.asyncio
 async def test_activity_interceptor_preserves_prebuilt_application_error(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     cause = RuntimeError('controller failure')
     failure = ApplicationError(
         'curated application failure',
@@ -230,14 +230,15 @@ async def test_activity_interceptor_preserves_prebuilt_application_error(
     assert caught.value is failure
     assert caught.value.message == 'curated application failure'
     assert caught.value.type == 'PlacementRejected'
-    assert tuple(caught.value.details) == ({'placement': 'single-host-limit'}, )
+    assert tuple(caught.value.details) == ({'placement': 'single-host-limit'},)
     assert caught.value.non_retryable is True
     assert caught.value.__cause__ is cause
 
 
 @pytest.mark.asyncio
 async def test_autorpc_unknown_error_history_is_sanitized_and_logs_message(
-        monkeypatch, caplog) -> None:
+    monkeypatch, caplog
+) -> None:
     canary = 'provider-body password=autorpc-secret-canary'
 
     @activity.defn(name='test_autorpc_unknown_error_sanitized')
@@ -268,7 +269,8 @@ async def test_autorpc_unknown_error_history_is_sanitized_and_logs_message(
 
 @pytest.mark.parametrize('non_retryable', (False, True))
 def test_wf_failure_preserves_direct_application_retryability(
-        non_retryable: bool) -> None:
+    non_retryable: bool,
+) -> None:
     failure = ApplicationError(
         'curated application failure',
         type='PlacementRejected',
@@ -356,23 +358,19 @@ class SyncClass:
 async def test_blocking_call_async():
     assert await sync_func.coroutine(1, 2) == 3
 
-    with pytest.raises(Exception,
-                       match='Not allowed to call a blocking function'):
+    with pytest.raises(Exception, match='Not allowed to call a blocking function'):
         sync_func(1, 2)
 
-    with pytest.raises(Exception,
-                       match='Not allowed to call a blocking function'):
+    with pytest.raises(Exception, match='Not allowed to call a blocking function'):
         sync_func.sync(1, 2)
 
     instance = SyncClass(3)
     assert await instance.sync_method.coroutine(1, 2) == 6
 
-    with pytest.raises(Exception,
-                       match='Not allowed to call a blocking function'):
+    with pytest.raises(Exception, match='Not allowed to call a blocking function'):
         instance.sync_method(1, 2)
 
-    with pytest.raises(Exception,
-                       match='Not allowed to call a blocking function'):
+    with pytest.raises(Exception, match='Not allowed to call a blocking function'):
         instance.sync_method.sync(1, 2)
 
 

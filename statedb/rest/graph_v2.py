@@ -26,9 +26,10 @@ class GraphDBEntryV2(DBEntry):
     # Ref counting is used for V2 graph to track how many PQueries (v2) are
     # using the same graph.
     ref_count: int = 1
-    created_by: str = ""
-    created_by_name: str = ""
+    created_by: str = ''
+    created_by_name: str = ''
 
     def __post_init__(self) -> None:
-        self.normalized_alias = (normalize_resource_alias(self.alias)
-                                 if self.alias else '')
+        self.normalized_alias = (
+            normalize_resource_alias(self.alias) if self.alias else ''
+        )

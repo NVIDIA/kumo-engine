@@ -82,15 +82,20 @@ async def signal_workflow_if_running(
     wf_handle = workflow.get_external_workflow_handle(wf_id, run_id=run_id)
     try:
         await wf_handle.signal(signal=signal_name, args=args)
-        log.info('Sent signal %s to target wf %s, run_id=%s', signal_name,
-                 wf_id, run_id)
+        log.info(
+            'Sent signal %s to target wf %s, run_id=%s', signal_name, wf_id, run_id
+        )
         return True
     except ApplicationError as err:
         if err.type == 'ExternalWorkflowExecutionNotFound':
             log.warning(
                 'Failed to signal a workflow that is not running, '
-                'wf_id=%s, run_id=%s, signal=%s, err=%s', wf_id, run_id,
-                signal_name, err)
+                'wf_id=%s, run_id=%s, signal=%s, err=%s',
+                wf_id,
+                run_id,
+                signal_name,
+                err,
+            )
             return False
         raise
 
@@ -105,8 +110,7 @@ async def start_child_data_wf(
     wf_id: str,
     args: Sequence[Any],
     execution_timeout: timedelta,
-    cancellation_type:
-    ChildWorkflowCancellationType = ChildWorkflowCancellationType.TRY_CANCEL,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.TRY_CANCEL,
     parent_close_policy: ParentClosePolicy = ParentClosePolicy.REQUEST_CANCEL,
     # Callers on a different queue than the child (e.g. ML workflows starting
     # a data-backend refresh) must set this; None inherits the caller's queue.
@@ -131,7 +135,8 @@ async def start_child_data_wf(
     # child when: 1) the task is execution of the activity "wait_on_workflow";
     # and 2) the activity failed due to the child workflow getting canceled.
     async def _auto_retry_canceled_child_refresh(
-            child_task: asyncio.Task[ChildReturnType]) -> ChildReturnType:
+        child_task: asyncio.Task[ChildReturnType],
+    ) -> ChildReturnType:
         while True:
             try:
                 return await child_task
@@ -139,8 +144,10 @@ async def start_child_data_wf(
                 if _child_refresh_canceled(ex):
                     log.warning(
                         'Child refresh workflow %s was canceled but '
-                        'still needed by %s, restarting it...', wf_id,
-                        workflow.info().workflow_id)
+                        'still needed by %s, restarting it...',
+                        wf_id,
+                        workflow.info().workflow_id,
+                    )
                     # Recursive call to restart the child.
                     child_task = await _create_child_wf_task()
                     continue
@@ -151,8 +158,7 @@ async def start_child_data_wf(
             # Attempt to spawn the child workflow run. If successful, the
             # caller workflow is regarded as the "primary" or "real" parent,
             # and it won't auto-restart the child when it fails.
-            log.info('start_child_data_wf: spawning child %s with args=%s',
-                     wf_id, args)
+            log.info('start_child_data_wf: spawning child %s with args=%s', wf_id, args)
             child_wf_task = await workflow.start_child_workflow(
                 workflow_fn,
                 args=args,
@@ -170,10 +176,12 @@ async def start_child_data_wf(
                     # outcome still arrives through child_wf_task.
                     if err.type != 'ExternalWorkflowExecutionNotFound':
                         raise
-                    log.info('Child %s closed before signal %s', wf_id,
-                             signal_name)
-            log.info('Parent %s successfully spawned child %s',
-                     workflow.info().workflow_id, wf_id)
+                    log.info('Child %s closed before signal %s', wf_id, signal_name)
+            log.info(
+                'Parent %s successfully spawned child %s',
+                workflow.info().workflow_id,
+                wf_id,
+            )
             return child_wf_task
         except WorkflowAlreadyStartedError as err:
             # The "child" workflow is already running, likely launched by its
@@ -185,8 +193,9 @@ async def start_child_data_wf(
             # _create_child_wf_task()
             log.info('Child workflow %s already exists...', wf_id)
             if signal_name:
-                await signal_workflow_if_running(err.workflow_id, err.run_id,
-                                                 signal_name, args=signal_args)
+                await signal_workflow_if_running(
+                    err.workflow_id, err.run_id, signal_name, args=signal_args
+                )
             child_wf_task = workflow.start_activity(
                 DataBackendActivities.wait_on_workflow,
                 args=[ctx, wf_id, err.run_id],
@@ -199,7 +208,8 @@ async def start_child_data_wf(
                 retry_policy=CHILD_WF_WAITING_RETRY_POLICY,
             )
             return asyncio.ensure_future(
-                _auto_retry_canceled_child_refresh(child_wf_task))
+                _auto_retry_canceled_child_refresh(child_wf_task)
+            )
 
     return await _create_child_wf_task()
 
@@ -212,6 +222,5 @@ def _child_refresh_canceled(ex: BaseException):
         while cause:
             if is_cancelled_exception(cause):
                 return True
-            cause = getattr(cause, 'cause', None) or getattr(
-                cause, '__cause__', None)
+            cause = getattr(cause, 'cause', None) or getattr(cause, '__cause__', None)
     return False

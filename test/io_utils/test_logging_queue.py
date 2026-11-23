@@ -19,8 +19,7 @@ from io_utils import logging
 
 LOGGER_NAME = 'test_logging_queue'
 _FORK_HELPER = Path(__file__).with_name('logging_queue_fork_helper.py')
-_MULTIPROCESSING_HELPER = Path(__file__).with_name(
-    'multiprocessing_log_helper.py')
+_MULTIPROCESSING_HELPER = Path(__file__).with_name('multiprocessing_log_helper.py')
 _REPO_ROOT = Path(__file__).parents[2]
 _FORK_CHILD_TIMEOUT_S = 3.0
 _FORK_HELPER_TIMEOUT_S = 10.0
@@ -39,9 +38,7 @@ def _read(path, expected, timeout=10.0):
 def test_multiprocessing_file_handler_flushes_records_at_exit(tmp_path):
     path = tmp_path / 'multiprocessing.log'
     result = subprocess.run(
-        [sys.executable,
-         str(_MULTIPROCESSING_HELPER),
-         str(path)],
+        [sys.executable, str(_MULTIPROCESSING_HELPER), str(path)],
         capture_output=True,
         text=True,
         timeout=15.0,
@@ -56,15 +53,16 @@ def test_multiprocessing_file_handler_flushes_records_at_exit(tmp_path):
     ]
 
 
-def test_multiprocessing_file_handler_ignores_records_after_close(
-        tmp_path, capsys):
+def test_multiprocessing_file_handler_ignores_records_after_close(tmp_path, capsys):
     path = tmp_path / 'closed.log'
     handler = logging.MultiProcessingLog(path, 'a', 1048576, 1)
     handler.close()
 
     handler.emit(
-        py_logging.LogRecord(LOGGER_NAME, py_logging.INFO, __file__, 1,
-                             'after close', (), None))
+        py_logging.LogRecord(
+            LOGGER_NAME, py_logging.INFO, __file__, 1, 'after close', (), None
+        )
+    )
 
     assert capsys.readouterr().err == ''
     assert path.read_text() == ''
@@ -119,8 +117,13 @@ def _terminate_helper_group(process):
         return '', 'helper process group did not exit after SIGKILL\n'
 
 
-def _run_fork_helper(tmp_path, *, child_timeout=_FORK_CHILD_TIMEOUT_S,
-                     simulate_stuck=False, force_quiesce_timeout=False):
+def _run_fork_helper(
+    tmp_path,
+    *,
+    child_timeout=_FORK_CHILD_TIMEOUT_S,
+    simulate_stuck=False,
+    force_quiesce_timeout=False,
+):
     log_path = tmp_path / 'fork-helper.log'
     report_path = tmp_path / 'fork-helper-report.json'
     command = [
@@ -139,9 +142,13 @@ def _run_fork_helper(tmp_path, *, child_timeout=_FORK_CHILD_TIMEOUT_S,
         command.append('--force-quiesce-timeout')
 
     started_at = time.monotonic()
-    process = subprocess.Popen(command, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True,
-                               start_new_session=True)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
         stdout, stderr = process.communicate(timeout=_FORK_HELPER_TIMEOUT_S)
     except subprocess.TimeoutExpired:
@@ -174,22 +181,28 @@ def _preserve_fork_diagnostics(nodeid, report, stdout, stderr, report_path):
         shutil.copyfile(report_path, out / 'fork-helper-report.json')
     else:
         (out / 'fork-helper-report.json').write_text(
-            json.dumps(report, indent=2, sort_keys=True))
+            json.dumps(report, indent=2, sort_keys=True)
+        )
     (out / 'fork-helper-stdout.txt').write_text(stdout)
     (out / 'fork-helper-stderr.txt').write_text(stderr)
 
 
 def _assert_fork_helper_completed(request, report, stdout, stderr, report_path):
     events = [event.get('event') for event in report.get('events', [])]
-    parent_before_fork = next((event for event in report.get('events', [])
-                               if event.get('event') == 'parent_before_fork'),
-                              {})
+    parent_before_fork = next(
+        (
+            event
+            for event in report.get('events', [])
+            if event.get('event') == 'parent_before_fork'
+        ),
+        {},
+    )
     threads = parent_before_fork.get('threads', [])
     failures = []
     if report.get('status') != 'completed':
-        failures.append(f"status={report.get('status')!r}")
+        failures.append(f'status={report.get("status")!r}')
     if report.get('child_exitcode') != 0:
-        failures.append(f"child_exitcode={report.get('child_exitcode')!r}")
+        failures.append(f'child_exitcode={report.get("child_exitcode")!r}')
     if report.get('child_alive_after_cleanup'):
         failures.append('child was alive after cleanup')
     if parent_before_fork.get('requested_start_method') != 'fork':
@@ -197,14 +210,14 @@ def _assert_fork_helper_completed(request, report, stdout, stderr, report_path):
     if len(threads) != 2:
         failures.append(f'helper forked with unexpected threads: {threads!r}')
     for expected in (
-            'child_at_fork_callbacks_started',
-            'child_at_fork_callbacks_completed',
-            'child_target_started',
-            'child_before_log',
-            'child_after_log',
-            'child_after_second_log',
-            'child_after_logging_shutdown',
-            'child_target_completed',
+        'child_at_fork_callbacks_started',
+        'child_at_fork_callbacks_completed',
+        'child_target_started',
+        'child_before_log',
+        'child_after_log',
+        'child_after_second_log',
+        'child_after_logging_shutdown',
+        'child_target_completed',
     ):
         if expected not in events:
             failures.append(f'missing checkpoint {expected!r}')
@@ -215,11 +228,13 @@ def _assert_fork_helper_completed(request, report, stdout, stderr, report_path):
         failures.append('child record was not written')
 
     if failures:
-        _preserve_fork_diagnostics(request.node.nodeid, report, stdout, stderr,
-                                   report_path)
+        _preserve_fork_diagnostics(
+            request.node.nodeid, report, stdout, stderr, report_path
+        )
         pytest.fail(
-            '; '.join(failures) + '\n' +
-            json.dumps(report, indent=2, sort_keys=True), pytrace=False)
+            '; '.join(failures) + '\n' + json.dumps(report, indent=2, sort_keys=True),
+            pytrace=False,
+        )
 
 
 def test_fork_child_records_are_written(tmp_path, request):
@@ -228,8 +243,9 @@ def test_fork_child_records_are_written(tmp_path, request):
 
 
 def test_fork_helper_bounds_and_diagnoses_a_stuck_child(tmp_path):
-    report, _, stderr, _ = _run_fork_helper(tmp_path, child_timeout=1.5,
-                                            simulate_stuck=True)
+    report, _, stderr, _ = _run_fork_helper(
+        tmp_path, child_timeout=1.5, simulate_stuck=True
+    )
     events = [event.get('event') for event in report['events']]
     assert report['status'] == 'timed_out'
     assert report['outer_elapsed_seconds'] < _FORK_HELPER_TIMEOUT_S
@@ -241,8 +257,7 @@ def test_fork_helper_bounds_and_diagnoses_a_stuck_child(tmp_path):
 
 
 def test_fork_quiesce_timeout_disables_unsafe_child_routes(tmp_path):
-    report, _, stderr, _ = _run_fork_helper(tmp_path,
-                                            force_quiesce_timeout=True)
+    report, _, stderr, _ = _run_fork_helper(tmp_path, force_quiesce_timeout=True)
     events = [event.get('event') for event in report['events']]
     assert report['status'] == 'completed'
     assert report['outer_elapsed_seconds'] < _FORK_HELPER_TIMEOUT_S
@@ -273,10 +288,9 @@ def test_fork_child_restores_routes_after_listener_was_stopped(routed):
     assert 'after_stopped_listener' in _read(path, 1)
 
 
-def test_concurrent_fork_callbacks_keep_lock_ownership_isolated(
-        routed, monkeypatch):
+def test_concurrent_fork_callbacks_keep_lock_ownership_isolated(routed, monkeypatch):
     logger, path = routed
-    handler, = logging._ROUTED_HANDLERS[LOGGER_NAME]
+    (handler,) = logging._ROUTED_HANDLERS[LOGGER_NAME]
     handler_lock = handler.lock
     assert handler_lock is not None
     monkeypatch.setattr(logging, '_FORK_HANDLER_LOCK_TIMEOUT_S', 0.05)
@@ -322,8 +336,7 @@ def test_concurrent_fork_callbacks_keep_lock_ownership_isolated(
     try:
         assert first_prepared.wait(5.0)
         assert second_completed.wait(5.0)
-        routing_lock_acquired = logging._QUEUE_LISTENER_LOCK.acquire(
-            timeout=0.05)
+        routing_lock_acquired = logging._QUEUE_LISTENER_LOCK.acquire(timeout=0.05)
         if routing_lock_acquired:
             logging._QUEUE_LISTENER_LOCK.release()
         handler_lock_acquired = handler_lock.acquire(timeout=0.05)
@@ -353,7 +366,7 @@ def test_deferred_args_are_resolved_at_call_time(routed):
 
 def test_handle_does_not_take_the_handler_lock(routed):
     logger, _ = routed
-    handler, = [
+    (handler,) = [
         h for h in logger.handlers if isinstance(h, logging._RecordQueueHandler)
     ]
     handler_lock = handler.lock
@@ -361,8 +374,7 @@ def test_handle_does_not_take_the_handler_lock(routed):
     handler_lock.acquire()
     try:
         done = threading.Event()
-        threading.Thread(
-            target=lambda: (logger.info('unlocked'), done.set())).start()
+        threading.Thread(target=lambda: (logger.info('unlocked'), done.set())).start()
         assert done.wait(5.0)
     finally:
         handler_lock.release()
@@ -395,7 +407,7 @@ def test_listener_survives_a_raising_handler(routed):
         def handle(self, record):
             raise RuntimeError('boom')
 
-    listener.handlers = (_Boom(), ) + original
+    listener.handlers = (_Boom(),) + original
     logger.info('first')
     # The handler after the raising one must still get this record.
     assert 'first' in _read(path, 1)
@@ -419,7 +431,7 @@ def test_stop_bounds_the_join_on_a_wedged_sink(routed, monkeypatch):
 
     listener = logging._QUEUE_LISTENER
     assert listener is not None
-    listener.handlers = (_Wedged(), )
+    listener.handlers = (_Wedged(),)
     logger.info('wedge')
     assert blocked.wait(5.0)
     start = time.monotonic()

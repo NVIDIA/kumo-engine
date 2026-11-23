@@ -11,6 +11,7 @@ Locks are never reclaimed. The number of locks is bounded by the number of
 snapshots that have ever been addressed in this process, which is small
 relative to the bounded pool size.
 """
+
 import asyncio
 import contextlib
 from typing import AsyncIterator, Dict
@@ -18,6 +19,7 @@ from typing import AsyncIterator, Dict
 
 class PerSnapshotLocks:
     """Hands out one ``asyncio.Lock`` per snapshot id."""
+
     def __init__(self) -> None:
         self._locks: Dict[str, asyncio.Lock] = {}
         # Serializes lock creation so concurrent ``get``/``acquire`` for the

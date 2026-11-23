@@ -34,7 +34,7 @@ from kumo.validation.validation import ValidationException
 
 TEST_GRAPH_NAME = 'kumo_test_graph'
 TEST_PERSIST_DIR = 'test_persist_dir'
-TEST_GRAPH_STATS_FILE = "graph_stats.json"
+TEST_GRAPH_STATS_FILE = 'graph_stats.json'
 
 
 def _financial_test_graph(name: str = TEST_GRAPH_NAME) -> Graph:
@@ -55,15 +55,11 @@ def test_graph_ambiguous_access_resolves_to_column(tmp_path):
     # If a table name is the same as a data source, we may get ambiguous access
     # Example: Data source "anime", tables "anime" and "rating", column
     # "anime.rating" exists but access through __getitem__ is ambiguous
-    pd.DataFrame({
-        'rating': [1]
-    }).to_csv(
+    pd.DataFrame({'rating': [1]}).to_csv(
         tmp_path / 'anime.csv',
         index=False,
     )
-    pd.DataFrame({
-        'id': [1]
-    }).to_csv(
+    pd.DataFrame({'id': [1]}).to_csv(
         tmp_path / 'rating.csv',
         index=False,
     )
@@ -74,7 +70,7 @@ def test_graph_ambiguous_access_resolves_to_column(tmp_path):
 
     # Make sure ambiguous access resolves to a column (anime.rating)
     # is both a valid table as well as a valid column
-    assert (graph['anime.rating'] == graph.column_from_fqn('anime.rating'))
+    assert graph['anime.rating'] == graph.column_from_fqn('anime.rating')
     assert isinstance(graph['anime.rating'], Column)
 
     # Make sure unambiguous access to a table works
@@ -126,13 +122,15 @@ def test_graph_add_from_config():
     graph.infer_encoders()
     graph.validate()
 
-    assert str(graph) == ('Graph(\n'
-                          '  name=FINANCIAL,\n'
-                          '  data_sources=[csv],\n'
-                          '  tables=[csv.ACCOUNT, csv.CARD, csv.CLIENT,'
-                          ' csv.DISP, csv.DISTRICT, csv.LOAN, csv.ORDERS,'
-                          ' csv.TRANS],\n'
-                          ')')
+    assert str(graph) == (
+        'Graph(\n'
+        '  name=FINANCIAL,\n'
+        '  data_sources=[csv],\n'
+        '  tables=[csv.ACCOUNT, csv.CARD, csv.CLIENT,'
+        ' csv.DISP, csv.DISTRICT, csv.LOAN, csv.ORDERS,'
+        ' csv.TRANS],\n'
+        ')'
+    )
 
     # Test `Graph` functions:
     assert len(graph['LOAN'].fkeys) == 1
@@ -173,8 +171,9 @@ def test_graph_infer_metadata_include_exclude_cols(create_graph):
     graph.infer_metadata(
         exclude_cols={
             'BUREAU': {'CREDIT_ACTIVE'},
-            'CREDIT_CARD_BALANCE': {'AMT_BALANCE', 'MONTHS_BALANCE'}
-        })
+            'CREDIT_CARD_BALANCE': {'AMT_BALANCE', 'MONTHS_BALANCE'},
+        }
+    )
 
     assert len(graph) == 7
     assert len(graph['APPLICATION'].cols) == 121
@@ -190,14 +189,13 @@ def test_graph_infer_metadata_include_exclude_cols(create_graph):
 def test_graph_uninferred_links(caplog):
     graph = _financial_test_graph('FINANCIAL')
 
-    graph.add('LOAN', 'csv', pkey='LOAN_ID', fkeys=['TRANS_ID'],
-              cols=['ACCOUNT_ID'])
+    graph.add('LOAN', 'csv', pkey='LOAN_ID', fkeys=['TRANS_ID'], cols=['ACCOUNT_ID'])
     graph.add('ACCOUNT', 'csv', pkey='ACCOUNT_ID')
 
     # table has uninferred fkey:
     with caplog.at_level(sys_logging.WARNING):
         graph.infer_links()
-    assert ("Cannot infer destination table for") in caplog.text
+    assert ('Cannot infer destination table for') in caplog.text
     assert graph['LOAN']['TRANS_ID'].dst_table is None
 
 
@@ -218,7 +216,7 @@ def test_graph_validate_ignore_encoders(create_graph):
     graph.infer_metadata()
 
     # Should raise error if encoders are missing
-    with pytest.raises(ValueError, match="has no encoder"):
+    with pytest.raises(ValueError, match='has no encoder'):
         graph.validate(raise_on_error=True)
 
     # Should pass if ignore encoders
@@ -231,14 +229,14 @@ def test_graph_validate_ignore_encoders(create_graph):
 
 def test_graph_indexing():
     graph = Graph(name='FINANCIAL')
-    connector = CSVConnector('csv', ".")
+    connector = CSVConnector('csv', '.')
     graph.connect(connector)
     graph.add('TABLE', 'csv', 'PKEY', fkeys=['FKEY'], cols=['COL1', 'COL2'])
 
     assert isinstance(graph['TABLE'], Table)
     assert isinstance(graph['csv.TABLE'], Table)
     assert isinstance(graph[('csv', 'TABLE')], Table)
-    assert isinstance(graph[('TABLE', )], Table)
+    assert isinstance(graph[('TABLE',)], Table)
 
     assert isinstance(graph['TABLE', 'PKEY'], PrimaryKey)
     assert isinstance(graph['TABLE.PKEY'], PrimaryKey)
@@ -277,8 +275,9 @@ def test_graph_link_with_multiple_data_sources(create_graph):
     graph = create_graph(name='FINANCIAL')
     graph.connect(ParquetConnector('parquet', '/test/path'))
     graph.add(name='ACCOUNT', data_source='parquet')
-    graph.link('ACCOUNT', 'DISTRICT_ID', 'DISTRICT', 'DISTRICT_ID',
-               src_data_source='parquet')
+    graph.link(
+        'ACCOUNT', 'DISTRICT_ID', 'DISTRICT', 'DISTRICT_ID', src_data_source='parquet'
+    )
     table = graph.table('ACCOUNT', 'parquet')
 
     assert len(table.fkeys) == 1
@@ -307,13 +306,19 @@ def test_graph_link_with_incorrect_data_source(create_graph):
     graph = create_graph(name='FINANCIAL')
     graph.connect(ParquetConnector('parquet', '/test/path'))
     graph.add(name='ACCOUNT', data_source='parquet')
-    with pytest.raises(ValidationException,
-                       match="incorrect_data_source does not exist"):
-        graph.link('ACCOUNT', 'DISTRICT_ID', 'DISTRICT', 'DISTRICT_ID',
-                   src_data_source='incorrect_data_source')
+    with pytest.raises(
+        ValidationException, match='incorrect_data_source does not exist'
+    ):
+        graph.link(
+            'ACCOUNT',
+            'DISTRICT_ID',
+            'DISTRICT',
+            'DISTRICT_ID',
+            src_data_source='incorrect_data_source',
+        )
 
 
-@withPackage('graphviz', executables=('dot', ))
+@withPackage('graphviz', executables=('dot',))
 def test_graph_visualize_via_graphviz(create_graph):
     graph = create_graph(name='FINANCIAL', infer=True)
 
@@ -344,27 +349,34 @@ def test_fully_qualified_table_names():
     # Add basic table
     graph._data_source_dict[data_source] = 'c"onnector_impl'
     fqn = graph.fully_qualified_table_name(name, data_source)
-    assert fqn == f"{data_source}.{name}"
+    assert fqn == f'{data_source}.{name}'
     graph._tables[fqn] = Table(table_name=name, data_source=data_source)
 
     # Basic tests
-    expected_output = f"{data_source}.{name}"
+    expected_output = f'{data_source}.{name}'
 
     # * name={name}, data_source={data_source}
-    assert graph.fully_qualified_table_name(
-        name=name, data_source=data_source) == expected_output
+    assert (
+        graph.fully_qualified_table_name(name=name, data_source=data_source)
+        == expected_output
+    )
 
     # * name=({data_source}, {name}), data_source=None
-    assert graph.fully_qualified_table_name(name=(data_source, name),
-                                            data_source=None) == expected_output
+    assert (
+        graph.fully_qualified_table_name(name=(data_source, name), data_source=None)
+        == expected_output
+    )
 
     # * name={data_source}.{name}, data_source=None
-    assert graph.fully_qualified_table_name(name=f'{data_source}.{name}',
-                                            data_source=None) == expected_output
+    assert (
+        graph.fully_qualified_table_name(name=f'{data_source}.{name}', data_source=None)
+        == expected_output
+    )
 
     # * name={name}, data_source=None (unique name)
-    assert graph.fully_qualified_table_name(name=name,
-                                            data_source=None) == expected_output
+    assert (
+        graph.fully_qualified_table_name(name=name, data_source=None) == expected_output
+    )
 
 
 def test_graph_has_table():
@@ -380,22 +392,23 @@ def test_graph_has_table():
 def test_infer_col_groups_respects_integer_width_direction():
     graph = Graph(name=TEST_GRAPH_NAME)
     connect_financial_csv(graph)
-    graph.add("ACCOUNT", "csv", pkey=PrimaryKey(name="ACCOUNT_ID",
-                                                dtype=Dtype.int64))
+    graph.add('ACCOUNT', 'csv', pkey=PrimaryKey(name='ACCOUNT_ID', dtype=Dtype.int64))
     graph.add(
-        "LOAN",
-        "csv",
-        pkey=PrimaryKey(name="LOAN_ID", dtype=Dtype.int64),
-        cols=[Column(name="ACCOUNT_ID", dtype=Dtype.int32)],
+        'LOAN',
+        'csv',
+        pkey=PrimaryKey(name='LOAN_ID', dtype=Dtype.int64),
+        cols=[Column(name='ACCOUNT_ID', dtype=Dtype.int32)],
     )
 
     groups = graph.infer_col_groups()
     assert len(groups) == 1
-    assert (groups[0].fkeys[0].table == "csv.LOAN"
-            and groups[0].fkeys[0].col == "ACCOUNT_ID")
+    assert (
+        groups[0].fkeys[0].table == 'csv.LOAN'
+        and groups[0].fkeys[0].col == 'ACCOUNT_ID'
+    )
 
-    graph.table("ACCOUNT").pkey.dtype = Dtype.int32
-    graph.table("LOAN").cols[0].dtype = Dtype.int64
+    graph.table('ACCOUNT').pkey.dtype = Dtype.int32
+    graph.table('LOAN').cols[0].dtype = Dtype.int64
 
     assert graph.infer_col_groups() == []
 
@@ -418,10 +431,12 @@ def test_generate_graph_encoders(generate_graph):
 
 
 def test_graph_col_stats_fallback_seeds_encoder_requirements():
-    users = pd.DataFrame({
-        'USER_ID': [1, 2, 3],
-        'AGE': [20, None, 40],
-    })
+    users = pd.DataFrame(
+        {
+            'USER_ID': [1, 2, 3],
+            'AGE': [20, None, 40],
+        }
+    )
     graph = Graph(name=f'{TEST_GRAPH_NAME}_stats')
     graph.add('USERS', data_source=users, pkey='USER_ID', cols=['AGE'])
 
@@ -439,8 +454,7 @@ def test_graph_col_stats_fallback_seeds_encoder_requirements():
 def test_generate_graph_encoders_low_na(generate_graph):
     # Same graph size and density but with 0.2 fraction of feature entries as
     # N/A
-    graph = generate_graph(f'{TEST_GRAPH_NAME}_1', 'MEDIUM', 'MEDIUM', True,
-                           0.2)
+    graph = generate_graph(f'{TEST_GRAPH_NAME}_1', 'MEDIUM', 'MEDIUM', True, 0.2)
     graph.infer_metadata()
     graph.infer_encoders()
 
@@ -492,15 +506,15 @@ def test_graph_pandas_view(create_graph):
     assert graph['LOAN'].pandas[10:20].shape == (10, 6)
     assert graph['LOAN'].pandas.sample(n=10).shape == (10, 6)
 
-    assert graph['LOAN', 'STATUS'].pandas().shape == (682, )
-    assert graph['LOAN', 'STATUS'].pandas[:10].shape == (10, )
-    assert graph['LOAN', 'STATUS'].pandas[10:20].shape == (10, )
-    assert graph['LOAN', 'STATUS'].pandas.sample(n=10).shape == (10, )
+    assert graph['LOAN', 'STATUS'].pandas().shape == (682,)
+    assert graph['LOAN', 'STATUS'].pandas[:10].shape == (10,)
+    assert graph['LOAN', 'STATUS'].pandas[10:20].shape == (10,)
+    assert graph['LOAN', 'STATUS'].pandas.sample(n=10).shape == (10,)
 
     assert graph['LOAN', ..., :10].shape == (10, 6)
     assert graph['LOAN', ..., 10:20].shape == (10, 6)
-    assert graph['LOAN', 'STATUS', :10].shape == (10, )
-    assert graph['LOAN', 'STATUS', 10:20].shape == (10, )
+    assert graph['LOAN', 'STATUS', :10].shape == (10,)
+    assert graph['LOAN', 'STATUS', 10:20].shape == (10,)
     assert graph['LOAN', ['AMOUNT', 'STATUS'], :10].shape == (10, 2)
     assert graph['LOAN', ['AMOUNT', 'STATUS'], 10:20].shape == (10, 2)
 
@@ -547,16 +561,13 @@ def test_graph_remove_unused_cols(generate_graph):
 
 
 def test_graph_pandas_connector(tmp_path):
-    data = [{
-        "name": "ted",
-        "age": 34,
-        "value": 0.10
-    }, {
-        "name": "barney",
-        "age": 35,
-        "value": 1.2
-    }]
-    df = pd.DataFrame.from_dict(data, )
+    data = [
+        {'name': 'ted', 'age': 34, 'value': 0.10},
+        {'name': 'barney', 'age': 35, 'value': 1.2},
+    ]
+    df = pd.DataFrame.from_dict(
+        data,
+    )
 
     graph = Graph(name=TEST_GRAPH_NAME)
     assert graph.name == TEST_GRAPH_NAME
@@ -564,14 +575,14 @@ def test_graph_pandas_connector(tmp_path):
     # Save/load round-trip through an explicit temp dir (no dependence on the
     # process-global home dir).
     save_dir = str(tmp_path)
-    graph.add('pds_data', data_source=df, pkey="name", cols=['age', 'value'])
+    graph.add('pds_data', data_source=df, pkey='name', cols=['age', 'value'])
     graph.save(destination=save_dir)
 
     config_path = osp.join(save_dir, 'graphs', TEST_GRAPH_NAME, 'config.json')
     new_graph = Graph.from_config(load_json(config_path, cls=GraphConfig))
     table = new_graph['pds_data']
 
-    df.set_index("name", inplace=True)
+    df.set_index('name', inplace=True)
     table_df = table.pandas()
     assert len(table_df) == 2
     assert list(table_df['age'].values) == [34, 35]
@@ -587,32 +598,34 @@ def test_graph_save_destination_does_not_use_global_home_dir(tmp_path):
 
     graph.save(destination=dest)
 
-    assert fsutil.exists(
-        osp.join(dest, 'graphs', TEST_GRAPH_NAME, 'config.json'))
+    assert fsutil.exists(osp.join(dest, 'graphs', TEST_GRAPH_NAME, 'config.json'))
     # Nothing leaked to the global home dir.
-    assert not fsutil.exists(osp.join(get_home_dir(), 'graphs',
-                                      TEST_GRAPH_NAME))
+    assert not fsutil.exists(osp.join(get_home_dir(), 'graphs', TEST_GRAPH_NAME))
 
 
-@pytest.mark.parametrize("account_dtype,loan_dtype,expect_success", [
-    pytest.param(Dtype.int64, Dtype.int32, True,
-                 id="safe_int32_fkey_to_int64_pkey"),
-    pytest.param(Dtype.int, Dtype.int32, True,
-                 id="safe_int32_fkey_to_int_pkey"),
-    pytest.param(Dtype.int32, Dtype.int64, False,
-                 id="reject_int64_fkey_to_int32_pkey"),
-    pytest.param(Dtype.int32, Dtype.int, False,
-                 id="reject_int_fkey_to_int32_pkey"),
-    (Dtype.string, Dtype.int, False),
-    (Dtype.int, Dtype.float, False),
-    (Dtype.date, Dtype.time, False),
-    (Dtype.string, Dtype.time, False),
-    (Dtype.string, Dtype.bool, False),
-    (Dtype.int, Dtype.bool, False),
-    (Dtype.int, Dtype.time, False),
-])
-def test_graph_fkey_dtype_validation(account_dtype: Dtype, loan_dtype: Dtype,
-                                     expect_success: True):
+@pytest.mark.parametrize(
+    'account_dtype,loan_dtype,expect_success',
+    [
+        pytest.param(
+            Dtype.int64, Dtype.int32, True, id='safe_int32_fkey_to_int64_pkey'
+        ),
+        pytest.param(Dtype.int, Dtype.int32, True, id='safe_int32_fkey_to_int_pkey'),
+        pytest.param(
+            Dtype.int32, Dtype.int64, False, id='reject_int64_fkey_to_int32_pkey'
+        ),
+        pytest.param(Dtype.int32, Dtype.int, False, id='reject_int_fkey_to_int32_pkey'),
+        (Dtype.string, Dtype.int, False),
+        (Dtype.int, Dtype.float, False),
+        (Dtype.date, Dtype.time, False),
+        (Dtype.string, Dtype.time, False),
+        (Dtype.string, Dtype.bool, False),
+        (Dtype.int, Dtype.bool, False),
+        (Dtype.int, Dtype.time, False),
+    ],
+)
+def test_graph_fkey_dtype_validation(
+    account_dtype: Dtype, loan_dtype: Dtype, expect_success: True
+):
 
     graph = _financial_test_graph()
 
@@ -644,12 +657,11 @@ def test_graph_fkey_dtype_validation(account_dtype: Dtype, loan_dtype: Dtype,
         assert graph.validate()
     elif has_float_key:
         with pytest.raises(
-                Exception, match="float/double key columns "
-                "are not supported"):
+            Exception, match='float/double key columns are not supported'
+        ):
             graph.validate()
     else:
-        with pytest.raises(Exception, match="Links are only allowed between "
-                           "matching"):
+        with pytest.raises(Exception, match='Links are only allowed between matching'):
             graph.validate()
 
 
@@ -674,21 +686,18 @@ def test_graph_float_fkey_is_rejected():
         ],
     )
 
-    with pytest.raises(ValueError, match="float/double key columns are not "
-                       "supported"):
+    with pytest.raises(ValueError, match='float/double key columns are not supported'):
         graph.validate()
 
     # The error must name the column and tell the user to set its dtype to int.
-    with pytest.raises(ValueError, match="set the dtype of 'ACCOUNT_ID' to "
-                       "'int'"):
+    with pytest.raises(ValueError, match="set the dtype of 'ACCOUNT_ID' to 'int'"):
         graph.validate()
 
     # Soft validation still surfaces the problem without raising.
     assert not graph.validate(raise_on_error=False)
 
 
-@pytest.mark.parametrize("float_dtype",
-                         [Dtype.float, Dtype.float32, Dtype.float64])
+@pytest.mark.parametrize('float_dtype', [Dtype.float, Dtype.float32, Dtype.float64])
 def test_graph_float_pkey_is_rejected(float_dtype: Dtype):
     # A float/double primary key yields zero nodes at ingest; reject it.
     graph = _financial_test_graph()
@@ -698,12 +707,10 @@ def test_graph_float_pkey_is_rejected(float_dtype: Dtype):
         pkey=PrimaryKey('ACCOUNT_ID', dtype=float_dtype),
     )
 
-    with pytest.raises(ValueError, match="float/double key columns are not "
-                       "supported"):
+    with pytest.raises(ValueError, match='float/double key columns are not supported'):
         graph.validate()
 
-    with pytest.raises(ValueError, match="set the dtype of 'ACCOUNT_ID' to "
-                       "'int'"):
+    with pytest.raises(ValueError, match="set the dtype of 'ACCOUNT_ID' to 'int'"):
         graph.validate()
 
 
@@ -749,34 +756,39 @@ def test_graph_non_key_float_column_passes():
 def test_graph_with_no_tables_is_rejected():
     graph = Graph(name=TEST_GRAPH_NAME)
 
-    with pytest.raises(ValueError, match="must contain at least one table"):
+    with pytest.raises(ValueError, match='must contain at least one table'):
         graph.validate()
 
     # Soft validation surfaces the problem without raising.
-    with pytest.warns(UserWarning, match="must contain at least one table"):
+    with pytest.warns(UserWarning, match='must contain at least one table'):
         assert not graph.validate(raise_on_error=False)
 
 
 def test_verify_edge_type(create_graph):
     graph = create_graph(name='FINANCIAL')
 
-    assert graph._verify_edge_type('DISP_ID') == ('csv.CARD', 'DISP_ID',
-                                                  'csv.DISP')
-    assert graph._verify_edge_type(
-        ('csv.LOAN', 'csv.ACCOUNT')) == ('csv.LOAN', 'ACCOUNT_ID',
-                                         'csv.ACCOUNT')
-    assert graph._verify_edge_type(
-        ('csv.ACCOUNT', 'csv.LOAN')) == ('csv.ACCOUNT', 'rev_ACCOUNT_ID',
-                                         'csv.LOAN')
-    assert graph._verify_edge_type(
-        ('csv.TRANS', 'ACCOUNT_ID',
-         'csv.ACCOUNT')) == ('csv.TRANS', 'ACCOUNT_ID', 'csv.ACCOUNT')
+    assert graph._verify_edge_type('DISP_ID') == ('csv.CARD', 'DISP_ID', 'csv.DISP')
+    assert graph._verify_edge_type(('csv.LOAN', 'csv.ACCOUNT')) == (
+        'csv.LOAN',
+        'ACCOUNT_ID',
+        'csv.ACCOUNT',
+    )
+    assert graph._verify_edge_type(('csv.ACCOUNT', 'csv.LOAN')) == (
+        'csv.ACCOUNT',
+        'rev_ACCOUNT_ID',
+        'csv.LOAN',
+    )
+    assert graph._verify_edge_type(('csv.TRANS', 'ACCOUNT_ID', 'csv.ACCOUNT')) == (
+        'csv.TRANS',
+        'ACCOUNT_ID',
+        'csv.ACCOUNT',
+    )
 
-    with pytest.raises(ValueError, match=r"Ambiguous .*"):
+    with pytest.raises(ValueError, match=r'Ambiguous .*'):
         graph._verify_edge_type(('ACCOUNT_ID'))
 
-    with pytest.raises(ValueError, match=r"Unknown .*"):
-        graph._verify_edge_type(("START", "RELATION", "END"))
+    with pytest.raises(ValueError, match=r'Unknown .*'):
+        graph._verify_edge_type(('START', 'RELATION', 'END'))
 
 
 def test_infer_col_groups():
@@ -784,11 +796,14 @@ def test_infer_col_groups():
     graph = _financial_test_graph()
 
     graph.add(
-        'ACCOUNT', 'csv', pkey=PrimaryKey(name='ACCOUNT_ID', dtype=Dtype.int64),
+        'ACCOUNT',
+        'csv',
+        pkey=PrimaryKey(name='ACCOUNT_ID', dtype=Dtype.int64),
         cols=[
             Column(name='ACC_COL1', dtype=Dtype.int16),
-            Column(name='ACC_COL2', dtype=Dtype.int16)
-        ])
+            Column(name='ACC_COL2', dtype=Dtype.int16),
+        ],
+    )
     # Set pkey(LOAN) = 'iD'
     graph.add(
         'LOAN',
@@ -797,12 +812,15 @@ def test_infer_col_groups():
         # candidate fkey with dtype=float (valid)
         cols=[
             Column(name='ACCOUNT_ID', dtype=Dtype.int64),
-            Column(name='LOAN_COL2', dtype=Dtype.int16)
-        ])
+            Column(name='LOAN_COL2', dtype=Dtype.int16),
+        ],
+    )
 
     groups = graph.infer_col_groups()
-    assert groups[0].fkeys[0].table == 'csv.LOAN' and groups[0].fkeys[
-        0].col == 'ACCOUNT_ID'
+    assert (
+        groups[0].fkeys[0].table == 'csv.LOAN'
+        and groups[0].fkeys[0].col == 'ACCOUNT_ID'
+    )
 
     # Change the dtype of ACCOUNT_ID to bool (invalid) in LOAN table.
     graph.table('LOAN').cols[0].dtype = Dtype.bool
@@ -828,12 +846,15 @@ def test_infer_col_groups():
         # fkey LOAN_ID should link to pkey = 'iD'(Case insensitve match)
         cols=[
             Column(name='LOAN_ID', dtype=Dtype.int16),
-            Column(name='TRANS_COL2', dtype=Dtype.int16)
-        ])
+            Column(name='TRANS_COL2', dtype=Dtype.int16),
+        ],
+    )
 
     groups = graph.infer_col_groups()
-    assert groups[1].fkeys[0].table == 'parquet.TRANS' and groups[1].fkeys[
-        0].col == 'LOAN_ID'
+    assert (
+        groups[1].fkeys[0].table == 'parquet.TRANS'
+        and groups[1].fkeys[0].col == 'LOAN_ID'
+    )
 
     # Remove all the pkeys and expect an empty group.
     graph.table('ACCOUNT').remove_pkey()
@@ -848,8 +869,10 @@ def test_infer_col_groups():
     graph.table('ACCOUNT').set_pkey('ID')
     graph.table('LOAN').add_fkey('ACCOUNT_ID')
     groups = graph.infer_col_groups()
-    assert (groups[0].fkeys[0].table == 'csv.LOAN'
-            and groups[0].fkeys[0].col == 'ACCOUNT_ID')
+    assert (
+        groups[0].fkeys[0].table == 'csv.LOAN'
+        and groups[0].fkeys[0].col == 'ACCOUNT_ID'
+    )
 
     # Rename table ACCOUNT to ACCOUNTS and expect its pkey as a fkey in
     # LOAN table to be in the group.
@@ -857,8 +880,10 @@ def test_infer_col_groups():
     graph.remove('ACCOUNT')
     graph.add('ACCOUNTS', 'csv', pkey=PrimaryKey(name='ID', dtype=Dtype.int64))
     groups = graph.infer_col_groups()
-    assert (groups[0].fkeys[0].table == 'csv.LOAN'
-            and groups[0].fkeys[0].col == 'ACCOUNT_ID')
+    assert (
+        groups[0].fkeys[0].table == 'csv.LOAN'
+        and groups[0].fkeys[0].col == 'ACCOUNT_ID'
+    )
 
 
 def test_encoder_override_with_incorrect_table_name(create_graph):

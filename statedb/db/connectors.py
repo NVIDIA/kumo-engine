@@ -41,8 +41,8 @@ class ConnectorAlreadyExistsError(Exception):
 
 class StateDBConnectorRepository:
     def __init__(self) -> None:
-        self._connectors = JsonRepository("connectors", ConnectorDBEntry)
-        self._projects = JsonRepository("projects", ProjectDBEntry)
+        self._connectors = JsonRepository('connectors', ConnectorDBEntry)
+        self._projects = JsonRepository('projects', ProjectDBEntry)
 
     async def _validate_persistence_invariants(
         self,
@@ -52,12 +52,16 @@ class StateDBConnectorRepository:
         project = await self._projects.get(tx, str(connector.project_id))
         if project is None or project.payload.status != ProjectStatus.ACTIVE:
             raise ValueError(
-                f"Connector project '{connector.project_id}' is not active")
-        if (connector.normalized_name == PROJECT_UPLOAD_CONNECTOR_NAME
-                and isinstance(connector, ExternalConnectorDBEntry)):
+                f"Connector project '{connector.project_id}' is not active"
+            )
+        if connector.normalized_name == PROJECT_UPLOAD_CONNECTOR_NAME and isinstance(
+            connector, ExternalConnectorDBEntry
+        ):
             raise ValueError('Connector name is reserved for internal uploads')
-        if (isinstance(connector, InternalConnectorDBEntry)
-                and connector.normalized_name == PROJECT_UPLOAD_CONNECTOR_NAME):
+        if (
+            isinstance(connector, InternalConnectorDBEntry)
+            and connector.normalized_name == PROJECT_UPLOAD_CONNECTOR_NAME
+        ):
             if not is_project_upload_connector(connector):
                 raise ValueError('Invalid project upload connector')
 
@@ -70,8 +74,9 @@ class StateDBConnectorRepository:
             raise ValueError('Connector kind is immutable')
         if existing.config != connector.config:
             raise ValueError('Connector target configuration is immutable')
-        if (getattr(existing, 'identity_id', None)
-                != getattr(connector, 'identity_id', None)):
+        if getattr(existing, 'identity_id', None) != getattr(
+            connector, 'identity_id', None
+        ):
             raise ValueError('Connector identity_id is immutable')
 
     async def get(
@@ -124,7 +129,8 @@ class StateDBConnectorRepository:
             },
         )
         return [
-            row.payload for row in rows
+            row.payload
+            for row in rows
             if isinstance(row.payload, ExternalConnectorDBEntry)
         ]
 
@@ -164,9 +170,7 @@ class StateDBConnectorRepository:
             project_id=project_id,
             select_payload=True,
         )
-        return [
-            self._connectors._row_from_list_row(row).payload for row in rows
-        ]
+        return [self._connectors._row_from_list_row(row).payload for row in rows]
 
     async def list_ids(
         self,
@@ -189,7 +193,7 @@ class StateDBConnectorRepository:
             project_id=project_id,
             select_payload=False,
         )
-        return [ConnectorID(row_str(row, "id", 0)) for row in rows]
+        return [ConnectorID(row_str(row, 'id', 0)) for row in rows]
 
     async def _list_rows(
         self,
@@ -206,7 +210,7 @@ class StateDBConnectorRepository:
         if connector_ids is not None and not connector_ids:
             return []
         if root_dir is not None and root_dirs is not None:
-            raise ValueError("Specify either root_dir or root_dirs, not both")
+            raise ValueError('Specify either root_dir or root_dirs, not both')
         if root_dirs is not None and not root_dirs:
             return []
 
@@ -215,42 +219,45 @@ class StateDBConnectorRepository:
 
         if connector_ids is not None:
             clauses.append(
-                _in_predicate(tx, "id", sorted(map(str, connector_ids)), args))
+                _in_predicate(tx, 'id', sorted(map(str, connector_ids)), args)
+            )
 
         if project_id is not None:
             args.append(str(project_id))
             clauses.append(
-                f"{_json_value(tx, 'project_id')} = {_placeholder(tx, len(args))}"
+                f'{_json_value(tx, "project_id")} = {_placeholder(tx, len(args))}'
             )
 
         if data_source_type is not None:
-            connector_types = _connector_types_for_data_source_type(
-                data_source_type)
+            connector_types = _connector_types_for_data_source_type(data_source_type)
             if not connector_types:
                 return []
             clauses.append(
-                _in_predicate(tx, _connector_json_value(tx, "type"),
-                              connector_types, args))
+                _in_predicate(
+                    tx, _connector_json_value(tx, 'type'), connector_types, args
+                )
+            )
 
         if connector_type is not None:
             args.append(ConnectorType(connector_type).value)
             clauses.append(
-                f"{_connector_json_value(tx, 'type')} = {_placeholder(tx, len(args))}"
+                f'{_connector_json_value(tx, "type")} = {_placeholder(tx, len(args))}'
             )
 
         if root_dir is not None:
             args.append(root_dir)
             clauses.append(
-                f"{_connector_json_value(tx, 'root_dir')} = {_placeholder(tx, len(args))}"
+                f'{_connector_json_value(tx, "root_dir")} = {_placeholder(tx, len(args))}'
             )
         if root_dirs is not None:
             clauses.append(
-                _in_predicate(tx, _connector_json_value(tx, "root_dir"),
-                              sorted(root_dirs), args))
+                _in_predicate(
+                    tx, _connector_json_value(tx, 'root_dir'), sorted(root_dirs), args
+                )
+            )
 
-        select = ("id, payload, created_at, updated_at"
-                  if select_payload else "id")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        select = 'id, payload, created_at, updated_at' if select_payload else 'id'
+        where = f'WHERE {" AND ".join(clauses)}' if clauses else ''
         return await tx.fetch(
             f"""
             SELECT {select}
@@ -267,10 +274,11 @@ def _connector_json_value(tx: StateTx, field_name: str) -> str:
 
 
 def _connector_types_for_data_source_type(
-        data_source_type: DataSourceType | str) -> list[str]:
+    data_source_type: DataSourceType | str,
+) -> list[str]:
     # Custom SQL is a kind of source table, not a ``DataSourceType`` member, so
     # it cannot be coerced to the enum; match its stable on-the-wire tag first.
-    tag = getattr(data_source_type, "value", data_source_type)
+    tag = getattr(data_source_type, 'value', data_source_type)
     if tag == CUSTOM_SQL_SOURCE_TABLE_TYPE:
         # A Custom SQL table is backed by any of the supported warehouse
         # SQL connectors.
@@ -282,8 +290,7 @@ def _connector_types_for_data_source_type(
     data_source_type = DataSourceType(data_source_type)
     if data_source_type == DataSourceType.SNOWFLAKE:
         return [ConnectorType.SNOWFLAKE.value]
-    if data_source_type in (DataSourceType.S3, DataSourceType.GCS,
-                            DataSourceType.ADLS):
+    if data_source_type in (DataSourceType.S3, DataSourceType.GCS, DataSourceType.ADLS):
         explicit_type = {
             DataSourceType.S3: ConnectorType.S3.value,
             DataSourceType.GCS: ConnectorType.GCS.value,

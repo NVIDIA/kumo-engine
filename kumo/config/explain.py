@@ -43,8 +43,12 @@ ContributionValueName = NewType('ContributionValueName', str)
 class ClassColumnAndValueContributions:
     column_contributions: List[ColumnContribution]
     # Maps column name to value name to summary of contributions
-    categorical_value_contributions: Optional[Dict[ContributionEntityName, Dict[
-        ContributionValueName, ValueContributionSummary]]] = None
+    categorical_value_contributions: Optional[
+        Dict[
+            ContributionEntityName,
+            Dict[ContributionValueName, ValueContributionSummary],
+        ]
+    ] = None
 
 
 class ContributionKind(Enum):
@@ -63,8 +67,9 @@ class Contribution:
     # If kind == Column
     # Maps a value name to a struct containing contribution summary stats for
     # each value in the column
-    value_magnitudes: Optional[Dict[ContributionValueName,
-                                    ValueContributionSummary]] = None
+    value_magnitudes: Optional[
+        Dict[ContributionValueName, ValueContributionSummary]
+    ] = None
 
     # If kind == Column
     column_stype: Optional[Stype] = None
@@ -83,25 +88,27 @@ class ColumnContributionSummary:
             of columns per class in the test set.
             :obj:`None` for non-classification tasks.
     """
+
     # All tasks
     global_column_contributions: List[ColumnContribution]
 
     # Classification
     # Maps class name to contributions
-    classes: Optional[Dict[ContributionClass,
-                           ClassColumnAndValueContributions]] = None
+    classes: Optional[Dict[ContributionClass, ClassColumnAndValueContributions]] = None
 
     @staticmethod
-    def _column_contribution_from_df(
-            df: pd.DataFrame) -> List[ColumnContribution]:
+    def _column_contribution_from_df(df: pd.DataFrame) -> List[ColumnContribution]:
         """Given  a dataframe `df` with columns `table`, `column` and `score`
         return a list of `ColumnContribution`"""
         cols = []
         for row in df.itertuples():
             cols.append(
-                ColumnContribution(col_name=str(row.column),
-                                   table_name=str(row.table),
-                                   contribution=float(row.score)))
+                ColumnContribution(
+                    col_name=str(row.column),
+                    table_name=str(row.table),
+                    contribution=float(row.score),
+                )
+            )
         return cols
 
     @classmethod
@@ -110,8 +117,7 @@ class ColumnContributionSummary:
 
     @property
     def is_empty(self) -> bool:
-        return len(self.global_column_contributions) == 0 and len(
-            self.classes) == 0
+        return len(self.global_column_contributions) == 0 and len(self.classes) == 0
 
     @classmethod
     def from_trainer(
@@ -121,21 +127,23 @@ class ColumnContributionSummary:
         """Loads the contribution csvs saved
         in `explain_dir` during `trainer.test` into
         `ColumnContributionSummary`"""
-        if not fsutil.exists(explain_dir) or len(
-                fsutil.listdir(explain_dir)) == 0:
-            logger.error(f"Error when loading explainer score, that "
-                         f"the explain directory {explain_dir} does not "
-                         f"exist or is empty.")
+        if not fsutil.exists(explain_dir) or len(fsutil.listdir(explain_dir)) == 0:
+            logger.error(
+                f'Error when loading explainer score, that '
+                f'the explain directory {explain_dir} does not '
+                f'exist or is empty.'
+            )
             return cls.empty()
         try:
             global_column_contributions_df = pd.read_csv(
-                osp.join(explain_dir, 'scores.csv'))
+                osp.join(explain_dir, 'scores.csv')
+            )
             global_column_contributions = cls._column_contribution_from_df(
-                global_column_contributions_df)
+                global_column_contributions_df
+            )
             classes = {}
             assert global_column_contributions is not None
-            return ColumnContributionSummary(global_column_contributions,
-                                             classes)
+            return ColumnContributionSummary(global_column_contributions, classes)
         except Exception as e:
             logger.exception(e)
             return cls.empty()

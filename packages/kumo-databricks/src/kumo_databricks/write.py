@@ -47,6 +47,7 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
 import pandas as pd
+
 from kumo_databricks import output
 from kumo_databricks.errors import ArtifactValidationError
 from kumo_databricks.sql import qualified_name, quote_identifier, quote_literal
@@ -75,21 +76,23 @@ _UNSAFE = ('\x00', '\n', '\r')
 #: Parquet written from a tz-naive column is exactly that.
 _NTZ = "TBLPROPERTIES ('delta.feature.timestampNtz' = 'supported')"
 
-_NOT_STAGEABLE = ('Databricks table output accepts only local Parquet files '
-                  'for direct PUT INTO upload or a Kumo managed-volume stage.')
+_NOT_STAGEABLE = (
+    'Databricks table output accepts only local Parquet files '
+    'for direct PUT INTO upload or a Kumo managed-volume stage.'
+)
 
 
 @dataclass(frozen=True)
 class VolumeURI:
     """A Unity Catalog volume path, in either spelling it is written in."""
+
     catalog: str
     uc_schema: str
     volume: str
     path: str
 
     def as_path(self) -> str:
-        return (f'/Volumes/{self.catalog}/{self.uc_schema}/{self.volume}/'
-                f'{self.path}')
+        return f'/Volumes/{self.catalog}/{self.uc_schema}/{self.volume}/{self.path}'
 
 
 def parse_volume_uri(path: str) -> VolumeURI | None:
@@ -128,29 +131,38 @@ def within_stage(artifact_path: str, catalog: str, schema: str) -> str:
     volume = parse_volume_uri(artifact_path)
     if volume is None:
         raise ArtifactValidationError(_NOT_STAGEABLE)
-    if (volume.catalog.casefold() != catalog.casefold()
-            or volume.uc_schema.casefold() != schema.casefold()
-            or volume.volume.casefold() != output.STAGING_VOLUME.casefold()):
+    if (
+        volume.catalog.casefold() != catalog.casefold()
+        or volume.uc_schema.casefold() != schema.casefold()
+        or volume.volume.casefold() != output.STAGING_VOLUME.casefold()
+    ):
         raise ArtifactValidationError(
             'Databricks artifact stage is outside the connector-managed '
-            'Unity Catalog volume.')
+            'Unity Catalog volume.'
+        )
     stage = volume.as_path().rstrip('/')
-    if (any(part in {'.', '..'} for part in stage.split('/'))
-            or any(character in stage for character in _UNSAFE)):
+    if any(part in {'.', '..'} for part in stage.split('/')) or any(
+        character in stage for character in _UNSAFE
+    ):
         raise ArtifactValidationError(
-            'Databricks artifact stage contains an unsafe path component.')
-    root = (f'/Volumes/{catalog}/{schema}/{output.STAGING_VOLUME}/'
-            f'{output.STAGING_PREFIX}')
-    if (stage.casefold() != root.casefold()
-            and not stage.casefold().startswith(root.casefold() + '/')):
+            'Databricks artifact stage contains an unsafe path component.'
+        )
+    root = (
+        f'/Volumes/{catalog}/{schema}/{output.STAGING_VOLUME}/{output.STAGING_PREFIX}'
+    )
+    if stage.casefold() != root.casefold() and not stage.casefold().startswith(
+        root.casefold() + '/'
+    ):
         raise ArtifactValidationError(
             'Databricks artifact stage is outside the connector-managed '
-            'artifact staging prefix.')
+            'artifact staging prefix.'
+        )
     return stage
 
 
-def manifest(stage: str, staged_files: Sequence[str] | None, *, catalog: str,
-             schema: str) -> list[str]:
+def manifest(
+    stage: str, staged_files: Sequence[str] | None, *, catalog: str, schema: str
+) -> list[str]:
     """Checks the file list a producer says it already uploaded.
 
     Fails closed: the caller is claiming files exist that this process never
@@ -159,27 +171,36 @@ def manifest(stage: str, staged_files: Sequence[str] | None, *, catalog: str,
     """
     if not staged_files:
         raise ArtifactValidationError(
-            'A managed-volume producer stage requires its exact uploaded-file '
-            'manifest.')
+            'A managed-volume producer stage requires its exact uploaded-file manifest.'
+        )
     prefix = stage.rstrip('/') + '/'
     uploaded = []
     for staged_file in staged_files:
         staged_path = within_stage(staged_file, catalog, schema)
-        if (not staged_path.casefold().startswith(prefix.casefold())
-                or not staged_path.casefold().endswith('.parquet')):
+        if not staged_path.casefold().startswith(
+            prefix.casefold()
+        ) or not staged_path.casefold().endswith('.parquet'):
             raise ArtifactValidationError(
                 'A staged Databricks artifact file is outside its declared '
-                'managed-volume directory or is not Parquet.')
+                'managed-volume directory or is not Parquet.'
+            )
         uploaded.append(staged_path)
     if len(set(uploaded)) != len(uploaded):
         raise ArtifactValidationError(
-            'A managed-volume producer manifest contains duplicate files.')
+            'A managed-volume producer manifest contains duplicate files.'
+        )
     return uploaded
 
 
-def stage_files(run: RunVolume, workers: Workers, files: Sequence[Path], *,
-                stage: str, file_prefix: str = 'part',
-                prepare_file=None) -> tuple[str, list[str]]:
+def stage_files(
+    run: RunVolume,
+    workers: Workers,
+    files: Sequence[Path],
+    *,
+    stage: str,
+    file_prefix: str = 'part',
+    prepare_file=None,
+) -> tuple[str, list[str]]:
     """Uploads local Parquet into ``stage`` and says what landed where.
 
     ``PUT INTO`` is the Databricks-recommended ingestion-partner protocol: the
@@ -190,34 +211,40 @@ def stage_files(run: RunVolume, workers: Workers, files: Sequence[Path], *,
     """
     if not files:
         raise ArtifactValidationError(
-            'Databricks table output found no local Parquet files to upload.')
+            'Databricks table output found no local Parquet files to upload.'
+        )
     if not _FILE_PREFIX.fullmatch(file_prefix):
         raise ArtifactValidationError(
-            'Databricks managed-volume file prefix contains unsupported '
-            'characters.')
+            'Databricks managed-volume file prefix contains unsupported characters.'
+        )
     remote_files = [
-        f'{stage}/{file_prefix}-{index:08d}.parquet'
-        for index in range(len(files))
+        f'{stage}/{file_prefix}-{index:08d}.parquet' for index in range(len(files))
     ]
     commands = [
-        f'PUT {quote_literal(str(local))} INTO {quote_literal(remote)} '
-        f'OVERWRITE' for local, remote in zip(files, remote_files, strict=True)
+        f'PUT {quote_literal(str(local))} INTO {quote_literal(remote)} OVERWRITE'
+        for local, remote in zip(files, remote_files, strict=True)
     ]
     common_root = os.path.commonpath([str(file.parent) for file in files])
     try:
         if prepare_file is None:
-            run(commands, worker_count=workers(files, len(commands)),
-                staging_allowed_local_path=common_root)
+            run(
+                commands,
+                worker_count=workers(files, len(commands)),
+                staging_allowed_local_path=common_root,
+            )
         else:
             # Transform/upload one file at a time; do not stage another full
             # copy of the selected output just to add destination metadata.
             for local, remote in zip(files, remote_files, strict=True):
                 with prepare_file(str(local)) as prepared:
-                    run([
-                        f'PUT {quote_literal(str(prepared))} INTO '
-                        f'{quote_literal(remote)} OVERWRITE'
-                    ], worker_count=1,
-                        staging_allowed_local_path=str(Path(prepared).parent))
+                    run(
+                        [
+                            f'PUT {quote_literal(str(prepared))} INTO '
+                            f'{quote_literal(remote)} OVERWRITE'
+                        ],
+                        worker_count=1,
+                        staging_allowed_local_path=str(Path(prepared).parent),
+                    )
     except BaseException:
         try:
             cleanup(run, workers, remote_files)
@@ -225,7 +252,8 @@ def stage_files(run: RunVolume, workers: Workers, files: Sequence[Path], *,
             log.warning(
                 'Databricks partial managed-volume upload cleanup failed '
                 '(error_type=%s)',
-                type(cleanup_error).__name__)
+                type(cleanup_error).__name__,
+            )
         raise
     return stage, remote_files
 
@@ -290,8 +318,9 @@ def load(
         local_files = resolve_local(artifact_path)
     else:
         warehouse_artifact_path = within_stage(artifact_path, catalog, schema)
-        uploaded_files = manifest(warehouse_artifact_path, staged_files,
-                                  catalog=catalog, schema=schema)
+        uploaded_files = manifest(
+            warehouse_artifact_path, staged_files, catalog=catalog, schema=schema
+        )
 
     staging_table_touched = False
     write_succeeded = False
@@ -302,29 +331,37 @@ def load(
         if volume is None:
             assert local_files is not None
             warehouse_artifact_path, uploaded_files = stage_files(
-                run, workers, local_files,
-                stage=output.staging_stage(catalog,
-                                           schema), file_prefix=file_prefix,
-                **({
-                    'prepare_file': prepare_file
-                } if prepare_file is not None else {}))
+                run,
+                workers,
+                local_files,
+                stage=output.staging_stage(catalog, schema),
+                file_prefix=file_prefix,
+                **({'prepare_file': prepare_file} if prepare_file is not None else {}),
+            )
 
         staging_table_touched = True
         execute(f'DROP TABLE IF EXISTS {staging_table}')
         execute(f'CREATE TABLE IF NOT EXISTS {staging_table}')
         execute(f'ALTER TABLE {staging_table} SET {_NTZ}')
-        execute(f'COPY INTO {staging_table} '
-                f'FROM {quote_literal(warehouse_artifact_path)} '
-                f"FILEFORMAT = PARQUET COPY_OPTIONS ('mergeSchema' = 'true')")
+        execute(
+            f'COPY INTO {staging_table} '
+            f'FROM {quote_literal(warehouse_artifact_path)} '
+            f"FILEFORMAT = PARQUET COPY_OPTIONS ('mergeSchema' = 'true')"
+        )
         if replace:
-            execute(f'CREATE OR REPLACE TABLE {destination_table} {_NTZ} '
-                    f'AS SELECT * FROM {staging_table}')
+            execute(
+                f'CREATE OR REPLACE TABLE {destination_table} {_NTZ} '
+                f'AS SELECT * FROM {staging_table}'
+            )
         else:
-            execute(f'CREATE TABLE IF NOT EXISTS {destination_table} {_NTZ} '
-                    f'AS SELECT * FROM {staging_table} WHERE 1 = 0')
+            execute(
+                f'CREATE TABLE IF NOT EXISTS {destination_table} {_NTZ} '
+                f'AS SELECT * FROM {staging_table} WHERE 1 = 0'
+            )
             execute(f'ALTER TABLE {destination_table} SET {_NTZ}')
-            execute(f'INSERT INTO {destination_table} BY NAME '
-                    f'SELECT * FROM {staging_table}')
+            execute(
+                f'INSERT INTO {destination_table} BY NAME SELECT * FROM {staging_table}'
+            )
         log.info("Data written to '%s'.", destination_table)
         write_succeeded = True
     finally:
@@ -355,5 +392,6 @@ def to_parquet(frame: pd.DataFrame, path: str) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), path,
-                   **PARQUET_OPTIONS)
+    pq.write_table(
+        pa.Table.from_pandas(frame, preserve_index=False), path, **PARQUET_OPTIONS
+    )

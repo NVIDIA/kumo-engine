@@ -24,7 +24,7 @@ from temporalio_commons import RpcError
 
 
 class _SamplePublicError(PublicException):
-    template = "boom: {reason}"
+    template = 'boom: {reason}'
     http_code = 422
     non_retryable = True
 
@@ -33,8 +33,7 @@ class _ValidatedInput(BaseModel):
     count: int
 
 
-@pytest.mark.parametrize('wrapper',
-                         [wrap_driver_errors, wrap_validation_exceptions])
+@pytest.mark.parametrize('wrapper', [wrap_driver_errors, wrap_validation_exceptions])
 def test_pydantic_errors_are_clean_422s(wrapper):
     with pytest.raises(HTTPException) as error:
         with wrapper():
@@ -88,7 +87,8 @@ def test_wrap_validation_exceptions_restores_validation_message_shape():
 
     assert exc_info.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert exc_info.value.detail == (
-        'GPU out-of-memory error - Reduce output_embedding_dim.')
+        'GPU out-of-memory error - Reduce output_embedding_dim.'
+    )
 
 
 def test_wrap_driver_errors_maps_entity_not_found_to_404():
@@ -138,6 +138,7 @@ def test_wrap_rpc_error_maps_validation_exception_to_422():
 
 class TestGetBaseKumoUrl:
     """Base-URL selection for a single-tenant deployment."""
+
     def test_external_host_set_builds_url_from_it(self):
         config = MagicMock()
         config.external_host = 'kumo-acme.dev.kumoai.cloud'
@@ -148,13 +149,14 @@ class TestGetBaseKumoUrl:
         config = MagicMock()
         config.external_host = None
         with (
-                patch('rest.utils.public.deploy_env', return_value=config),
+            patch('rest.utils.public.deploy_env', return_value=config),
         ):
             assert get_base_kumo_url() == 'http://localhost'
 
 
 class TestPresignParquetTableData:
     """Unit tests for presign_parquet_table_data."""
+
     def test_s3_directory(self):
         """S3 directory should list parquet files and presign each."""
         mock_files = [
@@ -162,26 +164,33 @@ class TestPresignParquetTableData:
             's3://bucket/output/date=2026',
         ]
         mock_helper = MagicMock()
-        mock_helper.generate_download_url.side_effect = (
-            lambda p: f'https://presigned/{p}')
+        mock_helper.generate_download_url.side_effect = lambda p: (
+            f'https://presigned/{p}'
+        )
         with (
-                patch('rest.utils.public.fsutil.get_presigned_helper',
-                      return_value=mock_helper),
-                patch('rest.utils.public.fsutil.isdir',
-                      side_effect=lambda path: not path.endswith('.parquet')),
-                patch(
-                    'rest.utils.public.fsutil.listdir', side_effect=[
-                        mock_files,
-                        ['s3://bucket/output/date=2026/part-1.parquet']
-                    ]),
+            patch(
+                'rest.utils.public.fsutil.get_presigned_helper',
+                return_value=mock_helper,
+            ),
+            patch(
+                'rest.utils.public.fsutil.isdir',
+                side_effect=lambda path: not path.endswith('.parquet'),
+            ),
+            patch(
+                'rest.utils.public.fsutil.listdir',
+                side_effect=[
+                    mock_files,
+                    ['s3://bucket/output/date=2026/part-1.parquet'],
+                ],
+            ),
         ):
             result = presign_parquet_table_data('s3://bucket/output')
 
         assert len(result) == 2
-        assert result[0] == (
-            'https://presigned/s3://bucket/output/part-0.parquet')
+        assert result[0] == ('https://presigned/s3://bucket/output/part-0.parquet')
         assert result[1] == (
-            'https://presigned/s3://bucket/output/date=2026/part-1.parquet')
+            'https://presigned/s3://bucket/output/date=2026/part-1.parquet'
+        )
 
     def test_gcs_directory(self):
         """GCS directory should list parquet files and presign each."""
@@ -190,15 +199,17 @@ class TestPresignParquetTableData:
             'gs://bucket/output/part-1.parquet',
         ]
         mock_helper = MagicMock()
-        mock_helper.generate_download_url.side_effect = (
-            lambda p: f'https://signed/{p}')
+        mock_helper.generate_download_url.side_effect = lambda p: f'https://signed/{p}'
         with (
-                patch('rest.utils.public.fsutil.get_presigned_helper',
-                      return_value=mock_helper),
-                patch('rest.utils.public.fsutil.isdir',
-                      side_effect=lambda path: path.endswith('/output')),
-                patch('rest.utils.public.fsutil.listdir',
-                      return_value=mock_files),
+            patch(
+                'rest.utils.public.fsutil.get_presigned_helper',
+                return_value=mock_helper,
+            ),
+            patch(
+                'rest.utils.public.fsutil.isdir',
+                side_effect=lambda path: path.endswith('/output'),
+            ),
+            patch('rest.utils.public.fsutil.listdir', return_value=mock_files),
         ):
             result = presign_parquet_table_data('gs://bucket/output')
 
@@ -209,12 +220,15 @@ class TestPresignParquetTableData:
     def test_single_file(self):
         """Single file path should presign directly without listing."""
         mock_helper = MagicMock()
-        mock_helper.generate_download_url.side_effect = (
-            lambda p: f'https://presigned/{p}')
+        mock_helper.generate_download_url.side_effect = lambda p: (
+            f'https://presigned/{p}'
+        )
         with (
-                patch('rest.utils.public.fsutil.get_presigned_helper',
-                      return_value=mock_helper),
-                patch('rest.utils.public.fsutil.isdir', return_value=False),
+            patch(
+                'rest.utils.public.fsutil.get_presigned_helper',
+                return_value=mock_helper,
+            ),
+            patch('rest.utils.public.fsutil.isdir', return_value=False),
         ):
             result = presign_parquet_table_data('s3://bucket/file.parquet')
 
@@ -223,10 +237,10 @@ class TestPresignParquetTableData:
     def test_local_path(self):
         """Local path should be returned via as_url (no presigning)."""
         with (
-                patch('rest.utils.public.fsutil.get_presigned_helper',
-                      return_value=None),
-                patch('rest.utils.public.fsutil.customer_facing_path',
-                      side_effect=lambda p: p),
+            patch('rest.utils.public.fsutil.get_presigned_helper', return_value=None),
+            patch(
+                'rest.utils.public.fsutil.customer_facing_path', side_effect=lambda p: p
+            ),
         ):
             result = presign_parquet_table_data('/tmp/output/data.parquet')
 

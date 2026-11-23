@@ -13,8 +13,8 @@ from kumo.config.prediction import PartitionedPredictionProgress
 
 log = logging.getLogger(__name__)
 
-FILE_PREFIX = "prediction_progress_"
-PARTITION_FILE_PREFIX = "partitioned_progress_"
+FILE_PREFIX = 'prediction_progress_'
+PARTITION_FILE_PREFIX = 'partitioned_progress_'
 
 
 def get_partition_progress(
@@ -26,28 +26,31 @@ def get_partition_progress(
         # None, it is single partition, return prediction progress.
         return prediction_progress
 
-    total_iterations = (prediction_progress.total_iterations *
-                        partition_progress.total_partitions)
-    completed_iterations = (prediction_progress.completed_iterations +
-                            prediction_progress.total_iterations *
-                            partition_progress.completed_partitions)
+    total_iterations = (
+        prediction_progress.total_iterations * partition_progress.total_partitions
+    )
+    completed_iterations = (
+        prediction_progress.completed_iterations
+        + prediction_progress.total_iterations * partition_progress.completed_partitions
+    )
     if partition_progress.estimated_prediction_time is None:
         # Running the first partition, estimate based on total iterations.
         elapsed_prediction_time = prediction_progress.elapsed_prediction_time
-        per_iteration_speed = elapsed_prediction_time / \
-            (prediction_progress.completed_iterations + 1e-6)
+        per_iteration_speed = elapsed_prediction_time / (
+            prediction_progress.completed_iterations + 1e-6
+        )
         return PredictionProgress(
             start_time=partition_progress.start_time,
             total_iterations=total_iterations,
             completed_iterations=completed_iterations,
             elapsed_prediction_time=elapsed_prediction_time,
-            estimated_prediction_time=per_iteration_speed *
-            (total_iterations - completed_iterations))
+            estimated_prediction_time=per_iteration_speed
+            * (total_iterations - completed_iterations),
+        )
 
     # Running several partitions, estimate based on combination of partition
     # progress and prediction progress.
-    if (prediction_progress.completed_iterations ==
-            prediction_progress.total_iterations):
+    if prediction_progress.completed_iterations == prediction_progress.total_iterations:
         # Prediction progress is completed, use partition progress only.
         elapsed_prediction_time = timedelta(seconds=0)
     else:
@@ -58,8 +61,9 @@ def get_partition_progress(
         completed_iterations=completed_iterations,
         elapsed_prediction_time=elapsed_prediction_time,
         estimated_prediction_time=(
-            partition_progress.estimated_prediction_time -
-            elapsed_prediction_time))
+            partition_progress.estimated_prediction_time - elapsed_prediction_time
+        ),
+    )
 
 
 def get_prediction_progress(log_dir: str) -> PredictionProgress | None:
@@ -70,7 +74,7 @@ def get_prediction_progress(log_dir: str) -> PredictionProgress | None:
 
     def _strip_ext(name: str) -> str:
         # Keep behavior robust whether ".json" is present or not
-        return name[:-5] if name.endswith(".json") else name
+        return name[:-5] if name.endswith('.json') else name
 
     # Collect per-partition files keyed by partition_id (number as string)
     partitioned_progress_dict: dict[str, PartitionedPredictionProgress] = {}
@@ -78,15 +82,14 @@ def get_prediction_progress(log_dir: str) -> PredictionProgress | None:
 
     for path in all_paths:
         fname = os.path.basename(path)
-        if fname.startswith(
-                PARTITION_FILE_PREFIX):  # e.g., "partitioned_progress_"
-            partition_id = _strip_ext(fname[len(PARTITION_FILE_PREFIX):])
+        if fname.startswith(PARTITION_FILE_PREFIX):  # e.g., "partitioned_progress_"
+            partition_id = _strip_ext(fname[len(PARTITION_FILE_PREFIX) :])
             partitioned_progress_dict[partition_id] = load_json(
-                path, PartitionedPredictionProgress)
+                path, PartitionedPredictionProgress
+            )
         elif fname.startswith(FILE_PREFIX):  # e.g., "prediction_progress_"
-            partition_id = _strip_ext(fname[len(FILE_PREFIX):])
-            prediction_progress_dict[partition_id] = load_json(
-                path, PredictionProgress)
+            partition_id = _strip_ext(fname[len(FILE_PREFIX) :])
+            prediction_progress_dict[partition_id] = load_json(path, PredictionProgress)
 
     # --- Primary path: derive overall progress from partitioned progress ---
     if partitioned_progress_dict and prediction_progress_dict:
@@ -123,8 +126,9 @@ def get_prediction_progress(log_dir: str) -> PredictionProgress | None:
     if len(prediction_progress_dict) > 0:
         # Only one prediction progress is available, if not, log a warning.
         if len(prediction_progress_dict) > 1:
-            log.warning("More then one prediction progress is ready "
-                        f"{prediction_progress_dict}")
+            log.warning(
+                f'More then one prediction progress is ready {prediction_progress_dict}'
+            )
         for value in prediction_progress_dict.values():
             return value
 

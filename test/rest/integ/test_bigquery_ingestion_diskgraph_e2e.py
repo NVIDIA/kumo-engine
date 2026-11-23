@@ -63,15 +63,12 @@ Usage:
         test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py \\
         -xvs --timeout=900
 """
+
 import logging
 import os
 import shutil
 import time
 from pathlib import Path
-from test.rest.integ.test_diskgraph_e2e import (
-    MAX_POLL_SECONDS,
-    POLL_INTERVAL_SECONDS,
-)
 
 import kumoapi.data_source as data_source_api
 import kumoapi.table as table_api
@@ -103,6 +100,10 @@ from rest.config.graph_v2 import (
 from rest.config.status import IDResponse
 from rest.config.table_v2 import BigQuerySourceTable, TableDefinition
 from statedb.config.common import JobStatus, ProjectID
+from test.rest.integ.test_diskgraph_e2e import (
+    MAX_POLL_SECONDS,
+    POLL_INTERVAL_SECONDS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -113,23 +114,28 @@ log = logging.getLogger(__name__)
 # any test in the session imports the conftest — see notes in
 # ``test_diskgraph_e2e.py``.
 if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
+    _default_deploy_config = (
+        Path(__file__).resolve().parents[3]
+        / 'rest'
+        / 'devserver'
+        / 'configs'
+        / 'diskgraph-test.json'
+    )
     os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
-_CONNECTOR_NAME = "financial_bigquery_diskgraph"
-_PROJECT_ID = "kumo-engineering"
-_DATASET_ID = "financial"
+_CONNECTOR_NAME = 'financial_bigquery_diskgraph'
+_PROJECT_ID = 'kumo-engineering'
+_DATASET_ID = 'financial'
 
 # Permanent tables in ``kumo-engineering.financial``. These are also used by
 # the BigQuery training E2E fixture.
-_TABLE_ACCOUNT = "ACCOUNT"
-_TABLE_LOAN = "LOAN"
-_TABLE_TRANS = "TRANS"
+_TABLE_ACCOUNT = 'ACCOUNT'
+_TABLE_LOAN = 'LOAN'
+_TABLE_TRANS = 'TRANS'
 # Reference name that intentionally does not exist in the financial dataset —
 # any ingest attempt against it surfaces a real ConnectorError from
 # the BigQuery backend. Used by the mid-batch failure test.
-_TABLE_DOES_NOT_EXIST = "does_not_exist"
+_TABLE_DOES_NOT_EXIST = 'does_not_exist'
 
 # Pool fixtures (storage_backend, _diskgraph_deploy_config,
 # _pool_subprocesses) live in test/rest/integ/conftest.py; the
@@ -137,8 +143,8 @@ _TABLE_DOES_NOT_EXIST = "does_not_exist"
 # assertions are scoped to local storage; pinning avoids a second skipped S3
 # parametrization and keeps the CI job from spawning an unused pool.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['local'], indirect=True),
 ]
 
 
@@ -146,6 +152,7 @@ pytestmark = [
 def test_cleanup_options():
     """Preserve state within each test, then clean diskgraph state after it."""
     from rest.testing.config import TestFunctionCleanupOptions
+
     return TestFunctionCleanupOptions(
         should_reset_rest_db=False,
         should_reset_ml_db=False,
@@ -162,11 +169,12 @@ def _cleanup_diskgraph_data_root_after_test(storage_backend):
         return
 
     from statedb.config.diskgraph import get_diskgraph_data_root
+
     data_root = Path(get_diskgraph_data_root())
     if 'diskgraph-data-root' not in data_root.name:
         log.warning(
-            "Skipping DiskGraph data_root cleanup for unexpected path %s",
-            data_root)
+            'Skipping DiskGraph data_root cleanup for unexpected path %s', data_root
+        )
         return
 
     shutil.rmtree(data_root, ignore_errors=True)
@@ -187,56 +195,89 @@ def _bq_source(connector_name: str, table_name: str) -> BigQuerySourceTable:
     )
 
 
-def _account_table_def(connector_name: str,
-                       source_name: str = _TABLE_ACCOUNT) -> TableDefinition:
+def _account_table_def(
+    connector_name: str, source_name: str = _TABLE_ACCOUNT
+) -> TableDefinition:
     return TableDefinition(
         cols=[
-            table_api.Column(name="ACCOUNT_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
+            table_api.Column(
+                name='ACCOUNT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
         ],
         source_table=_bq_source(connector_name, source_name),
-        pkey="ACCOUNT_ID",
+        pkey='ACCOUNT_ID',
         time_col=None,
         end_time_col=None,
     )
 
 
-def _loan_table_def(connector_name: str,
-                    source_name: str = _TABLE_LOAN) -> TableDefinition:
+def _loan_table_def(
+    connector_name: str, source_name: str = _TABLE_LOAN
+) -> TableDefinition:
     return TableDefinition(
         cols=[
-            table_api.Column(name="LOAN_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="ACCOUNT_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="AMOUNT", stype=Stype.numerical,
-                             dtype=Dtype.int, timestamp_format=None),
-            table_api.Column(name="DATE", stype=Stype.timestamp,
-                             dtype=Dtype.date, timestamp_format=None),
+            table_api.Column(
+                name='LOAN_ID', stype=Stype.ID, dtype=Dtype.int, timestamp_format=None
+            ),
+            table_api.Column(
+                name='ACCOUNT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='AMOUNT',
+                stype=Stype.numerical,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='DATE',
+                stype=Stype.timestamp,
+                dtype=Dtype.date,
+                timestamp_format=None,
+            ),
         ],
         source_table=_bq_source(connector_name, source_name),
-        pkey="LOAN_ID",
-        time_col="DATE",
+        pkey='LOAN_ID',
+        time_col='DATE',
         end_time_col=None,
     )
 
 
-def _trans_table_def(connector_name: str,
-                     source_name: str = _TABLE_TRANS) -> TableDefinition:
+def _trans_table_def(
+    connector_name: str, source_name: str = _TABLE_TRANS
+) -> TableDefinition:
     return TableDefinition(
         cols=[
-            table_api.Column(name="TRANS_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="ACCOUNT_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="AMOUNT", stype=Stype.numerical,
-                             dtype=Dtype.float, timestamp_format=None),
-            table_api.Column(name="DATE", stype=Stype.timestamp,
-                             dtype=Dtype.date, timestamp_format=None),
+            table_api.Column(
+                name='TRANS_ID', stype=Stype.ID, dtype=Dtype.int, timestamp_format=None
+            ),
+            table_api.Column(
+                name='ACCOUNT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='AMOUNT',
+                stype=Stype.numerical,
+                dtype=Dtype.float,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='DATE',
+                stype=Stype.timestamp,
+                dtype=Dtype.date,
+                timestamp_format=None,
+            ),
         ],
         source_table=_bq_source(connector_name, source_name),
-        pkey="TRANS_ID",
-        time_col="DATE",
+        pkey='TRANS_ID',
+        time_col='DATE',
         end_time_col=None,
     )
 
@@ -251,16 +292,16 @@ def _trans_table_def(connector_name: str,
 # randomization seed) and by ``FixtureDefinition``'s schema. The
 # query string is never executed.
 
-_DUMMY_QUERY_STR = (
-    "PREDICT SUM(LOAN.AMOUNT, 0, 360, days) FOR EACH ACCOUNT.ACCOUNT_ID")
+_DUMMY_QUERY_STR = 'PREDICT SUM(LOAN.AMOUNT, 0, 360, days) FOR EACH ACCOUNT.ACCOUNT_ID'
 
 
 def _build_single_table_bigquery_fixture(
-    connector_name: str = _CONNECTOR_NAME, ) -> FixtureDefinition:
+    connector_name: str = _CONNECTOR_NAME,
+) -> FixtureDefinition:
     """Single-table fixture using the small ACCOUNT source."""
     account = _account_table_def(connector_name)
 
-    graph = GraphDefinition(tables={"ACCOUNT": account}, col_groups=[])
+    graph = GraphDefinition(tables={'ACCOUNT': account}, col_groups=[])
 
     return FixtureDefinition(
         tables=[account],
@@ -269,7 +310,7 @@ def _build_single_table_bigquery_fixture(
             FixturePQueryRecord(
                 query_str=_DUMMY_QUERY_STR,
                 graph_fpid=graph.fpid,
-                pquery_name="single_table_dummy",
+                pquery_name='single_table_dummy',
             ),
         ],
     )
@@ -291,18 +332,21 @@ def _build_bigquery_fixture(
     trans = _trans_table_def(connector_name, trans_source)
 
     from kumoapi.graph import ColumnKey, ColumnKeyGroup
+
     graph = GraphDefinition(
         tables={
-            "ACCOUNT": account,
-            "LOAN": loan,
-            "TRANS": trans,
+            'ACCOUNT': account,
+            'LOAN': loan,
+            'TRANS': trans,
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(table_name="ACCOUNT", col_name="ACCOUNT_ID"),
-                ColumnKey(table_name="LOAN", col_name="ACCOUNT_ID"),
-                ColumnKey(table_name="TRANS", col_name="ACCOUNT_ID"),
-            )),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(table_name='ACCOUNT', col_name='ACCOUNT_ID'),
+                    ColumnKey(table_name='LOAN', col_name='ACCOUNT_ID'),
+                    ColumnKey(table_name='TRANS', col_name='ACCOUNT_ID'),
+                )
+            ),
         ],
     )
 
@@ -313,7 +357,7 @@ def _build_bigquery_fixture(
             FixturePQueryRecord(
                 query_str=_DUMMY_QUERY_STR,
                 graph_fpid=graph.fpid,
-                pquery_name="multi_table_dummy",
+                pquery_name='multi_table_dummy',
             ),
         ],
     )
@@ -338,9 +382,8 @@ def _staging_root_uri(table: TableDefinition) -> str:
     from kumo.data.utils import get_materialize_path
 
     # Any version: the caller walks the one subdirectory beneath.
-    staged = get_materialize_path(table.fingerprint(), "",
-                                  MaterializationStage.INGEST)
-    return staged.rstrip("/")
+    staged = get_materialize_path(table.fingerprint(), '', MaterializationStage.INGEST)
+    return staged.rstrip('/')
 
 
 def _list_parquet_files(staging_root: str) -> list[str]:
@@ -378,7 +421,7 @@ def _cleanup_staging_uris(uris: list[str]) -> None:
         try:
             fsutil.rm(uri, ignore_errors=True)
         except Exception as e:  # noqa: BLE001 — diagnostics only
-            log.warning("Cleanup failed for %s: %s", uri, e)
+            log.warning('Cleanup failed for %s: %s', uri, e)
 
 
 def _assert_staged_parquet(uri: str, source_name: str) -> list[str]:
@@ -389,11 +432,11 @@ def _assert_staged_parquet(uri: str, source_name: str) -> list[str]:
     """
     parquet_files = _list_parquet_files(uri)
     assert parquet_files, (
-        f"expected staged parquet for {source_name!r} under {uri}, "
-        f"but found none")
+        f'expected staged parquet for {source_name!r} under {uri}, but found none'
+    )
     for entry in parquet_files:
         size = fsutil.filesize(entry)
-        assert size and size > 0, f"empty staged parquet at {entry}"
+        assert size and size > 0, f'empty staged parquet at {entry}'
     return parquet_files
 
 
@@ -429,11 +472,13 @@ def _capture_signature(staging_uri: str) -> dict[str, tuple[int, float]]:
 
 def _skip_if_not_local(storage_backend: str) -> None:
     if storage_backend != 'local':
-        pytest.skip("BigQuery diskgraph ingestion e2e is scoped to local "
-                    "storage; the s3 parametrization hits a kumo-side "
-                    "stats persistence issue unrelated to the BigQuery "
-                    "connector path (same skip as the Databricks "
-                    "ingestion suite).")
+        pytest.skip(
+            'BigQuery diskgraph ingestion e2e is scoped to local '
+            'storage; the s3 parametrization hits a kumo-side '
+            'stats persistence issue unrelated to the BigQuery '
+            'connector path (same skip as the Databricks '
+            'ingestion suite).'
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -467,10 +512,10 @@ async def _setup_and_refresh(
     temporary_connector_id = _connector_name(fixture)
     setup = _register_connector(client, fixture)
     fixture = remap_fixture_connector_ids_v2(
-        fixture, {temporary_connector_id: setup.connector_id})
+        fixture, {temporary_connector_id: setup.connector_id}
+    )
 
-    assert len(fixture.graphs) == 1, (
-        "ingestion tests use exactly one graph per fixture")
+    assert len(fixture.graphs) == 1, 'ingestion tests use exactly one graph per fixture'
     graph_def = fixture.graphs[0]
     # ``?skip_validation=true`` so the API doesn't reject graphs that
     # reference deliberately-bad sources (e.g. the mid-batch failure
@@ -536,14 +581,14 @@ def _wait_for_graph_snapshot(
             GraphSnapshotResponse,
             project_id=str(project_id),
         )
-        ingest_state = resp.snapshot_resource.stages.get(
-            GraphSnapshotStage.INGEST)
+        ingest_state = resp.snapshot_resource.stages.get(GraphSnapshotStage.INGEST)
         if ingest_state and ingest_state.status.is_terminal:
             return resp
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Graph snapshot {graph_snapshot_id} did not complete INGEST "
-        f"stage within {MAX_POLL_SECONDS}s")
+        f'Graph snapshot {graph_snapshot_id} did not complete INGEST '
+        f'stage within {MAX_POLL_SECONDS}s'
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -575,18 +620,22 @@ async def test_export_single_table_graph_to_staging(
 
     try:
         graph_snapshot_id, project_id, graph_def = await _setup_and_refresh(
-            client, fixture)
-        account = next(table for table in graph_def.tables.values()
-                       if table.get_source_table_name() == _TABLE_ACCOUNT)
+            client, fixture
+        )
+        account = next(
+            table
+            for table in graph_def.tables.values()
+            if table.get_source_table_name() == _TABLE_ACCOUNT
+        )
         account_uri = _staging_root_uri(account)
         resp = _wait_for_graph_snapshot(client, graph_snapshot_id, project_id)
         ingest = resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert ingest.status == JobStatus.DONE, (
-            f"INGEST stage failed: status={ingest.status}, "
-            f"error={ingest.error}")
+            f'INGEST stage failed: status={ingest.status}, error={ingest.error}'
+        )
 
         _assert_staged_parquet(account_uri, _TABLE_ACCOUNT)
-        log.info("Single-table staging assertion passed at %s", account_uri)
+        log.info('Single-table staging assertion passed at %s', account_uri)
     finally:
         if account_uri is not None:
             _cleanup_staging_uris([account_uri])
@@ -615,7 +664,8 @@ async def test_export_multi_table_graph_to_staging(
 
     try:
         graph_snapshot_id, project_id, graph_def = await _setup_and_refresh(
-            client, fixture)
+            client, fixture
+        )
         table_to_uri = {
             table.get_source_table_name(): _staging_root_uri(table)
             for table in graph_def.tables.values()
@@ -623,13 +673,14 @@ async def test_export_multi_table_graph_to_staging(
         resp = _wait_for_graph_snapshot(client, graph_snapshot_id, project_id)
         ingest = resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert ingest.status == JobStatus.DONE, (
-            f"INGEST stage failed: status={ingest.status}, "
-            f"error={ingest.error}")
+            f'INGEST stage failed: status={ingest.status}, error={ingest.error}'
+        )
 
         for source, uri in table_to_uri.items():
             _assert_staged_parquet(uri, source)
-        log.info("Multi-table staging assertion passed for %d tables",
-                 len(table_to_uri))
+        log.info(
+            'Multi-table staging assertion passed for %d tables', len(table_to_uri)
+        )
     finally:
         _cleanup_staging_uris(list(table_to_uri.values()))
 
@@ -664,24 +715,24 @@ async def test_export_short_circuit_unchanged_version(
     table_to_uri = {}
 
     try:
-        first_id, project_id, graph_def = await _setup_and_refresh(
-            client, fixture)
+        first_id, project_id, graph_def = await _setup_and_refresh(client, fixture)
         table_to_uri = {
             table.get_source_table_name(): _staging_root_uri(table)
             for table in graph_def.tables.values()
         }
         first_resp = _wait_for_graph_snapshot(client, first_id, project_id)
-        first_ingest = first_resp.snapshot_resource.stages[
-            GraphSnapshotStage.INGEST]
+        first_ingest = first_resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert first_ingest.status == JobStatus.DONE, (
-            f"First refresh failed: {first_ingest.error}")
+            f'First refresh failed: {first_ingest.error}'
+        )
 
         before: dict[str, dict[str, tuple[int, float]]] = {}
         for source, uri in table_to_uri.items():
             _assert_staged_parquet(uri, source)
             before[source] = _capture_signature(uri)
-        log.info("Captured parquet signatures for %d tables after first run",
-                 len(before))
+        log.info(
+            'Captured parquet signatures for %d tables after first run', len(before)
+        )
 
         # Trigger the same graph refresh a second time. Same connector
         # + same fixture → same fingerprint + same data_version (a
@@ -702,19 +753,19 @@ async def test_export_short_circuit_unchanged_version(
         # ``(name, size, mtime)`` equality check below is the actual
         # signal that no re-export happened.
         second_resp = _wait_for_graph_snapshot(client, second_id, project_id)
-        second_ingest = second_resp.snapshot_resource.stages[
-            GraphSnapshotStage.INGEST]
+        second_ingest = second_resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert second_ingest.status == JobStatus.DONE, (
-            f"Second refresh failed: {second_ingest.error}")
+            f'Second refresh failed: {second_ingest.error}'
+        )
 
         for source, uri in table_to_uri.items():
             after = _capture_signature(uri)
             assert after == before[source], (
-                f"Second ingestion re-wrote staging parquet for "
-                f"{source!r} — diskgraph short-circuit failed. "
-                f"before={before[source]}, after={after}")
-        log.info("Short-circuit assertion passed for %d tables.",
-                 len(table_to_uri))
+                f'Second ingestion re-wrote staging parquet for '
+                f'{source!r} — diskgraph short-circuit failed. '
+                f'before={before[source]}, after={after}'
+            )
+        log.info('Short-circuit assertion passed for %d tables.', len(table_to_uri))
     finally:
         _cleanup_staging_uris(list(table_to_uri.values()))
 
@@ -764,22 +815,26 @@ async def test_export_mid_batch_failure(
     setup = _register_connector(client, fixture)
 
     graph_def = fixture.graphs[0]
-    resp = client.post('/v1/graphs/?skip_validation=true',
-                       data=to_json(graph_def, insecure=True),
-                       params={'project_id': setup.project_id},
-                       headers={"Content-Type": "application/json"})
+    resp = client.post(
+        '/v1/graphs/?skip_validation=true',
+        data=to_json(graph_def, insecure=True),
+        params={'project_id': setup.project_id},
+        headers={'Content-Type': 'application/json'},
+    )
     assert resp.status_code == 422, (
-        f"expected 422 for graph with non-existent source "
-        f"{_TABLE_DOES_NOT_EXIST!r}, got {resp.status_code}: "
-        f"{resp.text}")
+        f'expected 422 for graph with non-existent source '
+        f'{_TABLE_DOES_NOT_EXIST!r}, got {resp.status_code}: '
+        f'{resp.text}'
+    )
     detail = resp.json().get('detail', '')
     # BigQuery's connector wraps the 404 as
     # ``"Not found: Table ..."`` rather than ``"does not exist"`` —
     # accept either phrasing.
     detail_lower = detail.lower()
     assert 'does not exist' in detail_lower or 'not found' in detail_lower, (
-        f"expected bad-table error phrasing in detail, got: {detail!r}")
-    log.info("Mid-batch (bad-table) failure surfaced at API: %s", detail)
+        f'expected bad-table error phrasing in detail, got: {detail!r}'
+    )
+    log.info('Mid-batch (bad-table) failure surfaced at API: %s', detail)
 
 
 @pytest.mark.asyncio
@@ -799,13 +854,15 @@ async def test_export_bad_credentials_raises(
             data_source_api.CreateIdentityArgs(
                 display_name='invalid-bigquery-identity',
                 config=identity_config,
-                credentials=(data_source_api.GoogleServiceAccountKeyCredentials(
-                    private_key_id=SecretStr('bad_private_key_id'),
-                    private_key=SecretStr('bad_private_key'),
-                )),
+                credentials=(
+                    data_source_api.GoogleServiceAccountKeyCredentials(
+                        private_key_id=SecretStr('bad_private_key_id'),
+                        private_key=SecretStr('bad_private_key'),
+                    )
+                ),
             ),
             insecure=True,
         ),
-        headers={"Content-Type": "application/json"},
+        headers={'Content-Type': 'application/json'},
     )
     assert response.status_code == 422, response.text

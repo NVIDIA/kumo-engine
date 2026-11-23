@@ -62,8 +62,7 @@ class GCSConnectorResourceConfig:
     @model_validator(mode='before')
     @classmethod
     def migrate_legacy_rooted_target(cls, values):
-        return api.GCSConnectorResourceConfig.migrate_legacy_rooted_target(
-            values)
+        return api.GCSConnectorResourceConfig.migrate_legacy_rooted_target(values)
 
 
 @kumo_dataclass
@@ -75,8 +74,7 @@ class ADLSConnectorResourceConfig:
     @model_validator(mode='before')
     @classmethod
     def migrate_legacy_rooted_target(cls, values):
-        return api.ADLSConnectorResourceConfig.migrate_legacy_rooted_target(
-            values)
+        return api.ADLSConnectorResourceConfig.migrate_legacy_rooted_target(values)
 
 
 ExternalConnectorResourceConfigDB = Union[

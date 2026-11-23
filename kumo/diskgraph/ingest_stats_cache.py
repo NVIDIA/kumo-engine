@@ -28,8 +28,11 @@ def _pkey_duplicate_count_for_table(
     pkey_duplicate_counts: Dict[str, int],
     table_name: str,
 ) -> int:
-    return sum(count for key, count in pkey_duplicate_counts.items()
-               if key == table_name or key.startswith(f'{table_name}:shard-'))
+    return sum(
+        count
+        for key, count in pkey_duplicate_counts.items()
+        if key == table_name or key.startswith(f'{table_name}:shard-')
+    )
 
 
 class _Table(Protocol):
@@ -40,11 +43,10 @@ class _Table(Protocol):
     The per-graph alias is supplied as the dict key, not as a field on
     the table.
     """
-    def get_connector_id(self) -> Any:
-        ...
 
-    def get_source_table_name(self) -> Any:
-        ...
+    def get_connector_id(self) -> Any: ...
+
+    def get_source_table_name(self) -> Any: ...
 
     def fingerprint(self) -> Any:
         """Table fingerprint used as the cache key."""
@@ -71,7 +73,8 @@ def _copy_col_stats(
         if full_json is None:
             raise RuntimeError(
                 f'Diskgraph ingest did not produce col stats for table '
-                f'{table_name}. Ensure the diskgraph package is up to date.')
+                f'{table_name}. Ensure the diskgraph package is up to date.'
+            )
         min_json = _read_col_stats(index_path, table_name, 'min')
 
         table_dir = get_active_cache().create_table_cache_dir(
@@ -81,12 +84,12 @@ def _copy_col_stats(
             table.fingerprint(),
         )
         fsutil.write_text(table_dir.col_stats, full_json)
-        fsutil.write_text(table_dir.min_col_stats,
-                          min_json if min_json is not None else full_json)
+        fsutil.write_text(
+            table_dir.min_col_stats, min_json if min_json is not None else full_json
+        )
 
 
-def _read_pkey_duplicate_counts(
-        ingest_stats_path: str) -> Optional[Dict[str, int]]:
+def _read_pkey_duplicate_counts(ingest_stats_path: str) -> Optional[Dict[str, int]]:
     try:
         report = json.loads(fsutil.read_text(ingest_stats_path))
         stats = report.get('stats')
@@ -95,9 +98,13 @@ def _read_pkey_duplicate_counts(
         duplicate_counts = stats['pk_duplicate_counts']
         if not isinstance(duplicate_counts, dict):
             return None
-        if any(not isinstance(key, str) or isinstance(count, bool)
-               or not isinstance(count, int) or count < 0
-               for key, count in duplicate_counts.items()):
+        if any(
+            not isinstance(key, str)
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            for key, count in duplicate_counts.items()
+        ):
             return None
         return duplicate_counts
     except (AttributeError, OSError, TypeError, ValueError):
@@ -122,11 +129,13 @@ def _save_num_rows_from_node_counts(
     Temporal-sandbox safe.
     """
     try:
-        node_counts = (((json.loads(fsutil.read_text(ingest_stats_path))
-                         or {}).get('stats') or {}).get('node_counts') or {})
+        node_counts = (
+            (json.loads(fsutil.read_text(ingest_stats_path)) or {}).get('stats') or {}
+        ).get('node_counts') or {}
     except Exception:
-        log.warning('Could not read node_counts from %s; NUM_ROWS left unset',
-                    ingest_stats_path)
+        log.warning(
+            'Could not read node_counts from %s; NUM_ROWS left unset', ingest_stats_path
+        )
         return
 
     cache = get_active_cache()
@@ -142,8 +151,9 @@ def _save_num_rows_from_node_counts(
         cache.add_table_stats(
             table.fingerprint(),
             {
-                TableStatType.NUM_ROWS:
-                Stats(value=int(count), approx=False, data_version=version)
+                TableStatType.NUM_ROWS: Stats(
+                    value=int(count), approx=False, data_version=version
+                )
             },
         )
 
@@ -162,21 +172,22 @@ def _copy_edge_stats(
     if edge_json is None:
         if not has_edges:
             log.info(
-                'Diskgraph ingest produced no edge stats for no-edge graph '
-                '%s at %s', graph_key, index_path)
+                'Diskgraph ingest produced no edge stats for no-edge graph %s at %s',
+                graph_key,
+                index_path,
+            )
             return
         raise RuntimeError(
             f'Diskgraph ingest did not produce edge_stats.json at '
-            f'{index_path}. Ensure the diskgraph package is up to date.')
+            f'{index_path}. Ensure the diskgraph package is up to date.'
+        )
 
     graph_cache = get_active_cache().graph_cache
-    dest = graph_cache.edge_stats_path(
-        VersionedGraphKey(graph_key, graph_data_version))
+    dest = graph_cache.edge_stats_path(VersionedGraphKey(graph_key, graph_data_version))
     log.info('Writing diskgraph edge stats to %s', dest)
     stats = json.loads(edge_json)
     source_names = {
-        alias: str(table.get_source_table_name())
-        for alias, table in tables.items()
+        alias: str(table.get_source_table_name()) for alias, table in tables.items()
     }
     known_source_names = set(source_names.values())
     normalized_stats = {}
@@ -190,8 +201,8 @@ def _copy_edge_stats(
                 parts[position] = source_names[table_name]
             elif table_name not in known_source_names:
                 raise ValueError(
-                    f'Unknown table identity in diskgraph edge stat key: '
-                    f'{key}')
+                    f'Unknown table identity in diskgraph edge stat key: {key}'
+                )
         normalized_stats['__'.join(parts)] = value
     fsutil.write_text(dest, json.dumps(normalized_stats))
 
@@ -217,8 +228,7 @@ def copy_ingest_stats_to_backend_cache(
         tables,
         table_data_versions,
     )
-    _save_num_rows_from_node_counts(ingest_stats_path, tables,
-                                    table_data_versions)
+    _save_num_rows_from_node_counts(ingest_stats_path, tables, table_data_versions)
     _copy_edge_stats(
         index_path,
         graph_key,
@@ -229,14 +239,14 @@ def copy_ingest_stats_to_backend_cache(
     if pkey_duplicate_counts is None:
         return None
     return {
-        table_name:
-        _pkey_duplicate_count_for_table(pkey_duplicate_counts, table_name)
+        table_name: _pkey_duplicate_count_for_table(pkey_duplicate_counts, table_name)
         for table_name in tables
     }
 
 
 class _GraphTable(Protocol):
     """Structural view of ``kumo.graph.Table`` for the seed path."""
+
     table_name: str
     name: str
     data_version: str
@@ -264,17 +274,19 @@ def seed_missing_col_stats_from_index(
     cache = get_active_cache()
     for table in graph_tables:
         fp = table.fingerprint()
-        table_cache = cache.create_table_cache_dir(fp.connector_name,
-                                                   fp.source_name,
-                                                   table.data_version, fp)
+        table_cache = cache.create_table_cache_dir(
+            fp.connector_name, fp.source_name, table.data_version, fp
+        )
 
         for candidate_name in (fp.source_name, table.table_name):
             full_json = _read_col_stats(index_path, candidate_name, 'full')
             if full_json is None:
                 continue
             log.info(
-                'Seeding missing col stats for table %s (version=%s) '
-                'from DG index', table.name, table.data_version)
+                'Seeding missing col stats for table %s (version=%s) from DG index',
+                table.name,
+                table.data_version,
+            )
             fsutil.write_text(table_cache.col_stats, full_json)
             # Preserve original: only seed min if cache doesn't already
             # have one.
@@ -282,9 +294,13 @@ def seed_missing_col_stats_from_index(
                 min_json = _read_col_stats(index_path, candidate_name, 'min')
                 fsutil.write_text(
                     table_cache.min_col_stats,
-                    min_json if min_json is not None else full_json)
+                    min_json if min_json is not None else full_json,
+                )
             break
         else:
             log.warning(
-                'Could not find col stats in DG index for table %s '
-                '(tried %s, %s)', table.name, fp.source_name, table.table_name)
+                'Could not find col stats in DG index for table %s (tried %s, %s)',
+                table.name,
+                fp.source_name,
+                table.table_name,
+            )

@@ -18,12 +18,14 @@ from kumo.engine.connector.identity import DatabricksIdentity
         ('/Volumes/main/kumo/staging', True, ReadMode.STAGED),
     ],
 )
-def test_read_configuration_reaches_the_cached_backend(staging_volume_path,
-                                                       require_staged,
-                                                       expected_mode):
-    identity = DatabricksIdentity(host='https://workspace.example.com',
-                                  client_id='test-client',
-                                  client_secret='test-secret')
+def test_read_configuration_reaches_the_cached_backend(
+    staging_volume_path, require_staged, expected_mode
+):
+    identity = DatabricksIdentity(
+        host='https://workspace.example.com',
+        client_id='test-client',
+        client_secret='test-secret',
+    )
     connector = DatabricksConnector(
         catalog='main',
         schema_name='analytics',
@@ -43,11 +45,12 @@ def test_read_configuration_reaches_the_cached_backend(staging_volume_path,
 
 @pytest.mark.parametrize('staging_volume_path', [None, ''])
 def test_strict_staging_requires_a_volume(staging_volume_path):
-    identity = DatabricksIdentity(host='https://workspace.example.com',
-                                  client_id='test-client',
-                                  client_secret='test-secret')
-    with pytest.raises(ValueError,
-                       match='require_staged needs a staging_volume_path'):
+    identity = DatabricksIdentity(
+        host='https://workspace.example.com',
+        client_id='test-client',
+        client_secret='test-secret',
+    )
+    with pytest.raises(ValueError, match='require_staged needs a staging_volume_path'):
         DatabricksConnector(
             catalog='main',
             schema_name='analytics',
@@ -58,10 +61,13 @@ def test_strict_staging_requires_a_volume(staging_volume_path):
         )
 
 
-@pytest.mark.parametrize('build', [
-    DatabricksConnector.from_notebook,
-    DatabricksConnector,
-])
+@pytest.mark.parametrize(
+    'build',
+    [
+        DatabricksConnector.from_notebook,
+        DatabricksConnector,
+    ],
+)
 def test_without_an_identity_the_connector_is_ambient(build):
     connector = build(
         catalog='main',
@@ -73,8 +79,7 @@ def test_without_an_identity_the_connector_is_ambient(build):
     identity_config = connector.identity._config
     assert identity_config.host is None
     assert identity_config.client_id is None
-    assert (identity_config.authentication is
-           DatabricksAuthenticationKind.AMBIENT)
+    assert identity_config.authentication is DatabricksAuthenticationKind.AMBIENT
 
     backend = connector.source_backend
 

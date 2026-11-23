@@ -38,16 +38,19 @@ def load_gcs_test_identity() -> tuple[
             data_source_api.GCSIdentityConfig(
                 authentication=(
                     data_source_api.GoogleWorkloadIdentityAuthentication(
-                        service_account_email=workload_service_account, )), ),
+                        service_account_email=workload_service_account,
+                    )
+                ),
+            ),
             None,
         )
 
-    with open(os.environ['GOOGLE_APPLICATION_CREDENTIALS'],
-              encoding='utf-8') as credential_file:
+    with open(
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'], encoding='utf-8'
+    ) as credential_file:
         document = json.load(credential_file)
     if document.get('type') != 'service_account':
-        raise ValueError(
-            'GCS integration credentials must be a service account')
+        raise ValueError('GCS integration credentials must be a service account')
 
     config = data_source_api.GCSIdentityConfig(
         authentication=data_source_api.GoogleServiceAccountKeyAuthentication(
@@ -57,7 +60,8 @@ def load_gcs_test_identity() -> tuple[
             auth_uri=document['auth_uri'],
             token_uri=document['token_uri'],
             universe_domain=document.get('universe_domain', 'googleapis.com'),
-        ), )
+        ),
+    )
     credentials = data_source_api.GoogleServiceAccountKeyCredentials(
         private_key_id=SecretStr(document['private_key_id']),
         private_key=SecretStr(document['private_key']),
@@ -135,8 +139,7 @@ def get_gcs_source_table(
 
     response = get_and_expect_success(
         client,
-        (f'/v0/projects/{project_id}/connectors/{connector_id}/'
-         'source-table-config'),
+        (f'/v0/projects/{project_id}/connectors/{connector_id}/source-table-config'),
         {'table_name': source_table_name},
         SourceTableConfigResponse,
     )

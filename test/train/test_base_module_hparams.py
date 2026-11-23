@@ -21,16 +21,12 @@ def _model():
     amount._stats = {ColStatType.MEAN: 1.5}
     return NodeGNNLightningModule(
         encoder=HeteroTensorFrameEncoder(
-            table_encoder_dict={'users': {
-                'city': city,
-                'amount': amount
-            }},
+            table_encoder_dict={'users': {'city': city, 'amount': amount}},
             out_channels=2,
             time_col_dict={},
             exclude_cols_dict={},
         ),
-        model=HeteroGNN(channels=2, num_mp_layers=0,
-                        metadata=(['users'], [])),
+        model=HeteroGNN(channels=2, num_mp_layers=0, metadata=(['users'], [])),
         head=NodePredHead(in_channels=2, out_channels=1),
         task_type=TaskType.BINARY_CLASSIFICATION,
         train_table_name='train_table',
@@ -68,9 +64,12 @@ def test_checkpoints_with_encoder_stats_in_hparams_still_load(tmp_path):
         {
             'state_dict': model.state_dict(),
             'hyper_parameters': {
-                **model.hparams, 'encoder': asdict(model.encoder.config())
+                **model.hparams,
+                'encoder': asdict(model.encoder.config()),
             },
-        }, path)
+        },
+        path,
+    )
 
     loaded = _model().load_checkpoint(str(path)).state_dict()
 

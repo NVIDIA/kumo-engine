@@ -140,10 +140,12 @@ async def canonicalize_graph_custom_sql_tables(
             canonicalized[table_name] = table_def
             continue
         connector = await connectors.get_for_project(
-            project_id, table_def.get_connector_id(), principal)
+            project_id, table_def.get_connector_id(), principal
+        )
         connector_type = ConnectorType(connector.config.type.value)
         canonical = table_logic.canonicalize_custom_sql_source(
-            table_def, connector_type)
+            table_def, connector_type
+        )
         canonicalized[table_name] = canonical
         changed = changed or canonical is not table_def
     if not changed:
@@ -182,7 +184,7 @@ class GraphLogic:
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError("GraphLogic requires StateServices")
+            raise RuntimeError('GraphLogic requires StateServices')
         return self._state_services
 
     def _require_graph_service(self):
@@ -196,13 +198,14 @@ class GraphLogic:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-        close = getattr(coro, "close", None)
+        close = getattr(coro, 'close', None)
         if close is not None:
             close()
         raise RuntimeError(
-            "GraphLogic synchronous graph storage helpers require "
-            "StateServices and must be called outside a running event loop; "
-            "async callers should use async GraphLogic/StateServices methods.")
+            'GraphLogic synchronous graph storage helpers require '
+            'StateServices and must be called outside a running event loop; '
+            'async callers should use async GraphLogic/StateServices methods.'
+        )
 
     def _run_async_graph_logic(self, coro):
         return self._run_state_service(coro)
@@ -225,8 +228,9 @@ class GraphLogic:
         graph_ids: Sequence[GraphIDv2],
     ) -> Dict[GraphIDv2, FPID]:
         result: Dict[GraphIDv2, FPID] = {}
-        graph_ids_by_pquery_id: Dict[PredictiveQueryID,
-                                     List[GraphIDv2]] = (defaultdict(list))
+        graph_ids_by_pquery_id: Dict[PredictiveQueryID, List[GraphIDv2]] = defaultdict(
+            list
+        )
         for graph_id in graph_ids:
             pquery_id, graph_fpid = GraphIDv2.parse(graph_id)
             if graph_fpid is not None:
@@ -241,7 +245,9 @@ class GraphLogic:
 
         pquery_defs_by_id = (
             await self._get_pquery_definitions_by_ids_from_state_services(
-                graph_ids_by_pquery_id.keys()))
+                graph_ids_by_pquery_id.keys()
+            )
+        )
 
         for pquery_id, pquery_graph_ids in graph_ids_by_pquery_id.items():
             pquery_def = pquery_defs_by_id.get(pquery_id)
@@ -265,19 +271,16 @@ class GraphLogic:
         graph_fpids: Iterable[FPID],
     ) -> Dict[FPID, GraphDBEntryV2]:
         fpids = set(graph_fpids)
-        return await self._graph_service.get_graph_entries(
-            self._project_id, fpids)
+        return await self._graph_service.get_graph_entries(self._project_id, fpids)
 
     async def _get_graph_entry_v2_from_state_services(
         self,
         graph_id: GraphIDv2,
     ) -> Optional[GraphDBEntryV2]:
-        graph_fpid = await self._resolve_graph_fpid_from_state_services(graph_id
-                                                                        )
+        graph_fpid = await self._resolve_graph_fpid_from_state_services(graph_id)
         if graph_fpid is None:
             return None
-        return await self._graph_service.get_graph_entry(
-            self._project_id, graph_fpid)
+        return await self._graph_service.get_graph_entry(self._project_id, graph_fpid)
 
     async def _get_many_graph_entries_v2_from_state_services(
         self,
@@ -285,9 +288,9 @@ class GraphLogic:
     ) -> List[Optional[CanonicalGraphDBEntry]]:
         gid_to_fpid = await self._resolve_graph_fpids_from_state_services(ids)
 
-        entries_by_fpid = (await
-                           self._get_graph_entries_by_fpid_from_state_services(
-                               gid_to_fpid.values()))
+        entries_by_fpid = await self._get_graph_entries_by_fpid_from_state_services(
+            gid_to_fpid.values()
+        )
 
         result: List[Optional[CanonicalGraphDBEntry]] = []
         for gid in ids:
@@ -321,12 +324,10 @@ class GraphLogic:
     ) -> Dict[ConnectorID, ConnectorOpenSpec]:
         connector_service = self._require_state_services().connectors
         return {
-            connector_id:
-            await
-            connector_service.config_for_project(_current_user_ctx.get(),
-                                                 self._project_id, connector_id)
-            for connector_id in connector_service.connector_ids_for_graph(
-                graph_def)
+            connector_id: await connector_service.config_for_project(
+                _current_user_ctx.get(), self._project_id, connector_id
+            )
+            for connector_id in connector_service.connector_ids_for_graph(graph_def)
         }
 
     async def create_full_graph_def_v2(
@@ -336,7 +337,7 @@ class GraphLogic:
         alias: Optional[str] = None,
         force_rename: bool = False,
         skip_validation: bool = False,
-        created_by_name: str = "",
+        created_by_name: str = '',
     ) -> Graph:
         r"""Create full graph definition in the V2 object model; this creates
         the graph and all its tables. No-op if any objects already exist, as
@@ -355,13 +356,17 @@ class GraphLogic:
         # connector_type correctness/security gate the table-create path applies,
         # and this pquery-driven path must not persist an unvalidated one.
         graph_def = await canonicalize_graph_custom_sql_tables(
-            graph_def, self._project_id, self._require_state_services(),
-            _current_user_ctx.get())
+            graph_def,
+            self._project_id,
+            self._require_state_services(),
+            _current_user_ctx.get(),
+        )
         # NOTE `fpid` is a cached property and may perform some computation:
         graph_fpid = graph_def.fpid
         graph_service = self._require_graph_service()
         existing_entry = await graph_service.get_graph_entry(
-            self._project_id, graph_fpid)
+            self._project_id, graph_fpid
+        )
         await graph_service.save_graph_definition(
             self._project_id,
             graph_def,
@@ -373,20 +378,19 @@ class GraphLogic:
             return
         graph = await self._make_graph_from_definition_with_state_services(
             graph_def,
-            "NA",
+            'NA',
         )
         if not skip_validation:
             await self.validate_graph(graph)
         return graph
 
-    async def _make_graph_from_graph_def_v2(
-            self, graph_def: GraphDefinition) -> Graph:
+    async def _make_graph_from_graph_def_v2(self, graph_def: GraphDefinition) -> Graph:
         return await self._make_graph_from_definition_with_state_services(
             graph_def=graph_def,
-            name="NA",
+            name='NA',
         )
 
-    @deprecated("Will be obsolete after db migration.")
+    @deprecated('Will be obsolete after db migration.')
     async def infer_links(
         self,
         graph_def: GraphDefinition,
@@ -408,20 +412,20 @@ class GraphLogic:
 
         return graph_def
 
-    @deprecated("Will be obsolete after db migration.")
+    @deprecated('Will be obsolete after db migration.')
     async def validate_graph_definition(self, graph_def: GraphDefinition):
         graph: Graph = await self.make_graph_from_definition.coroutine(
             graph_def=graph_def,
-            name="NA",
+            name='NA',
         )
         await self.validate_graph(graph)
 
-    @deprecated("Will be obsolete after db migration.")
+    @deprecated('Will be obsolete after db migration.')
     async def validate_graph(self, graph: Graph):
         try:
-            await graph.validate.coroutine(raise_on_error=True,
-                                           ignore_encoders=True,
-                                           enforce_connected=True)
+            await graph.validate.coroutine(
+                raise_on_error=True, ignore_encoders=True, enforce_connected=True
+            )
         except ValidationException as e:
             raise ValidationException(
                 title=INVALID_GRAPH_PARAMETERS_TITLE,
@@ -432,8 +436,7 @@ class GraphLogic:
     async def get_many_data_compute_inputs(
         self, graph_ids: List[GraphIDv2]
     ) -> List[Union[GraphDataComputeInput, Exception]]:
-        return await self._require_graph_service(
-        ).get_many_graph_data_compute_inputs(
+        return await self._require_graph_service().get_many_graph_data_compute_inputs(
             graph_ids,
             project_id=self._project_id,
             user_authorization=_current_user_ctx.get(),
@@ -451,10 +454,10 @@ class GraphLogic:
         )
 
     async def _get_num_rows(self, table_ids: List[TableID]) -> Optional[int]:
-        tables_and_exc = await self._table_logic.get_many_table_definitions(
-            table_ids)
+        tables_and_exc = await self._table_logic.get_many_table_definitions(table_ids)
         tables = batch_ops.raise_errors(
-            tables_and_exc, "Failed to fetch some tables in the graph")
+            tables_and_exc, 'Failed to fetch some tables in the graph'
+        )
         cache = get_active_cache()
         maybe_stats = await cache.get_many_min_latest_exact_stats.coroutine(
             tables,
@@ -478,20 +481,20 @@ class GraphLogic:
             if TableStatType.NUM_ROWS not in stat.table_stats:
                 # This should never happen, since NUM_ROWS should always be
                 # computed. If this happens, then there is a bug.
-                log.error("TableStatType.NUM_ROWS is missing")
+                log.error('TableStatType.NUM_ROWS is missing')
                 return None
             count += int(stat.get_table_stat(TableStatType.NUM_ROWS, 0))
 
         return count
 
     def _get_table_adj_list(
-            self, graph: CanonicalGraphDBEntry) -> Dict[TableID, Set[TableID]]:
+        self, graph: CanonicalGraphDBEntry
+    ) -> Dict[TableID, Set[TableID]]:
         """Get table adjacency list of a graph."""
         adj_list: Dict[TableID, Set[TableID]] = defaultdict(set)
         for col_group in graph.col_groups:
             connected_table_ids: Set[TableID] = {
-                graph.table_name_to_id[col.table_name]
-                for col in col_group.columns
+                graph.table_name_to_id[col.table_name] for col in col_group.columns
             }
             for table_id in connected_table_ids:
                 for adj_table_id in connected_table_ids:
@@ -499,10 +502,12 @@ class GraphLogic:
                         adj_list[table_id].add(adj_table_id)
         return adj_list
 
-    def get_bfs_tree(self, graph_id: GraphID,
-                     root_table_name: str) -> Dict[TableID, List[TableID]]:
+    def get_bfs_tree(
+        self, graph_id: GraphID, root_table_name: str
+    ) -> Dict[TableID, List[TableID]]:
         return self._run_async_graph_logic(
-            self.async_get_bfs_tree(graph_id, root_table_name))
+            self.async_get_bfs_tree(graph_id, root_table_name)
+        )
 
     async def async_get_bfs_tree(
         self,
@@ -530,8 +535,7 @@ class GraphLogic:
         graph_service = self._graph_service
         if graph_service is not None and isinstance(graph_id, GraphIDv2):
             pquery_id, _ = GraphIDv2.parse(graph_id)
-            graph_entry = await self._get_graph_entry_v2_from_state_services(
-                graph_id)
+            graph_entry = await self._get_graph_entry_v2_from_state_services(graph_id)
             if graph_entry is None:
                 return None
             graph = graph_entry.as_canonical_entry(pquery_id)
@@ -539,9 +543,11 @@ class GraphLogic:
             table_ids_have_fpids = all(
                 isinstance(table_id, TableIDv2)
                 and TableIDv2.parse(table_id)[2] is not None
-                for table_id in table_ids)
-            num_rows = (await self._get_num_rows(table_ids)
-                        if table_ids_have_fpids else None)
+                for table_id in table_ids
+            )
+            num_rows = (
+                await self._get_num_rows(table_ids) if table_ids_have_fpids else None
+            )
             num_links = sum(len(grp.columns) - 1 for grp in graph.col_groups)
             return GraphResponse(
                 id=graph_id,
@@ -567,12 +573,17 @@ class GraphLogic:
         # and all fkeys are linked to that pkey (star graph)
         num_links = sum(len(grp.columns) - 1 for grp in graph.col_groups)
 
-        return GraphResponse(id=graph_id, name=graph.display_name,
-                             table_ids=table_ids,
-                             col_groups=graph.column_groups, num_tables=len(
-                                 graph.table_name_to_id), num_links=num_links,
-                             timestamps=graph.timestamps, num_rows=num_rows,
-                             description=graph.display_description)
+        return GraphResponse(
+            id=graph_id,
+            name=graph.display_name,
+            table_ids=table_ids,
+            col_groups=graph.column_groups,
+            num_tables=len(graph.table_name_to_id),
+            num_links=num_links,
+            timestamps=graph.timestamps,
+            num_rows=num_rows,
+            description=graph.display_description,
+        )
 
     def contains_view(self, id: GraphID) -> bool:
         # Kumo views are no longer supported.
@@ -590,13 +601,11 @@ class GraphLogic:
         graph_fpid = await self._resolve_graph_fpid_from_state_services(id)
         if graph_fpid is None:
             return None
-        return await graph_service.get_graph_definition(self._project_id,
-                                                        graph_fpid)
+        return await graph_service.get_graph_definition(self._project_id, graph_fpid)
 
-    @deprecated("Will be obsolete after db migration.")
+    @deprecated('Will be obsolete after db migration.')
     async def get_edge_stats(
-        self, id: GraphID,
-        graph_version_info: GraphDataVersionInfo | None = None
+        self, id: GraphID, graph_version_info: GraphDataVersionInfo | None = None
     ) -> EdgeHealthStats:
         edge_stats = await self._get_edge_stats(id, graph_version_info)
         if isinstance(id, GraphIDv1):
@@ -608,10 +617,12 @@ class GraphLogic:
             for edge in edge_stats.link_stats:
                 if edge.col_a:
                     edge.col_a.table_id = TableIDv2.update(
-                        TableIDv2(edge.col_a.table_id), pquery_id, False)
+                        TableIDv2(edge.col_a.table_id), pquery_id, False
+                    )
                 if edge.col_b:
                     edge.col_b.table_id = TableIDv2.update(
-                        TableIDv2(edge.col_b.table_id), pquery_id, False)
+                        TableIDv2(edge.col_b.table_id), pquery_id, False
+                    )
         return edge_stats
 
     async def get_table_resources_in_graph(
@@ -631,12 +642,12 @@ class GraphLogic:
         graph_fpid = await self._resolve_graph_fpid_from_state_services(id)
         if graph_fpid is None:
             raise GraphDoesNotExistError(id)
-        graph_entry = await graph_service.get_graph_entry(
-            self._project_id, graph_fpid)
+        graph_entry = await graph_service.get_graph_entry(self._project_id, graph_fpid)
         if graph_entry is None:
             raise GraphDoesNotExistError(id)
         entries_by_fpid = await table_service.get_table_entries(
-            self._project_id, graph_entry.table_name_to_dbid.values())
+            self._project_id, graph_entry.table_name_to_dbid.values()
+        )
         resolved: List[TableDBEntryV2] = []
         for table_fpid in graph_entry.table_name_to_dbid.values():
             entry = entries_by_fpid.get(table_fpid)
@@ -644,18 +655,18 @@ class GraphLogic:
                 raise TableDoesNotExistError(table_fpid)
             resolved.append(entry)
         return await self._table_logic._get_many_table_response_v2(
-            resolved, fetch_column_stats=False)
+            resolved, fetch_column_stats=False
+        )
 
     async def _get_edge_stats(
-            self, graph_id: GraphID,
-            graph_version_info: GraphDataVersionInfo | None) -> EdgeHealthStats:
+        self, graph_id: GraphID, graph_version_info: GraphDataVersionInfo | None
+    ) -> EdgeHealthStats:
         data_compute_input = await self.get_graph_data_compute_input(graph_id)
-        link_stats = await DataBackend.get_edge_stats(self._data_backend_ctx,
-                                                      data_compute_input,
-                                                      graph_version_info)
+        link_stats = await DataBackend.get_edge_stats(
+            self._data_backend_ctx, data_compute_input, graph_version_info
+        )
 
-        return EdgeHealthStats(is_ready=link_stats is not None,
-                               link_stats=link_stats)
+        return EdgeHealthStats(is_ready=link_stats is not None, link_stats=link_stats)
 
     def exists(self, id: GraphID) -> bool:
         return self._run_async_graph_logic(self.async_exists(id))
@@ -663,16 +674,16 @@ class GraphLogic:
     async def async_exists(self, id: GraphID) -> bool:
         if isinstance(id, GraphIDv1):
             raise RuntimeError(
-                "GraphLogic StateServices graph storage does not support "
-                "v1 graph IDs.")
+                'GraphLogic StateServices graph storage does not support v1 graph IDs.'
+            )
 
         assert isinstance(id, GraphIDv2)
         return await self.async_get_graph_entry_v2(id) is not None
 
     def _get_graph_entry_v1(self, id: GraphIDv1) -> None:
         raise RuntimeError(
-            "GraphLogic StateServices graph storage does not support "
-            "v1 graph IDs.")
+            'GraphLogic StateServices graph storage does not support v1 graph IDs.'
+        )
 
     async def async_get_graph_entry_v2(
         self,
@@ -684,8 +695,7 @@ class GraphLogic:
         self,
         graph_ids: Sequence[GraphID],
     ) -> List[Optional[CanonicalGraphDBEntry]]:
-        return self._run_async_graph_logic(
-            self.async_get_many_graph_entries(graph_ids))
+        return self._run_async_graph_logic(self.async_get_many_graph_entries(graph_ids))
 
     async def async_get_many_graph_entries(
         self,
@@ -694,8 +704,8 @@ class GraphLogic:
         v1_ids, v2_ids = _split_graph_id_versions(graph_ids)
         if v1_ids:
             raise RuntimeError(
-                "GraphLogic StateServices graph storage does not support "
-                "v1 graph IDs.")
+                'GraphLogic StateServices graph storage does not support v1 graph IDs.'
+            )
 
         v1_result: List[Optional[CanonicalGraphDBEntry]] = []
         v2_result = await self.async_get_many_graph_entries_v2(v2_ids)
@@ -716,12 +726,12 @@ class GraphLogic:
         return entry
 
     def _get_many_graph_entries_v1(
-            self,
-            ids: List[GraphIDv1]) -> List[Optional[CanonicalGraphDBEntry]]:
+        self, ids: List[GraphIDv1]
+    ) -> List[Optional[CanonicalGraphDBEntry]]:
         if ids:
             raise RuntimeError(
-                "GraphLogic StateServices graph storage does not support "
-                "v1 graph IDs.")
+                'GraphLogic StateServices graph storage does not support v1 graph IDs.'
+            )
         return []
 
     async def async_get_many_graph_entries_v2(
@@ -765,15 +775,15 @@ class GraphLogic:
             contains `name`.
         """
         db_entries = await self._require_graph_service().list_named_graphs(
-            self._project_id)
+            self._project_id
+        )
 
         list_response: List[ListResponse] = []
 
         for entry in db_entries:
             if entry.alias:
                 num_tables = len(entry.table_name_to_dbid)
-                num_links = sum(
-                    len(grp.columns) - 1 for grp in entry.col_groups)
+                num_links = sum(len(grp.columns) - 1 for grp in entry.col_groups)
                 list_response.append(
                     ListResponse(
                         id=f'graph-{entry.id}',
@@ -782,28 +792,29 @@ class GraphLogic:
                         num_tables=num_tables,
                         num_links=num_links,
                         created_by_name=entry.created_by_name,
-                    ))
+                    )
+                )
 
         return list_response
 
     async def start_graph_refresh(
-        self, graph_id: GraphID,
-        table_versions: Mapping[TableID,
-                                TableDataVersion] = {}) -> Optional[str]:
+        self, graph_id: GraphID, table_versions: Mapping[TableID, TableDataVersion] = {}
+    ) -> Optional[str]:
         data_compute_intput = await self.get_graph_data_compute_input(graph_id)
         if table_versions:
             data_compute_intput.pinned_data_versions = dict(table_versions)
-        return await DataBackend.start_refresh_graph(self._data_backend_ctx,
-                                                     data_compute_intput)
+        return await DataBackend.start_refresh_graph(
+            self._data_backend_ctx, data_compute_intput
+        )
 
     @blocking_method()
-    def pquery_from_config(self, pquery_config: PredictiveQueryV2Config,
-                           graph: Graph) -> PredictiveQuery:
+    def pquery_from_config(
+        self, pquery_config: PredictiveQueryV2Config, graph: Graph
+    ) -> PredictiveQuery:
         return PredictiveQueryV2.from_config(pquery_config, graph=graph)
 
     def delete_full_graph_def_v2(self, id: GraphIDv2) -> bool:
-        return self._run_async_graph_logic(
-            self.async_delete_full_graph_def_v2(id))
+        return self._run_async_graph_logic(self.async_delete_full_graph_def_v2(id))
 
     async def async_delete_full_graph_def_v2(self, id: GraphIDv2) -> bool:
         graph_fpid = await self._resolve_graph_fpid_from_state_services(id)
@@ -811,7 +822,8 @@ class GraphLogic:
             return False
         graph_service = self._require_graph_service()
         return await graph_service.decrement_or_delete_graph_definition(
-            self._project_id, graph_fpid)
+            self._project_id, graph_fpid
+        )
 
     @trace(TraceOptions(trace_params=True))
     async def _make_graph_from_graph_data_compute_input(
@@ -819,14 +831,15 @@ class GraphLogic:
         graph_data_compute_input: GraphDataComputeInput,
     ) -> Graph:
         connector_specs = await self._get_connector_specs_for_graph_def(
-            graph_data_compute_input.graph_definition)
+            graph_data_compute_input.graph_definition
+        )
         return _build_graph_from_definition_with_specs(
             graph_data_compute_input.graph_definition,
             graph_data_compute_input.graph_display_name,
             connector_specs.values(),
         )
 
-    @deprecated("Will be obsolete after db migration.")
+    @deprecated('Will be obsolete after db migration.')
     async def get_graph_script_for_sdk(self, graph_id: GraphIDv2) -> str:
         """
         The method that handles the logic to generate a fully executable Python SDK script.
@@ -847,8 +860,7 @@ class GraphLogic:
             _, fpid = GraphIDv2.parse(graph_id)
             assert fpid is not None
         except BaseException:
-            raise ValueError(f'Table resource id is malformed '
-                             f': {graph_id}')
+            raise ValueError(f'Table resource id is malformed : {graph_id}')
 
         graph_service = self._require_graph_service()
         db_entry = await graph_service.get_graph_entry(self._project_id, fpid)
@@ -860,8 +872,11 @@ class GraphLogic:
         # Handle edge case where the same table is used multiple times in the graph
         _assert_no_duplicate_tables(table_name_to_dbid)
 
-        table_and_connector_confs = await self._table_logic.get_many_table_configs_for_sdk(
-            db_entry.table_name_to_dbid)
+        table_and_connector_confs = (
+            await self._table_logic.get_many_table_configs_for_sdk(
+                db_entry.table_name_to_dbid
+            )
+        )
 
         connector_configs, table_configs = table_and_connector_confs
 
@@ -877,12 +892,11 @@ class GraphLogic:
         )
         return make_stype_and_dtype_sdk_compat(final_script)
 
-    @deprecated("Will be obsolete after db migration.")
+    @deprecated('Will be obsolete after db migration.')
     async def get_graph_metadata_for_sdk(
         self,
         graph_fpid: FPID,
-    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata],
-               List[graph_api.Edge]]:
+    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata], List[graph_api.Edge]]:
         """
         Generates the connector(s), tables, and edges metadata for UI to
         SDK feature.
@@ -894,8 +908,7 @@ class GraphLogic:
                List[graph_api.Edge]]
         """
         graph_service = self._require_graph_service()
-        db_entry = await graph_service.get_graph_entry(self._project_id,
-                                                       graph_fpid)
+        db_entry = await graph_service.get_graph_entry(self._project_id, graph_fpid)
         if not db_entry:
             raise GraphDoesNotExistError(GraphIDv2.compose(None, graph_fpid))
         table_name_to_dbid = db_entry.table_name_to_dbid
@@ -903,11 +916,11 @@ class GraphLogic:
         # Handle edge case where the same table is used multiple times in the graph
         _assert_no_duplicate_tables(table_name_to_dbid)
 
-        table_and_connector_confs = await self._table_logic.get_many_table_configs_for_sdk(
-            table_name_to_dbid)
+        table_and_connector_confs = (
+            await self._table_logic.get_many_table_configs_for_sdk(table_name_to_dbid)
+        )
         connector_configs, table_configs = table_and_connector_confs
-        edge_configs = get_edge_configs_for_sdk(db_entry.col_groups,
-                                                table_configs)
+        edge_configs = get_edge_configs_for_sdk(db_entry.col_groups, table_configs)
         return (connector_configs, table_configs, edge_configs)
 
     @property
@@ -933,7 +946,8 @@ class GraphLogic:
 
 
 def _make_col_index_v2(
-    tables: Dict[TableName, TableDefinition], ) -> Dict[ColumnKey, Any]:
+    tables: Dict[TableName, TableDefinition],
+) -> Dict[ColumnKey, Any]:
     """Map ColumnKey -> v2 Column for every column across all tables."""
     result: Dict[ColumnKey, Any] = {}
     for tname, definition in tables.items():
@@ -954,16 +968,14 @@ def _make_fkeys_v2(
     """
     try:
         resolved = graph_api.resolve_foreign_keys(
-            {
-                str(name): definition
-                for name, definition in tables.items()
-            },
+            {str(name): definition for name, definition in tables.items()},
             col_groups,
         )
     except graph_api.GraphSpecError as error:
         if error.code == 'no_primary_key':
-            rendered = ', '.join(f'{column.table_name}.{column.col_name}'
-                                 for column in error.columns)
+            rendered = ', '.join(
+                f'{column.table_name}.{column.col_name}' for column in error.columns
+            )
             message = COLUMN_GROUP_NO_PKEY_MESSAGE.format(rendered)
         elif error.code == 'multiple_primary_keys':
             first, second = error.columns[:2]
@@ -976,8 +988,7 @@ def _make_fkeys_v2(
                 table_name=error.column.table_name,
                 col_name=error.column.col_name,
             )
-            message = COLUMN_GROUP_MISSING_COLUMN_MESSAGE.format(
-                key, key.table_name)
+            message = COLUMN_GROUP_MISSING_COLUMN_MESSAGE.format(key, key.table_name)
         else:
             message = str(error)
         raise ValidationException(message=message) from error
@@ -998,12 +1009,14 @@ def _make_fkeys_v2(
                 dst_connector_id=destination.get_connector_id(),
                 dst_table_name=TableName(link.dst_table),
                 dst_col_name=destination.pkey,
-            ))
+            )
+        )
     return result
 
 
-def _convert_cols_v2(cols: Any, pkey: Optional[PrimaryKey],
-                     fkeys: List[ForeignKey]) -> List[Column]:
+def _convert_cols_v2(
+    cols: Any, pkey: Optional[PrimaryKey], fkeys: List[ForeignKey]
+) -> List[Column]:
     """v2 mirror of :func:`_convert_cols`; takes v2 ``Column`` inputs."""
     result: List[Column] = []
     names_to_exclude: Set[str] = set()
@@ -1040,8 +1053,7 @@ def _add_tables_to_graph_v2(
         # Thread the SQL text so the built table is ``is_sql=True`` (mirrors
         # ``table_args_to_kumo_table``). Only the ``is_sql`` marker is later
         # serialized into ``TableConfig`` for the validate/train activity.
-        custom_sql = (definition.source_table.sql
-                      if definition.is_sql else None)
+        custom_sql = definition.source_table.sql if definition.is_sql else None
         graph.add(
             name=tname,
             data_source=definition.get_connector_id(),
@@ -1096,9 +1108,9 @@ def _close_connectors(connectors: Iterable[Connector]) -> None:
             if first_error is None:
                 first_error = error
             log.warning(
-                'Activity graph connector cleanup failed '
-                '(cleanup_error_type=%s)',
-                type(error).__name__)
+                'Activity graph connector cleanup failed (cleanup_error_type=%s)',
+                type(error).__name__,
+            )
     if first_error is not None:
         raise first_error
 
@@ -1113,20 +1125,18 @@ def infer_graph_links_activity(
     graph_def: GraphDefinition,
     connector_refs: Dict[ConnectorID, ConnectorExecutionRef],
 ) -> List[ColumnKeyGroup]:
-    graph = _build_graph_from_definition_with_specs(graph_def, 'NA',
-                                                    connector_refs.values())
+    graph = _build_graph_from_definition_with_specs(
+        graph_def, 'NA', connector_refs.values()
+    )
     primary_error: BaseException | None = None
     try:
         inferred: List[ColumnKeyGroup] = []
         for group in graph.infer_col_groups():
             pkey_table = TableIDv2.parse(group.pkey.table + '-NA')[1]
-            columns = [
-                ColumnKey(table_name=pkey_table, col_name=group.pkey.col)
-            ]
+            columns = [ColumnKey(table_name=pkey_table, col_name=group.pkey.col)]
             for fkey in group.fkeys:
                 fkey_table = TableIDv2.parse(fkey.table + '-NA')[1]
-                columns.append(
-                    ColumnKey(table_name=fkey_table, col_name=fkey.col))
+                columns.append(ColumnKey(table_name=fkey_table, col_name=fkey.col))
             inferred.append(ColumnKeyGroup(columns=tuple(columns)))
         return inferred
     except BaseException as error:
@@ -1145,8 +1155,9 @@ async def validate_graph_definition_activity(
     graph_def: GraphDefinition,
     connector_refs: Dict[ConnectorID, ConnectorExecutionRef],
 ) -> None:
-    graph = _build_graph_from_definition_with_specs(graph_def, 'NA',
-                                                    connector_refs.values())
+    graph = _build_graph_from_definition_with_specs(
+        graph_def, 'NA', connector_refs.values()
+    )
     primary_error: BaseException | None = None
     try:
         await graph.validate.coroutine(
@@ -1185,7 +1196,7 @@ async def validate_graph_definition_activity(
 
 
 def _split_graph_id_versions(
-        graph_ids: Sequence[GraphID]
+    graph_ids: Sequence[GraphID],
 ) -> Tuple[List[GraphIDv1], List[GraphIDv2]]:
     # Split into v1 and v2
     v1_ids: List[GraphIDv1] = []
@@ -1203,8 +1214,9 @@ def _split_graph_id_versions(
 T = TypeVar('T')
 
 
-def _merge_graph_id_versions(graph_ids: Sequence[GraphID], v1_result: List[T],
-                             v2_result: List[T]) -> List[T]:
+def _merge_graph_id_versions(
+    graph_ids: Sequence[GraphID], v1_result: List[T], v2_result: List[T]
+) -> List[T]:
     # Merge together
     result: List[T] = []
     v1_idx = 0
@@ -1251,8 +1263,7 @@ def get_edge_configs_for_sdk(
             new_table_conf[table.source_table_name] = table.table_config
 
     tables = {
-        name:
-        ApiTableDefinition(
+        name: ApiTableDefinition(
             cols=config['cols'],
             source_table=UnavailableSourceTable(config['table_name']),
             pkey=config['pkey'],
@@ -1264,13 +1275,13 @@ def get_edge_configs_for_sdk(
             new_table_conf[edge.src_table]['table_name'],
             edge.fkey,
             new_table_conf[edge.dst_table]['table_name'],
-        ) for edge in graph_api.resolve_foreign_keys(tables, col_groups)
+        )
+        for edge in graph_api.resolve_foreign_keys(tables, col_groups)
     ]
 
 
 def _assert_no_duplicate_tables(table_name_to_dbid: Dict[TableName, FPID]):
-    if len(set(table_name_to_dbid.keys())) != len(
-            set(table_name_to_dbid.values())):
+    if len(set(table_name_to_dbid.keys())) != len(set(table_name_to_dbid.values())):
         value_to_keys = {}
         for key, value in table_name_to_dbid.items():
             if value in value_to_keys:
@@ -1278,10 +1289,10 @@ def _assert_no_duplicate_tables(table_name_to_dbid: Dict[TableName, FPID]):
             else:
                 value_to_keys[value] = [key]
         duplicate_keys = [
-            key for keys in value_to_keys.values() if len(keys) > 1
-            for key in keys
+            key for keys in value_to_keys.values() if len(keys) > 1 for key in keys
         ]
         raise ValueError(
-            "Kumo cannot generate SDK code for graphs that contain multiple "
-            "tables that point to the same source table. "
-            f"The duplicate tables are: {duplicate_keys}.")
+            'Kumo cannot generate SDK code for graphs that contain multiple '
+            'tables that point to the same source table. '
+            f'The duplicate tables are: {duplicate_keys}.'
+        )

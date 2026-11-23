@@ -30,23 +30,27 @@ def data(root: Path) -> kumo.Graph:
     rng = np.random.default_rng(0)
     root.mkdir(parents=True)
     pd.DataFrame({'USER_ID': np.arange(200)}).to_parquet(root / 'users.parquet')
-    pd.DataFrame({
-        'ORDER_ID': np.arange(6000),
-        'USER_ID': rng.integers(0, 200, 6000),
-        'ORDER_TIME': pd.Timestamp('2024-01-01') +
-        pd.to_timedelta(rng.integers(0, 120, 6000), unit='D'),
-    }).to_parquet(root / 'orders.parquet')
+    pd.DataFrame(
+        {
+            'ORDER_ID': np.arange(6000),
+            'USER_ID': rng.integers(0, 200, 6000),
+            'ORDER_TIME': pd.Timestamp('2024-01-01')
+            + pd.to_timedelta(rng.integers(0, 120, 6000), unit='D'),
+        }
+    ).to_parquet(root / 'orders.parquet')
     files = kumo.FileConnector(root_dir=str(root))
     orders = kumo.Table.from_source_table(
-        files['orders.parquet'], primary_key='ORDER_ID',
-        time_column='ORDER_TIME').infer_metadata()
+        files['orders.parquet'], primary_key='ORDER_ID', time_column='ORDER_TIME'
+    ).infer_metadata()
     return kumo.Graph(
         tables={
             'users': kumo.Table.from_source_table(
-                files['users.parquet'], primary_key='USER_ID'),
+                files['users.parquet'], primary_key='USER_ID'
+            ),
             'orders': orders,
-        }, edges=[kumo.Edge(src_table='orders', fkey='USER_ID',
-                            dst_table='users')])
+        },
+        edges=[kumo.Edge(src_table='orders', fkey='USER_ID', dst_table='users')],
+    )
 
 
 def tracking(args: argparse.Namespace, suffix: str):
@@ -54,39 +58,67 @@ def tracking(args: argparse.Namespace, suffix: str):
 
     if args.platform == 'databricks':
         workspace = DatabricksConnector(
-            catalog=args.catalog, schema_name=args.schema,
-            warehouse_id=args.warehouse, identity=DatabricksIdentity(
-                host=args.host, client_id=args.client_id,
-                client_secret=os.environ['DATABRICKS_CLIENT_SECRET']))
-        return (MlflowTracking(target=workspace,
-                               experiment_name=args.experiment),
-                f'{args.catalog}.{args.schema}.kumo_smoke_{suffix}')
+            catalog=args.catalog,
+            schema_name=args.schema,
+            warehouse_id=args.warehouse,
+            identity=DatabricksIdentity(
+                host=args.host,
+                client_id=args.client_id,
+                client_secret=os.environ['DATABRICKS_CLIENT_SECRET'],
+            ),
+        )
+        return (
+            MlflowTracking(target=workspace, experiment_name=args.experiment),
+            f'{args.catalog}.{args.schema}.kumo_smoke_{suffix}',
+        )
     if args.platform == 'sagemaker':
         identity = S3Identity(role_arn=args.role_arn) if args.role_arn else None
-        return (MlflowTracking(
-            target=SageMakerMLflow(args.arn, identity=identity),
-            experiment_name='kumo-smoke'), f'kumo-smoke-{suffix}')
+        return (
+            MlflowTracking(
+                target=SageMakerMLflow(args.arn, identity=identity),
+                experiment_name='kumo-smoke',
+            ),
+            f'kumo-smoke-{suffix}',
+        )
     from kumo.engine.integrations.snowflake import SnowflakeTracking
 
     connector = SnowflakeConnector(
-        warehouse=args.warehouse, database=args.database,
-        schema_name=args.schema, identity=SnowflakeIdentity(
-            account=args.account, username=args.user,
-            private_key=Path(args.private_key_file).read_text()))
-    return (SnowflakeTracking(connector, experiment_name='KUMO_SMOKE'),
-            f'KUMO_SMOKE_{suffix}')
+        warehouse=args.warehouse,
+        database=args.database,
+        schema_name=args.schema,
+        identity=SnowflakeIdentity(
+            account=args.account,
+            username=args.user,
+            private_key=Path(args.private_key_file).read_text(),
+        ),
+    )
+    return (
+        SnowflakeTracking(connector, experiment_name='KUMO_SMOKE'),
+        f'KUMO_SMOKE_{suffix}',
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('platform',
-                        choices=('databricks', 'sagemaker', 'snowflake'))
-    for flag in ('--host', '--client-id', '--catalog', '--schema',
-                 '--warehouse', '--experiment', '--arn', '--role-arn',
-                 '--database', '--account', '--user', '--private-key-file'):
+    parser.add_argument('platform', choices=('databricks', 'sagemaker', 'snowflake'))
+    for flag in (
+        '--host',
+        '--client-id',
+        '--catalog',
+        '--schema',
+        '--warehouse',
+        '--experiment',
+        '--arn',
+        '--role-arn',
+        '--database',
+        '--account',
+        '--user',
+        '--private-key-file',
+    ):
         parser.add_argument(flag)
-    parser.add_argument('--artifact-root',
-                        help='defaults to a local temporary directory')
+    parser.add_argument(
+        '--artifact-root', help='defaults to a local temporary directory'
+    )
     args = parser.parse_args(argv)
 
     started = time.monotonic()
@@ -95,8 +127,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     graph = data(work / 'data')
     tracker, model_name = tracking(args, time.strftime('%Y%m%d%H%M%S'))
     location = ModelRegistryLocation(model_name, alias='candidate')
-    cfg = kumo.MLOps(args.artifact_root or str(work / 'root'),
-                     tracking=tracker, registry=location, on_error='raise')
+    cfg = kumo.MLOps(
+        args.artifact_root or str(work / 'root'),
+        tracking=tracker,
+        registry=location,
+        on_error='raise',
+    )
     print(f'checked the target in {time.monotonic() - started:.0f} s')
     with kumo.mlops(cfg):
         snapshot = graph.snapshot()
@@ -106,8 +142,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         plan.training_job.num_experiments = 1
         plan.optimization.max_epochs = 1
         result = kumo.Trainer(plan).fit(table, snapshot=snapshot)
-    print(f'fit run {result.tracking}, bundle {result.id}, '
-          f'registered {result.registered_model}')
+    print(
+        f'fit run {result.tracking}, bundle {result.id}, '
+        f'registered {result.registered_model}'
+    )
     loaded = kumo.Trainer.load_from_connector(cfg, location=location)
     assert loaded.result.id == result.id, (loaded.result.id, result.id)
     print('loaded the registered model back')

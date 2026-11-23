@@ -20,10 +20,10 @@ def test_customer_source_requires_matching_explicit_identity(path):
             source_access(path)
 
 
-@pytest.mark.parametrize('path,provider', [('s3://bucket/key', 's3'),
-                                           ('gs://bucket/key', 'gcs')])
-def test_incomplete_customer_identity_never_uses_ambient(
-        path, provider, monkeypatch):
+@pytest.mark.parametrize(
+    'path,provider', [('s3://bucket/key', 's3'), ('gs://bucket/key', 'gcs')]
+)
+def test_incomplete_customer_identity_never_uses_ambient(path, provider, monkeypatch):
     ambient = Mock(side_effect=AssertionError('ambient fallback'))
     monkeypatch.setattr('google.auth.default', ambient)
     monkeypatch.setattr('boto3.session.Session', ambient)
@@ -37,11 +37,12 @@ def test_s3_attested_source_cannot_become_static_credentials(monkeypatch):
     factory = Mock()
     monkeypatch.setattr('kumo_s3.access.source_access', factory)
     session = Mock()
-    session.get_credentials.return_value.get_frozen_credentials.return_value.token = None
-    with credential_scope({
-            'provider': 's3',
-            'ambient_session': session
-    }, require_explicit=True):
+    session.get_credentials.return_value.get_frozen_credentials.return_value.token = (
+        None
+    )
+    with credential_scope(
+        {'provider': 's3', 'ambient_session': session}, require_explicit=True
+    ):
         with pytest.raises(RuntimeError, match='no temporary credentials'):
             source_access('s3://customer-bucket/table')
     factory.assert_not_called()

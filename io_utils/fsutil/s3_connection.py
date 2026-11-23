@@ -19,24 +19,28 @@ from io_utils.secrets import get_secrets
 from service_framework._raw_deploy_config import S3AddressingStyle
 from service_framework.deploy_env_config import deploy_env
 
-AWS_WORKLOAD_CREDENTIAL_METHODS = frozenset({
-    'assume-role-with-web-identity',
-    'container-role',
-    'iam-role',
-})
+AWS_WORKLOAD_CREDENTIAL_METHODS = frozenset(
+    {
+        'assume-role-with-web-identity',
+        'container-role',
+        'iam-role',
+    }
+)
 
 # Environment selectors that let an AWS SDK child reconstruct the renewable
 # workload provider already attested by the control plane. Instance-role auth
 # has no positive selector; it works when metadata access is left enabled.
-AWS_WORKLOAD_CREDENTIAL_ENVIRONMENT_KEYS = frozenset({
-    'AWS_WEB_IDENTITY_TOKEN_FILE',
-    'AWS_ROLE_ARN',
-    'AWS_ROLE_SESSION_NAME',
-    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
-    'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-    'AWS_CONTAINER_AUTHORIZATION_TOKEN',
-    'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-})
+AWS_WORKLOAD_CREDENTIAL_ENVIRONMENT_KEYS = frozenset(
+    {
+        'AWS_WEB_IDENTITY_TOKEN_FILE',
+        'AWS_ROLE_ARN',
+        'AWS_ROLE_SESSION_NAME',
+        'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+    }
+)
 
 # The Rust SDK checks shared AWS files before workload providers, while boto3
 # checks web identity before shared files. Point both file inputs at an empty
@@ -79,10 +83,7 @@ class S3Connection:
     def boto_config(self) -> Config:
         return Config(
             signature_version='s3v4',
-            s3={
-                'addressing_style':
-                _addressing_style_value(self.addressing_style)
-            },
+            s3={'addressing_style': _addressing_style_value(self.addressing_style)},
         )
 
     @property
@@ -92,8 +93,7 @@ class S3Connection:
     @property
     def ca_path(self) -> Optional[str]:
         if self.ca_certificate is not None:
-            return _materialize_ca(self.owner, self.rotation_id,
-                                   self.ca_certificate)
+            return _materialize_ca(self.owner, self.rotation_id, self.ca_certificate)
         return self.ca_bundle_path
 
     def pyarrow_options(self) -> dict[str, object]:
@@ -107,15 +107,17 @@ class S3Connection:
         options.update(
             arrow_connection_options(
                 self.endpoint_url,
-                _addressing_style_value(self.addressing_style), self.ca_path))
+                _addressing_style_value(self.addressing_style),
+                self.ca_path,
+            )
+        )
         return options
 
 
 S3AddressingStyleValue = Literal['auto', 'path', 'virtual']
 
 
-def _addressing_style_value(
-        style: S3AddressingStyle | str) -> S3AddressingStyleValue:
+def _addressing_style_value(style: S3AddressingStyle | str) -> S3AddressingStyleValue:
     if style == S3AddressingStyle.AUTO or style == 'auto':
         return 'auto'
     if style == S3AddressingStyle.PATH or style == 'path':
@@ -158,8 +160,9 @@ def _materialize_ca(owner: str, rotation_id: str, certificate: str) -> str:
         existing = _CA_PATHS.get(key)
         if existing is not None:
             return existing
-        descriptor, path = tempfile.mkstemp(dir=_CA_DIRECTORY, prefix='ca-',
-                                            suffix='.pem')
+        descriptor, path = tempfile.mkstemp(
+            dir=_CA_DIRECTORY, prefix='ca-', suffix='.pem'
+        )
         try:
             os.fchmod(descriptor, 0o400)
             os.write(descriptor, certificate.encode('utf-8'))
@@ -169,13 +172,14 @@ def _materialize_ca(owner: str, rotation_id: str, certificate: str) -> str:
         return path
 
 
-def _required_secret_value(secret: Mapping[str, str], key: str,
-                           secret_name: str) -> str:
+def _required_secret_value(
+    secret: Mapping[str, str], key: str, secret_name: str
+) -> str:
     value = secret.get(key)
     if not isinstance(value, str) or not value.strip():
         raise RuntimeError(
-            f'S3 credential secret {secret_name!r} is missing required key '
-            f'{key!r}')
+            f'S3 credential secret {secret_name!r} is missing required key {key!r}'
+        )
     return value
 
 
@@ -187,20 +191,24 @@ def deployment_s3_connection() -> Optional[S3Connection]:
         return None
     secret = get_secrets(config.credential_secret_name)
     session_token = secret.get('aws_session_token')
-    if session_token is not None and (not isinstance(session_token, str)
-                                      or not session_token.strip()):
+    if session_token is not None and (
+        not isinstance(session_token, str) or not session_token.strip()
+    ):
         raise RuntimeError(
             f'S3 credential secret {config.credential_secret_name!r} has an '
-            'empty aws_session_token')
+            'empty aws_session_token'
+        )
     return S3Connection(
         endpoint_url=config.endpoint_url,
         region=config.region,
         addressing_style=config.addressing_style,
         credential_secret_name=config.credential_secret_name,
-        access_key=_required_secret_value(secret, 'aws_access_key_id',
-                                          config.credential_secret_name),
-        secret_key=_required_secret_value(secret, 'aws_secret_access_key',
-                                          config.credential_secret_name),
+        access_key=_required_secret_value(
+            secret, 'aws_access_key_id', config.credential_secret_name
+        ),
+        secret_key=_required_secret_value(
+            secret, 'aws_secret_access_key', config.credential_secret_name
+        ),
         session_token=session_token,
         ca_bundle_path=config.ca_bundle_path,
         send_bucket_owner_full_control=(config.send_bucket_owner_full_control),
@@ -211,6 +219,7 @@ def active_s3_connection() -> Optional[S3Connection]:
     """Return deployment settings unless an explicit S3 identity is active."""
     # Local import breaks the credentials -> resolved-connection type cycle.
     from io_utils.fsutil.credentials import credentials_for_provider
+
     scope = credentials_for_provider('s3')
     if scope is not None:
         connection = (scope.credentials or {}).get('s3_connection')
@@ -222,33 +231,35 @@ def active_s3_connection() -> Optional[S3Connection]:
     return deployment_s3_connection()
 
 
-S3_INHERITED_ENVIRONMENT_KEYS = frozenset({
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_SECURITY_TOKEN',
-    'AWS_PROFILE',
-    'AWS_DEFAULT_PROFILE',
-    'AWS_SHARED_CREDENTIALS_FILE',
-    'AWS_CONFIG_FILE',
-    'AWS_WEB_IDENTITY_TOKEN_FILE',
-    'AWS_ROLE_ARN',
-    'AWS_ROLE_SESSION_NAME',
-    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
-    'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-    'AWS_CONTAINER_AUTHORIZATION_TOKEN',
-    'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-    'AWS_ENDPOINT_URL',
-    'AWS_ENDPOINT_URL_S3',
-    'AWS_CA_BUNDLE',
-    'AWS_S3_ADDRESSING_STYLE',
-    'S3_ACCESS_KEY',
-    'S3_SECRET_KEY',
-    'S3_SESSION_TOKEN',
-    'S3_REGION',
-    'S3_ENDPOINT',
-    'S3_VIRTUAL_HOSTED',
-})
+S3_INHERITED_ENVIRONMENT_KEYS = frozenset(
+    {
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
+        'AWS_SECURITY_TOKEN',
+        'AWS_PROFILE',
+        'AWS_DEFAULT_PROFILE',
+        'AWS_SHARED_CREDENTIALS_FILE',
+        'AWS_CONFIG_FILE',
+        'AWS_WEB_IDENTITY_TOKEN_FILE',
+        'AWS_ROLE_ARN',
+        'AWS_ROLE_SESSION_NAME',
+        'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+        'AWS_ENDPOINT_URL',
+        'AWS_ENDPOINT_URL_S3',
+        'AWS_CA_BUNDLE',
+        'AWS_S3_ADDRESSING_STYLE',
+        'S3_ACCESS_KEY',
+        'S3_SECRET_KEY',
+        'S3_SESSION_TOKEN',
+        'S3_REGION',
+        'S3_ENDPOINT',
+        'S3_VIRTUAL_HOSTED',
+    }
+)
 
 
 def scrubbed_s3_environment() -> dict[str, None]:
@@ -279,11 +290,12 @@ def s3_connection_environment(connection: S3Connection) -> dict[str, str]:
         environment['S3_SESSION_TOKEN'] = connection.session_token
     if _addressing_style_value(connection.addressing_style) != 'auto':
         virtual = str(
-            _addressing_style_value(connection.addressing_style) ==
-            'virtual').lower()
+            _addressing_style_value(connection.addressing_style) == 'virtual'
+        ).lower()
         environment['S3_VIRTUAL_HOSTED'] = virtual
-        environment['AWS_S3_ADDRESSING_STYLE'] = (_addressing_style_value(
-            connection.addressing_style))
+        environment['AWS_S3_ADDRESSING_STYLE'] = _addressing_style_value(
+            connection.addressing_style
+        )
     if connection.ca_path:
         environment['AWS_CA_BUNDLE'] = connection.ca_path
         environment['SSL_CERT_FILE'] = connection.ca_path

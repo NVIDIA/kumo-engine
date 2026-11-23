@@ -22,16 +22,15 @@ def teardown_function():
 def test_generate_graph():
     graph_spec = GraphSpec(
         table_specs={
-            0: TableSpec(100,
-                         [Dtype.int, (Dtype.float, 0.8), (Dtype.string, 0.4)]),
+            0: TableSpec(100, [Dtype.int, (Dtype.float, 0.8), (Dtype.string, 0.4)]),
             1: TableSpec(50, [Dtype.date, Dtype.time]),
-            2: TableSpec(25, [Dtype.int, Dtype.bool])
+            2: TableSpec(25, [Dtype.int, Dtype.bool]),
         },
         edge_specs={
             (0, 1): EdgeSpec(0.5),
             (1, 0): EdgeSpec(1),
             (0, 2): EdgeSpec(1),
-            (1, 2): EdgeSpec(2)
+            (1, 2): EdgeSpec(2),
         },
     )
 
@@ -47,27 +46,26 @@ def test_generate_graph():
 
 
 def test_validation_errors():
-    with pytest.raises(ValueError, match="must be between 0 and 1"):
+    with pytest.raises(ValueError, match='must be between 0 and 1'):
         _ = ColumnSpec(dtype=None, na_frac=2)
 
-    with pytest.raises(ValueError, match="must be integral"):
+    with pytest.raises(ValueError, match='must be integral'):
         _ = EdgeSpec(2.5)
 
 
 def test_generate_graph_multiedges():
     graph_spec = GraphSpec(
         table_specs={
-            0: TableSpec(100,
-                         [Dtype.int, (Dtype.float, 0.8), (Dtype.string, 0.4)]),
+            0: TableSpec(100, [Dtype.int, (Dtype.float, 0.8), (Dtype.string, 0.4)]),
             1: TableSpec(50, [Dtype.date, Dtype.time]),
             2: TableSpec(25, [Dtype.int, Dtype.bool]),
-            3: TableSpec(15, [Dtype.int])
+            3: TableSpec(15, [Dtype.int]),
         },
         edge_specs={
             (0, 1): EdgeSpec(0.5),
             (1, 2): EdgeSpec(2),
             (0, 1, 3): EdgeSpec(3),
-            (0, 1, 2): EdgeSpec(25)
+            (0, 1, 2): EdgeSpec(25),
         },
     )
 

@@ -7,6 +7,7 @@
 Run it outside the checkout, next to wheel_gpu_smoke.py, with the Python of
 the venv that holds the wheel. See docs/development/releasing-kumo-engine.md.
 """
+
 import argparse
 import hashlib
 import json
@@ -72,8 +73,9 @@ def check_wheel(wheel):
     if os.path.normcase(path) != os.path.normcase(wheel.resolve()):
         raise RuntimeError(f'kumo-engine is installed from {path}, not {wheel}')
     module = Path(kumo.__file__).resolve()
-    if (sys.prefix == sys.base_prefix
-            or not module.is_relative_to(Path(sys.prefix).resolve())):
+    if sys.prefix == sys.base_prefix or not module.is_relative_to(
+        Path(sys.prefix).resolve()
+    ):
         raise RuntimeError(f'kumo.engine is not imported from a venv: {module}')
     return hashlib.sha256(wheel.read_bytes()).hexdigest()
 
@@ -116,9 +118,15 @@ def observe(work):
     search = mips.MIPSFaiss._search
 
     def traced(index, *args):
-        work['search'].add('torch' if index._cpu_index is not None else
-                           'metal' if index._metal_index is not None else
-                           'cuda' if index._res is not None else 'faiss-cpu')
+        work['search'].add(
+            'torch'
+            if index._cpu_index is not None
+            else 'metal'
+            if index._metal_index is not None
+            else 'cuda'
+            if index._res is not None
+            else 'faiss-cpu'
+        )
         return search(index, *args)
 
     step = lambda optimizer, *_: work['steps'].add(type(optimizer).__name__)
@@ -151,8 +159,11 @@ def worker(phase, task, device, durable, out, base, data):
         prepared = tasks.prepare_task(task, base, graphs, base / 'task', {})
         shutil.copy2(prepared['input_file'], durable / 'inputs.parquet')
         snapshot, anchor = prepared['snapshot'], prepared['anchor']
-        meta = dict(ids=prepared['ids'], classes=prepared['classes'],
-                    anchor=anchor and str(anchor))
+        meta = dict(
+            ids=prepared['ids'],
+            classes=prepared['classes'],
+            anchor=anchor and str(anchor),
+        )
     else:
         meta = json.loads(out.with_name('produce.json').read_text())
     with observe(work):
@@ -160,23 +171,29 @@ def worker(phase, task, device, durable, out, base, data):
             seed()
             trainer = kumo.Trainer(tasks.make_plan(task), accelerator=device)
             trainer.fit(prepared['training_table'], snapshot=snapshot).export(
-                kumo.ModelOutputConfig(files, path='model'))
+                kumo.ModelOutputConfig(files, path='model')
+            )
             meta['model'] = trainer.result.id
             meta['snapshot'] = snapshot.export(
-                kumo.SnapshotOutputConfig(files, path='snapshot'))
+                kumo.SnapshotOutputConfig(files, path='snapshot')
+            )
         else:
-            trainer = kumo.Trainer.load_from_connector(files, path='model',
-                                                       accelerator=device)
+            trainer = kumo.Trainer.load_from_connector(
+                files, path='model', accelerator=device
+            )
             snapshot = kumo.GraphSnapshot.load_from_connector(
-                files, path=meta['snapshot'])
+                files, path=meta['snapshot']
+            )
         options = dict(entities=files['inputs.parquet'])  # As the GPU smoke.
         if task == 'binary':
             options.update(
-                binary_classification_threshold=.5,
+                binary_classification_threshold=0.5,
                 output_config=kumo.PredictionOutputConfig(
                     connector=kumo.FileConnector(root_dir=str(base / 'output')),
                     output_paths={'predictions': 'predictions'},
-                    extra_fields=[MetadataField.ANCHOR_TIMESTAMP]))
+                    extra_fields=[MetadataField.ANCHOR_TIMESTAMP],
+                ),
+            )
         else:
             options['num_classes_to_return'] = len(meta['classes'])
         seed()
@@ -195,17 +212,26 @@ def spawn(phase, task, device, durable, out, data=None, **extra):
         (base / name).mkdir()
     drop = ('KUMO_', 'DISKGRAPH_')  # Could point at other binaries or data.
     env = {k: v for k, v in os.environ.items() if not k.startswith(drop)}
-    env.update(extra, HOME=str(base / 'home'), TMPDIR=str(base / 'tmp'),
-               XDG_CACHE_HOME=str(base / 'cache'),
-               PYTORCH_ENABLE_MPS_FALLBACK='0')  # No silent CPU fallback.
+    env.update(
+        extra,
+        HOME=str(base / 'home'),
+        TMPDIR=str(base / 'tmp'),
+        XDG_CACHE_HOME=str(base / 'cache'),
+        PYTORCH_ENABLE_MPS_FALLBACK='0',
+    )  # No silent CPU fallback.
     if device == 'cpu':  # A CPU row must not reach a GPU.
         env['CUDA_VISIBLE_DEVICES'] = ''
     command = [sys.executable, '-Iu', __file__, 'worker', phase, task, device]
     command += map(str, (durable, out, base, data))
     with open(out.with_suffix('.log'), 'wb') as log:
-        process = subprocess.Popen(command, cwd=base / 'cwd', env=env,
-                                   stdout=log, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
+        process = subprocess.Popen(
+            command,
+            cwd=base / 'cwd',
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
             return process.wait(timeout=3600)
         finally:
@@ -222,8 +248,14 @@ def qualify(task, device, data, out, work, result):
     durable = work / task
     durable.mkdir()
     for phase in ('produce', 'consume'):
-        if spawn(phase, task, device, durable, out / phase,
-                 data if phase == 'produce' else None):
+        if spawn(
+            phase,
+            task,
+            device,
+            durable,
+            out / phase,
+            data if phase == 'produce' else None,
+        ):
             raise RuntimeError(f'The {phase} process failed: {phase}.log')
         # Batches and searches run on the device. The consumer does not train.
         want = dict(train=[TORCH[device]], predict=[TORCH[device]])
@@ -242,24 +274,40 @@ def qualify(task, device, data, out, work, result):
     def align(phase):  # The GPU smoke's checks of one prediction.
         frame = pd.read_parquet(out / f'{phase}.parquet')
         options = dict(classes=meta['classes'])
-        return (tasks.prediction_values(task, frame, meta['ids'],
-                                        anchor=meta['anchor'], **options),
-                tasks.prediction_decisions(task, frame, meta['ids'], **options))
+        return (
+            tasks.prediction_values(
+                task, frame, meta['ids'], anchor=meta['anchor'], **options
+            ),
+            tasks.prediction_decisions(task, frame, meta['ids'], **options),
+        )
 
     (before, chosen), (after, rechosen) = align('produce'), align('consume')
     result.update(
-        tasks.compare_predictions(before, after, task=task, atol=ATOL[device],
-                                  before_decisions=chosen,
-                                  after_decisions=rechosen))
-    cases = ('model_corrupt', 'model_missing', 'snapshot_corrupt',
-             'snapshot_missing', mps_case())
+        tasks.compare_predictions(
+            before,
+            after,
+            task=task,
+            atol=ATOL[device],
+            before_decisions=chosen,
+            after_decisions=rechosen,
+        )
+    )
+    cases = (
+        'model_corrupt',
+        'model_missing',
+        'snapshot_corrupt',
+        'snapshot_missing',
+        mps_case(),
+    )
     result['failure_cases'] = rejected = {}
     for name in filter(None, cases if task == 'binary' else ['faiss_missing']):
         copy, kind = work / name, name.split('_')[0]
         shutil.copytree(durable, copy)
         if kind in ('model', 'snapshot'):
-            target = max((p for p in (copy / kind).rglob('*') if p.is_file()),
-                         key=lambda p: p.stat().st_size)
+            target = max(
+                (p for p in (copy / kind).rglob('*') if p.is_file()),
+                key=lambda p: p.stat().st_size,
+            )
             if name == 'snapshot_missing':
                 shutil.rmtree(copy / kind)
             elif name == 'model_missing':
@@ -268,14 +316,22 @@ def qualify(task, device, data, out, work, result):
                 content = bytearray(target.read_bytes())
                 content[len(content) // 2] ^= 0xFF
                 target.write_bytes(content)
-        code = spawn('consume', task, 'mps' if kind == 'mps' else device, copy,
-                     out / name, DRQ_HIDE_FAISS='1' if kind == 'faiss' else '')
+        code = spawn(
+            'consume',
+            task,
+            'mps' if kind == 'mps' else device,
+            copy,
+            out / name,
+            DRQ_HIDE_FAISS='1' if kind == 'faiss' else '',
+        )
         shutil.rmtree(copy)
         error = out / f'{name}.error'
         rejected[name] = error.read_text() if code and error.exists() else ''
         if not re.search(ERRORS[name], rejected[name]):
-            raise RuntimeError(f'The consumer did not reject {name} clearly: '
-                               f'exit {code}, {rejected[name]!r}')
+            raise RuntimeError(
+                f'The consumer did not reject {name} clearly: '
+                f'exit {code}, {rejected[name]!r}'
+            )
     shutil.rmtree(durable)
 
 
@@ -293,9 +349,15 @@ def main():
         sys.exit(f'{output} holds an earlier attempt. Use a new --output-dir.')
     output.mkdir(parents=True, exist_ok=True)
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-    summary = dict(label=label(args.device), commit=args.commit, started=now,
-                   wheel=args.wheel.name, wheel_sha256=None,
-                   cpus=os.cpu_count(), tasks={})
+    summary = dict(
+        label=label(args.device),
+        commit=args.commit,
+        started=now,
+        wheel=args.wheel.name,
+        wheel_sha256=None,
+        cpus=os.cpu_count(),
+        tasks={},
+    )
     work = Path(tempfile.mkdtemp(prefix='drq-work-', dir='/tmp'))
     try:
         for task in TASKS:
@@ -304,24 +366,29 @@ def main():
             try:  # A wrong wheel fails each task with the reason.
                 summary['wheel_sha256'] = check_wheel(args.wheel)
                 (output / task).mkdir()
-                qualify(task, args.device, args.data_dir.resolve(),
-                        output / task, work, result)
+                qualify(
+                    task,
+                    args.device,
+                    args.data_dir.resolve(),
+                    output / task,
+                    work,
+                    result,
+                )
                 result['status'] = 'PASS'
             except Exception as error:  # Record it, then run the next task.
                 traceback.print_exc()
-                result.update(status='FAIL',
-                              error=f'{type(error).__name__}: {error}')
+                result.update(status='FAIL', error=f'{type(error).__name__}: {error}')
             result['seconds'] = round(time.monotonic() - started, 1)
             # The largest worker's ru_maxrss: KiB on Linux, bytes on macOS.
             rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
             summary['peak_rss_mib'] = round(
-                rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10))
+                rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10)
+            )
             print(task, json.dumps(result), flush=True)
             (output / 'summary.json').write_text(json.dumps(summary, indent=1))
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    return 0 if all(r['status'] == 'PASS'
-                    for r in summary['tasks'].values()) else 1
+    return 0 if all(r['status'] == 'PASS' for r in summary['tasks'].values()) else 1
 
 
 if __name__ == '__main__':
@@ -331,5 +398,6 @@ if __name__ == '__main__':
         worker(*sys.argv[2:])
     except BaseException as error:
         Path(sys.argv[6]).with_suffix('.error').write_text(
-            f'{type(error).__name__}: {error}')
+            f'{type(error).__name__}: {error}'
+        )
         raise

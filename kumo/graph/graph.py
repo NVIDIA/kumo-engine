@@ -51,6 +51,7 @@ GRAPH_THREAD_POOL = ThreadPoolExecutor(thread_name_prefix='Graph-Threadpool')
 class ColumnInfo:
     r"""Dataclass to hold FQ table name and column name of an inferred group
     in the graph. Used to create inferred links."""
+
     table: str
     col: str
 
@@ -60,6 +61,7 @@ class GroupInfo:
     r"""Dataclass that defines an inferred group. pkey holds the column
     details about primary key of the group and fkeys are the list of table
     information about probable fkeys. Used to create inferred links."""
+
     pkey: ColumnInfo
     fkeys: List[ColumnInfo]
 
@@ -89,6 +91,7 @@ class Graph(ConfigMixin, _HasData):
         tables (List[Table], optional): The tables in the graph.
             (default: :obj:`None`)
     """
+
     def __init__(
         self,
         name: Optional[str] = None,
@@ -176,19 +179,21 @@ class Graph(ConfigMixin, _HasData):
             # If two strings, resolve ambiguity by checking column first, then
             # table
             maybe_cols = [name[1]] if isinstance(name[1], str) else name[1]
-            maybe_cols = [] if not isinstance(maybe_cols,
-                                              (list, tuple)) else maybe_cols
-            is_valid_columns = (self.has_table(name[0]) and all(
-                [self.table(name[0]).has_col(col) for col in maybe_cols]))
+            maybe_cols = [] if not isinstance(maybe_cols, (list, tuple)) else maybe_cols
+            is_valid_columns = self.has_table(name[0]) and all(
+                [self.table(name[0]).has_col(col) for col in maybe_cols]
+            )
             is_valid_table = self.has_data_source(name[0]) and self.has_table(
-                name[1], data_source=name[0])
+                name[1], data_source=name[0]
+            )
 
             if is_valid_columns:
                 if is_valid_table:
                     logger.warning(
-                        f"Ambiguous access: {original_name} is a valid "
-                        "column as well as a valid table. Assuming it is a "
-                        "column.")
+                        f'Ambiguous access: {original_name} is a valid '
+                        'column as well as a valid table. Assuming it is a '
+                        'column.'
+                    )
                 return (None, name[0]), name[1:]
             if is_valid_table:
                 return (name[0], name[1]), None
@@ -196,8 +201,10 @@ class Graph(ConfigMixin, _HasData):
             # Fallback: Let `__getitem__` handle any errors gracefully:
             return (None, name[0]), name[1:]
 
-        raise IndexError(f"Only strings and tuples can be used for "
-                         f"indexing (got '{type(name).__name__}')")
+        raise IndexError(
+            f'Only strings and tuples can be used for '
+            f"indexing (got '{type(name).__name__}')"
+        )
 
     def __getitem__(
         self,
@@ -237,13 +244,15 @@ class Graph(ConfigMixin, _HasData):
             yield table
 
     def __repr__(self) -> str:
-        data_sources = str(self.data_sources).replace("'", "")
-        table_names = str(self.table_names).replace("'", "")
-        return (f'{self.__class__.__name__}(\n'
-                f'  name={self.name},\n'
-                f'  data_sources={data_sources},\n'
-                f'  tables={table_names},\n'
-                f')')
+        data_sources = str(self.data_sources).replace("'", '')
+        table_names = str(self.table_names).replace("'", '')
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  name={self.name},\n'
+            f'  data_sources={data_sources},\n'
+            f'  tables={table_names},\n'
+            f')'
+        )
 
     # Copy ####################################################################
 
@@ -343,29 +352,34 @@ class Graph(ConfigMixin, _HasData):
             Fully qualified table name. E.g. "csv.table"
         """
         # If data_source is not provided, infer it based on unique table names.
-        if (data_source is None and isinstance(name, str)
-                and not is_fully_qualified_name(name)):
-            matches = [
-                table for table in self.tables if table.table_name == name
-            ]
+        if (
+            data_source is None
+            and isinstance(name, str)
+            and not is_fully_qualified_name(name)
+        ):
+            matches = [table for table in self.tables if table.table_name == name]
             if len(matches) > 1:
-                raise ValidationException(message=(
-                    "There exist multiple tables in the graph with name "
-                    f"'{name}'. Please also specify the table data "
-                    "source."))
+                raise ValidationException(
+                    message=(
+                        'There exist multiple tables in the graph with name '
+                        f"'{name}'. Please also specify the table data "
+                        'source.'
+                    )
+                )
             elif len(matches) == 0:
                 raise KeyError(
                     f'Table "{name}" is not found in the graph. ',
-                    'Please ensure that the correct table name is '
-                    'used.')
+                    'Please ensure that the correct table name is used.',
+                )
             data_source = matches[0].data_source
         fq_table_name = fully_qualified_table_name(name, data_source)
         data_source = get_data_source(fq_table_name)
 
         # Ensure that the data source exists in the graph.
         if data_source not in self._data_source_dict.keys():
-            raise ValidationException(message=(
-                f"Data source: {data_source} does not exist in the graph."))
+            raise ValidationException(
+                message=(f'Data source: {data_source} does not exist in the graph.')
+            )
 
         return fq_table_name
 
@@ -383,20 +397,19 @@ class Graph(ConfigMixin, _HasData):
         """
         return self._tables[self.fully_qualified_table_name(name, data_source)]
 
-    def column(self, fully_qualified_table_name: str,
-               column_name: str) -> BaseColumn:
-        r"""The column with name :obj:`column_name`.
-        """
+    def column(self, fully_qualified_table_name: str, column_name: str) -> BaseColumn:
+        r"""The column with name :obj:`column_name`."""
         if fully_qualified_table_name not in self._tables:
             raise TableNotInGraphError(
-                title=f'Table "{fully_qualified_table_name}" is not found in '
-                'the Graph',
-                message='Please ensure that the correct table name is used.')
+                title=f'Table "{fully_qualified_table_name}" is not found in the Graph',
+                message='Please ensure that the correct table name is used.',
+            )
         if column_name not in self._tables[fully_qualified_table_name]:
             raise ColumnNotInTableError(
                 title=f'Column "{column_name}" does not exist in the table: '
                 f'"{fully_qualified_table_name}"',
-                message='Please ensure that the correct column name is used.')
+                message='Please ensure that the correct column name is used.',
+            )
         return self._tables[fully_qualified_table_name][column_name]
 
     def column_from_fqn(self, column_path: str) -> BaseColumn:
@@ -488,8 +501,7 @@ class Graph(ConfigMixin, _HasData):
 
         if data_source is None:
             if self.num_data_sources != 1:
-                raise ValueError(f"Can not add table '{name}' without any "
-                                 f"data source")
+                raise ValueError(f"Can not add table '{name}' without any data source")
             data_source = self.data_sources[0]
 
         table = Table(
@@ -508,8 +520,7 @@ class Graph(ConfigMixin, _HasData):
 
     def _add(self, table: Table, ignore_errors: bool = False) -> 'Graph':
         if not self.has_data_source(table.data_source) and not ignore_errors:
-            raise ValueError(
-                f"Data source '{table.data_source}' does not yet exist")
+            raise ValueError(f"Data source '{table.data_source}' does not yet exist")
 
         key = table.name
         if key in self._tables:
@@ -541,8 +552,9 @@ class Graph(ConfigMixin, _HasData):
                 if data_source is not None:
                     table.data_source = data_source
                 elif self.num_data_sources != 1:
-                    raise ValueError(f"Can not add table '{table.name}' "
-                                     f"without any data source")
+                    raise ValueError(
+                        f"Can not add table '{table.name}' without any data source"
+                    )
                 else:
                     table.data_source = self.data_sources[0]
             self._add(Table.from_config(table))
@@ -600,10 +612,8 @@ class Graph(ConfigMixin, _HasData):
                 has the same name as another table in a different data source.
                 (default: :obj:`None`)
         """
-        fq_src_table_name = self.fully_qualified_table_name(
-            src_table, src_data_source)
-        fq_dst_table_name = self.fully_qualified_table_name(
-            dst_table, dst_data_source)
+        fq_src_table_name = self.fully_qualified_table_name(src_table, src_data_source)
+        fq_dst_table_name = self.fully_qualified_table_name(dst_table, dst_data_source)
 
         src_data_source = get_data_source(fq_src_table_name)
         dst_data_source = get_data_source(fq_dst_table_name)
@@ -639,8 +649,7 @@ class Graph(ConfigMixin, _HasData):
         return self
 
     def get_total_num_edges(self) -> int:
-        r"""Get the number of edges in the graph (estimated).
-        """
+        r"""Get the number of edges in the graph (estimated)."""
         num_edges = 0
         for table in self.tables:
             # Despite the FK-FK relationship, each FK is considered as 2 edges
@@ -670,13 +679,13 @@ class Graph(ConfigMixin, _HasData):
         # Convert PandasConnector to ParquetConnector in a GraphConfig.
         for connector in self.connectors:
             if isinstance(connector, PandasConnector):
-                new_connector = persist_pandas_connector(
-                    connector, root_dir=root_dir)
+                new_connector = persist_pandas_connector(connector, root_dir=root_dir)
                 logger.warning(
-                    f"Converting {connector} to {new_connector} when saving "
-                    "the graph. If the PandasConnector is connected to data "
-                    "**other than** training table, errors may occur "
-                    "during training.")
+                    f'Converting {connector} to {new_connector} when saving '
+                    'the graph. If the PandasConnector is connected to data '
+                    '**other than** training table, errors may occur '
+                    'during training.'
+                )
                 # Switch connector for tables
                 for table in self.tables:
                     if table._data_source == 'pandas':
@@ -700,7 +709,8 @@ class Graph(ConfigMixin, _HasData):
         """
         if self.name is None:
             raise ValueError(
-                "Please specify a name of the graph before saving it to disk")
+                'Please specify a name of the graph before saving it to disk'
+            )
         name = name or self.name
         root_dir = osp.join(destination, 'graphs', name)
         fsutil.makedirs(root_dir, exist_ok=True)
@@ -722,7 +732,7 @@ class Graph(ConfigMixin, _HasData):
             if table.has_data:
                 table.data.save_data(osp.join(root_dir, table.name))
 
-        logger.info("Successfully saved Graph %s to %s", self.name, root_dir)
+        logger.info('Successfully saved Graph %s to %s', self.name, root_dir)
 
     # Statistics ##############################################################
 
@@ -759,8 +769,7 @@ class Graph(ConfigMixin, _HasData):
                 continue
 
             group = GroupInfo(
-                pkey=ColumnInfo(table=pkey_table.name,
-                                col=pkey_table.pkey_name),
+                pkey=ColumnInfo(table=pkey_table.name, col=pkey_table.pkey_name),
                 fkeys=[],
             )
 
@@ -779,8 +788,9 @@ class Graph(ConfigMixin, _HasData):
                     # First check whether the candidate fkey can link to
                     # the pkey dtype.
                     fkey_obj = ForeignKey(col.name, None, None, col.dtype)
-                    if not fkey_obj.can_link_to_dtype(pkey_table.pkey_name,
-                                                      pkey_table.pkey.dtype):
+                    if not fkey_obj.can_link_to_dtype(
+                        pkey_table.pkey_name, pkey_table.pkey.dtype
+                    ):
                         continue
                     # Prepare case folded column name for fkey column.
                     colname = col.name.casefold()
@@ -788,14 +798,17 @@ class Graph(ConfigMixin, _HasData):
                     pkey_formata = pkey_table.pkey_name.casefold()
                     pkey_formatb = (f'{pkey_table.table_name}_id').casefold()
                     pkey_formatc = (
-                        (f'{inf.singular_noun(pkey_table.table_name)}_id'
-                         ).casefold())
-                    if (colname == pkey_formata or colname == pkey_formatb
-                            or colname == pkey_formatc):
-
+                        f'{inf.singular_noun(pkey_table.table_name)}_id'
+                    ).casefold()
+                    if (
+                        colname == pkey_formata
+                        or colname == pkey_formatb
+                        or colname == pkey_formatc
+                    ):
                         # Add inferred fkey to the group
                         group.fkeys.append(
-                            ColumnInfo(table=fkey_table.name, col=col.name))
+                            ColumnInfo(table=fkey_table.name, col=col.name)
+                        )
 
             if len(group.fkeys) > 0:  # Group ready
                 groups.append(group)
@@ -851,14 +864,15 @@ class Graph(ConfigMixin, _HasData):
                 # Update fkeys in the tables of this graph.
                 for fkey in group.fkeys:
                     table = self.table(fkey.table)
-                    if (table.has_fkey(fkey.col)
-                            and table[fkey.col].dst_table is None):
+                    if table.has_fkey(fkey.col) and table[fkey.col].dst_table is None:
                         table[fkey.col].dst_table = group.pkey.table
                         table[fkey.col].dst_key = group.pkey.col
                     else:
-                        table.add_fkey(name=fkey.col,
-                                       dst_table=group.pkey.table,
-                                       dst_key=group.pkey.col)
+                        table.add_fkey(
+                            name=fkey.col,
+                            dst_table=group.pkey.table,
+                            dst_key=group.pkey.col,
+                        )
             uninferred_links = []
             for table in self:
                 for fkey in table.fkeys:
@@ -868,8 +882,9 @@ class Graph(ConfigMixin, _HasData):
             if len(uninferred_links) > 0:
                 logger.warning(
                     f"Cannot infer destination table for '{uninferred_links}'."
-                    "Please manually assign the dst_table for these foreign "
-                    "keys.")
+                    'Please manually assign the dst_table for these foreign '
+                    'keys.'
+                )
 
         self.fully_qualify_all_fkeys()
         return self
@@ -882,7 +897,7 @@ class Graph(ConfigMixin, _HasData):
         for table in self:
             table.infer_stypes()
 
-    @Timer(logging_prefix="graph.infer_metadata")
+    @Timer(logging_prefix='graph.infer_metadata')
     def infer_metadata(
         self,
         include_cols: Union[Dict[str, Set[str]], Set[str], None] = None,
@@ -930,9 +945,11 @@ class Graph(ConfigMixin, _HasData):
 
         if num_threads == 0:
             for table in self.tables:
-                table.infer_metadata(include_cols.get(table.name, None),
-                                     exclude_cols.get(table.name, None),
-                                     drop_id_cols=drop_id_cols)
+                table.infer_metadata(
+                    include_cols.get(table.name, None),
+                    exclude_cols.get(table.name, None),
+                    drop_id_cols=drop_id_cols,
+                )
         else:
             # TODO: verify that `table.infer_metadata` and calls into the
             # `connector` are thread-safe.
@@ -940,10 +957,13 @@ class Graph(ConfigMixin, _HasData):
                 futures = []
                 for table in self.tables:
                     futures.append(
-                        executor.submit(table.infer_metadata,
-                                        include_cols.get(table.name, None),
-                                        exclude_cols.get(table.name, None),
-                                        drop_id_cols=drop_id_cols))
+                        executor.submit(
+                            table.infer_metadata,
+                            include_cols.get(table.name, None),
+                            exclude_cols.get(table.name, None),
+                            drop_id_cols=drop_id_cols,
+                        )
+                    )
                 check_for_exception(futures)
 
         return self
@@ -969,8 +989,7 @@ class Graph(ConfigMixin, _HasData):
             encoder_stats = {}
 
         for table in self.tables:
-            table.infer_encoders(encoder_stats=encoder_stats.get(table.name),
-                                 **kwargs)
+            table.infer_encoders(encoder_stats=encoder_stats.get(table.name), **kwargs)
 
         return self
 
@@ -992,7 +1011,8 @@ class Graph(ConfigMixin, _HasData):
                 raise ValueError(
                     'Column specified in encoder overrides needs to be of the '
                     'form <connector_name>.<table_name>.<column_name> '
-                    f'(got {fqcn})')
+                    f'(got {fqcn})'
+                )
             table_name, column_name = fqcn.rsplit('.', 1)
             if not is_fully_qualified_name(table_name):
                 table_name = self.fully_qualified_table_name(table_name, None)
@@ -1003,7 +1023,8 @@ class Graph(ConfigMixin, _HasData):
 
     @blocking_method(
         GRAPH_THREAD_POOL,
-        tracing_options=tracing.TraceOptions(trace_params=['ignore_encoders']))
+        tracing_options=tracing.TraceOptions(trace_params=['ignore_encoders']),
+    )
     def validate(
         self,
         raise_on_error: bool = True,
@@ -1023,32 +1044,33 @@ class Graph(ConfigMixin, _HasData):
             status = False
             logging.warn_or_raise(
                 'A graph must contain at least one table. Please add at '
-                'least one table to the graph.', raise_on_error)
+                'least one table to the graph.',
+                raise_on_error,
+            )
 
         reachable_tables: Set[Tuple[str, str]] = set()
         self.fully_qualify_all_fkeys()
         for table in self.tables:
-
             # 1. Validate the correctness of each table.
-            status &= table.validate(raise_on_error,
-                                     ignore_encoders=ignore_encoders)
+            status &= table.validate(raise_on_error, ignore_encoders=ignore_encoders)
             for fkey in table.fkeys:
                 # 2. For each foreign key, there exists a valid destination:
-                if (fkey.dst_table is None
-                        or not self.has_table(fkey.dst_table)):
+                if fkey.dst_table is None or not self.has_table(fkey.dst_table):
                     status = False
                     logging.warn_or_raise(
                         f"The foreign key '{fkey.name}' of the table "
                         f"'{table.name}' is expected to point to a valid "
-                        f"destination table (got {fkey.dst_table})",
-                        raise_on_error)
+                        f'destination table (got {fkey.dst_table})',
+                        raise_on_error,
+                    )
 
                 if not is_fully_qualified_name(fkey.dst_table):
                     status = False
                     logging.warn_or_raise(
-                        f"The destination table of foreign key {fkey.name} "
-                        f"is not fully qualified. Got {fkey.dst_table}",
-                        raise_on_error)
+                        f'The destination table of foreign key {fkey.name} '
+                        f'is not fully qualified. Got {fkey.dst_table}',
+                        raise_on_error,
+                    )
 
                 fkey_dst_table = self[fkey.dst_table]
                 if fkey.dst_key is None:
@@ -1059,38 +1081,45 @@ class Graph(ConfigMixin, _HasData):
                         logging.warn_or_raise(
                             f"The foreign key '{fkey.name}' of the table "
                             f"'{table.name}' is expected to point to a "
-                            f"destination table {fkey_dst_table.name} with "
-                            "a primary key", raise_on_error)
+                            f'destination table {fkey_dst_table.name} with '
+                            'a primary key',
+                            raise_on_error,
+                        )
                     fkey_dst_col = fkey_dst_table.pkey
                 else:
                     # 4. Each table referenced by a foreign key with a
                     # destination column has that destination column
                     # as a key (primary or foreign):
-                    if (not fkey_dst_table.has_fkey(fkey.dst_key)
-                            and not fkey_dst_table.is_pkey(fkey.dst_key)):
+                    if not fkey_dst_table.has_fkey(
+                        fkey.dst_key
+                    ) and not fkey_dst_table.is_pkey(fkey.dst_key):
                         status = False
                         logging.warn_or_raise(
                             f"The foreign key '{fkey.name}' of the table "
                             f"'{table.name}' points to the non-existent key "
                             f"'{fkey.dst_key}' in table '{fkey.dst_table}'",
-                            raise_on_error)
+                            raise_on_error,
+                        )
                     fkey_dst_col = fkey_dst_table[fkey.dst_key]
 
                 # 5. Each foreign key must have a compatible data type
                 if not fkey.can_link_to_dtype(
-                        fkey_dst_col.name, fkey_dst_col.dtype, raise_on_error):
+                    fkey_dst_col.name, fkey_dst_col.dtype, raise_on_error
+                ):
                     logging.warn_or_raise(
                         f"The foreign key '{fkey.name}' of the table "
                         f"'{table.name}' has data type '{fkey.dtype}' "
-                        f"which is incompatible with the destination "
+                        f'which is incompatible with the destination '
                         f"column '{fkey.dst_key}' in table "
                         f"'{fkey.dst_table}' which has data type "
                         f"'{fkey_dst_col.dtype}'. Please make sure that "
-                        f"the data types match exactly or that integer "
-                        f"links widen from the foreign key to the "
-                        f"destination key without narrowing. This can be "
-                        f"done by reconfiguring or reuploading the table "
-                        f"with compatible data types.", raise_on_error)
+                        f'the data types match exactly or that integer '
+                        f'links widen from the foreign key to the '
+                        f'destination key without narrowing. This can be '
+                        f'done by reconfiguring or reuploading the table '
+                        f'with compatible data types.',
+                        raise_on_error,
+                    )
 
                 # Float/double FK columns are dropped at ingest (empty graph); reject so the user declares an int key.
                 if fkey.dtype is not None and fkey.dtype.is_float():
@@ -1098,10 +1127,12 @@ class Graph(ConfigMixin, _HasData):
                     logging.warn_or_raise(
                         f"The foreign key '{fkey.name}' of table "
                         f"'{table.name}' has dtype '{fkey.dtype}'. ID/key "
-                        f"columns must be integer or string; float/double "
-                        f"key columns are not supported and would be dropped "
+                        f'columns must be integer or string; float/double '
+                        f'key columns are not supported and would be dropped '
                         f"at ingest. Please set the dtype of '{fkey.name}' to "
-                        f"'int'.", raise_on_error)
+                        f"'int'.",
+                        raise_on_error,
+                    )
 
                 reachable_tables.add(table.name)
                 reachable_tables.add(fkey.dst_table)
@@ -1110,11 +1141,12 @@ class Graph(ConfigMixin, _HasData):
         if len(self) > 1 and len(reachable_tables) < len(self):
             # This is not a hard requirement, so we just warn here:
             logging.warn_or_raise(
-                f"Tables {set(self.table_names) - reachable_tables} are not "
-                f"reachable from any table in the graph. Please make sure "
-                f"that all tables are fully linked into a single graph via "
-                f"column groups, or remove the tables that cannot be linked.",
-                raise_on_error=enforce_connected)
+                f'Tables {set(self.table_names) - reachable_tables} are not '
+                f'reachable from any table in the graph. Please make sure '
+                f'that all tables are fully linked into a single graph via '
+                f'column groups, or remove the tables that cannot be linked.',
+                raise_on_error=enforce_connected,
+            )
 
         return status
 
@@ -1126,8 +1158,9 @@ class Graph(ConfigMixin, _HasData):
 
     # Visualization ###########################################################
 
-    @blocking_method(GRAPH_THREAD_POOL,
-                     tracing_options=tracing.TraceOptions(trace_params=True))
+    @blocking_method(
+        GRAPH_THREAD_POOL, tracing_options=tracing.TraceOptions(trace_params=True)
+    )
     def visualize(
         self,
         path: Union[str, BytesIO, None] = None,
@@ -1157,7 +1190,7 @@ class Graph(ConfigMixin, _HasData):
 
     @raise_post_materialization
     def add_metapath(self, metapath: List[EdgeType]):
-        r""" Specify the metapath to be added during the
+        r"""Specify the metapath to be added during the
         materialization step. It will append the metapath to
         be added, and set / override the arguments for calling the
         :meth:`GraphData.add_metapath` method in materialization.
@@ -1178,7 +1211,7 @@ class Graph(ConfigMixin, _HasData):
 
     @raise_post_materialization
     def remove_metapath(self, metapath: List[EdgeType]):
-        r""" Remove the metapath from the list of metapaths to be added
+        r"""Remove the metapath from the list of metapaths to be added
         during the materialization step.
 
         Args:
@@ -1190,12 +1223,13 @@ class Graph(ConfigMixin, _HasData):
         try:
             self._metapaths.remove(metapath)
         except ValueError:
-            logger.warning(f"Attempting to remove a metapath that does not "
-                           f"exist: {metapath}")
+            logger.warning(
+                f'Attempting to remove a metapath that does not exist: {metapath}'
+            )
 
     @raise_post_materialization
     def set_metapath_kwargs(self, kwargs: Dict[str, Any]):
-        r""" Set metapath arguments for :meth:`add_metapath`.
+        r"""Set metapath arguments for :meth:`add_metapath`.
 
         Args:
             kwargs: the dictionary of arguments. Possible keys:
@@ -1211,7 +1245,7 @@ class Graph(ConfigMixin, _HasData):
 
     @raise_post_materialization
     def add_intra_table_metapath(self, metapath: List[EdgeType]):
-        r""" Specify the intra-table metapath to be added during the
+        r"""Specify the intra-table metapath to be added during the
         materialization step. These metapaths connect rows from the same
         table.
         It will append the list of intra-table metapaths to
@@ -1238,7 +1272,7 @@ class Graph(ConfigMixin, _HasData):
 
     @raise_post_materialization
     def remove_intra_metapath(self, metapath: List[EdgeType]):
-        r""" Remove the metapath from the list of metapaths to be added
+        r"""Remove the metapath from the list of metapaths to be added
         during the materialization step.
 
         Args:
@@ -1256,12 +1290,14 @@ class Graph(ConfigMixin, _HasData):
         try:
             self._intra_metapaths.remove(metapath)
         except ValueError:
-            logger.warning(f"Attempting to remove an intra-table metapath "
-                           f"that does not exist: {metapath}")
+            logger.warning(
+                f'Attempting to remove an intra-table metapath '
+                f'that does not exist: {metapath}'
+            )
 
     @raise_post_materialization
     def set_intra_metapath_kwargs(self, kwargs: Dict[str, Any]):
-        r""" Set metapath arguments for :meth:`add_intra_metapath`.
+        r"""Set metapath arguments for :meth:`add_intra_metapath`.
 
         Args:
             kwargs: the dictionary of arguments. Possible keys:
@@ -1275,8 +1311,7 @@ class Graph(ConfigMixin, _HasData):
         for k, v in kwargs.items():
             self._metapath_kwargs[k] = v
 
-    def _fully_qualify_metapaths(self,
-                                 metapaths: List[EdgeType]) -> List[EdgeType]:
+    def _fully_qualify_metapaths(self, metapaths: List[EdgeType]) -> List[EdgeType]:
         fully_qualified_metapaths = []
         for metapath in metapaths:
             fq_src_name = self.fully_qualified_table_name(metapath[0])
@@ -1289,8 +1324,7 @@ class Graph(ConfigMixin, _HasData):
                 edge_type = metapath[1]
                 fq_dst_name = self.fully_qualified_table_name(metapath[2])
             if edge_type is not None:
-                fully_qualified_metapaths.append(
-                    (fq_src_name, edge_type, fq_dst_name))
+                fully_qualified_metapaths.append((fq_src_name, edge_type, fq_dst_name))
             else:
                 fully_qualified_metapaths.append((fq_src_name, fq_dst_name))
         return fully_qualified_metapaths
@@ -1312,27 +1346,30 @@ class Graph(ConfigMixin, _HasData):
 
          Table names must be fully qualified.
         """
+
         def unknown():
-            raise ValueError(f"Unknown edge type {edge_type}")
+            raise ValueError(f'Unknown edge type {edge_type}')
 
         def ambiguous():
-            raise ValueError(f"Ambiguous edge type {edge_type}")
+            raise ValueError(f'Ambiguous edge type {edge_type}')
 
         fkey_map = defaultdict(list)
         table_map = defaultdict(list)
         for table in self.tables:
             for fkey in table.fkeys:
-                fkey_map[fkey.name].append(
-                    (table.name, fkey.name, fkey.dst_table))
+                fkey_map[fkey.name].append((table.name, fkey.name, fkey.dst_table))
                 fkey_map[f'rev_{fkey.name}'].append(
-                    (fkey.dst_table, f'rev_{fkey.name}', table.name))
+                    (fkey.dst_table, f'rev_{fkey.name}', table.name)
+                )
                 table_map[(table.name, fkey.dst_table)].append(
-                    (table.name, fkey.name, fkey.dst_table))
+                    (table.name, fkey.name, fkey.dst_table)
+                )
                 table_map[(fkey.dst_table, table.name)].append(
-                    (fkey.dst_table, f'rev_{fkey.name}', table.name))
+                    (fkey.dst_table, f'rev_{fkey.name}', table.name)
+                )
 
         if isinstance(edge_type, str):
-            edge_type = (edge_type, )
+            edge_type = (edge_type,)
 
         if len(edge_type) == 1:
             if len(fkey_map[edge_type[0]]) == 0:
@@ -1366,22 +1403,22 @@ class Graph(ConfigMixin, _HasData):
         fkey = ForeignKey.cast(fkey)
         fq_dst_table = None
         if fkey.dst_table is None:
-            dst_col = (fkey.name if fkey.dst_key is None else fkey.dst_key)
+            dst_col = fkey.name if fkey.dst_key is None else fkey.dst_key
             filtered_potential_fkeys: List[Table] = list(
                 filter(
-                    lambda table:
-                    (table.pkey is not None and dst_col == table.pkey.name),
-                    self.tables))
+                    lambda table: table.pkey is not None and dst_col == table.pkey.name,
+                    self.tables,
+                )
+            )
             if len(filtered_potential_fkeys) > 1:
                 raise ValueError(
-                    f"Multiple tables matching the dst_col: {dst_col} for "
-                    f"fkey: {fkey}")
+                    f'Multiple tables matching the dst_col: {dst_col} for fkey: {fkey}'
+                )
             elif len(filtered_potential_fkeys) == 1:
                 fq_dst_table = filtered_potential_fkeys[0].name
         else:
             fq_dst_table = self.fully_qualified_table_name(fkey.dst_table)
-        dst_data_source = (get_data_source(fq_dst_table)
-                           if fq_dst_table else None)
+        dst_data_source = get_data_source(fq_dst_table) if fq_dst_table else None
 
         return ForeignKey(
             fkey.name,
@@ -1396,8 +1433,7 @@ class Graph(ConfigMixin, _HasData):
         r"""Fully qualify FKeys in all the tables of the graph"""
         for table in self.tables:
             for fkey in table.fkeys:
-                if fkey.dst_table and not is_fully_qualified_name(
-                        fkey.dst_table):
+                if fkey.dst_table and not is_fully_qualified_name(fkey.dst_table):
                     table.fkey(fkey.name).update(self.fully_qualify_fkey(fkey))
                 if fkey.dst_key is None and fkey.dst_table is not None:
                     fkey.dst_key = self.table(fkey.dst_table).pkey.name

@@ -31,10 +31,9 @@ class FilesystemCredentialScope:
         return str(value) if value else None
 
 
-_current_scope: contextvars.ContextVar[FilesystemCredentialScope
-                                       | None] = (contextvars.ContextVar(
-                                           'filesystem_credential_scope',
-                                           default=None))
+_current_scope: contextvars.ContextVar[FilesystemCredentialScope | None] = (
+    contextvars.ContextVar('filesystem_credential_scope', default=None)
+)
 
 
 @contextmanager
@@ -60,7 +59,8 @@ def credentials_for_provider(provider: str) -> FilesystemCredentialScope | None:
     if scope.require_explicit:
         raise ExplicitFilesystemCredentialsRequired(
             f'Explicit {provider.upper()} credentials are required for this '
-            'identity-backed connector')
+            'identity-backed connector'
+        )
     return None
 
 
@@ -81,6 +81,7 @@ class ContextPropagatingThreadPoolExecutor(ThreadPoolExecutor):
     A fresh copy per task also prevents a prior task's scope from leaking
     into later work on the same long-lived worker thread.
     """
+
     def submit(self, fn, /, *args, **kwargs):
         context = contextvars.copy_context()
         return super().submit(context.run, fn, *args, **kwargs)
@@ -88,6 +89,7 @@ class ContextPropagatingThreadPoolExecutor(ThreadPoolExecutor):
 
 def with_filesystem_credentials(fn: Callable[..., T]) -> Callable[..., T]:
     """Run a connector entrypoint under its request-local credential scope."""
+
     @functools.wraps(fn)
     def wrapped(self, *args, **kwargs):
         scope_factory = getattr(self, 'filesystem_credential_scope', None)
@@ -105,25 +107,31 @@ def scoped_cache_key(provider: str, discriminator: str) -> tuple[str, int, str]:
 def pyarrow_filesystem(path: str):
     """Build an explicit PyArrow filesystem for an identity-backed URI."""
     from pyarrow import fs
+
     filesystem_type: Any = fs.FileSystem  # pyright: ignore[reportPrivateImportUsage]
 
     if path.startswith(('s3://', 's3a://')):
         from kumo_s3.session import retry_strategy
+
         scope = credentials_for_provider('s3')
         if scope is None:
             # Local import avoids the credentials <-> S3 provider cycle.
             from io_utils.fsutil.s3_connection import active_s3_connection
+
             connection = active_s3_connection()
             if connection is not None:
                 return fs.S3FileSystem(  # pyright: ignore[reportPrivateImportUsage]
-                    **connection.pyarrow_options())
+                    **connection.pyarrow_options()
+                )
             return filesystem_type.from_uri(path)[0]
         if not (scope.credentials or {}).get('region'):
             # Local import avoids the credentials <-> S3 implementation cycle.
             from io_utils.fsutil.s3_filesystem import select_s3_region
+
             select_s3_region(path)
         credentials = scope.credentials or {}
         from io_utils.fsutil.s3_connection import active_s3_connection
+
         connection = active_s3_connection()
         ambient_session = credentials.get('ambient_session')
         if ambient_session is not None:
@@ -132,10 +140,12 @@ def pyarrow_filesystem(path: str):
             # never re-run PyArrow's independent default provider chain.
             source = ambient_session.get_credentials()
             frozen = source.get_frozen_credentials() if source else None
-            if not (frozen and frozen.access_key and frozen.secret_key
-                    and frozen.token):
+            if not (
+                frozen and frozen.access_key and frozen.secret_key and frozen.token
+            ):
                 raise RuntimeError(
-                    'Attested ambient AWS session has no temporary credentials')
+                    'Attested ambient AWS session has no temporary credentials'
+                )
             options = {
                 'access_key': frozen.access_key,
                 'secret_key': frozen.secret_key,
@@ -146,16 +156,20 @@ def pyarrow_filesystem(path: str):
             }
             if connection is not None:
                 options.update(connection.pyarrow_options())
-                options.update({
-                    'access_key': frozen.access_key,
-                    'secret_key': frozen.secret_key,
-                    'session_token': frozen.token,
-                })
+                options.update(
+                    {
+                        'access_key': frozen.access_key,
+                        'secret_key': frozen.secret_key,
+                        'session_token': frozen.token,
+                    }
+                )
             return fs.S3FileSystem(  # pyright: ignore[reportPrivateImportUsage]
-                **options)
+                **options
+            )
         if connection is not None:
             return fs.S3FileSystem(  # pyright: ignore[reportPrivateImportUsage]
-                **connection.pyarrow_options())
+                **connection.pyarrow_options()
+            )
         return fs.S3FileSystem(  # pyright: ignore[reportPrivateImportUsage]
             access_key=credentials.get('aws_access_key_id'),
             secret_key=credentials.get('aws_secret_access_key'),
@@ -176,8 +190,9 @@ def pyarrow_filesystem(path: str):
         return fs.GcsFileSystem(  # pyright: ignore[reportPrivateImportUsage]
             access_token=token,
             credential_token_expiration=expiration,
-            project_id=(credentials.get('requester_pays_project')
-                        or credentials.get('project')),
+            project_id=(
+                credentials.get('requester_pays_project') or credentials.get('project')
+            ),
         )
     if path.startswith(('abfs://', 'abfss://')):
         # PyArrow's native AzureFileSystem cannot consume the federated
@@ -185,6 +200,8 @@ def pyarrow_filesystem(path: str):
         # goes through an fsspec adapter over the credentialed SDK clients.
         # Imported lazily: impl_adls imports this module for scope helpers.
         from io_utils.fsutil.adls_arrow import ADLSArrowFileSystem
+
         return fs.PyFileSystem(  # pyright: ignore[reportPrivateImportUsage]
-            fs.FSSpecHandler(ADLSArrowFileSystem.from_uri(path)))
+            fs.FSSpecHandler(ADLSArrowFileSystem.from_uri(path))
+        )
     return filesystem_type.from_uri(path)[0]

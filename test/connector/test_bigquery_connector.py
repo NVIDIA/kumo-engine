@@ -34,12 +34,16 @@ def _write_df_to_bigquery(connector, table_name, df, replace=False):
     r"""Test helper: write a pandas DataFrame to a BigQuery table."""
     job_config = bigquery.LoadJobConfig(
         autodetect=True,
-        write_disposition=(bigquery.WriteDisposition.WRITE_APPEND if not replace
-                           else bigquery.WriteDisposition.WRITE_TRUNCATE),
+        write_disposition=(
+            bigquery.WriteDisposition.WRITE_APPEND
+            if not replace
+            else bigquery.WriteDisposition.WRITE_TRUNCATE
+        ),
     )
 
     job = connector.context.load_table_from_dataframe(
-        df, connector.full_table_name(table_name), job_config=job_config)
+        df, connector.full_table_name(table_name), job_config=job_config
+    )
     job.result()
 
 
@@ -73,12 +77,12 @@ def test_bigquery_read_table():
     df = connector.read_table('LOAN', pkey=BaseColumnConfig('LOAN_ID'))
     assert df.shape == (682, 6)
 
-    chunk = connector.read_table('LOAN', pkey=BaseColumnConfig('LOAN_ID'),
-                                 num_rows=5)
+    chunk = connector.read_table('LOAN', pkey=BaseColumnConfig('LOAN_ID'), num_rows=5)
     assert df[:5].equals(chunk)
 
-    chunk = connector.read_table('LOAN', pkey=BaseColumnConfig('LOAN_ID'),
-                                 num_rows=3, offset=2)
+    chunk = connector.read_table(
+        'LOAN', pkey=BaseColumnConfig('LOAN_ID'), num_rows=3, offset=2
+    )
     assert df[2:5].equals(chunk)
 
 
@@ -90,20 +94,22 @@ def test_bigquery_overwrite_table():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    assert connector.table_exists("customers")
-    assert connector.table_exists("articles")
-    overwrite_table_name = f"test_{uuid.uuid4().hex}"
+    assert connector.table_exists('customers')
+    assert connector.table_exists('articles')
+    overwrite_table_name = f'test_{uuid.uuid4().hex}'
 
     try:
         # Test overwrite to a new table.
-        connector.overwrite_table("customers", overwrite_table_name)
+        connector.overwrite_table('customers', overwrite_table_name)
         assert connector._get_table_num_rows(
-            "customers") == connector._get_table_num_rows(overwrite_table_name)
+            'customers'
+        ) == connector._get_table_num_rows(overwrite_table_name)
 
         # Test overwrite existing table.
-        connector.overwrite_table("articles", overwrite_table_name)
+        connector.overwrite_table('articles', overwrite_table_name)
         assert connector._get_table_num_rows(
-            "articles") == connector._get_table_num_rows(overwrite_table_name)
+            'articles'
+        ) == connector._get_table_num_rows(overwrite_table_name)
     finally:
         connector.drop_table_if_exists(overwrite_table_name)
         assert not connector.table_exists(overwrite_table_name)
@@ -153,11 +159,14 @@ def test_get_exact_col_stats():
     assert len(stats) == 3
     assert stats[ColStatType.NUM_UNIQUE].value == 4
     assert stats[ColStatType.NUM_UNIQUE].num_entries == 682
-    assert stats[ColStatType.UNIQUE_FRACTION].value == pytest.approx(
-        0.0058, abs=1e-2)
+    assert stats[ColStatType.UNIQUE_FRACTION].value == pytest.approx(0.0058, abs=1e-2)
     assert stats[ColStatType.UNIQUE_FRACTION].num_entries == 682
-    assert stats[ColStatType.CATEGORY_COUNTS].value == [('C', 403), ('A', 203),
-                                                        ('D', 45), ('B', 31)]
+    assert stats[ColStatType.CATEGORY_COUNTS].value == [
+        ('C', 403),
+        ('A', 203),
+        ('D', 45),
+        ('B', 31),
+    ]
     assert stats[ColStatType.CATEGORY_COUNTS].num_entries == 682
 
     out = connector._get_exact_col_stats(
@@ -261,11 +270,11 @@ def test_bigquery_connector_list_types(monkeypatch):
         project_id='kumo-engineering',
         dataset_id='movielens',
     )
-    metadata = connector.get_table_metadata(["movie_stringlist"])[0]
+    metadata = connector.get_table_metadata(['movie_stringlist'])[0]
     genres_col = [col for col in metadata.cols if col.name == 'genres'][0]
     assert genres_col.dtype == Dtype.stringlist
 
-    metadata = connector.get_table_metadata(["movie_intlist"])[0]
+    metadata = connector.get_table_metadata(['movie_intlist'])[0]
     genres_col = [col for col in metadata.cols if col.name == 'genres'][0]
     assert genres_col.dtype == Dtype.intlist
 
@@ -281,11 +290,14 @@ def test_emb_col_stats():
     emb_col = BaseColumnConfig('EMB', stype=Stype.sequence, dtype=Dtype.intlist)
     connector.open()
     df = connector.read_table('TEST_EMPTY_EMB', cols=[key_col, emb_col])
-    stats = compute_col_stats_python(df['EMB'], [
-        ColStatType.SEQUENCE_MAX_LENGTH,
-        ColStatType.SEQUENCE_MIN_LENGTH,
-        ColStatType.NUM_NA,
-    ])
+    stats = compute_col_stats_python(
+        df['EMB'],
+        [
+            ColStatType.SEQUENCE_MAX_LENGTH,
+            ColStatType.SEQUENCE_MIN_LENGTH,
+            ColStatType.NUM_NA,
+        ],
+    )
     assert stats[ColStatType.SEQUENCE_MAX_LENGTH].value == 3
     assert stats[ColStatType.SEQUENCE_MIN_LENGTH].value == 3
     assert stats[ColStatType.NUM_NA].value == 0
@@ -333,10 +345,10 @@ def test_get_table_num_rows():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    total_rows = connector._get_table_num_rows("transactions")
+    total_rows = connector._get_table_num_rows('transactions')
     assert total_rows == 31788324
 
-    view_total_rows = connector._get_table_num_rows("transactions_view")
+    view_total_rows = connector._get_table_num_rows('transactions_view')
     assert view_total_rows == total_rows
 
 
@@ -350,7 +362,7 @@ def test_set_credentials_and_open():
     # This will get credentials from the JSON key file.
     connector.open()
     # Corrupt the env variable so that we don't get credentials from there:
-    os.environ[ENV_GOOGLE_CREDENTIALS_JSON] = "random"
+    os.environ[ENV_GOOGLE_CREDENTIALS_JSON] = 'random'
 
     connector2 = BigQueryConnector(
         name='bigquery2',
@@ -377,12 +389,12 @@ def test_bigquery_table_permission_fail_read_table():
     message = str(caught.value)
     assert message == (
         'The selected identity does not have the required BigQuery dataset '
-        'read permissions.')
+        'read permissions.'
+    )
     assert 'LOAN' not in message
 
 
-@withBigQueryCredentials(
-    identity=BigQueryIdentity.NO_JOB)
+@withBigQueryCredentials(identity=BigQueryIdentity.NO_JOB)
 def test_bigquery_project_permission_fail_read_table():
     connector = BigQueryConnector(
         name='bigquery_fail',
@@ -391,7 +403,7 @@ def test_bigquery_project_permission_fail_read_table():
     )
     with pytest.raises(ConnectorError):
         connector.check_table_read_permissions(table_name='LOAN')
-    with pytest.raises(ConnectorError, match=r"does not have .+ permission"):
+    with pytest.raises(ConnectorError, match=r'does not have .+ permission'):
         connector.read_table(table_name='LOAN', num_rows=100)
 
 
@@ -423,14 +435,15 @@ def test_invalid_dataset():
     message = str(caught.value)
     assert message == (
         'The configured BigQuery dataset was not found or is not accessible '
-        'to the selected identity.')
+        'to the selected identity.'
+    )
     assert 'mxyzptlk' not in message
     assert 'kumo-engineering' not in message
 
 
 _BQ_EXPORT_TEST_STAGING_PATH = os.environ.get(
-    'BIGQUERY_EXPORT_TEST_STAGING_PATH',
-    'gs://kumo-test-bucket/bigquery-integ-test/')
+    'BIGQUERY_EXPORT_TEST_STAGING_PATH', 'gs://kumo-test-bucket/bigquery-integ-test/'
+)
 
 
 @withBigQueryCredentials
@@ -441,28 +454,30 @@ def test_export_table_to_blob_storage():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    table_name = f"test_export_{uuid.uuid4().hex}"
-    dest_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH,
-                         f'export_{uuid.uuid4().hex}/')
+    table_name = f'test_export_{uuid.uuid4().hex}'
+    dest_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH, f'export_{uuid.uuid4().hex}/')
 
     nrows = 100
-    source_df = pd.DataFrame({
-        'LOAN_ID': list(range(nrows)),
-        'AMOUNT': [float(i) * 100 for i in range(nrows)],
-        'STATUS': ['A'] * nrows,
-    })
+    source_df = pd.DataFrame(
+        {
+            'LOAN_ID': list(range(nrows)),
+            'AMOUNT': [float(i) * 100 for i in range(nrows)],
+            'STATUS': ['A'] * nrows,
+        }
+    )
     _write_df_to_bigquery(connector, table_name, source_df, replace=True)
 
     try:
         connector.export_table_to_blob_storage(table_name, dest_path)
 
         exported_files = fsutil.listdir(dest_path, suffix='parquet')
-        assert exported_files, f"No parquet files at {dest_path}"
+        assert exported_files, f'No parquet files at {dest_path}'
 
         exported = pd.concat([pd.read_parquet(f) for f in exported_files])
         exported = exported.sort_values('LOAN_ID').reset_index(drop=True)
-        pd.testing.assert_frame_equal(exported[source_df.columns], source_df,
-                                      check_dtype=False)
+        pd.testing.assert_frame_equal(
+            exported[source_df.columns], source_df, check_dtype=False
+        )
     finally:
         connector.drop_table_if_exists(table_name)
         fsutil.rm(dest_path, ignore_errors=True)
@@ -481,25 +496,29 @@ def test_export_table_to_blob_storage_with_columns():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    table_name = f"test_export_cols_{uuid.uuid4().hex}"
-    dest_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH,
-                         f'export_cols_{uuid.uuid4().hex}/')
+    table_name = f'test_export_cols_{uuid.uuid4().hex}'
+    dest_path = osp.join(
+        _BQ_EXPORT_TEST_STAGING_PATH, f'export_cols_{uuid.uuid4().hex}/'
+    )
 
     nrows = 50
-    source_df = pd.DataFrame({
-        'LOAN_ID': list(range(nrows)),
-        'AMOUNT': [float(i) * 100 for i in range(nrows)],
-        'STATUS': ['A'] * nrows,
-        'EXTRA_COL': ['should_not_appear'] * nrows,
-    })
+    source_df = pd.DataFrame(
+        {
+            'LOAN_ID': list(range(nrows)),
+            'AMOUNT': [float(i) * 100 for i in range(nrows)],
+            'STATUS': ['A'] * nrows,
+            'EXTRA_COL': ['should_not_appear'] * nrows,
+        }
+    )
     _write_df_to_bigquery(connector, table_name, source_df, replace=True)
 
     try:
-        connector.export_table_to_blob_storage(table_name, dest_path,
-                                               columns=['LOAN_ID', 'AMOUNT'])
+        connector.export_table_to_blob_storage(
+            table_name, dest_path, columns=['LOAN_ID', 'AMOUNT']
+        )
 
         exported_files = fsutil.listdir(dest_path, suffix='parquet')
-        assert exported_files, f"No parquet files at {dest_path}"
+        assert exported_files, f'No parquet files at {dest_path}'
 
         exported = pd.concat([pd.read_parquet(f) for f in exported_files])
         exported = exported.sort_values('LOAN_ID').reset_index(drop=True)
@@ -524,9 +543,8 @@ def test_export_table_to_blob_storage_error_nonexistent_table():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    missing_table = f"does_not_exist_{uuid.uuid4().hex}"
-    dest_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH,
-                         f'missing_{uuid.uuid4().hex}/')
+    missing_table = f'does_not_exist_{uuid.uuid4().hex}'
+    dest_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH, f'missing_{uuid.uuid4().hex}/')
 
     try:
         with pytest.raises(ConnectorError):
@@ -557,16 +575,17 @@ def test_bigquery_write_artifacts_to_table_from_gcs():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    table_name = f"test_gcs_write_{uuid.uuid4().hex}"
-    gcs_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH,
-                        f'gcs_write_{uuid.uuid4().hex}/')
+    table_name = f'test_gcs_write_{uuid.uuid4().hex}'
+    gcs_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH, f'gcs_write_{uuid.uuid4().hex}/')
 
     nrows = 100
-    source_df = pd.DataFrame({
-        'LOAN_ID': list(range(nrows)),
-        'AMOUNT': [float(i) * 100 for i in range(nrows)],
-        'STATUS': ['A'] * nrows,
-    })
+    source_df = pd.DataFrame(
+        {
+            'LOAN_ID': list(range(nrows)),
+            'AMOUNT': [float(i) * 100 for i in range(nrows)],
+            'STATUS': ['A'] * nrows,
+        }
+    )
     try:
         _seed_gcs_parquet(source_df, gcs_path)
 
@@ -574,8 +593,9 @@ def test_bigquery_write_artifacts_to_table_from_gcs():
 
         loaded = connector.read_table(table_name)
         loaded = loaded.sort_values('LOAN_ID').reset_index(drop=True)
-        pd.testing.assert_frame_equal(loaded[source_df.columns], source_df,
-                                      check_dtype=False)
+        pd.testing.assert_frame_equal(
+            loaded[source_df.columns], source_df, check_dtype=False
+        )
     finally:
         connector.drop_table_if_exists(table_name)
         fsutil.rm(gcs_path, ignore_errors=True)
@@ -601,18 +621,19 @@ def test_bigquery_write_artifacts_to_table_from_gcs_with_embedding_column():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    table_name = f"test_gcs_embed_{uuid.uuid4().hex}"
-    gcs_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH,
-                        f'gcs_embed_{uuid.uuid4().hex}/')
+    table_name = f'test_gcs_embed_{uuid.uuid4().hex}'
+    gcs_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH, f'gcs_embed_{uuid.uuid4().hex}/')
 
     nrows = 50
     emb_size = 5
-    source_df = pd.DataFrame({
-        'LOAN_ID':
-        list(range(nrows)),
-        'EMBEDDING':
-        [[float(i + k) for k in range(emb_size)] for i in range(nrows)],
-    })
+    source_df = pd.DataFrame(
+        {
+            'LOAN_ID': list(range(nrows)),
+            'EMBEDDING': [
+                [float(i + k) for k in range(emb_size)] for i in range(nrows)
+            ],
+        }
+    )
     try:
         _seed_gcs_parquet(source_df, gcs_path)
         connector.write_artifacts_to_table(table_name, gcs_path)
@@ -621,14 +642,17 @@ def test_bigquery_write_artifacts_to_table_from_gcs_with_embedding_column():
         # column. Without enable_list_inference (or if it's ignored),
         # BQ would read the parquet LIST as a nested STRUCT and this
         # query would fail with a SQL type error.
-        query = (f'SELECT COUNT(*) AS n FROM '
-                 f'{connector.full_table_name(table_name)} '
-                 f'WHERE ARRAY_LENGTH(EMBEDDING) = {emb_size}')
+        query = (
+            f'SELECT COUNT(*) AS n FROM '
+            f'{connector.full_table_name(table_name)} '
+            f'WHERE ARRAY_LENGTH(EMBEDDING) = {emb_size}'
+        )
         result_df = connector.context.query(query).result().to_dataframe()
         assert result_df['n'].iloc[0] == nrows, (
-            f"Expected {nrows} rows with EMBEDDING of length {emb_size}; "
-            f"got {result_df['n'].iloc[0]}. pandas-generated LIST parquet "
-            f"may not be read as a BQ ARRAY via enable_list_inference.")
+            f'Expected {nrows} rows with EMBEDDING of length {emb_size}; '
+            f'got {result_df["n"].iloc[0]}. pandas-generated LIST parquet '
+            f'may not be read as a BQ ARRAY via enable_list_inference.'
+        )
     finally:
         connector.drop_table_if_exists(table_name)
         fsutil.rm(gcs_path, ignore_errors=True)
@@ -648,15 +672,18 @@ def test_bigquery_write_artifacts_to_table_from_gcs_append_and_replace():
         dataset_id='hnm_integ_test',
         location='us-west1',
     )
-    table_name = f"test_gcs_replace_{uuid.uuid4().hex}"
-    gcs_path = osp.join(_BQ_EXPORT_TEST_STAGING_PATH,
-                        f'gcs_replace_{uuid.uuid4().hex}/')
+    table_name = f'test_gcs_replace_{uuid.uuid4().hex}'
+    gcs_path = osp.join(
+        _BQ_EXPORT_TEST_STAGING_PATH, f'gcs_replace_{uuid.uuid4().hex}/'
+    )
 
     nrows = 50
-    source_df = pd.DataFrame({
-        'LOAN_ID': list(range(nrows)),
-        'AMOUNT': [float(i) * 100 for i in range(nrows)],
-    })
+    source_df = pd.DataFrame(
+        {
+            'LOAN_ID': list(range(nrows)),
+            'AMOUNT': [float(i) * 100 for i in range(nrows)],
+        }
+    )
     try:
         _seed_gcs_parquet(source_df, gcs_path)
 

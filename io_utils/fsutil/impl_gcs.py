@@ -10,6 +10,7 @@ Safe/idempotent reads and listings use a bounded retry policy for transient
 Google API and transport failures. Authentication, malformed-request, and
 not-found failures remain single-attempt.
 """
+
 import datetime
 import gzip
 import logging
@@ -22,9 +23,8 @@ from typing import BinaryIO, Generator, List, Optional, Sequence, TextIO
 from zipfile import ZipFile
 
 from google.api_core import exceptions as gcs_exceptions
-from google.auth import compute_engine
+from google.auth import compute_engine, impersonated_credentials
 from google.auth import default as auth_default
-from google.auth import impersonated_credentials
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport import requests
 from google.cloud import storage
@@ -77,8 +77,14 @@ def is_retryable_gcs_error(error: BaseException) -> bool:
 
 def gcs_retry_policy():
     """Bounded retry for operations explicitly safe to repeat."""
-    return retry(exceptions=_GCS_TRANSIENT_ERRORS, tries=3, delay=0.5,
-                 backoff=2, max_delay=2, logger=None)
+    return retry(
+        exceptions=_GCS_TRANSIENT_ERRORS,
+        tries=3,
+        delay=0.5,
+        backoff=2,
+        max_delay=2,
+        logger=None,
+    )
 
 
 class ThreadLocalGCSClient(threading.local):
@@ -90,6 +96,7 @@ class ThreadLocalGCSClient(threading.local):
 
     Reference: https://github.com/googleapis/google-cloud-python/issues/5685
     """
+
     def __init__(self) -> None:
         super().__init__()
         self._client = None
@@ -113,7 +120,8 @@ class ThreadLocalGCSClient(threading.local):
                 credential = credentials.get('credential')
                 if credential is None:
                     raise RuntimeError(
-                        'Missing federated GCS credential for GCS identity')
+                        'Missing federated GCS credential for GCS identity'
+                    )
                 client = storage.Client(
                     project=credentials.get('project'),
                     credentials=credential,
@@ -155,6 +163,7 @@ def _client_bucket(client: storage.Client, bucket_name: str) -> storage.Bucket:
 
 class _ScopedGCSClient:
     """Smart-open client adapter preserving requester-pays bucket shape."""
+
     def __init__(self, client: storage.Client):
         self._client = client
         self._credentials = client._credentials
@@ -190,8 +199,9 @@ def read_binary(uri: GCSURI, compression: bool) -> bytes:
         actual_size = len(file_bytes)
         if expected_size != actual_size:
             raise IOError(
-                f"File {uri} might be incomplete! Expected {expected_size} bytes, "
-                f"but got {actual_size} bytes.")
+                f'File {uri} might be incomplete! Expected {expected_size} bytes, '
+                f'but got {actual_size} bytes.'
+            )
 
         if compression:
             return gzip.decompress(file_bytes)
@@ -205,8 +215,9 @@ def read_binary(uri: GCSURI, compression: bool) -> bytes:
 @fsExceptionHandler
 @trace(TraceOptions(trace_params=['uri', 'compression']))
 @gcs_fs_logging_policy(skip_args=[1])
-def write_binary(uri: GCSURI, data: BinaryIO, compression: bool,
-                 ttl: Optional[object] = None) -> None:
+def write_binary(
+    uri: GCSURI, data: BinaryIO, compression: bool, ttl: Optional[object] = None
+) -> None:
     """Write binary data to a GCS object.
 
     Note: ttl parameter is ignored for GCS (not supported by this impl.).
@@ -224,8 +235,7 @@ def write_binary(uri: GCSURI, data: BinaryIO, compression: bool,
 @fsExceptionHandler
 @trace(TraceOptions(trace_params=True))
 @gcs_fs_logging_policy(allowed_exceptions=FileNotFoundError)
-def read_text(uri: GCSURI, compression: bool,
-              encoding: Optional[str] = None) -> str:
+def read_text(uri: GCSURI, compression: bool, encoding: Optional[str] = None) -> str:
     """Read text data from a GCS object."""
     r = read_binary(uri, compression=compression)
     if encoding:
@@ -237,8 +247,9 @@ def read_text(uri: GCSURI, compression: bool,
 @fsExceptionHandler
 @trace(TraceOptions(trace_params=['uri', 'compression']))
 @gcs_fs_logging_policy()
-def write_text(uri: GCSURI, data: str, compression: bool = False,
-               encoding: Optional[str] = None) -> None:
+def write_text(
+    uri: GCSURI, data: str, compression: bool = False, encoding: Optional[str] = None
+) -> None:
     """Write text data to a GCS object."""
     if encoding:
         encoded_data = data.encode(encoding)
@@ -276,15 +287,18 @@ def get_binary_handle(
 ) -> Generator[BinaryIO, None, None]:
     """Get a binary file handle for reading/writing GCS objects."""
     with restricted_diagnostic_boundary(
-            safe_message='GCS stream operation failed',
-            exception_types=(gcs_exceptions.GoogleAPIError, GoogleAuthError,
-                             OSError)):
+        safe_message='GCS stream operation failed',
+        exception_types=(gcs_exceptions.GoogleAPIError, GoogleAuthError, OSError),
+    ):
         if 'b' not in mode:
             mode = mode + 'b'
-        with smart_open(uri.as_gs(), mode, encoding=None,
-                        compression=".gz" if compression else None,
-                        transport_params={'client': _smart_open_client()
-                                          }) as f:  # type: ignore
+        with smart_open(
+            uri.as_gs(),
+            mode,
+            encoding=None,
+            compression='.gz' if compression else None,
+            transport_params={'client': _smart_open_client()},
+        ) as f:  # type: ignore
             yield f  # type: ignore
 
 
@@ -298,13 +312,16 @@ def get_handle(
 ) -> Generator[TextIO, None, None]:
     """Get a text file handle for reading/writing GCS objects."""
     with restricted_diagnostic_boundary(
-            safe_message='GCS stream operation failed',
-            exception_types=(gcs_exceptions.GoogleAPIError, GoogleAuthError,
-                             OSError)):
-        with smart_open(uri.as_gs(), mode, encoding='utf-8',
-                        compression=".gz" if compression else None,
-                        transport_params={'client': _smart_open_client()
-                                          }) as f:  # type: ignore
+        safe_message='GCS stream operation failed',
+        exception_types=(gcs_exceptions.GoogleAPIError, GoogleAuthError, OSError),
+    ):
+        with smart_open(
+            uri.as_gs(),
+            mode,
+            encoding='utf-8',
+            compression='.gz' if compression else None,
+            transport_params={'client': _smart_open_client()},
+        ) as f:  # type: ignore
             yield f  # type: ignore
 
 
@@ -349,15 +366,15 @@ def exists(uri: GCSURI) -> bool:
         return blob.exists()
     except gcs_exceptions.Forbidden:
         # Access denied - treat as not existing
-        logger.debug(f"Access denied when checking existence: {uri.as_gs()}")
+        logger.debug(f'Access denied when checking existence: {uri.as_gs()}')
         return False
     except Exception as e:
         if is_retryable_gcs_error(e):
             raise
         logger.warning(
-            "Unexpected exception checking GCS existence "
-            "(error_type=%s)",
-            type(e).__name__)
+            'Unexpected exception checking GCS existence (error_type=%s)',
+            type(e).__name__,
+        )
         return False
 
 
@@ -381,8 +398,9 @@ def _isdir_once(uri: GCSURI) -> bool:
     except Exception as e:
         if is_retryable_gcs_error(e):
             raise
-        logger.warning("Unexpected exception in GCS isdir (error_type=%s)",
-                       type(e).__name__)
+        logger.warning(
+            'Unexpected exception in GCS isdir (error_type=%s)', type(e).__name__
+        )
         return False
 
 
@@ -404,8 +422,9 @@ def _listdir_details(
 
     if max_items is not None and not (1 <= max_items <= 1000):
         raise ValueError(
-            "max_items should be in the range of 1 <= max_items <= 1000 "
-            "for GCS fsutil.listdir")
+            'max_items should be in the range of 1 <= max_items <= 1000 '
+            'for GCS fsutil.listdir'
+        )
 
     bucket_name = uri.bucket
     bucket = _get_bucket(uri)
@@ -415,8 +434,9 @@ def _listdir_details(
 
     # Use delimiter='/' to get only direct children (not recursive)
     # When max_items is None, don't pass max_results to get all results
-    iterator = bucket.list_blobs(prefix=prefix, delimiter='/',
-                                 max_results=max_items if max_items else None)
+    iterator = bucket.list_blobs(
+        prefix=prefix, delimiter='/', max_results=max_items if max_items else None
+    )
 
     # Iterate through all pages if max_items is None, or until we reach max_items
     for page in iterator.pages:
@@ -428,7 +448,8 @@ def _listdir_details(
                     api.PathDetail(
                         path=f'gs://{bucket_name}/{blob.name}',
                         is_directory=False,
-                    ))
+                    )
+                )
                 if max_items and len(entries) >= max_items:
                     return entries
 
@@ -442,7 +463,8 @@ def _listdir_details(
                         api.PathDetail(
                             path=f'gs://{bucket_name}/{dir_path}',
                             is_directory=True,
-                        ))
+                        )
+                    )
                     if max_items and len(entries) >= max_items:
                         return entries
 
@@ -480,8 +502,9 @@ def listdir_detail(
 @api.rm.register
 @trace(TraceOptions(trace_params=['path']))
 @gcs_fs_logging_policy()
-def rm(uri: GCSURI, ignore_errors: bool = False,
-       include: Optional[List[str]] = None) -> None:
+def rm(
+    uri: GCSURI, ignore_errors: bool = False, include: Optional[List[str]] = None
+) -> None:
     """Remove a GCS object or directory (prefix)."""
     try:
         if isdir(uri):
@@ -495,8 +518,7 @@ def rm(uri: GCSURI, ignore_errors: bool = False,
         if not ignore_errors:
             raise
         else:
-            logger.debug("Ignored GCS rm error (error_type=%s)",
-                         type(e).__name__)
+            logger.debug('Ignored GCS rm error (error_type=%s)', type(e).__name__)
 
 
 def _rmdir(uri: GCSURI, include: Optional[List[str]] = None) -> None:
@@ -557,9 +579,8 @@ def filesize(uri: GCSURI) -> Optional[int]:
         if is_retryable_gcs_error(e):
             raise
         logger.warning(
-            "Unexpected exception in GCS filesize "
-            "(error_type=%s)",
-            type(e).__name__)
+            'Unexpected exception in GCS filesize (error_type=%s)', type(e).__name__
+        )
         return None
 
 
@@ -615,9 +636,9 @@ def get_if_present(uri: GCSURI) -> Optional[bytes]:
         if is_retryable_gcs_error(e):
             raise
         logger.warning(
-            "Unexpected exception in GCS get_if_present "
-            "(error_type=%s)",
-            type(e).__name__)
+            'Unexpected exception in GCS get_if_present (error_type=%s)',
+            type(e).__name__,
+        )
         return None
 
 
@@ -642,8 +663,7 @@ def has_write_permission(uri: GCSURI) -> bool:
     except (gcs_exceptions.Forbidden, gcs_exceptions.Unauthorized):
         logger.warning('GCS output write probe was denied')
     except Exception as error:
-        logger.warning('GCS output write probe failed (%s)',
-                       type(error).__name__)
+        logger.warning('GCS output write probe failed (%s)', type(error).__name__)
     finally:
         if uploaded:
             assert blob is not None
@@ -726,9 +746,11 @@ def get_last_modified_time(uri: GCSURI, suffix: Optional[str] = None) -> float:
 
     except Exception as e:
         logger.warning(
-            "Unable to get GCS last modified time for %s; returning %s "
-            "(error_type=%s)", uri.as_gs(), DEFAULT_DATA_VERSION,
-            type(e).__name__)
+            'Unable to get GCS last modified time for %s; returning %s (error_type=%s)',
+            uri.as_gs(),
+            DEFAULT_DATA_VERSION,
+            type(e).__name__,
+        )
         return DEFAULT_DATA_VERSION
 
     # For files
@@ -740,15 +762,18 @@ def get_last_modified_time(uri: GCSURI, suffix: Optional[str] = None) -> float:
         return DEFAULT_DATA_VERSION
     except gcs_exceptions.NotFound as e:
         logger.error(
-            "Unable to get GCS last modified time for %s; file not found "
-            "(error_type=%s)", uri.as_gs(),
-            type(e).__name__)
+            'Unable to get GCS last modified time for %s; file not found '
+            '(error_type=%s)',
+            uri.as_gs(),
+            type(e).__name__,
+        )
         return DEFAULT_DATA_VERSION
     except Exception as e:
         logger.error(
-            "Unable to get GCS last modified time for %s (error_type=%s)",
+            'Unable to get GCS last modified time for %s (error_type=%s)',
             uri.as_gs(),
-            type(e).__name__)
+            type(e).__name__,
+        )
         return DEFAULT_DATA_VERSION
 
 
@@ -801,7 +826,7 @@ def _get_signing_credentials(scopes=None):
     # User credentials — impersonate default compute SA.
     credentials.refresh(requests.Request())
     client = threadsafe_gcs.client()
-    service_account_email = f"{client.project}@appspot.gserviceaccount.com"
+    service_account_email = f'{client.project}@appspot.gserviceaccount.com'
     return impersonated_credentials.Credentials(
         source_credentials=credentials,
         target_principal=service_account_email,
@@ -816,11 +841,12 @@ def _get_signing_credentials(scopes=None):
 
 def _get_gcs_part_path(base_path: str, part_number: int) -> str:
     """Generate the path for a temporary part object."""
-    return f"{base_path}.part{part_number:05d}"
+    return f'{base_path}.part{part_number:05d}'
 
 
 class GCSPresignedHelper(api.PresignedHelper[GCSURI]):
     """GCS implementation of :class:`~api.PresignedHelper`."""
+
     def __init__(self, uri: GCSURI):
         super().__init__(uri)
 
@@ -832,25 +858,26 @@ class GCSPresignedHelper(api.PresignedHelper[GCSURI]):
         """Generate a V4 signed URL for downloading a GCS object."""
         if isdir(uri):
             raise ValueError(
-                f"Unable to generate signed URL for GCS directory: "
-                f"{uri.as_gs()}")
+                f'Unable to generate signed URL for GCS directory: {uri.as_gs()}'
+            )
 
         try:
             blob = _get_blob(uri)
             signing_creds = _get_signing_credentials()
 
             if hasattr(signing_creds, 'sign_bytes') and not isinstance(
-                    signing_creds, impersonated_credentials.Credentials):
+                signing_creds, impersonated_credentials.Credentials
+            ):
                 signed_url = blob.generate_signed_url(
-                    version="v4",
+                    version='v4',
                     expiration=DEFAULT_SIGNED_URL_EXPIRATION,
-                    method="GET",
+                    method='GET',
                 )
             else:
                 signed_url = blob.generate_signed_url(
-                    version="v4",
+                    version='v4',
                     expiration=DEFAULT_SIGNED_URL_EXPIRATION,
-                    method="GET",
+                    method='GET',
                     credentials=signing_creds,
                 )
 
@@ -858,34 +885,36 @@ class GCSPresignedHelper(api.PresignedHelper[GCSURI]):
 
         except Exception:
             raise ValueError(
-                f"Permission error for generating signed URL for path: "
-                f"{uri.as_gs()}.") from None
+                f'Permission error for generating signed URL for path: {uri.as_gs()}.'
+            ) from None
 
     def _create_multipart_upload(self, uri: GCSURI, num_parts):
         client = threadsafe_gcs.client()
         bucket = _client_bucket(client, uri.bucket)
         signing_creds = _get_signing_credentials(
-            scopes=['https://www.googleapis.com/auth/devstorage.read_write'])
+            scopes=['https://www.googleapis.com/auth/devstorage.read_write']
+        )
 
         presigned_urls = {}
         for part_number in range(1, num_parts + 1):
             part_path = _get_gcs_part_path(uri.path, part_number)
             blob = bucket.blob(part_path)
             presigned_urls[part_number] = blob.generate_signed_url(
-                version="v4",
+                version='v4',
                 expiration=GCS_UPLOAD_URL_EXPIRATION,
-                method="PUT",
+                method='PUT',
                 credentials=signing_creds,
             )
 
         # Use the gs:// path as the "upload_id" for GCS
         upload_id = uri.as_gs()
-        logger.info(f"Created GCS composite upload request for {uri.as_gs()} "
-                    f"with {num_parts} parts")
+        logger.info(
+            f'Created GCS composite upload request for {uri.as_gs()} '
+            f'with {num_parts} parts'
+        )
         return upload_id, presigned_urls
 
-    def _complete_multipart_upload(self, uri: GCSURI, upload_id,
-                                   parts):  # noqa: ARG002
+    def _complete_multipart_upload(self, uri: GCSURI, upload_id, parts):  # noqa: ARG002
         """Complete a GCS composite upload by composing part objects.
 
         Unlike S3 multipart upload which uses a server-generated
@@ -902,13 +931,17 @@ class GCSPresignedHelper(api.PresignedHelper[GCSURI]):
             part_path = _get_gcs_part_path(uri.path, part.part_number)
             blob = bucket.blob(part_path)
             if not blob.exists():
-                raise ValueError(f"Part {part.part_number} not found at "
-                                 f"gs://{uri.bucket}/{part_path}")
+                raise ValueError(
+                    f'Part {part.part_number} not found at '
+                    f'gs://{uri.bucket}/{part_path}'
+                )
             part_blobs.append(blob)
 
         gs_path = uri.as_gs()
-        logger.debug(f"All {len(part_blobs)} parts verified for {gs_path}, "
-                     f"composing into final object")
+        logger.debug(
+            f'All {len(part_blobs)} parts verified for {gs_path}, '
+            f'composing into final object'
+        )
 
         MAX_COMPOSE_OBJECTS = 32
 
@@ -918,9 +951,8 @@ class GCSPresignedHelper(api.PresignedHelper[GCSURI]):
         else:
             intermediate_blobs = []
             for i in range(0, len(part_blobs), MAX_COMPOSE_OBJECTS):
-                batch = part_blobs[i:i + MAX_COMPOSE_OBJECTS]
-                intermediate_path = (
-                    f"{uri.path}.intermediate{i // MAX_COMPOSE_OBJECTS}")
+                batch = part_blobs[i : i + MAX_COMPOSE_OBJECTS]
+                intermediate_path = f'{uri.path}.intermediate{i // MAX_COMPOSE_OBJECTS}'
                 intermediate_blob = bucket.blob(intermediate_path)
                 intermediate_blob.compose(batch)
                 intermediate_blobs.append(intermediate_blob)
@@ -931,13 +963,12 @@ class GCSPresignedHelper(api.PresignedHelper[GCSURI]):
             for blob in intermediate_blobs:
                 blob.delete()
 
-        logger.info(f"Composed {len(part_blobs)} parts into {gs_path}")
+        logger.info(f'Composed {len(part_blobs)} parts into {gs_path}')
 
         for blob in part_blobs:
             blob.delete()
 
-        logger.info(
-            f"Deleted {len(part_blobs)} temporary part objects for {gs_path}")
+        logger.info(f'Deleted {len(part_blobs)} temporary part objects for {gs_path}')
 
 
 @api.get_presigned_helper.register
@@ -983,14 +1014,15 @@ def zip_directory(
     blobs = [b for b in blobs if not b.name.endswith('/') and b.name != prefix]
 
     if not blobs:
-        raise ValueError(f"No files found under {uri.as_gs()}")
+        raise ValueError(f'No files found under {uri.as_gs()}')
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        zip_path = os.path.join(temp_dir, "output.zip")
+        zip_path = os.path.join(temp_dir, 'output.zip')
         with ZipFile(zip_path, 'w') as zipf:
             for blob in blobs:
-                logger.info("zipping gs://%s/%s to %s", uri.bucket, blob.name,
-                            output_path)
+                logger.info(
+                    'zipping gs://%s/%s to %s', uri.bucket, blob.name, output_path
+                )
                 data = blob.download_as_bytes()
                 zipf.writestr(blob.name, data)
 
@@ -1051,16 +1083,19 @@ def _server_side_copy(src_uri: GCSURI, dst_uri: GCSURI) -> bool:
         token = None
         for _ in range(_GCS_REWRITE_MAX_ITERATIONS):
             token, _bytes_rewritten, _total_bytes = dst_blob.rewrite(
-                src_blob, token=token)
+                src_blob, token=token
+            )
             if token is None:
                 return True
-        logger.debug("Server-side GCS copy exceeded %d iterations: %s -> %s",
-                     _GCS_REWRITE_MAX_ITERATIONS, src_uri.as_gs(),
-                     dst_uri.as_gs())
+        logger.debug(
+            'Server-side GCS copy exceeded %d iterations: %s -> %s',
+            _GCS_REWRITE_MAX_ITERATIONS,
+            src_uri.as_gs(),
+            dst_uri.as_gs(),
+        )
         return False
     except Exception as e:
-        logger.debug("Server-side GCS copy failed (error_type=%s)",
-                     type(e).__name__)
+        logger.debug('Server-side GCS copy failed (error_type=%s)', type(e).__name__)
         return False
 
 
@@ -1082,11 +1117,12 @@ def _download_client() -> GCSDownloader:
             material = scope.credentials or {}
             credential = material.get('credential')
             if credential is None:
-                raise RuntimeError(
-                    'Missing federated GCS credential for GCS identity')
+                raise RuntimeError('Missing federated GCS credential for GCS identity')
             downloader = GCSDownloader(
-                credentials=credential, project=material.get('project'),
-                requester_pays_project=material.get('requester_pays_project'))
+                credentials=credential,
+                project=material.get('project'),
+                requester_pays_project=material.get('requester_pays_project'),
+            )
             scope.cache[key] = downloader
         return downloader
 
@@ -1146,8 +1182,8 @@ def copydir(src: str, dst: str) -> None:
     """
     src_uri = ParseURI(src)
     dst_uri = ParseURI(dst)
-    assert isinstance(src_uri, GCSURI), f"Expected GCSURI, got {type(src_uri)}"
-    assert isinstance(dst_uri, GCSURI), f"Expected GCSURI, got {type(dst_uri)}"
+    assert isinstance(src_uri, GCSURI), f'Expected GCSURI, got {type(src_uri)}'
+    assert isinstance(dst_uri, GCSURI), f'Expected GCSURI, got {type(dst_uri)}'
 
     src_bucket = _get_bucket(src_uri)
     src_prefix = src_uri.path
@@ -1155,23 +1191,22 @@ def copydir(src: str, dst: str) -> None:
         src_prefix += '/'
 
     blobs = [
-        b for b in src_bucket.list_blobs(prefix=src_prefix)
-        if not b.name.endswith('/')
+        b for b in src_bucket.list_blobs(prefix=src_prefix) if not b.name.endswith('/')
     ]
     if not blobs:
-        logger.warning("copydir: source is empty or does not exist: %s", src)
+        logger.warning('copydir: source is empty or does not exist: %s', src)
         return
 
-    logger.debug("copydir: copying %d files from %s to %s", len(blobs), src,
-                 dst)
+    logger.debug('copydir: copying %d files from %s to %s', len(blobs), src, dst)
 
     src_base = src_prefix.rstrip('/')
     dst_base = dst_uri.path.rstrip('/')
 
     def _copy_one(src_name: str) -> None:
-        rel = src_name[len(src_base):].lstrip(
-            '/') if src_base else src_name.lstrip('/')
-        dst_path = f"{dst_base}/{rel}" if dst_base else rel
+        rel = (
+            src_name[len(src_base) :].lstrip('/') if src_base else src_name.lstrip('/')
+        )
+        dst_path = f'{dst_base}/{rel}' if dst_base else rel
         file_src = GCSURI(bucket=src_uri.bucket, path=src_name)
         file_dst = GCSURI(bucket=dst_uri.bucket, path=dst_path)
         if not _server_side_copy(file_src, file_dst):
@@ -1183,7 +1218,7 @@ def copydir(src: str, dst: str) -> None:
     for task in tasks:
         task.result()
 
-    logger.debug("copydir: done copying %s to %s", src, dst)
+    logger.debug('copydir: done copying %s to %s', src, dst)
 
 
 @api.customer_facing_path.register

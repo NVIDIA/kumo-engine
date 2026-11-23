@@ -31,9 +31,13 @@ torch.utils.data._utils.MP_STATUS_CHECK_INTERVAL = 0.1
 
 # Loading-time budget for graph engine startup.
 _MAX_LOADING_TIME = EnvVar(
-    'GRAPH_ENGINE_MAX_LOADING_TIME_SECONDS', type=int, required=False,
-    default_value=2 * 60 * 60, description='Maximum loading time budget '
-    '(seconds) propagated to the k8s job manifest.')
+    'GRAPH_ENGINE_MAX_LOADING_TIME_SECONDS',
+    type=int,
+    required=False,
+    default_value=2 * 60 * 60,
+    description='Maximum loading time budget '
+    '(seconds) propagated to the k8s job manifest.',
+)
 
 # Per-edge-type cap enforced at ingest-time downsampling and at job
 # pre-flight sizing.
@@ -61,5 +65,6 @@ def get_service() -> DiskgraphService:
     if not isinstance(data_compute, DiskgraphConfig):
         raise RuntimeError(
             'get_service() called in non-DiskGraph mode; '
-            f'data_compute is {type(data_compute).__name__}', )
+            f'data_compute is {type(data_compute).__name__}',
+        )
     return DiskgraphService(data_compute)

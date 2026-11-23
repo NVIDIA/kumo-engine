@@ -33,8 +33,7 @@ def parse_ast_node(node, locals):
         return node.value
     elif isinstance(node, ast.Name):
         return node.id
-    elif isinstance(node, ast.UnaryOp) and isinstance(node.op,
-                                                      (ast.UAdd, ast.USub)):
+    elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
         operand = parse_ast_node(node.operand, locals)
         if isinstance(node.op, ast.UAdd):
             return operand
@@ -47,15 +46,14 @@ def parse_ast_node(node, locals):
     elif isinstance(node, ast.Call):
         class_name = node.func.id  # type: ignore
         args = [parse_ast_node(n, locals) for n in node.args]
-        kwargs = {
-            kw.arg: parse_ast_node(kw.value, locals)
-            for kw in node.keywords
-        }
+        kwargs = {kw.arg: parse_ast_node(kw.value, locals) for kw in node.keywords}
         return locals[class_name](*args, **kwargs)
     else:
-        raise ValueError(f'Object type not supported. Must be one of '
-                         f'{ast.Constant, ast.Name, ast.List, ast.Call} '
-                         f'(got {type(node)}')
+        raise ValueError(
+            f'Object type not supported. Must be one of '
+            f'{ast.Constant, ast.Name, ast.List, ast.Call} '
+            f'(got {type(node)}'
+        )
 
 
 def repr_to_object(object_str: str, locals: Dict[str, Any]) -> Any:

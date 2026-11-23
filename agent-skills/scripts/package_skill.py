@@ -40,6 +40,7 @@ Every build is checked: each markdown link must resolve relative to the file tha
 each backticked path naming a package directory must resolve relative to the package root. A
 package that references a file it does not ship fails the build.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -73,20 +74,32 @@ CAPABILITY = [
 ]
 HOSTS: dict[str, dict] = {
     # The Cortex extension root holds only `skills/`, with one skill directory.
-    'coco': dict(prefix='kumo-ds/skills',
-                 hosts=['snowflake-coco/adapter.md', 'snowflake-coco/runtime.md',
-                        'snowflake-coco/ml_job.md'],
-                 capability=True),
+    'coco': dict(
+        prefix='kumo-ds/skills',
+        hosts=[
+            'snowflake-coco/adapter.md',
+            'snowflake-coco/runtime.md',
+            'snowflake-coco/ml_job.md',
+        ],
+        capability=True,
+    ),
     # A coding agent outside any data platform. The package root holds the one skill directory,
     # ready to copy into the agent's skills directory.
-    'generic': dict(prefix='skills',
-                    hosts=['generic/adapter.md', 'generic/runtime.md'],
-                    capability=True),
+    'generic': dict(
+        prefix='skills',
+        hosts=['generic/adapter.md', 'generic/runtime.md'],
+        capability=True,
+    ),
     # Databricks Genie Code. Its skills folder holds the one skill directory, like `generic`.
-    'genie': dict(prefix='skills',
-                  hosts=['databricks-genie/adapter.md', 'databricks-genie/runtime.md',
-                         'databricks-genie/job.md'],
-                  capability=True),
+    'genie': dict(
+        prefix='skills',
+        hosts=[
+            'databricks-genie/adapter.md',
+            'databricks-genie/runtime.md',
+            'databricks-genie/job.md',
+        ],
+        capability=True,
+    ),
 }
 GENIE_SKILLS = '/Users/{user}/.assistant/skills'
 
@@ -101,21 +114,27 @@ def build_id() -> str:
     Without git, name the content instead: `unknown-<digest>` of every skill file, the same for
     every host, so the stale check never takes two different builds for one.
     """
+
     def git(*args: str) -> str:
-        return subprocess.run(['git', '-C', str(ROOT), *args], check=True, capture_output=True,
-                              text=True).stdout.strip()
+        return subprocess.run(
+            ['git', '-C', str(ROOT), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
 
     try:
         # A fixed 8 characters: %h's length depends on the clone, so a shallow CI checkout and a
         # full one would stamp the same commit differently.
-        date, sha = git('log', '-1', '--format=%cd %H', '--date=format:%Y-%m-%d').split()
+        date, sha = git(
+            'log', '-1', '--format=%cd %H', '--date=format:%Y-%m-%d'
+        ).split()
         stamp = f'{date}-{sha[:8]}'
         dirty = git('status', '--porcelain', '--', str(SKILLS))
     except (OSError, subprocess.CalledProcessError):
         digest = hashlib.sha256()
         for p in skill_files(SKILLS):
-            data = p.read_bytes().replace(b'\r\n', b'\n')   # as build() ships it
-            digest.update(f'{p.relative_to(SKILLS).as_posix()}\0{len(data)}\0'.encode() + data)
+            data = p.read_bytes().replace(b'\r\n', b'\n')  # as build() ships it
+            digest.update(
+                f'{p.relative_to(SKILLS).as_posix()}\0{len(data)}\0'.encode() + data
+            )
         return f'unknown-{digest.hexdigest()[:12]}'
     return f'{stamp}-dirty' if dirty else stamp
 
@@ -132,8 +151,12 @@ def git_tracked(src: Path) -> list[Path]:
     """
     rel = src.relative_to(ROOT)
     try:
-        out = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '--', str(rel)],
-                             check=True, capture_output=True, text=True).stdout
+        out = subprocess.run(
+            ['git', '-C', str(ROOT), 'ls-files', '--', str(rel)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
     except (OSError, subprocess.CalledProcessError):
         return skill_files(src)
     return [ROOT / line for line in out.splitlines() if line]
@@ -141,8 +164,11 @@ def git_tracked(src: Path) -> list[Path]:
 
 def skill_files(src: Path) -> list[Path]:
     """The files under `src` a skill is made of, found without git."""
-    return sorted(p for p in src.rglob('*')
-                  if p.is_file() and p.suffix in SKILL_SUFFIXES and '__pycache__' not in p.parts)
+    return sorted(
+        p
+        for p in src.rglob('*')
+        if p.is_file() and p.suffix in SKILL_SUFFIXES and '__pycache__' not in p.parts
+    )
 
 
 def copy_tracked(src: Path, dest: Path) -> None:
@@ -183,7 +209,9 @@ def build(host: str, dist: Path) -> Path:
             if b'\r\n' in data:
                 p.write_bytes(data.replace(b'\r\n', b'\n'))
     router = pkg / 'SKILL.md'
-    text, n = MARKER.subn(f'SKILL-BUILD: {build_id()}', router.read_text(encoding='utf-8'))
+    text, n = MARKER.subn(
+        f'SKILL-BUILD: {build_id()}', router.read_text(encoding='utf-8')
+    )
     if n != 1:
         raise SystemExit(f'expected one SKILL-BUILD marker in {router}, found {n}')
     router.write_text(text, encoding='utf-8', newline='\n')
@@ -205,7 +233,9 @@ def unresolved(pkg: Path) -> list[str]:
             if not resolved.is_file():
                 errors.append(f'{where}: link ({target}) does not resolve')
             elif not resolved.is_relative_to(pkg):
-                errors.append(f'{where}: link ({target}) resolves outside the package root')
+                errors.append(
+                    f'{where}: link ({target}) resolves outside the package root'
+                )
         for target in CODE_PATH.findall(text):
             head, _, rest = target.partition('/')
             if head == ROUTER:
@@ -213,7 +243,9 @@ def unresolved(pkg: Path) -> list[str]:
             if head not in roots:
                 continue  # not a package path, e.g. a Kumo source module
             if not (pkg / head / rest).is_file():
-                errors.append(f'{where}: `{target}` does not resolve from the package root')
+                errors.append(
+                    f'{where}: `{target}` does not resolve from the package root'
+                )
     return errors
 
 
@@ -233,7 +265,9 @@ def bundle(out: Path) -> None:
             pkg = build(host, Path(tmp))
             errors = unresolved(pkg)
             if errors:
-                raise SystemExit(f'{host}: {len(errors)} unresolved reference(s): {errors[:3]}')
+                raise SystemExit(
+                    f'{host}: {len(errors)} unresolved reference(s): {errors[:3]}'
+                )
             shutil.copytree(pkg, out / host / ROUTER)
 
 
@@ -273,21 +307,36 @@ class Workspace:
         if '://' not in host:
             host = f'https://{host}'
         if not host.startswith('https://'):
-            raise SystemExit(f'Refusing a non-https Databricks host (the token would go in clear): {host}')
+            raise SystemExit(
+                f'Refusing a non-https Databricks host (the token would go in clear): {host}'
+            )
         self.host = host.rstrip('/')
         self.token = token
 
-    def api(self, method: str, path: str, body: dict | None = None,
-            query: dict | None = None) -> dict:
+    def api(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        query: dict | None = None,
+    ) -> dict:
         url = self.host + path + ('?' + urllib.parse.urlencode(query) if query else '')
         req = urllib.request.Request(
-            url, method=method, data=json.dumps(body).encode() if body is not None else None,
-            headers={'Authorization': f'Bearer {self.token}', 'Content-Type': 'application/json'})
+            url,
+            method=method,
+            data=json.dumps(body).encode() if body is not None else None,
+            headers={
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read() or b'{}')
         except urllib.error.HTTPError as e:
-            raise SystemExit(f'{method} {path}: HTTP {e.code} {e.read().decode()[:300]}') from None
+            raise SystemExit(
+                f'{method} {path}: HTTP {e.code} {e.read().decode()[:300]}'
+            ) from None
 
     def me(self) -> str:
         return self.api('GET', '/api/2.0/preview/scim/v2/Me')['userName']
@@ -340,16 +389,20 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
     def inside(paths: list[str]) -> list[str]:
         outside = [path for path in paths if not path.startswith(target + '/')]
         if outside:
-            raise SystemExit(f'workspace listing of {target} returned paths outside it '
-                             f'(e.g. {outside[0]}). Nothing was deleted.')
+            raise SystemExit(
+                f'workspace listing of {target} returned paths outside it '
+                f'(e.g. {outside[0]}). Nothing was deleted.'
+            )
         return paths
 
     stale = sorted(set(inside(ws.listing(target))) - set(remote))
     stale_hosts = [path for path in stale if path.startswith(f'{target}/hosts/')]
     if stale_hosts and not prune:
-        raise SystemExit(f'{len(stale_hosts)} file(s) under {target}/hosts/ are not in this package '
-                         f'(e.g. {stale_hosts[0]}); a second host directory would be read. '
-                         f'Rerun with --prune to delete them. Nothing was written.')
+        raise SystemExit(
+            f'{len(stale_hosts)} file(s) under {target}/hosts/ are not in this package '
+            f'(e.g. {stale_hosts[0]}); a second host directory would be read. '
+            f'Rerun with --prune to delete them. Nothing was written.'
+        )
     if prune:
         for path in stale:
             ws.delete(path)
@@ -360,13 +413,26 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
                 print(f'  empty directory deleted: {d}')
     for path, p in remote.items():
         ws.api('POST', '/api/2.0/workspace/mkdirs', dict(path=path.rsplit('/', 1)[0]))
-        ws.api('POST', '/api/2.0/workspace/import', dict(
-            path=path, format='AUTO', overwrite=True,
-            content=base64.b64encode(p.read_bytes()).decode()))
-    bad = [path for path, p in remote.items()
-           if base64.b64decode(ws.api('GET', '/api/2.0/workspace/export',
-                                      query=dict(path=path, format='AUTO')).get('content', ''))
-           != p.read_bytes()]
+        ws.api(
+            'POST',
+            '/api/2.0/workspace/import',
+            dict(
+                path=path,
+                format='AUTO',
+                overwrite=True,
+                content=base64.b64encode(p.read_bytes()).decode(),
+            ),
+        )
+    bad = [
+        path
+        for path, p in remote.items()
+        if base64.b64decode(
+            ws.api(
+                'GET', '/api/2.0/workspace/export', query=dict(path=path, format='AUTO')
+            ).get('content', '')
+        )
+        != p.read_bytes()
+    ]
     if bad:
         raise SystemExit(f'deploy check failed for {len(bad)} file(s): {bad[:5]}')
     print(f'genie: {len(files)} files deployed and read back byte for byte -> {target}')
@@ -374,22 +440,42 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
         for path in stale:
             print(f'  not in this package, left in place: {path}')
         print('  --prune deletes these.')
-    print('Start a new Genie Code chat (agent mode) to load it; ask it to quote SKILL-BUILD.')
+    print(
+        'Start a new Genie Code chat (agent mode) to load it; ask it to quote SKILL-BUILD.'
+    )
     return target
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description='Build and check a kumo-data-science skill package.')
+    ap = argparse.ArgumentParser(
+        description='Build and check a kumo-data-science skill package.'
+    )
     ap.add_argument('host', nargs='?', choices=sorted(HOSTS))
-    ap.add_argument('--out', type=Path, default=DIST, help='output root (default: %(default)s)')
-    ap.add_argument('--check', action='store_true', help='build and check every host in a temp dir')
-    ap.add_argument('--zip', type=Path, metavar='DIR',
-                    help='write kumo-data-science-<host>.zip for every host into DIR')
-    ap.add_argument('--deploy', action='store_true',
-                    help='genie: upload to your Genie Code skills folder and read it back')
-    ap.add_argument('--prune', action='store_true',
-                    help='genie --deploy: delete files in the target the package does not ship')
-    ap.add_argument('--env-file', type=Path, help='KEY=VALUE file with DATABRICKS_HOST/_TOKEN')
+    ap.add_argument(
+        '--out', type=Path, default=DIST, help='output root (default: %(default)s)'
+    )
+    ap.add_argument(
+        '--check', action='store_true', help='build and check every host in a temp dir'
+    )
+    ap.add_argument(
+        '--zip',
+        type=Path,
+        metavar='DIR',
+        help='write kumo-data-science-<host>.zip for every host into DIR',
+    )
+    ap.add_argument(
+        '--deploy',
+        action='store_true',
+        help='genie: upload to your Genie Code skills folder and read it back',
+    )
+    ap.add_argument(
+        '--prune',
+        action='store_true',
+        help='genie --deploy: delete files in the target the package does not ship',
+    )
+    ap.add_argument(
+        '--env-file', type=Path, help='KEY=VALUE file with DATABRICKS_HOST/_TOKEN'
+    )
     args = ap.parse_args()
     if args.zip:
         if args.host or args.check or args.deploy:
@@ -411,7 +497,9 @@ def main() -> None:
             pkg = build(host, Path(tmp) if args.check else args.out)
             errors = unresolved(pkg)
             files = sum(1 for p in pkg.rglob('*') if p.is_file())
-            print(f'{host}: {files} files, build {build_id()}, {len(errors)} unresolved reference(s)')
+            print(
+                f'{host}: {files} files, build {build_id()}, {len(errors)} unresolved reference(s)'
+            )
             for e in errors:
                 print(f'  {e}')
             failed |= bool(errors)
@@ -423,7 +511,9 @@ def main() -> None:
         host = os.environ.get('DATABRICKS_HOST') or os.environ.get('DATABRICKS_URL')
         token = os.environ.get('DATABRICKS_TOKEN')
         if not host or not token:
-            sys.exit('--deploy needs DATABRICKS_HOST (or DATABRICKS_URL) and DATABRICKS_TOKEN')
+            sys.exit(
+                '--deploy needs DATABRICKS_HOST (or DATABRICKS_URL) and DATABRICKS_TOKEN'
+            )
         deploy_genie(pkg, Workspace(host, token), prune=args.prune)
 
 

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Startup-order regression tests for :mod:`pool.controller_main`."""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -28,15 +29,13 @@ def test_startup_cleanup_completes_before_canary(monkeypatch, tmp_path):
         events.append('canary')
         raise RuntimeError('canary could not schedule')
 
-    monkeypatch.setattr(controller_main, 'init_logging_and_tracing',
-                        lambda _: None)
-    monkeypatch.setattr(controller_main, 'start_http_server',
-                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(controller_main, 'init_logging_and_tracing', lambda _: None)
+    monkeypatch.setattr(
+        controller_main, 'start_http_server', lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(controller_main, 'deploy_env', lambda: object())
-    monkeypatch.setattr(controller_main, 'create_pool_controller',
-                        create_controller)
-    monkeypatch.setattr(controller_main, 'run_configured_init_canary',
-                        run_canary)
+    monkeypatch.setattr(controller_main, 'create_pool_controller', create_controller)
+    monkeypatch.setattr(controller_main, 'run_configured_init_canary', run_canary)
     ready_path = tmp_path / 'ready'
     ready_path.touch()
     monkeypatch.setattr(controller_main, 'READY_PATH', ready_path)
@@ -73,21 +72,19 @@ def test_server_uses_autorpc_environment_configuration(monkeypatch, tmp_path):
     async def run_canary(config, _canary_controller):
         assert config is deploy_config
 
-    monkeypatch.setattr(controller_main, 'init_logging_and_tracing',
-                        lambda _: None)
-    monkeypatch.setattr(controller_main, 'start_http_server',
-                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(controller_main, 'init_logging_and_tracing', lambda _: None)
+    monkeypatch.setattr(
+        controller_main, 'start_http_server', lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(controller_main, 'deploy_env', lambda: deploy_config)
-    monkeypatch.setattr(controller_main, 'create_pool_controller',
-                        create_controller)
-    monkeypatch.setattr(controller_main, 'run_configured_init_canary',
-                        run_canary)
-    monkeypatch.setattr(controller_main, 'create_server_from_config',
-                        create_server)
+    monkeypatch.setattr(controller_main, 'create_pool_controller', create_controller)
+    monkeypatch.setattr(controller_main, 'run_configured_init_canary', run_canary)
+    monkeypatch.setattr(controller_main, 'create_server_from_config', create_server)
     monkeypatch.setattr(controller_main, 'install_loop_guards', lambda: None)
     parse_from_env = MagicMock(return_value=server_config)
-    monkeypatch.setattr(controller_main.AutoRpcServerWorkerConfig,
-                        'parse_from_env', parse_from_env)
+    monkeypatch.setattr(
+        controller_main.AutoRpcServerWorkerConfig, 'parse_from_env', parse_from_env
+    )
     monkeypatch.setattr(controller_main, 'READY_PATH', ready_path)
 
     asyncio.run(controller_main.main())

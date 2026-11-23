@@ -11,8 +11,7 @@ def withPackage(*args, executables=()) -> Callable:
     r"""Skip tests unless their Python packages and binaries are available."""
     na_packages = {arg for arg in args if find_spec(arg) is None}
     na_executables = {
-        executable
-        for executable in executables if which(executable) is None
+        executable for executable in executables if which(executable) is None
     }
 
     def decorator(func: Callable) -> Callable:
@@ -20,8 +19,10 @@ def withPackage(*args, executables=()) -> Callable:
 
         return pytest.mark.skipif(
             bool(na_packages or na_executables),
-            reason=(f"Package(s) {na_packages} and executable(s) "
-                    f"{na_executables} are not installed"),
+            reason=(
+                f'Package(s) {na_packages} and executable(s) '
+                f'{na_executables} are not installed'
+            ),
         )(func)
 
     return decorator
@@ -29,8 +30,10 @@ def withPackage(*args, executables=()) -> Callable:
 
 def withRegisteredOp(*args) -> Callable:
     r"""A decorator to skip tests if a certain op is not registered."""
+
     def is_registered(op: str) -> bool:
         import torch
+
         module = torch.ops
         for attr in op.split('.'):
             try:
@@ -46,7 +49,7 @@ def withRegisteredOp(*args) -> Callable:
 
         return pytest.mark.skipif(
             len(na_ops) > 0,
-            reason=f"Operator(s) {na_ops} are not registered",
+            reason=f'Operator(s) {na_ops} are not registered',
         )(func)
 
     return decorator

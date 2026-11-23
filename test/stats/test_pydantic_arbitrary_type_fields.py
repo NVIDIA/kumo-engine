@@ -28,6 +28,7 @@ they crash at encode time (a different, loud failure) and are carried by models
 that round-trip through parquet rather than the JSON codec (``EvalOutput`` /
 ``PredOutput``).
 """
+
 import importlib
 import inspect
 import pkgutil
@@ -71,8 +72,7 @@ def _instance_type_fqn(cls: object) -> str:
     return f'{getattr(cls, "__module__", "")}.{getattr(cls, "__name__", cls)}'
 
 
-def _walk_schema(schema: object, path: str,
-                 found: List[Tuple[str, str]]) -> None:
+def _walk_schema(schema: object, path: str, found: List[Tuple[str, str]]) -> None:
     if not isinstance(schema, dict):
         return
     if schema.get('type') == 'is-instance':
@@ -85,9 +85,10 @@ def _walk_schema(schema: object, path: str,
             import datetime as _dt
 
             import numpy as _np
-            serializable_but_strict = (
-                isinstance(cls, type)
-                and issubclass(cls, (_dt.datetime, _dt.date, _np.floating)))
+
+            serializable_but_strict = isinstance(cls, type) and issubclass(
+                cls, (_dt.datetime, _dt.date, _np.floating)
+            )
         except Exception:
             serializable_but_strict = False
         if serializable_but_strict and fqn not in _ALLOWED_INSTANCE_TYPES:
@@ -138,8 +139,7 @@ def _collect_models() -> List[type]:
             continue
         walk_module(pkg_name)
         if hasattr(pkg, '__path__'):
-            for mod_info in pkgutil.walk_packages(pkg.__path__,
-                                                  prefix=pkg_name + '.'):
+            for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=pkg_name + '.'):
                 walk_module(mod_info.name)
     return models
 
@@ -152,7 +152,8 @@ def test_no_serializable_bare_arbitrary_type_fields() -> None:
     # collapses (e.g. an import regression), the guard would silently pass.
     assert len(models) > 100, (
         f'expected to inspect many pydantic models, got {len(models)}; '
-        'model discovery likely broke')
+        'model discovery likely broke'
+    )
 
     offenders: List[Tuple[str, str, str]] = []
     for model in models:
@@ -169,5 +170,6 @@ def test_no_serializable_bare_arbitrary_type_fields() -> None:
     assert not offenders, (
         'pydantic-v2 models with bare arbitrary-type fields that serialize but '
         'fail strict re-validation (annotate with a PlainValidator, e.g. '
-        '`PandasTimestamp` from kumo/stats/utils.py):\n' +
-        '\n'.join(f'  {m}: {p} -> {t}' for m, p, t in offenders))
+        '`PandasTimestamp` from kumo/stats/utils.py):\n'
+        + '\n'.join(f'  {m}: {p} -> {t}' for m, p, t in offenders)
+    )

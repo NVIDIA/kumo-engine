@@ -45,8 +45,10 @@ def compare_stat_values(stat_value1: Any, stat_value2: Any):
         assert stat_value1 == stat_value2
 
 
-def compare_column_stats(stat1: Dict[str, Dict[ColStatType, Stats]],
-                         stat2: Dict[str, Dict[ColStatType, Stats]]):
+def compare_column_stats(
+    stat1: Dict[str, Dict[ColStatType, Stats]],
+    stat2: Dict[str, Dict[ColStatType, Stats]],
+):
     r"""
     Utility to compare two sets of column stats and assert that they are equal.
     """
@@ -59,10 +61,12 @@ def compare_column_stats(stat1: Dict[str, Dict[ColStatType, Stats]],
         assert set(stat1[column].keys()) == (set(stat2[column].keys()))
         for stat_type in stat1[column].keys():
             try:
-                compare_stat_values(stat1[column][stat_type].value,
-                                    stat2[column][stat_type].value)
+                compare_stat_values(
+                    stat1[column][stat_type].value, stat2[column][stat_type].value
+                )
             except AssertionError as e:
                 raise AssertionError(
-                    f"Stats comparsion failed for {column=} {stat_type=}. "
-                    f"Values are {stat1[column][stat_type].value=} "
-                    f"{stat2[column][stat_type].value=}") from e
+                    f'Stats comparsion failed for {column=} {stat_type=}. '
+                    f'Values are {stat1[column][stat_type].value=} '
+                    f'{stat2[column][stat_type].value=}'
+                ) from e

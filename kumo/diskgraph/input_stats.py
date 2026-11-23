@@ -39,29 +39,23 @@ def assemble_input_data_stats(
     """
     from kumo_core.types import TableStatType
 
-    index_meta = get_service().load_ingest_index_metadata(
-        handle, index_path=index_path)
+    index_meta = get_service().load_ingest_index_metadata(handle, index_path=index_path)
 
-    node_type_to_meta = {
-        nt['name']: nt
-        for nt in index_meta.get('node_types', [])
-    }
+    node_type_to_meta = {nt['name']: nt for nt in index_meta.get('node_types', [])}
 
     result = InputDataStats()
 
     graph_num_nodes = 0
     for table in graph:
         max_id = node_type_to_meta.get(table.table_name, {}).get('max_id')
-        num_nodes = (max_id +
-                     1) if isinstance(max_id, int) and max_id >= 0 else 0
+        num_nodes = (max_id + 1) if isinstance(max_id, int) and max_id >= 0 else 0
         result.table_num_nodes[table.name] = num_nodes
         graph_num_nodes += num_nodes
     result.graph_num_nodes = graph_num_nodes
 
     backend_cache = get_active_cache()
     backend_cache.load_all_table_caches(graph.config())
-    graph_edge_stats = backend_cache.graph_cache.get_graph_edge_stats(
-        graph_key_ver)
+    graph_edge_stats = backend_cache.graph_cache.get_graph_edge_stats(graph_key_ver)
     compute_edge_counts(graph, graph_edge_stats, result)
 
     compute_time_ranges(graph, backend_cache, result)

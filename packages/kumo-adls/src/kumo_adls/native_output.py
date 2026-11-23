@@ -22,45 +22,54 @@ def validate_output_configuration(principal, account, suffix, container):
     account = normalize_adls_storage_account(account)
     suffix = normalize_adls_endpoint_suffix(suffix)
     container = normalize_adls_filesystem(container)
-    cloud, (_, _, authority) = next((cloud, values)
-                                    for cloud, values in CLOUDS.items()
-                                    if values[0] == suffix)
+    cloud, (_, _, authority) = next(
+        (cloud, values) for cloud, values in CLOUDS.items() if values[0] == suffix
+    )
     if principal is not None:
         config = principal.config
         if not isinstance(config, ADLSIdentityConfig):
             raise ValueError('The selected identity is not an ADLS identity')
         if config.cloud != cloud:
-            raise ValueError(
-                'ADLS endpoint does not match the selected identity cloud')
-        if (os.environ.get('AZURE_TENANT_ID') != config.tenant_id
-                or os.environ.get('AZURE_CLIENT_ID') != config.client_id or
-                not os.environ.get('AZURE_FEDERATED_TOKEN_FILE', '').strip()):
+            raise ValueError('ADLS endpoint does not match the selected identity cloud')
+        if (
+            os.environ.get('AZURE_TENANT_ID') != config.tenant_id
+            or os.environ.get('AZURE_CLIENT_ID') != config.client_id
+            or not os.environ.get('AZURE_FEDERATED_TOKEN_FILE', '').strip()
+        ):
             raise NotImplementedError(
                 'Native Arrow ADLS writes require AZURE_TENANT_ID and '
                 'AZURE_CLIENT_ID to match the selected workload identity, '
                 'and AZURE_FEDERATED_TOKEN_FILE to name its projected token. '
                 'Configure these in the process environment before writing. '
                 'Per-connector workload identities that differ from the '
-                'process identity remain supported for reads only.')
+                'process identity remain supported for reads only.'
+            )
 
-    host = os.environ.get('AZURE_AUTHORITY_HOST',
-                          'https://login.microsoftonline.com')
+    host = os.environ.get('AZURE_AUTHORITY_HOST', 'https://login.microsoftonline.com')
     parsed = urlsplit(host)
-    if (parsed.scheme != 'https' or parsed.netloc.casefold() != authority
-            or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
+    if (
+        parsed.scheme != 'https'
+        or parsed.netloc.casefold() != authority
+        or parsed.path not in ('', '/')
+        or parsed.query
+        or parsed.fragment
+    ):
         raise ValueError(
-            'Native Arrow ADLS writes require AZURE_AUTHORITY_HOST=' +
-            f'https://{authority} for the selected cloud')
+            'Native Arrow ADLS writes require AZURE_AUTHORITY_HOST='
+            + f'https://{authority} for the selected cloud'
+        )
     return account, suffix, container
 
 
 def filesystem_for(principal, account, suffix, container):
     """Bind native output without changing or substituting an identity."""
     account, suffix, container = validate_output_configuration(
-        principal, account, suffix, container)
+        principal, account, suffix, container
+    )
     options = dict(
         blob_storage_authority='.' + suffix.replace('dfs.', 'blob.', 1),
-        dfs_storage_authority='.' + suffix)
+        dfs_storage_authority='.' + suffix,
+    )
     if principal is None:
         return AzureFileSystem(account_name=account, **options)
 
@@ -68,15 +77,14 @@ def filesystem_for(principal, account, suffix, container):
     # unlike DefaultAzureCredential it cannot fall back to another principal.
     # The short URI form keeps account/container correct in sovereign clouds.
     query = urlencode(dict(credential_kind='workload_identity', **options))
-    filesystem, _ = FileSystem.from_uri(
-        f'abfss://{account}@{container}/?{query}')
+    filesystem, _ = FileSystem.from_uri(f'abfss://{account}@{container}/?{query}')
     return filesystem
 
 
 class NativeOutputHandler(FSSpecHandler):
     """Keep SDK metadata/reads and return native Arrow output streams."""
-    def __init__(self, filesystem, output_filesystem=None, *,
-                 output_factory=None):
+
+    def __init__(self, filesystem, output_filesystem=None, *, output_factory=None):
         super().__init__(filesystem)
         self.output_filesystem = output_filesystem
         self.output_factory = output_factory
@@ -101,5 +109,6 @@ class NativeOutputHandler(FSSpecHandler):
         self.fs._address(path)
         authority, _, key = path.strip('/').partition('/')
         container, _, _ = authority.partition('@')
-        return self._output().open_output_stream(f'{container}/{key}',
-                                                 metadata=metadata)
+        return self._output().open_output_stream(
+            f'{container}/{key}', metadata=metadata
+        )

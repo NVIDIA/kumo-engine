@@ -41,7 +41,7 @@ from statedb.config.common import TableName
 from statedb.db.identities import ConnectorService
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope='function')
 def test_cleanup_options() -> TestFunctionCleanupOptions:
     return TestFunctionCleanupOptions(
         should_reset_data_backend_cache=True,
@@ -49,73 +49,66 @@ def test_cleanup_options() -> TestFunctionCleanupOptions:
     )
 
 
-def test_column_stats_config(client: TestClient, ):
+def test_column_stats_config(
+    client: TestClient,
+):
     # Basic test
     time_now = datetime.datetime.now()
     time_tomorrow = time_now + datetime.timedelta(days=1)
     valid_stats_dict = {
-        ColStatType.NUM_NA:
-        Stats(value=50, approx=False, data_version=0),
-        ColStatType.NUM_UNIQUE:
-        Stats(value=42, approx=False, data_version=0),
-        ColStatType.MIN:
-        Stats(value=pd.to_datetime(time_now), approx=False, data_version=0),
-        ColStatType.MAX:
-        Stats(value=pd.to_datetime(time_tomorrow), approx=False,
-              data_version=0),
-        ColStatType.COUNT:
-        Stats(value=100, approx=False, data_version=0),
-        ColStatType.INVALID_FRACTION:
-        Stats(value=0.0, approx=False, data_version=0)
+        ColStatType.NUM_NA: Stats(value=50, approx=False, data_version=0),
+        ColStatType.NUM_UNIQUE: Stats(value=42, approx=False, data_version=0),
+        ColStatType.MIN: Stats(
+            value=pd.to_datetime(time_now), approx=False, data_version=0
+        ),
+        ColStatType.MAX: Stats(
+            value=pd.to_datetime(time_tomorrow), approx=False, data_version=0
+        ),
+        ColStatType.COUNT: Stats(value=100, approx=False, data_version=0),
+        ColStatType.INVALID_FRACTION: Stats(value=0.0, approx=False, data_version=0),
     }
-    col_stats = ColumnStats.from_stats_dict(Stype.timestamp,
-                                            stats_dict=valid_stats_dict)
+    col_stats = ColumnStats.from_stats_dict(
+        Stype.timestamp, stats_dict=valid_stats_dict
+    )
     assert ('Range', '1 days') in col_stats.summary_stats
 
     # NA time test
     invalid_stats_dict = valid_stats_dict
-    invalid_stats_dict[ColStatType.MIN] = Stats(value=pd.NaT, approx=False,
-                                                data_version=0)
-    invalid_stats_dict[ColStatType.MAX] = Stats(value=pd.NaT, approx=False,
-                                                data_version=0)
-    col_stats = ColumnStats.from_stats_dict(Stype.timestamp,
-                                            stats_dict=invalid_stats_dict)
+    invalid_stats_dict[ColStatType.MIN] = Stats(
+        value=pd.NaT, approx=False, data_version=0
+    )
+    invalid_stats_dict[ColStatType.MAX] = Stats(
+        value=pd.NaT, approx=False, data_version=0
+    )
+    col_stats = ColumnStats.from_stats_dict(
+        Stype.timestamp, stats_dict=invalid_stats_dict
+    )
     assert ('Min', 'NA') in col_stats.summary_stats
     assert ('Max', 'NA') in col_stats.summary_stats
     assert ('Range', 'NA') in col_stats.summary_stats
 
     # Sequence test
     valid_stats_dict = {
-        ColStatType.SEQUENCE_MIN_LENGTH:
-        Stats(value=42, approx=False, data_version=0),
-        ColStatType.SEQUENCE_MAX_LENGTH:
-        Stats(value=50, approx=False, data_version=0),
-        ColStatType.COUNT:
-        Stats(value=100, approx=False, data_version=0),
-        ColStatType.INVALID_FRACTION:
-        Stats(value=0.0, approx=False, data_version=0),
-        ColStatType.NUM_NA:
-        Stats(value=50, approx=False, data_version=0),
+        ColStatType.SEQUENCE_MIN_LENGTH: Stats(value=42, approx=False, data_version=0),
+        ColStatType.SEQUENCE_MAX_LENGTH: Stats(value=50, approx=False, data_version=0),
+        ColStatType.COUNT: Stats(value=100, approx=False, data_version=0),
+        ColStatType.INVALID_FRACTION: Stats(value=0.0, approx=False, data_version=0),
+        ColStatType.NUM_NA: Stats(value=50, approx=False, data_version=0),
     }
-    col_stats = ColumnStats.from_stats_dict(Stype.sequence,
-                                            stats_dict=valid_stats_dict)
+    col_stats = ColumnStats.from_stats_dict(Stype.sequence, stats_dict=valid_stats_dict)
     assert ('Max Length', 50) in col_stats.summary_stats
     assert ('Min Length', 42) in col_stats.summary_stats
 
 
 def test_missing_percentage_for_categorical_exact():
     valid_stats_dict = {
-        ColStatType.NUM_NA:
-        Stats(value=35, approx=False, data_version=0),
-        ColStatType.COUNT:
-        Stats(value=100, approx=False, data_version=0),
-        ColStatType.NUM_UNIQUE:
-        Stats(value=10, approx=False, data_version=0),
-        ColStatType.CATEGORY_COUNTS:
-        Stats(value=[('c1', 12), ('c2', 24), ('c3', 64)], approx=False,
-              data_version=0),
-        ColStatType.INVALID_FRACTION:
-        Stats(
+        ColStatType.NUM_NA: Stats(value=35, approx=False, data_version=0),
+        ColStatType.COUNT: Stats(value=100, approx=False, data_version=0),
+        ColStatType.NUM_UNIQUE: Stats(value=10, approx=False, data_version=0),
+        ColStatType.CATEGORY_COUNTS: Stats(
+            value=[('c1', 12), ('c2', 24), ('c3', 64)], approx=False, data_version=0
+        ),
+        ColStatType.INVALID_FRACTION: Stats(
             value=0.2,
             approx=False,
             data_version=0,
@@ -130,22 +123,18 @@ def test_missing_percentage_for_categorical_exact():
 
 def test_missing_percentage_for_categorical_approx():
     valid_stats_dict = {
-        ColStatType.NUM_NA:
-        Stats(
+        ColStatType.NUM_NA: Stats(
             value=25,
             approx=True,
             data_version=0,
             num_entries=100,
         ),
-        ColStatType.COUNT:
-        Stats(value=100, approx=False, data_version=0),
-        ColStatType.NUM_UNIQUE:
-        Stats(value=10, approx=False, data_version=0),
-        ColStatType.CATEGORY_COUNTS:
-        Stats(value=[('c1', 12), ('c2', 24), ('c3', 64)], approx=False,
-              data_version=0),
-        ColStatType.INVALID_FRACTION:
-        Stats(
+        ColStatType.COUNT: Stats(value=100, approx=False, data_version=0),
+        ColStatType.NUM_UNIQUE: Stats(value=10, approx=False, data_version=0),
+        ColStatType.CATEGORY_COUNTS: Stats(
+            value=[('c1', 12), ('c2', 24), ('c3', 64)], approx=False, data_version=0
+        ),
+        ColStatType.INVALID_FRACTION: Stats(
             value=0.2,
             approx=False,
             data_version=0,
@@ -171,8 +160,7 @@ def _compare_stats(a: List[ColumnSummary], b: List[ColumnSummary]):
         calculated_stat = b[i]
 
         # Sample rows are random so we don't want to check them exactly
-        assert len(expected_stat.sample_rows) == len(
-            calculated_stat.sample_rows)
+        assert len(expected_stat.sample_rows) == len(calculated_stat.sample_rows)
         expected_stat.sample_rows = []
         calculated_stat.sample_rows = []
 
@@ -192,18 +180,18 @@ def _compare_stats(a: List[ColumnSummary], b: List[ColumnSummary]):
 
 @withBigQueryCredentials
 def test_validate_size(client: TestClient):
-    endpoint = "/v1/tables/validate"
+    endpoint = '/v1/tables/validate'
 
     # Use a deliberately tiny cap so this remains independent of mutable
     # external fixture-table sizes.
     os.environ['MAX_TABLE_SIZE_BYTES_BIGQUERY'] = '1'
     bigquery_args: Dict[str, Any] = {
         'project_id': 'kumo-engineering',
-        'dataset_id': 'financial'
+        'dataset_id': 'financial',
     }
-    bigquery_resource = BigQueryConnectorResourceConfig(name='bq_financial',
-                                                        location='US',
-                                                        **bigquery_args)
+    bigquery_resource = BigQueryConnectorResourceConfig(
+        name='bq_financial', location='US', **bigquery_args
+    )
     identity_config, credentials = bigquery_test_identity()
     setup = create_identity_backed_connector(
         client,
@@ -214,16 +202,23 @@ def test_validate_size(client: TestClient):
     connector_id = setup.connector_id
     project_id = setup.project_id
     cols = [
-        table_api.Column("ACCOUNT_ID", table_api.Stype.ID, table_api.Dtype.int),
-        table_api.Column("TRANS_ID", table_api.Stype.ID, table_api.Dtype.int)
+        table_api.Column('ACCOUNT_ID', table_api.Stype.ID, table_api.Dtype.int),
+        table_api.Column('TRANS_ID', table_api.Stype.ID, table_api.Dtype.int),
     ]
 
-    def validate(name: str, connector_id: str, should_succeed: bool,
-                 error_message: str = '') -> str | None:
+    def validate(
+        name: str, connector_id: str, should_succeed: bool, error_message: str = ''
+    ) -> str | None:
         table_args = table_api.TableDefinition(
-            cols=cols, source_table=source_table_api.BigQuerySourceTable(
-                bigquery_connector_id=connector_id, **bigquery_args,
-                table_name=TableName(name)), pkey=None, time_col=None)
+            cols=cols,
+            source_table=source_table_api.BigQuerySourceTable(
+                bigquery_connector_id=connector_id,
+                **bigquery_args,
+                table_name=TableName(name),
+            ),
+            pkey=None,
+            time_col=None,
+        )
         response = post_and_expect_success(
             client,
             endpoint,
@@ -251,17 +246,18 @@ def _assert_no_leaked_internals(response_text: str) -> None:
     assert 'File "' not in response_text
 
 
-def test_validate_table_malformed_body_returns_structured_422(
-        client: TestClient):
+def test_validate_table_malformed_body_returns_structured_422(client: TestClient):
     body = {'cols': 'notalist'}
-    response = client.post('/v1/tables/validate',
-                           params={'project_id': DEFAULT_PROJECT_ID}, json=body)
+    response = client.post(
+        '/v1/tables/validate', params={'project_id': DEFAULT_PROJECT_ID}, json=body
+    )
 
     assert response.status_code == 422
     errors = response.json()
     assert isinstance(errors, list) and len(errors) > 0
-    assert any(err['type'] == 'list_type' and err['loc'][-1] == 'cols'
-               for err in errors)
+    assert any(
+        err['type'] == 'list_type' and err['loc'][-1] == 'cols' for err in errors
+    )
     _assert_no_leaked_internals(response.text)
 
 
@@ -279,24 +275,24 @@ def test_validate_name_missing_query_param_returns_422(client: TestClient):
     assert response.status_code == 422
     errors = response.json()
     assert isinstance(errors, list) and len(errors) > 0
-    assert any(err['type'] == 'missing' and err['loc'][-1] == 'project_id'
-               for err in errors)
+    assert any(
+        err['type'] == 'missing' and err['loc'][-1] == 'project_id' for err in errors
+    )
     _assert_no_leaked_internals(response.text)
 
 
 def test_format_time():
     jan1 = datetime.datetime(2020, 1, 1)
     jan5 = datetime.datetime(2020, 1, 5)
-    assert table._format_time(None) == "NA"
-    assert table._format_time(jan1) == "2020-01-01"
-    assert (table._format_time(datetime.datetime(2020, 1, 1,
-                                                 12)) == "2020-01-01 12:00")
+    assert table._format_time(None) == 'NA'
+    assert table._format_time(jan1) == '2020-01-01'
+    assert table._format_time(datetime.datetime(2020, 1, 1, 12)) == '2020-01-01 12:00'
 
-    assert table._format_time_range(1, 2) == "NA"
-    assert table._format_time_range(None, jan1) == "NA"
-    assert table._format_time_range(jan1, pd.NA) == "NA"
-    assert table._format_time_range(jan1, pd.NaT) == "NA"
-    assert table._format_time_range(jan1, jan5) == "4 days"
+    assert table._format_time_range(1, 2) == 'NA'
+    assert table._format_time_range(None, jan1) == 'NA'
+    assert table._format_time_range(jan1, pd.NA) == 'NA'
+    assert table._format_time_range(jan1, pd.NaT) == 'NA'
+    assert table._format_time_range(jan1, jan5) == '4 days'
 
     t1 = pd.Timestamp(year=1900, month=1, day=1)
     t2 = pd.Timestamp(year=2200, month=1, day=1)
@@ -310,16 +306,20 @@ def skip_table_source_validation(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     """Keep persistence/SDK route tests independent of Temporal workers."""
     validation = AsyncMock()
     monkeypatch.setattr(
-        'rest.driver.table_driver.TableDriver.'
-        '_validate_new_table_for_state_service', validation)
+        'rest.driver.table_driver.TableDriver._validate_new_table_for_state_service',
+        validation,
+    )
     monkeypatch.setattr(
         'rest.driver.table_driver.TableDriver.get_col_stats_and_sample_rows',
-        AsyncMock(return_value=ColStatsResponse(
-            statistics_available=False,
-            columns=[],
-            approx=False,
-            rows_used=0,
-        )))
+        AsyncMock(
+            return_value=ColStatsResponse(
+                statistics_available=False,
+                columns=[],
+                approx=False,
+                rows_used=0,
+            )
+        ),
+    )
     return validation
 
 
@@ -340,7 +340,7 @@ def test_create_table_v2(
     )
 
     assert len(table_id.id) > 0
-    assert table_id.id.startswith("NA.NA-") is True
+    assert table_id.id.startswith('NA.NA-') is True
 
     # A nameless table is hidden from the list the UI reads and cannot be
     # deleted, so the route refuses to create one.
@@ -355,10 +355,12 @@ def test_create_table_v2(
 
 
 @pytest.mark.asyncio
-async def test_get_col_stats_v2(client: TestClient,
-                                table_definition_v2: table_api.TableDefinition,
-                                rest_api_driver: RestApiDriver,
-                                skip_table_source_validation: AsyncMock):
+async def test_get_col_stats_v2(
+    client: TestClient,
+    table_definition_v2: table_api.TableDefinition,
+    rest_api_driver: RestApiDriver,
+    skip_table_source_validation: AsyncMock,
+):
     table_def = TableDefinition(**dataclasses.asdict(table_definition_v2))
 
     table_id = post_and_expect_success(
@@ -374,7 +376,7 @@ async def test_get_col_stats_v2(client: TestClient,
 
     response = get_and_expect_success(
         client=client,
-        path=f"/v1/tables/{table_id.id}/col_stats",
+        path=f'/v1/tables/{table_id.id}/col_stats',
         params={'project_id': DEFAULT_PROJECT_ID},
         response_type=ColStatsResponse,
     )
@@ -403,7 +405,7 @@ def test_table_to_sdk(
     )
 
     assert len(table_id.id) > 0
-    assert table_id.id.startswith("NA.NA-") is True
+    assert table_id.id.startswith('NA.NA-') is True
 
     # The shared HNM fixture is deliberately an internal local-file connector
     # so ingestion can run without cloud credentials. SDK replay only supports
@@ -413,12 +415,13 @@ def test_table_to_sdk(
         connector = await self.get_internal(project_id, connector_id)
         return SimpleNamespace(id=connector.id, name=connector.name)
 
-    monkeypatch.setattr(ConnectorService, 'source_table_connector_for_project',
-                        visible_test_connector)
+    monkeypatch.setattr(
+        ConnectorService, 'source_table_connector_for_project', visible_test_connector
+    )
 
     table_sdk_script = get_and_expect_success(
         client=client,
-        path=f"/v1/tables/{table_id.id}/sdk",
+        path=f'/v1/tables/{table_id.id}/sdk',
         params={'project_id': DEFAULT_PROJECT_ID},
         response_type=str,
     )
@@ -428,15 +431,16 @@ def test_table_to_sdk(
     assert 'kumo.S3Connector.get_by_name' in table_sdk_script
     assert f'project="{DEFAULT_PROJECT_ID}"' in table_sdk_script
     assert 'root_dir=' not in table_sdk_script
-    assert "transactions_config" in table_sdk_script
-    assert "transactions = kumo.Table" in table_sdk_script
+    assert 'transactions_config' in table_sdk_script
+    assert 'transactions = kumo.Table' in table_sdk_script
 
 
 def test_table_to_sdk_missing_table_returns_404(client: TestClient):
     missing_id = 'NA.NA-' + '0' * 32
 
-    response = client.get(f'/v1/tables/{missing_id}/sdk',
-                          params={'project_id': DEFAULT_PROJECT_ID})
+    response = client.get(
+        f'/v1/tables/{missing_id}/sdk', params={'project_id': DEFAULT_PROJECT_ID}
+    )
 
     assert response.status_code == 404
     assert 'does not exist' in response.json()['detail']

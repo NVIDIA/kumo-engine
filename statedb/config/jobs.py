@@ -82,26 +82,31 @@ class LocalPredictionOutput(api.LocalPredictionOutput):
         return kumo_core.types.PredictionArtifactType(v)
 
 
-PredictionOutputConfig = Annotated[Union[BigQueryPredictionOutput,
-                                         SnowflakePredictionOutput,
-                                         DatabricksPredictionOutput,
-                                         S3PredictionOutput,
-                                         GCSPredictionOutput,
-                                         ADLSPredictionOutput,
-                                         LocalPredictionOutput],
-                                   Field(discriminator='storage_type')]
+PredictionOutputConfig = Annotated[
+    Union[
+        BigQueryPredictionOutput,
+        SnowflakePredictionOutput,
+        DatabricksPredictionOutput,
+        S3PredictionOutput,
+        GCSPredictionOutput,
+        ADLSPredictionOutput,
+        LocalPredictionOutput,
+    ],
+    Field(discriminator='storage_type'),
+]
 
 
 def validate_prediction_outputs(outputs: List[PredictionOutputConfig]) -> None:
     # One producer artifact is shared by every destination of that type, so
     # all destinations for the same artifact must request the same schema.
-    extra_fields_by_artifact: dict[kumo_core.types.PredictionArtifactType,
-                                   set] = {}
+    extra_fields_by_artifact: dict[kumo_core.types.PredictionArtifactType, set] = {}
     for output in outputs:
         extra_fields = set(output.extra_fields)
-        expected = extra_fields_by_artifact.setdefault(output.artifact_type,
-                                                       extra_fields)
+        expected = extra_fields_by_artifact.setdefault(
+            output.artifact_type, extra_fields
+        )
         if extra_fields != expected:
             raise ValueError(
-                "All outputs for the same artifact type must have the same "
-                f"set of extra_fields. Got: {outputs}")
+                'All outputs for the same artifact type must have the same '
+                f'set of extra_fields. Got: {outputs}'
+            )

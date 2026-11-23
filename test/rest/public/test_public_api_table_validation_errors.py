@@ -34,16 +34,18 @@ from rest.driver.error_constants import INVALID_PRIMARY_KEY_TITLE
 from statedb.config.table import PKEY_PRESENT_IN_COLS
 
 _GENERIC_MASKED_MESSAGE = (
-    'Data backend operation failed. Please retry or contact Kumo support.')
+    'Data backend operation failed. Please retry or contact Kumo support.'
+)
 _JSON_HEADERS = {'Content-Type': 'application/json'}
 
 
 def _post(client: TestClient, path: str, payload, project_id: str):
     body = json.dumps(
-        payload, default=partial(trusted_custom_pydantic_encoder,
-                                 insecure=True))
-    return client.post(path, content=body, headers=_JSON_HEADERS,
-                       params={'project_id': project_id})
+        payload, default=partial(trusted_custom_pydantic_encoder, insecure=True)
+    )
+    return client.post(
+        path, content=body, headers=_JSON_HEADERS, params={'project_id': project_id}
+    )
 
 
 def test_infer_metadata_unknown_column_returns_actionable_422(
@@ -64,22 +66,29 @@ def test_infer_metadata_unknown_column_returns_actionable_422(
         source_table=table_definition_v2.source_table,
         pkey=None,
     )
-    response = _post(public_api_client, '/v1/tables/infer_metadata',
-                     dataclasses.asdict(request), default_project_id)
+    response = _post(
+        public_api_client,
+        '/v1/tables/infer_metadata',
+        dataclasses.asdict(request),
+        default_project_id,
+    )
 
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, (
-        response.text)
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
     body = response.json()
     assert body['error_type'] == 'ValidationException'
     assert 'Column ghost does not exist in table transactions' in body['error']
     assert _GENERIC_MASKED_MESSAGE not in response.text
 
 
-def _validate(client: TestClient, definition: table_api.TableDefinition,
-              project_id: str) -> dict:
-    response = _post(client, '/v1/tables/validate',
-                     {'table_definition': dataclasses.asdict(definition)},
-                     project_id)
+def _validate(
+    client: TestClient, definition: table_api.TableDefinition, project_id: str
+) -> dict:
+    response = _post(
+        client,
+        '/v1/tables/validate',
+        {'table_definition': dataclasses.asdict(definition)},
+        project_id,
+    )
     assert response.status_code == HTTPStatus.OK, response.text
     return response.json()
 

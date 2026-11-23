@@ -46,46 +46,55 @@ def setup_rest_test_session() -> None:
     return None
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True, scope='session')
 def temporal_workers_ready():
     yield True
 
 
 def test_get_date_hist():
     assert _get_date_hist({}) == []
-    assert _get_date_hist({
-        ColStatType.HISTOGRAM_HALF_MONTH:
-        Stats(value=None, approx=False),
-    }) == []
-    assert _get_date_hist({
-        ColStatType.HISTOGRAM_HALF_MONTH:
-        Stats(value=[32], approx=False),
-    }) == []
+    assert (
+        _get_date_hist(
+            {
+                ColStatType.HISTOGRAM_HALF_MONTH: Stats(value=None, approx=False),
+            }
+        )
+        == []
+    )
+    assert (
+        _get_date_hist(
+            {
+                ColStatType.HISTOGRAM_HALF_MONTH: Stats(value=[32], approx=False),
+            }
+        )
+        == []
+    )
     d1 = datetime.date(2000, 12, 1)
     d2 = datetime.date(2000, 12, 15)
     d3 = datetime.date(2000, 12, 16)
     d4 = datetime.date(2000, 12, 31)
-    assert _get_date_hist({
-        ColStatType.HISTOGRAM_HALF_MONTH:
-        Stats(value=[(d1, 45), (d3, 50)], approx=False),
-    }) == [(d1, d2, 45), (d3, d4, 50)]
+    assert _get_date_hist(
+        {
+            ColStatType.HISTOGRAM_HALF_MONTH: Stats(
+                value=[(d1, 45), (d3, 50)], approx=False
+            ),
+        }
+    ) == [(d1, d2, 45), (d3, d4, 50)]
 
 
 def test_convert_to_v2():
     test_v2_table = TableDefinition(
-        cols=(Column(
-            'test_col',
-            Stype.categorical,
-            Dtype.string,
-            TimestampUnit('s'),
-        ), ),
+        cols=(
+            Column(
+                'test_col',
+                Stype.categorical,
+                Dtype.string,
+                TimestampUnit('s'),
+            ),
+        ),
         source_table=S3SourceTable(
-            connector_id=ConnectorID(
-                'connector_00000000000000000000000000000001'),
-            source={
-                'mode': 'relative',
-                'path': 'customer.parquet'
-            },
+            connector_id=ConnectorID('connector_00000000000000000000000000000001'),
+            source={'mode': 'relative', 'path': 'customer.parquet'},
             file_type=FileType.PARQUET,
         ),
         pkey='test_col',
@@ -100,18 +109,17 @@ def test_convert_to_v2():
 
 def test_multicategorical_delimiter_survives_all_v2_column_conversions():
     table = TableDefinition(
-        cols=(Column(
-            name='tags',
-            stype=Stype.multicategorical,
-            dtype=Dtype.string,
-            multicategorical_delimiter=';',
-        ), ),
+        cols=(
+            Column(
+                name='tags',
+                stype=Stype.multicategorical,
+                dtype=Dtype.string,
+                multicategorical_delimiter=';',
+            ),
+        ),
         source_table=S3SourceTable(
             connector_id='connector_' + '1' * 32,
-            source={
-                'mode': 'relative',
-                'path': 'items.parquet'
-            },
+            source={'mode': 'relative', 'path': 'items.parquet'},
             file_type=FileType.PARQUET,
         ),
     )
@@ -127,8 +135,7 @@ def test_multicategorical_delimiter_survives_all_v2_column_conversions():
 
 
 @pytest.mark.parametrize('timestamp_format', ['', '   '])
-def test_blank_timestamp_format_is_absent_in_v2_column_conversions(
-        timestamp_format):
+def test_blank_timestamp_format_is_absent_in_v2_column_conversions(timestamp_format):
     col = Column(
         name='customer_id',
         stype=Stype.ID,
@@ -136,13 +143,10 @@ def test_blank_timestamp_format_is_absent_in_v2_column_conversions(
         timestamp_format=timestamp_format,
     )
     table = TableDefinition(
-        cols=(col, ),
+        cols=(col,),
         source_table=S3SourceTable(
             connector_id='connector_' + '1' * 32,
-            source={
-                'mode': 'relative',
-                'path': 'customers.parquet'
-            },
+            source={'mode': 'relative', 'path': 'customers.parquet'},
             file_type=FileType.PARQUET,
         ),
         pkey='customer_id',
@@ -168,13 +172,10 @@ def test_real_timestamp_format_survives_v2_column_conversions():
         timestamp_format='%Y-%m-%d',
     )
     table = TableDefinition(
-        cols=(col, ),
+        cols=(col,),
         source_table=S3SourceTable(
             connector_id='connector_' + '1' * 32,
-            source={
-                'mode': 'relative',
-                'path': 'events.parquet'
-            },
+            source={'mode': 'relative', 'path': 'events.parquet'},
             file_type=FileType.PARQUET,
         ),
         pkey='event_time',
@@ -206,8 +207,7 @@ def test_delimiter_validation_accepts_extended_kumo_enums():
         (Stype.multicategorical, Dtype.stringlist),
     ],
 )
-def test_delimiter_validation_rejects_incompatible_extended_kumo_enums(
-        stype, dtype):
+def test_delimiter_validation_rejects_incompatible_extended_kumo_enums(stype, dtype):
     with pytest.raises(ValueError, match='multicategorical_delimiter'):
         Column(
             name='tags',
@@ -220,47 +220,40 @@ def test_delimiter_validation_rejects_incompatible_extended_kumo_enums(
 def test_s3_source_table_name_is_connector_relative():
     s3_source_table = S3SourceTable(
         connector_id='connector-s3',
-        source={
-            'mode': 'relative',
-            'path': 'customerltv_mini_integ_test.parquet'
-        },
+        source={'mode': 'relative', 'path': 'customerltv_mini_integ_test.parquet'},
         file_type=FileType.PARQUET,
     )
     assert s3_source_table.table_name == 'customerltv_mini_integ_test.parquet'
     s3_source_table = S3SourceTable(
         connector_id='connector-s3',
-        source={
-            'mode': 'relative',
-            'path': 'nested/customerltv_mini_integ_test'
-        },
+        source={'mode': 'relative', 'path': 'nested/customerltv_mini_integ_test'},
         file_type=FileType.PARQUET,
     )
     assert s3_source_table.table_name == ('nested/customerltv_mini_integ_test')
 
 
 @pytest.mark.parametrize(
-    ("source_cls", "api_source_cls"),
+    ('source_cls', 'api_source_cls'),
     [
         (GCSSourceTable, source_table_api.GCSSourceTable),
         (ADLSSourceTable, source_table_api.ADLSSourceTable),
     ],
 )
-def test_file_source_table_preserves_relative_metadata(source_cls,
-                                                       api_source_cls):
+def test_file_source_table_preserves_relative_metadata(source_cls, api_source_cls):
     source_table = source_cls(
-        connector_id="connector-project-owned",
-        source_table_name="minimal_hnm/USERS.csv",
+        connector_id='connector-project-owned',
+        source_table_name='minimal_hnm/USERS.csv',
         file_type=FileType.CSV,
     )
-    assert source_table.connector_id == "connector-project-owned"
+    assert source_table.connector_id == 'connector-project-owned'
     assert source_table.source_table_name == 'minimal_hnm/USERS.csv'
     assert source_table.file_type == FileType.CSV
 
     table_def = TableDefinition(
         cols=(),
         source_table=api_source_cls(
-            connector_id="connector-project-owned",
-            source_table_name="minimal_hnm/USERS.csv",
+            connector_id='connector-project-owned',
+            source_table_name='minimal_hnm/USERS.csv',
             file_type=source_table_api.FileType.CSV,
         ),
     )
@@ -271,24 +264,24 @@ def test_file_source_table_preserves_relative_metadata(source_cls,
 
 def test_s3_source_table_preserves_discriminated_relative_source():
     source_table = S3SourceTable(
-        connector_id="connector-project-owned",
+        connector_id='connector-project-owned',
         source={
             'mode': 'relative',
-            'path': "minimal_hnm/USERS.csv",
+            'path': 'minimal_hnm/USERS.csv',
         },
         file_type=FileType.CSV,
     )
-    assert source_table.connector_id == "connector-project-owned"
+    assert source_table.connector_id == 'connector-project-owned'
     assert source_table.source.path == 'minimal_hnm/USERS.csv'
     assert source_table.file_type == FileType.CSV
 
     table_def = TableDefinition(
         cols=(),
         source_table=source_table_api.S3SourceTable(
-            connector_id="connector-project-owned",
+            connector_id='connector-project-owned',
             source={
                 'mode': 'relative',
-                'path': "minimal_hnm/USERS.csv",
+                'path': 'minimal_hnm/USERS.csv',
             },
             file_type=source_table_api.FileType.CSV,
         ),
@@ -300,12 +293,19 @@ def test_s3_source_table_preserves_discriminated_relative_source():
 
 def _make_v2_cols() -> tuple:
     return (
-        Column(name='id', stype=Stype.ID, dtype=Dtype.string,
-               timestamp_format=None),
-        Column(name='ts', stype=Stype.timestamp, dtype=Dtype.time,
-               timestamp_format=table_api.TimestampUnit.SECOND),
-        Column(name='val', stype=Stype.numerical, dtype=Dtype.float32,
-               timestamp_format=None),
+        Column(name='id', stype=Stype.ID, dtype=Dtype.string, timestamp_format=None),
+        Column(
+            name='ts',
+            stype=Stype.timestamp,
+            dtype=Dtype.time,
+            timestamp_format=table_api.TimestampUnit.SECOND,
+        ),
+        Column(
+            name='val',
+            stype=Stype.numerical,
+            dtype=Dtype.float32,
+            timestamp_format=None,
+        ),
     )
 
 
@@ -315,10 +315,7 @@ def _s3_named() -> TableDefinition:
         source_table=S3SourceTable(
             file_type=FileType.PARQUET,
             connector_id='connector_' + '1' * 32,
-            source={
-                'mode': 'relative',
-                'path': 'transactions'
-            },
+            source={'mode': 'relative', 'path': 'transactions'},
         ),
         pkey='id',
         time_col='ts',
@@ -395,11 +392,11 @@ def test_unavailable_source_table_has_stable_fpid_and_no_connector():
     assert table_def.fpid
     assert table_def.source_table.table_location == 'client_side_table'
     assert not table_def.source_table.require_connector(
-        FileConnectorResourceConfig(name='internal',
-                                    root_dir='/tmp/client_side_table'))
-    assert TableDefinition(
-        **dataclasses.asdict(table_def)).source_table.fpid == (
-            table_def.source_table.fpid)
+        FileConnectorResourceConfig(name='internal', root_dir='/tmp/client_side_table')
+    )
+    assert TableDefinition(**dataclasses.asdict(table_def)).source_table.fpid == (
+        table_def.source_table.fpid
+    )
 
 
 def test_table_def_primary_key_col_returns_none_when_pkey_missing():
@@ -408,10 +405,7 @@ def test_table_def_primary_key_col_returns_none_when_pkey_missing():
         source_table=S3SourceTable(
             file_type=FileType.PARQUET,
             connector_id='c',
-            source={
-                'mode': 'relative',
-                'path': 't'
-            },
+            source={'mode': 'relative', 'path': 't'},
         ),
         # pkey omitted -> None
     )
@@ -424,10 +418,7 @@ def test_table_def_time_col_returns_none_when_unset():
         source_table=S3SourceTable(
             file_type=FileType.PARQUET,
             connector_id='c',
-            source={
-                'mode': 'relative',
-                'path': 't'
-            },
+            source={'mode': 'relative', 'path': 't'},
         ),
         pkey='id',
         # time_col / end_time_col omitted
@@ -450,8 +441,7 @@ def test_table_def_primary_key_col_raises_when_pkey_missing_from_cols():
     # these raises to `RuntimeError` regresses the finding and fails here.
     class _Stub:
         pkey = 'ghost'
-        cols = (Column(name='real', stype=Stype.numerical,
-                       dtype=Dtype.float32), )
+        cols = (Column(name='real', stype=Stype.numerical, dtype=Dtype.float32),)
 
     with pytest.raises(ValidationException) as excinfo:
         TableDefinition.primary_key_col(_Stub())
@@ -468,11 +458,11 @@ def test_table_def_time_cols_raise_validation_when_missing_from_cols():
 
     class _TimeStub:
         time_col = 'ghost'
-        cols = (real_col, )
+        cols = (real_col,)
 
     class _EndTimeStub:
         end_time_col = 'ghost'
-        cols = (real_col, )
+        cols = (real_col,)
 
     with pytest.raises(ValidationException) as time_err:
         TableDefinition.time_column(_TimeStub())
@@ -496,13 +486,13 @@ def test_numerical_stats_without_quantiles_names_what_is_missing():
     counting_stats_only = {
         ColStatType.NUM_NA: Stats(value=0, approx=True, num_entries=10000),
         ColStatType.COUNT: Stats(value=10000, approx=True, num_entries=10000),
-        ColStatType.NUM_UNIQUE: Stats(value=9893, approx=True,
-                                      num_entries=10000),
+        ColStatType.NUM_UNIQUE: Stats(value=9893, approx=True, num_entries=10000),
     }
 
     with pytest.raises(ValueError, match='quartile statistics'):
-        ColumnStats.from_stats_dict(Stype.numerical, counting_stats_only, 10000,
-                                    Dtype.float64)
+        ColumnStats.from_stats_dict(
+            Stype.numerical, counting_stats_only, 10000, Dtype.float64
+        )
 
 
 def test_every_shared_source_table_type_has_a_mirror():

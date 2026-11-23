@@ -86,12 +86,14 @@ def _s3_config() -> S3IdentityConfig:
         authentication=S3AssumeRoleAuthentication(
             partition='aws',
             role_arn='arn:aws:iam::123456789012:role/customer-kumo',
-        ), )
+        ),
+    )
 
 
 def _google_config(provider: str):
     authentication = GoogleWorkloadIdentityAuthentication(
-        service_account_email=('customer-kumo@example.iam.gserviceaccount.com'))
+        service_account_email=('customer-kumo@example.iam.gserviceaccount.com')
+    )
     if provider == 'bigquery':
         return BigQueryIdentityConfig(authentication=authentication)
     return GCSIdentityConfig(authentication=authentication)
@@ -122,18 +124,21 @@ _AMBIENT_GCP_EMAIL = 'kumo-workload@example-project.iam.gserviceaccount.com'
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 def test_ambient_gcp_uses_source_directly_without_impersonation(
-        monkeypatch, provider) -> None:
+    monkeypatch, provider
+) -> None:
     source = Mock(spec=compute_engine.Credentials)
     source.service_account_email = _AMBIENT_GCP_EMAIL
-    monkeypatch.setattr('google.auth.default', lambda scopes=None:
-                        (source, 'example-project'))
+    monkeypatch.setattr(
+        'google.auth.default', lambda scopes=None: (source, 'example-project')
+    )
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_gcp_workload_config',
-        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL, )),
+        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL,)),
     )
 
     result = NativeWorkloadIdentityExchanger().exchange(
-        _google_ambient_config(provider), None)
+        _google_ambient_config(provider), None
+    )
 
     assert isinstance(result, GoogleCloudCredentials)
     assert result.provider == provider
@@ -145,38 +150,31 @@ def test_ambient_gcp_uses_source_directly_without_impersonation(
 def test_ambient_gcp_rejects_unapproved_service_account(monkeypatch) -> None:
     source = Mock(spec=compute_engine.Credentials)
     source.service_account_email = 'rogue@evil.iam.gserviceaccount.com'
-    monkeypatch.setattr('google.auth.default', lambda scopes=None:
-                        (source, 'p'))
+    monkeypatch.setattr('google.auth.default', lambda scopes=None: (source, 'p'))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_gcp_workload_config',
-        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL, )),
+        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL,)),
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='not approved'):
-        NativeWorkloadIdentityExchanger().exchange(
-            _google_ambient_config('gcs'), None)
+    with pytest.raises(WorkloadExchangeConfigurationError, match='not approved'):
+        NativeWorkloadIdentityExchanger().exchange(_google_ambient_config('gcs'), None)
 
 
 def test_ambient_gcp_rejects_disallowed_source(monkeypatch) -> None:
     # A static / developer credential (not a workload chain) must be rejected.
-    monkeypatch.setattr('google.auth.default', lambda scopes=None:
-                        (Mock(), 'p'))
+    monkeypatch.setattr('google.auth.default', lambda scopes=None: (Mock(), 'p'))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_gcp_workload_config',
-        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL, )),
+        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL,)),
     )
 
     with pytest.raises(IdentityAuthenticationCategoryError) as exc:
-        NativeWorkloadIdentityExchanger().exchange(
-            _google_ambient_config('gcs'), None)
-    assert exc.value.category == (
-        IdentityAuthenticationCategory.DISALLOWED_SOURCE)
+        NativeWorkloadIdentityExchanger().exchange(_google_ambient_config('gcs'), None)
+    assert exc.value.category == (IdentityAuthenticationCategory.DISALLOWED_SOURCE)
 
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
-def test_ambient_gcp_accepts_user_adc_on_devserver(monkeypatch,
-                                                   provider) -> None:
+def test_ambient_gcp_accepts_user_adc_on_devserver(monkeypatch, provider) -> None:
     source = oauth2_credentials.Credentials(
         token='developer-access-token',
         refresh_token='developer-refresh-token',
@@ -189,15 +187,17 @@ def test_ambient_gcp_accepts_user_adc_on_devserver(monkeypatch,
     monkeypatch.setattr(source, 'refresh', refresh)
     monkeypatch.setenv('DEPLOY_STAGE', 'dev_local')
     monkeypatch.setenv('KUMO_DEV_GCP_USER_CREDENTIALS_ENABLED', 'true')
-    monkeypatch.setattr('google.auth.default', lambda scopes=None:
-                        (source, 'developer-project'))
+    monkeypatch.setattr(
+        'google.auth.default', lambda scopes=None: (source, 'developer-project')
+    )
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_gcp_workload_config',
         Mock(side_effect=WorkloadExchangeConfigurationError('disabled')),
     )
 
     result = NativeWorkloadIdentityExchanger().exchange(
-        _google_ambient_config(provider), None)
+        _google_ambient_config(provider), None
+    )
 
     assert result.provider == provider
     assert result.credential is source
@@ -205,15 +205,15 @@ def test_ambient_gcp_accepts_user_adc_on_devserver(monkeypatch,
     refresh.assert_called_once()
 
 
-def test_ambient_gcp_devserver_falls_back_to_active_gcloud_profile(
-        monkeypatch) -> None:
+def test_ambient_gcp_devserver_falls_back_to_active_gcloud_profile(monkeypatch) -> None:
     source = oauth2_credentials.Credentials(token='gcloud-access-token')
     refresh = Mock()
     monkeypatch.setattr(source, 'refresh', refresh)
     monkeypatch.setenv('DEPLOY_STAGE', 'dev_local')
     monkeypatch.setenv('KUMO_DEV_GCP_USER_CREDENTIALS_ENABLED', 'true')
-    monkeypatch.setattr('google.auth.default',
-                        Mock(side_effect=RuntimeError('ADC unavailable')))
+    monkeypatch.setattr(
+        'google.auth.default', Mock(side_effect=RuntimeError('ADC unavailable'))
+    )
     gcloud_credentials = Mock(return_value=(source, 'gcloud-project'))
     monkeypatch.setattr(
         'rest.config.identity._gcloud_cli_user_credentials',
@@ -225,29 +225,32 @@ def test_ambient_gcp_devserver_falls_back_to_active_gcloud_profile(
     )
 
     result = NativeWorkloadIdentityExchanger().exchange(
-        _google_ambient_config('bigquery'), None)
+        _google_ambient_config('bigquery'), None
+    )
 
     assert result.credential is source
     assert result.project == 'gcloud-project'
     gcloud_credentials.assert_called_once_with(
-        ['https://www.googleapis.com/auth/cloud-platform'])
+        ['https://www.googleapis.com/auth/cloud-platform']
+    )
     refresh.assert_called_once()
 
 
 def test_gcloud_profile_adapter_refreshes_with_google_auth_contract(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     def run(command, **kwargs):
         del kwargs
         if command[1:3] == ['auth', 'print-access-token']:
-            return Mock(returncode=0,
-                        stdout='{"token":"short-lived-access-token"}')
+            return Mock(returncode=0, stdout='{"token":"short-lived-access-token"}')
         assert command[1:4] == ['config', 'get-value', 'project']
         return Mock(returncode=0, stdout='example-project\n')
 
     monkeypatch.setattr('subprocess.run', run)
 
     credential, project = _gcloud_cli_user_credentials(
-        ['https://www.googleapis.com/auth/cloud-platform'])
+        ['https://www.googleapis.com/auth/cloud-platform']
+    )
     credential.refresh(Mock())
 
     assert project == 'example-project'
@@ -255,76 +258,85 @@ def test_gcloud_profile_adapter_refreshes_with_google_auth_contract(
     assert credential.expiry is not None
 
 
-@pytest.mark.parametrize(('deploy_stage', 'enabled'), [
-    ('prod', 'true'),
-    ('dev_local', 'false'),
-])
+@pytest.mark.parametrize(
+    ('deploy_stage', 'enabled'),
+    [
+        ('prod', 'true'),
+        ('dev_local', 'false'),
+    ],
+)
 def test_ambient_gcp_rejects_user_adc_outside_enabled_devserver(
-        monkeypatch, deploy_stage, enabled) -> None:
+    monkeypatch, deploy_stage, enabled
+) -> None:
     source = oauth2_credentials.Credentials(token='developer-access-token')
     monkeypatch.setenv('DEPLOY_STAGE', deploy_stage)
     monkeypatch.setenv('KUMO_DEV_GCP_USER_CREDENTIALS_ENABLED', enabled)
-    monkeypatch.setattr('google.auth.default', lambda scopes=None:
-                        (source, 'developer-project'))
+    monkeypatch.setattr(
+        'google.auth.default', lambda scopes=None: (source, 'developer-project')
+    )
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_gcp_workload_config',
-        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL, )),
+        lambda: Mock(approved_service_account_emails=(_AMBIENT_GCP_EMAIL,)),
     )
 
     with pytest.raises(IdentityAuthenticationCategoryError) as exc:
         NativeWorkloadIdentityExchanger().exchange(
-            _google_ambient_config('bigquery'), None)
+            _google_ambient_config('bigquery'), None
+        )
 
-    assert exc.value.category == (
-        IdentityAuthenticationCategory.DISALLOWED_SOURCE)
+    assert exc.value.category == (IdentityAuthenticationCategory.DISALLOWED_SOURCE)
 
 
-def test_ambient_gcp_devserver_does_not_bypass_workload_allowlist(
-        monkeypatch) -> None:
+def test_ambient_gcp_devserver_does_not_bypass_workload_allowlist(monkeypatch) -> None:
     source = Mock(spec=compute_engine.Credentials)
     source.service_account_email = _AMBIENT_GCP_EMAIL
     monkeypatch.setenv('DEPLOY_STAGE', 'dev_local')
     monkeypatch.setenv('KUMO_DEV_GCP_USER_CREDENTIALS_ENABLED', 'true')
-    monkeypatch.setattr('google.auth.default', lambda scopes=None:
-                        (source, 'workload-project'))
+    monkeypatch.setattr(
+        'google.auth.default', lambda scopes=None: (source, 'workload-project')
+    )
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_gcp_workload_config',
         Mock(side_effect=WorkloadExchangeConfigurationError('disabled')),
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='workload identity is disabled'):
+    with pytest.raises(
+        WorkloadExchangeConfigurationError, match='workload identity is disabled'
+    ):
         NativeWorkloadIdentityExchanger().exchange(
-            _google_ambient_config('bigquery'), None)
+            _google_ambient_config('bigquery'), None
+        )
 
 
 def test_ambient_gcp_launch_config_validates_emails() -> None:
     config = AmbientGCPWorkloadConfig(
-        approved_service_account_emails=(_AMBIENT_GCP_EMAIL, ))
-    assert config.approved_service_account_emails == (_AMBIENT_GCP_EMAIL, )
+        approved_service_account_emails=(_AMBIENT_GCP_EMAIL,)
+    )
+    assert config.approved_service_account_emails == (_AMBIENT_GCP_EMAIL,)
     with pytest.raises(ValueError, match='must not be empty'):
         AmbientGCPWorkloadConfig(approved_service_account_emails=())
     with pytest.raises(ValueError, match='duplicates'):
         AmbientGCPWorkloadConfig(
-            approved_service_account_emails=(_AMBIENT_GCP_EMAIL,
-                                             _AMBIENT_GCP_EMAIL))
+            approved_service_account_emails=(_AMBIENT_GCP_EMAIL, _AMBIENT_GCP_EMAIL)
+        )
     with pytest.raises(ValueError, match='Google service-account'):
-        AmbientGCPWorkloadConfig(
-            approved_service_account_emails=('not-an-email', ))
+        AmbientGCPWorkloadConfig(approved_service_account_emails=('not-an-email',))
 
 
 def test_ambient_gcp_identity_key() -> None:
     assert identity_key(_google_ambient_config('gcs')) == 'gcs:ambient'
-    assert identity_key(
-        _google_ambient_config('bigquery')) == 'bigquery:ambient'
+    assert identity_key(_google_ambient_config('bigquery')) == 'bigquery:ambient'
 
 
 class _TestExternalAccountCredentials(external_account.Credentials):
     """Actual external-account base type with inert token retrieval."""
+
     def __init__(self) -> None:
         super().__init__(
-            audience=('//iam.googleapis.com/projects/123/locations/global/'
-                      'workloadIdentityPools/kumo/providers/runtime'),
+            audience=(
+                '//iam.googleapis.com/projects/123/locations/global/'
+                'workloadIdentityPools/kumo/providers/runtime'
+            ),
             subject_token_type=('urn:ietf:params:oauth:token-type:jwt'),
             token_url='https://sts.googleapis.com/v1/token',
             credential_source={'file': '/var/run/kumo/subject-token'},
@@ -335,17 +347,19 @@ class _TestExternalAccountCredentials(external_account.Credentials):
         return 'test-subject-token'
 
 
-def _ambient_session(method: str = 'container-role',
-                     token: str | None = 'temporary-token',
-                     role_name: str = 'kumo-runtime'):
-    frozen = Mock(access_key='temporary-access', secret_key='temporary-secret',
-                  token=token)
+def _ambient_session(
+    method: str = 'container-role',
+    token: str | None = 'temporary-token',
+    role_name: str = 'kumo-runtime',
+):
+    frozen = Mock(
+        access_key='temporary-access', secret_key='temporary-secret', token=token
+    )
     source = Mock(method=method)
     source.get_frozen_credentials.return_value = frozen
     sts = Mock()
     sts.get_caller_identity.return_value = {
-        'Arn': ('arn:aws:sts::123456789012:assumed-role/'
-                f'{role_name}/session')
+        'Arn': (f'arn:aws:sts::123456789012:assumed-role/{role_name}/session')
     }
     session = Mock(spec=boto3.session.Session)
     session.get_credentials.return_value = source
@@ -353,28 +367,31 @@ def _ambient_session(method: str = 'container-role',
     return session, source, sts
 
 
-@pytest.mark.parametrize('method', [
-    'assume-role-with-web-identity',
-    'container-role',
-    'iam-role',
-])
-def test_ambient_s3_attests_only_approved_workload_roles(monkeypatch,
-                                                         method) -> None:
+@pytest.mark.parametrize(
+    'method',
+    [
+        'assume-role-with-web-identity',
+        'container-role',
+        'iam-role',
+    ],
+)
+def test_ambient_s3_attests_only_approved_workload_roles(monkeypatch, method) -> None:
     session, _, sts = _ambient_session(method)
     monkeypatch.setattr('boto3.session.Session', Mock(return_value=session))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/kumo-runtime',)
+        ),
     )
 
     result = NativeWorkloadIdentityExchanger().exchange(
-        S3IdentityConfig(authentication=S3AmbientAuthentication()), None)
+        S3IdentityConfig(authentication=S3AmbientAuthentication()), None
+    )
 
     assert isinstance(result, AWSAmbientCredentials)
     assert result.session is session
-    assert result.approved_role_arn == (
-        'arn:aws:iam::123456789012:role/kumo-runtime')
+    assert result.approved_role_arn == ('arn:aws:iam::123456789012:role/kumo-runtime')
     sts.get_caller_identity.assert_called_once_with()
 
 
@@ -384,15 +401,17 @@ def test_ambient_s3_concurrent_exchange_attests_once(monkeypatch) -> None:
     monkeypatch.setattr('boto3.session.Session', session_constructor)
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/kumo-runtime',)
+        ),
     )
     exchanger = NativeWorkloadIdentityExchanger()
     config = S3IdentityConfig(authentication=S3AmbientAuthentication())
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(
-            executor.map(lambda _: exchanger.exchange(config, None), range(8)))
+            executor.map(lambda _: exchanger.exchange(config, None), range(8))
+        )
 
     assert all(result is results[0] for result in results)
     session_constructor.assert_called_once_with()
@@ -408,18 +427,16 @@ def test_ambient_s3_failed_leader_does_not_block_follower(monkeypatch) -> None:
     def reject_role():
         failure_started.set()
         assert release_failure.wait(1)
-        return {
-            'Arn': ('arn:aws:sts::123456789012:assumed-role/'
-                    'other-runtime/session')
-        }
+        return {'Arn': ('arn:aws:sts::123456789012:assumed-role/other-runtime/session')}
 
     rejected_sts.get_caller_identity.side_effect = reject_role
     session_constructor = Mock(side_effect=[rejected, approved])
     monkeypatch.setattr('boto3.session.Session', session_constructor)
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/kumo-runtime',)
+        ),
     )
     exchanger = NativeWorkloadIdentityExchanger()
     config = S3IdentityConfig(authentication=S3AmbientAuthentication())
@@ -429,8 +446,7 @@ def test_ambient_s3_failed_leader_does_not_block_follower(monkeypatch) -> None:
         assert failure_started.wait(1)
         follower = executor.submit(exchanger.exchange, config, None)
         release_failure.set()
-        with pytest.raises(WorkloadExchangeConfigurationError,
-                           match='not approved'):
+        with pytest.raises(WorkloadExchangeConfigurationError, match='not approved'):
             leader.result()
         result = follower.result()
 
@@ -450,8 +466,9 @@ def test_ambient_s3_cache_reattests_after_ttl(monkeypatch) -> None:
     monkeypatch.setattr('rest.config.identity.time.monotonic', lambda: clock[0])
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/kumo-runtime',)
+        ),
     )
     exchanger = NativeWorkloadIdentityExchanger()
     config = S3IdentityConfig(authentication=S3AmbientAuthentication())
@@ -468,12 +485,13 @@ def test_ambient_s3_cache_reattests_after_ttl(monkeypatch) -> None:
 
 
 def test_ambient_s3_cache_is_shared_across_configs_and_bound_to_role_policy(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     first, _, _ = _ambient_session()
     second, _, second_sts = _ambient_session(role_name='replacement-runtime')
     session_constructor = Mock(side_effect=[first, second])
     approved_roles = [
-        ('arn:aws:iam::123456789012:role/kumo-runtime', ),
+        ('arn:aws:iam::123456789012:role/kumo-runtime',),
     ]
     monkeypatch.setattr('boto3.session.Session', session_constructor)
     monkeypatch.setattr(
@@ -495,11 +513,12 @@ def test_ambient_s3_cache_is_shared_across_configs_and_bound_to_role_policy(
             executor.map(
                 lambda config: exchanger.exchange(config, None),
                 [west, east] * 4,
-            ))
+            )
+        )
 
     assert all(result.session is first for result in results)
     assert session_constructor.call_count == 1
-    approved_roles[0] = ('arn:aws:iam::123456789012:role/replacement-runtime', )
+    approved_roles[0] = ('arn:aws:iam::123456789012:role/replacement-runtime',)
     result = exchanger.exchange(east, None)
 
     assert result.session is second
@@ -513,40 +532,44 @@ def test_ambient_s3_rejects_unapproved_attested_role(monkeypatch) -> None:
     monkeypatch.setattr('boto3.session.Session', Mock(return_value=session))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/other-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/other-runtime',)
+        ),
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='not approved'):
+    with pytest.raises(WorkloadExchangeConfigurationError, match='not approved'):
         NativeWorkloadIdentityExchanger().exchange(
-            S3IdentityConfig(authentication=S3AmbientAuthentication()), None)
+            S3IdentityConfig(authentication=S3AmbientAuthentication()), None
+        )
 
     sts.get_caller_identity.assert_called_once_with()
 
 
 def test_ambient_s3_rejects_same_name_from_path_qualified_allowlist(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     session, _, sts = _ambient_session('iam-role')
     monkeypatch.setattr('boto3.session.Session', Mock(return_value=session))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/approved/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/approved/kumo-runtime',)
+        ),
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='not approved'):
+    with pytest.raises(WorkloadExchangeConfigurationError, match='not approved'):
         NativeWorkloadIdentityExchanger().exchange(
-            S3IdentityConfig(authentication=S3AmbientAuthentication()), None)
+            S3IdentityConfig(authentication=S3AmbientAuthentication()), None
+        )
 
     sts.get_caller_identity.assert_called_once_with()
 
 
 def test_ambient_s3_launch_config_rejects_role_paths_and_duplicates() -> None:
     with pytest.raises(ValueError, match='pathless IAM role ARNs'):
-        AmbientS3WorkloadConfig(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/approved/kumo-runtime', ))
+        AmbientS3WorkloadConfig(
+            approved_role_arns=('arn:aws:iam::123456789012:role/approved/kumo-runtime',)
+        )
 
     role = 'arn:aws:iam::123456789012:role/kumo-runtime'
     with pytest.raises(ValueError, match='must not contain duplicates'):
@@ -555,26 +578,31 @@ def test_ambient_s3_launch_config_rejects_role_paths_and_duplicates() -> None:
 
 def test_ambient_s3_launch_config_accepts_exact_pathless_role() -> None:
     role = 'arn:aws:iam::123456789012:role/kumo-runtime'
-    config = AmbientS3WorkloadConfig(approved_role_arns=(role, ))
+    config = AmbientS3WorkloadConfig(approved_role_arns=(role,))
 
-    assert config.approved_role_arns == (role, )
+    assert config.approved_role_arns == (role,)
 
 
 @pytest.mark.parametrize('method', ['env', 'shared-credentials-file', 'sso'])
 def test_ambient_s3_rejects_static_and_developer_provider_chains(
-        monkeypatch, method) -> None:
+    monkeypatch, method
+) -> None:
     session, _, _ = _ambient_session(method)
     monkeypatch.setattr('boto3.session.Session', Mock(return_value=session))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/kumo-runtime',)
+        ),
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='web-identity, container-role, or instance-role'):
+    with pytest.raises(
+        WorkloadExchangeConfigurationError,
+        match='web-identity, container-role, or instance-role',
+    ):
         NativeWorkloadIdentityExchanger().exchange(
-            S3IdentityConfig(authentication=S3AmbientAuthentication()), None)
+            S3IdentityConfig(authentication=S3AmbientAuthentication()), None
+        )
 
 
 def test_ambient_s3_requires_temporary_session_token(monkeypatch) -> None:
@@ -582,18 +610,22 @@ def test_ambient_s3_requires_temporary_session_token(monkeypatch) -> None:
     monkeypatch.setattr('boto3.session.Session', Mock(return_value=session))
     monkeypatch.setattr(
         'rest.config.identity.require_ambient_s3_workload_config',
-        lambda: Mock(approved_role_arns=(
-            'arn:aws:iam::123456789012:role/kumo-runtime', )),
+        lambda: Mock(
+            approved_role_arns=('arn:aws:iam::123456789012:role/kumo-runtime',)
+        ),
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='temporary session credentials'):
+    with pytest.raises(
+        WorkloadExchangeConfigurationError, match='temporary session credentials'
+    ):
         NativeWorkloadIdentityExchanger().exchange(
-            S3IdentityConfig(authentication=S3AmbientAuthentication()), None)
+            S3IdentityConfig(authentication=S3AmbientAuthentication()), None
+        )
 
 
 def test_ambient_session_is_exact_for_boto_and_refreshed_for_each_pyarrow_use(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     session, source, s3 = _ambient_session()
     s3.head_bucket.return_value = {'BucketRegion': 'us-west-2'}
     credentials = AWSAmbientCredentials(
@@ -602,10 +634,12 @@ def test_ambient_session_is_exact_for_boto_and_refreshed_for_each_pyarrow_use(
     )
     pyarrow_s3 = Mock(side_effect=[object(), object()])
     monkeypatch.setattr('pyarrow.fs.S3FileSystem', pyarrow_s3)
-    conflicting_default = Mock(side_effect=AssertionError(
-        'independent AWS default chain must not be consulted'))
-    monkeypatch.setattr(ThreadLocalBotoSession, 'core_session',
-                        conflicting_default)
+    conflicting_default = Mock(
+        side_effect=AssertionError(
+            'independent AWS default chain must not be consulted'
+        )
+    )
+    monkeypatch.setattr(ThreadLocalBotoSession, 'core_session', conflicting_default)
 
     with credential_scope(credentials.as_dict(), require_explicit=True):
         assert ThreadLocalBotoSession().session() is session
@@ -616,14 +650,14 @@ def test_ambient_session_is_exact_for_boto_and_refreshed_for_each_pyarrow_use(
     assert first is not second
     assert source.get_frozen_credentials.call_count == 2
     assert s3.head_bucket.call_count == 2
-    assert all(call.kwargs['region'] == 'us-west-2'
-               for call in pyarrow_s3.call_args_list)
+    assert all(
+        call.kwargs['region'] == 'us-west-2' for call in pyarrow_s3.call_args_list
+    )
     conflicting_default.assert_not_called()
     assert pyarrow_s3.call_count == 2
 
 
-def test_ambient_credentials_are_not_temporal_serializable_or_repr_visible(
-) -> None:
+def test_ambient_credentials_are_not_temporal_serializable_or_repr_visible() -> None:
     session, _, _ = _ambient_session()
     credentials = AWSAmbientCredentials(
         session=session,
@@ -631,16 +665,14 @@ def test_ambient_credentials_are_not_temporal_serializable_or_repr_visible(
     )
 
     with pytest.raises(TypeError, match='activity-local'):
-        dataclass_converter.DataclassJsonPayloadConverter().to_payload(
-            credentials)
+        dataclass_converter.DataclassJsonPayloadConverter().to_payload(credentials)
     rendered = repr(credentials)
     assert 'temporary-access' not in rendered
     assert 'temporary-secret' not in rendered
     assert 'kumo-runtime' not in rendered
 
 
-def test_explicit_ambient_scope_never_falls_back_to_unsigned_s3(
-        monkeypatch) -> None:
+def test_explicit_ambient_scope_never_falls_back_to_unsigned_s3(monkeypatch) -> None:
     client = Mock()
     client.head_object.side_effect = NoCredentialsError()
     unsigned = Mock()
@@ -648,8 +680,7 @@ def test_explicit_ambient_scope_never_falls_back_to_unsigned_s3(
         'io_utils.fsutil.s3_filesystem.threadsafe_boto.s3_client',
         Mock(return_value=client),
     )
-    monkeypatch.setattr('io_utils.fsutil.s3_filesystem._unsigned_s3_client',
-                        unsigned)
+    monkeypatch.setattr('io_utils.fsutil.s3_filesystem._unsigned_s3_client', unsigned)
     session, _, _ = _ambient_session()
     credentials = AWSAmbientCredentials(
         session=session,
@@ -666,13 +697,13 @@ def test_explicit_ambient_scope_never_falls_back_to_unsigned_s3(
 def test_workload_exchange_must_be_explicitly_enabled(monkeypatch) -> None:
     monkeypatch.delenv('KUMO_AWS_WORKLOAD_EXCHANGE_ENABLED', raising=False)
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='is not configured'):
+    with pytest.raises(WorkloadExchangeConfigurationError, match='is not configured'):
         NativeWorkloadIdentityExchanger().exchange(_s3_config(), None)
 
 
 def test_aws_exchange_rejects_static_or_developer_source_credentials(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     monkeypatch.setenv('KUMO_AWS_WORKLOAD_EXCHANGE_ENABLED', 'true')
     session = Mock()
     session.get_credentials.return_value = Mock(method='env')
@@ -685,8 +716,7 @@ def test_aws_exchange_rejects_static_or_developer_source_credentials(
     session.client.assert_not_called()
 
 
-def test_aws_exchange_assumes_only_the_selected_customer_role(
-        monkeypatch) -> None:
+def test_aws_exchange_assumes_only_the_selected_customer_role(monkeypatch) -> None:
     monkeypatch.setenv('KUMO_AWS_WORKLOAD_EXCHANGE_ENABLED', 'true')
     sts = Mock()
     sts.assume_role.return_value = {
@@ -697,8 +727,7 @@ def test_aws_exchange_assumes_only_the_selected_customer_role(
         }
     }
     session = Mock()
-    session.get_credentials.return_value = Mock(
-        method='assume-role-with-web-identity')
+    session.get_credentials.return_value = Mock(method='assume-role-with-web-identity')
     session.client.return_value = sts
     monkeypatch.setattr('boto3.session.Session', Mock(return_value=session))
 
@@ -742,8 +771,7 @@ def test_s3_access_key_resolution_does_not_use_aws_sts(monkeypatch) -> None:
     session_constructor.assert_not_called()
 
 
-def test_s3_access_key_validation_makes_one_bounded_signed_request(
-        monkeypatch) -> None:
+def test_s3_access_key_validation_makes_one_bounded_signed_request(monkeypatch) -> None:
     monkeypatch.setenv('DEPLOY_STAGE', 'test')
     config = S3IdentityConfig(
         authentication=S3AccessKeyAuthentication(),
@@ -794,16 +822,20 @@ def test_s3_access_key_validation_rejects_provider_failure(monkeypatch) -> None:
     poison = 'provider-response-must-not-leak'
     client = Mock()
     client.list_buckets.side_effect = ClientError(
-        {'Error': {
-            'Code': 'SignatureDoesNotMatch',
-            'Message': poison,
-        }},
+        {
+            'Error': {
+                'Code': 'SignatureDoesNotMatch',
+                'Message': poison,
+            }
+        },
         'ListBuckets',
     )
     monkeypatch.setattr('boto3.client', Mock(return_value=client))
 
-    with pytest.raises(IdentityAuthenticationCategoryError,
-                       match='S3 access key or connection settings') as caught:
+    with pytest.raises(
+        IdentityAuthenticationCategoryError,
+        match='S3 access key or connection settings',
+    ) as caught:
         validate_identity_authentication(
             config,
             credentials,
@@ -811,13 +843,15 @@ def test_s3_access_key_validation_rejects_provider_failure(monkeypatch) -> None:
         )
 
     assert caught.value.category == (
-        IdentityAuthenticationCategory.S3_VALIDATION_FAILED)
+        IdentityAuthenticationCategory.S3_VALIDATION_FAILED
+    )
     assert poison not in str(caught.value)
     assert caught.value.__cause__ is None
 
 
 def test_s3_access_key_validation_sanitizes_client_construction_failure(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     monkeypatch.setenv('DEPLOY_STAGE', 'test')
     config = S3IdentityConfig(
         authentication=S3AccessKeyAuthentication(),
@@ -844,13 +878,15 @@ def test_s3_access_key_validation_sanitizes_client_construction_failure(
         )
 
     assert caught.value.category == (
-        IdentityAuthenticationCategory.S3_VALIDATION_FAILED)
+        IdentityAuthenticationCategory.S3_VALIDATION_FAILED
+    )
     assert poison not in str(caught.value)
     assert caught.value.__cause__ is None
 
 
 def test_s3_access_key_validation_accepts_permission_limited_principal(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     monkeypatch.setenv('DEPLOY_STAGE', 'test')
     config = S3IdentityConfig(
         authentication=S3AccessKeyAuthentication(),
@@ -883,7 +919,8 @@ def test_s3_access_key_validation_accepts_permission_limited_principal(
 
 
 def test_ambient_s3_connector_keeps_refreshable_session_as_only_auth(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     identity_id = IdentityID.generate()
     connector_id = ConnectorID.generate()
     session, _, _ = _ambient_session()
@@ -922,7 +959,8 @@ def test_ambient_s3_connector_keeps_refreshable_session_as_only_auth(
     assert resolved.credentials.connection is None
     assert 's3_connection' not in resolved.credentials.as_dict()
     native_connector.set_credentials.assert_called_once_with(
-        resolved.credentials.as_dict())
+        resolved.credentials.as_dict()
+    )
 
 
 @pytest.mark.parametrize(
@@ -946,7 +984,8 @@ def test_ambient_s3_connector_keeps_refreshable_session_as_only_auth(
     ],
 )
 def test_plain_aws_connector_does_not_attach_s3_connection(
-        monkeypatch, authentication, runtime_credentials) -> None:
+    monkeypatch, authentication, runtime_credentials
+) -> None:
     identity_id = IdentityID.generate()
     connector_id = ConnectorID.generate()
     monkeypatch.setattr(
@@ -981,7 +1020,8 @@ def test_plain_aws_connector_does_not_attach_s3_connection(
     assert resolved.credentials.connection is None
     assert 's3_connection' not in resolved.credentials.as_dict()
     native_connector.set_credentials.assert_called_once_with(
-        resolved.credentials.as_dict())
+        resolved.credentials.as_dict()
+    )
 
 
 def test_s3_http_endpoint_is_rejected_outside_local_modes(monkeypatch) -> None:
@@ -1004,17 +1044,19 @@ def test_s3_http_endpoint_is_rejected_outside_local_modes(monkeypatch) -> None:
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 def test_gcp_exchange_rejects_service_account_or_user_source_credentials(
-        monkeypatch, provider) -> None:
+    monkeypatch, provider
+) -> None:
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
-    monkeypatch.setattr('google.auth.default',
-                        Mock(return_value=(object(), 'source-project')))
+    monkeypatch.setattr(
+        'google.auth.default', Mock(return_value=(object(), 'source-project'))
+    )
     impersonate = Mock()
-    monkeypatch.setattr('google.auth.impersonated_credentials.Credentials',
-                        impersonate)
+    monkeypatch.setattr('google.auth.impersonated_credentials.Credentials', impersonate)
     config = _google_config(provider)
 
-    with pytest.raises(IdentityAuthenticationCategoryError,
-                       match='not an approved workload credential') as caught:
+    with pytest.raises(
+        IdentityAuthenticationCategoryError, match='not an approved workload credential'
+    ) as caught:
         NativeWorkloadIdentityExchanger().exchange(config, None)
 
     assert caught.value.category == IdentityAuthenticationCategory.DISALLOWED_SOURCE
@@ -1022,30 +1064,27 @@ def test_gcp_exchange_rejects_service_account_or_user_source_credentials(
 
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
-def test_gcp_exchange_disabled_is_a_safe_category(monkeypatch,
-                                                  provider) -> None:
+def test_gcp_exchange_disabled_is_a_safe_category(monkeypatch, provider) -> None:
     monkeypatch.delenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', raising=False)
 
-    with pytest.raises(IdentityAuthenticationCategoryError,
-                       match='disabled for this deployment') as caught:
-        NativeWorkloadIdentityExchanger().exchange(_google_config(provider),
-                                                   None)
+    with pytest.raises(
+        IdentityAuthenticationCategoryError, match='disabled for this deployment'
+    ) as caught:
+        NativeWorkloadIdentityExchanger().exchange(_google_config(provider), None)
 
     assert caught.value.category == IdentityAuthenticationCategory.EXCHANGE_DISABLED
 
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
-def test_gcp_source_failure_is_sanitized_by_category(monkeypatch,
-                                                     provider) -> None:
+def test_gcp_source_failure_is_sanitized_by_category(monkeypatch, provider) -> None:
     poison = 'poison-source-token'
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
-    monkeypatch.setattr('google.auth.default',
-                        Mock(side_effect=RefreshError(poison)))
+    monkeypatch.setattr('google.auth.default', Mock(side_effect=RefreshError(poison)))
 
-    with pytest.raises(IdentityAuthenticationCategoryError,
-                       match='workload credential is unavailable') as caught:
-        NativeWorkloadIdentityExchanger().exchange(_google_config(provider),
-                                                   None)
+    with pytest.raises(
+        IdentityAuthenticationCategoryError, match='workload credential is unavailable'
+    ) as caught:
+        NativeWorkloadIdentityExchanger().exchange(_google_config(provider), None)
 
     assert caught.value.category == IdentityAuthenticationCategory.SOURCE_UNAVAILABLE
     assert poison not in str(caught.value)
@@ -1053,12 +1092,14 @@ def test_gcp_source_failure_is_sanitized_by_category(monkeypatch,
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 def test_gcp_impersonation_failure_is_sanitized_by_category(
-        monkeypatch, provider) -> None:
+    monkeypatch, provider
+) -> None:
     poison = 'poison-impersonation-response'
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
     source = compute_engine.Credentials()
-    monkeypatch.setattr('google.auth.default',
-                        Mock(return_value=(source, 'source-project')))
+    monkeypatch.setattr(
+        'google.auth.default', Mock(return_value=(source, 'source-project'))
+    )
     exchanged = Mock()
     exchanged.refresh.side_effect = RefreshError(poison)
     monkeypatch.setattr(
@@ -1066,10 +1107,10 @@ def test_gcp_impersonation_failure_is_sanitized_by_category(
         Mock(return_value=exchanged),
     )
 
-    with pytest.raises(IdentityAuthenticationCategoryError,
-                       match='impersonation was denied') as caught:
-        NativeWorkloadIdentityExchanger().exchange(_google_config(provider),
-                                                   None)
+    with pytest.raises(
+        IdentityAuthenticationCategoryError, match='impersonation was denied'
+    ) as caught:
+        NativeWorkloadIdentityExchanger().exchange(_google_config(provider), None)
 
     assert caught.value.category == IdentityAuthenticationCategory.IMPERSONATION_DENIED
     assert poison not in str(caught.value)
@@ -1083,7 +1124,8 @@ def test_gcp_impersonation_failure_is_sanitized_by_category(
     ],
 )
 def test_gcp_exchange_impersonates_selected_service_account_from_workload_source(
-        monkeypatch, provider, scope) -> None:
+    monkeypatch, provider, scope
+) -> None:
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
     source = compute_engine.Credentials()
     monkeypatch.setattr(
@@ -1092,8 +1134,7 @@ def test_gcp_exchange_impersonates_selected_service_account_from_workload_source
     )
     exchanged = Mock()
     impersonate = Mock(return_value=exchanged)
-    monkeypatch.setattr('google.auth.impersonated_credentials.Credentials',
-                        impersonate)
+    monkeypatch.setattr('google.auth.impersonated_credentials.Credentials', impersonate)
     config = _google_config(provider)
 
     result = NativeWorkloadIdentityExchanger().exchange(config, None)
@@ -1118,7 +1159,8 @@ def test_gcp_exchange_impersonates_selected_service_account_from_workload_source
     ],
 )
 def test_gcp_exchange_accepts_external_account_workload_source(
-        monkeypatch, provider, scope) -> None:
+    monkeypatch, provider, scope
+) -> None:
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
     source = _TestExternalAccountCredentials()
     monkeypatch.setattr(
@@ -1127,11 +1169,9 @@ def test_gcp_exchange_accepts_external_account_workload_source(
     )
     exchanged = Mock()
     impersonate = Mock(return_value=exchanged)
-    monkeypatch.setattr('google.auth.impersonated_credentials.Credentials',
-                        impersonate)
+    monkeypatch.setattr('google.auth.impersonated_credentials.Credentials', impersonate)
 
-    result = NativeWorkloadIdentityExchanger().exchange(
-        _google_config(provider), None)
+    result = NativeWorkloadIdentityExchanger().exchange(_google_config(provider), None)
 
     assert isinstance(source, external_account.Credentials)
     assert isinstance(result, GoogleCloudCredentials)
@@ -1146,8 +1186,7 @@ def test_gcp_exchange_accepts_external_account_workload_source(
     exchanged.refresh.assert_called_once()
 
 
-def test_google_runtime_credentials_are_activity_local_and_secret_safe(
-) -> None:
+def test_google_runtime_credentials_are_activity_local_and_secret_safe() -> None:
     credential = Mock(token='poison-access-token')
     credentials = GoogleCloudCredentials(
         provider='gcs',
@@ -1156,8 +1195,7 @@ def test_google_runtime_credentials_are_activity_local_and_secret_safe(
     )
 
     with pytest.raises(TypeError, match='activity-local'):
-        dataclass_converter.DataclassJsonPayloadConverter().to_payload(
-            credentials)
+        dataclass_converter.DataclassJsonPayloadConverter().to_payload(credentials)
     assert 'poison-access-token' not in repr(credentials)
 
 
@@ -1184,25 +1222,29 @@ def test_google_workload_validation_refreshes_exactly_once(provider) -> None:
 
 @pytest.mark.parametrize('provider', ['bigquery', 'gcs'])
 def test_google_key_refresh_failure_uses_stored_key_category(
-        monkeypatch, provider) -> None:
+    monkeypatch, provider
+) -> None:
     poison = 'poison-refresh-response'
     credential = Mock()
     credential.refresh.side_effect = RefreshError(poison)
     monkeypatch.setattr(
         'rest.config.identity.credentials_for_identity',
-        Mock(return_value=GoogleCloudCredentials(
-            provider=provider,
-            credential=credential,
-            project='service-project',
-        )),
+        Mock(
+            return_value=GoogleCloudCredentials(
+                provider=provider,
+                credential=credential,
+                project='service-project',
+            )
+        ),
     )
     credentials = GoogleServiceAccountKeyCredentials(
         private_key_id=SecretStr('key-id'),
         private_key=SecretStr('not-used'),
     )
 
-    with pytest.raises(IdentityAuthenticationCategoryError,
-                       match='service-account key is invalid') as caught:
+    with pytest.raises(
+        IdentityAuthenticationCategoryError, match='service-account key is invalid'
+    ) as caught:
         validate_identity_authentication(
             _google_key_config(provider),
             credentials,
@@ -1215,7 +1257,8 @@ def test_google_key_refresh_failure_uses_stored_key_category(
 
 
 def test_google_key_rejects_noncanonical_endpoint_before_provider_call(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     authentication = GoogleServiceAccountKeyAuthentication(
         project_id='service-project',
         client_email='reader@service-project.iam.gserviceaccount.com',
@@ -1223,8 +1266,9 @@ def test_google_key_rejects_noncanonical_endpoint_before_provider_call(
         auth_uri='https://accounts.google.com/o/oauth2/auth',
         token_uri='https://oauth2.googleapis.com/token',
     )
-    object.__setattr__(authentication, 'token_uri',
-                       'http://169.254.169.254/poison-token')
+    object.__setattr__(
+        authentication, 'token_uri', 'http://169.254.169.254/poison-token'
+    )
     provider_constructor = Mock()
     monkeypatch.setattr(
         'google.oauth2.service_account.Credentials.from_service_account_info',
@@ -1252,18 +1296,23 @@ def test_azure_exchange_requires_federated_token_file(monkeypatch) -> None:
         cloud=AzureCloud.PUBLIC,
     )
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='AZURE_FEDERATED_TOKEN_FILE'):
+    with pytest.raises(
+        WorkloadExchangeConfigurationError, match='AZURE_FEDERATED_TOKEN_FILE'
+    ):
         NativeWorkloadIdentityExchanger().exchange(config, None)
 
 
-@pytest.mark.parametrize(('authority', 'cloud'), [
-    ('https://login.microsoftonline.com/', AzureCloud.PUBLIC),
-    ('https://login.microsoftonline.us/', AzureCloud.US_GOVERNMENT),
-    ('https://login.chinacloudapi.cn/', AzureCloud.CHINA),
-])
+@pytest.mark.parametrize(
+    ('authority', 'cloud'),
+    [
+        ('https://login.microsoftonline.com/', AzureCloud.PUBLIC),
+        ('https://login.microsoftonline.us/', AzureCloud.US_GOVERNMENT),
+        ('https://login.chinacloudapi.cn/', AzureCloud.CHINA),
+    ],
+)
 def test_ambient_adls_config_uses_injected_workload_identity(
-        monkeypatch, authority, cloud) -> None:
+    monkeypatch, authority, cloud
+) -> None:
     monkeypatch.setenv('KUMO_AZURE_WORKLOAD_EXCHANGE_ENABLED', 'true')
     monkeypatch.setenv('AZURE_TENANT_ID', 'tenant-id')
     monkeypatch.setenv('AZURE_CLIENT_ID', 'client-id')
@@ -1276,42 +1325,50 @@ def test_ambient_adls_config_uses_injected_workload_identity(
     )
 
 
-def test_ambient_adls_config_is_absent_when_exchange_is_disabled(
-        monkeypatch) -> None:
+def test_ambient_adls_config_is_absent_when_exchange_is_disabled(monkeypatch) -> None:
     monkeypatch.delenv('KUMO_AZURE_WORKLOAD_EXCHANGE_ENABLED', raising=False)
 
     assert ambient_adls_identity_config() is None
 
 
-def test_ambient_adls_config_requires_complete_aks_injection(
-        monkeypatch) -> None:
+def test_ambient_adls_config_requires_complete_aks_injection(monkeypatch) -> None:
     monkeypatch.setenv('KUMO_AZURE_WORKLOAD_EXCHANGE_ENABLED', 'true')
     monkeypatch.setenv('AZURE_TENANT_ID', 'tenant-id')
     monkeypatch.delenv('AZURE_CLIENT_ID', raising=False)
-    monkeypatch.setenv('AZURE_AUTHORITY_HOST',
-                       'https://login.microsoftonline.com/')
+    monkeypatch.setenv('AZURE_AUTHORITY_HOST', 'https://login.microsoftonline.com/')
 
-    with pytest.raises(WorkloadExchangeConfigurationError,
-                       match='AZURE_CLIENT_ID'):
+    with pytest.raises(WorkloadExchangeConfigurationError, match='AZURE_CLIENT_ID'):
         ambient_adls_identity_config()
 
 
-@pytest.mark.parametrize(('cloud', 'authority', 'scope'), [
-    (AzureCloud.PUBLIC, 'login.microsoftonline.com',
-     'https://storage.azure.com/.default'),
-    (AzureCloud.US_GOVERNMENT, 'login.microsoftonline.us',
-     'https://storage.azure.us/.default'),
-    (AzureCloud.CHINA, 'login.chinacloudapi.cn',
-     'https://storage.azure.cn/.default'),
-])
+@pytest.mark.parametrize(
+    ('cloud', 'authority', 'scope'),
+    [
+        (
+            AzureCloud.PUBLIC,
+            'login.microsoftonline.com',
+            'https://storage.azure.com/.default',
+        ),
+        (
+            AzureCloud.US_GOVERNMENT,
+            'login.microsoftonline.us',
+            'https://storage.azure.us/.default',
+        ),
+        (
+            AzureCloud.CHINA,
+            'login.chinacloudapi.cn',
+            'https://storage.azure.cn/.default',
+        ),
+    ],
+)
 def test_azure_exchange_targets_selected_customer_application(
-        monkeypatch, cloud, authority, scope) -> None:
+    monkeypatch, cloud, authority, scope
+) -> None:
     monkeypatch.setenv('KUMO_AZURE_WORKLOAD_EXCHANGE_ENABLED', 'true')
     monkeypatch.setenv('AZURE_FEDERATED_TOKEN_FILE', '/var/run/kumo/token')
     credential = Mock()
     constructor = Mock(return_value=credential)
-    monkeypatch.setattr('azure.identity.WorkloadIdentityCredential',
-                        constructor)
+    monkeypatch.setattr('azure.identity.WorkloadIdentityCredential', constructor)
     config = ADLSIdentityConfig(
         tenant_id='customer-tenant',
         client_id='customer-application',
@@ -1332,7 +1389,8 @@ def test_azure_exchange_targets_selected_customer_application(
 
 
 def test_warehouse_target_validation_relies_on_open_permission_check_once(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     connector = Mock()
     monkeypatch.setattr(
         'kumo.connector.connector.Connector.from_config',
@@ -1349,7 +1407,8 @@ def test_warehouse_target_validation_relies_on_open_permission_check_once(
             connector_id=ConnectorID.generate(),
             connector_config=object(),
             credentials=credentials,
-        ))
+        )
+    )
 
     connector.require_explicit_credentials.assert_called_once_with()
     connector.set_credentials.assert_called_once_with(credentials.as_dict())
@@ -1369,7 +1428,8 @@ def test_google_key_mapping_preserves_hosted_normalization(monkeypatch):
     )
     parser = Mock()
     monkeypatch.setattr(
-        'rest.config.identity.serialization.load_pem_private_key', parser)
+        'rest.config.identity.serialization.load_pem_private_key', parser
+    )
     ambient = Mock(side_effect=AssertionError('key auth must not use ADC'))
     monkeypatch.setattr('google.auth.default', ambient)
 

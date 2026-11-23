@@ -45,6 +45,7 @@ from statedb.rest.graph_v2 import GraphDBEntryV2 as SerializedGraphDBEntryV2
 @kumo_dataclass(frozen=True)
 class ColumnKey(api.ColumnKey):
     """Reference to a column within a PQuery definition."""
+
     @classmethod
     def from_kumoapi(cls, column_key: api.ColumnKey) -> 'ColumnKey':
         return cls(
@@ -72,8 +73,7 @@ def _coerce_column_key(value: Any) -> ColumnKey:
     if isinstance(value, api.ColumnKey):
         return ColumnKey.from_kumoapi(value)
     if dataclasses.is_dataclass(value):
-        return ColumnKey(**dataclasses.asdict(
-            value))  # pyright: ignore[reportArgumentType]
+        return ColumnKey(**dataclasses.asdict(value))  # pyright: ignore[reportArgumentType]
     raise ValueError(f'Unsupported column key: {value}, type={type(value)}')
 
 
@@ -92,8 +92,7 @@ class ColumnKeyGroup(api.ColumnKeyGroup):
         sorted_deduped = [col_dict[key] for key in sorted(col_dict)]
         if len(sorted_deduped) < len(v):
             num_dupes = len(v) - len(sorted_deduped)
-            raise ValueError(
-                f'All columns must be unique, found {num_dupes} dupes')
+            raise ValueError(f'All columns must be unique, found {num_dupes} dupes')
         return tuple(sorted_deduped)
 
     def _column_keys(self) -> Tuple[ColumnKey, ...]:
@@ -107,7 +106,8 @@ class ColumnKeyGroup(api.ColumnKeyGroup):
         return FPID(md5_hasher.hexdigest())
 
     def as_column_group(
-            self, table_name_to_id: Dict[TableName, TableID]) -> ColumnGroup:
+        self, table_name_to_id: Dict[TableName, TableID]
+    ) -> ColumnGroup:
         """The data backend expects the ColumnGroup structure, which is the
         same as ColumnKeyGroup, but uses TableID instead of TableName.
         """
@@ -115,8 +115,7 @@ class ColumnKeyGroup(api.ColumnKeyGroup):
         for col in self._column_keys():
             table_name = TableName(col.table_name)
             if table_name not in table_name_to_id:
-                raise ValueError(
-                    f"Table name is missing from the map: {table_name}")
+                raise ValueError(f'Table name is missing from the map: {table_name}')
             table_id = table_name_to_id[table_name]
             cols.append(ColumnID(table_id, col.col_name))
         return ColumnGroup(cols)
@@ -133,13 +132,11 @@ class GraphDefinition(api.GraphDefinition):
             if isinstance(v, TableDefinition):
                 tables_dict[k] = v
             elif dataclasses.is_dataclass(v):
-                tables_dict[k] = TableDefinition(**dataclasses.asdict(
-                    v))  # pyright: ignore[reportArgumentType]
+                tables_dict[k] = TableDefinition(**dataclasses.asdict(v))  # pyright: ignore[reportArgumentType]
             elif isinstance(v, BaseModel):
                 tables_dict[k] = TableDefinition(**dict(v))
             else:
-                raise ValueError(
-                    f'Unknown table definition (type={type(v)}): {v}')
+                raise ValueError(f'Unknown table definition (type={type(v)}): {v}')
         return tables_dict
 
     @field_validator('col_groups')
@@ -155,20 +152,22 @@ class GraphDefinition(api.GraphDefinition):
                 tables[str(table_name)] = table_args
             elif dataclasses.is_dataclass(table_args):
                 tables[str(table_name)] = TableDefinition(
-                    **dataclasses.asdict(
-                        table_args))  # pyright: ignore[reportArgumentType]
+                    **dataclasses.asdict(table_args)
+                )  # pyright: ignore[reportArgumentType]
             elif isinstance(table_args, BaseModel):
                 tables[str(table_name)] = TableDefinition(**dict(table_args))
             else:
                 raise ValueError(
-                    f'Unknown table definition (type={type(table_args)}): '
-                    f'{table_args}')
+                    f'Unknown table definition (type={type(table_args)}): {table_args}'
+                )
         return tables
 
     def _column_key_groups(self) -> List[ColumnKeyGroup]:
         return [
-            col_group if isinstance(col_group, ColumnKeyGroup) else
-            ColumnKeyGroup(col_group.columns) for col_group in self.col_groups
+            col_group
+            if isinstance(col_group, ColumnKeyGroup)
+            else ColumnKeyGroup(col_group.columns)
+            for col_group in self.col_groups
         ]
 
     @cached_property
@@ -202,7 +201,8 @@ class GraphDefinition(api.GraphDefinition):
                 src_table=edge.dst_table,
                 fkey=edge.fkey,
                 dst_table=edge.src_table,
-            ) for edge in api.resolve_foreign_keys(self.tables, self.col_groups)
+            )
+            for edge in api.resolve_foreign_keys(self.tables, self.col_groups)
         ]
 
 
@@ -230,8 +230,10 @@ def build_graph_definition(
     elif isinstance(graph, BaseModel):
         data = dict(graph)
     else:
-        raise ValueError(f'Invalid GraphDefinition type ({type(graph)}),'
-                         f' unable to coerce graph: {graph}')
+        raise ValueError(
+            f'Invalid GraphDefinition type ({type(graph)}),'
+            f' unable to coerce graph: {graph}'
+        )
 
     try:
         return GraphDefinition(**data)
@@ -241,7 +243,7 @@ def build_graph_definition(
             reason = error['msg']
             prefix = 'Value error, '
             if reason.startswith(prefix):
-                reason = reason[len(prefix):]
+                reason = reason[len(prefix) :]
             field_path = '.'.join(str(part) for part in error['loc'])
             details.append(f'{field_path}: {reason}' if field_path else reason)
         raise ValidationException(
@@ -255,6 +257,7 @@ class CanonicalGraphDBEntry(DBEntry):
     """A standard representation of GraphDBEntry and GraphDBEntryV2, making it
     easier to write generic code that works for both types of objects.
     """
+
     # ID of the entry in the database. Publicly exposed in the API.
     id: GraphID
     # global dedup key, graph name for v1; "NA-<fpid>" for v2
@@ -288,34 +291,37 @@ class GraphDBEntryV2(SerializedGraphDBEntryV2):
 
     def _column_key_groups(self) -> List[ColumnKeyGroup]:
         return [
-            col_group if isinstance(col_group, ColumnKeyGroup) else
-            ColumnKeyGroup(col_group.columns) for col_group in self.col_groups
+            col_group
+            if isinstance(col_group, ColumnKeyGroup)
+            else ColumnKeyGroup(col_group.columns)
+            for col_group in self.col_groups
         ]
 
-    def to_graph_definition(self,
-                            tables: List[TableDefinition]) -> GraphDefinition:
+    def to_graph_definition(self, tables: List[TableDefinition]) -> GraphDefinition:
         tables_by_fpid = {t.fpid: t for t in tables}
         tables_by_name = {
             t_name: tables_by_fpid[t_fpid]
             for t_name, t_fpid in self.table_name_to_dbid.items()
         }
-        return GraphDefinition(**{
-            'tables': tables_by_name,
-            'col_groups': self._column_key_groups(),
-        })
+        return GraphDefinition(
+            **{
+                'tables': tables_by_name,
+                'col_groups': self._column_key_groups(),
+            }
+        )
 
     def as_canonical_entry(
-            self,
-            pquery_id: Optional[PredictiveQueryID]) -> CanonicalGraphDBEntry:
+        self, pquery_id: Optional[PredictiveQueryID]
+    ) -> CanonicalGraphDBEntry:
         graph_id = GraphIDv2.compose(pquery_id, self.id)
         tables: Dict[TableName, TableID] = {}
         for table_name, fpid in self.table_name_to_dbid.items():
             # Prefer to hide FPID in table id v2 when pquery_id is present.
-            table_id = TableIDv2.compose(pquery_id, table_name,
-                                         (None if pquery_id else fpid))
+            table_id = TableIDv2.compose(
+                pquery_id, table_name, (None if pquery_id else fpid)
+            )
             tables[table_name] = table_id
-        display_name = self.alias or (f'{pquery_id}_graph'
-                                      if pquery_id else graph_id)
+        display_name = self.alias or (f'{pquery_id}_graph' if pquery_id else graph_id)
         return CanonicalGraphDBEntry(
             id=graph_id,
             dedup_key=GraphIDv2.compose(None, self.id),
@@ -323,7 +329,8 @@ class GraphDBEntryV2(SerializedGraphDBEntryV2):
             table_name_to_id=tables,
             col_groups=self._column_key_groups(),  # noqa: E126
             timestamps=self.timestamps,
-            display_description=self.description)
+            display_description=self.description,
+        )
 
 
 @kumo_dataclass
@@ -334,6 +341,7 @@ class GraphResourceResponse:
     timestamps.
     Used as response for `get_graph_v2`.
     """
+
     # Graph resource identifier in the format of "graph-<16digit hex id>",
     # this is generated on the backend.
     id: str
@@ -358,8 +366,8 @@ class GraphResourceResponse:
     num_tables: Optional[int] = None
     num_links: Optional[int] = None
 
-    created_by: str = ""
-    created_by_name: str = ""
+    created_by: str = ''
+    created_by_name: str = ''
 
     @model_validator(mode='before')
     @classmethod
@@ -376,13 +384,14 @@ class GraphResourceResponse:
 @kumo_dataclass
 class GraphSnapshotRequest:
     """
-        A config object used to fetch graph snapshot.
-        In the SDK, a training and a training table job can be triggered with different graphs.
-        The UI should show the appropriate graph for each (currently we only show the graph snapshot for
-        the training table generation job). The get_graph_snapshot endpoint takes graph definition and graph
-        version as additional arguments. If those are supplied, the endpoint relies on them to fetch the graph snapshot.
-        Otherwise, it only relies on the graph snapshot ID.
+    A config object used to fetch graph snapshot.
+    In the SDK, a training and a training table job can be triggered with different graphs.
+    The UI should show the appropriate graph for each (currently we only show the graph snapshot for
+    the training table generation job). The get_graph_snapshot endpoint takes graph definition and graph
+    version as additional arguments. If those are supplied, the endpoint relies on them to fetch the graph snapshot.
+    Otherwise, it only relies on the graph snapshot ID.
     """
+
     graph_snapshot_id: Optional[snapshot_api.GraphSnapshotID] = None
     graph_definiton: Optional[GraphDefinition] = None
     graph_version: Optional[str] = None
@@ -403,6 +412,7 @@ class ListResponse:
     Currently medata includes alias (name), id, timestamps,
     source table name, and connector ID.
     """
+
     name: str
     id: Optional[str] = None
     timestamps: Optional[ResourceTimestamps] = None
@@ -410,7 +420,7 @@ class ListResponse:
     connector_id: Optional[ConnectorID] = None
     num_tables: Optional[int] = None
     num_links: Optional[int] = None
-    created_by_name: str = ""
+    created_by_name: str = ''
     # Raw-vs-Custom-SQL discriminator for table rows, stamped by the Tables-list
     # builder so the UI "Kind" filter classifies straight off the wire. Left
     # ``None`` for graph rows (the field is table-only) and, defensively, for any
@@ -424,6 +434,7 @@ class GraphSnapshotStatsResponse:
     Response model for graph snapshot statistics.
     Contains aggregated statistics across all tables in the snapshot.
     """
+
     total_rows: Optional[int] = None
     total_size_bytes: Optional[int] = None
 
@@ -431,6 +442,7 @@ class GraphSnapshotStatsResponse:
 @dataclass
 class GraphDataComputeInput:
     """Workflow-safe graph input containing only durable connector references."""
+
     graph_display_name: str
     graph_key: str
     tables: Dict[TableID, TableDefinition]
@@ -438,27 +450,27 @@ class GraphDataComputeInput:
     connectors: Dict[ConnectorID, ConnectorExecutionRef]
     graph_definition: GraphDefinition
     table_aliases: Dict[TableID, TableName] = field(default_factory=dict)
-    pinned_data_versions: Dict[TableID,
-                               TableDataVersion] = field(default_factory=dict)
+    pinned_data_versions: Dict[TableID, TableDataVersion] = field(default_factory=dict)
     timestamp_precision: TimestampPrecision = 'seconds'
 
     def __post_init__(self) -> None:
         for connector_id, reference in self.connectors.items():
             if not isinstance(reference, ConnectorExecutionRef):
-                raise TypeError("GraphDataComputeInput connectors must be "
-                                "ConnectorExecutionRef values")
+                raise TypeError(
+                    'GraphDataComputeInput connectors must be '
+                    'ConnectorExecutionRef values'
+                )
             if ConnectorID(connector_id) != reference.connector_id:
                 raise ValueError(
-                    "GraphDataComputeInput connector key must match its "
-                    "reference connector_id")
-        project_ids = {
-            reference.project_id
-            for reference in self.connectors.values()
-        }
+                    'GraphDataComputeInput connector key must match its '
+                    'reference connector_id'
+                )
+        project_ids = {reference.project_id for reference in self.connectors.values()}
         if len(project_ids) > 1:
             raise ValueError(
-                "GraphDataComputeInput cannot contain cross-project "
-                "connector references")
+                'GraphDataComputeInput cannot contain cross-project '
+                'connector references'
+            )
 
     @field_validator('tables')
     @classmethod

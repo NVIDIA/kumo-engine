@@ -30,7 +30,7 @@ async def dummy_activity(seconds_to_sleep: int, heartbeat: bool = False):
             print(f'received cancellation while sleeping: {type(ex)}')
             raise
 
-        print(f'sleep {i+1} seconds')
+        print(f'sleep {i + 1} seconds')
         if heartbeat:
             try:
                 activity.heartbeat()
@@ -57,22 +57,27 @@ _TEST_HEARTBEAT_TIMEOUT = timedelta(seconds=10)
 @workflow.defn
 class DummyTestWorkflow:  # pylint: disable=too-few-public-methods
     @workflow.run
-    async def run(self, seconds_to_sleep: int, num_activities: int = 1,
-                  enable_heartbeat: bool = False) -> str:
+    async def run(
+        self,
+        seconds_to_sleep: int,
+        num_activities: int = 1,
+        enable_heartbeat: bool = False,
+    ) -> str:
         for _ in range(num_activities):
             act_task = asyncio.create_task(
                 workflow.execute_activity(
                     dummy_activity,
                     args=[seconds_to_sleep, enable_heartbeat],
                     schedule_to_close_timeout=(
-                        timedelta(minutes=1) +
-                        timedelta(seconds=seconds_to_sleep)),
+                        timedelta(minutes=1) + timedelta(seconds=seconds_to_sleep)
+                    ),
                     retry_policy=RetryPolicy(maximum_attempts=1),
-                    heartbeat_timeout=(None if not enable_heartbeat else
-                                       _TEST_HEARTBEAT_TIMEOUT),
-                    cancellation_type=workflow.ActivityCancellationType.
-                    WAIT_CANCELLATION_COMPLETED,
-                ))
+                    heartbeat_timeout=(
+                        None if not enable_heartbeat else _TEST_HEARTBEAT_TIMEOUT
+                    ),
+                    cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+                )
+            )
             await run_activity_shield_cancel(act_task)
 
         return 'Done'
@@ -84,8 +89,9 @@ async def test_activity_cancellation(temporal_config: DeployEnvConfig):
     worker_options = WorkerOptions(task_queue=test_worker_task_queue)
     worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
 
-    worker = await worker_env.build_worker(activities=[dummy_activity],
-                                           workflows=[DummyTestWorkflow])
+    worker = await worker_env.build_worker(
+        activities=[dummy_activity], workflows=[DummyTestWorkflow]
+    )
     async with worker:
         client = await worker_env.client()
 
@@ -135,8 +141,8 @@ async def test_activity_cancellation(temporal_config: DeployEnvConfig):
             # we expect the activity to receive cancellation through
             # heartbeating at least every _TEST_HEARTBEAT_TIMEOUT seconds.
             await asyncio.wait_for(
-                wf_handle.result(),
-                timeout=_TEST_HEARTBEAT_TIMEOUT.total_seconds() * 2)
+                wf_handle.result(), timeout=_TEST_HEARTBEAT_TIMEOUT.total_seconds() * 2
+            )
         cause = err_info.value.cause
         assert isinstance(cause, CancelledError)
         assert cause.message == 'Workflow cancelled'
@@ -181,8 +187,9 @@ async def test_workflow_cancellation(temporal_config: DeployEnvConfig):
     worker_options = WorkerOptions(task_queue=test_worker_task_queue)
     worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
 
-    worker = await worker_env.build_worker(activities=[dummy_activity],
-                                           workflows=[TestCancellationWorkflow])
+    worker = await worker_env.build_worker(
+        activities=[dummy_activity], workflows=[TestCancellationWorkflow]
+    )
     async with worker:
         client = await worker_env.client()
         wf_handle1 = await client.start_workflow(

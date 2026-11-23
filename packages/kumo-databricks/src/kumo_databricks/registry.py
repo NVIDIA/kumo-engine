@@ -17,8 +17,6 @@ from urllib.parse import quote
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import NotFound, ResourceAlreadyExists
-from kumo_databricks.session import _DatabricksSessions, _target_config
-from kumo_databricks.sql import normalize_table_coordinate
 from kumoapi.plugin import (
     BUNDLE_ID_KEY,
     ENGINE_MARKER,
@@ -29,28 +27,37 @@ from kumoapi.plugin import (
     registry_lineage,
 )
 
+from kumo_databricks.session import _DatabricksSessions, _target_config
+from kumo_databricks.sql import normalize_table_coordinate
+
 _MODELS = '/api/2.1/unity-catalog/models'
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _LOG = logging.getLogger(__name__)
 
 
-def _address(connector: SourceConnector, path: Optional[str],
-             location: Optional[ModelRegistryLocation]) -> str:
+def _address(
+    connector: SourceConnector,
+    path: Optional[str],
+    location: Optional[ModelRegistryLocation],
+) -> str:
     if path is not None:
-        raise ValueError('Databricks models take a ModelRegistryLocation, '
-                         'or a /Volumes/<catalog>/<schema>/<volume>/... '
-                         'path.')
+        raise ValueError(
+            'Databricks models take a ModelRegistryLocation, '
+            'or a /Volumes/<catalog>/<schema>/<volume>/... '
+            'path.'
+        )
     if location is None:
         raise ValueError('Pass a ModelRegistryLocation naming the model.')
     config = _target_config(connector)
-    schema, name = normalize_table_coordinate(location.model_name,
-                                              catalog=config.catalog,
-                                              schema=config.schema_name)
+    schema, name = normalize_table_coordinate(
+        location.model_name, catalog=config.catalog, schema=config.schema_name
+    )
     if len(name) > 255 or _UC_FORBIDDEN.search(name):
         raise ValueError(
             f'Unity Catalog cannot register a model named {name!r}: use up to '
             f'255 characters without spaces, "/" or ".", e.g. '
-            f"'users_churn'.")
+            f"'users_churn'."
+        )
     return f'{config.catalog}.{schema}.{name}'
 
 
@@ -86,16 +93,20 @@ def _published(
 ) -> PublishedModel:
     _validate_catalog(dict(metadata=dict(metadata), metrics=dict(metrics)))
     number = str(version['version'])
-    return PublishedModel(name=name.rsplit('.', 1)[-1], version=number,
-                          uri=f'models:/{name}/{number}',
-                          metadata=dict(metadata), metrics=dict(metrics))
+    return PublishedModel(
+        name=name.rsplit('.', 1)[-1],
+        version=number,
+        uri=f'models:/{name}/{number}',
+        metadata=dict(metadata),
+        metrics=dict(metrics),
+    )
 
 
-def _pages(client: WorkspaceClient, path: str, field: str,
-           **query: str) -> Iterator[dict[str, Any]]:
+def _pages(
+    client: WorkspaceClient, path: str, field: str, **query: str
+) -> Iterator[dict[str, Any]]:
     while True:
-        page = cast(dict[str, Any],
-                    client.api_client.do('GET', path, query=query))
+        page = cast(dict[str, Any], client.api_client.do('GET', path, query=query))
         yield from page.get(field, [])
         token = page.get('next_page_token')
         if not token:
@@ -103,10 +114,12 @@ def _pages(client: WorkspaceClient, path: str, field: str,
         query['page_token'] = token
 
 
-def _get_version(client: WorkspaceClient, name: str,
-                 number: int | str) -> dict[str, Any]:
-    return cast(dict[str, Any],
-                client.api_client.do('GET', _version_path(name, number)))
+def _get_version(
+    client: WorkspaceClient, name: str, number: int | str
+) -> dict[str, Any]:
+    return cast(
+        dict[str, Any], client.api_client.do('GET', _version_path(name, number))
+    )
 
 
 def _versions(client: WorkspaceClient, name: str) -> Iterator[dict[str, Any]]:
@@ -120,14 +133,18 @@ def _versions(client: WorkspaceClient, name: str) -> Iterator[dict[str, Any]]:
             continue
 
 
-def _registered_version(client: WorkspaceClient, name: str,
-                        bundle_id: str) -> Optional[dict[str, Any]]:
+def _registered_version(
+    client: WorkspaceClient, name: str, bundle_id: str
+) -> Optional[dict[str, Any]]:
     """The ready Kumo version of ``name`` that holds ``bundle_id``, if any."""
     try:
         for version in _versions(client, name):
             tags = _tags(version)
-            if (version.get('status') == 'READY' and ENGINE_MARKER in tags
-                    and tags.get(BUNDLE_ID_KEY) == bundle_id):
+            if (
+                version.get('status') == 'READY'
+                and ENGINE_MARKER in tags
+                and tags.get(BUNDLE_ID_KEY) == bundle_id
+            ):
                 return version
     except NotFound:
         pass
@@ -138,12 +155,17 @@ def _validate_catalog(catalog: object) -> None:
     if not isinstance(catalog, dict) or set(catalog) != {'metadata', 'metrics'}:
         raise ValueError('Invalid Kumo registry metadata or metrics.')
     metadata, metrics = catalog['metadata'], catalog['metrics']
-    if (not isinstance(metadata, dict) or not all(
-            isinstance(k, str) and isinstance(v, str)
-            for k, v in metadata.items()) or not isinstance(metrics, dict)
-            or not all(
-                isinstance(k, str) and isinstance(v, (int, float))
-                for k, v in metrics.items())):
+    if (
+        not isinstance(metadata, dict)
+        or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in metadata.items()
+        )
+        or not isinstance(metrics, dict)
+        or not all(
+            isinstance(k, str) and isinstance(v, (int, float))
+            for k, v in metrics.items()
+        )
+    ):
         raise ValueError('Invalid Kumo registry metadata or metrics.')
 
 
@@ -173,48 +195,60 @@ def publish_bundle(
         tags[BUNDLE_ID_KEY] = str(metadata[BUNDLE_ID_KEY])
         existing = _registered_version(client, name, tags[BUNDLE_ID_KEY])
         if existing is not None:
-            _LOG.info('%s version %s already holds bundle %s; reused it', name,
-                      existing['version'], tags[BUNDLE_ID_KEY])
-            return _published(name, existing, metadata=metadata,
-                              metrics=metrics)
+            _LOG.info(
+                '%s version %s already holds bundle %s; reused it',
+                name,
+                existing['version'],
+                tags[BUNDLE_ID_KEY],
+            )
+            return _published(name, existing, metadata=metadata, metrics=metrics)
     try:
-        client.registered_models.create(catalog_name=catalog_name,
-                                        schema_name=schema, name=model)
+        client.registered_models.create(
+            catalog_name=catalog_name, schema_name=schema, name=model
+        )
     except ResourceAlreadyExists:
         # Publishing another version reuses the registered model.
         pass
     # UC requires source provenance even though we upload the files ourselves.
-    body = dict(catalog_name=catalog_name, schema_name=schema, model_name=model,
-                source=bundle_dir.resolve().as_uri(),
-                tags=[dict(key=k, value=v) for k, v in tags.items()])
+    body = dict(
+        catalog_name=catalog_name,
+        schema_name=schema,
+        model_name=model,
+        source=bundle_dir.resolve().as_uri(),
+        tags=[dict(key=k, value=v) for k, v in tags.items()],
+    )
     if comment is not None:
         body['comment'] = comment
     version = cast(
-        dict[str, Any],
-        client.api_client.do('POST', f'{_MODELS}/versions', body=body))
+        dict[str, Any], client.api_client.do('POST', f'{_MODELS}/versions', body=body)
+    )
     number = version['version']
     try:
         remote = _files_path(name, number)
         for path in files:
             with path.open('rb') as stream:
                 client.files.upload(
-                    f'{remote}/{path.relative_to(root).as_posix()}', stream,
-                    overwrite=True)
+                    f'{remote}/{path.relative_to(root).as_posix()}',
+                    stream,
+                    overwrite=True,
+                )
         version = cast(
             dict[str, Any],
-            client.api_client.do('PATCH',
-                                 f'{_version_path(name, number)}/finalize',
-                                 body=dict(full_name=name,
-                                           version=int(number))))
+            client.api_client.do(
+                'PATCH',
+                f'{_version_path(name, number)}/finalize',
+                body=dict(full_name=name, version=int(number)),
+            ),
+        )
         if version.get('status') != 'READY':
-            raise RuntimeError(
-                'Databricks model registration did not reach READY.')
+            raise RuntimeError('Databricks model registration did not reach READY.')
     except Exception:
         try:
             client.model_versions.delete(name, int(number))
         except Exception:
-            _LOG.warning('Could not clean up model version %s/%s', name, number,
-                         exc_info=True)
+            _LOG.warning(
+                'Could not clean up model version %s/%s', name, number, exc_info=True
+            )
         raise
     # Finalize need not return tags; we just wrote these on creation.
     version['tags'] = body['tags']
@@ -223,18 +257,19 @@ def publish_bundle(
 
 def _bundle_metadata(bundle: Path) -> tuple[dict[str, str], dict[str, float]]:
     spec = json.loads((bundle / 'training-spec.json').read_text())
-    if (not isinstance(spec, dict)
-            or not isinstance(spec.get('spec_version'), int)
-            or not isinstance(spec.get('predictive_query'), str)
-            or not isinstance(spec.get('snapshot_id'), str)):
+    if (
+        not isinstance(spec, dict)
+        or not isinstance(spec.get('spec_version'), int)
+        or not isinstance(spec.get('predictive_query'), str)
+        or not isinstance(spec.get('snapshot_id'), str)
+    ):
         raise ValueError('Invalid training specification in model bundle.')
     metadata = {
         key: str(spec[key])
         for key in ('spec_version', 'predictive_query', 'snapshot_id')
     }
     metrics_path = bundle / 'metrics.json'
-    metrics = json.loads(
-        metrics_path.read_text()) if metrics_path.is_file() else {}
+    metrics = json.loads(metrics_path.read_text()) if metrics_path.is_file() else {}
     catalog = dict(metadata=metadata, metrics=metrics)
     _validate_catalog(catalog)
     return metadata, metrics
@@ -245,10 +280,9 @@ def _download(client: WorkspaceClient, remote: str, destination: Path) -> None:
         # A server-provided path must stay an immediate child of this directory.
         path = (entry.path or '').rstrip('/')
         prefix = remote + '/'
-        child = path[len(prefix):] if path.startswith(prefix) else ''
+        child = path[len(prefix) :] if path.startswith(prefix) else ''
         if not child or '/' in child or child in ('.', '..') or '\\' in child:
-            raise ValueError(
-                'Invalid model artifact path returned by Databricks.')
+            raise ValueError('Invalid model artifact path returned by Databricks.')
         local = destination / child
         if entry.is_directory:
             local.mkdir()
@@ -261,50 +295,61 @@ def _download(client: WorkspaceClient, remote: str, destination: Path) -> None:
                 shutil.copyfileobj(stream, output)
 
 
-def fetch_bundle(client: WorkspaceClient, name: str, local_dir: Path, *,
-                 version: Optional[str] = None,
-                 alias: Optional[str] = None) -> PublishedModel:
+def fetch_bundle(
+    client: WorkspaceClient,
+    name: str,
+    local_dir: Path,
+    *,
+    version: Optional[str] = None,
+    alias: Optional[str] = None,
+) -> PublishedModel:
     from kumo_core.artifacts import verify_model_bundle
 
     if alias is not None:
-        aliased = cast(dict[str, Any],
-                       client.api_client.do('GET', _alias_path(name, alias)))
+        aliased = cast(
+            dict[str, Any], client.api_client.do('GET', _alias_path(name, alias))
+        )
         model_version = _get_version(client, name, aliased['version'])
     elif version is None:
         versions = [
-            v for v in _versions(client, name) if v.get('status') == 'READY'
-            and _tags(v).get(ENGINE_MARKER) == '1'
+            v
+            for v in _versions(client, name)
+            if v.get('status') == 'READY' and _tags(v).get(ENGINE_MARKER) == '1'
         ]
         if not versions:
             raise ValueError('No ready Kumo model version in this registry.')
         model_version = max(versions, key=lambda v: int(v['version']))
     else:
         model_version = _get_version(client, name, version)
-    if model_version.get('status') != 'READY' or _tags(model_version).get(
-            ENGINE_MARKER) != '1':
+    if (
+        model_version.get('status') != 'READY'
+        or _tags(model_version).get(ENGINE_MARKER) != '1'
+    ):
         raise ValueError('This version is not a ready Kumo model bundle.')
     destination = local_dir
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=destination.parent,
-                                     prefix='kumo-registry-download-') as tmp:
+    with tempfile.TemporaryDirectory(
+        dir=destination.parent, prefix='kumo-registry-download-'
+    ) as tmp:
         root = Path(tmp) / 'model'
         root.mkdir()
         _download(client, _files_path(name, model_version['version']), root)
         bundles = [
-            p.parent for p in root.rglob('training-spec.json')
+            p.parent
+            for p in root.rglob('training-spec.json')
             if (p.parent / 'publication-manifest.json').is_file()
         ]
         if len(bundles) != 1:
-            raise ValueError(
-                'The registered model must contain one Kumo bundle.')
+            raise ValueError('The registered model must contain one Kumo bundle.')
         bundle = bundles[0]
         verify_model_bundle(bundle)
         metadata, metrics = _bundle_metadata(bundle)
         published = _published(
-            name, model_version, metadata={
-                **metadata,
-                **registry_lineage(_tags(model_version))
-            }, metrics=metrics)
+            name,
+            model_version,
+            metadata={**metadata, **registry_lineage(_tags(model_version))},
+            metrics=metrics,
+        )
         backup = Path(tmp) / 'previous'
         if destination.exists():
             os.replace(destination, backup)
@@ -317,28 +362,34 @@ def fetch_bundle(client: WorkspaceClient, name: str, local_dir: Path, *,
     return published
 
 
-def list_models(client: WorkspaceClient, catalog: str,
-                schema: str) -> list[PublishedModel]:
+def list_models(
+    client: WorkspaceClient, catalog: str, schema: str
+) -> list[PublishedModel]:
     found: list[PublishedModel] = []
-    for model in _pages(client, _MODELS, 'registered_models',
-                        catalog_name=catalog, schema_name=schema):
+    for model in _pages(
+        client, _MODELS, 'registered_models', catalog_name=catalog, schema_name=schema
+    ):
         name = model['full_name']
         prefix = f'{catalog}.{schema}.'
         if not name.startswith(prefix):
             continue
         for version in _versions(client, name):
-            if version.get('status') == 'READY' and _tags(version).get(
-                    ENGINE_MARKER) == '1':
+            if (
+                version.get('status') == 'READY'
+                and _tags(version).get(ENGINE_MARKER) == '1'
+            ):
                 found.append(
-                    _published(name, version,
-                               metadata=registry_lineage(_tags(version))))
+                    _published(name, version, metadata=registry_lineage(_tags(version)))
+                )
     return sorted(found, key=lambda item: (item.name, int(item.version)))
 
 
 class DatabricksModelRegistryMixin(_DatabricksSessions):
     """Publish, discover and reload bundles; prediction remains in Kumo."""
-    def check_model_location(self, connector: SourceConnector,
-                             location: ModelRegistryLocation) -> None:
+
+    def check_model_location(
+        self, connector: SourceConnector, location: ModelRegistryLocation
+    ) -> None:
         """Raises ``ValueError`` unless this schema can hold ``location``."""
         _address(connector, None, location)
 
@@ -358,17 +409,25 @@ class DatabricksModelRegistryMixin(_DatabricksSessions):
         name = _address(connector, path, location)
         assert location is not None
         if location.version is not None:
-            raise ValueError('Databricks assigns numeric model versions; '
-                             'leave ModelRegistryLocation.version unset '
-                             'when publishing.')
+            raise ValueError(
+                'Databricks assigns numeric model versions; '
+                'leave ModelRegistryLocation.version unset '
+                'when publishing.'
+            )
         bundle = Path(bundle_dir).resolve()
         for marker in ('training-spec.json', 'publication-manifest.json'):
             if not (bundle / marker).is_file():
-                raise ValueError(f'{bundle} is not a published Kumo bundle: '
-                                 f'missing {marker}.')
-        return publish_bundle(self._client(connector), name, bundle,
-                              comment=location.comment, metadata=metadata,
-                              metrics=metrics)
+                raise ValueError(
+                    f'{bundle} is not a published Kumo bundle: missing {marker}.'
+                )
+        return publish_bundle(
+            self._client(connector),
+            name,
+            bundle,
+            comment=location.comment,
+            metadata=metadata,
+            metrics=metrics,
+        )
 
     def fetch_model(
         self,
@@ -384,26 +443,33 @@ class DatabricksModelRegistryMixin(_DatabricksSessions):
         name = _address(connector, path, location)
         assert location is not None
         _version_number(location)
-        return fetch_bundle(self._client(connector), name,
-                            Path(local_dir).resolve(), version=location.version,
-                            alias=location.alias)
+        return fetch_bundle(
+            self._client(connector),
+            name,
+            Path(local_dir).resolve(),
+            version=location.version,
+            alias=location.alias,
+        )
 
-    def set_model_alias(self, connector: SourceConnector,
-                        location: ModelRegistryLocation, alias: str) -> None:
+    def set_model_alias(
+        self, connector: SourceConnector, location: ModelRegistryLocation, alias: str
+    ) -> None:
         """Point an alias at a version; UC moves it from any other."""
         name = _address(connector, None, location)
         number = _version_number(location)
         if number is None:
-            raise ValueError('Setting an alias needs a ModelRegistryLocation '
-                             'naming a version.')
+            raise ValueError(
+                'Setting an alias needs a ModelRegistryLocation naming a version.'
+            )
         check_model_alias(alias)
-        self._client(connector).api_client.do('PUT', _alias_path(name, alias),
-                                              body=dict(version_num=number))
+        self._client(connector).api_client.do(
+            'PUT', _alias_path(name, alias), body=dict(version_num=number)
+        )
 
-    def list_models(self, connector: SourceConnector, *,
-                    project_id: Optional[str] = None) -> list[PublishedModel]:
+    def list_models(
+        self, connector: SourceConnector, *, project_id: Optional[str] = None
+    ) -> list[PublishedModel]:
         """List Kumo versions inside this connector's catalog and schema."""
         del project_id
         config = _target_config(connector)
-        return list_models(self._client(connector), config.catalog,
-                           config.schema_name)
+        return list_models(self._client(connector), config.catalog, config.schema_name)

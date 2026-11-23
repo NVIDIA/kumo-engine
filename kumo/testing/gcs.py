@@ -20,11 +20,12 @@ ENV_GCS_TEST_BUCKET = 'GCS_TEST_BUCKET'
 def setup_gcs_credentials() -> Generator[None, None, None]:
     """Scope explicit ADC without discovering or writing credential files."""
     with setup_bigquery_credentials(), pytest.MonkeyPatch.context() as environment:
-        environment.setenv(ENV_GCS_TEST_BUCKET,
-                           os.environ.get(ENV_GCS_TEST_BUCKET) or 'kumo-test-bucket')
+        environment.setenv(
+            ENV_GCS_TEST_BUCKET,
+            os.environ.get(ENV_GCS_TEST_BUCKET) or 'kumo-test-bucket',
+        )
         # Cached clients otherwise retain an identity from an earlier scope.
-        environment.setattr(impl_gcs, 'threadsafe_gcs',
-                            impl_gcs.ThreadLocalGCSClient())
+        environment.setattr(impl_gcs, 'threadsafe_gcs', impl_gcs.ThreadLocalGCSClient())
         yield
 
 
@@ -42,6 +43,7 @@ def withMockedGCSFilesystem(func: Callable):
     - gcs-testbench (Google's official test server)
     - fake-gcs-server
     """
+
     def wrapper():
         # Save GCP environment variables and original threadsafe_gcs instances
         credentials = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
@@ -76,8 +78,9 @@ def withMockedGCSFilesystem(func: Callable):
 
                             # Mock blob.upload_from_string()
                             def upload_from_string(data, **kwargs):
-                                blob._data = data if isinstance(
-                                    data, bytes) else data.encode()
+                                blob._data = (
+                                    data if isinstance(data, bytes) else data.encode()
+                                )
                                 blob.size = len(blob._data)
                                 blob.exists.return_value = True
 
@@ -104,7 +107,8 @@ def withMockedGCSFilesystem(func: Callable):
                             def download_as_bytes():
                                 if not blob.exists.return_value:
                                     from google.api_core import exceptions
-                                    raise exceptions.NotFound("Blob not found")
+
+                                    raise exceptions.NotFound('Blob not found')
                                 return blob._data
 
                             blob.download_as_bytes.side_effect = download_as_bytes
@@ -113,7 +117,8 @@ def withMockedGCSFilesystem(func: Callable):
                             def download_to_filename(filename):
                                 if not blob.exists.return_value:
                                     from google.api_core import exceptions
-                                    raise exceptions.NotFound("Blob not found")
+
+                                    raise exceptions.NotFound('Blob not found')
                                 with open(filename, 'wb') as f:
                                     f.write(blob._data)
 
@@ -131,7 +136,8 @@ def withMockedGCSFilesystem(func: Callable):
                             def reload():
                                 if not blob.exists.return_value:
                                     from google.api_core import exceptions
-                                    raise exceptions.NotFound("Blob not found")
+
+                                    raise exceptions.NotFound('Blob not found')
 
                             blob.reload.side_effect = reload
 
@@ -148,14 +154,16 @@ def withMockedGCSFilesystem(func: Callable):
 
                         for blob_name, blob in mock_bucket._blobs.items():
                             if blob.exists.return_value and blob_name.startswith(
-                                    prefix):
+                                prefix
+                            ):
                                 if delimiter:
                                     # Find the next delimiter after the prefix
-                                    remainder = blob_name[len(prefix):]
+                                    remainder = blob_name[len(prefix) :]
                                     if delimiter in remainder:
                                         # This is a subdirectory
-                                        subdir = remainder.split(
-                                            delimiter)[0] + delimiter
+                                        subdir = (
+                                            remainder.split(delimiter)[0] + delimiter
+                                        )
                                         prefixes.add(prefix + subdir)
                                     else:
                                         # This is a file in the current directory
@@ -166,13 +174,15 @@ def withMockedGCSFilesystem(func: Callable):
                         # Create mock iterator
                         mock_iterator = mock.MagicMock()
                         mock_iterator.__iter__ = lambda self: iter(
-                            blobs[:max_results] if max_results else blobs)
+                            blobs[:max_results] if max_results else blobs
+                        )
                         mock_iterator.prefixes = list(prefixes)
 
                         # Mock pages
                         mock_page = mock.MagicMock()
                         mock_page.__iter__ = lambda self: iter(
-                            blobs[:max_results] if max_results else blobs)
+                            blobs[:max_results] if max_results else blobs
+                        )
                         mock_page.prefixes = list(prefixes)
                         mock_iterator.pages = iter([mock_page])
 
@@ -245,6 +255,7 @@ def withGCSEmulator(func: Callable):
     Or use Docker:
     - docker run -p 9023:9023 fsouza/fake-gcs-server
     """
+
     def wrapper():
         # Save original environment
         original_host = os.environ.get('STORAGE_EMULATOR_HOST')
@@ -262,7 +273,8 @@ def withGCSEmulator(func: Callable):
             # Create client that connects to emulator
             client = storage.Client(
                 project='test-project',
-                client_options={'api_endpoint': 'http://localhost:9023'})
+                client_options={'api_endpoint': 'http://localhost:9023'},
+            )
 
             func(client)
 

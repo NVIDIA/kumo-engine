@@ -18,13 +18,21 @@ def test_get_data_version_s3_multiple_files():
 
     # Directories fingerprint every source part's metadata.
     assert re.fullmatch(r'[0-9a-f]{64}', version)
-    assert file_connector.get_data_version(
-        's3_table', skip_cache=True, save_to_cache=False) == version
+    assert (
+        file_connector.get_data_version(
+            's3_table', skip_cache=True, save_to_cache=False
+        )
+        == version
+    )
 
     # Create a table object with pre-assigned data version. Verify that the
     # connector retrieves the pre-assigned data version for this table.
-    table = Table(table_name='s3_table', data_source='parquet',
-                  source_name='s3_table', data_version='test_version')
+    table = Table(
+        table_name='s3_table',
+        data_source='parquet',
+        source_name='s3_table',
+        data_version='test_version',
+    )
     table.connector = file_connector
     assert file_connector.get_data_version('s3_table') == 'test_version'
 
@@ -37,5 +45,7 @@ def test_get_data_version_s3_single_file():
 
     # A single object is versioned by its S3 VersionId, else its ETag.
     assert version and version != '1663190838'
-    assert file_connector.get_data_version(
-        'table', skip_cache=True, save_to_cache=False) == version
+    assert (
+        file_connector.get_data_version('table', skip_cache=True, save_to_cache=False)
+        == version
+    )

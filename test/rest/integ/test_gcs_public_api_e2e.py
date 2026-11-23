@@ -9,17 +9,11 @@ training and batch-prediction phases use the explicit multi-step v2 public
 endpoints (`/v1/gentraintable_jobs`, `/v1/training_jobs`, `/v1/prediction_jobs`)
 instead of the legacy auto-cascade training/prediction routes.
 """
+
 import dataclasses
 import os
 import time
 import uuid
-from test.rest.integ import fixture_connector_args
-from test.rest.integ.gcs_connector_helpers import (
-    create_gcs_connector_in_project,
-    create_identity_backed_gcs_connector,
-    get_gcs_source_table,
-    load_gcs_test_identity,
-)
 from typing import List, Optional, Tuple
 
 import kumoapi.jobs as api
@@ -43,6 +37,13 @@ from rest.config.graph_v2 import GraphDefinition as RestGraphDefinition
 from rest.config.status import IDResponse
 from rest.config.table_v2 import Column, TableDefinition
 from statedb.config.common import GraphSnapshotID, JobStatus, TableName
+from test.rest.integ import fixture_connector_args
+from test.rest.integ.gcs_connector_helpers import (
+    create_gcs_connector_in_project,
+    create_identity_backed_gcs_connector,
+    get_gcs_source_table,
+    load_gcs_test_identity,
+)
 
 # Pool fixtures (storage_backend, _diskgraph_deploy_config, _pool_subprocesses)
 # live in ``test/rest/integ/conftest.py``. Without ``_pool_subprocesses`` the
@@ -50,8 +51,8 @@ from statedb.config.common import GraphSnapshotID, JobStatus, TableName
 # (routed via ``DiskgraphIngestWorkflow`` -> ``pool.wf_coordinator``) hangs on a
 # no-worker AutoRPC queue and the workflow times out.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['local'], indirect=True),
 ]
 
 # GCS test bucket and paths
@@ -64,11 +65,11 @@ POLL_INTERVAL_SECONDS = 10
 
 
 def _get_gcs_financial_path() -> str:
-    return f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL"
+    return f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL'
 
 
 def _get_gcs_financial_e2e_path() -> str:
-    return f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL_E2E"
+    return f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL_E2E'
 
 
 def _generate_unique_suffix() -> str:
@@ -137,13 +138,18 @@ def _wait_for_gen_train_table_job(
 ) -> api.GenerateTrainTableJobResource:
     start = time.time()
     while time.time() - start < MAX_POLL_SECONDS:
-        job = get_and_expect_success(client, f'/v1/gentraintable_jobs/{job_id}',
-                                     {}, api.GenerateTrainTableJobResource)
+        job = get_and_expect_success(
+            client,
+            f'/v1/gentraintable_jobs/{job_id}',
+            {},
+            api.GenerateTrainTableJobResource,
+        )
         if job.job_status_report.status.is_terminal:
             return job
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Gen-train-table job {job_id} did not complete in {MAX_POLL_SECONDS}s")
+        f'Gen-train-table job {job_id} did not complete in {MAX_POLL_SECONDS}s'
+    )
 
 
 def _wait_for_training_job_v1(
@@ -152,13 +158,13 @@ def _wait_for_training_job_v1(
 ) -> api.TrainingJobResource:
     start = time.time()
     while time.time() - start < MAX_POLL_SECONDS:
-        job = get_and_expect_success(client, f'/v1/training_jobs/{job_id}', {},
-                                     api.TrainingJobResource)
+        job = get_and_expect_success(
+            client, f'/v1/training_jobs/{job_id}', {}, api.TrainingJobResource
+        )
         if job.job_status_report.status.is_terminal:
             return job
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"Training job {job_id} did not complete in {MAX_POLL_SECONDS}s")
+    raise TimeoutError(f'Training job {job_id} did not complete in {MAX_POLL_SECONDS}s')
 
 
 def _wait_for_prediction_job_v1(
@@ -167,18 +173,21 @@ def _wait_for_prediction_job_v1(
 ) -> api.BatchPredictionJobResource:
     start = time.time()
     while time.time() - start < MAX_POLL_SECONDS:
-        job = get_and_expect_success(client, f'/v1/prediction_jobs/{job_id}',
-                                     {}, api.BatchPredictionJobResource)
+        job = get_and_expect_success(
+            client, f'/v1/prediction_jobs/{job_id}', {}, api.BatchPredictionJobResource
+        )
         if job.job_status_report.status.is_terminal:
             return job
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Prediction job {job_id} did not complete in {MAX_POLL_SECONDS}s")
+        f'Prediction job {job_id} did not complete in {MAX_POLL_SECONDS}s'
+    )
 
 
 @pytest.mark.asyncio
 class TestGCSPublicAPIE2EFlow:
     """End-to-end GCS coverage exercising the v2 public training/BP API."""
+
     @withGCSCredentials
     async def test_gcs_full_e2e_flow_v2(
         self,
@@ -209,18 +218,17 @@ class TestGCSPublicAPIE2EFlow:
             project_id=project_id,
             identity_id=financial_setup.identity_id,
         )
-        fixture_connector_args.bind_test_client_project(
-            public_api_client, project_id)
+        fixture_connector_args.bind_test_client_project(public_api_client, project_id)
 
         # Step 2: Wait for source tables to be discovered
-        source_tables = _wait_for_source_tables(client, project_id,
-                                                financial_connector)
+        source_tables = _wait_for_source_tables(client, project_id, financial_connector)
         table_names = set(source_tables.table_names)
         assert 'ACCOUNT' in table_names
         assert 'TRANS' in table_names
 
-        source_tables_e2e = _wait_for_source_tables(client, project_id,
-                                                    financial_e2e_connector)
+        source_tables_e2e = _wait_for_source_tables(
+            client, project_id, financial_e2e_connector
+        )
         e2e_table_names = set(source_tables_e2e.table_names)
         assert 'LOAN' in e2e_table_names
 
@@ -229,14 +237,31 @@ class TestGCSPublicAPIE2EFlow:
         trans_name = TableName(f'TRANS_{suffix}')
         loan_name = TableName(f'LOAN_{suffix}')
         account_table_def = await _create_table_from_connector(
-            client, project_id, financial_connector, 'ACCOUNT',
-            account_name, pkey='ACCOUNT_ID')
+            client,
+            project_id,
+            financial_connector,
+            'ACCOUNT',
+            account_name,
+            pkey='ACCOUNT_ID',
+        )
         trans_table_def = await _create_table_from_connector(
-            client, project_id, financial_connector, 'TRANS',
-            trans_name, pkey='TRANS_ID', time_col='DATE')
+            client,
+            project_id,
+            financial_connector,
+            'TRANS',
+            trans_name,
+            pkey='TRANS_ID',
+            time_col='DATE',
+        )
         loan_table_def = await _create_table_from_connector(
-            client, project_id, financial_e2e_connector, 'LOAN', loan_name,
-            pkey='LOAN_ID', time_col='DATE')
+            client,
+            project_id,
+            financial_e2e_connector,
+            'LOAN',
+            loan_name,
+            pkey='LOAN_ID',
+            time_col='DATE',
+        )
 
         # Step 4: Create graph linking the tables (v2)
         graph_def = GraphDefinition(
@@ -246,11 +271,13 @@ class TestGCSPublicAPIE2EFlow:
                 loan_name: loan_table_def,
             },
             col_groups=[
-                ColumnKeyGroup(columns=(
-                    ColumnKey(table_name=account_name, col_name='ACCOUNT_ID'),
-                    ColumnKey(table_name=trans_name, col_name='ACCOUNT_ID'),
-                    ColumnKey(table_name=loan_name, col_name='ACCOUNT_ID'),
-                )),
+                ColumnKeyGroup(
+                    columns=(
+                        ColumnKey(table_name=account_name, col_name='ACCOUNT_ID'),
+                        ColumnKey(table_name=trans_name, col_name='ACCOUNT_ID'),
+                        ColumnKey(table_name=loan_name, col_name='ACCOUNT_ID'),
+                    )
+                ),
             ],
         )
         graph_id = post_and_expect_success(
@@ -263,10 +290,11 @@ class TestGCSPublicAPIE2EFlow:
 
         # Step 5: Create predictive query (v2)
         pquery_name = f'gcs_pquery_{suffix}'
-        graph_def_internal = RestGraphDefinition(
-            **dataclasses.asdict(graph_def))
-        query_string = (f"PREDICT LAST(LOAN_{suffix}.STATUS, 0, 30) = 'A' "
-                        f"FOR EACH ACCOUNT_{suffix}.ACCOUNT_ID")
+        graph_def_internal = RestGraphDefinition(**dataclasses.asdict(graph_def))
+        query_string = (
+            f"PREDICT LAST(LOAN_{suffix}.STATUS, 0, 30) = 'A' "
+            f'FOR EACH ACCOUNT_{suffix}.ACCOUNT_ID'
+        )
         post_and_expect_success(
             client,
             '/v1/predictive_queries/',
@@ -285,7 +313,11 @@ class TestGCSPublicAPIE2EFlow:
             post_and_expect_success(
                 public_api_client,
                 f'/v1/graphsnapshots?graph_id={graph_id}&refresh_source=true',
-                {}, IDResponse, project_id=project_id).id)
+                {},
+                IDResponse,
+                project_id=project_id,
+            ).id
+        )
 
         # Step 7: Generate the training table (v2)
         plan_payload = plan_api.SuggestModelPlanRequest(
@@ -295,21 +327,24 @@ class TestGCSPublicAPIE2EFlow:
         )
         train_table_plan = post_and_expect_success(
             public_api_client,
-            '/v1/predictive_queries/train_table_generation_plan?'
-            'dialect=PQLANG_V2',
+            '/v1/predictive_queries/train_table_generation_plan?dialect=PQLANG_V2',
             plan_payload,
             api.TrainingTableGenerationPlan,
             project_id=project_id,
         )
         train_table_job_id = post_and_expect_success(
-            public_api_client, '/v1/gentraintable_jobs',
-            api.GenerateTrainTableRequest({}, pquery_name, train_table_plan,
-                                          snapshot_id), IDResponse,
-            project_id=project_id).id
-        tt_job = _wait_for_gen_train_table_job(public_api_client,
-                                               train_table_job_id)
+            public_api_client,
+            '/v1/gentraintable_jobs',
+            api.GenerateTrainTableRequest(
+                {}, pquery_name, train_table_plan, snapshot_id
+            ),
+            IDResponse,
+            project_id=project_id,
+        ).id
+        tt_job = _wait_for_gen_train_table_job(public_api_client, train_table_job_id)
         assert tt_job.job_status_report.status == JobStatus.DONE, (
-            f"Train table gen failed: {tt_job.job_status_report.status}")
+            f'Train table gen failed: {tt_job.job_status_report.status}'
+        )
 
         # Step 7b: Verify train table presigned URLs work for GCS
         train_table_urls = get_and_expect_success(
@@ -323,26 +358,37 @@ class TestGCSPublicAPIE2EFlow:
         # Step 8: Launch training (v2)
         model_plan_info = post_and_expect_success(
             public_api_client,
-            '/v1/predictive_queries/model_plan?dialect=PQLANG_V2', plan_payload,
-            plan_api.ModelPlanInfo, project_id=project_id)
+            '/v1/predictive_queries/model_plan?dialect=PQLANG_V2',
+            plan_payload,
+            plan_api.ModelPlanInfo,
+            project_id=project_id,
+        )
         model_plan = model_plan_info.model_plan
         training_job_id = post_and_expect_success(
-            public_api_client, '/v1/training_jobs',
-            api.TrainingJobRequest({}, pquery_id=pquery_name,
-                                   model_plan=model_plan,
-                                   graph_snapshot_id=snapshot_id,
-                                   train_table_job_id=train_table_job_id),
-            IDResponse, project_id=project_id).id
-        training_job = _wait_for_training_job_v1(public_api_client,
-                                                 training_job_id)
+            public_api_client,
+            '/v1/training_jobs',
+            api.TrainingJobRequest(
+                {},
+                pquery_id=pquery_name,
+                model_plan=model_plan,
+                graph_snapshot_id=snapshot_id,
+                train_table_job_id=train_table_job_id,
+            ),
+            IDResponse,
+            project_id=project_id,
+        ).id
+        training_job = _wait_for_training_job_v1(public_api_client, training_job_id)
         assert training_job.job_status_report.status == JobStatus.DONE, (
-            f"Training failed: {training_job.job_status_report.status}")
+            f'Training failed: {training_job.job_status_report.status}'
+        )
 
         # Step 9: Batch prediction with GCS output (predictions + embeddings)
-        gcs_predictions_path = (f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/"
-                                f"predictions/{suffix}/")
-        gcs_embeddings_path = (f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/"
-                               f"embeddings/{suffix}/")
+        gcs_predictions_path = (
+            f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/predictions/{suffix}/'
+        )
+        gcs_embeddings_path = (
+            f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/embeddings/{suffix}/'
+        )
 
         bp_result = post_and_expect_success(
             public_api_client,
@@ -376,11 +422,13 @@ class TestGCSPublicAPIE2EFlow:
         assert bp_job_id is not None
         bp_job = _wait_for_prediction_job_v1(public_api_client, bp_job_id)
         assert bp_job.job_status_report.status == JobStatus.DONE, (
-            f"BP failed: {bp_job.job_status_report.status}")
+            f'BP failed: {bp_job.job_status_report.status}'
+        )
 
         # Step 10: Verify prediction output exists in customer-specified GCS path
         assert fsutil.exists(gcs_predictions_path), (
-            f"Prediction output not found: {gcs_predictions_path}")
+            f'Prediction output not found: {gcs_predictions_path}'
+        )
 
         prediction_files = fsutil.listdir(gcs_predictions_path)
         parquet_files = [f for f in prediction_files if f.endswith('.parquet')]

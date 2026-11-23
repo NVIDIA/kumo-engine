@@ -30,12 +30,15 @@ class ADLSSourceReader(ObjectStoreSourceReader):
         if isinstance(self.filesystem, PyFileSystem):
             handler = self.filesystem.handler
             adapter = handler.fs if isinstance(handler, FSSpecHandler) else None
-            if (isinstance(adapter, ADLSFileSystem) and getattr(
-                    self.object_identity, '__self__', None) is adapter
-                    and getattr(self.object_identity, '__func__',
-                                None) is ADLSFileSystem.object_identity):
+            if (
+                isinstance(adapter, ADLSFileSystem)
+                and getattr(self.object_identity, '__self__', None) is adapter
+                and getattr(self.object_identity, '__func__', None)
+                is ADLSFileSystem.object_identity
+            ):
                 identities = adapter.object_identities(
-                    [entry.path for entry in found], root=self.root)
+                    [entry.path for entry in found], root=self.root
+                )
                 if identities is not None:
                     return identities
         return super()._identities(found, worker_ceiling)
@@ -46,22 +49,29 @@ class ADLSSourceReader(ObjectStoreSourceReader):
         # cannot alias the same cached source.
         ordered = sorted(entries, key=lambda entry: entry.path)
         metadata = list(
-            zip((entry.path for entry in ordered),
-                self._identities(ordered, None)))
+            zip((entry.path for entry in ordered), self._identities(ordered, None))
+        )
         # Discovery and preparation spell the same directory with/without '/'.
-        single = (len(ordered) == 1
-                  and ordered[0].path.rstrip('/') == path.rstrip('/'))
+        single = len(ordered) == 1 and ordered[0].path.rstrip('/') == path.rstrip('/')
         return SourceVersion(
             hashlib.sha256(
-                json.dumps((path.rstrip('/'), metadata)).encode()).hexdigest(),
-            'exact' if single else 'listing')
+                json.dumps((path.rstrip('/'), metadata)).encode()
+            ).hexdigest(),
+            'exact' if single else 'listing',
+        )
 
 
-def source_reader(client, account: str, suffix: str = 'dfs.core.windows.net', *,
-                  filesystem: str, prefix: str = '',
-                  file_format: Literal['csv', 'parquet'] | None = None,
-                  file_suffix: str | None = None,
-                  csv_options: CsvOptions | None = None) -> ADLSSourceReader:
+def source_reader(
+    client,
+    account: str,
+    suffix: str = 'dfs.core.windows.net',
+    *,
+    filesystem: str,
+    prefix: str = '',
+    file_format: Literal['csv', 'parquet'] | None = None,
+    file_suffix: str | None = None,
+    csv_options: CsvOptions | None = None,
+) -> ADLSSourceReader:
     """Build the engine's reader over a borrowed, already-authenticated client.
 
     The caller owns the client and credential for the reader's entire lifetime.
@@ -70,13 +80,17 @@ def source_reader(client, account: str, suffix: str = 'dfs.core.windows.net', *,
     account = normalize_adls_storage_account(account)
     suffix = normalize_adls_endpoint_suffix(suffix)
     filesystem = normalize_adls_filesystem(filesystem)
-    prefix = normalize_object_store_root_prefix(prefix,
-                                                provider_name='Azure Data Lake')
+    prefix = normalize_object_store_root_prefix(prefix, provider_name='Azure Data Lake')
     access = source_access(client, account, suffix)
     authority = f'{filesystem}@{account}.{suffix}'
     root = authority + ('/' + prefix if prefix else '')
-    return ADLSSourceReader(access.filesystem, root=root,
-                            file_format=file_format, file_suffix=file_suffix,
-                            csv_options=csv_options,
-                            source_type=ConnectorType.ADLS, fetch=access.fetch,
-                            object_identity=access.object_identity)
+    return ADLSSourceReader(
+        access.filesystem,
+        root=root,
+        file_format=file_format,
+        file_suffix=file_suffix,
+        csv_options=csv_options,
+        source_type=ConnectorType.ADLS,
+        fetch=access.fetch,
+        object_identity=access.object_identity,
+    )

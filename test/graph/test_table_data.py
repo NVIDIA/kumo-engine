@@ -44,26 +44,25 @@ def test_attribute_serialization(tmp_path: pathlib.Path, is_pseudo: bool):
 
     # Setup:
     table = Table(table_name='test_table', data_source='test_ds')
-    table.set_pkey(PrimaryKey("pkey"))
-    table.add_fkey(ForeignKey("fkey", dst_table="x", dst_key="y"))
+    table.set_pkey(PrimaryKey('pkey'))
+    table.add_fkey(ForeignKey('fkey', dst_table='x', dst_key='y'))
 
     in_mem_attrs = InMemoryDataAttributes()
     in_mem_attrs.time_col = TimeColumn(name='time')
     in_mem_attrs.weight_col = BaseColumn(name='weight', dtype=Dtype.int)
     in_mem_attrs.entity_include_bit_col = BoolColumn(name=ENTITY_INCLUDE_BIT)
     if is_pseudo:
-        time_periods = dict(
-            {TrainingStage.VAL: TimePeriod.cast(0, 1, is_pseudo=True)})
+        time_periods = dict({TrainingStage.VAL: TimePeriod.cast(0, 1, is_pseudo=True)})
     else:
         time_periods = dict(
-            {TrainingStage.VAL: TimePeriod.cast('2000-01-01', '2000-01-02')})
+            {TrainingStage.VAL: TimePeriod.cast('2000-01-01', '2000-01-02')}
+        )
 
     attrs = TableDataAttributes(
         name='test',
         num_nodes=1000,
         data_version='-1',
-        in_memory_attrs=in_mem_attrs.config(
-            data_cls=InMemoryDataAttributesConfig),
+        in_memory_attrs=in_mem_attrs.config(data_cls=InMemoryDataAttributesConfig),
         table_metadata_config=table.metadata_config(),
         time_periods=time_periods,
     )
@@ -74,7 +73,8 @@ def test_attribute_serialization(tmp_path: pathlib.Path, is_pseudo: bool):
 
     # Compare in-memory attributes:
     assert in_mem_attrs == InMemoryDataAttributes.from_config(
-        attrs_deserialized.in_memory_attrs)
+        attrs_deserialized.in_memory_attrs
+    )
 
     # Compare other attributes:
     attrs.in_memory_attrs = None
@@ -92,7 +92,7 @@ def test_non_unique_index_error():
     pkey = PrimaryKey('non_unique_idx')
     pd_view = PandasView(MockConnector(), 'TABLE', cols=[], pkey=pkey)
 
-    with pytest.raises(ValueError, match="has more than 50% duplicated"):
+    with pytest.raises(ValueError, match='has more than 50% duplicated'):
         pd_view()
 
 
@@ -113,8 +113,9 @@ def test_non_unique_index_drop():
 
 
 def test_table_data_memory(create_graph, tmp_path: pathlib.Path):
-    graph: Graph = create_graph(name='FINANCIAL', parquet=True, infer=True,
-                                temporal=True)
+    graph: Graph = create_graph(
+        name='FINANCIAL', parquet=True, infer=True, temporal=True
+    )
 
     graph['LOAN', 'DATE'].metadata = {'TS_FORMAT': 'yyyyMMdd'}
     graph['ACCOUNT', 'DATE'].metadata = {'TS_FORMAT': 'yyyyMMdd'}
@@ -125,12 +126,14 @@ def test_table_data_memory(create_graph, tmp_path: pathlib.Path):
     assert table_data.persist_dir is None
     assert hasattr(table_data, 'data')
 
-    assert str(table_data) == (f'TableData(\n'
-                               f'  name=parquet.LOAN,\n'
-                               f'  data_version={table_data.data_version},\n'
-                               f'  persist_dir=MEMORY,\n'
-                               f'  num_nodes=682\n'
-                               f')')
+    assert str(table_data) == (
+        f'TableData(\n'
+        f'  name=parquet.LOAN,\n'
+        f'  data_version={table_data.data_version},\n'
+        f'  persist_dir=MEMORY,\n'
+        f'  num_nodes=682\n'
+        f')'
+    )
 
     # Index map:
     assert len(table_data.index_map) == table_data.num_nodes
@@ -141,10 +144,10 @@ def test_table_data_memory(create_graph, tmp_path: pathlib.Path):
     # datetime resolution (pandas-2 ``astype(int)`` would yield seconds for a
     # ``datetime64[s]`` source). FINANCIAL dates are 1990s -> ns since epoch are
     # ~7e17, far beyond any seconds (~7e8) magnitude; assert the ns scale.
-    _finite = table_data.time[table_data.time != torch.iinfo(
-        table_data.time.dtype).max]
+    _finite = table_data.time[table_data.time != torch.iinfo(table_data.time.dtype).max]
     assert int(_finite.abs().max()) > 10**17, (
-        "time column is not nanoseconds (resolution bug)")
+        'time column is not nanoseconds (resolution bug)'
+    )
 
     # Save:
     save_out_dir = osp.join(tmp_path.resolve().as_posix(), '_saved_data')
@@ -175,7 +178,8 @@ def test_table_data_memory(create_graph, tmp_path: pathlib.Path):
 
     assert isinstance(table_data_2.data, pd.DataFrame)
     assert len(table_data_2._fkey_data) > 0
-    assert isinstance(get_fkey_data(list(table_data_2._fkey_data.values())[0]),
-                      pd.Series)
+    assert isinstance(
+        get_fkey_data(list(table_data_2._fkey_data.values())[0]), pd.Series
+    )
 
     assert len(table_data_2.index_map) == table_data_2.num_nodes

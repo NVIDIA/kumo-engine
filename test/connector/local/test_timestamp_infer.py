@@ -14,6 +14,7 @@ native-dtype passthrough.
 Everything is deterministic: fixed literals only, no ``now()``, no randomness, no
 machine-timezone dependence.
 """
+
 import datetime
 
 import numpy as np
@@ -48,15 +49,18 @@ def test_hint_is_frozen_hashable_and_equal():
     assert TemporalHint.of_unit('s') != TemporalHint.of_unit('ms')
 
 
-@pytest.mark.parametrize('kind, unit, strftime', [
-    (HintKind.UNIT, 'bogus', None),   # invalid unit token
-    (HintKind.UNIT, None, None),      # UNIT without a unit
-    (HintKind.UNIT, 's', '%Y'),       # UNIT must not carry a format
-    (HintKind.FORMAT, None, None),    # FORMAT without a format
-    (HintKind.FORMAT, 's', '%Y'),     # FORMAT must not carry a unit
-    (HintKind.NATIVE, 's', None),     # NATIVE must carry neither
-    (HintKind.UNRESOLVED, None, '%Y'),
-])
+@pytest.mark.parametrize(
+    'kind, unit, strftime',
+    [
+        (HintKind.UNIT, 'bogus', None),  # invalid unit token
+        (HintKind.UNIT, None, None),  # UNIT without a unit
+        (HintKind.UNIT, 's', '%Y'),  # UNIT must not carry a format
+        (HintKind.FORMAT, None, None),  # FORMAT without a format
+        (HintKind.FORMAT, 's', '%Y'),  # FORMAT must not carry a unit
+        (HintKind.NATIVE, 's', None),  # NATIVE must carry neither
+        (HintKind.UNRESOLVED, None, '%Y'),
+    ],
+)
 def test_hint_mutual_exclusion_enforced(kind, unit, strftime):
     with pytest.raises(ValueError):
         TemporalHint(kind, unit=unit, strftime=strftime)
@@ -65,9 +69,11 @@ def test_hint_mutual_exclusion_enforced(kind, unit, strftime):
 def test_hint_storage_mapping():
     # UNIT -> timestamp_unit; FORMAT -> metadata['TS_FORMAT']; else neither.
     assert ti.hint_to_storage(TemporalHint.of_unit('ms')) == ti.HintStorage(
-        timestamp_unit='ms')
+        timestamp_unit='ms'
+    )
     assert ti.hint_to_storage(TemporalHint.of_format('%Y%m%d')) == ti.HintStorage(
-        ts_format='%Y%m%d')
+        ts_format='%Y%m%d'
+    )
     assert ti.hint_to_storage(TemporalHint.native()) == ti.HintStorage()
     assert ti.hint_to_storage(TemporalHint.unresolved()) == ti.HintStorage()
     assert ti.TIMESTAMP_UNIT_CONFIG_FIELD == 'timestamp_unit'
@@ -77,21 +83,26 @@ def test_hint_storage_mapping():
 # ===========================================================================
 # Epoch-magnitude bands (strict '<' at 1e10 / 1e13 / 1e16)
 # ===========================================================================
-@pytest.mark.parametrize('value, unit', [
-    (1709251200, 's'),
-    (-86400, 's'),                    # negative uses unsigned magnitude
-    (9999999999, 's'),                # 1e10 - 1
-    (10000000000, 'ms'),              # 1e10 flips
-    (9999999999999, 'ms'),            # 1e13 - 1
-    (10000000000000, 'us'),           # 1e13 flips
-    (9999999999999999, 'us'),         # 1e16 - 1
-    (10000000000000000, 'ns'),        # 1e16 flips
-    (1709251200000, 'ms'),
-    (1709251200000000, 'us'),
-    (1709251200000000000, 'ns'),
-])
+@pytest.mark.parametrize(
+    'value, unit',
+    [
+        (1709251200, 's'),
+        (-86400, 's'),  # negative uses unsigned magnitude
+        (9999999999, 's'),  # 1e10 - 1
+        (10000000000, 'ms'),  # 1e10 flips
+        (9999999999999, 'ms'),  # 1e13 - 1
+        (10000000000000, 'us'),  # 1e13 flips
+        (9999999999999999, 'us'),  # 1e16 - 1
+        (10000000000000000, 'ns'),  # 1e16 flips
+        (1709251200000, 'ms'),
+        (1709251200000000, 'us'),
+        (1709251200000000000, 'ns'),
+    ],
+)
 def test_epoch_magnitude_bands(value, unit):
-    assert infer([value], ) == TemporalHint.of_unit(unit)
+    assert infer(
+        [value],
+    ) == TemporalHint.of_unit(unit)
 
 
 def test_zero_is_no_vote():
@@ -107,33 +118,36 @@ def test_nat_sentinel_is_not_a_nanosecond_epoch():
 # Encoded-date integers: a FORMAT hint, never a UNIT hint (applying a unit to
 # an encoded-date column would reinterpret it as epoch seconds and corrupt it).
 # ===========================================================================
-@pytest.mark.parametrize('value, expected', [
-    (20230408, TemporalHint.of_format('%Y%m%d')),
-    (20230408120530, TemporalHint.of_format('%Y%m%d%H%M%S')),
-    (2023, TemporalHint.of_format('%Y')),
-    (202304, TemporalHint.of_format('%Y%m')),
-    (19000101, TemporalHint.of_format('%Y%m%d')),        # earliest valid
-    (21001231, TemporalHint.of_format('%Y%m%d')),        # latest valid
-    (19000101000000, TemporalHint.of_format('%Y%m%d%H%M%S')),
-    (21001231235959, TemporalHint.of_format('%Y%m%d%H%M%S')),
-    (-20230408, TemporalHint.of_format('%Y%m%d')),       # sign discarded
-    # Component ranges are checked, calendar validity is not.
-    (20230230, TemporalHint.of_format('%Y%m%d')),        # Feb 30
-    (20230431, TemporalHint.of_format('%Y%m%d')),        # Apr 31
-    # Out of range / no pattern: falls through to the epoch magnitude.
-    (99999999, TemporalHint.of_unit('s')),               # year 9999
-    (18991231, TemporalHint.of_unit('s')),               # year 1899
-    (21010101, TemporalHint.of_unit('s')),               # year 2101
-    (20231301, TemporalHint.of_unit('s')),               # month 13
-    (20230001, TemporalHint.of_unit('s')),               # month 00
-    (20230100, TemporalHint.of_unit('s')),               # day 00
-    (20230132, TemporalHint.of_unit('s')),               # day 32
-    (12345, TemporalHint.of_unit('s')),                  # 5 digits, no pattern
-    (1709251200, TemporalHint.of_unit('s')),             # 10 digits, no pattern
-    (20230408240000, TemporalHint.of_unit('us')),        # hour 24
-    (20230408006000, TemporalHint.of_unit('us')),        # minute 60
-    (20230408000060, TemporalHint.of_unit('us')),        # second 60
-])
+@pytest.mark.parametrize(
+    'value, expected',
+    [
+        (20230408, TemporalHint.of_format('%Y%m%d')),
+        (20230408120530, TemporalHint.of_format('%Y%m%d%H%M%S')),
+        (2023, TemporalHint.of_format('%Y')),
+        (202304, TemporalHint.of_format('%Y%m')),
+        (19000101, TemporalHint.of_format('%Y%m%d')),  # earliest valid
+        (21001231, TemporalHint.of_format('%Y%m%d')),  # latest valid
+        (19000101000000, TemporalHint.of_format('%Y%m%d%H%M%S')),
+        (21001231235959, TemporalHint.of_format('%Y%m%d%H%M%S')),
+        (-20230408, TemporalHint.of_format('%Y%m%d')),  # sign discarded
+        # Component ranges are checked, calendar validity is not.
+        (20230230, TemporalHint.of_format('%Y%m%d')),  # Feb 30
+        (20230431, TemporalHint.of_format('%Y%m%d')),  # Apr 31
+        # Out of range / no pattern: falls through to the epoch magnitude.
+        (99999999, TemporalHint.of_unit('s')),  # year 9999
+        (18991231, TemporalHint.of_unit('s')),  # year 1899
+        (21010101, TemporalHint.of_unit('s')),  # year 2101
+        (20231301, TemporalHint.of_unit('s')),  # month 13
+        (20230001, TemporalHint.of_unit('s')),  # month 00
+        (20230100, TemporalHint.of_unit('s')),  # day 00
+        (20230132, TemporalHint.of_unit('s')),  # day 32
+        (12345, TemporalHint.of_unit('s')),  # 5 digits, no pattern
+        (1709251200, TemporalHint.of_unit('s')),  # 10 digits, no pattern
+        (20230408240000, TemporalHint.of_unit('us')),  # hour 24
+        (20230408006000, TemporalHint.of_unit('us')),  # minute 60
+        (20230408000060, TemporalHint.of_unit('us')),  # second 60
+    ],
+)
 def test_encoded_int_format(value, expected):
     assert infer([value]) == expected
 
@@ -141,16 +155,19 @@ def test_encoded_int_format(value, expected):
 # ===========================================================================
 # String columns
 # ===========================================================================
-@pytest.mark.parametrize('value, expected', [
-    ('2024-01-15', '%Y-%m-%d'),
-    ('2024-01-15 10:30:00', '%Y-%m-%d %H:%M:%S'),
-    ('2024-01-15T10:30:00', '%Y-%m-%d %H:%M:%S'),
-    ('2019-07-04T00:00:00Z', '%Y-%m-%dT%H:%M:%S%#z'),
-    ('01/15/2024', '%m/%d/%Y'),
-    ('01/15/2024 10:30:00', '%m/%d/%Y %H:%M:%S'),
-    ('15/01/2024', '%d/%m/%Y'),                # day>12, only d/m/Y matches
-    ('20230408', '%Y%m%d'),                    # numeric string, encoded date
-])
+@pytest.mark.parametrize(
+    'value, expected',
+    [
+        ('2024-01-15', '%Y-%m-%d'),
+        ('2024-01-15 10:30:00', '%Y-%m-%d %H:%M:%S'),
+        ('2024-01-15T10:30:00', '%Y-%m-%d %H:%M:%S'),
+        ('2019-07-04T00:00:00Z', '%Y-%m-%dT%H:%M:%S%#z'),
+        ('01/15/2024', '%m/%d/%Y'),
+        ('01/15/2024 10:30:00', '%m/%d/%Y %H:%M:%S'),
+        ('15/01/2024', '%d/%m/%Y'),  # day>12, only d/m/Y matches
+        ('20230408', '%Y%m%d'),  # numeric string, encoded date
+    ],
+)
 def test_string_format_detection(value, expected):
     assert infer([value]) == TemporalHint.of_format(expected)
 
@@ -182,8 +199,9 @@ def test_format_beats_unit_on_tie():
 
 
 def test_format_plurality_over_tied_units():
-    assert infer([20230408, 20240115, 1709251200,
-                  1709251200000]) == TemporalHint.of_format('%Y%m%d')
+    assert infer(
+        [20230408, 20240115, 1709251200, 1709251200000]
+    ) == TemporalHint.of_format('%Y%m%d')
 
 
 # ===========================================================================
@@ -192,16 +210,14 @@ def test_format_plurality_over_tied_units():
 def test_robust_float_null_epoch_resolves_to_unit():
     # An int epoch column with nulls becomes float64; it must still resolve to
     # the correct UNIT, not fall through to UNRESOLVED.
-    assert infer([1709251200.0, None,
-                  1710000000.0]) == TemporalHint.of_unit('s')
+    assert infer([1709251200.0, None, 1710000000.0]) == TemporalHint.of_unit('s')
     assert infer([1709251200000.0, np.nan]) == TemporalHint.of_unit('ms')
 
 
 def test_robust_float_encoded_date_stays_format():
     # A float-typed encoded-date column must still become FORMAT (corruption
     # trap: a unit on an encoded-date column mis-encodes it as epoch seconds).
-    assert infer([20230408.0, 20240115.0,
-                  None]) == TemporalHint.of_format('%Y%m%d')
+    assert infer([20230408.0, 20240115.0, None]) == TemporalHint.of_format('%Y%m%d')
 
 
 def test_robust_negative_epoch_sign_agnostic():
@@ -211,8 +227,9 @@ def test_robust_negative_epoch_sign_agnostic():
 def test_robust_messy_mixed_magnitude_does_not_raise():
     # Mixed magnitudes never raise; the plurality unit wins (three seconds votes
     # beat one ms vote).
-    assert infer([1000000000, 2000000000, 3000000000,
-                  1709251200000]) == TemporalHint.of_unit('s')
+    assert infer(
+        [1000000000, 2000000000, 3000000000, 1709251200000]
+    ) == TemporalHint.of_unit('s')
 
 
 def test_robust_mixed_object_column_does_not_raise():
@@ -223,12 +240,10 @@ def test_robust_mixed_object_column_does_not_raise():
 def test_robust_category_column_resolves_and_applies():
     # A low-cardinality column arrives dictionary-encoded; the values are
     # timestamps regardless of how they are physically laid out.
-    ser = pd.Series(['2024-01-15', '2024-02-20', '2024-01-15'],
-                    dtype='category')
+    ser = pd.Series(['2024-01-15', '2024-02-20', '2024-01-15'], dtype='category')
     hint = ti.infer_temporal_hint(ser)
     assert hint == TemporalHint.of_format('%Y-%m-%d')
-    assert list(tc.to_epoch_seconds(ser, hint)) == [
-        1705276800, 1708387200, 1705276800]
+    assert list(tc.to_epoch_seconds(ser, hint)) == [1705276800, 1708387200, 1705276800]
 
 
 def test_robust_bool_column_is_unresolved():
@@ -240,18 +255,17 @@ def test_robust_leading_sentinels_do_not_hide_the_timestamps():
     # and leave a real timestamp column UNRESOLVED (fatal for a create_time).
     values = ['0'] * 50 + ['2024-01-15'] * 50
     assert infer(values) == TemporalHint.of_format('%Y-%m-%d')
-    assert infer(values, is_create_time=True) == TemporalHint.of_format(
-        '%Y-%m-%d')
+    assert infer(values, is_create_time=True) == TemporalHint.of_format('%Y-%m-%d')
 
 
 def test_robust_all_null_non_create_time_is_unresolved():
-    assert infer([None, None, np.nan],
-                 is_create_time=False) == TemporalHint.unresolved()
+    assert (
+        infer([None, None, np.nan], is_create_time=False) == TemporalHint.unresolved()
+    )
 
 
 def test_robust_all_unparseable_non_create_time_is_unresolved():
-    assert infer(['x', 'y', 'z'],
-                 is_create_time=False) == TemporalHint.unresolved()
+    assert infer(['x', 'y', 'z'], is_create_time=False) == TemporalHint.unresolved()
 
 
 def test_robust_all_null_create_time_raises():
@@ -269,14 +283,17 @@ def test_robust_unresolvable_create_time_raises():
 # DiskGraph call, so a detected hint is applicable by construction -- including
 # when the token that wins is not the one a human would have picked.
 # ===========================================================================
-@pytest.mark.parametrize('values, epochs', [
-    (['2024/01/15', '2024/02/20'], [1705276800, 1708387200]),
-    (['2024/01/15 10:30:00'], [1705314600]),
-    (['01/15/2024', '02/20/2024'], [1705276800, 1708387200]),
-    (['2019-07-04T00:00:00Z'], [1562198400]),
-    (['20230408'], [1680912000]),
-    (['1709251200'], [1709251200]),
-])
+@pytest.mark.parametrize(
+    'values, epochs',
+    [
+        (['2024/01/15', '2024/02/20'], [1705276800, 1708387200]),
+        (['2024/01/15 10:30:00'], [1705314600]),
+        (['01/15/2024', '02/20/2024'], [1705276800, 1708387200]),
+        (['2019-07-04T00:00:00Z'], [1562198400]),
+        (['20230408'], [1680912000]),
+        (['1709251200'], [1709251200]),
+    ],
+)
 def test_detected_hint_is_applicable(values, epochs):
     ser = pd.Series(values)
     hint = ti.infer_temporal_hint(ser)
@@ -295,30 +312,30 @@ def test_slash_content_resolves_to_the_separator_tolerant_dash_format():
 # ===========================================================================
 def test_gate_declared_unit_returned_unchanged():
     # A declared hint short-circuits inference, even on messy data.
-    assert infer([20230408, 20240115],
-                 declared_unit='ms') == TemporalHint.of_unit('ms')
+    assert infer([20230408, 20240115], declared_unit='ms') == TemporalHint.of_unit('ms')
 
 
 def test_gate_declared_format_returned_unchanged():
-    assert infer([1709251200, 1710000000],
-                 declared_format='%Y%m%d') == TemporalHint.of_format('%Y%m%d')
+    assert infer(
+        [1709251200, 1710000000], declared_format='%Y%m%d'
+    ) == TemporalHint.of_format('%Y%m%d')
 
 
 def test_gate_declared_format_precedes_declared_unit():
-    assert infer([1, 2], declared_unit='s',
-                 declared_format='%Y-%m-%d') == TemporalHint.of_format(
-                     '%Y-%m-%d')
+    assert infer(
+        [1, 2], declared_unit='s', declared_format='%Y-%m-%d'
+    ) == TemporalHint.of_format('%Y-%m-%d')
 
 
 def test_infer_unrecognized_declared_unit_falls_through_to_inference():
     # 'weeks' is not a known alias; inference runs rather than raising.
-    assert infer([1709251200, 1710000000],
-                 declared_unit='weeks') == TemporalHint.of_unit('s')
+    assert infer(
+        [1709251200, 1710000000], declared_unit='weeks'
+    ) == TemporalHint.of_unit('s')
 
 
 def test_infer_non_series_sample_is_coerced():
-    assert ti.infer_temporal_hint(
-        [1709251200, 1710000000]) == TemporalHint.of_unit('s')
+    assert ti.infer_temporal_hint([1709251200, 1710000000]) == TemporalHint.of_unit('s')
 
 
 def test_native_dtype_passthrough_datetime64():
@@ -327,8 +344,9 @@ def test_native_dtype_passthrough_datetime64():
 
 
 def test_native_dtype_passthrough_object_datetimes():
-    ser = pd.Series([datetime.datetime(2024, 1, 1),
-                     datetime.datetime(2024, 2, 1)], dtype=object)
+    ser = pd.Series(
+        [datetime.datetime(2024, 1, 1), datetime.datetime(2024, 2, 1)], dtype=object
+    )
     assert ti.infer_temporal_hint(ser) == TemporalHint.native()
 
 
@@ -339,13 +357,17 @@ def test_native_dtype_passthrough_object_np_datetime64():
 
 
 def test_is_native_temporal_series_arrow_dtypes():
-    ts = pd.Series(pd.to_datetime(['2024-01-01', '2024-02-01']),
-                   dtype=pd.ArrowDtype(pa.timestamp('us')))
+    ts = pd.Series(
+        pd.to_datetime(['2024-01-01', '2024-02-01']),
+        dtype=pd.ArrowDtype(pa.timestamp('us')),
+    )
     assert ti._is_native_temporal_series(ts)
     assert ti.infer_temporal_hint(ts) == TemporalHint.native()
 
-    dt = pd.Series([datetime.date(2024, 1, 1), datetime.date(2024, 2, 1)],
-                   dtype=pd.ArrowDtype(pa.date32()))
+    dt = pd.Series(
+        [datetime.date(2024, 1, 1), datetime.date(2024, 2, 1)],
+        dtype=pd.ArrowDtype(pa.date32()),
+    )
     assert ti._is_native_temporal_series(dt)
     assert ti.infer_temporal_hint(dt) == TemporalHint.native()
 
@@ -354,16 +376,35 @@ def test_is_native_temporal_series_arrow_dtypes():
 # map_timestamp_unit: every alias -> canonical token, plus the None / empty /
 # unrecognized / `.value`-object cases.
 # ===========================================================================
-@pytest.mark.parametrize('alias, expected', [
-    ('s', 's'), ('sec', 's'), ('secs', 's'), ('second', 's'), ('seconds', 's'),
-    ('ms', 'ms'), ('milli', 'ms'), ('millis', 'ms'), ('millisecond', 'ms'),
-    ('milliseconds', 'ms'),
-    ('us', 'us'), ('µs', 'us'), ('micro', 'us'), ('micros', 'us'),
-    ('microsecond', 'us'), ('microseconds', 'us'),
-    ('ns', 'ns'), ('nano', 'ns'), ('nanos', 'ns'), ('nanosecond', 'ns'),
-    ('nanoseconds', 'ns'),
-    (None, None), ('', None), ('bogus', None),
-])
+@pytest.mark.parametrize(
+    'alias, expected',
+    [
+        ('s', 's'),
+        ('sec', 's'),
+        ('secs', 's'),
+        ('second', 's'),
+        ('seconds', 's'),
+        ('ms', 'ms'),
+        ('milli', 'ms'),
+        ('millis', 'ms'),
+        ('millisecond', 'ms'),
+        ('milliseconds', 'ms'),
+        ('us', 'us'),
+        ('µs', 'us'),
+        ('micro', 'us'),
+        ('micros', 'us'),
+        ('microsecond', 'us'),
+        ('microseconds', 'us'),
+        ('ns', 'ns'),
+        ('nano', 'ns'),
+        ('nanos', 'ns'),
+        ('nanosecond', 'ns'),
+        ('nanoseconds', 'ns'),
+        (None, None),
+        ('', None),
+        ('bogus', None),
+    ],
+)
 def test_map_timestamp_unit_aliases(alias, expected):
     assert ti.map_timestamp_unit(alias) == expected
 

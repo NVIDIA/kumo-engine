@@ -64,16 +64,20 @@ def expect(error, call, *needles):
     try:
         call()
     except error as caught:
-        require(all(needle in str(caught) for needle in needles),
-                f'Diagnostic is not actionable: {caught}')
+        require(
+            all(needle in str(caught) for needle in needles),
+            f'Diagnostic is not actionable: {caught}',
+        )
         return str(caught)
     raise AssertionError(f'Expected {error} from a broken input')
 
 
 def selected(explanations, expected):
     trial = os.path.relpath(explanations.trial_root, explanations.run_root)
-    require(trial == expected,
-            f'Explanations describe {trial}, not the published {expected}')
+    require(
+        trial == expected,
+        f'Explanations describe {trial}, not the published {expected}',
+    )
     return trial
 
 
@@ -141,7 +145,9 @@ def training_rows(root, table, name):
     directory.mkdir()
     table.export(
         kumo.TrainingTableOutputConfig(
-            kumo.FileConnector(root_dir=str(directory)), 'rows/'))
+            kumo.FileConnector(root_dir=str(directory)), 'rows/'
+        )
+    )
     frame = pd.read_parquet(directory / 'rows')
     frame = frame.sort_values(list(frame)).reset_index(drop=True)
     return frame_digest(frame)
@@ -150,13 +156,18 @@ def training_rows(root, table, name):
 def frame_digest(frame):
     import pandas as pd
 
-    payload = json.dumps(
-        {
-            'columns': list(frame),
-            'dtypes': [str(dtype) for dtype in frame.dtypes],
-            'schema': pd.io.json.build_table_schema(frame, index=False),
-        }, sort_keys=True, default=str).encode() + pd.util.hash_pandas_object(
-            frame, index=False).to_numpy().tobytes()
+    payload = (
+        json.dumps(
+            {
+                'columns': list(frame),
+                'dtypes': [str(dtype) for dtype in frame.dtypes],
+                'schema': pd.io.json.build_table_schema(frame, index=False),
+            },
+            sort_keys=True,
+            default=str,
+        ).encode()
+        + pd.util.hash_pandas_object(frame, index=False).to_numpy().tobytes()
+    )
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -169,47 +180,60 @@ def check_install(wheel, expected_version, *, managed=False):
 
     require(sys.platform == 'linux', 'This initial profile requires Linux CPU')
     if not managed:
-        require(sys.prefix != sys.base_prefix,
-                'Use a clean virtual environment')
+        require(sys.prefix != sys.base_prefix, 'Use a clean virtual environment')
         config = Path(sys.prefix) / 'pyvenv.cfg'
-        require('include-system-site-packages = false' in config.read_text(),
-                'System site packages are not allowed for qualification')
+        require(
+            'include-system-site-packages = false' in config.read_text(),
+            'System site packages are not allowed for qualification',
+        )
     dist = importlib.metadata.distribution('kumo-engine')
-    require(dist.version == expected_version == kumo.__version__,
-            'Installed Engine version differs from the selected wheel')
+    require(
+        dist.version == expected_version == kumo.__version__,
+        'Installed Engine version differs from the selected wheel',
+    )
     direct = json.loads(dist.read_text('direct_url.json') or '{}')
     wheel_hash = digest(wheel)
     require(
-        direct.get('archive_info', {}).get('hashes',
-                                           {}).get('sha256') == wheel_hash,
-        'Install the exact candidate wheel with pip')
-    require(not direct.get('dir_info', {}).get('editable'),
-            'Editable installations are not qualification')
+        direct.get('archive_info', {}).get('hashes', {}).get('sha256') == wheel_hash,
+        'Install the exact candidate wheel with pip',
+    )
+    require(
+        not direct.get('dir_info', {}).get('editable'),
+        'Editable installations are not qualification',
+    )
     imports = {}
     import diskgraph._c as native
 
     modules = (kumo, kumo_core, diskgraph, native)
     location = Path(dist.locate_file('')).resolve()
-    files = {
-        Path(dist.locate_file(entry)).resolve()
-        for entry in (dist.files or [])
-    }
+    files = {Path(dist.locate_file(entry)).resolve() for entry in (dist.files or [])}
     for module in modules:
         path = Path(module.__file__).resolve()
         if not managed:
-            require(path.is_relative_to(Path(sys.prefix).resolve()),
-                    f'{module.__name__} imports outside the environment')
+            require(
+                path.is_relative_to(Path(sys.prefix).resolve()),
+                f'{module.__name__} imports outside the environment',
+            )
         require(
             path.is_relative_to(location),
-            f'{module.__name__} imports outside the wheel location: {path}')
-        require(path in files,
-                f'{module.__name__} is not supplied by the candidate wheel')
+            f'{module.__name__} imports outside the wheel location: {path}',
+        )
+        require(
+            path in files, f'{module.__name__} is not supplied by the candidate wheel'
+        )
         verify_wheel_file(wheel, location, path)
         imports[module.__name__] = str(path)
-    verify_wheel_file(wheel, location,
-                      Path(diskgraph.__file__).parent / 'bin' / 'ingest')
-    return dict(wheel=str(wheel), sha256=wheel_hash, version=dist.version,
-                python=sys.version, executable=sys.executable, imports=imports)
+    verify_wheel_file(
+        wheel, location, Path(diskgraph.__file__).parent / 'bin' / 'ingest'
+    )
+    return dict(
+        wheel=str(wheel),
+        sha256=wheel_hash,
+        version=dist.version,
+        python=sys.version,
+        executable=sys.executable,
+        imports=imports,
+    )
 
 
 def verify_wheel_file(wheel, location, path):
@@ -219,7 +243,8 @@ def verify_wheel_file(wheel, location, path):
             expected = hashlib.file_digest(stream, 'sha256').hexdigest()
     require(
         digest(path) == expected,
-        f'Installed file differs from the selected wheel: {relative}')
+        f'Installed file differs from the selected wheel: {relative}',
+    )
 
 
 def settings(root, *, register=False):
@@ -235,10 +260,11 @@ def settings(root, *, register=False):
     mlflow.set_tracking_uri(uri)
     mlflow.set_registry_uri(uri)
     return kumo.MLOps(
-        str(root / 'store'), tracking=MlflowTracking(EXPERIMENT,
-                                                     log_system_metrics=False),
+        str(root / 'store'),
+        tracking=MlflowTracking(EXPERIMENT, log_system_metrics=False),
         registry=(kumo.ModelRegistryLocation(MODEL) if register else None),
-        on_error='raise')
+        on_error='raise',
+    )
 
 
 def graph(root, cutoff, *, categorical=False):
@@ -252,36 +278,30 @@ def graph(root, cutoff, *, categorical=False):
     data = root / f'data-{cutoff}'
     data.mkdir()
     rng = np.random.default_rng(0)
-    pd.DataFrame({
-        'ID': np.arange(POPULATION)
-    }).to_parquet(data / 'users.parquet')
-    events = pd.DataFrame({
-        'EID':
-        np.arange(1500),
-        'USER_ID':
-        rng.integers(0, POPULATION, 1500),
-        'TS':
-        pd.Timestamp('2024-01-01') +
-        pd.to_timedelta(rng.integers(0, 120, 1500), unit='D'),
-    })
+    pd.DataFrame({'ID': np.arange(POPULATION)}).to_parquet(data / 'users.parquet')
+    events = pd.DataFrame(
+        {
+            'EID': np.arange(1500),
+            'USER_ID': rng.integers(0, POPULATION, 1500),
+            'TS': pd.Timestamp('2024-01-01')
+            + pd.to_timedelta(rng.integers(0, 120, 1500), unit='D'),
+        }
+    )
     if categorical:
-        events['KIND'] = np.array(['morning', 'afternoon',
-                                   'evening'])[events.EID % 3]
+        events['KIND'] = np.array(['morning', 'afternoon', 'evening'])[events.EID % 3]
     events[events.TS < pd.Timestamp(cutoff)].to_parquet(data / 'events.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
     return kumo.Graph(
         tables={
-            'users':
-            kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='ID'),
-            'events':
-            kumo.Table.from_source_table(connector['events.parquet'],
-                                         primary_key='EID',
-                                         time_column='TS').with_column(
-                                             'USER_ID', stype=Stype.ID),
-        }, edges=[
-            kumo.Edge(src_table='events', fkey='USER_ID', dst_table='users')
-        ])
+            'users': kumo.Table.from_source_table(
+                connector['users.parquet'], primary_key='ID'
+            ),
+            'events': kumo.Table.from_source_table(
+                connector['events.parquet'], primary_key='EID', time_column='TS'
+            ).with_column('USER_ID', stype=Stype.ID),
+        },
+        edges=[kumo.Edge(src_table='events', fkey='USER_ID', dst_table='users')],
+    )
 
 
 def population(run):
@@ -289,22 +309,32 @@ def population(run):
 
     frame = run.frame.sort_values('ENTITY').reset_index(drop=True)
     require(list(frame) == SCHEMA, 'Default binary prediction schema changed')
-    require(frame.ENTITY.tolist() == list(range(POPULATION)),
-            'Prediction population is missing, duplicated, or foreign')
-    require((run.requested_rows, run.scored_rows,
-             run.skipped_rows) == (POPULATION, POPULATION, 0),
-            'Incorrect population accounting')
+    require(
+        frame.ENTITY.tolist() == list(range(POPULATION)),
+        'Prediction population is missing, duplicated, or foreign',
+    )
+    require(
+        (run.requested_rows, run.scored_rows, run.skipped_rows)
+        == (POPULATION, POPULATION, 0),
+        'Incorrect population accounting',
+    )
     scores = frame[['False_PROB', 'True_PROB']].to_numpy(dtype=float)
     require(
         np.isfinite(scores).all() and ((scores >= 0) & (scores <= 1)).all(),
-        'Invalid prediction probabilities')
-    require(np.allclose(scores.sum(axis=1), 1, atol=1e-6, rtol=0),
-            'Prediction probabilities do not sum to one')
-    require(np.array_equal(frame.TARGET_PRED, frame.True_PROB > 0.5),
-            'Labels disagree with the configured threshold')
+        'Invalid prediction probabilities',
+    )
+    require(
+        np.allclose(scores.sum(axis=1), 1, atol=1e-6, rtol=0),
+        'Prediction probabilities do not sum to one',
+    )
+    require(
+        np.array_equal(frame.TARGET_PRED, frame.True_PROB > 0.5),
+        'Labels disagree with the configured threshold',
+    )
     require(
         len(run.manifest.prediction_table.anchors) == 1,
-        'Expected one prediction time anchor')
+        'Expected one prediction time anchor',
+    )
     return frame
 
 
@@ -315,18 +345,20 @@ def prediction_tracking(cfg, run, expected, *, root=None):
     require(run.tracking is not None, 'Prediction not tracked')
     with cfg.tracking.client() as client:
         record = client.get_run(run.tracking.run_id)
-        require(record.info.status == 'FINISHED',
-                'Prediction tracking unfinished')
+        require(record.info.status == 'FINISHED', 'Prediction tracking unfinished')
         tags = record.data.tags
         require(
             all(
-                tags.get(key) == value for key, value in {
+                tags.get(key) == value
+                for key, value in {
                     'kumo.model_name': MODEL,
                     'kumo.model_version': expected['version'],
                     'kumo.bundle_id': expected['bundle'],
                     'kumo.prediction_id': run.id,
-                }.items()),
-            'Prediction tracking records the wrong model/run identity')
+                }.items()
+            ),
+            'Prediction tracking records the wrong model/run identity',
+        )
 
 
 def small_plan(seed, trials=1, *, task='binary'):
@@ -342,15 +374,22 @@ def small_plan(seed, trials=1, *, task='binary'):
 
 def local_fit_record(run, history, registered, bundle):
     require(run.info.status == 'FINISHED', 'Fit tracking unfinished')
-    require(run.data.tags.get('kumo.bundle_id') == bundle,
-            'Fit tracking records the wrong bundle')
     require(
-        all(len({step for step, _ in points}) >= 2
+        run.data.tags.get('kumo.bundle_id') == bundle,
+        'Fit tracking records the wrong bundle',
+    )
+    require(
+        all(
+            len({step for step, _ in points}) >= 2
             and all(math.isfinite(value) for _, value in points)
-            for points in history.values()),
-        'Expected at least two finite tracked epochs')
-    require(registered.tags.get('kumo_bundle_id') == bundle,
-            'Registry version points to another bundle')
+            for points in history.values()
+        ),
+        'Expected at least two finite tracked epochs',
+    )
+    require(
+        registered.tags.get('kumo_bundle_id') == bundle,
+        'Registry version points to another bundle',
+    )
 
 
 def fit(root):
@@ -369,15 +408,19 @@ def fit(root):
         for seed in (0, 1):
             trainer = kumo.Trainer(small_plan(seed), accelerator=accelerator(root))
             result = trainer.fit(
-                table, snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(
-                    binary_classification_threshold=0.5))
+                table,
+                snapshot=snapshot,
+                scoring_defaults=kumo.ScoringDefaults(
+                    binary_classification_threshold=0.5
+                ),
+            )
             require(result.registered_model is not None, 'Model not registered')
             require(result.tracking is not None, 'Fit not tracked')
             parent = result.manifest.parents.training_table
             require(
-                parent.id == table.id
-                and parent.parents.snapshot.id == snapshot.id,
-                'Training lineage is incorrect')
+                parent.id == table.id and parent.parents.snapshot.id == snapshot.id,
+                'Training lineage is incorrect',
+            )
             reference = None
             if profile is not None:
                 reference = platform_helpers().fit_record(profile, cfg, result)
@@ -385,65 +428,94 @@ def fit(root):
             else:
                 with cfg.tracking.client() as client:
                     run = client.get_run(result.tracking.run_id)
-                    require(run.info.status == 'FINISHED',
-                            'Fit tracking unfinished')
+                    require(run.info.status == 'FINISHED', 'Fit tracking unfinished')
                     history = {
-                        name: [(p.step, p.value)
-                               for p in client.get_metric_history(
-                                   run.info.run_id, name)]
+                        name: [
+                            (p.step, p.value)
+                            for p in client.get_metric_history(run.info.run_id, name)
+                        ]
                         for name in ('train/loss', 'val/auroc')
                     }
                     registered = client.get_model_version(
-                        MODEL, result.registered_model.version)
+                        MODEL, result.registered_model.version
+                    )
                     local_fit_record(run, history, registered, result.id)
             versions.append(
                 dict(
-                    version=result.registered_model.version, bundle=result.id,
-                    run=result.tracking.run_id, history=history,
-                    reference=reference, exported_artifacts=read(
-                        result.bundle_dir /
-                        'publication-manifest.json')['artifacts']))
-        require(versions[0]['version'] != versions[1]['version'],
-                'Expected two distinct registered versions')
-        require(versions[0]['bundle'] != versions[1]['bundle'],
-                'Expected two independently fitted bundles')
+                    version=result.registered_model.version,
+                    bundle=result.id,
+                    run=result.tracking.run_id,
+                    history=history,
+                    reference=reference,
+                    exported_artifacts=read(
+                        result.bundle_dir / 'publication-manifest.json'
+                    )['artifacts'],
+                )
+            )
+        require(
+            versions[0]['version'] != versions[1]['version'],
+            'Expected two distinct registered versions',
+        )
+        require(
+            versions[0]['bundle'] != versions[1]['bundle'],
+            'Expected two independently fitted bundles',
+        )
     set_alias(root, cfg, versions[0]['version'])
-    result = dict(training_snapshot=snapshot.id, scoring_snapshot=scored.id,
-                  training_table=table.id, training_rows_sha256=rows_sha256,
-                  model=model_name(root), versions=versions)
+    result = dict(
+        training_snapshot=snapshot.id,
+        scoring_snapshot=scored.id,
+        training_table=table.id,
+        training_rows_sha256=rows_sha256,
+        model=model_name(root),
+        versions=versions,
+    )
     if profile is None:
         plan = small_plan(1, TRIALS)
         plan.training_job.disable_explain = False
         plan.training_job.refit_trainval = True
-        untracked = kumo.Trainer(plan,
-                                 accelerator='cpu').fit(table, snapshot=snapshot)
+        untracked = kumo.Trainer(plan, accelerator='cpu').fit(table, snapshot=snapshot)
         require(untracked.tracking is None, 'Ordinary training used a tracker')
         untracked_history = untracked.metric_history
-        require(untracked_history['total_trials']
-                == untracked_history['completed_trials']
-                == len(untracked_history['trial_progress']) == TRIALS,
-                'Model history lost a completed trial')
+        require(
+            untracked_history['total_trials']
+            == untracked_history['completed_trials']
+            == len(untracked_history['trial_progress'])
+            == TRIALS,
+            'Model history lost a completed trial',
+        )
         for trial in untracked_history['trial_progress'].values():
-            require(trial['num_epochs_completed'] == EPOCHS
-                    and set(trial['metrics']) == {str(i) for i in range(EPOCHS)},
-                    'Model history lost a recorded epoch')
-        untracked.export(kumo.ModelOutputConfig(
-            kumo.FileConnector(root_dir=str(root)), path='untracked-model'))
+            require(
+                trial['num_epochs_completed'] == EPOCHS
+                and set(trial['metrics']) == {str(i) for i in range(EPOCHS)},
+                'Model history lost a recorded epoch',
+            )
+        untracked.export(
+            kumo.ModelOutputConfig(
+                kumo.FileConnector(root_dir=str(root)), path='untracked-model'
+            )
+        )
         explained = untracked.explanations
         require(
             untracked.manifest.fit_mode == 'refit_trainval'
-            and all(a.available and a.generation_failure is None
-                    for a in explained.availability.values()),
-            f'Refit explanations are incomplete: {explained.availability}')
+            and all(
+                a.available and a.generation_failure is None
+                for a in explained.availability.values()
+            ),
+            f'Refit explanations are incomplete: {explained.availability}',
+        )
         trial = selected(
             explained,
-            os.path.relpath(untracked.holdout_path.parent, explained.run_root))
+            os.path.relpath(untracked.holdout_path.parent, explained.run_root),
+        )
         # Fit scratch is deleted before recovery; retain the training run itself.
         shutil.copytree(explained.run_root, root / 'training-run')
         gradient = explained.gradient_scores().to_pandas().to_dict('records')
         result['untracked'] = dict(
-            bundle=untracked.id, history=untracked_history,
-            explanation_trial=trial, gradient=gradient)
+            bundle=untracked.id,
+            history=untracked_history,
+            explanation_trial=trial,
+            gradient=gradient,
+        )
     return result
 
 
@@ -452,9 +524,11 @@ def load(root, *, version=None, alias=None):
 
     return kumo.Trainer.load_from_connector(
         settings(root),
-        location=kumo.ModelRegistryLocation(model_name(root), version=version,
-                                            alias=alias),
-        accelerator=accelerator(root))
+        location=kumo.ModelRegistryLocation(
+            model_name(root), version=version, alias=alias
+        ),
+        accelerator=accelerator(root),
+    )
 
 
 def score(root):
@@ -464,50 +538,63 @@ def score(root):
 
     state = read(root / 'fit.json')['result']
     cfg = settings(root)
-    snapshot = kumo.GraphSnapshot.load_from_connector(
-        cfg, id=state['scoring_snapshot'])
+    snapshot = kumo.GraphSnapshot.load_from_connector(cfg, id=state['scoring_snapshot'])
     training = kumo.GraphSnapshot.load_from_connector(
-        cfg, id=state['training_snapshot'])
+        cfg, id=state['training_snapshot']
+    )
     require(snapshot.id != training.id, 'Scoring must use a distinct snapshot')
     # Loading an exported TT gives it a new source identity, but preserves rows.
     restored = kumo.TrainingTable.load_from_connector(
-        cfg, path=f'training_tables/{state["training_table"]}',
-        pquery=kumo.PredictiveQuery(graph=training,
-                                    query=QUERY), snapshot=training)
-    require(restored.manifest.parents.snapshot.id == training.id,
-            'Restored training table has the wrong snapshot')
+        cfg,
+        path=f'training_tables/{state["training_table"]}',
+        pquery=kumo.PredictiveQuery(graph=training, query=QUERY),
+        snapshot=training,
+    )
+    require(
+        restored.manifest.parents.snapshot.id == training.id,
+        'Restored training table has the wrong snapshot',
+    )
     restored_hash = training_rows(root, restored, 'restored-training-table')
-    require(restored_hash == state['training_rows_sha256'],
-            'Restored training rows changed')
+    require(
+        restored_hash == state['training_rows_sha256'], 'Restored training rows changed'
+    )
     # Also verify the artifact-root model copy, independently of the registry.
     for expected in state['versions']:
         stored = kumo.Trainer.load_from_connector(
-            cfg, path=f'models/{expected["bundle"]}',
-            accelerator=accelerator(root))
-        require(stored.result.id == expected['bundle'],
-                'Stored model copy changed')
+            cfg, path=f'models/{expected["bundle"]}', accelerator=accelerator(root)
+        )
+        require(stored.result.id == expected['bundle'], 'Stored model copy changed')
     results = []
     for expected in state['versions']:
         trainer = load(root, version=expected['version'])
-        require(trainer.result.id == expected['bundle'],
-                'Explicit version loaded the wrong bundle')
+        require(
+            trainer.result.id == expected['bundle'],
+            'Explicit version loaded the wrong bundle',
+        )
         run = trainer.predict(snapshot, mlops=cfg)
         frame = population(run)
         lineage = run.manifest.parents
         require(
-            lineage.model.id == expected['bundle'] and
-            lineage.model.parents.training_table.id == state['training_table']
-            and lineage.model.parents.training_table.parents.snapshot.id
-            == training.id and lineage.snapshot.id == snapshot.id,
-            'Training and scoring lineage are conflated')
+            lineage.model.id == expected['bundle']
+            and lineage.model.parents.training_table.id == state['training_table']
+            and lineage.model.parents.training_table.parents.snapshot.id == training.id
+            and lineage.snapshot.id == snapshot.id,
+            'Training and scoring lineage are conflated',
+        )
         require(
             lineage.snapshot.parents.source_tables
             != training.manifest.parents.source_tables,
-            'Scoring source-table lineage did not change')
+            'Scoring source-table lineage did not change',
+        )
         reference = prediction_tracking(cfg, run, expected, root=root)
         results.append(
-            dict(prediction=run.id, bundle=expected['bundle'],
-                 version=expected['version'], reference=reference))
+            dict(
+                prediction=run.id,
+                bundle=expected['bundle'],
+                version=expected['version'],
+                reference=reference,
+            )
+        )
 
     aliases = []
     for index, expected in enumerate(state['versions']):
@@ -515,50 +602,71 @@ def score(root):
             set_alias(root, cfg, expected['version'])
         require(
             alias_version(root, cfg) == expected['version'],
-            'Alias update did not resolve to the intended version')
+            'Alias update did not resolve to the intended version',
+        )
         trainer = load(root, alias='champion')
         require(
             trainer.result.id == expected['bundle']
             and trainer.result.registered_model.version == expected['version'],
-            'Alias loaded the wrong version')
+            'Alias loaded the wrong version',
+        )
         run = trainer.predict(snapshot, mlops=cfg)
         frame = population(run)
         reference = prediction_tracking(cfg, run, expected, root=root)
         aliases.append(
-            dict(prediction=run.id, bundle=expected['bundle'],
-                 version=expected['version'], reference=reference))
+            dict(
+                prediction=run.id,
+                bundle=expected['bundle'],
+                version=expected['version'],
+                reference=reference,
+            )
+        )
 
     # Outside an MLOps context, the same public predict call stays untracked.
     plain = trainer.predict(snapshot)
     baseline = population(plain)
     require(plain.tracking is None, 'MLOps leaked into an ordinary prediction')
-    require(baseline.dtypes.equals(frame.dtypes),
-            'MLOps changed the ordinary prediction schema')
+    require(
+        baseline.dtypes.equals(frame.dtypes),
+        'MLOps changed the ordinary prediction schema',
+    )
 
     # Real public-API negative case: unknown IDs must be accounted for.
     inputs = root / 'unknown-inputs'
     inputs.mkdir()
     path = inputs / 'rows.parquet'
-    pd.DataFrame({
-        'ENTITY1': [0, 10**9],
-        'TIMESTAMP':
-        [pd.Timestamp(run.manifest.prediction_table.anchors[0])] * 2
-    }).to_parquet(path)
+    pd.DataFrame(
+        {
+            'ENTITY1': [0, 10**9],
+            'TIMESTAMP': [pd.Timestamp(run.manifest.prediction_table.anchors[0])] * 2,
+        }
+    ).to_parquet(path)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         partial = trainer.predict(
             snapshot,
             entities=kumo.FileConnector(root_dir=str(inputs))[path.name],
-            mlops=cfg)
-    require(any('skipped 1 of 2' in str(w.message) for w in caught),
-            'Missing diagnostic for unknown prediction ID')
-    require((partial.requested_rows, partial.scored_rows, partial.skipped_rows)
-            == (2, 1, 1) and partial.frame.ENTITY.tolist() == [0],
-            'Unknown ID disappeared without correct accounting')
-    require(partial.manifest.prediction_table.skipped_sample == [10**9],
-            'Wrong skipped prediction ID')
-    return dict(explicit=results, aliases=aliases, unknown_id='passed',
-                schema_compatibility='passed')
+            mlops=cfg,
+        )
+    require(
+        any('skipped 1 of 2' in str(w.message) for w in caught),
+        'Missing diagnostic for unknown prediction ID',
+    )
+    require(
+        (partial.requested_rows, partial.scored_rows, partial.skipped_rows) == (2, 1, 1)
+        and partial.frame.ENTITY.tolist() == [0],
+        'Unknown ID disappeared without correct accounting',
+    )
+    require(
+        partial.manifest.prediction_table.skipped_sample == [10**9],
+        'Wrong skipped prediction ID',
+    )
+    return dict(
+        explicit=results,
+        aliases=aliases,
+        unknown_id='passed',
+        schema_compatibility='passed',
+    )
 
 
 def evaluate(root):
@@ -576,58 +684,84 @@ def evaluate(root):
     for expected in scored['aliases']:
         trainer = load(root, version=expected['version'])
         run = kumo.PredictionResult.load_from_connector(
-            cfg, path=f'predictions/{expected["prediction"]}')
+            cfg, path=f'predictions/{expected["prediction"]}'
+        )
         frame = population(run)
         require(
             run.bundle_id == expected['bundle']
             and run.snapshot_id == fitted['scoring_snapshot'],
-            'Saved prediction identity changed after moving the alias')
+            'Saved prediction identity changed after moving the alias',
+        )
         drift = trainer.score_drift(run, previous=run, mlops=cfg)
-        require((drift.prediction_id, drift.bundle_id)
-                == (run.id, expected['bundle']) and drift.bundle_matches,
-                'Drift refers to another prediction/model')
-        require(not drift.reasons,
-                f'Drift calculation incomplete: {drift.reasons}')
-        require(drift.previous_prediction_id == run.id,
-                'Drift compared the wrong previous prediction')
         require(
-            all(value is not None and math.isfinite(value)
-                for value in (drift.psi, drift.ks, drift.wasserstein)),
-            f'Holdout drift is unavailable: {drift.reasons}')
-        require((drift.previous_psi, drift.previous_ks,
-                 drift.previous_wasserstein) == (0, 0, 0),
-                'A saved prediction must have zero drift against itself')
+            (drift.prediction_id, drift.bundle_id) == (run.id, expected['bundle'])
+            and drift.bundle_matches,
+            'Drift refers to another prediction/model',
+        )
+        require(not drift.reasons, f'Drift calculation incomplete: {drift.reasons}')
+        require(
+            drift.previous_prediction_id == run.id,
+            'Drift compared the wrong previous prediction',
+        )
+        require(
+            all(
+                value is not None and math.isfinite(value)
+                for value in (drift.psi, drift.ks, drift.wasserstein)
+            ),
+            f'Holdout drift is unavailable: {drift.reasons}',
+        )
+        require(
+            (drift.previous_psi, drift.previous_ks, drift.previous_wasserstein)
+            == (0, 0, 0),
+            'A saved prediction must have zero drift against itself',
+        )
         result = trainer.evaluate(run, labels_snapshot=labels, mlops=cfg)
-        require(not result.reasons,
-                f'Evaluation calculation incomplete: {result.reasons}')
-        require((result.prediction_id, result.bundle_id,
-                 result.snapshot_id) == (run.id, expected['bundle'], labels.id),
-                'Evaluation refers to another prediction/model/label snapshot')
         require(
-            result.matured and result.bundle_matches
+            not result.reasons, f'Evaluation calculation incomplete: {result.reasons}'
+        )
+        require(
+            (result.prediction_id, result.bundle_id, result.snapshot_id)
+            == (run.id, expected['bundle'], labels.id),
+            'Evaluation refers to another prediction/model/label snapshot',
+        )
+        require(
+            result.matured
+            and result.bundle_matches
             and result.rows == result.labelled == POPULATION
-            and result.labelled_fraction == 1, f'Incomplete labels: {result}')
+            and result.labelled_fraction == 1,
+            f'Incomplete labels: {result}',
+        )
         events = pd.read_parquet(root / 'data-2024-05-01' / 'events.parquet')
         anchor = pd.Timestamp(run.manifest.prediction_table.anchors[0])
         if anchor.tzinfo is not None:
             anchor = anchor.tz_convert(None)
-        active = set(events.loc[(events.TS > anchor)
-                                & (events.TS <= anchor + pd.Timedelta(days=7)),
-                                'USER_ID'])
+        active = set(
+            events.loc[
+                (events.TS > anchor) & (events.TS <= anchor + pd.Timedelta(days=7)),
+                'USER_ID',
+            ]
+        )
         targets = frame.ENTITY.isin(active).to_numpy()
         require(len(set(targets)) == 2, 'Fixture needs both realized classes')
         actuals = pd.read_parquet(result.actuals).sort_values('ENTITY')
         require(
             actuals.ENTITY.tolist() == list(range(POPULATION))
             and np.array_equal(actuals.TARGET, targets),
-            'Realized labels do not match the independent event-window join')
-        require(np.array_equal(actuals.True_PROB, frame.True_PROB),
-                'Evaluation changed the saved probabilities')
+            'Realized labels do not match the independent event-window join',
+        )
         require(
-            math.isclose(result.metrics['auroc'],
-                         roc_auc_score(targets, frame.True_PROB), abs_tol=1e-6,
-                         rel_tol=0),
-            'Realized AUROC differs from independent recomputation')
+            np.array_equal(actuals.True_PROB, frame.True_PROB),
+            'Evaluation changed the saved probabilities',
+        )
+        require(
+            math.isclose(
+                result.metrics['auroc'],
+                roc_auc_score(targets, frame.True_PROB),
+                abs_tol=1e-6,
+                rel_tol=0,
+            ),
+            'Realized AUROC differs from independent recomputation',
+        )
         profile = platform_backend(root)
         reference = None
         drift_reference = None
@@ -636,25 +770,37 @@ def evaluate(root):
             require(
                 record['params'].get('kumo.labels_snapshot_id') == labels.id
                 and record['params'].get('kumo.prediction_id') == run.id,
-                'Platform monitoring records another prediction/label snapshot')
+                'Platform monitoring records another prediction/label snapshot',
+            )
             require(
-                math.isclose(record['metrics'].get('realized/auroc', math.nan),
-                             result.metrics['auroc'], rel_tol=0, abs_tol=1e-6),
-                'Platform realized metric differs from the evaluated result')
+                math.isclose(
+                    record['metrics'].get('realized/auroc', math.nan),
+                    result.metrics['auroc'],
+                    rel_tol=0,
+                    abs_tol=1e-6,
+                ),
+                'Platform realized metric differs from the evaluated result',
+            )
             reference = record
-            drift_reference = platform_helpers().drift_record(
-                profile, cfg, run, drift)
+            drift_reference = platform_helpers().drift_record(profile, cfg, run, drift)
         else:
             with cfg.tracking.client() as client:
                 record = client.get_run(result.tracking.run_id)
                 require(
                     record.data.tags['kumo.labels_snapshot_id'] == labels.id,
-                    'Tracker records another label snapshot')
+                    'Tracker records another label snapshot',
+                )
         checks.append(
-            dict(prediction=run.id, bundle=run.bundle_id,
-                 labels_snapshot=labels.id, auroc=result.metrics['auroc'],
-                 psi=drift.psi, reference=reference,
-                 drift_reference=drift_reference))
+            dict(
+                prediction=run.id,
+                bundle=run.bundle_id,
+                labels_snapshot=labels.id,
+                auroc=result.metrics['auroc'],
+                psi=drift.psi,
+                reference=reference,
+                drift_reference=drift_reference,
+            )
+        )
     return dict(monitoring=checks)
 
 
@@ -667,23 +813,30 @@ def negative(root):
     state = read(root / 'fit.json')['result']
     connector = kumo.FileConnector(root_dir=str(root))
     restored = kumo.Trainer.load_from_connector(
-        connector, path='untracked-model', accelerator='cpu')
-    require(restored.result.id == state['untracked']['bundle']
-            and restored.result.metric_history == state['untracked']['history'],
-            'Model history changed after fresh-process load')
-    restored.result.export(kumo.ModelOutputConfig(
-        connector, path='history-reexport'))
-    require((root / 'untracked-model' / 'metric-history.json').read_bytes()
-            == (root / 'history-reexport' / 'metric-history.json').read_bytes(),
-            'Re-export changed metric history bytes')
-    require('mlflow' not in sys.modules,
-            'Loading or re-exporting model history imported MLflow')
+        connector, path='untracked-model', accelerator='cpu'
+    )
+    require(
+        restored.result.id == state['untracked']['bundle']
+        and restored.result.metric_history == state['untracked']['history'],
+        'Model history changed after fresh-process load',
+    )
+    restored.result.export(kumo.ModelOutputConfig(connector, path='history-reexport'))
+    require(
+        (root / 'untracked-model' / 'metric-history.json').read_bytes()
+        == (root / 'history-reexport' / 'metric-history.json').read_bytes(),
+        'Re-export changed metric history bytes',
+    )
+    require(
+        'mlflow' not in sys.modules,
+        'Loading or re-exporting model history imported MLflow',
+    )
     bundle = root / 'store' / 'models' / state['versions'][0]['bundle']
     broken = root / 'incomplete-model'
     shutil.copytree(bundle, broken)
     manifest = read(broken / 'publication-manifest.json')
-    entry = next(item for item in manifest['artifacts']
-                 if item['role'] == 'training_spec')
+    entry = next(
+        item for item in manifest['artifacts'] if item['role'] == 'training_spec'
+    )
     missing = broken / entry['relative_path']
     missing.unlink()
     try:
@@ -692,7 +845,8 @@ def negative(root):
         require(
             str(error).strip()
             and (missing.name in str(error) or 'missing' in str(error).lower()),
-            f'Incomplete model diagnostic is not actionable: {error}')
+            f'Incomplete model diagnostic is not actionable: {error}',
+        )
         incomplete = str(error)
     else:
         raise AssertionError('An incomplete model was accepted')
@@ -702,12 +856,15 @@ def negative(root):
     try:
         if os.access(denied, os.W_OK):
             raise PrerequisiteError(
-                'Permission case requires a non-root user without write access')
+                'Permission case requires a non-root user without write access'
+            )
         try:
             kumo.MLOps(str(denied), on_error='raise')
         except PermissionError as error:
-            require('artifact_root' in str(error) and 'write' in str(error),
-                    f'Artifact access diagnostic is not actionable: {error}')
+            require(
+                'artifact_root' in str(error) and 'write' in str(error),
+                f'Artifact access diagnostic is not actionable: {error}',
+            )
             permission = str(error)
         else:
             raise AssertionError('An unwritable artifact root was accepted')
@@ -725,16 +882,22 @@ def negative(root):
         marker.unlink()
     try:
         kumo.PredictionResult.load_from_connector(
-            kumo.FileConnector(root_dir=str(root)),
-            path='interrupted-prediction')
+            kumo.FileConnector(root_dir=str(root)), path='interrupted-prediction'
+        )
     except (ValueError, FileNotFoundError) as error:
-        require('_SUCCESS' in str(error) or 'complete' in str(error).lower(),
-                f'Incomplete export diagnostic is not actionable: {error}')
+        require(
+            '_SUCCESS' in str(error) or 'complete' in str(error).lower(),
+            f'Incomplete export diagnostic is not actionable: {error}',
+        )
         interruption = str(error)
     else:
         raise AssertionError('An uncommitted prediction export was accepted')
-    return dict(incomplete_model=incomplete, denied_artifact_access=permission,
-                incomplete_prediction=interruption, exported_epoch_history='passed')
+    return dict(
+        incomplete_model=incomplete,
+        denied_artifact_access=permission,
+        incomplete_prediction=interruption,
+        exported_epoch_history='passed',
+    )
 
 
 def explain(root, *, check_local_permissions=True):
@@ -750,10 +913,13 @@ def explain(root, *, check_local_permissions=True):
     scores = explained.gradient_scores().to_pandas()
     require(
         scores.to_dict('records') == state['gradient'],
-        'Gradient scores changed after reopening')
+        'Gradient scores changed after reopening',
+    )
     model = kumo.Trainer.load_from_connector(
-        kumo.FileConnector(root_dir=str(root)), path='untracked-model',
-        accelerator='cpu').result
+        kumo.FileConnector(root_dir=str(root)),
+        path='untracked-model',
+        accelerator='cpu',
+    ).result
     holdout = model.holdout_df()
     # The cohorts of this key hold every explained TEST row of the fixture, so
     # their weighted prediction is the explained model's holdout mean.
@@ -762,48 +928,59 @@ def explain(root, *, check_local_permissions=True):
     cohort = explained.cohort(key)
     mean = sum(p * q for p, q in zip(cohort.populations, cohort.predictions))
     published = holdout.True_PROB.mean()
-    pre_refit = pd.read_parquet(run / trial.removesuffix('_refit_trainval') /
-                                'test_df.parquet').True_PROB.mean()
+    pre_refit = pd.read_parquet(
+        run / trial.removesuffix('_refit_trainval') / 'test_df.parquet'
+    ).True_PROB.mean()
     require(
         abs(mean - published) < 0.01 <= abs(pre_refit - published),
         f'Explained mean {mean} must be within 0.01 of the published refit '
-        f'model {published} and not of the pre-refit model {pre_refit}')
+        f'model {published} and not of the pre-refit model {pre_refit}',
+    )
     figure, axis = explained.plot_gradient(top_k=5)
-    require([bar.get_width()
-             for bar in axis.patches] == scores.score.nlargest(5).tolist(),
-            'Gradient plot differs from the scores')
+    require(
+        [bar.get_width() for bar in axis.patches] == scores.score.nlargest(5).tolist(),
+        'Gradient plot differs from the scores',
+    )
     figure.savefig(root / 'explanation-gradient.png')
     figure, (predictions, populations) = explained.plot_cohort(key)
     require(
         predictions.lines[0].get_ydata().tolist() == cohort.predictions
-        and [bar.get_height()
-             for bar in populations.patches] == cohort.populations,
-        'Cohort plot differs from the cohort')
+        and [bar.get_height() for bar in populations.patches] == cohort.populations,
+        'Cohort plot differs from the cohort',
+    )
     figure.savefig(root / 'explanation-cohort.png')
     references = explained.samples()
-    require(references and all(r.available for r in references),
-            'Sampled graphs are missing')
+    require(
+        references and all(r.available for r in references),
+        'Sampled graphs are missing',
+    )
     entities = set(holdout.ENTITY)
     for reference in references:
         sampled = explained.sample(reference.artifact_id)
         store = sampled.subgraph_store
         user = store.nodes[store.root_id].pkey
         require(
-            store.root_id in store.tables['users'] and user in entities
+            store.root_id in store.tables['users']
+            and user in entities
             and set(reference.original_ids.values()) == {user}
             and sampled.feature_store is not None,
-            f'Sample {reference.artifact_id} is not its recorded held-out user')
+            f'Sample {reference.artifact_id} is not its recorded held-out user',
+        )
 
-    unknown = expect(kumo.ExplanationUnavailableError,
-                     lambda: explained.sample('999999'), '999999.json')
+    unknown = expect(
+        kumo.ExplanationUnavailableError,
+        lambda: explained.sample('999999'),
+        '999999.json',
+    )
     require(
-        all(a.reason == 'model_only'
-            for a in model.explanations.availability.values()),
-        'A model bundle reported training explanations')
+        all(a.reason == 'model_only' for a in model.explanations.availability.values()),
+        'A model bundle reported training explanations',
+    )
     bundle = expect(
         kumo.InvalidRunError,
         lambda: kumo.TrainingExplanations.load(root / 'untracked-model'),
-        'model bundle alone')
+        'model bundle alone',
+    )
     broken = root / 'broken-training-run'
     shutil.copytree(run, broken)
     path = broken / trial / 'explain_test' / 'scores.csv'
@@ -813,24 +990,34 @@ def explain(root, *, check_local_permissions=True):
         try:
             if os.access(path, os.R_OK):
                 raise PrerequisiteError(
-                    'Permission case requires a non-root user without read access')
+                    'Permission case requires a non-root user without read access'
+                )
             denied = expect(
                 (kumo.InvalidExplanationError, PermissionError),
                 lambda: kumo.TrainingExplanations.load(broken).gradient_scores(),
-                'Permission denied', str(path))
+                'Permission denied',
+                str(path),
+            )
         finally:
             path.chmod(0o600)
     path.unlink()
     incomplete = expect(
         kumo.ExplanationUnavailableError,
         lambda: kumo.TrainingExplanations.load(broken).gradient_scores(),
-        str(path))
+        str(path),
+    )
     shutil.rmtree(broken)
-    return dict(trial=trial, explained_mean=mean,
-                published_mean=float(published),
-                pre_refit_mean=float(pre_refit), samples=len(references),
-                unknown_sample=unknown, model_only=bundle,
-                denied_artifact_access=denied, incomplete_artifact=incomplete)
+    return dict(
+        trial=trial,
+        explained_mean=mean,
+        published_mean=float(published),
+        pre_refit_mean=float(pre_refit),
+        samples=len(references),
+        unknown_sample=unknown,
+        model_only=bundle,
+        denied_artifact_access=denied,
+        incomplete_artifact=incomplete,
+    )
 
 
 def phase(args):
@@ -840,18 +1027,19 @@ def phase(args):
     try:
         profile = platform_backend(args.output_dir)
         if profile is not None and profile.config['environment'] == 'managed':
-            report['environment'] = check_install(args.wheel,
-                                                  args.expected_version,
-                                                  managed=True)
+            report['environment'] = check_install(
+                args.wheel, args.expected_version, managed=True
+            )
         else:
-            report['environment'] = check_install(args.wheel,
-                                                  args.expected_version)
+            report['environment'] = check_install(args.wheel, args.expected_version)
         if profile is not None:
-            report['platform'] = dict(platform=profile.config['platform'],
-                                      model=profile.model,
-                                      experiment=profile.experiment,
-                                      artifact_root=profile.artifact_root,
-                                      placement=profile.placement())
+            report['platform'] = dict(
+                platform=profile.config['platform'],
+                model=profile.model,
+                experiment=profile.experiment,
+                artifact_root=profile.artifact_root,
+                placement=profile.placement(),
+            )
         import torch
 
         import kumo.engine as kumo
@@ -865,17 +1053,21 @@ def phase(args):
         report['error'] = traceback.format_exc()
     except Exception as error:
         if profile is not None and platform_helpers().denied_access(
-                error, provider_only=True, provider=profile.config['platform']):
+            error, provider_only=True, provider=profile.config['platform']
+        ):
             report['status'] = 'blocked'
         report['error'] = traceback.format_exc()
     finally:
         report['seconds'] = time.monotonic() - started
         report['resources'] = dict(
-            device='cpu', torch_threads=2,
+            device='cpu',
+            torch_threads=2,
             maxrss_self_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             maxrss_terminated_children_kib=resource.getrusage(
-                resource.RUSAGE_CHILDREN).ru_maxrss,
-            scope='Linux process maxima, not simultaneous process-tree memory')
+                resource.RUSAGE_CHILDREN
+            ).ru_maxrss,
+            scope='Linux process maxima, not simultaneous process-tree memory',
+        )
         write(args.output_dir / f'{args.phase}.json', report)
     return 0 if report['status'] == 'passed' else 1
 
@@ -884,62 +1076,76 @@ def run(args):
     root = args.output_dir
     root.mkdir(parents=True, exist_ok=False)
     report = dict(
-        status='blocked', command=sys.argv, phases={
+        status='blocked',
+        command=sys.argv,
+        phases={
             name: dict(status='blocked', reason='Prerequisite has not passed')
             for name in PHASES
-        }, test_sha256=digest(Path(__file__)))
+        },
+        test_sha256=digest(Path(__file__)),
+    )
     started = time.monotonic()
     execution_started = False
     try:
         if getattr(args, 'platform_config', None) is not None:
-            platform_helpers().prepare(root, args.platform_config,
-                                       attempt=getattr(args, 'attempt', None))
+            platform_helpers().prepare(
+                root, args.platform_config, attempt=getattr(args, 'attempt', None)
+            )
             report['platform_helpers_sha256'] = digest(
-                Path(__file__).with_name('wheel_mlops_platform.py'))
+                Path(__file__).with_name('wheel_mlops_platform.py')
+            )
         profile = platform_backend(root)
         if profile is not None:
             report['required_gaps'] = {
                 'exported_epoch_history': dict(
                     status='not implemented',
-                    reason='Managed profiles do not yet exercise epoch-history export/reload.'),
+                    reason='Managed profiles do not yet exercise epoch-history export/reload.',
+                ),
             }
             report['required_gaps']['ui_review'] = {
-                'status':
-                'blocked',
-                'reason':
-                'Inspect platform UI against the recorded runs, metrics and versions',
+                'status': 'blocked',
+                'reason': 'Inspect platform UI against the recorded runs, metrics and versions',
             }
             if profile.config['execution_context'] == 'client':
                 report['required_gaps']['native_platform_execution'] = {
-                    'status':
-                    'blocked',
-                    'reason':
-                    'Client execution does not qualify the managed runtime',
+                    'status': 'blocked',
+                    'reason': 'Client execution does not qualify the managed runtime',
                 }
         report['gpu_helpers_sha256'] = digest(
-            Path(__file__).with_name('wheel_gpu_smoke.py'))
+            Path(__file__).with_name('wheel_gpu_smoke.py')
+        )
         if profile is not None and profile.config['environment'] == 'managed':
-            report['environment'] = check_install(args.wheel,
-                                                  args.expected_version,
-                                                  managed=True)
+            report['environment'] = check_install(
+                args.wheel, args.expected_version, managed=True
+            )
         else:
-            report['environment'] = check_install(args.wheel,
-                                                  args.expected_version)
+            report['environment'] = check_install(args.wheel, args.expected_version)
         with (root / 'pip-check.log').open('w') as log:
             subprocess.run(
                 [sys.executable, '-I', '-m', 'pip', '--isolated', 'check'],
-                stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=True,
+                timeout=120,
+            )
         execution_started = True
-        phases = (('negative', 'fit', 'score',
-                   'evaluate') if profile is not None else PHASES)
+        phases = (
+            ('negative', 'fit', 'score', 'evaluate') if profile is not None else PHASES
+        )
         report['phases'] = {name: report['phases'][name] for name in phases}
         for name in phases:
             command = [
-                sys.executable, '-I',
-                str(Path(__file__).resolve()), '--output-dir',
-                str(root), '--wheel',
-                str(args.wheel), '--expected-version', args.expected_version,
-                '--phase', name
+                sys.executable,
+                '-I',
+                str(Path(__file__).resolve()),
+                '--output-dir',
+                str(root),
+                '--wheel',
+                str(args.wheel),
+                '--expected-version',
+                args.expected_version,
+                '--phase',
+                name,
             ]
             if profile is not None:
                 command.append('--execute-platform')
@@ -947,18 +1153,24 @@ def run(args):
                 try:
                     returncode = execute(command, root, log, args.phase_timeout)
                 except subprocess.TimeoutExpired:
-                    report['phases'][name] = dict(status='failed',
-                                                  error='Phase timed out')
+                    report['phases'][name] = dict(
+                        status='failed', error='Phase timed out'
+                    )
                     report['status'] = 'failed'
                     break
             receipt = root / f'{name}.json'
-            report['phases'][name] = (read(receipt) if receipt.is_file() else
-                                      dict(status='failed',
-                                           error='Worker produced no receipt'))
+            report['phases'][name] = (
+                read(receipt)
+                if receipt.is_file()
+                else dict(status='failed', error='Worker produced no receipt')
+            )
             report['phases'][name]['returncode'] = returncode
             if returncode or report['phases'][name]['status'] != 'passed':
-                status = ('blocked' if report['phases'][name]['status']
-                          == 'blocked' else 'failed')
+                status = (
+                    'blocked'
+                    if report['phases'][name]['status'] == 'blocked'
+                    else 'failed'
+                )
                 report['phases'][name]['status'] = status
                 report['status'] = status
                 break
@@ -970,12 +1182,19 @@ def run(args):
             if name == 'fit':
                 for source in root.glob('data-*'):
                     shutil.rmtree(source)
-                require(not list(root.glob('data-*')),
-                        'Producer source files survived cleanup')
+                require(
+                    not list(root.glob('data-*')),
+                    'Producer source files survived cleanup',
+                )
         else:
-            report['status'] = ('blocked' if any(
-                gap['status'] != 'passed'
-                for gap in report.get('required_gaps', {}).values()) else 'passed')
+            report['status'] = (
+                'blocked'
+                if any(
+                    gap['status'] != 'passed'
+                    for gap in report.get('required_gaps', {}).values()
+                )
+                else 'passed'
+            )
     except Exception:
         if execution_started:
             report['status'] = 'failed'
@@ -985,16 +1204,22 @@ def run(args):
         write(root / 'summary.json', report)
         print(
             json.dumps(
-                dict(status=report['status'],
-                     summary=str(root / 'summary.json'))))
+                dict(status=report['status'], summary=str(root / 'summary.json'))
+            )
+        )
     return 0 if report['status'] == 'passed' else 1
 
 
 def execute(command, cwd, log, timeout, *, env=None):
     """Bound each worker and its training/prediction descendants."""
-    with subprocess.Popen(command, cwd=cwd, stdout=log, env=env,
-                          stderr=subprocess.STDOUT,
-                          start_new_session=True) as process:
+    with subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=log,
+        env=env,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    ) as process:
         try:
             return process.wait(timeout=timeout)
         except BaseException:
@@ -1024,14 +1249,15 @@ def main(argv=None):
     parser.add_argument('--attempt', help=argparse.SUPPRESS)
     parser.add_argument('--phase-timeout', type=int, default=600)
     parser.add_argument('--platform-config', type=Path, help=argparse.SUPPRESS)
-    parser.add_argument('--execute-platform', action='store_true',
-                        help=argparse.SUPPRESS)
+    parser.add_argument(
+        '--execute-platform', action='store_true', help=argparse.SUPPRESS
+    )
     parser.add_argument('--phase', choices=PHASES, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if (args.platform_config is not None or
-        (args.phase is not None and
-         (args.output_dir / 'platform.json').is_file())
-        ) and not args.execute_platform:
+    if (
+        args.platform_config is not None
+        or (args.phase is not None and (args.output_dir / 'platform.json').is_file())
+    ) and not args.execute_platform:
         parser.error(
             'Use the platform entrypoint (Snowflake notebook or platform --execute)'
         )

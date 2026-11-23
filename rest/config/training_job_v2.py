@@ -29,6 +29,7 @@ class TrainingJobInternalRequest:
     the public model plan at the REST boundary so that the driver layer never
     round-trips a plan through the wire contract.
     """
+
     # ID of the predictive query to train.
     pquery_id: str
 
@@ -64,7 +65,8 @@ class TrainingJobInternalRequest:
         if v is not None and isinstance(v.source_table, local_file):
             raise ValueError(
                 'A local file custom training table is readable only by a '
-                'backend running in the calling process, not by this server.')
+                'backend running in the calling process, not by this server.'
+            )
         return v
 
 
@@ -73,6 +75,7 @@ class TrainingJobRequest:
     """
     Training job request with additional parameters needed for UI.
     """
+
     # Predictive query for this training job.
     predictive_query: str
 

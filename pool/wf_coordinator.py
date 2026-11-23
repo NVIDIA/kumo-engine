@@ -9,6 +9,7 @@ Kumo Temporal workflows and the diskgraph pool.
 exit. ``run_pooled_activity`` additionally handles activity dispatch and
 worker-loss recovery. Both paths are idempotent on ``(snapshot_id, job_id)``.
 """
+
 import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -113,7 +114,8 @@ _POOL_STATS_SCHEDULE_TO_CLOSE = timedelta(minutes=2)
 
 _POOLED_ACTIVITY_NO_POLLER_MESSAGE = (
     'The DiskGraph compute task timed out before a worker picked it up. Retry '
-    'the job. If the problem continues, contact Kumo support.')
+    'the job. If the problem continues, contact Kumo support.'
+)
 
 
 def _iter_error_chain(err: BaseException) -> Iterator[BaseException]:
@@ -134,7 +136,8 @@ def _is_schedule_to_start_timeout(err: BaseException) -> bool:
     return any(
         isinstance(current, TimeoutError)
         and getattr(current, 'type', None) == TimeoutType.SCHEDULE_TO_START
-        for current in _iter_error_chain(err))
+        for current in _iter_error_chain(err)
+    )
 
 
 def _is_permanent_snapshot_miss(err: ActivityError) -> bool:
@@ -146,7 +149,8 @@ def _is_permanent_snapshot_miss(err: ActivityError) -> bool:
     """
     return any(
         getattr(cause, 'type', None) == PERMANENT_SNAPSHOT_MISS_ERROR_TYPE
-        for cause in _iter_error_chain(err))
+        for cause in _iter_error_chain(err)
+    )
 
 
 def _build_placement_request(
@@ -162,8 +166,9 @@ def _build_placement_request(
     placement contexts and ``run_pooled_activity`` so the lease identity
     is computed one way."""
     workflow_id = workflow.info().workflow_id
-    job_id = (f'{workflow_id}#shard-{shard_index}'
-              if shard_index is not None else workflow_id)
+    job_id = (
+        f'{workflow_id}#shard-{shard_index}' if shard_index is not None else workflow_id
+    )
     return PlacementRequest(
         snapshot_id=snapshot_id,
         job_id=job_id,
@@ -174,8 +179,9 @@ def _build_placement_request(
     )
 
 
-def _stamp_placement_memo(result: PlacementResult, activity: SnapshotActivity,
-                          shard_index: Optional[int]) -> None:
+def _stamp_placement_memo(
+    result: PlacementResult, activity: SnapshotActivity, shard_index: Optional[int]
+) -> None:
     """Stamp strategy-provided observability metadata onto the workflow memo
     so the Temporal Cloud UI links to the placed pod's logs. See the inline
     rationale in ``snapshot_placement_session_ctx`` for the JSON encoding."""
@@ -196,7 +202,8 @@ _POOL_PLACEMENT_TIMEOUT_MESSAGE = (
     'e.g. because a required GPU pool could not be validated at startup), or '
     'no worker could be provisioned. Please retry; if the problem persists, '
     'contact Kumo support or your cluster administrator to check the pool '
-    'controller (kumo-poolcontroller) health.')
+    'controller (kumo-poolcontroller) health.'
+)
 
 
 def _classify_placement_failure(err: BaseException) -> tuple[bool, bool]:
@@ -267,8 +274,7 @@ async def _place_snapshot(request: PlacementRequest) -> PlacementResult:
             raise ApplicationError(
                 f'diskgraph placement did not complete for '
                 f'snapshot={request.snapshot_id} job={request.job_id}',
-                PublicException(
-                    message=_POOL_PLACEMENT_TIMEOUT_MESSAGE).to_dict(),
+                PublicException(message=_POOL_PLACEMENT_TIMEOUT_MESSAGE).to_dict(),
                 type='PoolPlacementUnavailableError',
                 non_retryable=True,
             ) from err
@@ -294,8 +300,10 @@ async def _release_snapshot(request: PlacementRequest) -> bool:
     except Exception:
         workflow.logger.exception(
             'release_snapshot_activity failed for snapshot=%s job=%s — '
-            'controller lease TTL will reap the zombie', request.snapshot_id,
-            request.job_id)
+            'controller lease TTL will reap the zombie',
+            request.snapshot_id,
+            request.job_id,
+        )
         return False
 
 
@@ -373,8 +381,8 @@ async def run_pooled_activity(
     or the runner exits, so a re-place never leaks the prior lease.
     """
     request = _build_placement_request(
-        snapshot_id, activity, resource_hint, shard_index,
-        source_size_bytes)
+        snapshot_id, activity, resource_hint, shard_index, source_size_bytes
+    )
 
     last_error: Optional[BaseException] = None
     # Live placement carried across iterations: re-dispatch reuses it; a
@@ -394,16 +402,20 @@ async def run_pooled_activity(
                 placed = True
                 workflow.logger.info(
                     'run_pooled_activity placed: snapshot=%s job=%s tq=%s '
-                    'status=%s worker=%s', request.snapshot_id, request.job_id,
-                    task_queue, result.status.value, pool_worker_uid)
+                    'status=%s worker=%s',
+                    request.snapshot_id,
+                    request.job_id,
+                    task_queue,
+                    result.status.value,
+                    pool_worker_uid,
+                )
             try:
                 return await workflow.execute_activity(
                     activity_fn,
                     args=args,
                     task_queue=task_queue,
                     schedule_to_close_timeout=schedule_to_close_timeout,
-                    schedule_to_start_timeout=(
-                        _POOLED_ACTIVITY_SCHEDULE_TO_START),
+                    schedule_to_start_timeout=(_POOLED_ACTIVITY_SCHEDULE_TO_START),
                     heartbeat_timeout=heartbeat_timeout,
                     retry_policy=retry_policy,
                 )
@@ -417,22 +429,30 @@ async def run_pooled_activity(
                     workflow.logger.info(
                         'run_pooled_activity cancelled; releasing placement '
                         'without re-dispatch (snapshot=%s job=%s).',
-                        request.snapshot_id, request.job_id)
+                        request.snapshot_id,
+                        request.job_id,
+                    )
                     raise
                 if _is_permanent_snapshot_miss(err):
                     workflow.logger.warning(
                         'run_pooled_activity snapshot miss on placed worker; '
-                        're-placing (snapshot=%s job=%s).', request.snapshot_id,
-                        request.job_id)
+                        're-placing (snapshot=%s job=%s).',
+                        request.snapshot_id,
+                        request.job_id,
+                    )
                 elif _is_schedule_to_start_timeout(err):
                     # Daemon health cannot detect an activity poller lost after
                     # placement, so delete this Job before replacing it.
                     workflow.logger.warning(
                         'run_pooled_activity lost activity poller for tq=%s; '
-                        're-placing (snapshot=%s job=%s).', task_queue,
-                        request.snapshot_id, request.job_id)
-                elif (task_queue is not None
-                      and task_queue.startswith(ACTIVITY_TQ_PREFIX)):
+                        're-placing (snapshot=%s job=%s).',
+                        task_queue,
+                        request.snapshot_id,
+                        request.job_id,
+                    )
+                elif task_queue is not None and task_queue.startswith(
+                    ACTIVITY_TQ_PREFIX
+                ):
                     # The activity-scoped worker deliberately exits after one
                     # terminal activity. Kubernetes has already exhausted the
                     # Job's pod retries by the time Temporal surfaces this
@@ -443,27 +463,39 @@ async def run_pooled_activity(
                     workflow.logger.warning(
                         'run_pooled_activity activity-scoped worker exhausted '
                         'for tq=%s; re-placing (snapshot=%s job=%s).',
-                        task_queue, request.snapshot_id, request.job_id)
+                        task_queue,
+                        request.snapshot_id,
+                        request.job_id,
+                    )
                 elif pool_worker_uid is None:
                     # Overflow (eph) placement — no durable worker to poll.
                     # The eph pod is throwaway; drop + re-place from scratch.
                     workflow.logger.warning(
                         'run_pooled_activity overflow activity failed for '
                         'snapshot=%s job=%s; re-placing. err=%s',
-                        request.snapshot_id, request.job_id, err)
+                        request.snapshot_id,
+                        request.job_id,
+                        err,
+                    )
                 else:
                     decision = await _await_worker_recovery(pool_worker_uid)
                     if decision == 'retry':
                         workflow.logger.info(
                             'run_pooled_activity worker %s healthy after '
                             'failure; re-dispatching on same placement '
-                            '(snapshot=%s job=%s).', pool_worker_uid,
-                            request.snapshot_id, request.job_id)
+                            '(snapshot=%s job=%s).',
+                            pool_worker_uid,
+                            request.snapshot_id,
+                            request.job_id,
+                        )
                         continue
                     workflow.logger.warning(
                         'run_pooled_activity worker %s is DEAD/gone after '
                         'failure; re-placing (snapshot=%s job=%s).',
-                        pool_worker_uid, request.snapshot_id, request.job_id)
+                        pool_worker_uid,
+                        request.snapshot_id,
+                        request.job_id,
+                    )
 
                 if not await _release_snapshot(request):
                     break
@@ -481,8 +513,7 @@ async def run_pooled_activity(
             f'DiskGraph compute activity for snapshot={request.snapshot_id} '
             f'job={request.job_id} lost its poller after {placement_count} '
             f'placement{"s" if placement_count != 1 else ""}',
-            PublicException(
-                message=_POOLED_ACTIVITY_NO_POLLER_MESSAGE).to_dict(),
+            PublicException(message=_POOLED_ACTIVITY_NO_POLLER_MESSAGE).to_dict(),
             type='PooledActivityNoPollerError',
             non_retryable=True,
         ) from last_error
@@ -528,18 +559,20 @@ async def snapshot_placement_session_ctx(
     capacity metadata can inspect it.
     """
     request = _build_placement_request(
-        snapshot_id, activity, resource_hint, shard_index,
-        source_size_bytes)
+        snapshot_id, activity, resource_hint, shard_index, source_size_bytes
+    )
     # place_snapshot is long-running on cold-start (controller waits for
     # K8s daemon registration). start_to_close must accommodate the
     # AutoRPC rpc_timeout configured in pool.client; schedule_to_close
     # is the retry budget. See :mod:`pool.timeouts`.
     result: PlacementResult = await _place_snapshot(request)
     workflow.logger.info(
-        'snapshot_placement_session_ctx acquired: '
-        'snapshot=%s job=%s tq=%s status=%s',
-        request.snapshot_id, request.job_id, result.task_queue,
-        result.status.value)
+        'snapshot_placement_session_ctx acquired: snapshot=%s job=%s tq=%s status=%s',
+        request.snapshot_id,
+        request.job_id,
+        result.task_queue,
+        result.status.value,
+    )
     # Stamp strategy-provided observability metadata (pod_name,
     # grafana_logs_url, ...) onto the workflow memo so anyone landing
     # on the Temporal Cloud URL can jump to the pod's logs. Keyed by

@@ -48,6 +48,7 @@ BUFFER_SIZE = 1024 * 1024  # 1mb
 def retry_policy():
     try:
         from databricks.sdk.errors import platform
+
         ex_types = (
             platform.ResourceConflict,
             platform.TooManyRequests,
@@ -59,13 +60,14 @@ def retry_policy():
             ValueError,  # invalid_client auth failures
         )
     except ModuleNotFoundError:
-        ex_types = (Exception, )
+        ex_types = (Exception,)
 
     def _on_auth_error(e: Exception) -> None:
         logger.warning(
-            "Databricks auth failed, reconnecting with fresh "
-            "credentials from Secrets Manager (error_type=%s)",
-            type(e).__name__)
+            'Databricks auth failed, reconnecting with fresh '
+            'credentials from Secrets Manager (error_type=%s)',
+            type(e).__name__,
+        )
         uc_ctx.reconnect()
 
     return retry(
@@ -95,16 +97,22 @@ class UCContext:
     On auth failure (e.g. after credential rotation), automatically
     reconnects with fresh credentials from AWS Secrets Manager.
     """
+
     def __init__(self):
         self._local = threading.local()
         self._lock = threading.Lock()
         self._connection_info: Optional[DatabricksConnectionInfo] = None
 
-    @retry(exceptions=(ValueError, MaxRetryError, ConnectionError), tries=7,
-           delay=5, backoff=2, logger=logger)
-    def _connect(self,
-                 connection_info: Optional[DatabricksConnectionInfo] = None):
+    @retry(
+        exceptions=(ValueError, MaxRetryError, ConnectionError),
+        tries=7,
+        delay=5,
+        backoff=2,
+        logger=logger,
+    )
+    def _connect(self, connection_info: Optional[DatabricksConnectionInfo] = None):
         from databricks.sdk import WorkspaceClient
+
         config = self.config(connection_info)
         # Configure timeouts and connection pool.
         # http_timeout_seconds: per-request timeout. Reduced from 300s to 60s
@@ -137,25 +145,26 @@ class UCContext:
     @property
     def client(self):
         from databricks.sdk import WorkspaceClient
-        if hasattr(self._local, "pid") and self._local.pid != os.getpid():
+
+        if hasattr(self._local, 'pid') and self._local.pid != os.getpid():
             self._local.client = None
-        if not hasattr(self._local, "client") or self._local.client is None:
+        if not hasattr(self._local, 'client') or self._local.client is None:
             try:
                 self._connect()
             except ModuleNotFoundError:
-                raise RuntimeError("calling databricks operations "
-                                   "from non-databricks environment") \
-                    from None
+                raise RuntimeError(
+                    'calling databricks operations from non-databricks environment'
+                ) from None
             except ClientError:
-                raise RuntimeError("databricks connection failed") from None
+                raise RuntimeError('databricks connection failed') from None
 
         assert self._local.client is not None
         assert isinstance(self._local.client, WorkspaceClient)
         return self._local.client
 
-    def config(self,
-               connection_info: Optional[DatabricksConnectionInfo] = None):
+    def config(self, connection_info: Optional[DatabricksConnectionInfo] = None):
         from databricks.sdk.core import Config
+
         if connection_info:
             with self._lock:
                 self._connection_info = connection_info
@@ -165,25 +174,29 @@ class UCContext:
                     if not self._connection_info:
                         self._connection_info = DatabricksConnectionInfo.get()
         host = self._connection_info.host
-        token = self._connection_info.credentials.get("pat", None)
+        token = self._connection_info.credentials.get('pat', None)
         client_id = self._connection_info.credentials.get('client_id', None)
-        client_secret = self._connection_info.credentials.get(
-            'client_secret', None)
+        client_secret = self._connection_info.credentials.get('client_secret', None)
         if not host:
-            raise RuntimeError("no databricks hostname provided (env: "
-                               f"{DATABRICKS_HOST.name})")
+            raise RuntimeError(
+                f'no databricks hostname provided (env: {DATABRICKS_HOST.name})'
+            )
         elif token:
-            return Config(host=host, auth_type="pat",
-                          token=token.get_secret_value())
+            return Config(host=host, auth_type='pat', token=token.get_secret_value())
         elif client_id and client_secret:
-            return Config(host=host, auth_type="oauth-m2m",
-                          client_id=client_id.get_secret_value(),
-                          client_secret=client_secret.get_secret_value())
+            return Config(
+                host=host,
+                auth_type='oauth-m2m',
+                client_id=client_id.get_secret_value(),
+                client_secret=client_secret.get_secret_value(),
+            )
         else:
-            raise RuntimeError("no databricks credentials provided (env: "
-                               f"{DATABRICKS_TOKEN.name} or "
-                               f"{DATABRICKS_CLIENT_ID.name} and "
-                               f"{DATABRICKS_CLIENT_SECRET.name})")
+            raise RuntimeError(
+                'no databricks credentials provided (env: '
+                f'{DATABRICKS_TOKEN.name} or '
+                f'{DATABRICKS_CLIENT_ID.name} and '
+                f'{DATABRICKS_CLIENT_SECRET.name})'
+            )
 
 
 uc_ctx = UCContext()
@@ -196,12 +209,13 @@ uc_ctx = UCContext()
 def object_identity(uri: UCURI) -> api.ObjectIdentity:
     """Capture the Unity Catalog file's exact closed-object metadata."""
     from databricks.sdk.errors.platform import NotFound
+
     try:
         metadata = uc_ctx.client.files.get_metadata(uri.as_path())
     except NotFound:
-        raise FileNotFoundError(f"not found: {uri.as_url()}") from None
+        raise FileNotFoundError(f'not found: {uri.as_url()}') from None
     if metadata.content_length is None or metadata.last_modified is None:
-        raise ValueError("Unity Catalog object identity is incomplete")
+        raise ValueError('Unity Catalog object identity is incomplete')
     return api.ObjectIdentity(
         size=int(metadata.content_length),
         etag=None,
@@ -215,6 +229,7 @@ def object_identity(uri: UCURI) -> api.ObjectIdentity:
 @ucv_fs_logging_policy()
 def filesize(uri: UCURI) -> Optional[int]:
     from databricks.sdk.errors.platform import NotFound
+
     try:
         ret = uc_ctx.client.files.get_metadata(uri.as_path())
         return ret.content_length
@@ -229,12 +244,13 @@ def filesize(uri: UCURI) -> Optional[int]:
 def read_binary(uri: UCURI, compression: bool) -> bytes:
     from databricks.sdk._base_client import _StreamingResponse
     from databricks.sdk.errors.platform import NotFound
+
     try:
         res = uc_ctx.client.files.download(uri.as_path())
     except NotFound:
-        raise FileNotFoundError(f"not found: {uri.as_url()}") from None
+        raise FileNotFoundError(f'not found: {uri.as_url()}') from None
     if res.contents is None:
-        raise FileNotFoundError(f"no contents: {uri.as_url()}")
+        raise FileNotFoundError(f'no contents: {uri.as_url()}')
     assert isinstance(res.contents, _StreamingResponse)
     res.contents.set_chunk_size(BUFFER_SIZE)  # pyright: ignore
     try:
@@ -251,8 +267,7 @@ def read_binary(uri: UCURI, compression: bool) -> bytes:
 @api.read_text.register
 @trace(TraceOptions(trace_params=True))
 @ucv_fs_logging_policy(allowed_exceptions=FileNotFoundError)
-def read_text(uri: UCURI, compression: bool,
-              encoding: Optional[str] = None) -> str:
+def read_text(uri: UCURI, compression: bool, encoding: Optional[str] = None) -> str:
     r = read_binary(uri, compression=compression)
     if encoding:
         return r.decode(encoding)
@@ -263,21 +278,22 @@ def read_text(uri: UCURI, compression: bool,
 @retry_policy()
 @trace(TraceOptions(trace_params=['uri', 'compression']))
 @ucv_fs_logging_policy(skip_args=[1])
-def write_binary(uri: UCURI, data: BinaryIO, compression: bool,
-                 **kwargs) -> None:
-    body: BinaryIO = io.BytesIO(gzip.compress(
-        data.read())) if compression else data
+def write_binary(uri: UCURI, data: BinaryIO, compression: bool, **kwargs) -> None:
+    body: BinaryIO = io.BytesIO(gzip.compress(data.read())) if compression else data
     uc_ctx.client.files.upload(uri.as_path(), body, overwrite=True)
 
 
 @api.write_text.register
 @trace(TraceOptions(trace_params=['uri', 'compression', 'encoding']))
 @ucv_fs_logging_policy(skip_args=[1])
-def write_text(uri: UCURI, data: str, compression: bool,
-               encoding: Optional[str] = None) -> None:
-    api.write_binary(uri.as_url(),
-                     data.encode(encoding) if encoding else data.encode(),
-                     compression=compression)
+def write_text(
+    uri: UCURI, data: str, compression: bool, encoding: Optional[str] = None
+) -> None:
+    api.write_binary(
+        uri.as_url(),
+        data.encode(encoding) if encoding else data.encode(),
+        compression=compression,
+    )
 
 
 @api.dirsize.register
@@ -292,8 +308,11 @@ def dirsize(uri: UCURI) -> int:
         if entry.is_directory:
             subdir = deepcopy(uri)
             assert entry.name is not None
-            subdir.path = osp.join(subdir.path, entry.name) if len(
-                subdir.path) > 0 else entry.name
+            subdir.path = (
+                osp.join(subdir.path, entry.name)
+                if len(subdir.path) > 0
+                else entry.name
+            )
             return dirsize(subdir)
         else:
             assert entry.file_size is not None
@@ -301,8 +320,8 @@ def dirsize(uri: UCURI) -> int:
 
     try:
         return sum(
-            map(get_size,
-                uc_ctx.client.files.list_directory_contents(uri.as_path())))
+            map(get_size, uc_ctx.client.files.list_directory_contents(uri.as_path()))
+        )
     except NotFound:
         raise FileNotFoundError(str(uri))
 
@@ -315,25 +334,27 @@ def _check_size_match(*, local: Union[LocalURI, bytes], remote: UCURI):
     remote_size = filesize(remote)
     if remote_size != local_size:
         if isinstance(local, bytes):
-            err_msg = f"local bytes is {local_size} bytes, "
+            err_msg = f'local bytes is {local_size} bytes, '
         else:
-            err_msg = f"local file {local.path} is {local_size} bytes, "
+            err_msg = f'local file {local.path} is {local_size} bytes, '
         raise RuntimeError(
-            f"UC Volumes file size mismatch, {err_msg}"
-            f"remote file {remote.as_url()} is {remote_size} bytes")
+            f'UC Volumes file size mismatch, {err_msg}'
+            f'remote file {remote.as_url()} is {remote_size} bytes'
+        )
 
 
 @retry_policy()
 def _upload(*, local: LocalURI, remote: UCURI):
     try:
         uc_ctx.client.files.upload_from(  # pyright: ignore
-            remote.as_path(), local.path, overwrite=True)
+            remote.as_path(), local.path, overwrite=True
+        )
     except Exception as e:
         uc_ctx._local.client = None
         logger.warning(
-            "Upload failed, re-initializing client before retry "
-            "(error_type=%s)",
-            type(e).__name__)
+            'Upload failed, re-initializing client before retry (error_type=%s)',
+            type(e).__name__,
+        )
         raise
     _check_size_match(local=local, remote=remote)
 
@@ -342,6 +363,7 @@ def _upload(*, local: LocalURI, remote: UCURI):
 def _download(*, remote: UCURI, local: LocalURI):
     """Files API download"""
     from databricks.sdk.errors.platform import NotFound
+
     try:
         # Use parallel download for large files. databricks
         # sdk will automatically decide whether to use parallelism
@@ -349,10 +371,14 @@ def _download(*, remote: UCURI, local: LocalURI):
         # We reduce the parallelism to 5 since fsutil could
         # also be using multi-process downloading.
         uc_ctx.client.files.download_to(  # pyright: ignore
-            remote.as_path(), local.path, overwrite=True, use_parallel=True,
-            parallelism=5)
+            remote.as_path(),
+            local.path,
+            overwrite=True,
+            use_parallel=True,
+            parallelism=5,
+        )
     except NotFound:
-        raise FileNotFoundError(f"not found: {remote.as_url()}") from None
+        raise FileNotFoundError(f'not found: {remote.as_url()}') from None
 
     _check_size_match(remote=remote, local=local)
 
@@ -365,14 +391,20 @@ def get_binary_handle(
     compression: bool = False,
 ) -> Generator[BinaryIO, None, None]:
     with restricted_diagnostic_boundary(
-            safe_message='Databricks volume stream operation failed',
-            exception_types=(DatabricksError, ClientError, ConnectionError,
-                             MaxRetryError, OSError)):
+        safe_message='Databricks volume stream operation failed',
+        exception_types=(
+            DatabricksError,
+            ClientError,
+            ConnectionError,
+            MaxRetryError,
+            OSError,
+        ),
+    ):
         if 'b' not in mode:
             mode += 'b'
 
         with TemporaryDirectory() as temp_dir:
-            temp_file = osp.join(temp_dir, "temp_file")
+            temp_file = osp.join(temp_dir, 'temp_file')
             local = LocalURI(path=temp_file)
             try:
                 if 'r' in mode:
@@ -397,8 +429,9 @@ def get_handle(
     mode: str,
     compression: bool = False,
 ) -> Generator[TextIO, None, None]:
-    with api.get_binary_handle(uri.as_url(), mode + 'b',
-                               compression=compression) as handle:
+    with api.get_binary_handle(
+        uri.as_url(), mode + 'b', compression=compression
+    ) as handle:
         yield io.TextIOWrapper(
             buffer=handle,
             encoding='utf-8',
@@ -416,6 +449,7 @@ def exists(uri: UCURI) -> bool:
         NotFound,
         PermissionDenied,
     )
+
     try:
         uc_ctx.client.files.get_metadata(uri.as_path())
         return True
@@ -435,6 +469,7 @@ def exists(uri: UCURI) -> bool:
 @ucv_fs_logging_policy()
 def isdir(uri: UCURI) -> bool:
     from databricks.sdk.errors.platform import NotFound
+
     try:
         uc_ctx.client.files.get_directory_metadata(uri.as_path())
         return True
@@ -448,6 +483,7 @@ def isdir(uri: UCURI) -> bool:
 @ucv_fs_logging_policy()
 def get_if_present(uri: UCURI) -> Optional[bytes]:
     from databricks.sdk.errors.platform import NotFound
+
     try:
         res = uc_ctx.client.files.download(uri.as_path())
         if res.contents is None:
@@ -484,9 +520,9 @@ def copy_file(src: str, dst: str):
 @ucv_fs_logging_policy()
 def touch(uri: UCURI) -> None:
     from databricks.sdk.errors.platform import AlreadyExists
+
     try:
-        uc_ctx.client.files.upload(uri.as_path(), io.BytesIO(b''),
-                                   overwrite=False)
+        uc_ctx.client.files.upload(uri.as_path(), io.BytesIO(b''), overwrite=False)
     except AlreadyExists:
         pass
 
@@ -497,6 +533,7 @@ def touch(uri: UCURI) -> None:
 @ucv_fs_logging_policy(skip_args=[1])
 def write_text_if_absent(uri: UCURI, data: str) -> bool:
     from databricks.sdk.errors.platform import AlreadyExists
+
     try:
         uc_ctx.client.files.upload(
             uri.as_path(),
@@ -517,7 +554,7 @@ def has_write_permission(uri: UCURI) -> bool:
     from databricks.sdk.service.catalog import Privilege, SecurableType
 
     user_name = uc_ctx.client.current_user.me().user_name
-    volume_full_name = f"{uri.catalog}.{uri.uc_schema}.{uri.volume}"
+    volume_full_name = f'{uri.catalog}.{uri.uc_schema}.{uri.volume}'
     try:
         owner = uc_ctx.client.volumes.read(volume_full_name).owner
     except (NotFound, PermissionDenied):
@@ -531,7 +568,8 @@ def has_write_permission(uri: UCURI) -> bool:
     grants = uc_ctx.client.grants.get_effective(
         full_name=volume_full_name,
         securable_type=SecurableType.VOLUME.value,  # pyright: ignore
-        principal=user_name)
+        principal=user_name,
+    )
     for assignment in grants.privilege_assignments or []:
         for privilege in assignment.privileges or []:
             if privilege.privilege == Privilege.ALL_PRIVILEGES:
@@ -553,13 +591,15 @@ def listdir(
     from databricks.sdk.errors.platform import NotFound
 
     def extract_path(entry):
-        return f"dbfs:{entry.path.rstrip('/')}"
+        return f'dbfs:{entry.path.rstrip("/")}'
 
     entries = []
     try:
         entries = list(
-            map(extract_path,
-                uc_ctx.client.files.list_directory_contents(uri.as_path())))
+            map(
+                extract_path, uc_ctx.client.files.list_directory_contents(uri.as_path())
+            )
+        )
     except NotFound:
         entries = []
     return entries
@@ -576,14 +616,18 @@ def listdir_detail(
     from databricks.sdk.errors.platform import NotFound
 
     def extract_file_info(entry):
-        return api.PathDetail(path=f"dbfs:{entry.path.rstrip('/')}",
-                              is_directory=entry.is_directory)
+        return api.PathDetail(
+            path=f'dbfs:{entry.path.rstrip("/")}', is_directory=entry.is_directory
+        )
 
     entries = []
     try:
         entries = list(
-            map(extract_file_info,
-                uc_ctx.client.files.list_directory_contents(uri.as_path())))
+            map(
+                extract_file_info,
+                uc_ctx.client.files.list_directory_contents(uri.as_path()),
+            )
+        )
     except NotFound:
         entries = []
     return entries
@@ -595,7 +639,7 @@ def listdir_detail(
 @ucv_fs_logging_policy()
 def makedirs(uri: UCURI, exist_ok: bool = False) -> None:
     if not exist_ok and exists(uri):
-        raise FileExistsError(f"{uri.as_url()} already exists")
+        raise FileExistsError(f'{uri.as_url()} already exists')
     uc_ctx.client.files.create_directory(uri.as_path())
 
 
@@ -603,10 +647,11 @@ def makedirs(uri: UCURI, exist_ok: bool = False) -> None:
 @retry_policy()
 @trace(TraceOptions(trace_params=True))
 @ucv_fs_logging_policy()
-def rm(uri: UCURI, ignore_errors: bool = False,
-       include: Optional[List[str]] = None) -> None:
+def rm(
+    uri: UCURI, ignore_errors: bool = False, include: Optional[List[str]] = None
+) -> None:
     if include is not None:
-        raise NotImplementedError("include is not implemented for UC Volume")
+        raise NotImplementedError('include is not implemented for UC Volume')
     if isdir(uri):
         for entry in listdir(uri):
             rm(ParseURI(entry))
@@ -636,6 +681,7 @@ def contains_subdir(uri: UCURI) -> bool:
 @ucv_fs_logging_policy()
 def get_last_modified_time(uri: UCURI, suffix: Optional[str] = None) -> float:
     from databricks.sdk.errors.platform import NotFound
+
     ucv_path = uri.as_path()
     # UC Volume does not track last modified for directories.
     # The only case where a parquet connector points to a UC Volume path
@@ -653,8 +699,7 @@ def get_last_modified_time(uri: UCURI, suffix: Optional[str] = None) -> float:
         ret = uc_ctx.client.files.get_metadata(ucv_path)
         if ret.last_modified is None:  # pragma: no cover
             return DEFAULT_DATA_VERSION
-        timestamp = datetime.strptime(ret.last_modified,
-                                      "%a, %d %b %Y %H:%M:%S %Z")
+        timestamp = datetime.strptime(ret.last_modified, '%a, %d %b %Y %H:%M:%S %Z')
         return timestamp.timestamp()
     except NotFound:
         return DEFAULT_DATA_VERSION
@@ -671,7 +716,7 @@ def zip_directory(
     recursive: bool = False,
     output_path: Optional[str] = None,
 ) -> str:
-    raise NotImplementedError("zip_directory is not implemented for UCV")
+    raise NotImplementedError('zip_directory is not implemented for UCV')
 
 
 @api.customer_facing_path.register

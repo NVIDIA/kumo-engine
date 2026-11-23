@@ -31,24 +31,25 @@ def run(csv_s3_path: str, output_s3_path: str) -> None:
     # Parse CSV filename
     root_dir, fname = os.path.split(csv_s3_path)
     table_name, ext = os.path.splitext(fname)
-    if ext != ".csv":
-        print(f"CSV_S3_PATH must end with `.csv` but got: {csv_s3_path}")
+    if ext != '.csv':
+        print(f'CSV_S3_PATH must end with `.csv` but got: {csv_s3_path}')
         exit(1)
 
     # Validate S3 file does not exist
     if fsutil.exists(output_s3_path):
-        print(f"A file already exists at the output path. "
-              f"Please delete: {output_s3_path}")
+        print(
+            f'A file already exists at the output path. Please delete: {output_s3_path}'
+        )
         exit(1)
 
     # Read CSV file and infer metadata
-    conn = CSVConnector("name", root_dir)
+    conn = CSVConnector('name', root_dir)
     meta = conn.get_table_metadata([table_name])
     cols = meta[0].all_cols()
 
     print(f"Reading csv table '{table_name}' from '{root_dir}'")
     df = conn.read_table(table_name, cols=cols)
-    print("Got the following dataframe:")
+    print('Got the following dataframe:')
     print(df)
     print(df.dtypes)
 
@@ -57,15 +58,15 @@ def run(csv_s3_path: str, output_s3_path: str) -> None:
     df.to_parquet(output_s3_path)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "CSV_S3_PATH",
-        help="a single CSV file",
+        'CSV_S3_PATH',
+        help='a single CSV file',
     )
     parser.add_argument(
-        "OUTPUT_S3_PATH",
-        help="the output parquet file name",
+        'OUTPUT_S3_PATH',
+        help='the output parquet file name',
     )
     args = parser.parse_args()
     run(args.CSV_S3_PATH, args.OUTPUT_S3_PATH)

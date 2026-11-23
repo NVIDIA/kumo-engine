@@ -14,14 +14,16 @@ STATUSES = ('FAILED', 'FINISHED')
 
 
 def _like(pattern: str, name: str) -> bool:
-    regex = ''.join('.*' if c == '%' else '.' if c == '_' else re.escape(c)
-                    for c in pattern)
+    regex = ''.join(
+        '.*' if c == '%' else '.' if c == '_' else re.escape(c) for c in pattern
+    )
     return re.fullmatch(regex, name, re.IGNORECASE | re.DOTALL) is not None
 
 
 class FakeRun:
-    def __init__(self, tracking: 'FakeExperimentTracking', experiment: str,
-                 name: str) -> None:
+    def __init__(
+        self, tracking: 'FakeExperimentTracking', experiment: str, name: str
+    ) -> None:
         self._tracking = tracking
         self.experiment_name = experiment
         self.name = name
@@ -35,8 +37,7 @@ class FakeRun:
         self._tracking.calls.append(('run.__exit__', self.name))
         self._tracking.lineage_stack.pop()
         if self._tracking._run is self:
-            self._tracking.end_run(
-                status='FAILED' if exc_type is not None else None)
+            self._tracking.end_run(status='FAILED' if exc_type is not None else None)
 
 
 class FakeExperimentTracking:
@@ -47,56 +48,68 @@ class FakeExperimentTracking:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, session: Any, *, database_name: Optional[str] = None,
-                 schema_name: Optional[str] = None,
-                 capture_source_info: bool = True, model_registry: Any = None,
-                 warnings_as_errors: bool = False) -> None:
+    def __init__(
+        self,
+        session: Any,
+        *,
+        database_name: Optional[str] = None,
+        schema_name: Optional[str] = None,
+        capture_source_info: bool = True,
+        model_registry: Any = None,
+        warnings_as_errors: bool = False,
+    ) -> None:
         self.capture_source_info = capture_source_info
         self.warnings_as_errors = warnings_as_errors
         if hasattr(self, '_initialized'):
             self.calls.append(('__init__', database_name, schema_name))
             return
         self._session = session
-        self.database = _identifier(database_name
-                                    or session.get_current_database())
-        self.schema = _identifier(schema_name or session.get_current_schema()
-                                  or 'PUBLIC')
-        self.calls: List[Tuple[Any, ...]] = [('__init__', database_name,
-                                              schema_name)]
+        self.database = _identifier(database_name or session.get_current_database())
+        self.schema = _identifier(
+            schema_name or session.get_current_schema() or 'PUBLIC'
+        )
+        self.calls: List[Tuple[Any, ...]] = [('__init__', database_name, schema_name)]
         self.fail_on: set = set()
         self.experiment: Optional[str] = None
         self._run: Optional[FakeRun] = None
         self.runs: Dict[str, Dict[str, Any]] = {}
         self.lineage_stack: List[Tuple[str, str]] = []
         self._sql_client = types.SimpleNamespace(
-            show_runs_in_experiment=self._show_runs)
+            show_runs_in_experiment=self._show_runs
+        )
         self._initialized = True
 
-    def _show_runs(self, *, experiment_name: str,
-                   like: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _show_runs(
+        self, *, experiment_name: str, like: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         self._record('show_runs', experiment_name, like)
         return self._matching(experiment_name, like)
 
-    def _matching(self, experiment: str,
-                  like: Optional[str]) -> List[Dict[str, Any]]:
-        return [{'name': name} for name, run in self.runs.items()
-                if run['experiment'] == experiment
-                and (like is None or _like(like, name))]
+    def _matching(self, experiment: str, like: Optional[str]) -> List[Dict[str, Any]]:
+        return [
+            {'name': name}
+            for name, run in self.runs.items()
+            if run['experiment'] == experiment and (like is None or _like(like, name))
+        ]
 
     def _record(self, *call: Any) -> None:
         self.calls.append(call)
         if call[0] in self.fail_on:
             raise RuntimeError(f'fake Snowflake error in {call[0]}')
 
-    def set_experiment(self, experiment_name: str,
-                       database_name: Optional[str] = None,
-                       schema_name: Optional[str] = None) -> Any:
-        self._record('set_experiment', experiment_name, database_name,
-                     schema_name)
+    def set_experiment(
+        self,
+        experiment_name: str,
+        database_name: Optional[str] = None,
+        schema_name: Optional[str] = None,
+    ) -> Any:
+        self._record('set_experiment', experiment_name, database_name, schema_name)
         if database_name is not None and schema_name is None:
             schema_name = 'PUBLIC'
-        location = (_identifier(database_name or self.database),
-                    _identifier(schema_name or self.schema))
+        location = (
+            _identifier(database_name or self.database),
+            _identifier(schema_name or self.schema),
+        )
         name = _identifier(experiment_name)
         if (name, *location) != (self.experiment, self.database, self.schema):
             self._run = None
@@ -107,27 +120,35 @@ class FakeExperimentTracking:
     def start_run(self, run_name: Optional[str] = None) -> FakeRun:
         self._record('start_run', run_name)
         if self._run is not None:
-            raise RuntimeError('A run is already active. Please end the '
-                               'current run before starting a new one.')
+            raise RuntimeError(
+                'A run is already active. Please end the '
+                'current run before starting a new one.'
+            )
         if self.experiment is None:
             self.experiment = 'DEFAULT'
-        matches = self._matching(self.experiment,
-                                 run_name) if run_name else []
+        matches = self._matching(self.experiment, run_name) if run_name else []
         if matches:
             name = matches[0]['name']
             if self.runs[name]['status'] != 'RUNNING':
-                raise RuntimeError(f'Run {run_name} exists but cannot be '
-                                   f'resumed as it is no longer running.')
+                raise RuntimeError(
+                    f'Run {run_name} exists but cannot be '
+                    f'resumed as it is no longer running.'
+                )
         else:
             name = _identifier(run_name or f'RUN_{len(self.runs) + 1}')
-            self.runs[name] = {'experiment': self.experiment,
-                               'status': 'RUNNING', 'params': {},
-                               'metrics': [], 'artifacts': {}}
+            self.runs[name] = {
+                'experiment': self.experiment,
+                'status': 'RUNNING',
+                'params': {},
+                'metrics': [],
+                'artifacts': {},
+            }
         self._run = FakeRun(self, self.experiment, name)
         return self._run
 
-    def end_run(self, run_name: Optional[str] = None,
-                status: Optional[str] = None) -> None:
+    def end_run(
+        self, run_name: Optional[str] = None, status: Optional[str] = None
+    ) -> None:
         self._record('end_run', run_name, status)
         if self.experiment is None:
             raise RuntimeError('No experiment set.')
@@ -146,33 +167,42 @@ class FakeExperimentTracking:
     def log_params(self, params: Dict[str, Any]) -> None:
         self._record('log_params', dict(params))
         self._active()['params'].update(
-            {key: str(value) for key, value in params.items()})
+            {key: str(value) for key, value in params.items()}
+        )
 
     def log_metrics(self, metrics: Dict[str, float], step: int = 0) -> None:
         self._record('log_metrics', dict(metrics), step)
         self._active()['metrics'].extend(
-            (key, float(value), step) for key, value in metrics.items())
+            (key, float(value), step) for key, value in metrics.items()
+        )
 
-    def log_artifact(self, local_path: str,
-                     artifact_path: Optional[str] = None) -> None:
+    def log_artifact(
+        self, local_path: str, artifact_path: Optional[str] = None
+    ) -> None:
         self._record('log_artifact', local_path, artifact_path)
         if not re.fullmatch(r'[A-Z_][A-Z0-9_$]*', self._run.name):
-            raise RuntimeError(f'Run "{self._run.name}" does not exist in '
-                               f'Experiment {self.experiment}.')
+            raise RuntimeError(
+                f'Run "{self._run.name}" does not exist in '
+                f'Experiment {self.experiment}.'
+            )
         with open(local_path, 'rb') as file:
             content = file.read()
         try:
             content = content.decode('utf-8')
         except UnicodeDecodeError:
             pass
-        self._active()['artifacts'][os.path.join(
-            artifact_path or '', os.path.basename(local_path))] = content
+        self._active()['artifacts'][
+            os.path.join(artifact_path or '', os.path.basename(local_path))
+        ] = content
 
 
 class FakeSession:
-    def __init__(self, database: Optional[str] = 'DB',
-                 schema: Optional[str] = 'PUBLIC',
-                 schemas: Sequence[Tuple[str]] = ()) -> None:
+    def __init__(
+        self,
+        database: Optional[str] = 'DB',
+        schema: Optional[str] = 'PUBLIC',
+        schemas: Sequence[Tuple[str]] = (),
+    ) -> None:
         self.database, self.schema = database, schema
         self.schemas = list(schemas)
         self.statements: List[str] = []

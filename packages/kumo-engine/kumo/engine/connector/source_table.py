@@ -40,6 +40,7 @@ class SourceTable:
     `connector.table(table_name)`, not directly -- consumed by `Table.
     from_source_table(source_table, ...)`.
     """
+
     def __init__(self, table_name: str, connector: Connector) -> None:
         self.table_name = table_name
         self.connector = connector
@@ -55,8 +56,7 @@ class SourceTable:
         """
         from kumo.engine._infer import infer_source_columns
 
-        return infer_source_columns(self.connector, self.table_name,
-                                    sql=self.sql)
+        return infer_source_columns(self.connector, self.table_name, sql=self.sql)
 
     @property
     def sql(self) -> Optional[str]:
@@ -74,8 +74,10 @@ class SourceTable:
         return self.connector.source_table_for(self.table_name)
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(table_name={self.table_name!r}, "
-                f"connector={self.connector!r})")
+        return (
+            f'{self.__class__.__name__}(table_name={self.table_name!r}, '
+            f'connector={self.connector!r})'
+        )
 
 
 def checked_sql(connector: Connector, sql: str) -> CustomSQLSourceTable:
@@ -89,9 +91,10 @@ def checked_sql(connector: Connector, sql: str) -> CustomSQLSourceTable:
     kind = getattr(connector.source_type, 'name', None)
     if kind not in ('SNOWFLAKE', 'DATABRICKS', 'BIGQUERY'):
         raise ValueError(
-            f"Custom SQL is only supported for warehouse connectors "
-            f"(Snowflake, Databricks, BigQuery); {type(connector).__name__} "
-            f"cannot execute SQL.")
+            f'Custom SQL is only supported for warehouse connectors '
+            f'(Snowflake, Databricks, BigQuery); {type(connector).__name__} '
+            f'cannot execute SQL.'
+        )
     connector_type = ConnectorType[kind]
     refs = gate_custom_sql(sql, connector_type, connector.config)
     return CustomSQLSourceTable(
@@ -112,6 +115,7 @@ class SQLSourceTable(SourceTable):
     gates hosted applies, and `table_name` is hosted's synthetic name for
     it. Reads pass the query to the connector's reader as `sql=`.
     """
+
     def __init__(self, sql: str, connector: Connector) -> None:
         self._source = checked_sql(connector, sql)
         super().__init__(self._source.table, connector)

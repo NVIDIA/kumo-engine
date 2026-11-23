@@ -25,21 +25,22 @@ from rest.utils.pquery import (
     resolve_train_table_options,
 )
 
-VALID_QUERY_YAML = ('PREDICT LOAN_FIXTURE.STATUS\n'
-                    'FOR EACH LOAN_FIXTURE.LOAN_ID')
+VALID_QUERY_YAML = 'PREDICT LOAN_FIXTURE.STATUS\nFOR EACH LOAN_FIXTURE.LOAN_ID'
 
-VALID_BINARY_QUERY = ('PREDICT LOAN_FIXTURE.STATUS = "A"\n'
-                      'FOR EACH LOAN_FIXTURE.LOAN_ID')
+VALID_BINARY_QUERY = 'PREDICT LOAN_FIXTURE.STATUS = "A"\nFOR EACH LOAN_FIXTURE.LOAN_ID'
 
 VALID_OPTIONS_YAML = 'run_mode: FAST\nglove: True\nnum_ensembles: 1'
-DATE_OFFSET_SPLIT_YAML = ('\nsplit: DateOffsetSplit([-60, -30], unit="days")')
+DATE_OFFSET_SPLIT_YAML = '\nsplit: DateOffsetSplit([-60, -30], unit="days")'
 TEMPORAL_SPLIT_YAML = '\nsplit: TimeSplit(fractions=[0.7, 0.2, 0.1])'
 RANDOM_SPLIT_YAML = '\nsplit: RandomSplit([0.7, 0.2, 0.1])'
-TIME_RANGE_SPLIT_YAML = ('\nsplit: TimeRangeSplit([("2022-04-01", '
-                         '"2022-06-01"), ("2022-06-01", "2022-07-01"), '
-                         '("2022-07-01", "2022-12-02")])')
+TIME_RANGE_SPLIT_YAML = (
+    '\nsplit: TimeRangeSplit([("2022-04-01", '
+    '"2022-06-01"), ("2022-06-01", "2022-07-01"), '
+    '("2022-07-01", "2022-12-02")])'
+)
 LR_SCHEDULER_YAML = (
-    "\nlr_scheduler: [['cosine_with_warmup_restarts', {'gamma': 0.9}, 'step']]")
+    "\nlr_scheduler: [['cosine_with_warmup_restarts', {'gamma': 0.9}, 'step']]"
+)
 
 VALID_MODEL_PLAN = """# Training Data Generation
 split: TimeSplit(timestamp_boundaries=None, offset_boundaries=None, fractions=[0.8, 0.1, 0.1], indices=None, strict_split_boundaries=True)
@@ -300,6 +301,7 @@ model_architecture:
 
 def _get_split_fpid(value: str | None) -> Optional[FPID]:
     from kumo.task.split import Split
+
     split: Optional[Split] = TrainingTableGenerationPlan.get_split(value)
     if split is None:
         return None
@@ -312,6 +314,7 @@ def test_training_table_generation_options_in_all_configs():
     that need to be updated where the options are passed. This test ensures
     that we don't miss any of them.
     """
+
     def get_fields(cls):
         return set(cls.__dataclass_fields__)
 
@@ -336,22 +339,25 @@ def test_training_table_generation_options_in_all_configs():
     pq_v2_config_fields.remove('validated_predictive_query')
     assert_fields_match(
         fields - {'entity_candidate', 'entity_candidate_aggregation'},
-        pq_v2_config_fields)
+        pq_v2_config_fields,
+    )
 
     # PredictiveQueryAdvancedOptions
     pq_kwargs_fields = get_fields(PredictiveQueryAdvancedOptions)
     assert_fields_match(
-        fields - {'entity_candidate', 'entity_candidate_aggregation'},
-        pq_kwargs_fields)
+        fields - {'entity_candidate', 'entity_candidate_aggregation'}, pq_kwargs_fields
+    )
 
 
-def test_training_table_generation_options_translations(create_node_pred_graph,
-                                                        tempdir):
+def test_training_table_generation_options_translations(
+    create_node_pred_graph, tempdir
+):
     """
     When adding a new TrainingTableGeneration option, there are a lot of places
     that need to be updated where the options are passed. This test ensures
     that we don't miss any of them.
     """
+
     def get_fields(cls):
         return set(cls.__dataclass_fields__)
 
@@ -391,21 +397,19 @@ def test_training_table_generation_options_translations(create_node_pred_graph,
                 pq_kwargs = to_predictive_query_kwargs(default_model_plan)
                 for field in fields:
                     mp_value = inferred_or_missing_type_to_none(
-                        getattr(default_model_plan.training_table_generation,
-                                field))
+                        getattr(default_model_plan.training_table_generation, field)
+                    )
                     if field == 'year_over_year':
                         mp_value = inferred_or_missing_type_to_false(
-                            getattr(
-                                default_model_plan.training_table_generation,
-                                field))
+                            getattr(default_model_plan.training_table_generation, field)
+                        )
                     pq_value = getattr(pq_kwargs, field)
-                    assert mp_value == pq_value, f"{field} does not match"
+                    assert mp_value == pq_value, f'{field} does not match'
 
     # Test make_predictive_config_with_graph since this is used to generate
     # the PredictiveQueryV2Config in the Batch Prediction codebase
     graph = create_node_pred_graph('simple_graph', root_dir=tempdir.name)
-    query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) '
-             'FOR EACH USERS.USER_ID')
+    query = 'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) FOR EACH USERS.USER_ID'
     default_model_plan = ModelPlan.from_default(
         TaskType.REGRESSION,
         QueryType.TEMPORAL,
@@ -413,6 +417,7 @@ def test_training_table_generation_options_translations(create_node_pred_graph,
         run_mode=RunMode.FAST,
     )
     from copy import deepcopy
+
     model_plan = deepcopy(default_model_plan)
     for field in fields:
         if field == 'year_over_year':
@@ -438,7 +443,8 @@ def test_training_table_generation_options_translations(create_node_pred_graph,
             model_plan,
             task_type=TaskType.REGRESSION,
             query_type=QueryType.TEMPORAL,
-        ))
+        )
+    )
     pq_config = make_predictive_config_with_graph(
         name='test',
         query_yaml=query,
@@ -453,11 +459,11 @@ def test_training_table_generation_options_translations(create_node_pred_graph,
             assert getattr(pq_config, field) is None
             continue
         assert getattr(pq_config, field) != getattr(
-            default_model_plan.training_table_generation,
-            field), f"{field} was not overridden"
-        assert getattr(pq_config,
-                       field) == getattr(model_plan.training_table_generation,
-                                         field), f"{field} does not match"
+            default_model_plan.training_table_generation, field
+        ), f'{field} was not overridden'
+        assert getattr(pq_config, field) == getattr(
+            model_plan.training_table_generation, field
+        ), f'{field} does not match'
 
     # Test PredictiveQueryAdvancedOptions.apply_overrides
     default_options, default_options_provided = resolve_train_table_options(
@@ -465,7 +471,8 @@ def test_training_table_generation_options_translations(create_node_pred_graph,
             default_model_plan,
             task_type=TaskType.REGRESSION,
             query_type=QueryType.TEMPORAL,
-        ))
+        )
+    )
     pq_v2_config = make_predictive_config_with_graph(
         name='test',
         query_yaml=query,
@@ -482,24 +489,24 @@ def test_training_table_generation_options_translations(create_node_pred_graph,
     )
     pq_config_with_overrides = overrides.apply_overrides(pq_v2_config)
     for field in fields:
-        assert getattr(pq_config_with_overrides,
-                       field) == getattr(overrides,
-                                         field), f"{field} does not match"
+        assert getattr(pq_config_with_overrides, field) == getattr(overrides, field), (
+            f'{field} does not match'
+        )
 
     # Test PredictiveQueryConfig.to_predictive_query_v2_config
     for field in fields:
-        assert getattr(pq_v2_config,
-                       field) == getattr(overrides,
-                                         field), f"{field} does not match"
+        assert getattr(pq_v2_config, field) == getattr(overrides, field), (
+            f'{field} does not match'
+        )
 
     # PredictiveQueryV2.from_config and PredictiveQueryV2.to_config
     pq_v2 = PredictiveQueryV2.from_config(pq_v2_config)
     for field in fields:
-        assert getattr(pq_v2,
-                       field) == getattr(overrides,
-                                         field), f"{field} does not match"
+        assert getattr(pq_v2, field) == getattr(overrides, field), (
+            f'{field} does not match'
+        )
     pq_v2_config_from_pq_v2 = pq_v2.config()
     for field in fields:
-        assert getattr(pq_v2_config_from_pq_v2,
-                       field) == getattr(overrides,
-                                         field), f"{field} does not match"
+        assert getattr(pq_v2_config_from_pq_v2, field) == getattr(overrides, field), (
+            f'{field} does not match'
+        )

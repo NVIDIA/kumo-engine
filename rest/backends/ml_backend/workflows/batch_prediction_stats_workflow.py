@@ -38,18 +38,22 @@ class BatchPredictionStatsWorkflow:
     The DG cutover (PR #28324) deleted the legacy Spark ColStatsWorkflow
     plumbing; this workflow is the replacement entry point.
     """
+
     @workflow.run
     async def run(
         self,
         job_input: BatchPredictionJobInput,
         ml_job_settings: MLJobSettings,
     ):
-        if (PredictionArtifactType.PREDICTIONS
-                not in requested_prediction_artifact_types(job_input.config)):
+        if (
+            PredictionArtifactType.PREDICTIONS
+            not in requested_prediction_artifact_types(job_input.config)
+        ):
             return
 
         data_backend_ctx = DataBackendContext(
-            deploy_env(), DataBackendSettings(disable_async_ingestion=False))
+            deploy_env(), DataBackendSettings(disable_async_ingestion=False)
+        )
 
         # Raw predictions
         await workflow.execute_activity(
@@ -57,7 +61,8 @@ class BatchPredictionStatsWorkflow:
             args=[data_backend_ctx, job_input, False],
             task_queue=DATA_BACKEND_TASK_QUEUE,
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_BP_STATS_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_BP_STATS_TIMEOUT_HOURS
+            ),
             retry_policy=_BP_STATS_RETRY,
         )
 
@@ -69,6 +74,7 @@ class BatchPredictionStatsWorkflow:
                 args=[data_backend_ctx, job_input, True],
                 task_queue=DATA_BACKEND_TASK_QUEUE,
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_BP_STATS_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_BP_STATS_TIMEOUT_HOURS
+                ),
                 retry_policy=_BP_STATS_RETRY,
             )

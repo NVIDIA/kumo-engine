@@ -33,26 +33,24 @@ def translated():
             'Set them before importing the provider (restart an existing '
             'process). These limits do not cap total memory or address all '
             'allocation failures; projected reads also buffer their requested '
-            'range.')
+            'range.'
+        )
         raise
     except ClientAuthenticationError:
         raise ReconnectRequiredError('ADLS authentication failed') from None
     except ResourceNotFoundError:
         raise FileNotFoundError('ADLS path was not found') from None
     except ResourceModifiedError:
-        raise TransientSourceError(
-            'ADLS object changed; retry the read') from None
+        raise TransientSourceError('ADLS object changed; retry the read') from None
     except (ServiceRequestError, ServiceResponseError):
-        raise TransientSourceError(
-            'ADLS transport failed; retry the request') from None
+        raise TransientSourceError('ADLS transport failed; retry the request') from None
     except HttpResponseError as error:
         status = error.status_code
         if status == 401:
             kind = ReconnectRequiredError
         elif status == 403:
             kind = SourceAccessDeniedError
-        elif status in (408, 412, 429) or (status is not None
-                                           and status >= 500):
+        elif status in (408, 412, 429) or (status is not None and status >= 500):
             kind = TransientSourceError
         else:
             kind = PermanentSourceError

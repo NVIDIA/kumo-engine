@@ -37,12 +37,6 @@ from typing import (
     Optional,
 )
 
-from kumo_snowflake.session import (
-    SnowflakeSession,
-    _require_snowpark,
-    _target_config,
-    resolved,
-)
 from kumoapi.plugin import (
     BUNDLE_ID_KEY,
     ENGINE_MARKER,
@@ -53,10 +47,20 @@ from kumoapi.plugin import (
     registry_lineage,
 )
 
+from kumo_snowflake.session import (
+    SnowflakeSession,
+    _require_snowpark,
+    _target_config,
+    resolved,
+)
+
 if TYPE_CHECKING:
     # ModelVersion is used by quoted annotations, which Vulture cannot resolve.
-    from snowflake.ml.model import ModelVersion  # noqa: F401
-    from snowflake.ml.model import custom_model, model_signature
+    from snowflake.ml.model import (
+        ModelVersion,  # noqa: F401
+        custom_model,
+        model_signature,
+    )
     from snowflake.ml.registry import Registry
 
 #: The file an export writes into every bundle, and so the marker that says a
@@ -92,13 +96,13 @@ _EXPORT_WORKERS = 8
 _METRICS_LINE = 'Holdout: '
 
 
-def _require_registry() -> type["Registry"]:
+def _require_registry() -> type['Registry']:
     r"""Returns the ``Registry`` class, or explains how to install it."""
     try:
         from snowflake.ml.registry import Registry
     except ImportError as error:  # pragma: no cover - depends on environment
         raise ImportError(
-            "Publishing a model to the Snowflake Model Registry requires "
+            'Publishing a model to the Snowflake Model Registry requires '
             "'snowflake-ml-python', which is not installed. Install the "
             "registry extra with `pip install 'kumo-snowflake[sdk]'`, or "
             "`pip install 'kumoai-studio[snowflake]'`, which pulls it."
@@ -106,7 +110,7 @@ def _require_registry() -> type["Registry"]:
     return Registry
 
 
-def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
+def _bundle_model(bundle_dir: str) -> 'custom_model.CustomModel':
     r"""Builds the carrier a bundle travels into the registry as.
 
     Defined inside the function so importing this module does not import
@@ -125,17 +129,18 @@ def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
         version and expose the bundle; load it with
         ``Trainer.load_from_connector``.
         """
+
         # Unquoted, and evaluated here rather than deferred: the registry
         # compares this annotation against `pandas.DataFrame` itself, so a
         # string it never resolves is rejected.
         @custom_model.inference_api
         def predict(self, df: pd.DataFrame) -> pd.DataFrame:
             raise NotImplementedError(
-                "This model version holds a Kumo bundle and does not score in "
-                "Snowflake; load it with Trainer.load_from_connector.")
+                'This model version holds a Kumo bundle and does not score in '
+                'Snowflake; load it with Trainer.load_from_connector.'
+            )
 
-    return _BundleModel(
-        custom_model.ModelContext(artifacts={'bundle': bundle_dir}))
+    return _BundleModel(custom_model.ModelContext(artifacts={'bundle': bundle_dir}))
 
 
 _TASKS = {
@@ -157,7 +162,7 @@ def _task(bundle: Path) -> Dict[str, Any]:
         return {}
 
 
-def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
+def _carrier_signature() -> Dict[str, 'model_signature.ModelSignature']:
     r"""Declares the carrier's signature instead of inferring one.
 
     Inference needs sample data, and the packager infers by calling the model
@@ -168,38 +173,37 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
     from snowflake.ml.model import model_signature
 
     return {
-        'predict':
-        model_signature.ModelSignature(
+        'predict': model_signature.ModelSignature(
             inputs=[
                 model_signature.FeatureSpec(
-                    name='entity', dtype=model_signature.DataType.STRING)
+                    name='entity', dtype=model_signature.DataType.STRING
+                )
             ],
             outputs=[
                 model_signature.FeatureSpec(
-                    name='score', dtype=model_signature.DataType.DOUBLE)
+                    name='score', dtype=model_signature.DataType.DOUBLE
+                )
             ],
         )
     }
 
 
-def _model_args(bundle: Path, metadata: Mapping[str, str],
-                connector: SourceConnector, workdir: str) -> Dict[str, Any]:
+def _model_args(
+    bundle: Path, metadata: Mapping[str, str], connector: SourceConnector, workdir: str
+) -> Dict[str, Any]:
     r"""``log_model`` arguments for a runnable model, else the carrier."""
     try:
         build = _model_builder()
         if build is not None:
-            return build(str(bundle), metadata, _serving_target(connector),
-                         workdir)
+            return build(str(bundle), metadata, _serving_target(connector), workdir)
     except ServingEnvironmentError:
         raise
     except Exception as error:
         _LOG.warning(
-            'Registering the bundle as a version that does not score in '
-            'Snowflake: %s', error)
-    return {
-        'model': _bundle_model(str(bundle)),
-        'signatures': _carrier_signature()
-    }
+            'Registering the bundle as a version that does not score in Snowflake: %s',
+            error,
+        )
+    return {'model': _bundle_model(str(bundle)), 'signatures': _carrier_signature()}
 
 
 def _model_builder() -> Optional[Callable[..., Dict[str, Any]]]:
@@ -219,37 +223,45 @@ def _serving_target(connector: SourceConnector) -> Dict[str, Optional[str]]:
     }
 
 
-def _serving(args: Mapping[str, Any], metadata: Mapping[str, str],
-             connector: SourceConnector) -> Optional[str]:
+def _serving(
+    args: Mapping[str, Any], metadata: Mapping[str, str], connector: SourceConnector
+) -> Optional[str]:
     r"""A digest of what the version serves; `None` if it does not score."""
     if 'pip_requirements' not in args:
         return None
     environment = {
         name: args.get(name)
-        for name in ('python_version', 'options', 'pip_requirements',
-                     'artifact_repository_map')
+        for name in (
+            'python_version',
+            'options',
+            'pip_requirements',
+            'artifact_repository_map',
+        )
     }
     environment['target'] = _serving_target(connector)
     environment['metadata'] = {
-        key: value
-        for key, value in metadata.items() if key.startswith('kumo.serving')
+        key: value for key, value in metadata.items() if key.startswith('kumo.serving')
     }
     return hashlib.sha256(
-        json.dumps(environment, sort_keys=True,
-                   default=str).encode()).hexdigest()[:16]
+        json.dumps(environment, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
 
 
-def _version_holding(registry: "Registry", location: ModelRegistryLocation,
-                     bundle_id: Optional[str],
-                     serving: Optional[str]) -> Optional["ModelVersion"]:
+def _version_holding(
+    registry: 'Registry',
+    location: ModelRegistryLocation,
+    bundle_id: Optional[str],
+    serving: Optional[str],
+) -> Optional['ModelVersion']:
     r"""The Kumo version holding ``bundle_id`` for ``serving``."""
     if not bundle_id:
         return None
     model_name = location.model_name
     try:
         model = registry.get_model(model_name)
-        versions = ([model.version(location.version)]
-                    if location.version else model.versions())
+        versions = (
+            [model.version(location.version)] if location.version else model.versions()
+        )
     except Exception:
         return None
     for version in versions:
@@ -258,14 +270,19 @@ def _version_holding(registry: "Registry", location: ModelRegistryLocation,
         except Exception as error:
             _LOG.warning('Could not read registry metadata: %s', error)
             continue
-        if (recorded.get(ENGINE_MARKER) == '1'
-                and recorded.get(BUNDLE_ID_KEY) == bundle_id):
+        if (
+            recorded.get(ENGINE_MARKER) == '1'
+            and recorded.get(BUNDLE_ID_KEY) == bundle_id
+        ):
             if recorded.get(SERVING_KEY) == serving:
                 return version
             _LOG.warning(
                 '%s version %s holds bundle %s for another serving '
-                'environment; registering a new version', model_name,
-                version.version_name, bundle_id)
+                'environment; registering a new version',
+                model_name,
+                version.version_name,
+                bundle_id,
+            )
     return None
 
 
@@ -285,51 +302,60 @@ def _locate_bundle(root: Path) -> Path:
         if (spec.parent / _MANIFEST_FILE).is_file():
             return spec.parent
     raise ValueError(
-        f"No Kumo model bundle under {root}: no directory holds both "
-        f"{_SPEC_FILE} and {_MANIFEST_FILE}. This model version was not "
-        f"published by kumoai_studio.export_model().")
+        f'No Kumo model bundle under {root}: no directory holds both '
+        f'{_SPEC_FILE} and {_MANIFEST_FILE}. This model version was not '
+        f'published by kumoai_studio.export_model().'
+    )
 
 
-def _export(session: Any, version: "ModelVersion", directory: Path) -> None:
+def _export(session: Any, version: 'ModelVersion', directory: Path) -> None:
     r"""Downloads the version's files except its embedded code."""
     from kumo_core.sources.layout import confined
 
-    root = (f'snow://model/{version.fully_qualified_model_name}/versions/'
-            f'{resolved(str(version.version_name))}/')
+    root = (
+        f'snow://model/{version.fully_qualified_model_name}/versions/'
+        f'{resolved(str(version.version_name))}/'
+    )
     names = [
         PurePosixPath(*PurePosixPath(row['name']).parts[2:])
-        for row in session.sql(f"LIST {_literal(root + 'model/')}").collect()
+        for row in session.sql(f'LIST {_literal(root + "model/")}').collect()
     ]
 
     def get(name: PurePosixPath) -> None:
         local = directory / confined(str(name.parent))
         local.mkdir(parents=True, exist_ok=True)
         with session.connection.cursor() as cursor:
-            cursor.execute(f"GET {_literal(root + str(name))} "
-                           f"{_literal(f'file://{local}')}")
+            cursor.execute(
+                f'GET {_literal(root + str(name))} {_literal(f"file://{local}")}'
+            )
 
     with ThreadPoolExecutor(_EXPORT_WORKERS) as pool:
-        list(pool.map(get, [name for name in names
-                            if name.parts[:2] != ('model', 'code')]))
+        list(
+            pool.map(
+                get, [name for name in names if name.parts[:2] != ('model', 'code')]
+            )
+        )
 
 
 def _literal(url: str) -> str:
     return "'" + url.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
 
-def _model_uri(connector: SourceConnector, version: "ModelVersion") -> str:
+def _model_uri(connector: SourceConnector, version: 'ModelVersion') -> str:
     r"""Returns the fully qualified name of one model version."""
     name = getattr(version, 'fully_qualified_model_name', None)
     if not name:
-        name = (f'{resolved(_target_config(connector).database)}.'
-                f'{resolved(_target_config(connector).schema_name)}.'
-                f'{version.model_name}')
+        name = (
+            f'{resolved(_target_config(connector).database)}.'
+            f'{resolved(_target_config(connector).schema_name)}.'
+            f'{version.model_name}'
+        )
     return f'{name}/{version.version_name}'
 
 
 def _published(
     connector: SourceConnector,
-    version: "ModelVersion",
+    version: 'ModelVersion',
     *,
     metadata: Mapping[str, str] = {},
     metrics: Mapping[str, float] = {},
@@ -348,7 +374,8 @@ def _refuse_path(path: Optional[str], action: str) -> None:
         raise ValueError(
             f'A Snowflake connector names a registry, which addresses a model '
             f'by name, so {action} takes a ModelRegistryLocation rather than '
-            f'a path.')
+            f'a path.'
+        )
 
 
 def _version_record(metadata: Mapping[str, str]) -> Dict[str, str]:
@@ -359,21 +386,23 @@ def _version_record(metadata: Mapping[str, str]) -> Dict[str, str]:
 
 
 def _finite(metrics: Mapping[str, float]) -> Dict[str, float]:
-    return {name: float(value) for name, value in metrics.items()
-            if math.isfinite(value)}
+    return {
+        name: float(value) for name, value in metrics.items() if math.isfinite(value)
+    }
 
 
-def _comment(user: Optional[str],
-             metrics: Mapping[str, float]) -> Optional[str]:
+def _comment(user: Optional[str], metrics: Mapping[str, float]) -> Optional[str]:
     r"""The user's comment, then a line of the model's holdout metrics."""
-    line = ' · '.join(f'{name} {value:.3g}'
-                      for name, value in _finite(metrics).items())
-    return '\n'.join(text for text in (user, line and _METRICS_LINE + line)
-                     if text) or None
+    line = ' · '.join(f'{name} {value:.3g}' for name, value in _finite(metrics).items())
+    return (
+        '\n'.join(text for text in (user, line and _METRICS_LINE + line) if text)
+        or None
+    )
 
 
-def _backfill(version: "ModelVersion", metrics: Mapping[str, float],
-              comment: Optional[str]) -> None:
+def _backfill(
+    version: 'ModelVersion', metrics: Mapping[str, float], comment: Optional[str]
+) -> None:
     r"""Records ``metrics`` on a reused ``version`` it lacks them on."""
     try:
         recorded = dict(version.show_metrics() or {})
@@ -383,19 +412,24 @@ def _backfill(version: "ModelVersion", metrics: Mapping[str, float],
         current = version.comment or None
         if comment is None:
             comment = '\n'.join(
-                line for line in (current or '').split('\n')
-                if not line.startswith(_METRICS_LINE))
+                line
+                for line in (current or '').split('\n')
+                if not line.startswith(_METRICS_LINE)
+            )
         wanted = _comment(comment, metrics)
         if wanted is not None and wanted != current:
             version.comment = wanted
     except Exception as error:
         _LOG.warning(
             'Could not record holdout metrics on %s version %s (needs '
-            'OWNERSHIP of the model): %s', version.model_name,
-            version.version_name, error)
+            'OWNERSHIP of the model): %s',
+            version.model_name,
+            version.version_name,
+            error,
+        )
 
 
-def _recorded_lineage(version: "ModelVersion") -> Dict[str, str]:
+def _recorded_lineage(version: 'ModelVersion') -> Dict[str, str]:
     try:
         return registry_lineage(dict(version.show_metrics() or {}))
     except Exception as error:
@@ -415,17 +449,22 @@ def _restore_alias(model: Any, version: str, alias: str) -> None:
     try:
         model.version(version).set_alias(alias)
     except Exception as error:
-        _LOG.warning('Alias %s is now unset: restoring it on version %s '
-                     'failed: %s', alias, version, error)
+        _LOG.warning(
+            'Alias %s is now unset: restoring it on version %s failed: %s',
+            alias,
+            version,
+            error,
+        )
     else:
-        _LOG.warning('Could not move alias %s; it stays on version %s.',
-                     alias, version)
+        _LOG.warning('Could not move alias %s; it stays on version %s.', alias, version)
 
 
 def _next_version(registry: Any, model_name: str) -> str:
     try:
-        names = [str(version.version_name)
-                 for version in registry.get_model(model_name).versions()]
+        names = [
+            str(version.version_name)
+            for version in registry.get_model(model_name).versions()
+        ]
     except ValueError:
         names = []
     numbers = [int(name[1:]) for name in names if re.fullmatch(r'V\d+', name)]
@@ -442,6 +481,7 @@ class SnowflakeModelRegistryMixin:
     resolution the table path uses, so a model is published under the identity
     its connector names and not some other one.
     """
+
     if TYPE_CHECKING:
         # The one thing this mixin needs from its host, declared rather than
         # reached for blindly: every class that mixes it in also inherits
@@ -449,11 +489,11 @@ class SnowflakeModelRegistryMixin:
         def _session(
             self,
             connector: SourceConnector,
-        ) -> ContextManager[SnowflakeSession]:
-            ...
+        ) -> ContextManager[SnowflakeSession]: ...
 
-    def check_model_location(self, connector: SourceConnector,
-                             location: ModelRegistryLocation) -> None:
+    def check_model_location(
+        self, connector: SourceConnector, location: ModelRegistryLocation
+    ) -> None:
         r"""Raises ``ValueError`` unless the model name is an identifier."""
         del connector
         if not _MODEL_NAME.fullmatch(location.model_name):
@@ -461,10 +501,11 @@ class SnowflakeModelRegistryMixin:
                 f'Snowflake cannot register a model named '
                 f'{location.model_name!r}: start with a letter or underscore '
                 f'and use letters, digits, underscores and $, or double-quote '
-                f"the name, e.g. 'USERS_CHURN'.")
+                f"the name, e.g. 'USERS_CHURN'."
+            )
 
     @contextmanager
-    def _registry(self, connector: SourceConnector) -> Iterator["Registry"]:
+    def _registry(self, connector: SourceConnector) -> Iterator['Registry']:
         r"""A registry statement is a session statement, so the caller keeps
         the warehouse for as long as it is asking the registry anything.
         """
@@ -515,31 +556,39 @@ class SnowflakeModelRegistryMixin:
         if location is None:
             raise ValueError(
                 'Publishing to a registry needs a model name; pass '
-                'output_location=ModelRegistryLocation(...).')
+                'output_location=ModelRegistryLocation(...).'
+            )
         bundle = Path(bundle_dir)
         if not (bundle / _SPEC_FILE).is_file():
             raise ValueError(
-                f"{bundle} does not look like a published model bundle: it "
-                f"has no {_SPEC_FILE}, which an export writes into every one.")
+                f'{bundle} does not look like a published model bundle: it '
+                f'has no {_SPEC_FILE}, which an export writes into every one.'
+            )
 
         record = {**_finite(metrics), **_version_record(metadata)}
-        with tempfile.TemporaryDirectory() as workdir, \
-                self._registry(connector) as registry:
+        with (
+            tempfile.TemporaryDirectory() as workdir,
+            self._registry(connector) as registry,
+        ):
             args = _model_args(bundle, metadata, connector, workdir)
             serving = _serving(args, metadata, connector)
             if serving is not None:
                 record[SERVING_KEY] = serving
-            version = _version_holding(registry, location,
-                                       metadata.get(BUNDLE_ID_KEY), serving)
+            version = _version_holding(
+                registry, location, metadata.get(BUNDLE_ID_KEY), serving
+            )
             if version is not None:
-                _LOG.info('%s version %s already holds bundle %s; reused it',
-                          location.model_name, version.version_name,
-                          metadata.get(BUNDLE_ID_KEY))
+                _LOG.info(
+                    '%s version %s already holds bundle %s; reused it',
+                    location.model_name,
+                    version.version_name,
+                    metadata.get(BUNDLE_ID_KEY),
+                )
                 _backfill(version, metrics, location.comment)
-                return _published(connector, version, metadata=metadata,
-                                  metrics=metrics)
-            name = location.version or _next_version(registry,
-                                                     location.model_name)
+                return _published(
+                    connector, version, metadata=metadata, metrics=metrics
+                )
+            name = location.version or _next_version(registry, location.model_name)
             for attempt in range(3):
                 try:
                     version = registry.log_model(
@@ -552,12 +601,14 @@ class SnowflakeModelRegistryMixin:
                     )
                     break
                 except Exception:
-                    taken, name = name, location.version or _next_version(
-                        registry, location.model_name)
+                    taken, name = (
+                        name,
+                        location.version
+                        or _next_version(registry, location.model_name),
+                    )
                     if name == taken or attempt == 2:
                         raise
-        return _published(connector, version, metadata=metadata,
-                          metrics=metrics)
+        return _published(connector, version, metadata=metadata, metrics=metrics)
 
     def list_models(
         self,
@@ -581,8 +632,10 @@ class SnowflakeModelRegistryMixin:
                     if recorded.get(ENGINE_MARKER) != '1':
                         continue
                     found.append(
-                        _published(connector, version,
-                                   metadata=registry_lineage(recorded)))
+                        _published(
+                            connector, version, metadata=registry_lineage(recorded)
+                        )
+                    )
         return sorted(found, key=lambda item: (item.name, item.version))
 
     def fetch_model(
@@ -619,11 +672,11 @@ class SnowflakeModelRegistryMixin:
         if location is None:
             raise ValueError(
                 'Fetching from a registry needs a model name; pass a '
-                'ModelRegistryLocation.')
+                'ModelRegistryLocation.'
+            )
 
         destination = Path(local_dir)
-        with self._registry(connector) as registry, \
-                self._session(connector) as session:
+        with self._registry(connector) as registry, self._session(connector) as session:
             # Resolved before anything on disk is touched: a name the registry
             # does not know must not cost the caller the bundle already there.
             model = registry.get_model(location.model_name)
@@ -631,7 +684,8 @@ class SnowflakeModelRegistryMixin:
                 if resolved(location.alias) not in _alias_holders(model):
                     raise ValueError(
                         f'No version of {location.model_name} holds alias '
-                        f'{location.alias}.')
+                        f'{location.alias}.'
+                    )
                 version = model.version(location.alias)
             elif location.version is None:
                 version = model.default
@@ -649,14 +703,13 @@ class SnowflakeModelRegistryMixin:
 
         bundle = _locate_bundle(staged)
         metrics_path = bundle / 'metrics.json'
-        metrics = json.loads(
-            metrics_path.read_text()) if metrics_path.is_file() else {}
-        if (not isinstance(metrics, dict) or not all(
-                isinstance(key, str) and isinstance(value, (int, float))
-                for key, value in metrics.items())):
+        metrics = json.loads(metrics_path.read_text()) if metrics_path.is_file() else {}
+        if not isinstance(metrics, dict) or not all(
+            isinstance(key, str) and isinstance(value, (int, float))
+            for key, value in metrics.items()
+        ):
             raise ValueError('Invalid training metrics in model bundle.')
-        published = _published(connector, version, metadata=recorded,
-                               metrics=metrics)
+        published = _published(connector, version, metadata=recorded, metrics=metrics)
         if destination.exists():
             shutil.rmtree(destination)
         shutil.move(str(bundle), str(destination))
@@ -671,8 +724,10 @@ class SnowflakeModelRegistryMixin:
     ) -> None:
         r"""Points :obj:`alias` at ``location.version``, moving it if held."""
         if location.version is None:
-            raise ValueError('Setting an alias needs a ModelRegistryLocation '
-                             'naming an exact version.')
+            raise ValueError(
+                'Setting an alias needs a ModelRegistryLocation '
+                'naming an exact version.'
+            )
         check_model_alias(alias)
         wanted = resolved(alias)
         with self._registry(connector) as registry:
@@ -690,7 +745,8 @@ class SnowflakeModelRegistryMixin:
             if held:
                 raise ValueError(
                     f'Version {name} of {location.model_name} already holds '
-                    f'alias {held[0]}; unset it first.')
+                    f'alias {held[0]}; unset it first.'
+                )
             previous = holders.get(wanted)
             if previous is not None:
                 model.version(previous).unset_alias(alias)

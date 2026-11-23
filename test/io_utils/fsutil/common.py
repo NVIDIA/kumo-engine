@@ -16,5 +16,6 @@ def no_retry():
 
 def random_name(k=16):
     import random
-    charset = (string.ascii_uppercase + string.ascii_lowercase + string.digits)
+
+    charset = string.ascii_uppercase + string.ascii_lowercase + string.digits
     return ''.join(random.choices(charset, k=int(k)))

@@ -18,14 +18,17 @@ def test_activity_image_uses_gpu_for_all_gpu_host_work(monkeypatch):
     monkeypatch.setattr('pool.images.get_kumo_version', lambda: 'sha-test')
 
     assert activity_image_uri(SnapshotActivity.TRAIN).endswith(
-        '/kumo-backend-gpu:sha-test')
+        '/kumo-backend-gpu:sha-test'
+    )
     assert activity_image_uri(SnapshotActivity.PREDICT).endswith(
-        '/kumo-backend-gpu:sha-test')
+        '/kumo-backend-gpu:sha-test'
+    )
     assert activity_image_uri(SnapshotActivity.GEN_TT).endswith(
-        '/kumo-backend-gpu:sha-test')
-    assert activity_image_uri(
-        SnapshotActivity.MATERIALIZE_TRAINING_TASK).endswith(
-        '/kumo-backend-gpu:sha-test')
+        '/kumo-backend-gpu:sha-test'
+    )
+    assert activity_image_uri(SnapshotActivity.MATERIALIZE_TRAINING_TASK).endswith(
+        '/kumo-backend-gpu:sha-test'
+    )
 
 
 def test_daemon_image_prefers_release_tag(monkeypatch):
@@ -34,4 +37,5 @@ def test_daemon_image_prefers_release_tag(monkeypatch):
     monkeypatch.setattr('pool.images.get_kumo_version', lambda: 'baked-sha')
 
     assert daemon_image_uri().endswith(
-        '/kumo-backend-gpu:configured-sha@sha256:configured-digest')
+        '/kumo-backend-gpu:configured-sha@sha256:configured-digest'
+    )

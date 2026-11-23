@@ -84,8 +84,11 @@ class BatchPredictionJobDBEntry:
             execution=self.execution,
             metadata=JobFilterMetadata(
                 start_time=self.execution.start_time,
-                end_time=(self.execution.last_updated_at
-                          if self.execution.status.is_terminal else None),
+                end_time=(
+                    self.execution.last_updated_at
+                    if self.execution.status.is_terminal
+                    else None
+                ),
                 created_at=self.timestamps.created_at,
                 job_type=JobType.BATCH_PREDICTION_JOB,
                 status=self.execution.status,

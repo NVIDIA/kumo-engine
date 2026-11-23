@@ -32,6 +32,7 @@ def _isolate_otel_context():
     as an order-dependent flake whenever the shard boundaries move.
     """
     from opentelemetry import context as otel_context
+
     token = otel_context.attach(otel_context.get_current())
     yield
     otel_context.detach(token)
@@ -91,7 +92,7 @@ def get_test_span(
     return None
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope='module')
 def init_tracing():
     assert not tracing.is_initialized()
     trace_analyzer_config = tracing.RequestTraceAnalyzerConfig(
@@ -101,17 +102,20 @@ def init_tracing():
         repeated_calls=3,
         merged_duration_frac=0.5,
     )
-    tracing.init_tracing(_RESOURCE_NAME, MonitoringSettings(),
-                         trace_analyzer_config)
+    tracing.init_tracing(_RESOURCE_NAME, MonitoringSettings(), trace_analyzer_config)
     yield
     monitoring.tracing.disable_tracing()
 
 
-def test_tracing_initialized(init_tracing: None, ):
+def test_tracing_initialized(
+    init_tracing: None,
+):
     assert tracing.is_initialized()
 
 
-def test_simple_span(init_tracing: None, ):
+def test_simple_span(
+    init_tracing: None,
+):
     with tracing.start_span('simple_span'):
         print('Hello, World!')
 
@@ -123,7 +127,9 @@ def test_simple_span(init_tracing: None, ):
     assert span.service_name == _RESOURCE_NAME
 
 
-def test_parent_child_span(init_tracing: None, ):
+def test_parent_child_span(
+    init_tracing: None,
+):
     with tracing.start_span('parent_span'):
         print('Hello, World!')
         with tracing.start_span('child_span'):
@@ -138,7 +144,9 @@ def test_parent_child_span(init_tracing: None, ):
     assert get_test_span('child_span', trace_id) is not None
 
 
-def test_context_carrier_basic(init_tracing: None, ):
+def test_context_carrier_basic(
+    init_tracing: None,
+):
     with tracing.start_span('save_context'):
         tracing.add_metadata_to_current_context('testkey', 'testvalue')
         carrier = tracing.get_context_carrier()
@@ -147,15 +155,17 @@ def test_context_carrier_basic(init_tracing: None, ):
     print(carrier, get_test_trace_id('save_context'))
 
 
-def test_context_carrier_load(init_tracing: None, ):
+def test_context_carrier_load(
+    init_tracing: None,
+):
     # Generated from a call to `test_context_carrier_basic``
-    remote_trace_id_hex = "0x67a3ca472727261c87affebb255d70d8"
+    remote_trace_id_hex = '0x67a3ca472727261c87affebb255d70d8'
     carrier = {
-        'traceparent':
-        '00-67a3ca472727261c87affebb255d70d8-d73daf410d50eac0-01',
-        'baggage':
-        ('instance_id=i-039063efeeff7bde8,'
-         'version=1.6.1.dev71%2Bgd0c61d0fb.d20230130,testkey=testvalue')
+        'traceparent': '00-67a3ca472727261c87affebb255d70d8-d73daf410d50eac0-01',
+        'baggage': (
+            'instance_id=i-039063efeeff7bde8,'
+            'version=1.6.1.dev71%2Bgd0c61d0fb.d20230130,testkey=testvalue'
+        ),
     }
 
     with tracing.start_span('load_context'):
@@ -169,14 +179,15 @@ def test_context_carrier_load(init_tracing: None, ):
 
         # Check new context
         post_context = tracing.get_context()
-        assert baggage.get_baggage('testkey',
-                                   context=post_context) == 'testvalue'
+        assert baggage.get_baggage('testkey', context=post_context) == 'testvalue'
         remote_trace_id = tracing.get_current_span().get_span_context().trace_id
         assert hex(remote_trace_id) == remote_trace_id_hex
         assert remote_trace_id != local_trace_id
 
 
-def test_async_span(init_tracing: None, ):
+def test_async_span(
+    init_tracing: None,
+):
     async_span = tracing.start_async_span('simple_async_span')
 
     assert get_test_span('simple_async_span') is None
@@ -193,14 +204,12 @@ def test_async_span(init_tracing: None, ):
 
 
 def test_request_analyzer(init_tracing: None, caplog: pytest.LogCaptureFixture):
-    @monitoring.tracing.trace(
-        monitoring.tracing.TraceOptions(trace_params=True))
+    @monitoring.tracing.trace(monitoring.tracing.TraceOptions(trace_params=True))
     def foo(param1: int, param2: str):
         sleep(0.1)
 
     with caplog.at_level(logging.WARNING):
-        with tracing.start_span('dummy_api_request',
-                                kind=SpanKind.SERVER) as span:
+        with tracing.start_span('dummy_api_request', kind=SpanKind.SERVER) as span:
             span.set_attribute('http.route', '/v0/api/`{id`}')
             foo(1, 'abc')
             foo(1, 'abc')
@@ -208,12 +217,15 @@ def test_request_analyzer(init_tracing: None, caplog: pytest.LogCaptureFixture):
             foo(0, 'y')
             foo(0, 'z')
 
-    assert ('Too many duplicate calls of '
-            'test.rest.test_rest_tracing.test_request_analyzer.<locals>.foo'
-            '(param1=1,param2=abc)') in caplog.text
-    assert ('Too many repeated calls of '
-            'test.rest.test_rest_tracing.test_request_analyzer.<locals>.foo'
-            ) in caplog.text
+    assert (
+        'Too many duplicate calls of '
+        'test.rest.test_rest_tracing.test_request_analyzer.<locals>.foo'
+        '(param1=1,param2=abc)'
+    ) in caplog.text
+    assert (
+        'Too many repeated calls of '
+        'test.rest.test_rest_tracing.test_request_analyzer.<locals>.foo'
+    ) in caplog.text
 
     monitoring.tracing.disable_tracing()
 

@@ -35,8 +35,8 @@ class DevserverInstance:
         normalized = unicodedata.normalize('NFKC', self.child_id).casefold()
         if not _CHILD_ID_RE.fullmatch(normalized):
             raise ValueError(
-                'child_id must normalize to ASCII lowercase '
-                '^[a-z][a-z0-9-]{0,47}$')
+                'child_id must normalize to ASCII lowercase ^[a-z][a-z0-9-]{0,47}$'
+            )
         object.__setattr__(self, 'child_id', normalized)
 
     @property
@@ -58,13 +58,13 @@ class DevserverInstance:
         return f'devserver_id={self.base_port}'
 
     def ui_node_modules_volume(
-            self, env: Mapping[str, str] = os.environ) -> Optional[str]:
+        self, env: Mapping[str, str] = os.environ
+    ) -> Optional[str]:
         """Return the isolated Docker dependency volume for a child UI."""
         if self.is_legacy:
             return None
         home = self.environment(env)['KUMO_HOME']
-        identity = hashlib.sha256(
-            osp.abspath(home).encode('utf-8')).hexdigest()[:16]
+        identity = hashlib.sha256(osp.abspath(home).encode('utf-8')).hexdigest()[:16]
         return f'kumo-ui-node-modules-{self.name}-{identity}'
 
     @property
@@ -77,8 +77,11 @@ class DevserverInstance:
             return self.name
         parent_identity = env.get('INSTANCE_ID') or MACHINE_INSTANCE_ID
         child_suffix = '-' + self.child_id
-        return (parent_identity if parent_identity.endswith(child_suffix) else
-                parent_identity + child_suffix)
+        return (
+            parent_identity
+            if parent_identity.endswith(child_suffix)
+            else parent_identity + child_suffix
+        )
 
     def data_root(self, root: str) -> str:
         return root if self.is_legacy else root.rstrip('/') + self.suffix
@@ -106,12 +109,14 @@ class DevserverInstance:
         if self.is_legacy:
             ports.update(jaeger_ui=16686, jaeger_otlp=4317, prometheus=9090)
         else:
-            ports.update(jaeger_ui=self.port(14), jaeger_otlp=self.port(15),
-                         prometheus=self.port(16))
+            ports.update(
+                jaeger_ui=self.port(14),
+                jaeger_otlp=self.port(15),
+                prometheus=self.port(16),
+            )
         return ports
 
-    def environment(self, env: Mapping[str,
-                                       str] = os.environ) -> Dict[str, str]:
+    def environment(self, env: Mapping[str, str] = os.environ) -> Dict[str, str]:
         """Return launcher environment overrides for this instance.
 
         The default instance intentionally returns no overrides so its
@@ -120,26 +125,30 @@ class DevserverInstance:
         if self.is_legacy:
             return {}
         base_home = env.get(
-            'KUMO_HOME', osp.join(os.getcwd(), '.cache', 'kumo', 'devserver'))
+            'KUMO_HOME', osp.join(os.getcwd(), '.cache', 'kumo', 'devserver')
+        )
         # ``web_devserver`` may be called after the CLI has already applied
         # this instance.  Do not turn ``.../devserver-11000`` into
         # ``.../devserver-11000/devserver-11000`` in that normal path.
-        home = (base_home if osp.basename(osp.normpath(base_home)) == self.name
-                else osp.join(base_home, self.name))
+        home = (
+            base_home
+            if osp.basename(osp.normpath(base_home)) == self.name
+            else osp.join(base_home, self.name)
+        )
         # Each child gets isolated XDG roots, but mise-managed executables must
         # continue using the operator's installed tool data and cache. If mise
         # follows the new empty XDG roots, invoking one of its shims can trigger
         # recursive tool-version resolution (including npm invoking its own
         # mise shim) before the devserver binds any listener.
         operator_home = env.get('HOME', osp.expanduser('~'))
-        operator_xdg_cache = env.get('XDG_CACHE_HOME',
-                                     osp.join(operator_home, '.cache'))
+        operator_xdg_cache = env.get(
+            'XDG_CACHE_HOME', osp.join(operator_home, '.cache')
+        )
         operator_xdg_data = env.get(
-            'XDG_DATA_HOME', osp.join(operator_home, '.local', 'share'))
-        mise_cache_dir = env.get('MISE_CACHE_DIR',
-                                 osp.join(operator_xdg_cache, 'mise'))
-        mise_data_dir = env.get('MISE_DATA_DIR',
-                                osp.join(operator_xdg_data, 'mise'))
+            'XDG_DATA_HOME', osp.join(operator_home, '.local', 'share')
+        )
+        mise_cache_dir = env.get('MISE_CACHE_DIR', osp.join(operator_xdg_cache, 'mise'))
+        mise_data_dir = env.get('MISE_DATA_DIR', osp.join(operator_xdg_data, 'mise'))
         # Keep TMPDIR short. PyTorch's ``file_system`` sharing strategy adds
         # ``torch-shm-dir-XXXXXXXX/manager.sock`` below this path, and AF_UNIX
         # socket paths are limited to roughly 108 bytes on Linux. Nesting the
@@ -147,8 +156,9 @@ class DevserverInstance:
         # training fail when torch_shm_manager binds its socket. The hash keeps
         # concurrent child instances isolated without exposing the full home
         # path to that fixed kernel limit.
-        tmp_identity = hashlib.sha256(
-            osp.abspath(home).encode('utf-8')).hexdigest()[:12]
+        tmp_identity = hashlib.sha256(osp.abspath(home).encode('utf-8')).hexdigest()[
+            :12
+        ]
         tmpdir = osp.join('/tmp', f'kumo-dev-{tmp_identity}')
         return {
             'DB_STORAGE_ROOT': osp.join(home, 'db'),
@@ -167,8 +177,7 @@ class DevserverInstance:
             'XDG_DATA_HOME': osp.join(home, 'xdg-data'),
         }
 
-    def apply_environment(self, env: MutableMapping[str,
-                                                    str] = os.environ) -> None:
+    def apply_environment(self, env: MutableMapping[str, str] = os.environ) -> None:
         overrides = self.environment(env)
         self.prepare_local_paths(overrides)
         env.update(overrides)
@@ -183,8 +192,15 @@ class DevserverInstance:
         if self.is_legacy:
             return
         for name in (
-                'KUMO_HOME', 'DB_STORAGE_ROOT', 'HF_HOME',
-                'KUMO_GRAFANA_HOME', 'TMPDIR', 'TORCH_HOME',
-                'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
+            'KUMO_HOME',
+            'DB_STORAGE_ROOT',
+            'HF_HOME',
+            'KUMO_GRAFANA_HOME',
+            'TMPDIR',
+            'TORCH_HOME',
+            'XDG_CACHE_HOME',
+            'XDG_CONFIG_HOME',
+            'XDG_DATA_HOME',
+        ):
             path = env[name]
             os.makedirs(path, mode=0o700, exist_ok=True)

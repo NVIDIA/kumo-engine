@@ -15,7 +15,7 @@ FORMAT_MAP = {'b': 'B', 'k': 'KiB', 'm': 'MiB', 'g': 'GiB'}
 def convert_bytes(value: int, output_unit: str = 'b') -> int:
     r"""Converts :obj:`value` from bytes to :obj:`output_unit`."""
     convert_map = {'b': 0, 'k': 1, 'm': 2, 'g': 3, 't': 4}
-    div_factor = 1024**convert_map[output_unit]
+    div_factor = 1024 ** convert_map[output_unit]
     return value / div_factor
 
 
@@ -34,15 +34,15 @@ def format_bytes(value: int, output_unit: Optional[str] = None) -> str:
             value /= p
             idx += 1
         output_unit = labels[idx] + 'B'
-        return f"{value:.2f} {output_unit}"
+        return f'{value:.2f} {output_unit}'
 
     # Convert from bytes:
-    converted = f"{convert_bytes(value, output_unit):.2f}"
+    converted = f'{convert_bytes(value, output_unit):.2f}'
     return converted + ' ' + FORMAT_MAP[output_unit]
 
 
 def convert_bytes_list(input: List, unit_letter: str):
-    byte_col_index = input[0].index("B")
+    byte_col_index = input[0].index('B')
     input[0][byte_col_index] = FORMAT_MAP[unit_letter]
     for row in input[1:]:
         row[byte_col_index] = convert_bytes(row[byte_col_index], unit_letter)
@@ -56,6 +56,7 @@ def clean_for_json(input: Dict):
         input (Dict) : dictionary to convert into json-writable format
     """
     import json
+
     for key, value in input.items():
         try:
             json.dumps(value)
@@ -67,6 +68,8 @@ def clean_for_json(input: Dict):
 
 
 def format_exception(error: Union[Exception, BaseException]) -> str:
-    return "".join(
+    return ''.join(
         traceback.format_exception(  # type: ignore
-            error, value=error, tb=error.__traceback__))
+            error, value=error, tb=error.__traceback__
+        )
+    )

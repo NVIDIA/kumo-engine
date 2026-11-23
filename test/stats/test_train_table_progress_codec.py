@@ -17,6 +17,7 @@ These tests drive the *exact* AutoRPC encode/decode path so a regression in the
 ``PandasTimestamp`` annotation on the nested timeframe dataclasses is caught.
 They fail pre-fix (bare ``pd.Timestamp``) and pass post-fix.
 """
+
 import pandas as pd
 
 from io_utils.json import from_json, to_json

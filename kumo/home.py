@@ -60,11 +60,12 @@ def set_home_dir(path: str):
         if not fsutil.exists(path):
             raise ValueError(
                 f"Provided path: {path} doesn't exist. Please create the "
-                "folder before using it as home_dir")
+                'folder before using it as home_dir'
+            )
 
     # Create home_dir if it does not exist:
     fsutil.makedirs(path, exist_ok=True)
-    logger.debug("Setting home dir to %s", path)
+    logger.debug('Setting home dir to %s', path)
     global _home_dir
     _home_dir = path
 
@@ -81,13 +82,14 @@ class HomeDirManager:
     directory structure (3) enable safe changes or migrations to the directory
     structure in a backwards-compatible manner
     """
+
     def __init__(self, home_dir: str) -> None:
         self._home_dir = home_dir
         self._best_trainer_config = None
 
     @property
     def materialization_task_info_file(self) -> str:
-        return osp.join(self.outputs_dir, "materialization_task_info.json.gz")
+        return osp.join(self.outputs_dir, 'materialization_task_info.json.gz')
 
     @property
     def training_job_input_file(self) -> str:
@@ -122,7 +124,7 @@ class HomeDirManager:
         as downstream code in other packages (eg. REST API), may directly read
         this data and show it in the UI.
         """
-        return osp.join(self._home_dir, "outputs")
+        return osp.join(self._home_dir, 'outputs')
 
     @property
     def inputs_dir(self) -> str:
@@ -130,47 +132,46 @@ class HomeDirManager:
         jobs (*JobInput and MLJobSettings) for use to rerun the workflows for
         individual steps.
         """
-        return osp.join(self._home_dir, "inputs")
+        return osp.join(self._home_dir, 'inputs')
 
     @property
     def pseudo_time_dir(self) -> str:
-        return osp.join(self._home_dir, "pseudo_time")
+        return osp.join(self._home_dir, 'pseudo_time')
 
     @property
     def pred_table_dir(self) -> str:
         """Dir of the prediction table."""
-        return osp.join(self._home_dir, "pred_table")
+        return osp.join(self._home_dir, 'pred_table')
 
     @property
     def train_table_dir(self) -> str:
         """Dir of the training table."""
-        return osp.join(self._home_dir, "training_table")
+        return osp.join(self._home_dir, 'training_table')
 
     @property
     def custom_train_table_path(self) -> str:
         """Dir of the custom training table."""
-        return osp.join(self._home_dir, "custom_train_table")
+        return osp.join(self._home_dir, 'custom_train_table')
 
     @property
     def materialized_train_table_dir(self) -> str:
         """Dir of the materialized training table."""
-        return osp.join(self.train_table_dir, "materialized")
+        return osp.join(self.train_table_dir, 'materialized')
 
     @property
     def materialized_train_table_config_path(self) -> str:
         """Path to the materialized training table config."""
-        return osp.join(self.materialized_train_table_dir,
-                        "training_table_config.json")
+        return osp.join(self.materialized_train_table_dir, 'training_table_config.json')
 
     @property
     def pred_table_path(self) -> str:
         """Path to the prediction table."""
-        return osp.join(self.pred_table_dir, "pred_table.parquet")
+        return osp.join(self.pred_table_dir, 'pred_table.parquet')
 
     @property
     def train_table_path(self) -> str:
         """Path to the training table."""
-        return osp.join(self.train_table_dir, "train_table.parquet")
+        return osp.join(self.train_table_dir, 'train_table.parquet')
 
     def automl_dir(self, task_name: str) -> str:
         """Directory containing the outputs of the AutoML job."""
@@ -187,11 +188,11 @@ class HomeDirManager:
 
     @property
     def graphs_dir(self) -> str:
-        return osp.join(self._home_dir, "graphs")
+        return osp.join(self._home_dir, 'graphs')
 
     @property
     def jobs_dir(self) -> str:
-        return osp.join(self._home_dir, "jobs")
+        return osp.join(self._home_dir, 'jobs')
 
     # Path where JobConfig and PredictionConfig data structures are stored.
     # This is applicable for both training and batch prediction jobs.
@@ -215,24 +216,24 @@ class HomeDirManager:
 
     @property
     def models_dir(self) -> str:
-        return osp.join(self._home_dir, "models")
+        return osp.join(self._home_dir, 'models')
 
     @property
     def tasks_dir(self) -> str:
-        return osp.join(self._home_dir, "tasks")
+        return osp.join(self._home_dir, 'tasks')
 
     @property
     def queries_dir(self) -> str:
-        return osp.join(self._home_dir, "queries")
+        return osp.join(self._home_dir, 'queries')
 
     @property
     def validation_dir(self) -> str:
-        return osp.join(self._home_dir, "validation")
+        return osp.join(self._home_dir, 'validation')
 
     @property
     def prediction_output_dir(self) -> str:
         "Location where batch prediction outputs are written."
-        return osp.join(self._home_dir, "prediction_output")
+        return osp.join(self._home_dir, 'prediction_output')
 
     @property
     def internal_predictions_file(self) -> str:
@@ -256,14 +257,14 @@ class HomeDirManager:
 
     @property
     def persist_dir(self) -> str:
-        return osp.join(self._home_dir, "persist")
+        return osp.join(self._home_dir, 'persist')
 
     @property
     def graph_persist_dir(self) -> str:
-        return osp.join(self.persist_dir, "edges")
+        return osp.join(self.persist_dir, 'edges')
 
     def validation_path(self, unique_id: str) -> str:
-        """ Contains validations from the training or batch prediction job, in
+        """Contains validations from the training or batch prediction job, in
         the data structure ValidationResponse.
         """
         return osp.join(self.validation_dir, f'{unique_id}.json')
@@ -271,24 +272,29 @@ class HomeDirManager:
     def train_table_mask_dir(self, split_fpid: str) -> str:
         return osp.join(self.persist_dir, 'train_task_mask_index', split_fpid)
 
-    def subgraph_collector_dir(self, stage: TrainingStage,
-                               best_trainer_dir: str | None = None) -> str:
+    def subgraph_collector_dir(
+        self, stage: TrainingStage, best_trainer_dir: str | None = None
+    ) -> str:
         if stage == TrainingStage.PRED:
             return osp.join(self.home_dir, 'xai/subgraph_collector/pred/')
         if best_trainer_dir is None:
-            raise ValueError("`best_trainer_dir` must be provided for "
-                             "stages other than PRED")
+            raise ValueError(
+                '`best_trainer_dir` must be provided for stages other than PRED'
+            )
         return osp.join(best_trainer_dir, 'subgraph_collector', stage.value)
 
-    def rfm_dir(self, stage: TrainingStage,
-                best_trainer_dir: str | None = None) -> str:
+    def rfm_dir(self, stage: TrainingStage, best_trainer_dir: str | None = None) -> str:
         r"""Returns the directory where the XAI RFMs are stored."""
         path = self.subgraph_collector_dir(stage, best_trainer_dir)
         return osp.join(path, 'rfm')
 
-    def subgraph_json_path(self, stage: TrainingStage, entity_id: str,
-                           best_trainer_dir: str | None = None,
-                           old: bool = True) -> str:
+    def subgraph_json_path(
+        self,
+        stage: TrainingStage,
+        entity_id: str,
+        best_trainer_dir: str | None = None,
+        old: bool = True,
+    ) -> str:
         r"""Returns the path to the subgraph JSON file.
         Args:
             stage (TrainingStage): The stage of the subgraph.
@@ -303,24 +309,27 @@ class HomeDirManager:
             return osp.join(path, 'nested_json', f'{entity_id}.json')
         return osp.join(path, 'subgraph_json', f'{entity_id}.json')
 
-    def subgraph_output_path(self, stage: TrainingStage, entity_id: str,
-                             best_trainer_dir: str | None = None) -> str:
+    def subgraph_output_path(
+        self, stage: TrainingStage, entity_id: str, best_trainer_dir: str | None = None
+    ) -> str:
         path = self.subgraph_collector_dir(stage, best_trainer_dir)
         return osp.join(path, 'output', f'{entity_id}.json')
 
     def subgraph_historical_items_path(
-            self, stage: TrainingStage, entity_id: str,
-            best_trainer_dir: str | None = None) -> str:
+        self, stage: TrainingStage, entity_id: str, best_trainer_dir: str | None = None
+    ) -> str:
         path = self.subgraph_collector_dir(stage, best_trainer_dir)
         return osp.join(path, 'historical_items', f'{entity_id}.json')
 
-    def subgraph_mappings_path(self, stage: TrainingStage,
-                               best_trainer_dir: str | None = None) -> str:
+    def subgraph_mappings_path(
+        self, stage: TrainingStage, best_trainer_dir: str | None = None
+    ) -> str:
         path = self.subgraph_collector_dir(stage, best_trainer_dir)
         return osp.join(path, 'strategy_mappings.json')
 
-    def rfm_path(self, stage: TrainingStage, entity_id: str,
-                 best_trainer_dir: str | None = None) -> str:
+    def rfm_path(
+        self, stage: TrainingStage, entity_id: str, best_trainer_dir: str | None = None
+    ) -> str:
         path = self.subgraph_collector_dir(stage, best_trainer_dir)
         return osp.join(path, 'rfm', f'{entity_id}.json')
 
@@ -328,11 +337,12 @@ class HomeDirManager:
         if stage == TrainingStage.PRED:
             return osp.join(self.home_dir, 'xai/column_analysis/pred/')
         # TODO (zecheng): Support for other training stages
-        raise ValueError(f"Stage {stage} is unsupported")
+        raise ValueError(f'Stage {stage} is unsupported')
 
     def mask_persist_path(self, stage: str, split_fpid: str):
-        return osp.join(self.train_table_mask_dir(split_fpid),
-                        f'{stage}_mask_index.parquet')
+        return osp.join(
+            self.train_table_mask_dir(split_fpid), f'{stage}_mask_index.parquet'
+        )
 
     @blocking_method()
     def touch_init_file(self) -> None:
@@ -342,8 +352,7 @@ class HomeDirManager:
 
     # Trainer related functions  ##############################################
     def get_best_trainer_config_path(self, task_name: str) -> str:
-        return osp.join(self.models_dir, task_name, 'automl',
-                        'best_trainer.json')
+        return osp.join(self.models_dir, task_name, 'automl', 'best_trainer.json')
 
     # TODO(kiriti): Change the behavior to return Optional[str] if
     # best_trainer doesn't exist
@@ -368,19 +377,21 @@ class HomeDirManager:
                 BestTrainerConfig,
             )
         # NOTE: Update the stored best trainer path for the same reason listed above.
-        self._best_trainer_config.best_trainer = self.make_best_trainer_path_V1_and_v2_compat(
-            self._best_trainer_config.best_trainer)
+        self._best_trainer_config.best_trainer = (
+            self.make_best_trainer_path_V1_and_v2_compat(
+                self._best_trainer_config.best_trainer
+            )
+        )
         return self._best_trainer_config.best_trainer
 
     def get_automl_dir(self, task_name: str) -> str:
         r"""Get the automl directory from the automl train directory"""
-        return osp.join(self.models_dir, task_name, "automl")
+        return osp.join(self.models_dir, task_name, 'automl')
 
     def split_train_table_dir(self, split_fpid: str) -> str:
         return osp.join(self.outputs_dir, split_fpid)
 
-    def split_train_table_path(self, split_fpid: str,
-                               stage: TrainingStage) -> str:
+    def split_train_table_path(self, split_fpid: str, stage: TrainingStage) -> str:
         return osp.join(
             self.split_train_table_dir(split_fpid),
             'split_tables',
@@ -397,11 +408,11 @@ class HomeDirManager:
             # Keep the old path for backwards compatibility
             return osp.join(
                 self.outputs_dir,
-                "split_train_table_stats.json",
+                'split_train_table_stats.json',
             )
         return osp.join(
             self.split_train_table_dir(split_fpid),
-            "split_train_table_stats.json",
+            'split_train_table_stats.json',
         )
 
     @property
@@ -411,7 +422,7 @@ class HomeDirManager:
         This contains label distribution stats for the target column of
         predictive queries.
         """
-        return osp.join(self.outputs_dir, "pquery_table_stats.json")
+        return osp.join(self.outputs_dir, 'pquery_table_stats.json')
 
     @property
     def pred_table_stats(self) -> str:
@@ -425,12 +436,11 @@ class HomeDirManager:
         return self.train_table_stats
 
     @blocking_method()
-    def get_regression_heatmap_path(self, stage: TrainingStage,
-                                    task_name: str) -> str:
+    def get_regression_heatmap_path(self, stage: TrainingStage, task_name: str) -> str:
         best_trainer_dir = self.get_best_trainer_dir(task_name)
         return os.path.join(
-            best_trainer_dir,
-            f'{stage.value}_target_prediction_heatmap/heatmap.json')
+            best_trainer_dir, f'{stage.value}_target_prediction_heatmap/heatmap.json'
+        )
 
     @property
     def all_target_regression_stats(self) -> str:
@@ -440,7 +450,7 @@ class HomeDirManager:
         distribution stats for both the labels and predictions of the target
         column.
         """
-        return osp.join(self.outputs_dir, "all_target_regression_stats.json")
+        return osp.join(self.outputs_dir, 'all_target_regression_stats.json')
 
     def first_task_name(self) -> Optional[str]:
         """Get the first task under the home directory."""
@@ -476,7 +486,7 @@ class HomeDirManager:
         if task_name is None:
             return []
 
-        models_path = osp.join(self.models_dir, task_name, "automl")
+        models_path = osp.join(self.models_dir, task_name, 'automl')
         model_config_dirs = fsutil.listdir(models_path)
 
         trials = []
@@ -495,10 +505,9 @@ class HomeDirManager:
         match = re.fullmatch(r'version_(\d+)', name)
         return match.group(1) if match else None
 
-    def make_best_trainer_path_V1_and_v2_compat(self,
-                                                best_trainer_path: str) -> str:
+    def make_best_trainer_path_V1_and_v2_compat(self, best_trainer_path: str) -> str:
         first_task_name = self.first_task_name()
-        prefix = best_trainer_path.rsplit("models/", 1)[0] + 'models/'
-        suffix = "/automl" + best_trainer_path.split("/automl")[1]
+        prefix = best_trainer_path.rsplit('models/', 1)[0] + 'models/'
+        suffix = '/automl' + best_trainer_path.split('/automl')[1]
         final_path = prefix + first_task_name + suffix
         return final_path

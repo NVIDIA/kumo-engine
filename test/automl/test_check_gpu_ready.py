@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """check_gpu_ready must fail loudly (not silently CPU-fall-back) when a GPU
 is required but unavailable — the single-host silent-GPU-loss issue."""
+
 import pytest
 from kumo_core.automl.error import check_gpu_ready
 
@@ -36,7 +37,8 @@ def test_mps_gpu_readiness(monkeypatch):
     monkeypatch.setattr('torch.cuda.is_available', lambda: False)
     monkeypatch.setattr('torch.backends.mps.is_available', lambda: True)
     monkeypatch.setattr(
-        'torch.zeros', lambda *args, **kwargs: devices.append(kwargs['device']))
+        'torch.zeros', lambda *args, **kwargs: devices.append(kwargs['device'])
+    )
 
     check_gpu_ready(require_gpu=True)
     assert devices == ['mps']

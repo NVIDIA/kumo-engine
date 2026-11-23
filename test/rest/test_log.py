@@ -11,9 +11,7 @@ from rest.routers.log import LogErrorArgs, LogLevel
 
 
 def test_log_ui_error(client: TestClient, caplog: LogCaptureFixture):
-    testMessage = "test message"
-    args = LogErrorArgs(message=testMessage, level=LogLevel.ERROR,
-                        stacktrace=None)
-    post_and_expect_success(client, "/v0/log/log_ui_error", args,
-                            EmptyResponse)
+    testMessage = 'test message'
+    args = LogErrorArgs(message=testMessage, level=LogLevel.ERROR, stacktrace=None)
+    post_and_expect_success(client, '/v0/log/log_ui_error', args, EmptyResponse)
     assert testMessage in caplog.text

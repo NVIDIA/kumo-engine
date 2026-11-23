@@ -14,6 +14,7 @@ class GenerationValidator:
             cache stats.
 
     """
+
     def __init__(
         self,
         stats_manager: StatsManager,

@@ -18,24 +18,29 @@ from kumo.utils.mapping import (
 
 def test_map_values():
     max_signed_int = 2**63 - 1
-    src_data = pd.DataFrame({
-        'index': [10, 20, 30, 40, 45, 50],
-        'col':
-        pd.Series([3, 4, 5, max_signed_int, pd.NA, 7], dtype="Int64"),
-    })
+    src_data = pd.DataFrame(
+        {
+            'index': [10, 20, 30, 40, 45, 50],
+            'col': pd.Series([3, 4, 5, max_signed_int, pd.NA, 7], dtype='Int64'),
+        }
+    )
     src_data.set_index('index', inplace=True)
 
-    dst_data = pd.DataFrame({
-        'index': [50, 60, 80, 90, 95, 100],
-        # Cast the numbers to str, to test joining str and int
-        'col': ["5", "5",
-                str(max_signed_int),
-                str(max_signed_int), pd.NA, "9"]
-    })
+    dst_data = pd.DataFrame(
+        {
+            'index': [50, 60, 80, 90, 95, 100],
+            # Cast the numbers to str, to test joining str and int
+            'col': ['5', '5', str(max_signed_int), str(max_signed_int), pd.NA, '9'],
+        }
+    )
     dst_data.set_index('index', inplace=True)
 
-    row, col = map_values(src_data['col'], get_index_map(src_data),
-                          dst_data['col'], get_index_map(dst_data))
+    row, col = map_values(
+        src_data['col'],
+        get_index_map(src_data),
+        dst_data['col'],
+        get_index_map(dst_data),
+    )
 
     assert_edge_index_equal((row, col), [[2, 2, 3, 3], [0, 1, 2, 3]])
 
@@ -91,8 +96,9 @@ def test_node_idx_tensor():
 
     arange = np.random.permutation(5)
 
-    index_map = pd.DataFrame(index=pd.Series(list(range(5))),
-                             data={NODE_INDEX_COLUMN: arange})
+    index_map = pd.DataFrame(
+        index=pd.Series(list(range(5))), data={NODE_INDEX_COLUMN: arange}
+    )
 
     idx_tensor = node_idx_tensor(index_map)
 
@@ -101,15 +107,15 @@ def test_node_idx_tensor():
 
 def test_mapping_chunked_array():
     range_limit = 1000
-    prefix = "a" * 1000
+    prefix = 'a' * 1000
     values = [prefix + str(i) for i in range(range_limit)]
 
-    target = pd.Series(values, dtype="string[pyarrow]", name='values')
+    target = pd.Series(values, dtype='string[pyarrow]', name='values')
     target = target.to_frame()
     target.set_index('values', inplace=True)
     index_map = MapIndex(target)
 
-    source = pd.Series(values, dtype="string[pyarrow]")
+    source = pd.Series(values, dtype='string[pyarrow]')
     source = pd.concat([source] * 1000)
     expected_col = np.tile(np.arange(range_limit), 1000)
 

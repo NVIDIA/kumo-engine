@@ -27,7 +27,8 @@ def adls_test_base_uri() -> str:
     if not storage_account or not container:
         raise RuntimeError(
             'ADLS integration tests require AZURE_STORAGE_ACCOUNT and '
-            'AZURE_CONTAINER_NAME')
+            'AZURE_CONTAINER_NAME'
+        )
     return f'abfss://{container}@{storage_account}.dfs.core.windows.net'
 
 
@@ -52,9 +53,13 @@ def _adls_credentials_configured(config_path: Optional[str] = None) -> bool:
 
     tenant_id = os.getenv('AZURE_TENANT_ID')
     client_id = os.getenv('AZURE_CLIENT_ID')
-    if (tenant_id and client_id
-            and (os.getenv('AZURE_CLIENT_SECRET')
-                 or os.getenv('AZURE_FEDERATED_TOKEN_FILE'))):
+    if (
+        tenant_id
+        and client_id
+        and (
+            os.getenv('AZURE_CLIENT_SECRET') or os.getenv('AZURE_FEDERATED_TOKEN_FILE')
+        )
+    ):
         return True
 
     # App Service / Functions and legacy managed-identity endpoints are
@@ -62,12 +67,14 @@ def _adls_credentials_configured(config_path: Optional[str] = None) -> bool:
     # without probing the public IMDS endpoint during local test collection.
     return any(
         os.getenv(name)
-        for name in ('IDENTITY_ENDPOINT', 'MSI_ENDPOINT', 'IMDS_ENDPOINT'))
+        for name in ('IDENTITY_ENDPOINT', 'MSI_ENDPOINT', 'IMDS_ENDPOINT')
+    )
 
 
 def withADLSCredentials(
-    func=None, config_path: Optional[str] = None, test_path:
-    str = 'abfss://kumopublic@kumopublicdatasets.dfs.core.windows.net/Kumo-Experience-Bug-Bash-Datasets/flight-delays/csv'
+    func=None,
+    config_path: Optional[str] = None,
+    test_path: str = 'abfss://kumopublic@kumopublicdatasets.dfs.core.windows.net/Kumo-Experience-Bug-Bash-Datasets/flight-delays/csv',
 ):
     """
     Decorator to skip tests if ADLS credentials are not available.
@@ -103,6 +110,7 @@ def withADLSCredentials(
         }
     }
     """
+
     def decorator(test_func: Callable):
         credentials_missing = not _adls_credentials_configured(config_path)
         if inspect.isgeneratorfunction(test_func):
@@ -110,15 +118,17 @@ def withADLSCredentials(
             # Marking fixtures is unsupported by pytest; a generator wrapper
             # skips at fixture setup before the yielded resource can be used.
             from kumo.testing._skip import skip_if
-            return skip_if(credentials_missing,
-                           "No Azure credentials found for ADLS", test_func)
+
+            return skip_if(
+                credentials_missing, 'No Azure credentials found for ADLS', test_func
+            )
         # Use a pytest mark rather than a runtime wrapper. Runtime wrappers
         # skip only after pytest has resolved fixtures; ADLS integration
         # fixtures perform provider I/O during setup and would therefore hang
         # before the wrapper got a chance to skip.
         return pytest.mark.skipif(
             credentials_missing,
-            reason="No Azure credentials found for ADLS",
+            reason='No Azure credentials found for ADLS',
         )(test_func)
 
     # Handle both @withADLSCredentials and @withADLSCredentials() syntax
@@ -140,7 +150,8 @@ def load_adls_config(config_path: Optional[str] = None) -> dict:
     """
     creds_path = config_path or os.getenv(
         'AZURE_CREDENTIALS_PATH',
-        os.path.expanduser('~/azure/azure_test_credentials.json'))
+        os.path.expanduser('~/azure/azure_test_credentials.json'),
+    )
 
     with open(creds_path, 'r') as f:
         return json.load(f)
@@ -158,6 +169,7 @@ def adls_client():
 
     # Save old ADLS contexts
     from io_utils.fsutil import impl_adls
+
     old_impl_ctx = impl_adls.adls_ctx
 
     old_data_lake_client_fn = threadsafe_adls.data_lake_client
@@ -168,7 +180,8 @@ def adls_client():
 
     impl_adls.adls_ctx = mock_ctx
     threadsafe_adls.data_lake_client = (
-        lambda storage_account=None, endpoint_suffix=None: mock_client)
+        lambda storage_account=None, endpoint_suffix=None: mock_client
+    )
 
     yield mock_client
 
@@ -191,6 +204,7 @@ def adls_client():
 
 class MockADLSContext:
     """Mock ADLSContext that uses MockADLSClient"""
+
     def __init__(self, mock_client):
         self._mock_client = mock_client
 
@@ -213,6 +227,7 @@ class MockADLSContext:
 
 class MockADLSClient:
     """Mock Azure Data Lake Storage client for testing"""
+
     def __init__(self):
         self._containers = {}
         self._files = {}
@@ -227,18 +242,20 @@ class MockADLSClient:
     def get_file_system_client(self, file_system: str):
         """Get a mock file system (container) client"""
         if file_system not in self._containers:
-            raise Exception(f"Container {file_system} does not exist")
+            raise Exception(f'Container {file_system} does not exist')
 
         mock_fs = Mock()
         mock_fs.file_system_name = file_system
         mock_fs.create_directory = lambda path: self._create_directory(
-            file_system, path)
+            file_system, path
+        )
         mock_fs.get_directory_client = lambda path: self._get_directory_client(
-            file_system, path)
-        mock_fs.get_file_client = lambda path: self._get_file_client(
-            file_system, path)
-        mock_fs.get_paths = lambda path="", recursive=True, max_results=None: self._get_paths(
-            file_system, path, recursive)
+            file_system, path
+        )
+        mock_fs.get_file_client = lambda path: self._get_file_client(file_system, path)
+        mock_fs.get_paths = lambda path='', recursive=True, max_results=None: (
+            self._get_paths(file_system, path, recursive)
+        )
 
         return mock_fs
 
@@ -250,32 +267,31 @@ class MockADLSClient:
         rest = parts[1].split('.dfs.core.windows.net/')
         path = rest[1] if len(rest) > 1 else ''
 
-        key = f"{container}/{path}"
-        self._files[key] = content.encode() if isinstance(content,
-                                                          str) else content
+        key = f'{container}/{path}'
+        self._files[key] = content.encode() if isinstance(content, str) else content
 
         # Auto-create parent directories
         path_parts = path.split('/')
         for i in range(len(path_parts) - 1):
-            dir_path = '/'.join(path_parts[:i + 1])
-            dir_key = f"{container}/{dir_path}/"
+            dir_path = '/'.join(path_parts[: i + 1])
+            dir_key = f'{container}/{dir_path}/'
             if dir_key not in self._files:
-                self._files[dir_key] = b""
+                self._files[dir_key] = b''
 
     def _create_directory(self, file_system: str, path: str):
         """Mock directory creation"""
         # Normalize path - ensure trailing slash for directories
         normalized_path = path.rstrip('/') + '/'
-        key = f"{file_system}/{normalized_path}"
+        key = f'{file_system}/{normalized_path}'
         if key not in self._files:
-            self._files[key] = b""
+            self._files[key] = b''
         return Mock(path=path)
 
     def _is_directory(self, file_system: str, path: str) -> bool:
         """Check if a path is a directory"""
         # Normalize path
         normalized_path = path.rstrip('/')
-        dir_key = f"{file_system}/{normalized_path}/"
+        dir_key = f'{file_system}/{normalized_path}/'
 
         # It's a directory if:
         # 1. The path/ exists as a key
@@ -284,15 +300,14 @@ class MockADLSClient:
             return True
 
         # Check if any files start with this prefix
-        prefix = f"{file_system}/{normalized_path}/"
+        prefix = f'{file_system}/{normalized_path}/'
         return any(k.startswith(prefix) for k in self._files.keys())
 
     def _get_directory_client(self, file_system: str, path: str):
         """Get a mock directory client"""
         mock_dir = Mock()
         mock_dir.path = path
-        mock_dir.create_directory = lambda: self._create_directory(
-            file_system, path)
+        mock_dir.create_directory = lambda: self._create_directory(file_system, path)
         mock_dir.delete_directory = lambda: self._delete_path(file_system, path)
         mock_dir.exists = lambda: self._exists(file_system, path)
 
@@ -307,7 +322,8 @@ class MockADLSClient:
         def get_directory_properties(**kwargs):
             if not self._is_directory(file_system, path):
                 from azure.core.exceptions import ResourceNotFoundError
-                raise ResourceNotFoundError(f"Directory not found: {path}")
+
+                raise ResourceNotFoundError(f'Directory not found: {path}')
 
             # Return a Mock that supports both attribute and dict access
             props = Mock()
@@ -320,7 +336,7 @@ class MockADLSClient:
                 'name': props.name,
                 'size': props.size,
                 'is_directory': props.is_directory,
-                'metadata': props.metadata
+                'metadata': props.metadata,
             }.get(k, default)
 
             return props
@@ -332,46 +348,52 @@ class MockADLSClient:
         """Get a mock file client"""
         mock_file = Mock()
         mock_file.path = path
-        mock_file.url = (
-            f"https://mock.dfs.core.windows.net/{file_system}/{path}")
+        mock_file.url = f'https://mock.dfs.core.windows.net/{file_system}/{path}'
 
         def create_file(**kwargs):
             """Create an empty file"""
-            key = f"{file_system}/{path}"
-            if (kwargs.get('match_condition') == MatchConditions.IfMissing
-                    and 'etag' in kwargs):
+            key = f'{file_system}/{path}'
+            if (
+                kwargs.get('match_condition') == MatchConditions.IfMissing
+                and 'etag' in kwargs
+            ):
                 raise TypeError('IfMissing must not include etag')
-            if (key in self._files and kwargs.get('match_condition')
-                    == MatchConditions.IfMissing):
-                raise ResourceExistsError(f"File already exists: {path}")
-            self._files[key] = b""
+            if (
+                key in self._files
+                and kwargs.get('match_condition') == MatchConditions.IfMissing
+            ):
+                raise ResourceExistsError(f'File already exists: {path}')
+            self._files[key] = b''
             self._metadata[key] = kwargs.get('metadata') or {}
 
             # Auto-create parent directories
             path_parts = path.split('/')
             for i in range(len(path_parts) - 1):
-                dir_path = '/'.join(path_parts[:i + 1])
-                dir_key = f"{file_system}/{dir_path}/"
+                dir_path = '/'.join(path_parts[: i + 1])
+                dir_key = f'{file_system}/{dir_path}/'
                 if dir_key not in self._files:
-                    self._files[dir_key] = b""
+                    self._files[dir_key] = b''
 
             return mock_file
 
         def upload_data(data, overwrite=True, **kwargs):
-            key = f"{file_system}/{path}"
-            if (kwargs.get('match_condition') == MatchConditions.IfMissing
-                    and 'etag' in kwargs):
+            key = f'{file_system}/{path}'
+            if (
+                kwargs.get('match_condition') == MatchConditions.IfMissing
+                and 'etag' in kwargs
+            ):
                 raise TypeError('IfMissing must not include etag')
             if not overwrite and kwargs.get('metadata') is not None:
-                raise ValueError(
-                    'metadata can be set only when overwrite is enabled')
-            if (key in self._files and kwargs.get('match_condition')
-                    == MatchConditions.IfMissing):
-                raise ResourceExistsError(f"File already exists: {path}")
+                raise ValueError('metadata can be set only when overwrite is enabled')
+            if (
+                key in self._files
+                and kwargs.get('match_condition') == MatchConditions.IfMissing
+            ):
+                raise ResourceExistsError(f'File already exists: {path}')
 
             # Handle different data types
             if data is None:
-                data = b""
+                data = b''
             elif isinstance(data, str):
                 data = data.encode()
             elif hasattr(data, 'read'):
@@ -392,14 +414,14 @@ class MockADLSClient:
             # Auto-create parent directories (same as create_file)
             path_parts = path.split('/')
             for i in range(len(path_parts) - 1):
-                dir_path = '/'.join(path_parts[:i + 1])
-                dir_key = f"{file_system}/{dir_path}/"
+                dir_path = '/'.join(path_parts[: i + 1])
+                dir_key = f'{file_system}/{dir_path}/'
                 if dir_key not in self._files:
-                    self._files[dir_key] = b""
+                    self._files[dir_key] = b''
 
         def download_file():
-            key = f"{file_system}/{path}"
-            content = self._files.get(key, b"")
+            key = f'{file_system}/{path}'
+            content = self._files.get(key, b'')
             mock_download = Mock()
             mock_download.readall = lambda: content
 
@@ -415,16 +437,17 @@ class MockADLSClient:
             return self._delete_path(file_system, path)
 
         def exists():
-            key = f"{file_system}/{path}"
+            key = f'{file_system}/{path}'
             result = key in self._files
             return result
 
         def get_file_properties(**kwargs):
-            key = f"{file_system}/{path}"
+            key = f'{file_system}/{path}'
             if key not in self._files:
                 from azure.core.exceptions import ResourceNotFoundError
-                raise ResourceNotFoundError(f"File not found: {path}")
-            content = self._files.get(key, b"")
+
+                raise ResourceNotFoundError(f'File not found: {path}')
+            content = self._files.get(key, b'')
 
             # Return a Mock that supports both attribute and dict access
             props = Mock()
@@ -439,7 +462,7 @@ class MockADLSClient:
                 'name': props.name,
                 'size': props.size,
                 'is_directory': props.is_directory,
-                'metadata': props.metadata
+                'metadata': props.metadata,
             }.get(k, default)
 
             copy_status = self._copy_status.get(key)
@@ -449,34 +472,37 @@ class MockADLSClient:
             return props
 
         def start_copy_from_url(source_url: str, **kwargs):
-            if ".dfs.core.windows.net/" not in source_url:
-                raise ValueError(f"Invalid source URL: {source_url}")
-            _, path_part = source_url.split(".dfs.core.windows.net/", 1)
-            if "/" not in path_part:
-                raise ValueError(f"Invalid source URL path: {source_url}")
-            src_container, src_path = path_part.split("/", 1)
-            src_key = f"{src_container}/{src_path}"
-            dst_key = f"{file_system}/{path}"
+            if '.dfs.core.windows.net/' not in source_url:
+                raise ValueError(f'Invalid source URL: {source_url}')
+            _, path_part = source_url.split('.dfs.core.windows.net/', 1)
+            if '/' not in path_part:
+                raise ValueError(f'Invalid source URL path: {source_url}')
+            src_container, src_path = path_part.split('/', 1)
+            src_key = f'{src_container}/{src_path}'
+            dst_key = f'{file_system}/{path}'
             if src_key not in self._files:
                 from azure.core.exceptions import ResourceNotFoundError
-                raise ResourceNotFoundError(f"File not found: {src_path}")
+
+                raise ResourceNotFoundError(f'File not found: {src_path}')
             self._files[dst_key] = self._files[src_key]
-            self._copy_status[dst_key] = "success"
+            self._copy_status[dst_key] = 'success'
 
         def rename_file(new_name: str, **kwargs):
             destination_container, destination_path = new_name.split('/', 1)
-            if (kwargs.get('match_condition') == MatchConditions.IfMissing
-                    and 'etag' in kwargs):
+            if (
+                kwargs.get('match_condition') == MatchConditions.IfMissing
+                and 'etag' in kwargs
+            ):
                 raise TypeError('IfMissing must not include etag')
-            source_key = f"{file_system}/{path}"
+            source_key = f'{file_system}/{path}'
             if source_key not in self._files:
                 from azure.core.exceptions import ResourceNotFoundError
-                raise ResourceNotFoundError(f"File not found: {path}")
-            destination_key = f"{destination_container}/{destination_path}"
+
+                raise ResourceNotFoundError(f'File not found: {path}')
+            destination_key = f'{destination_container}/{destination_path}'
             self._files[destination_key] = self._files.pop(source_key)
             self._metadata[destination_key] = self._metadata.pop(source_key, {})
-            return self._get_file_client(destination_container,
-                                         destination_path)
+            return self._get_file_client(destination_container, destination_path)
 
         mock_file.upload_data = upload_data
         mock_file.download_file = download_file
@@ -489,24 +515,23 @@ class MockADLSClient:
 
         return mock_file
 
-    def _get_paths(self, file_system: str, path: str = "",
-                   recursive: bool = True):
+    def _get_paths(self, file_system: str, path: str = '', recursive: bool = True):
         """List paths in a directory"""
-        prefix = f"{file_system}/{path}" if path else file_system
+        prefix = f'{file_system}/{path}' if path else file_system
         if not prefix.endswith('/'):
             prefix += '/'
 
         paths = []
         for key in self._files.keys():
             if key.startswith(prefix) and key != prefix:
-                relative_path = key[len(prefix):]
+                relative_path = key[len(prefix) :]
 
                 if not recursive and '/' in relative_path.rstrip('/'):
                     continue
 
                 mock_path = Mock()
                 # name should be the full path from container root, not just filename
-                full_path_from_root = key[len(f"{file_system}/"):]
+                full_path_from_root = key[len(f'{file_system}/') :]
                 mock_path.name = full_path_from_root.rstrip('/')
                 mock_path.is_directory = key.endswith('/')
                 paths.append(mock_path)
@@ -517,19 +542,19 @@ class MockADLSClient:
         """Check if path exists (file or directory)"""
         # Normalize path
         normalized_path = path.rstrip('/')
-        key = f"{file_system}/{normalized_path}"
-        dir_key = f"{key}/"
+        key = f'{file_system}/{normalized_path}'
+        dir_key = f'{key}/'
 
         # Exists if it's a file or a directory
         return key in self._files or dir_key in self._files
 
     def _delete_path(self, file_system: str, path: str):
         """Delete a path"""
-        key = f"{file_system}/{path}"
+        key = f'{file_system}/{path}'
         if key in self._files:
             del self._files[key]
         self._metadata.pop(key, None)
-        key_dir = f"{key}/"
+        key_dir = f'{key}/'
         if key_dir in self._files:
             del self._files[key_dir]
         self._metadata.pop(key_dir, None)
@@ -540,12 +565,14 @@ class MockADLSClient:
             self._metadata.pop(k, None)
 
 
-def withADLSServicePrincipal(tenant_id: str = None, client_id: str = None,
-                             client_secret: str = None):
+def withADLSServicePrincipal(
+    tenant_id: str = None, client_id: str = None, client_secret: str = None
+):
     """
     Decorator to test with specific Service Principal credentials.
     Useful for multi-tenant B2B scenarios.
     """
+
     def decorator(func: Callable):
         def wrapper(*args, **kwargs):
             # Save current credentials

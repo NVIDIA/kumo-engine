@@ -26,27 +26,28 @@ from kumo.engine import FileConnector, PredictiveQuery, Trainer, configure
 from kumo.engine.trainer.output_config import PredictionOutputConfig
 
 prepared, scratch, published, output = [
-    Path(os.environ[name]).expanduser().resolve() for name in (
-        "KUMO_PREDICTION_INPUT",
-        "KUMO_SCRATCH",
-        "KUMO_PREDICTION_OUTPUT",
-        "KUMO_RELOAD_OUTPUT",
+    Path(os.environ[name]).expanduser().resolve()
+    for name in (
+        'KUMO_PREDICTION_INPUT',
+        'KUMO_SCRATCH',
+        'KUMO_PREDICTION_OUTPUT',
+        'KUMO_RELOAD_OUTPUT',
     )
 ]
 for existing in (prepared, published):
     if not existing.is_dir():
-        raise FileNotFoundError(
-            f"Required directory does not exist: {existing}")
+        raise FileNotFoundError(f'Required directory does not exist: {existing}')
 for first, second in combinations((prepared, scratch, published, output), 2):
     if first.is_relative_to(second) or second.is_relative_to(first):
         raise ValueError(
-            "Prepared input, scratch, published output, and reload output "
-            "paths must be separate.")
+            'Prepared input, scratch, published output, and reload output '
+            'paths must be separate.'
+        )
 scratch.mkdir(parents=True, exist_ok=True)
 if output.exists():
-    raise FileExistsError("Choose a new reload output directory for each run.")
+    raise FileExistsError('Choose a new reload output directory for each run.')
 configure(scratch_dir=scratch)
-trainer = Trainer.load(published / "model")
+trainer = Trainer.load(published / 'model')
 graph = build_graph(prepared)
 graph.validate()
 snapshot = graph.snapshot()
@@ -54,8 +55,8 @@ query = PredictiveQuery(graph, QUERY)
 query.validate()
 
 prediction_time = pd.Timestamp(
-    os.environ.get("KUMO_PREDICTION_TIME",
-                   "2025-03-31T00:00:00")).to_pydatetime()
+    os.environ.get('KUMO_PREDICTION_TIME', '2025-03-31T00:00:00')
+).to_pydatetime()
 # Batch predictions
 # Generate label-free scoring rows for the query population.
 prediction_table = query.generate_prediction_table(
@@ -73,7 +74,7 @@ predictions = trainer.predict(
     output_config=PredictionOutputConfig(
         connector=destination,
         artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name="predictions.parquet",
+        table_name='predictions.parquet',
         write_mode=WriteMode.OVERWRITE,
     ),
 ).frame
@@ -85,14 +86,16 @@ embeddings = trainer.predict(
     output_config=PredictionOutputConfig(
         connector=destination,
         artifact_type=PredictionArtifactType.EMBEDDINGS,
-        table_name="embeddings.parquet",
+        table_name='embeddings.parquet',
         write_mode=WriteMode.OVERWRITE,
     ),
 ).frame
-pd.testing.assert_frame_equal(predictions,
-                              pd.read_parquet(output / "predictions.parquet"))
-pd.testing.assert_frame_equal(embeddings,
-                              pd.read_parquet(output / "embeddings.parquet"))
+pd.testing.assert_frame_equal(
+    predictions, pd.read_parquet(output / 'predictions.parquet')
+)
+pd.testing.assert_frame_equal(
+    embeddings, pd.read_parquet(output / 'embeddings.parquet')
+)
 assert set(predictions.ENTITY) == set(selected.ENTITY1)
 assert predictions.ENTITY.is_unique
 assert np.isfinite(predictions.True_PROB.to_numpy()).all()
@@ -103,6 +106,6 @@ assert set(embeddings.ENTITY) == set(selected.ENTITY1)
 vectors = np.stack(embeddings.EMBEDDING.to_numpy())
 assert vectors.shape[0] == len(selected) and vectors.shape[1] > 0
 assert np.isfinite(vectors).all()
-print("Reloaded prediction rows:", len(predictions))
-print("Reloaded embedding matrix shape:", vectors.shape)
-print("New outputs:", output)
+print('Reloaded prediction rows:', len(predictions))
+print('Reloaded embedding matrix shape:', vectors.shape)
+print('New outputs:', output)

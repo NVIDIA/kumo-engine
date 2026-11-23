@@ -60,14 +60,15 @@ def test_load_k8s_job_config():
     ]
     # Test load job v1 to v2 config
     job_json_dicts_v1 = dict(
-        home_dir="",
-        task_name="",
-        training_job_id="",
-        automl_cfg_path="",
-        data_backend_persist_dir="",
+        home_dir='',
+        task_name='',
+        training_job_id='',
+        automl_cfg_path='',
+        data_backend_persist_dir='',
     )
     job_json_dicts_v2 = _load_k8s_job_config(
-        job_json_dicts_v1, JobConfig, json_ignore_params=job_cfg_ignore_params)
+        job_json_dicts_v1, JobConfig, json_ignore_params=job_cfg_ignore_params
+    )
     job_config_v2 = TypeAdapter(JobConfig).validate_python(job_json_dicts_v2)
     job_config_v2_dict = job_config_v2.__dict__
     job_config_v2_dict.pop('__pydantic_initialised__', None)
@@ -81,19 +82,19 @@ def test_load_k8s_job_config():
     }.issubset(job_config_v2_dict.keys())
     # Test load job v2 to v1 config
     job_json_dicts_v2 = dict(
-        home_dir="",
-        task_name="",
-        automl_cfg_path="",
-        data_backend_persist_dir="",
-        remote_graphengine_address="",
-        tables_to_load="",
-        nodes_to_load="",
-        edges_to_load="",
+        home_dir='',
+        task_name='',
+        automl_cfg_path='',
+        data_backend_persist_dir='',
+        remote_graphengine_address='',
+        tables_to_load='',
+        nodes_to_load='',
+        edges_to_load='',
         disable_explain=False,
     )
     job_json_dicts_v1 = _load_k8s_job_config(
-        job_json_dicts_v2, JobConfigV1,
-        json_ignore_params=job_cfg_ignore_params)
+        job_json_dicts_v2, JobConfigV1, json_ignore_params=job_cfg_ignore_params
+    )
     assert len(job_json_dicts_v1) == 4
 
 
@@ -102,34 +103,45 @@ def test_load_prediction_config():
     config_raise_params = ['output_dir']
     # Test loading prediction v1 to v2 config
     # As we require json dicts to have output_dir, error will be raised here
-    pred_json_dicts_v1 = dict(home_dir="", train_dir="", task_name="",
-                              model_dir="", return_embeddings=False)
+    pred_json_dicts_v1 = dict(
+        home_dir='', train_dir='', task_name='', model_dir='', return_embeddings=False
+    )
     try:
-        _load_k8s_job_config(pred_json_dicts_v1, PredictionConfig,
-                             json_ignore_params=json_ignore_params,
-                             config_raise_params=config_raise_params)
+        _load_k8s_job_config(
+            pred_json_dicts_v1,
+            PredictionConfig,
+            json_ignore_params=json_ignore_params,
+            config_raise_params=config_raise_params,
+        )
         assert False
     except ValueError:
         assert True
 
     # Test loading prediction v2 to v1 config
-    predict_dicts_v2 = dict(home_dir="", train_dir="", task_name="",
-                            model_dir="", output_dir="",
-                            return_embeddings=False)
+    predict_dicts_v2 = dict(
+        home_dir='',
+        train_dir='',
+        task_name='',
+        model_dir='',
+        output_dir='',
+        return_embeddings=False,
+    )
     predict_dicts_v1 = _load_k8s_job_config(
-        predict_dicts_v2, PredictionConfigV1,
+        predict_dicts_v2,
+        PredictionConfigV1,
         json_ignore_params=json_ignore_params,
-        config_raise_params=config_raise_params)
+        config_raise_params=config_raise_params,
+    )
     prediction_config_v1 = TypeAdapter(PredictionConfigV1).validate_python(
-        predict_dicts_v1)
+        predict_dicts_v1
+    )
     prediction_config_v1_dict = prediction_config_v1.__dict__
     prediction_config_v1_dict.pop('__pydantic_initialised__', None)
     assert len(prediction_config_v1_dict) == 8
 
 
 @pytest.mark.parametrize('return_predictions', [False, True])
-def test_prediction_config_return_predictions_roundtrip(tmp_path,
-                                                        return_predictions):
+def test_prediction_config_return_predictions_roundtrip(tmp_path, return_predictions):
     config = PredictionConfig(
         home_dir='/h',
         train_dir='/t',
@@ -159,4 +171,5 @@ def test_prediction_config_requires_authoritative_prediction_output_flag():
                 output_dir='/o',
                 return_embeddings=True,
                 pred_table_path='/pred',
-            ))
+            )
+        )

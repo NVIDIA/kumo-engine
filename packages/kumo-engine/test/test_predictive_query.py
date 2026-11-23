@@ -48,18 +48,29 @@ from kumo.engine.trainer.trainer import _to_core_model_plan
 
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
 def test_classify_top_k_boundaries_on_generated_table(
-        connector_kind, tmp_path, monkeypatch, local_s3_object_identity):
+    connector_kind, tmp_path, monkeypatch, local_s3_object_identity
+):
     storage = tmp_path / 'storage'
     source = storage / 'bucket'
     source.mkdir(parents=True)
     pq.write_table(
-        pa.table({
-            'id':
-            pa.array(range(120), type=pa.int64()),
-            'labels':
-            pa.array([['a', 'b'] if i % 3 == 0 else ['b', 'c'] if i %
-                      3 == 1 else ['a', 'c'] for i in range(120)]),
-        }), source / 'users.parquet')
+        pa.table(
+            {
+                'id': pa.array(range(120), type=pa.int64()),
+                'labels': pa.array(
+                    [
+                        ['a', 'b']
+                        if i % 3 == 0
+                        else ['b', 'c']
+                        if i % 3 == 1
+                        else ['a', 'c']
+                        for i in range(120)
+                    ]
+                ),
+            }
+        ),
+        source / 'users.parquet',
+    )
     configure(scratch_dir=str(tmp_path / 'scratch'))
     if connector_kind == 'file':
         connector = FileConnector(root_dir=str(source))
@@ -84,13 +95,12 @@ def test_classify_top_k_boundaries_on_generated_table(
         session.client.return_value.download_file.side_effect = download_file
         monkeypatch.setattr(boto3, 'Session', Mock(return_value=session))
         connector = S3Connector(root_dir='s3://bucket', region='us-east-1')
-    graph = Graph(
-        [Table.from_source_table(connector['users'], primary_key='id')])
+    graph = Graph([Table.from_source_table(connector['users'], primary_key='id')])
 
     for top_k in (0, -1):
         query = PredictiveQuery(
-            graph, f'PREDICT users.labels CLASSIFY TOP {top_k} '
-            'FOR EACH users.id')
+            graph, f'PREDICT users.labels CLASSIFY TOP {top_k} FOR EACH users.id'
+        )
         with pytest.raises(ValueError, match=f'got {top_k}'):
             query.validate()
 
@@ -98,13 +108,15 @@ def test_classify_top_k_boundaries_on_generated_table(
     if connector_kind == 's3':
         assert local_s3_object_identity.count('bucket/users.parquet') >= 2
     oversized = PredictiveQuery(
-        graph, 'PREDICT users.labels CLASSIFY TOP 4 FOR EACH users.id')
+        graph, 'PREDICT users.labels CLASSIFY TOP 4 FOR EACH users.id'
+    )
     with pytest.raises(ValueError, match='TOP K 4.*1\\.\\.3'):
         oversized.generate_training_table(snapshot)
     assert not list(snapshot.index_path.glob('train_tables/*.staging'))
 
     valid = PredictiveQuery(
-        graph, 'PREDICT users.labels CLASSIFY TOP 3 FOR EACH users.id')
+        graph, 'PREDICT users.labels CLASSIFY TOP 3 FOR EACH users.id'
+    )
     result = valid.generate_training_table(snapshot)
     assert result.train_table_path.is_dir()
     assert (result.train_table_path / 'part-00000.parquet').is_file()
@@ -118,46 +130,63 @@ def graph_snapshot(tmp_path):
     for name, cols, time_col in [
         ('users', [('label', Dtype.bool, Stype.categorical)], None),
         ('products', [], None),
-        ('orders', [('user_id', Dtype.int64, Stype.ID),
-                    ('product_id', Dtype.int64, Stype.ID),
-                    ('ts', Dtype.date, Stype.timestamp),
-                    ('amount', Dtype.float64, Stype.numerical)], 'ts'),
+        (
+            'orders',
+            [
+                ('user_id', Dtype.int64, Stype.ID),
+                ('product_id', Dtype.int64, Stype.ID),
+                ('ts', Dtype.date, Stype.timestamp),
+                ('amount', Dtype.float64, Stype.numerical),
+            ],
+            'ts',
+        ),
     ]:
         tables.append(
             Table(
-                connector, name,
+                connector,
+                name,
                 TableDefinition(
                     source_table=S3SourceTable(
-                        connector_id=connector.id, file_type=FileType.PARQUET,
-                        source=S3RelativeSource(path=name)), pkey='id',
+                        connector_id=connector.id,
+                        file_type=FileType.PARQUET,
+                        source=S3RelativeSource(path=name),
+                    ),
+                    pkey='id',
                     time_col=time_col,
-                    cols=[Column(name='id', dtype=Dtype.int64, stype=Stype.ID)
-                          ] + [
-                              Column(name=col, dtype=dtype, stype=stype)
-                              for col, dtype, stype in cols
-                          ])))
-    graph = Graph(tables, [
-        Edge('orders', 'user_id', 'users'),
-        Edge('orders', 'product_id', 'products')
-    ])
+                    cols=[Column(name='id', dtype=Dtype.int64, stype=Stype.ID)]
+                    + [
+                        Column(name=col, dtype=dtype, stype=stype)
+                        for col, dtype, stype in cols
+                    ],
+                ),
+            )
+        )
+    graph = Graph(
+        tables,
+        [Edge('orders', 'user_id', 'users'), Edge('orders', 'product_id', 'products')],
+    )
     # An absent index proves suggestions only need resolved schema metadata.
-    return graph, GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'absent',
-                                graph._graph_config)
+    return graph, GraphSnapshot(
+        f'{graph.id}@fixture', tmp_path / 'absent', graph._graph_config
+    )
 
 
-@pytest.mark.parametrize('query', [
-    'PREDICT users.label FOR EACH users.id',
-    'PREDICT orders.amount FOR EACH orders.id',
-    'PREDICT COUNT(orders.*, 0, 7, days) FOR EACH users.id',
-    'PREDICT COUNT(orders.*, 0, 1, days) FORECAST 3 TIMEFRAMES '
-    'FOR EACH users.id',
-    'PREDICT LIST_DISTINCT(orders.product_id, 0, 7, days) RANK TOP 3 '
-    'FOR EACH users.id',
-])
+@pytest.mark.parametrize(
+    'query',
+    [
+        'PREDICT users.label FOR EACH users.id',
+        'PREDICT orders.amount FOR EACH orders.id',
+        'PREDICT COUNT(orders.*, 0, 7, days) FOR EACH users.id',
+        'PREDICT COUNT(orders.*, 0, 1, days) FORECAST 3 TIMEFRAMES FOR EACH users.id',
+        'PREDICT LIST_DISTINCT(orders.product_id, 0, 7, days) RANK TOP 3 '
+        'FOR EACH users.id',
+    ],
+)
 @pytest.mark.parametrize('run_mode', list(RunMode))
 @pytest.mark.parametrize('weight_col', [None, 'weight'])
-def test_suggestions_match_query_defaults_and_validate(graph_snapshot, query,
-                                                       run_mode, weight_col):
+def test_suggestions_match_query_defaults_and_validate(
+    graph_snapshot, query, run_mode, weight_col
+):
     graph, snapshot = graph_snapshot
     pquery = PredictiveQuery(graph, query)
     parsed = pquery._parsed
@@ -165,30 +194,43 @@ def test_suggestions_match_query_defaults_and_validate(graph_snapshot, query,
     facts = dict(
         task_type=TaskType(parsed.task_type),
         query_type=QueryType(parsed.query_type),
-        has_train_table_time_col=(parsed.query_type != 'static'
-                                  or parsed.entity_table == 'orders'),
+        has_train_table_time_col=(
+            parsed.query_type != 'static' or parsed.entity_table == 'orders'
+        ),
         run_mode=run_mode,
         graph=to_plan_graph(native),
         entity_table_names=(
-            [parsed.entity_table] +
-            ([parsed.rhs_node_type] if parsed.rhs_node_type else [])),
+            [parsed.entity_table]
+            + ([parsed.rhs_node_type] if parsed.rhs_node_type else [])
+        ),
         target_to_entity_paths=target_to_entity_paths(parsed, native),
         has_train_table_weight_col=weight_col is not None,
     )
     expected = CoreModelPlan.from_default(**facts)
     if facts['task_type'].is_ranking:
         expected.training_job.metrics = list(
-            set(expected.training_job.metrics +
-                ['map@3', 'precision@3', 'recall@3', 'f1@3']))
-    with patch('socket.socket.connect', side_effect=AssertionError('network')), \
-         patch.object(Graph, 'snapshot', side_effect=AssertionError('ingest')), \
-         patch.object(PredictiveQuery, 'generate_training_table',
-                      side_effect=AssertionError('materialization')), \
-         patch.object(Trainer, 'fit', side_effect=AssertionError('training')):
+            set(
+                expected.training_job.metrics
+                + ['map@3', 'precision@3', 'recall@3', 'f1@3']
+            )
+        )
+    with (
+        patch('socket.socket.connect', side_effect=AssertionError('network')),
+        patch.object(Graph, 'snapshot', side_effect=AssertionError('ingest')),
+        patch.object(
+            PredictiveQuery,
+            'generate_training_table',
+            side_effect=AssertionError('materialization'),
+        ),
+        patch.object(Trainer, 'fit', side_effect=AssertionError('training')),
+    ):
         plan = pquery.suggest_model_plan(
-            snapshot, run_mode=run_mode,
-            train_table_spec=TrainingTableSpec(weight_col=weight_col,
-                                               split_col='ignored'))
+            snapshot,
+            run_mode=run_mode,
+            train_table_spec=TrainingTableSpec(
+                weight_col=weight_col, split_col='ignored'
+            ),
+        )
     assert isinstance(plan, ModelPlan)
     actual = to_json_dict(plan)
     reference = to_json_dict(public_model_plan_from_internal(expected))
@@ -203,40 +245,40 @@ def test_suggestions_match_query_defaults_and_validate(graph_snapshot, query,
     assert errors == []
 
 
-@pytest.mark.parametrize('query,run_mode,error', [
-    ('not a predictive query', RunMode.FAST, 'does not start with the PREDICT'),
-    ('PREDICT users.absent FOR EACH users.id', RunMode.FAST, 'absent'),
-    ('PREDICT users.label FOR EACH users.id', 'invalid', 'RunMode'),
-])
-def test_suggestions_reject_invalid_input(graph_snapshot, query, run_mode,
-                                          error):
+@pytest.mark.parametrize(
+    'query,run_mode,error',
+    [
+        ('not a predictive query', RunMode.FAST, 'does not start with the PREDICT'),
+        ('PREDICT users.absent FOR EACH users.id', RunMode.FAST, 'absent'),
+        ('PREDICT users.label FOR EACH users.id', 'invalid', 'RunMode'),
+    ],
+)
+def test_suggestions_reject_invalid_input(graph_snapshot, query, run_mode, error):
     graph, snapshot = graph_snapshot
     with pytest.raises(ValueError, match=error):
-        PredictiveQuery(graph,
-                        query).suggest_model_plan(snapshot, run_mode=run_mode)
+        PredictiveQuery(graph, query).suggest_model_plan(snapshot, run_mode=run_mode)
 
 
-def test_suggestions_require_matching_snapshot_and_resolved_metadata(
-        graph_snapshot):
+def test_suggestions_require_matching_snapshot_and_resolved_metadata(graph_snapshot):
     graph, snapshot = graph_snapshot
     query = 'PREDICT users.label FOR EACH users.id'
     with pytest.raises(ValueError, match='was not materialized'):
-        PredictiveQuery(graph,
-                        query).suggest_model_plan(replace(snapshot, id='other'))
+        PredictiveQuery(graph, query).suggest_model_plan(replace(snapshot, id='other'))
     unresolved = Graph([replace(graph.tables[0], definition=None)])
     with pytest.raises(ValueError, match='definition|infer_metadata'):
         PredictiveQuery(unresolved, query).suggest_model_plan(
-            replace(snapshot, id=f'{unresolved.id}@fixture'))
+            replace(snapshot, id=f'{unresolved.id}@fixture')
+        )
 
 
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
-def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
-                                                    monkeypatch):
+def test_generated_weight_rejected_before_artifacts(
+    connector_kind, tmp_path, monkeypatch
+):
     columns = [
         Column(name='id', dtype=Dtype.int64, stype=Stype.ID),
         Column(name='label', dtype=Dtype.bool, stype=Stype.categorical),
-        Column(name='sample_weight', dtype=Dtype.float64,
-               stype=Stype.numerical),
+        Column(name='sample_weight', dtype=Dtype.float64, stype=Stype.numerical),
     ]
     if connector_kind == 'file':
         source_dir = tmp_path / 'source'
@@ -262,13 +304,16 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
             cols=columns,
         )
     graph = Graph([Table(connector, 'users', definition)])
-    snapshot = GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'index',
-                             graph._graph_config)
+    snapshot = GraphSnapshot(
+        f'{graph.id}@fixture', tmp_path / 'index', graph._graph_config
+    )
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     run_dir = tmp_path / 'generated-run'
 
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id',
-                        lambda: pytest.fail('allocated a weighted run id'))
+    monkeypatch.setattr(
+        'kumo.engine.pquery.predictive_query.new_run_id',
+        lambda: pytest.fail('allocated a weighted run id'),
+    )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.train_table_scratch_dir',
         lambda run_id: run_dir,
@@ -283,8 +328,8 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     )
 
     with pytest.raises(
-            ValueError,
-            match='Weighted training-table generation is not yet supported'):
+        ValueError, match='Weighted training-table generation is not yet supported'
+    ):
         query.generate_training_table(
             snapshot,
             TrainingTableGenerationPlan(weight_col='sample_weight'),
@@ -293,8 +338,9 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     assert not run_dir.exists()
 
     native_plan = SimpleNamespace(
-        train_table=SimpleNamespace(lag_timesteps=None, compiler_options=None,
-                                    split_family=None),
+        train_table=SimpleNamespace(
+            lag_timesteps=None, compiler_options=None, split_family=None
+        ),
         task_dataset=SimpleNamespace(required_stages=('train', 'val')),
     )
     generated = SimpleNamespace(
@@ -302,15 +348,17 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
         manifest_path=str(tmp_path / 'manifest.json'),
         staging_dir=str(tmp_path / 'staging'),
     )
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id',
-                        lambda: 'unweighted')
+    monkeypatch.setattr(
+        'kumo.engine.pquery.predictive_query.new_run_id', lambda: 'unweighted'
+    )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
         lambda workflow, *, purpose: native_plan,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
-        lambda request, **kwargs: generated)
+        lambda request, **kwargs: generated,
+    )
 
     table = query.generate_training_table(snapshot)
 
@@ -318,8 +366,7 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     assert table.train_table_path == tmp_path / 'train.parquet'
 
 
-def test_generated_temporal_split_requires_time_column(graph_snapshot,
-                                                       monkeypatch):
+def test_generated_temporal_split_requires_time_column(graph_snapshot, monkeypatch):
     graph, snapshot = graph_snapshot
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.new_run_id',
@@ -327,24 +374,31 @@ def test_generated_temporal_split_requires_time_column(graph_snapshot,
     )
     with pytest.raises(ValueError, match="doesn't have a 'Create Date'"):
         PredictiveQuery(
-            graph,
-            'PREDICT users.label FOR EACH users.id').generate_training_table(
-                snapshot,
-                TrainingTableGenerationPlan(
-                    split='TemporalSplit([0.6, 0.3, 0.1])'))
+            graph, 'PREDICT users.label FOR EACH users.id'
+        ).generate_training_table(
+            snapshot,
+            TrainingTableGenerationPlan(split='TemporalSplit([0.6, 0.3, 0.1])'),
+        )
 
 
-@pytest.mark.parametrize('options,message', [
-    ({'start_time': 'NaT', 'end_time': '2025-01-21'}, 'valid timestamp'),
-    ({'start_time': '2025-01-02', 'train_start_offset': 10},
-     'Cannot specify both'),
-    ({'start_time': '2025-01-02',
-      'split': "TimeRangeSplit([('2025-01-02', '2025-01-10'), "
-               "('2025-01-10', '2025-01-21')])"},
-     'cannot be combined'),
-])
+@pytest.mark.parametrize(
+    'options,message',
+    [
+        ({'start_time': 'NaT', 'end_time': '2025-01-21'}, 'valid timestamp'),
+        ({'start_time': '2025-01-02', 'train_start_offset': 10}, 'Cannot specify both'),
+        (
+            {
+                'start_time': '2025-01-02',
+                'split': "TimeRangeSplit([('2025-01-02', '2025-01-10'), "
+                "('2025-01-10', '2025-01-21')])",
+            },
+            'cannot be combined',
+        ),
+    ],
+)
 def test_generated_invalid_bounds_fail_before_artifacts(
-        graph_snapshot, monkeypatch, options, message):
+    graph_snapshot, monkeypatch, options, message
+):
     graph, snapshot = graph_snapshot
     monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
     monkeypatch.setattr(
@@ -363,9 +417,9 @@ def test_generated_invalid_bounds_fail_before_artifacts(
 
 
 @pytest.mark.parametrize('forecast_clause', ['', ' FORECAST 3 TIMEFRAMES'])
-def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
-                                                    monkeypatch,
-                                                    forecast_clause):
+def test_forecast_generation_retains_effective_plan(
+    graph_snapshot, tmp_path, monkeypatch, forecast_clause
+):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
         graph,
@@ -377,7 +431,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
             lag_timesteps=3,
             compiler_options={
                 'lag_offsets_secs': (-1, -2, -3),
-                'yoy_offsets_secs': (-365, ),
+                'yoy_offsets_secs': (-365,),
             },
         ),
         task_dataset=SimpleNamespace(required_stages=('train', 'val')),
@@ -387,8 +441,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
         manifest_path=str(tmp_path / 'manifest.json'),
         staging_dir=str(tmp_path / 'staging'),
     )
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id',
-                        lambda: 'run')
+    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id', lambda: 'run')
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.train_table_scratch_dir',
         lambda run_id: tmp_path / run_id,
@@ -399,7 +452,8 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
-        lambda plan, **kwargs: generated)
+        lambda plan, **kwargs: generated,
+    )
 
     table = query.generate_training_table(
         snapshot,
@@ -417,41 +471,53 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     assert table.generation_plan.forecast_length == 4
 
 
-def test_prediction_compiler_uses_plan_forecast_horizon(graph_snapshot,
-                                                        tmp_path, monkeypatch):
+def test_prediction_compiler_uses_plan_forecast_horizon(
+    graph_snapshot, tmp_path, monkeypatch
+):
     from kumo.engine.pquery.prediction_table import _compile_prediction_table
+
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
-        graph, 'PREDICT COUNT(orders.*, 0, 1, days) FOR EACH users.id')
+        graph, 'PREDICT COUNT(orders.*, 0, 1, days) FOR EACH users.id'
+    )
     monkeypatch.setattr(
-        'kumo_core.pquery.read_col_stats', lambda *args:
-        ('{"amount__MEAN": 1, '
-         '"ts__MIN__False": 1704067200000000000, '
-         '"ts__MAX__False": 1711843200000000000}'))
-    monkeypatch.setattr('kumo_core.pquery._infer_encoder',
-                        lambda column, stats: {'name': 'Numerical'})
+        'kumo_core.pquery.read_col_stats',
+        lambda *args: (
+            '{"amount__MEAN": 1, '
+            '"ts__MIN__False": 1704067200000000000, '
+            '"ts__MAX__False": 1711843200000000000}'
+        ),
+    )
+    monkeypatch.setattr(
+        'kumo_core.pquery._infer_encoder', lambda column, stats: {'name': 'Numerical'}
+    )
     captured = []
     monkeypatch.setattr(
         'kumo.engine.pquery.prediction_table.generate_prediction_table',
-        lambda request: captured.append(request) or object())
+        lambda request: captured.append(request) or object(),
+    )
     request, _, _ = _compile_prediction_table(
-        snapshot, query._parsed, prediction_time=None, run_id='prediction',
-        scratch_dir=tmp_path, artifact_dir=tmp_path,
-        generation_plan=TrainingTableGenerationPlan(forecast_length=4,
-                                                    lag_timesteps=3,
-                                                    year_over_year=True,
-                                                    timeframe_step=2))
+        snapshot,
+        query._parsed,
+        prediction_time=None,
+        run_id='prediction',
+        scratch_dir=tmp_path,
+        artifact_dir=tmp_path,
+        generation_plan=TrainingTableGenerationPlan(
+            forecast_length=4, lag_timesteps=3, year_over_year=True, timeframe_step=2
+        ),
+    )
     assert captured == [request]
     assert request.query.task_type == 'forecasting'
     assert request.query.forecast_length == 4
-    assert request.timestamps == (1_711_843_200_000_000_000, )
+    assert request.timestamps == (1_711_843_200_000_000_000,)
     assert request.task_dataset.task_type == 'forecasting'
-    assert request.compiler_options['future_offsets_secs'] == (0, 86400, 172800,
-                                                               259200)
+    assert request.compiler_options['future_offsets_secs'] == (0, 86400, 172800, 259200)
 
 
 def test_evaluate_prediction_after_absolute_training_bounds(
-        graph, tmp_path, monkeypatch, request):
+    graph, tmp_path, monkeypatch, request
+):
     import pandas as pd
     import torch
 
@@ -466,10 +532,14 @@ def test_evaluate_prediction_after_absolute_training_bounds(
     request.addfinalizer(lambda: torch.set_num_threads(threads))
     snapshot = graph.snapshot()
     query = PredictiveQuery(
-        graph, 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH users.ID')
+        graph, 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH users.ID'
+    )
     table = query.generate_training_table(
-        snapshot, TrainingTableGenerationPlan(
-            start_time='2024-01-10', end_time='2024-02-20', timeframe_step=2))
+        snapshot,
+        TrainingTableGenerationPlan(
+            start_time='2024-01-10', end_time='2024-02-20', timeframe_step=2
+        ),
+    )
     plan = ModelPlan()
     plan.training_job.num_experiments = 1
     plan.training_job.disable_explain = True
@@ -483,33 +553,40 @@ def test_evaluate_prediction_after_absolute_training_bounds(
     fitted = to_json_dict(trainer.training_table_generation_plan)
     assert fitted == to_json_dict(table.generation_plan)
     prediction = query.generate_prediction_table(
-        snapshot, prediction_time=pd.Timestamp('2024-03-01').to_pydatetime(),
-        plan=trainer.training_table_generation_plan)
-    run = trainer.predict(prediction, snapshot=snapshot,
-                          binary_classification_threshold=0.5)
+        snapshot,
+        prediction_time=pd.Timestamp('2024-03-01').to_pydatetime(),
+        plan=trainer.training_table_generation_plan,
+    )
+    run = trainer.predict(
+        prediction, snapshot=snapshot, binary_classification_threshold=0.5
+    )
     result = trainer.evaluate(run, labels_snapshot=snapshot)
     assert result.matured
     assert result.labelled_fraction == 1.0
     assert pd.Timestamp(result.anchors[0]).tz_convert(None) == pd.Timestamp(
-        '2024-03-01')
+        '2024-03-01'
+    )
     future_anchor = pd.Timestamp('2025-01-01')
     future = query.generate_prediction_table(
-        snapshot, prediction_time=future_anchor.to_pydatetime(),
-        plan=trainer.training_table_generation_plan)
+        snapshot,
+        prediction_time=future_anchor.to_pydatetime(),
+        plan=trainer.training_table_generation_plan,
+    )
     assert future.timestamps == (future_anchor.value,)
     assert future.row_count == 50
     assert to_json_dict(trainer.training_table_generation_plan) == fitted
     restored = Trainer.load(training_result.bundle_dir, accelerator='cpu')
     assert to_json_dict(restored.training_table_generation_plan) == fitted
     reloaded_run = restored.predict(
-        prediction, snapshot=snapshot, binary_classification_threshold=0.5)
+        prediction, snapshot=snapshot, binary_classification_threshold=0.5
+    )
     assert len(reloaded_run.frame) == 50
-    pd.testing.assert_frame_equal(run.frame, reloaded_run.frame,
-                                  atol=0.005, rtol=0)
+    pd.testing.assert_frame_equal(run.frame, reloaded_run.frame, atol=0.005, rtol=0)
 
 
 def test_custom_training_table_materializes_weight_and_manual_split(
-        graph_snapshot, tmp_path, monkeypatch):
+    graph_snapshot, tmp_path, monkeypatch
+):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     source = graph.tables[0].connector['custom_rows']
@@ -526,11 +603,13 @@ def test_custom_training_table_materializes_weight_and_manual_split(
         task_dataset=SimpleNamespace(required_stages=('train', 'val', 'test')),
     )
 
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
-                        lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
-        'kumo.engine.pquery._custom_source.validate_training_source',
-        lambda *args: None)
+        'kumo.engine.pquery._custom_source.stage_source_table',
+        lambda source_table, destination: (rows, None),
+    )
+    monkeypatch.setattr(
+        'kumo.engine.pquery._custom_source.validate_training_source', lambda *args: None
+    )
 
     def build(**kwargs):
         captured['plan_kwargs'] = kwargs
@@ -546,8 +625,9 @@ def test_custom_training_table_materializes_weight_and_manual_split(
             staging_dir=str(staging),
         )
 
-    monkeypatch.setattr('kumo_core.training.table.generate_custom_train_table',
-                        generate)
+    monkeypatch.setattr(
+        'kumo_core.training.table.generate_custom_train_table', generate
+    )
 
     table = TrainingTable.from_source_table(
         source,
@@ -562,29 +642,33 @@ def test_custom_training_table_materializes_weight_and_manual_split(
     assert captured['custom'].weight_column == 'WEIGHT'
     generation = captured['plan_kwargs']['training_table_generation_plan']
     assert generation.split == (
-        "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)")
+        "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)"
+    )
 
 
 def test_custom_training_table_uses_the_normal_inferred_split(
-        graph_snapshot, tmp_path, monkeypatch):
+    graph_snapshot, tmp_path, monkeypatch
+):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     rows = tmp_path / 'custom.parquet'
     rows.touch()
     staging = tmp_path / 'staging'
     captured = {}
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
-                        lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
-        'kumo.engine.pquery._custom_source.validate_training_source',
-        lambda *args: None)
+        'kumo.engine.pquery._custom_source.stage_source_table',
+        lambda source_table, destination: (rows, None),
+    )
+    monkeypatch.setattr(
+        'kumo.engine.pquery._custom_source.validate_training_source', lambda *args: None
+    )
 
     def build(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            train_table=SimpleNamespace(lag_timesteps=None,
-                                        compiler_options=None,
-                                        split_family=None),
+            train_table=SimpleNamespace(
+                lag_timesteps=None, compiler_options=None, split_family=None
+            ),
             task_dataset=SimpleNamespace(required_stages=('train', 'val')),
         )
 
@@ -606,18 +690,19 @@ def test_custom_training_table_uses_the_normal_inferred_split(
     )
 
     assert str(captured['training_table_generation_plan'].split) in {
-        'inferred', 'missing'
+        'inferred',
+        'missing',
     }
     assert table.required_stages == ('train', 'val')
 
 
 def test_prediction_generation_accepts_restored_training_plan(
-        graph_snapshot, tmp_path, monkeypatch):
+    graph_snapshot, tmp_path, monkeypatch
+):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
         graph,
-        'PREDICT COUNT(orders.*, 0, 1, days) FORECAST 3 TIMEFRAMES '
-        'FOR EACH users.id',
+        'PREDICT COUNT(orders.*, 0, 1, days) FORECAST 3 TIMEFRAMES FOR EACH users.id',
     )
     fitted_plan = TrainingTableGenerationPlan(
         lag_timesteps=3,
@@ -625,8 +710,8 @@ def test_prediction_generation_accepts_restored_training_plan(
         timeframe_step=2,
     )
     request = SimpleNamespace(
-        timestamps=(123, ),
-        task_dataset=SimpleNamespace(required_stages=('predict', )),
+        timestamps=(123,),
+        task_dataset=SimpleNamespace(required_stages=('predict',)),
         compiler_options={'lag_offsets_secs': (-1, -2, -3)},
     )
     generated = SimpleNamespace(
@@ -641,8 +726,7 @@ def test_prediction_generation_accepts_restored_training_plan(
         captured.update(kwargs)
         return request, generated, snapshot.id
 
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id',
-                        lambda: 'run')
+    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id', lambda: 'run')
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.prediction_table_scratch_dir',
         lambda run_id: tmp_path / run_id,
@@ -659,8 +743,9 @@ def test_prediction_generation_accepts_restored_training_plan(
 
 
 @pytest.mark.parametrize('operation', ['validate', 'snapshot'])
-def test_mismatched_graph_keys_fail_before_staging(graph_snapshot, monkeypatch,
-                                                   operation):
+def test_mismatched_graph_keys_fail_before_staging(
+    graph_snapshot, monkeypatch, operation
+):
     graph, _ = graph_snapshot
     orders = graph.tables[2].with_column('user_id', dtype=Dtype.string)
     invalid = Graph([*graph.tables[:2], orders], graph.edges)
@@ -668,36 +753,40 @@ def test_mismatched_graph_keys_fail_before_staging(graph_snapshot, monkeypatch,
     def unexpected_staging(*args, **kwargs):
         pytest.fail('invalid graph reached connector staging')
 
-    monkeypatch.setattr(type(orders.connector.source_backend), 'prepare_ingest',
-                        unexpected_staging)
+    monkeypatch.setattr(
+        type(orders.connector.source_backend), 'prepare_ingest', unexpected_staging
+    )
     with pytest.raises(ValueError, match='orders.user_id.*users.id'):
         getattr(invalid, operation)()
 
 
 def test_custom_prediction_table_materializes_exact_source_rows(
-        graph_snapshot, tmp_path, monkeypatch):
+    graph_snapshot, tmp_path, monkeypatch
+):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
         graph,
-        'PREDICT COUNT(orders.*, 0, 1, days) FORECAST 3 TIMEFRAMES '
-        'FOR EACH users.id',
+        'PREDICT COUNT(orders.*, 0, 1, days) FORECAST 3 TIMEFRAMES FOR EACH users.id',
     )
     source = graph.tables[0].connector['curated_population']
     rows = tmp_path / 'population.parquet'
     rows.touch()
     from kumo_core.prediction import PredictionTableRequest
+
     request = PredictionTableRequest(
         query=query._parsed,
         graph=graph.native_graph,
-        timestamps=(123, ),
+        timestamps=(123,),
         index_path=str(snapshot.index_path),
         tt_id='custom-prediction',
         task_dataset=SimpleNamespace(required_stages=('train', 'val')),
         compiler_options={'lag_offsets_secs': (-1, -2, -3)},
     )
     captured = {}
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
-                        lambda source_table, destination: (rows, None))
+    monkeypatch.setattr(
+        'kumo.engine.pquery._custom_source.stage_source_table',
+        lambda source_table, destination: (rows, None),
+    )
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_prediction_source',
         lambda *args: None,
@@ -747,61 +836,86 @@ def test_custom_prediction_table_materializes_exact_source_rows(
     assert table.compiler_options == {'lag_offsets_secs': (-1, -2, -3)}
 
 
-@pytest.mark.parametrize('field',
-                         ['train_table_path_override', 'task_path_override'])
+@pytest.mark.parametrize('field', ['train_table_path_override', 'task_path_override'])
 def test_generation_rejects_ignored_path_overrides(tmp_path, field):
     pq.write_table(
-        pa.table({
-            'id': pa.array(range(10), type=pa.int64()),
-            'label': [True, False] * 5,
-        }), tmp_path / 'users.parquet')
-    graph = Graph([
-        Table.from_source_table(
-            FileConnector(root_dir=str(tmp_path))['users.parquet'],
-            primary_key='id')
-    ])
+        pa.table(
+            {
+                'id': pa.array(range(10), type=pa.int64()),
+                'label': [True, False] * 5,
+            }
+        ),
+        tmp_path / 'users.parquet',
+    )
+    graph = Graph(
+        [
+            Table.from_source_table(
+                FileConnector(root_dir=str(tmp_path))['users.parquet'], primary_key='id'
+            )
+        ]
+    )
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
-    snapshot = GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'index',
-                             graph._graph_config)
+    snapshot = GraphSnapshot(
+        f'{graph.id}@fixture', tmp_path / 'index', graph._graph_config
+    )
 
     with pytest.raises(ValueError, match=f"'{field}'.*from_source_table"):
         query.generate_training_table(
-            snapshot, TrainingTableGenerationPlan(**{field: 's3://x/y'}))
+            snapshot, TrainingTableGenerationPlan(**{field: 's3://x/y'})
+        )
 
 
-@pytest.mark.parametrize('field', [
-    'entity_candidate',
-    'entity_candidate_aggregation',
-])
+@pytest.mark.parametrize(
+    'field',
+    [
+        'entity_candidate',
+        'entity_candidate_aggregation',
+    ],
+)
 def test_entity_candidate_settings_rejected(field, graph_snapshot, monkeypatch):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
-        graph, 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.id')
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id',
-                        lambda: pytest.fail('started generation'))
+        graph, 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.id'
+    )
+    monkeypatch.setattr(
+        'kumo.engine.pquery.predictive_query.new_run_id',
+        lambda: pytest.fail('started generation'),
+    )
     plan = TrainingTableGenerationPlan(**{field: 'candidate'})
 
     with pytest.raises(
-            ValueError, match=f"'training_table_generation.{field}'"
-            " is not supported.*WHERE filter"):
+        ValueError,
+        match=f"'training_table_generation.{field}' is not supported.*WHERE filter",
+    ):
         query.generate_training_table(snapshot, plan)
     with pytest.raises(ValueError, match=f"{field}' is not supported"):
         query.generate_prediction_table(snapshot, plan=plan)
 
 
-@pytest.mark.parametrize('query, title', [
-    ('PREDICT AVG(orders.amount, 0, 7, days) FOR EACH users.id',
-     'Semantic Type Mismatch'),
-    ('PREDICT users.label FOR EACH users.id WHERE users.id IS IN (1, 2)',
-     'Operation Deprecated'),
-])
-def test_validate_returns_warnings_without_ingestion(graph_snapshot, query,
-                                                     title):
+@pytest.mark.parametrize(
+    'query, title',
+    [
+        (
+            'PREDICT AVG(orders.amount, 0, 7, days) FOR EACH users.id',
+            'Semantic Type Mismatch',
+        ),
+        (
+            'PREDICT users.label FOR EACH users.id WHERE users.id IS IN (1, 2)',
+            'Operation Deprecated',
+        ),
+    ],
+)
+def test_validate_returns_warnings_without_ingestion(graph_snapshot, query, title):
     graph, snapshot = graph_snapshot
-    graph = Graph([
-        table.with_column('amount', stype=Stype.categorical)
-        if table.table_name == 'orders' else table for table in graph.tables
-    ], graph.edges)
+    graph = Graph(
+        [
+            table.with_column('amount', stype=Stype.categorical)
+            if table.table_name == 'orders'
+            else table
+            for table in graph.tables
+        ],
+        graph.edges,
+    )
     pquery = PredictiveQuery(graph, query)
     result = pquery.validate()
     assert result.ok
@@ -813,12 +927,18 @@ def test_validate_returns_warnings_without_ingestion(graph_snapshot, query,
 
 def test_validate_logs_warnings_only_when_verbose(graph_snapshot, caplog):
     graph, _ = graph_snapshot
-    graph = Graph([
-        table.with_column('amount', stype=Stype.categorical)
-        if table.table_name == 'orders' else table for table in graph.tables
-    ], graph.edges)
+    graph = Graph(
+        [
+            table.with_column('amount', stype=Stype.categorical)
+            if table.table_name == 'orders'
+            else table
+            for table in graph.tables
+        ],
+        graph.edges,
+    )
     pquery = PredictiveQuery(
-        graph, 'PREDICT AVG(orders.amount, 0, 7, days) FOR EACH users.id')
+        graph, 'PREDICT AVG(orders.amount, 0, 7, days) FOR EACH users.id'
+    )
     logger_name = 'kumo.engine.pquery.predictive_query'
     with caplog.at_level('INFO', logger=logger_name):
         pquery.validate(verbose=False)
@@ -835,12 +955,10 @@ def test_validate_logs_warnings_only_when_verbose(graph_snapshot, caplog):
     assert 'configured correctly' in caplog.records[0].getMessage()
 
 
-def test_validate_returns_empty_response_and_still_raises_errors(
-        graph_snapshot):
+def test_validate_returns_empty_response_and_still_raises_errors(graph_snapshot):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     assert query.validate().empty()
     with pytest.raises(ValueError):
-        PredictiveQuery(graph,
-                        'PREDICT users.missing FOR EACH users.id').validate()
+        PredictiveQuery(graph, 'PREDICT users.missing FOR EACH users.id').validate()
     assert not snapshot.index_path.exists()

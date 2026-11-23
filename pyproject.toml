@@ -177,6 +177,39 @@ requires-dist = [
   "keyring<26.0.0,>=23.1.0; extra == 'secure-local-storage'",
 ]
 
+[tool.ruff]
+required-version = "==0.17.3"
+target-version = "py311"
+line-length = 88
+include = ["*.py"]
+# Preserve the root Flake8/isort scope; excluded packages own their checks.
+extend-exclude = [
+  ".nodeenv",
+  "kumo/pquery/grammar",
+  "packages/diskgraph",
+  "packages/experimental/kumo-pytorch",
+  "packages/kumo-api",
+  "packages/kumo-core",
+  "packages/kumo-pql/kumopql/grammar",
+  "packages/kumo-sdk",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# Match the supported exceptions in setup.cfg's Flake8 policy.
+ignore = ["E501", "E731", "F811"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["I001"]
+"kumo/__init__.py" = ["E402", "I001"]
+
+[tool.ruff.lint.isort]
+# kumo is a PEP 420 namespace shared with packages/kumo-engine.
+known-first-party = ["kumo"]
+
+[tool.ruff.format]
+quote-style = "single"
+
 [tool.vulture]
 # Include high-confidence findings such as unused imports while avoiding the
 # noisier 60% class, function, method, and variable findings for now.

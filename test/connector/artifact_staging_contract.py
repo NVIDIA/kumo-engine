@@ -20,10 +20,13 @@ def local_artifact_dataset(
     nested: bool = False,
 ) -> Path:
     """Create the canonical local prediction/embedding Parquet dataset."""
-    path = tmp_path / ('processed_embeddings.parquet'
-                       if embeddings else 'processed_predictions.parquet')
+    path = tmp_path / (
+        'processed_embeddings.parquet'
+        if embeddings
+        else 'processed_predictions.parquet'
+    )
     path.mkdir()
-    values = ([[0.1, 0.2], [0.3, 0.4]] if embeddings else [0.2, 0.8])
+    values = [[0.1, 0.2], [0.3, 0.4]] if embeddings else [0.2, 0.8]
     column = 'EMBEDDING' if embeddings else 'SCORE'
     table = pa.table({'ENTITY_ID': [1, 2], column: values})
     for index in range(shards):
@@ -39,7 +42,6 @@ def assert_indexed_parquet_parts(paths: list[str], suffix: str = '.parquet') -> 
     prefixes = {path.rsplit('/', 1)[0] for path in paths}
     assert len(prefixes) == 1
     assert {path.rsplit('/', 1)[-1] for path in paths} == {
-        f'part-{index:08d}{suffix}'
-        for index in range(len(paths))
+        f'part-{index:08d}{suffix}' for index in range(len(paths))
     }
     return prefixes.pop()

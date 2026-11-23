@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Provider classifier trust-boundary tests."""
+
 import pytest
 from azure.core.exceptions import AzureError
 from botocore.exceptions import ClientError
@@ -31,7 +32,7 @@ from statedb.utils.errors import (
 
 # These imports require the databricks SDK to be installed. Skip the whole
 # module cleanly if it isn't (mirrors how the connector tests treat the SDK).
-pytest.importorskip("databricks.sdk.errors.platform")
+pytest.importorskip('databricks.sdk.errors.platform')
 
 from databricks.sdk.errors.platform import (  # noqa: E402
     NotFound,
@@ -55,7 +56,8 @@ def _temporal_failure(public_error):
     )
     failure = Failure()
     DefaultFailureConverter().to_failure(
-        application_error, DefaultPayloadConverter(), failure)
+        application_error, DefaultPayloadConverter(), failure
+    )
     return application_error, failure
 
 
@@ -66,7 +68,7 @@ def _temporal_failure(public_error):
             PermissionDenied(''),
             None,
             ('Files API', 'files', 'READ VOLUME', 'WRITE VOLUME'),
-            ('PermissionDenied', ),
+            ('PermissionDenied',),
         ),
         (
             Unauthenticated(''),
@@ -78,26 +80,24 @@ def _temporal_failure(public_error):
             NotFound(''),
             None,
             ('could not find', 'USE CATALOG', 'USE SCHEMA'),
-            ('NotFound', ),
+            ('NotFound',),
         ),
         (
             PermissionDenied('backend detail'),
             'Kumo could not access the volume.',
             ('Kumo could not access the volume.', 'Files API'),
-            ('backend detail', ),
+            ('backend detail',),
         ),
         (
-            PermissionDenied(
-                'grant CREATE VOLUME on schema -- misleading raw text'),
+            PermissionDenied('grant CREATE VOLUME on schema -- misleading raw text'),
             None,
-            ('Files API', ),
-            ('misleading raw text', ),
+            ('Files API',),
+            ('misleading raw text',),
         ),
     ],
     ids=['denied', 'unauthenticated', 'not_found', 'lead', 'untrusted_text'],
 )
-def test_databricks_uc_files_api_classification_contract(
-        error, lead, expected, absent):
+def test_databricks_uc_files_api_classification_contract(error, lead, expected, absent):
     """Files API guidance is type-based and never includes provider text."""
     kwargs = {'error': error}
     if lead is not None:
@@ -134,7 +134,8 @@ def test_snowflake_classifier_allows_only_safe_driver_fields(caplog):
     assert f'query_id={_SAFE_QUERY_ID}' in rendered
     assert not exception_message_should_be_logged_at_error(provider_error)
     assert safe_exception_message_for_log(provider_error) == (
-        'Provider operation failed')
+        'Provider operation failed'
+    )
 
     caplog.clear()
     with caplog.at_level('DEBUG'):
@@ -185,11 +186,13 @@ def test_snowflake_classifier_rejects_poisoned_driver_fields(caplog):
             ServerOperationError('databricks-provider-outer-canary'),
             'Databricks could not complete',
         ),
-        (GoogleAPIError(
-            'google-provider-outer-canary gs://private-bucket/secret/path'),
-         'Google Cloud provider'),
-        (RefreshError('google-auth-provider-outer-canary'),
-         'Google Cloud provider'),
+        (
+            GoogleAPIError(
+                'google-provider-outer-canary gs://private-bucket/secret/path'
+            ),
+            'Google Cloud provider',
+        ),
+        (RefreshError('google-auth-provider-outer-canary'), 'Google Cloud provider'),
         (
             ClientError(
                 {
@@ -208,8 +211,7 @@ def test_snowflake_classifier_rejects_poisoned_driver_fields(caplog):
     # heuristic: this classifier test is hermetic and must run in default CI.
     ids=['sf_driver', 'databricks', 'google', 'google_auth', 'aws', 'azure'],
 )
-def test_provider_classifier_stops_nested_cause_chain(
-        provider_error, expected, caplog):
+def test_provider_classifier_stops_nested_cause_chain(provider_error, expected, caplog):
     """A classified provider is a terminal trust boundary."""
     nested_canary = 'nested-third-party-body password=nested-secret-canary'
     provider_error.__cause__ = _NestedThirdPartyError(nested_canary)
@@ -227,15 +229,17 @@ def test_provider_classifier_stops_nested_cause_chain(
     assert public_error.__suppress_context__ is True
 
     application_error, failure = _temporal_failure(public_error)
-    rendered = ' '.join((
-        str(public_error),
-        repr(public_error),
-        str(public_error.to_dict()),
-        caplog.text,
-        str(application_error),
-        repr(application_error),
-        str(failure),
-    ))
+    rendered = ' '.join(
+        (
+            str(public_error),
+            repr(public_error),
+            str(public_error.to_dict()),
+            caplog.text,
+            str(application_error),
+            repr(application_error),
+            str(failure),
+        )
+    )
 
     assert nested_canary not in rendered
     assert 'nested-secret-canary' not in rendered
@@ -284,12 +288,15 @@ async def test_workflow_interceptor_drops_nested_provider_cause_from_history():
 
     failure = Failure()
     DefaultFailureConverter().to_failure(
-        application_error, DefaultPayloadConverter(), failure)
-    rendered = ' '.join((
-        str(application_error),
-        repr(application_error),
-        str(failure),
-    ))
+        application_error, DefaultPayloadConverter(), failure
+    )
+    rendered = ' '.join(
+        (
+            str(application_error),
+            repr(application_error),
+            str(failure),
+        )
+    )
     assert canary not in rendered
     assert 'workflow-secret' not in rendered
 
@@ -298,14 +305,20 @@ async def test_workflow_interceptor_drops_nested_provider_cause_from_history():
     ('error', 'expected'),
     [
         # Standalone diagnostic error (e.g. the Databricks samples case).
-        (ConnectorValidationDiagnosticError(
-            ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
-        ), 'databricks_sample_table_permissions'),
+        (
+            ConnectorValidationDiagnosticError(
+                ConnectorValidationDiagnosticCode.DATABRICKS_SAMPLE_TABLE_PERMISSIONS
+            ),
+            'databricks_sample_table_permissions',
+        ),
         # Attribute form: a detailed ConnectorError carrying a safe category.
-        (ConnectorError(
-            'Schema s does not exist under catalog c.',
-            diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND,
-        ), 'target_not_found'),
+        (
+            ConnectorError(
+                'Schema s does not exist under catalog c.',
+                diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND,
+            ),
+            'target_not_found',
+        ),
         # Uncategorized connector failure and an arbitrary exception: no code.
         (ConnectorError('Some connector failure.'), None),
         (RuntimeError('permission denied: secret'), None),
@@ -313,8 +326,7 @@ async def test_workflow_interceptor_drops_nested_provider_cause_from_history():
         (ConnectorError('boom', diagnostic_code='target_not_found'), None),
     ],
 )
-def test_connector_validation_diagnostic_value_normalizes_both_shapes(
-        error, expected):
+def test_connector_validation_diagnostic_value_normalizes_both_shapes(error, expected):
     assert connector_validation_diagnostic_value(error) == expected
 
 
@@ -326,5 +338,4 @@ def test_connector_error_preserves_message_and_carries_diagnostic_code():
     # The detailed public message is unchanged for non-masked callers (ingest)...
     assert str(error) == 'Schema s does not exist under catalog c.'
     # ...while the safe category rides alongside for the masking boundaries.
-    assert error.diagnostic_code == (
-        ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND)
+    assert error.diagnostic_code == (ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND)

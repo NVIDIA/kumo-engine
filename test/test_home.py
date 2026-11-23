@@ -14,8 +14,8 @@ from io_utils import fsutil
 from kumo.home import get_home_dir, get_local_home_dir, set_home_dir
 from service_framework.deploy_env import ENV_KUMO_HOME, get_default_home_dir
 
-TEST_PATH = "/tmp/test/path"
-EXISTING_S3_TEST_PATH = "s3://kumo-public-datasets/financial/"
+TEST_PATH = '/tmp/test/path'
+EXISTING_S3_TEST_PATH = 's3://kumo-public-datasets/financial/'
 
 
 def teardown_function():
@@ -27,17 +27,17 @@ def mock_s3_home_path(monkeypatch, existing_s3_path=EXISTING_S3_TEST_PATH):
     original_makedirs = kumo.home.fsutil.makedirs
 
     def exists(path):
-        if isinstance(path, str) and path.startswith("s3://"):
+        if isinstance(path, str) and path.startswith('s3://'):
             return path == existing_s3_path
         return original_exists(path)
 
     def makedirs(path, *args, **kwargs):
-        if isinstance(path, str) and path.startswith("s3://"):
+        if isinstance(path, str) and path.startswith('s3://'):
             return None
         return original_makedirs(path, *args, **kwargs)
 
-    monkeypatch.setattr(kumo.home.fsutil, "exists", exists)
-    monkeypatch.setattr(kumo.home.fsutil, "makedirs", makedirs)
+    monkeypatch.setattr(kumo.home.fsutil, 'exists', exists)
+    monkeypatch.setattr(kumo.home.fsutil, 'makedirs', makedirs)
 
 
 def test_default_home_dir_is_repo_local(tmp_path, monkeypatch):
@@ -45,18 +45,18 @@ def test_default_home_dir_is_repo_local(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     repo_root = Path(__file__).resolve().parents[1]
-    assert get_default_home_dir() == str(repo_root / ".cache" / "kumo")
+    assert get_default_home_dir() == str(repo_root / '.cache' / 'kumo')
 
 
 def test_relative_kumo_home_override_is_workdir_local(tmp_path, monkeypatch):
-    monkeypatch.setenv(ENV_KUMO_HOME, "custom-cache")
+    monkeypatch.setenv(ENV_KUMO_HOME, 'custom-cache')
     monkeypatch.chdir(tmp_path)
 
-    assert get_default_home_dir() == str(tmp_path / "custom-cache")
+    assert get_default_home_dir() == str(tmp_path / 'custom-cache')
 
 
 def test_remote_kumo_home_override_is_not_absolutized(monkeypatch):
-    home = "dbfs:/Volumes/catalog/schema/volume/cache"
+    home = 'dbfs:/Volumes/catalog/schema/volume/cache'
     monkeypatch.setenv(ENV_KUMO_HOME, home)
 
     assert get_default_home_dir() == home
@@ -81,7 +81,7 @@ def test_s3_path_home_dir(monkeypatch):
 
     # Using a non-existent path should raise an error
     with pytest.raises(ValueError, match="doesn't exist"):
-        set_home_dir("s3://kumo-public-datasets/random/path/does/not/exist")
+        set_home_dir('s3://kumo-public-datasets/random/path/does/not/exist')
 
     # Use an existing path for testing
     s3_path = EXISTING_S3_TEST_PATH
@@ -97,13 +97,16 @@ def test_s3_path_home_dir(monkeypatch):
 
 def test_first_task_name_handles_canonicalized_adls_scheme(monkeypatch):
     manager = kumo.home.HomeDirManager(
-        'abfs://jobs@account.dfs.core.windows.net/training/job-1')
+        'abfs://jobs@account.dfs.core.windows.net/training/job-1'
+    )
     monkeypatch.setattr(kumo.home.fsutil, 'exists', lambda _path: True)
     monkeypatch.setattr(
-        kumo.home.fsutil, 'listdir',
+        kumo.home.fsutil,
+        'listdir',
         lambda *_args, **_kwargs: [
             'abfss://jobs@account.dfs.core.windows.net/training/job-1/models/NA/'
-        ])
+        ],
+    )
 
     assert manager.first_task_name() == 'NA'
 
@@ -111,28 +114,33 @@ def test_first_task_name_handles_canonicalized_adls_scheme(monkeypatch):
 def test_trials_sorted_numerically_excluding_non_trial_dirs(monkeypatch):
     home = 'gs://bucket/jobs/trainingjob-1'
     automl = f'{home}/models/NA/automl'
-    names = sorted([f'version_{i}' for i in range(80)] + [
-        'version_71_refit_trainval',
-        'version_71_refit_full',
-        'failed_trials',
-        'best_trainer.json',
-    ])
+    names = sorted(
+        [f'version_{i}' for i in range(80)]
+        + [
+            'version_71_refit_trainval',
+            'version_71_refit_full',
+            'failed_trials',
+            'best_trainer.json',
+        ]
+    )
     listing = [f'{automl}/{name}' for name in names]
     manager = kumo.home.HomeDirManager(home)
     monkeypatch.setattr(manager, 'first_task_name', lambda: 'NA')
-    monkeypatch.setattr(kumo.home.fsutil, 'listdir',
-                        lambda *_args, **_kwargs: listing)
+    monkeypatch.setattr(kumo.home.fsutil, 'listdir', lambda *_args, **_kwargs: listing)
 
     assert manager.trials() == [f'{automl}/version_{i}' for i in range(80)]
 
 
-@pytest.mark.parametrize(('trial_dir', 'expected'), [
-    ('gs://bucket/models/NA/automl/version_71', '71'),
-    ('gs://bucket/models/NA/automl/version_71/', '71'),
-    ('/tmp/automl/version_0', '0'),
-    ('gs://bucket/models/NA/automl/version_71_refit_trainval', None),
-    ('gs://bucket/models/NA/automl/failed_trials', None),
-    ('gs://bucket/models/NA/automl/version_', None),
-])
+@pytest.mark.parametrize(
+    ('trial_dir', 'expected'),
+    [
+        ('gs://bucket/models/NA/automl/version_71', '71'),
+        ('gs://bucket/models/NA/automl/version_71/', '71'),
+        ('/tmp/automl/version_0', '0'),
+        ('gs://bucket/models/NA/automl/version_71_refit_trainval', None),
+        ('gs://bucket/models/NA/automl/failed_trials', None),
+        ('gs://bucket/models/NA/automl/version_', None),
+    ],
+)
 def test_trial_id(trial_dir, expected):
     assert kumo.home.HomeDirManager.trial_id(trial_dir) == expected

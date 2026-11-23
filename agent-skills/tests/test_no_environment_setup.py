@@ -10,6 +10,7 @@ including the host files about Snowflake ML Jobs, where Kumo reaches the job thr
 values (`KUMO_JOB_RUNTIME`, `KUMO_JOB_REQUIREMENTS`) that the skill only names. The catalog's skill
 cards and evals under `nvskills/` are published beside the skills, so they are checked too.
 """
+
 import re
 from pathlib import Path
 
@@ -25,34 +26,61 @@ SETUP_WORDS = re.compile(r'install|\bpip(?:\b|_)|wheel|\.whl\b|\.zip\b', re.IGNO
 
 
 def skill_files() -> list[Path]:
-    return sorted(p for root in (SKILLS, CATALOG) for p in root.rglob('*')
-                  if p.is_file() and '__pycache__' not in p.parts)
+    return sorted(
+        p
+        for root in (SKILLS, CATALOG)
+        for p in root.rglob('*')
+        if p.is_file() and '__pycache__' not in p.parts
+    )
 
 
 def test_files_are_found() -> None:
     names = {p.name for p in skill_files()}
-    assert {'SKILL.md', 'adapter.md', 'ml_job.md', 'retain_artifacts.py',
-            'skill-card.md', 'evals.json'} <= names
+    assert {
+        'SKILL.md',
+        'adapter.md',
+        'ml_job.md',
+        'retain_artifacts.py',
+        'skill-card.md',
+        'evals.json',
+    } <= names
 
 
 @pytest.mark.parametrize('path', skill_files(), ids=lambda p: str(p.relative_to(ROOT)))
 def test_no_setup_words(path: Path) -> None:
-    hits = [f'{n}: {line.strip()}' for n, line in enumerate(path.read_text().splitlines(), 1)
-            if SETUP_WORDS.search(line)]
+    hits = [
+        f'{n}: {line.strip()}'
+        for n, line in enumerate(path.read_text().splitlines(), 1)
+        if SETUP_WORDS.search(line)
+    ]
     assert hits == []
 
 
-@pytest.mark.parametrize('text', [
-    'pip install kumo', 'Do not install anything', 'reinstalled', 'pip_requirements=[...]',
-    'kumo_fat_bundle-20261010-cp312-cp312-linux_x86_64.whl', 'a Python wheel', 'bundle.zip',
-])
+@pytest.mark.parametrize(
+    'text',
+    [
+        'pip install kumo',
+        'Do not install anything',
+        'reinstalled',
+        'pip_requirements=[...]',
+        'kumo_fat_bundle-20261010-cp312-cp312-linux_x86_64.whl',
+        'a Python wheel',
+        'bundle.zip',
+    ],
+)
 def test_pattern_catches(text: str) -> None:
     assert SETUP_WORDS.search(text)
 
 
-@pytest.mark.parametrize('text', [
-    'with zipfile.ZipFile(handle) as bundle:', 'a data pipeline', 'subprocess.PIPE',
-    'KUMO_JOB_REQUIREMENTS', 'runtime_environment=KUMO_JOB_RUNTIME',
-])
+@pytest.mark.parametrize(
+    'text',
+    [
+        'with zipfile.ZipFile(handle) as bundle:',
+        'a data pipeline',
+        'subprocess.PIPE',
+        'KUMO_JOB_REQUIREMENTS',
+        'runtime_environment=KUMO_JOB_RUNTIME',
+    ],
+)
 def test_pattern_spares(text: str) -> None:
     assert not SETUP_WORDS.search(text)

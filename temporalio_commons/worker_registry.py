@@ -70,6 +70,7 @@ class WorkerOptions:
     Options for configuring and running a Temporal Worker entity which hosts
     a set of workflows and/or activities over a task queue.
     """
+
     task_queue: str = ''
     max_worker_threads: Optional[int] = None
     max_worker_processes: Optional[int] = None
@@ -87,14 +88,16 @@ class WorkerOptions:
             if not worker_threads or not worker_processes:
                 raise ValueError(
                     'Both max_worker_threads and max_worker_processes need '
-                    'to be set when multi_executors is set to True.')
+                    'to be set when multi_executors is set to True.'
+                )
         else:
             # Check only 1 is configured in non-multi_executors mode
             if worker_threads and worker_processes:
                 raise ValueError(
                     'WorkerOptions can only specify both max_worker_threads '
                     'and max_worker_processes when multi_executors flag is '
-                    'set to True. Otherwise, only one can be specified.')
+                    'set to True. Otherwise, only one can be specified.'
+                )
         return self
 
 
@@ -119,14 +122,13 @@ class ExecutorInfo:
         num_threads = len(executor._threads)
         num_idle_threads = executor._idle_semaphore._value
         items_waiting_in_queue = executor._work_queue.qsize()
-        pending_work_items = (num_threads -
-                              num_idle_threads) + items_waiting_in_queue
+        pending_work_items = (num_threads - num_idle_threads) + items_waiting_in_queue
         return ExecutorInfo(
             max_workers=executor._max_workers,
             pending_work_items=pending_work_items,
             num_idle_workers=num_idle_threads,
-            worker_ids={t.native_id
-                        for t in executor._threads if t.native_id})
+            worker_ids={t.native_id for t in executor._threads if t.native_id},
+        )
 
     @staticmethod
     def from_processpool(executor: ProcessPoolExecutor) -> 'ExecutorInfo':
@@ -134,7 +136,8 @@ class ExecutorInfo:
             max_workers=executor._max_workers,  # type: ignore
             pending_work_items=len(executor._pending_work_items),
             num_idle_workers=executor._idle_worker_semaphore._value,
-            worker_ids=set(pid for pid in executor._processes))
+            worker_ids=set(pid for pid in executor._processes),
+        )
 
 
 # Worker info to report (for debugging or health check purpose)
@@ -189,9 +192,13 @@ class WorkerInfo:
 
 
 class WorkerInfoActivity:
-    def __init__(self, worker_info: WorkerInfo, *,
-                 activity_executor: Optional[Executor],
-                 wf_task_executor: ThreadPoolExecutor) -> None:
+    def __init__(
+        self,
+        worker_info: WorkerInfo,
+        *,
+        activity_executor: Optional[Executor],
+        wf_task_executor: ThreadPoolExecutor,
+    ) -> None:
         self._worker_info = worker_info
         self._activity_executor = activity_executor
         self._wf_task_executor = wf_task_executor
@@ -205,28 +212,31 @@ class WorkerInfoActivity:
             executor = loop._default_executor  # type: ignore
             if isinstance(executor, ThreadPoolExecutor):
                 worker_info.event_loop_default_executor_info = (
-                    ExecutorInfo.from_threadpool(executor))
+                    ExecutorInfo.from_threadpool(executor)
+                )
 
         executor_info = None
         if self._activity_executor:
             if isinstance(self._activity_executor, ThreadPoolExecutor):
-                executor_info = (ExecutorInfo.from_threadpool(
-                    self._activity_executor))
+                executor_info = ExecutorInfo.from_threadpool(self._activity_executor)
             else:
-                assert isinstance(self._activity_executor,
-                                  HealingProcessPoolExecutor)
+                assert isinstance(self._activity_executor, HealingProcessPoolExecutor)
                 executor_info = ExecutorInfo.from_processpool(
-                    self._activity_executor._pool)
+                    self._activity_executor._pool
+                )
         worker_info.activity_executor_info = executor_info
 
-        worker_info.wf_task_executor_info = \
-            ExecutorInfo.from_threadpool(self._wf_task_executor)
+        worker_info.wf_task_executor_info = ExecutorInfo.from_threadpool(
+            self._wf_task_executor
+        )
 
         task_queue = activity.info().task_queue
-        worker_info.last_activity_heartbeat = (
-            last_sync_activity_heartbeat.get(task_queue))
-        worker_info.last_activity_completion = (
-            last_sync_activity_completion.get(task_queue))
+        worker_info.last_activity_heartbeat = last_sync_activity_heartbeat.get(
+            task_queue
+        )
+        worker_info.last_activity_completion = last_sync_activity_completion.get(
+            task_queue
+        )
 
         return worker_info
 
@@ -237,7 +247,8 @@ class WorkerInfoWorkflow:
     async def run(self) -> WorkerInfo:
         worker_info = await workflow.execute_local_activity_method(
             WorkerInfoActivity.get_worker_info,
-            schedule_to_close_timeout=timedelta(seconds=10))
+            schedule_to_close_timeout=timedelta(seconds=10),
+        )
         worker_info.current_wf_task_executor_id = current_thread().native_id
         log.debug('Current worker info: %s', worker_info)
 
@@ -250,6 +261,7 @@ class RunSingleActivityWorkflow:
     """A private, generic single-activity workflow that executes a rpc method
     (as activity func) by the rpc method name.
     """
+
     @workflow.run
     async def run(
         self,
@@ -296,11 +308,10 @@ class WorkerEnv:
         # deadlocked threads can't starve all workflow task slots.
         self._wf_task_executor = ThreadPoolExecutor(
             max_workers=500,
-            thread_name_prefix="temporal_workflow_",
+            thread_name_prefix='temporal_workflow_',
         )
         self._env_var_dict: Dict[str, EnvVar] = {
-            var.name: var
-            for var in options.env_variables
+            var.name: var for var in options.env_variables
         }
 
         if deploy_config.deploy_mode != DeployStage.TEST:
@@ -322,25 +333,28 @@ class WorkerEnv:
     def _maybe_init_thread_pool_executor(self):
         if self._options.max_worker_threads:
             self._thread_pool_executor = ThreadPoolExecutor(
-                self._options.max_worker_threads, f'{self._worker_name}-thread')
+                self._options.max_worker_threads, f'{self._worker_name}-thread'
+            )
 
     def _maybe_init_process_pool_executor(self):
-        if (self._process_pool_executor is None
-                and self._options.max_worker_processes):
+        if self._process_pool_executor is None and self._options.max_worker_processes:
             env_vars = {
-                k: self.get_variable_optional(k)
-                for k in self._env_var_dict.keys()
+                k: self.get_variable_optional(k) for k in self._env_var_dict.keys()
             }
             env_vars.update(self._env_var_test_override)
-            if (self._deploy_config.deploy_mode == DeployStage.TEST
-                    and "DEPLOY_ENV_CONFIG_JSON" in os.environ):
+            if (
+                self._deploy_config.deploy_mode == DeployStage.TEST
+                and 'DEPLOY_ENV_CONFIG_JSON' in os.environ
+            ):
                 env_vars.setdefault(
-                    "DEPLOY_ENV_CONFIG_JSON",
-                    os.environ["DEPLOY_ENV_CONFIG_JSON"],
+                    'DEPLOY_ENV_CONFIG_JSON',
+                    os.environ['DEPLOY_ENV_CONFIG_JSON'],
                 )
             self._process_pool_executor = HealingProcessPoolExecutor(
                 self._options.max_worker_processes,
-                deploy_stage=self._deploy_config.deploy_mode, env_vars=env_vars)
+                deploy_stage=self._deploy_config.deploy_mode,
+                env_vars=env_vars,
+            )
             if self._worker_name in {'data-backend-worker'}:
                 self._process_pool_executor.warm_up()
 
@@ -351,7 +365,8 @@ class WorkerEnv:
 
     def get_variable_optional(self, env_var_name: str) -> Optional[Any]:
         return self._env_var_test_override.get(
-            env_var_name, self._env_var_dict[env_var_name].parse_value())
+            env_var_name, self._env_var_dict[env_var_name].parse_value()
+        )
 
     def as_dict(self) -> Dict:
         options_dict = dataclasses.asdict(self._options)
@@ -396,42 +411,49 @@ class WorkerEnv:
         use_process_executor: Optional[bool] = None,
         graceful_shutdown_timeout: Optional[timedelta] = None,
     ) -> Worker:
-        log.info(f"Building worker with {len(activities)} activities and "
-                 f"{len(workflows)} workflows.")
+        log.info(
+            f'Building worker with {len(activities)} activities and '
+            f'{len(workflows)} workflows.'
+        )
         if ':' in self.name or ':' in worker_name_suffix:
-            raise ValueError(
-                'Worker name cannot contain ":" as reserved separator.')
-        if (use_process_executor is not None
-                and not self.options.multi_executors):
+            raise ValueError('Worker name cannot contain ":" as reserved separator.')
+        if use_process_executor is not None and not self.options.multi_executors:
             raise ValueError(
                 'Cannot specify use_process_executor if multi_executors flag '
-                'is not set or set to false.')
+                'is not set or set to false.'
+            )
 
         # Apply testing override of activites/workflows
         for i, act in enumerate(activities):
             act_name = activity._Definition.must_from_callable(act).name
             if act_name in self._activities_override:
                 activities[i] = self._activities_override[act_name]
-                log.warning('Override activity %s with %s', act_name,
-                            activities[i].__qualname__)
+                log.warning(
+                    'Override activity %s with %s', act_name, activities[i].__qualname__
+                )
         for i, wf in enumerate(workflows):
             wf_name = workflow._Definition.must_from_class(wf).name
             if wf_name in self._workflows_override:
                 workflows[i] = self._workflows_override[wf_name]
-                log.warning('Override workflow %s with %s', wf_name,
-                            workflows[i].__qualname__)
+                log.warning(
+                    'Override workflow %s with %s', wf_name, workflows[i].__qualname__
+                )
 
-        task_queue = self.deploy_config.task_queue(
-            alt_task_queue) if alt_task_queue else self.task_queue
-        worker_id = self.name + worker_name_suffix + '-' + \
-            self._deploy_config.instance_id
+        task_queue = (
+            self.deploy_config.task_queue(alt_task_queue)
+            if alt_task_queue
+            else self.task_queue
+        )
+        worker_id = (
+            self.name + worker_name_suffix + '-' + self._deploy_config.instance_id
+        )
 
         shared_state_mgr = None
         activity_executor = self.activity_executor(use_process_executor)
-        if (activity_executor
-                and activity_executor is self._process_pool_executor):
+        if activity_executor and activity_executor is self._process_pool_executor:
             shared_state_mgr = SharedStateManager.create_from_multiprocessing(
-                multiprocessing.Manager())
+                multiprocessing.Manager()
+            )
 
         activity_names = [
             activity._Definition.must_from_callable(a).name for a in activities
@@ -458,24 +480,24 @@ class WorkerEnv:
         for activity_fn in activities:
             activity_def = activity._Definition.must_from_callable(activity_fn)
             if activity_def.is_async:
-                activity_fn = measure_blocking_code(activity_def.fn,
-                                                    func_name=activity_def.name)
-            elif (isinstance(activity_executor, ProcessPoolExecutor)
-                  and not getattr(activity_def.fn, PROCESS_POOL_COMPATIBLE_ATTR,
-                                  False)):
+                activity_fn = measure_blocking_code(
+                    activity_def.fn, func_name=activity_def.name
+                )
+            elif isinstance(activity_executor, ProcessPoolExecutor) and not getattr(
+                activity_def.fn, PROCESS_POOL_COMPATIBLE_ATTR, False
+            ):
                 raise ValueError(
                     f'Acitivty fn {activity_def.name} must be defined by '
-                    f'@{process_pool_activity_defn.__name__}.')
+                    f'@{process_pool_activity_defn.__name__}.'
+                )
 
             activity_list.append(activity_fn)
 
         worker_kwargs: Dict[str, Any] = dict(
             task_queue=task_queue,
             activities=activity_list + [worker_info_activity.get_worker_info],
-            workflows=workflows +
-            [WorkerInfoWorkflow, RunSingleActivityWorkflow],
-            interceptors=[KumoActivityInterceptor(),
-                          KumoWorkflowInterceptor()],
+            workflows=workflows + [WorkerInfoWorkflow, RunSingleActivityWorkflow],
+            interceptors=[KumoActivityInterceptor(), KumoWorkflowInterceptor()],
             identity=worker_id,
             activity_executor=activity_executor,
             workflow_task_executor=self._wf_task_executor,
@@ -487,8 +509,7 @@ class WorkerEnv:
             workflow_runner=UnsandboxedWorkflowRunner(),
         )
         if graceful_shutdown_timeout is not None:
-            worker_kwargs['graceful_shutdown_timeout'] = (
-                graceful_shutdown_timeout)
+            worker_kwargs['graceful_shutdown_timeout'] = graceful_shutdown_timeout
         return Worker(await self.client(), **worker_kwargs)
 
     async def client(self) -> Client:
@@ -503,17 +524,17 @@ class WorkerEnv:
         if use_process_executor is None:
             return self._thread_pool_executor or self._process_pool_executor
         else:
-            return self._process_pool_executor if use_process_executor \
+            return (
+                self._process_pool_executor
+                if use_process_executor
                 else self._thread_pool_executor
+            )
 
-    def shutdown(self, *, wait: bool = True,
-                 cancel_futures: bool = False) -> None:
+    def shutdown(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
         if self._thread_pool_executor:
-            self._thread_pool_executor.shutdown(wait,
-                                                cancel_futures=cancel_futures)
+            self._thread_pool_executor.shutdown(wait, cancel_futures=cancel_futures)
         if self._process_pool_executor:
-            self._process_pool_executor.shutdown(wait,
-                                                 cancel_futures=cancel_futures)
+            self._process_pool_executor.shutdown(wait, cancel_futures=cancel_futures)
         self._wf_task_executor.shutdown(wait, cancel_futures=cancel_futures)
 
 
@@ -535,42 +556,43 @@ class WorkerEnv:
 #   return [worker1, worker2]
 
 P = ParamSpec('P')
-RunWorkerFunc = Callable[Concatenate[WorkerEnv, P], Coroutine[None, None,
-                                                              Worker]]
-RunMultiWorkerFunc = Callable[Concatenate[WorkerEnv, P],
-                              Coroutine[None, None, List[Worker]]]
+RunWorkerFunc = Callable[Concatenate[WorkerEnv, P], Coroutine[None, None, Worker]]
+RunMultiWorkerFunc = Callable[
+    Concatenate[WorkerEnv, P], Coroutine[None, None, List[Worker]]
+]
 
 
 class WorkerRegistry:
     """A global registry of worker_name -> RunWorkerFunc for all workers."""
+
     def __init__(self) -> None:
         self._workers: Dict[str, RunWorkerFunc] = {}
         self._bundle_workers: Dict[str, RunMultiWorkerFunc] = {}
 
     def has_worker(self, worker_name: str) -> bool:
         """Returns whether the worker_name has been registered."""
-        return (worker_name in self._workers
-                or worker_name in self._bundle_workers)
+        return worker_name in self._workers or worker_name in self._bundle_workers
 
     def all_workers(self) -> Set[str]:
-        return set.union(set(self._workers.keys()),
-                         set(self._bundle_workers.keys()))
+        return set.union(set(self._workers.keys()), set(self._bundle_workers.keys()))
 
-    def register_worker(self, worker_name,
-                        run_worker_func: RunWorkerFunc) -> None:
+    def register_worker(self, worker_name, run_worker_func: RunWorkerFunc) -> None:
         func = self._workers.setdefault(worker_name, run_worker_func)
         if func is not run_worker_func:
             raise RuntimeError(
                 f'Worker name {worker_name} is being registered by multiple '
-                f'functions: {func} and {run_worker_func}')
+                f'functions: {func} and {run_worker_func}'
+            )
 
-    def register_multi_worker(self, worker_name,
-                              run_worker_func: RunMultiWorkerFunc) -> None:
+    def register_multi_worker(
+        self, worker_name, run_worker_func: RunMultiWorkerFunc
+    ) -> None:
         func = self._bundle_workers.setdefault(worker_name, run_worker_func)
         if func is not run_worker_func:
             raise RuntimeError(
                 f'Worker name {worker_name} is being registered at multiple '
-                f'places: {func} and {run_worker_func}')
+                f'places: {func} and {run_worker_func}'
+            )
 
     async def build_worker(self, worker_env: WorkerEnv) -> List[Worker]:
         """Run the worker with provided options, return the coroutine."""
@@ -584,8 +606,7 @@ GLOBAL_WORKER_REGISTRY = WorkerRegistry()
 
 
 # Decorator to register a RunWorkerFunc with the worker_name.
-def register_worker(
-        worker_name: str) -> Callable[[RunWorkerFunc], RunWorkerFunc]:
+def register_worker(worker_name: str) -> Callable[[RunWorkerFunc], RunWorkerFunc]:
     def wrap(func: RunWorkerFunc):
         log.debug('Register %s in worker registry.', worker_name)
         GLOBAL_WORKER_REGISTRY.register_worker(worker_name, func)
@@ -597,7 +618,8 @@ def register_worker(
 # Decorator to register a RunMultiWorkerFunc to bundle multiple workers
 # to run together under the same worker name and config.
 def register_bundled_workers(
-        worker_name: str) -> Callable[[RunMultiWorkerFunc], RunMultiWorkerFunc]:
+    worker_name: str,
+) -> Callable[[RunMultiWorkerFunc], RunMultiWorkerFunc]:
     def wrap(func: RunMultiWorkerFunc):
         log.debug('Register %s in worker registry.', worker_name)
         GLOBAL_WORKER_REGISTRY.register_multi_worker(worker_name, func)

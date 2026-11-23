@@ -97,8 +97,7 @@ log = logging.getLogger(__name__)
 async def run_worker(worker_env: WorkerEnv) -> List[Worker]:
     # The data persist dir is derived from deploy_env() on demand
     # (kumo.data.get_persist_dir); no process-global state to prime here.
-    log.info('Data backend worker initialized with persist_dir=%s',
-             get_persist_dir())
+    log.info('Data backend worker initialized with persist_dir=%s', get_persist_dir())
 
     assert worker_env.options.max_worker_threads is not None
 
@@ -107,101 +106,101 @@ async def run_worker(worker_env: WorkerEnv) -> List[Worker]:
     # to the pool task queue, which owns the per-snapshot lock + dataplane
     # ingest semaphore.
     data_backend_activities = [
-            DataBackendActivities.wait_on_workflow,
-            DataBackendActivities.start_bp_stats_activity,
-            DataBackendActivities.compute_standalone_table_col_stats,
-            DataBackendActivities.validate_graph_table_stats,
-            DataBackendActivities.validate_table_ingest,
-            DataBackendActivities.validate_table_col_stats,
-            DataBackendActivities.validate_graph_edge_stats,
-            DataBackendActivities.create_table_cache_dir,
-            DataBackendActivities.save_table_version_activity,
-            DataBackendActivities.save_table_refresh_result,
-            DataBackendActivities.save_colstat_task_result,
-            DataBackendActivities.copy_colstat_to_job_dir,
-            DataBackendActivities.save_source_table_ingest_result,
-            DataBackendActivities.refresh_graph_data_version,
-            DataBackendActivities.get_connector_table_data_version,
-            DataBackendActivities.save_graph_data_version,
-            DataBackendActivities.update_table_timestamp_units,
-            build_graph_config_activity,
-            validate_custom_train_table_activity,
-            validate_object_prediction_output,
-            validate_warehouse_prediction_output,
-            create_project_connector_activity,
-            validate_identity_credentials_activity,
-            delegate_connector_authorizations,
-            revoke_connector_authorizations,
-            list_connector_source_tables,
-            get_connector_source_columns,
-            get_connector_source_table_file_type,
-            stage_connector_source_download,
-            validate_connector_source_table_exists,
-            get_connector_sample_rows,
-            is_connector_source_table_view,
-            validate_connector_reference,
-            infer_graph_links_activity,
-            validate_graph_definition_activity,
-            validate_predictive_query_activity,
-            infer_table_metadata_activity,
-            validate_table_definition_activity,
-            validate_custom_sql,
-            get_table_col_stats_and_sample_rows_activity,
-            # Both modes dispatch this — pool path runs the
-            # stats-bridge step on the pool queue after ensure_snapshot.
-            diskgraph_ingest_stats_activity,
-            io_activities.save_validation_response_activity,
-            # Pure-PyArrow validation with no process-wide global state, so it
-            # runs safely on the thread executor.
-            validate_weighted_train_table,
-            # I/O-bound connector unload + parquet copy with no process-wide
-            # global state, so it runs on the shared thread pool. The trade-off
-            # is that a long warehouse unload holds one of the workflow_worker
-            # threads (max_worker_threads, 20) for its whole duration, sharing
-            # that pool with the lightweight validate_*/save_* activities.
-            ingest_custom_train_table,
-            # I/O-bound connector export with no engine/per-job global state, so
-            # it runs on the shared thread pool; a blocking warehouse unload
-            # holds one of those threads for its whole duration.
-            ingest_table_data_activity_v2,
-            # Computes the prediction config from explicit per-job inputs
-            # (home_dir param, settings, job_input). Its only global reads are
-            # deploy-wide constants (engine backend, data-backend type) or
-            # vestigial-in-DG (edge_persist_paths, which the DG short-circuit
-            # never reads), so concurrent jobs on a shared thread can't collide.
-            generate_prediction_config,
-            # Computes the training config from explicit per-job inputs. The one
-            # per-job value it produces (the diskgraph index path) is threaded
-            # explicitly into save_trainer_job_config, the home dir is never
-            # read on this path, and its remaining global reads are deploy-wide
-            # (set at worker startup), so concurrent jobs on a shared thread
-            # can't collide.
-            generate_training_config,
-            # Materializes the train table from explicit per-job values
-            # (home_dir, diskgraph handle/index_path, output paths) derived
-            # locally per call and passed to callees, touching no per-job
-            # process globals, so concurrent jobs on a shared thread can't
-            # collide.
-            materialize_training_table,
-            # Connector-authorized custom PREDICT source localization. The
-            # DiskGraph bundle build runs on the snapshot-resident pool worker.
-            stage_custom_prediction_table,
-            # Splits a materialized train table. Nothing on the split path reads
-            # per-job process globals (manifest validated from the explicit
-            # path, get_service() built from deploy-wide config, stats cache
-            # keyed by job_id), so concurrent jobs on a shared thread can't
-            # collide.
-            execute_split,
-            # Async status-write activity hosted here so the compute queue stays
-            # heavy-compute only.
-            save_split_workflow_status,
-            # Pool integration: workflow-side wrappers that bridge
-            # Placement coordinators to PoolController
-            # via AutoRPC.
-            place_snapshot_activity,
-            release_snapshot_activity,
-            get_pool_stats_activity,
-        ]
+        DataBackendActivities.wait_on_workflow,
+        DataBackendActivities.start_bp_stats_activity,
+        DataBackendActivities.compute_standalone_table_col_stats,
+        DataBackendActivities.validate_graph_table_stats,
+        DataBackendActivities.validate_table_ingest,
+        DataBackendActivities.validate_table_col_stats,
+        DataBackendActivities.validate_graph_edge_stats,
+        DataBackendActivities.create_table_cache_dir,
+        DataBackendActivities.save_table_version_activity,
+        DataBackendActivities.save_table_refresh_result,
+        DataBackendActivities.save_colstat_task_result,
+        DataBackendActivities.copy_colstat_to_job_dir,
+        DataBackendActivities.save_source_table_ingest_result,
+        DataBackendActivities.refresh_graph_data_version,
+        DataBackendActivities.get_connector_table_data_version,
+        DataBackendActivities.save_graph_data_version,
+        DataBackendActivities.update_table_timestamp_units,
+        build_graph_config_activity,
+        validate_custom_train_table_activity,
+        validate_object_prediction_output,
+        validate_warehouse_prediction_output,
+        create_project_connector_activity,
+        validate_identity_credentials_activity,
+        delegate_connector_authorizations,
+        revoke_connector_authorizations,
+        list_connector_source_tables,
+        get_connector_source_columns,
+        get_connector_source_table_file_type,
+        stage_connector_source_download,
+        validate_connector_source_table_exists,
+        get_connector_sample_rows,
+        is_connector_source_table_view,
+        validate_connector_reference,
+        infer_graph_links_activity,
+        validate_graph_definition_activity,
+        validate_predictive_query_activity,
+        infer_table_metadata_activity,
+        validate_table_definition_activity,
+        validate_custom_sql,
+        get_table_col_stats_and_sample_rows_activity,
+        # Both modes dispatch this — pool path runs the
+        # stats-bridge step on the pool queue after ensure_snapshot.
+        diskgraph_ingest_stats_activity,
+        io_activities.save_validation_response_activity,
+        # Pure-PyArrow validation with no process-wide global state, so it
+        # runs safely on the thread executor.
+        validate_weighted_train_table,
+        # I/O-bound connector unload + parquet copy with no process-wide
+        # global state, so it runs on the shared thread pool. The trade-off
+        # is that a long warehouse unload holds one of the workflow_worker
+        # threads (max_worker_threads, 20) for its whole duration, sharing
+        # that pool with the lightweight validate_*/save_* activities.
+        ingest_custom_train_table,
+        # I/O-bound connector export with no engine/per-job global state, so
+        # it runs on the shared thread pool; a blocking warehouse unload
+        # holds one of those threads for its whole duration.
+        ingest_table_data_activity_v2,
+        # Computes the prediction config from explicit per-job inputs
+        # (home_dir param, settings, job_input). Its only global reads are
+        # deploy-wide constants (engine backend, data-backend type) or
+        # vestigial-in-DG (edge_persist_paths, which the DG short-circuit
+        # never reads), so concurrent jobs on a shared thread can't collide.
+        generate_prediction_config,
+        # Computes the training config from explicit per-job inputs. The one
+        # per-job value it produces (the diskgraph index path) is threaded
+        # explicitly into save_trainer_job_config, the home dir is never
+        # read on this path, and its remaining global reads are deploy-wide
+        # (set at worker startup), so concurrent jobs on a shared thread
+        # can't collide.
+        generate_training_config,
+        # Materializes the train table from explicit per-job values
+        # (home_dir, diskgraph handle/index_path, output paths) derived
+        # locally per call and passed to callees, touching no per-job
+        # process globals, so concurrent jobs on a shared thread can't
+        # collide.
+        materialize_training_table,
+        # Connector-authorized custom PREDICT source localization. The
+        # DiskGraph bundle build runs on the snapshot-resident pool worker.
+        stage_custom_prediction_table,
+        # Splits a materialized train table. Nothing on the split path reads
+        # per-job process globals (manifest validated from the explicit
+        # path, get_service() built from deploy-wide config, stats cache
+        # keyed by job_id), so concurrent jobs on a shared thread can't
+        # collide.
+        execute_split,
+        # Async status-write activity hosted here so the compute queue stays
+        # heavy-compute only.
+        save_split_workflow_status,
+        # Pool integration: workflow-side wrappers that bridge
+        # Placement coordinators to PoolController
+        # via AutoRPC.
+        place_snapshot_activity,
+        release_snapshot_activity,
+        get_pool_stats_activity,
+    ]
     validate_connector_activity_registration(data_backend_activities)
     workflow_worker = await worker_env.build_worker(
         activities=data_backend_activities,

@@ -90,7 +90,8 @@ def test_pquery_resource_adapter_accepts_nested_runtime_options():
 
 @pytest.mark.asyncio
 async def test_make_predictive_config_v2_forwards_runtime_options(
-    monkeypatch, ):
+    monkeypatch,
+):
     make_config = AsyncMock(return_value='config')
     monkeypatch.setattr(
         pquery_logic,
@@ -110,8 +111,7 @@ async def test_make_predictive_config_v2_forwards_runtime_options(
     )
     result = await logic.make_predictive_config_v2(
         PQueryValidationArgs(
-            query_string=(
-                'PREDICT LIST_DISTINCT(t.article_id) FOR EACH t.user_id'),
+            query_string=('PREDICT LIST_DISTINCT(t.article_id) FOR EACH t.user_id'),
             graph=_empty_graph_def(),
             name='runtime_options_pquery',
             runtime_options=PQueryRuntimeOptions(
@@ -131,7 +131,8 @@ async def test_make_predictive_config_v2_forwards_runtime_options(
 
 @pytest.mark.asyncio
 async def test_make_predictive_config_v2_preserves_omitted_runtime_options(
-    monkeypatch, ):
+    monkeypatch,
+):
     make_config = AsyncMock(return_value='config')
     monkeypatch.setattr(
         pquery_logic,
@@ -151,8 +152,7 @@ async def test_make_predictive_config_v2_preserves_omitted_runtime_options(
     )
     result = await logic.make_predictive_config_v2(
         PQueryValidationArgs(
-            query_string=(
-                'PREDICT LIST_DISTINCT(t.article_id) FOR EACH t.user_id'),
+            query_string=('PREDICT LIST_DISTINCT(t.article_id) FOR EACH t.user_id'),
             graph=_empty_graph_def(),
             name='runtime_options_pquery',
             runtime_options=PQueryRuntimeOptions(
@@ -172,10 +172,10 @@ async def test_make_predictive_config_v2_preserves_omitted_runtime_options(
 
 @pytest.mark.asyncio
 async def test_create_full_pquery_def_v2_persists_runtime_options(
-    monkeypatch, ):
+    monkeypatch,
+):
     class FakeGraphLogic:
-        def __init__(self, data_backend_ctx, *, state_services=None,
-                     project_id=None):
+        def __init__(self, data_backend_ctx, *, state_services=None, project_id=None):
             pass
 
         async def create_full_graph_def_v2(self, graph_def):
@@ -199,10 +199,15 @@ async def test_create_full_pquery_def_v2_persists_runtime_options(
         query_type=QueryType.TEMPORAL,
         get_task_type=lambda: TaskType.LINK_PREDICTION,
     )
-    logic.parse_predictive_query_v2 = AsyncMock(return_value=(SimpleNamespace(
-        config=SimpleNamespace(lp_bp_layout='separate_lhs_rhs'),
-        predictive_query=pquery,
-    ), ValidationResponse()))
+    logic.parse_predictive_query_v2 = AsyncMock(
+        return_value=(
+            SimpleNamespace(
+                config=SimpleNamespace(lp_bp_layout='separate_lhs_rhs'),
+                predictive_query=pquery,
+            ),
+            ValidationResponse(),
+        )
+    )
 
     pq_def = await logic.create_full_pquery_def_v2(
         _pquery_resource(
@@ -223,10 +228,10 @@ async def test_create_full_pquery_def_v2_persists_runtime_options(
 
 @pytest.mark.asyncio
 async def test_create_full_pquery_def_v2_preserves_omitted_runtime_options(
-    monkeypatch, ):
+    monkeypatch,
+):
     class FakeGraphLogic:
-        def __init__(self, data_backend_ctx, *, state_services=None,
-                     project_id=None):
+        def __init__(self, data_backend_ctx, *, state_services=None, project_id=None):
             pass
 
         async def create_full_graph_def_v2(self, graph_def):
@@ -250,10 +255,15 @@ async def test_create_full_pquery_def_v2_preserves_omitted_runtime_options(
         query_type=QueryType.TEMPORAL,
         get_task_type=lambda: TaskType.LINK_PREDICTION,
     )
-    logic.parse_predictive_query_v2 = AsyncMock(return_value=(SimpleNamespace(
-        config=SimpleNamespace(lp_bp_layout=None),
-        predictive_query=pquery,
-    ), ValidationResponse()))
+    logic.parse_predictive_query_v2 = AsyncMock(
+        return_value=(
+            SimpleNamespace(
+                config=SimpleNamespace(lp_bp_layout=None),
+                predictive_query=pquery,
+            ),
+            ValidationResponse(),
+        )
+    )
 
     pq_def = await logic.create_full_pquery_def_v2(
         _pquery_resource(
@@ -274,12 +284,12 @@ async def test_create_full_pquery_def_v2_preserves_omitted_runtime_options(
 
 @pytest.mark.asyncio
 async def test_make_bp_input_v2_rebuilds_config_with_runtime_options(
-    monkeypatch, ):
+    monkeypatch,
+):
     captured_args = []
 
     class FakePQueryLogic:
-        def __init__(self, data_backend_ctx, *, state_services,
-                     project_id=None):
+        def __init__(self, data_backend_ctx, *, state_services, project_id=None):
             pass
 
         async def make_predictive_config_v2(self, val_args, graph=None):
@@ -293,8 +303,7 @@ async def test_make_bp_input_v2_rebuilds_config_with_runtime_options(
     )
 
     class FakeGraphLogic:
-        def __init__(self, data_backend_ctx, *, state_services=None,
-                     project_id=None):
+        def __init__(self, data_backend_ctx, *, state_services=None, project_id=None):
             pass
 
         async def _make_graph_from_graph_def_v2(self, graph_def):

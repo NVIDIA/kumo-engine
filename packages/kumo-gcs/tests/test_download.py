@@ -30,17 +30,22 @@ def downloader(monkeypatch):
 
 def test_download_chunk_size_is_applied_to_the_client_library():
     from google.cloud.storage._media.requests import _request_helpers
+
     assert _request_helpers._SINGLE_GET_CHUNK_SIZE == 1024 * 1024
 
 
-@pytest.mark.parametrize('name', [
-    'plain.bin',
-    'my file.bin',
-    'dt=2026-01-01 00:00:00/part.bin',
-    '100%.bin',
-])
-def test_native_download_preserves_object_names(downloader, monkeypatch,
-                                                tmp_path, name):
+@pytest.mark.parametrize(
+    'name',
+    [
+        'plain.bin',
+        'my file.bin',
+        'dt=2026-01-01 00:00:00/part.bin',
+        '100%.bin',
+    ],
+)
+def test_native_download_preserves_object_names(
+    downloader, monkeypatch, tmp_path, name
+):
     client, _ = downloader
 
     def copy(source, target, **kwargs):
@@ -55,8 +60,9 @@ def test_native_download_preserves_object_names(downloader, monkeypatch,
 
 
 @pytest.mark.parametrize('generation', [111, 222, None])
-def test_native_download_checks_fresh_generation(downloader, monkeypatch,
-                                                 tmp_path, generation):
+def test_native_download_checks_fresh_generation(
+    downloader, monkeypatch, tmp_path, generation
+):
     client, pinned = downloader
     current = mock.Mock(generation=generation)
     if generation is None:
@@ -64,8 +70,10 @@ def test_native_download_checks_fresh_generation(downloader, monkeypatch,
     blobs = iter([pinned, current])
     monkeypatch.setattr(client, '_blob', lambda bucket, key: next(blobs))
     monkeypatch.setattr(
-        download.pafs, 'copy_files',
-        lambda source, target, **kwargs: Path(target).write_bytes(b'payload'))
+        download.pafs,
+        'copy_files',
+        lambda source, target, **kwargs: Path(target).write_bytes(b'payload'),
+    )
     target = tmp_path / 'output'
     target.write_bytes(b'previous')
     if generation == 111:
@@ -78,17 +86,20 @@ def test_native_download_checks_fresh_generation(downloader, monkeypatch,
     assert list(tmp_path.iterdir()) == [target]
 
 
-@pytest.mark.parametrize('error,expected', [
-    (None, OSError),
-    (gcs_exceptions.NotFound('removed'), FileNotFoundError),
-    (OSError('UNAVAILABLE'), ConnectionError),
-    (pa.ArrowCapacityError('RESOURCE_EXHAUSTED'), ConnectionError),
-    (OSError(errno.ENOSPC, 'full'), OSError),
-    (PermissionError('denied'), PermissionError),
-])
-def test_failed_native_download_preserves_destination(downloader, monkeypatch,
-                                                      tmp_path, error,
-                                                      expected):
+@pytest.mark.parametrize(
+    'error,expected',
+    [
+        (None, OSError),
+        (gcs_exceptions.NotFound('removed'), FileNotFoundError),
+        (OSError('UNAVAILABLE'), ConnectionError),
+        (pa.ArrowCapacityError('RESOURCE_EXHAUSTED'), ConnectionError),
+        (OSError(errno.ENOSPC, 'full'), OSError),
+        (PermissionError('denied'), PermissionError),
+    ],
+)
+def test_failed_native_download_preserves_destination(
+    downloader, monkeypatch, tmp_path, error, expected
+):
     client, _ = downloader
 
     def copy(source, target, **kwargs):
@@ -109,8 +120,9 @@ def test_failed_native_download_preserves_destination(downloader, monkeypatch,
 
 @pytest.mark.parametrize('reason', ['gzip', 'emulator', 'requester', 'quota'])
 @pytest.mark.parametrize('fail', [False, True])
-def test_sdk_routing_and_atomic_download(downloader, monkeypatch, tmp_path,
-                                         reason, fail):
+def test_sdk_routing_and_atomic_download(
+    downloader, monkeypatch, tmp_path, reason, fail
+):
     client, blob = downloader
     if reason == 'gzip':
         blob.size, blob.content_encoding = 30, 'gzip'
@@ -128,8 +140,11 @@ def test_sdk_routing_and_atomic_download(downloader, monkeypatch, tmp_path,
             raise gcs_exceptions.NotFound('removed during transfer')
 
     blob.download_to_file.side_effect = sdk
-    monkeypatch.setattr(download.pafs, 'copy_files',
-                        lambda *a, **kw: pytest.fail('SDK routing required'))
+    monkeypatch.setattr(
+        download.pafs,
+        'copy_files',
+        lambda *a, **kw: pytest.fail('SDK routing required'),
+    )
     target = tmp_path / 'output'
     target.write_bytes(b'previous')
     if fail:
@@ -161,29 +176,34 @@ def test_ambient_filesystem_is_shared_and_bounds_retry(monkeypatch):
     with ThreadPoolExecutor(4) as pool:
         results = list(pool.map(get, range(4)))
     assert all(result is results[0] for result in results)
-    assert constructed == [{
-        'anonymous': False,
-        'retry_time_limit': datetime.timedelta(seconds=120),
-    }]
+    assert constructed == [
+        {
+            'anonymous': False,
+            'retry_time_limit': datetime.timedelta(seconds=120),
+        }
+    ]
 
 
 def test_anonymous_access_never_discovers_ambient_credentials(monkeypatch):
-    monkeypatch.setattr('google.auth.default',
-                        lambda *a, **kw: pytest.fail('ambient discovery'))
+    monkeypatch.setattr(
+        'google.auth.default', lambda *a, **kw: pytest.fail('ambient discovery')
+    )
     client = GCSDownloader(AnonymousCredentials())
-    assert client._blob('bucket',
-                        'object').client._credentials is client.credentials
+    assert client._blob('bucket', 'object').client._credentials is client.credentials
     assert client.filesystem() is not None
 
 
-@pytest.mark.parametrize('budget,override,expected', [
-    (2, None, 32),
-    (12, None, 48),
-    (96, None, 64),
-    (96, '64', 64),
-    (96, '1000000', 128),
-    (96, '0', 64),
-])
+@pytest.mark.parametrize(
+    'budget,override,expected',
+    [
+        (2, None, 32),
+        (12, None, 48),
+        (96, None, 64),
+        (96, '64', 64),
+        (96, '1000000', 128),
+        (96, '0', 64),
+    ],
+)
 def test_native_io_budget(monkeypatch, budget, override, expected):
     monkeypatch.delenv('FSUTIL_GCS_IO_THREADS', raising=False)
     if override is not None:
@@ -193,8 +213,9 @@ def test_native_io_budget(monkeypatch, budget, override, expected):
 
 
 @pytest.mark.parametrize('existing,changes', [(8, [64]), (96, [])])
-def test_native_download_never_lowers_shared_io_pool(downloader, monkeypatch,
-                                                     existing, changes):
+def test_native_download_never_lowers_shared_io_pool(
+    downloader, monkeypatch, existing, changes
+):
     client, _ = downloader
     observed = []
     monkeypatch.setattr(download, 'gcs_io_threads', lambda: 64)

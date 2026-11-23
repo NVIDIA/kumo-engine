@@ -21,9 +21,11 @@ from kumo.pquery.generator_utils import (
 
 # isort: off
 from kumo.pquery.pquery_validators.pre_pred_table_validator import (
-    PrePredTableValidator, )
+    PrePredTableValidator,
+)
 from kumo.pquery.pquery_validators.pred_table_validator import (
-    PredTableValidator, )
+    PredTableValidator,
+)
 # isort: on
 
 from kumo_core.types import TaskType
@@ -56,14 +58,14 @@ class PredictionTableGeneratorV2:
         self.query = validated_query
         self.forecast_length = forecast_length
 
-        self.task_type: TaskType = get_task_type(self.graph, self.query,
-                                                 self.forecast_length).task_type
+        self.task_type: TaskType = get_task_type(
+            self.graph, self.query, self.forecast_length
+        ).task_type
         self.list_distinct_target_is_array = False
         self.lp_bp_layout: Optional[str] = None
 
         self.validate_pred_table_response = ValidationResponse()
-        self.stats_manager = StatsManager(self.task_type, self.query,
-                                          self.graph)
+        self.stats_manager = StatsManager(self.task_type, self.query, self.graph)
 
         self.pred_table_validator = PredTableValidator(self.stats_manager)
         self.pre_pred_table_validator = PrePredTableValidator()
@@ -74,7 +76,8 @@ class PredictionTableGeneratorV2:
 
     @blocking_method()
     def get_default_target_time_range(
-            self) -> Tuple[pd.Timestamp, pd.Timestamp, Optional[pd.Timedelta]]:
+        self,
+    ) -> Tuple[pd.Timestamp, pd.Timestamp, Optional[pd.Timedelta]]:
         r"""Determine the total time range that can be used to generate
         targets. Unless overriden with `train_start_offset` or
         `train_end_offset`, target data will be taken from this range.
@@ -132,39 +135,41 @@ class PredictionTableGeneratorV2:
             assert self.forecast_length >= 1
 
         if self.task_type.is_link_pred:
-            target_table_name = get_rhs_lp_table(self.query, self.graph,
-                                                 no_connector=True)
+            target_table_name = get_rhs_lp_table(
+                self.query, self.graph, no_connector=True
+            )
             validation_response.merge(
                 self.pre_pred_table_validator.validate_num_rhs_rows(
                     target_table_name=target_table_name,
                     graph=self.graph,
                     is_child_job=is_child_job,
-                ))
+                )
+            )
 
         if timestamp is not None:
-            target_min_date, target_max_date, _ = (
-                self.get_default_target_time_range())
+            target_min_date, target_max_date, _ = self.get_default_target_time_range()
             target_table_name = self.get_target_table_name()
             validation_response.merge(
                 self.pre_pred_table_validator.validate_anchor_time(
                     timestamp,  # type: ignore
                     target_min_date,
-                    target_table_name))
+                    target_table_name,
+                )
+            )
             if self.task_type == TaskType.FORECASTING:
                 assert lag_timestep is not None
-                timeframe = self.query.get_combined_date_offset_range(
-                ).timeframe
+                timeframe = self.query.get_combined_date_offset_range().timeframe
                 assert timeframe is not None
                 validation_response.merge(
-                    self.pre_pred_table_validator.
-                    validate_anchor_time_forecasting(
+                    self.pre_pred_table_validator.validate_anchor_time_forecasting(
                         timestamp,
                         timeframe,
                         lag_timestep,
                         target_table_name,
                         target_max_date,
                         target_min_date,
-                    ))
+                    )
+                )
 
         return validation_response
 
@@ -205,12 +210,16 @@ class PredictionTableGeneratorV2:
         # thread ``diskgraph_index_path`` through.
         if diskgraph_index_path is None:
             raise UnsupportedInDiskgraphError(
-                "PredictionTableGeneratorV2.generate_table requires "
-                "diskgraph_index_path; legacy pquery producer was retired "
-                "in the DG cutover.")
+                'PredictionTableGeneratorV2.generate_table requires '
+                'diskgraph_index_path; legacy pquery producer was retired '
+                'in the DG cutover.'
+            )
         self.list_distinct_target_is_array = list_distinct_target_is_array
-        lp_bp_layout = (lp_bp_layout if lp_bp_layout is not None else getattr(
-            self, 'lp_bp_layout', None))
+        lp_bp_layout = (
+            lp_bp_layout
+            if lp_bp_layout is not None
+            else getattr(self, 'lp_bp_layout', None)
+        )
         resolved_lp_bp_layout = _resolve_lp_bp_layout(
             list_distinct_target_is_array,
             lp_bp_layout,
@@ -235,38 +244,39 @@ class PredictionTableGeneratorV2:
         # static + fact-entity queries (instead of zeros), and so
         # create_time filtering kicks in for temporal queries.
         entity_table = self.graph.table(table_name(self.query.entity_column))
-        entity_time_col = (entity_table.time_col.name
-                           if entity_table.time_col is not None else None)
+        entity_time_col = (
+            entity_table.time_col.name if entity_table.time_col is not None else None
+        )
 
         # Lazy-import TimeUnit and the TT-NG generator.
         from diskgraph import TimeUnit
 
         # isort: off
         from kumo.data.generic.diskgraph_batch_pred import (
-            generate_batch_pred_table_via_diskgraph_ttng, )
+            generate_batch_pred_table_via_diskgraph_ttng,
+        )
+
         # isort: on
         pred_table_num_entities: int | None
-        pred_table_num_entities, _ = (
-            generate_batch_pred_table_via_diskgraph_ttng(
-                query=self.query,
-                task_type=self.task_type,
-                graph=self.graph,
-                timestamps=timestamps,
-                forecast_length=self.forecast_length,
-                lag_timesteps=lag_timesteps,
-                use_yoy_labels=use_yoy_labels,
-                list_distinct_target_is_array=(list_distinct_target_is_array),
-                index_path=diskgraph_index_path,
-                output_root=output_path,
-                input_timestamp_unit=TimeUnit.Nanoseconds,
-                target_stype=self.query.target_stype.value,
-                entity_time_col=entity_time_col,
-                lp_bp_layout=resolved_lp_bp_layout,
-                # Names the kept predict staging dir for materialize (one-gen handoff).
-                job_id=job_id,
-            ))
-        if job_id is not None and isinstance(pt,
-                                             pd.Timestamp) and not pd.isna(pt):
+        pred_table_num_entities, _ = generate_batch_pred_table_via_diskgraph_ttng(
+            query=self.query,
+            task_type=self.task_type,
+            graph=self.graph,
+            timestamps=timestamps,
+            forecast_length=self.forecast_length,
+            lag_timesteps=lag_timesteps,
+            use_yoy_labels=use_yoy_labels,
+            list_distinct_target_is_array=(list_distinct_target_is_array),
+            index_path=diskgraph_index_path,
+            output_root=output_path,
+            input_timestamp_unit=TimeUnit.Nanoseconds,
+            target_stype=self.query.target_stype.value,
+            entity_time_col=entity_time_col,
+            lp_bp_layout=resolved_lp_bp_layout,
+            # Names the kept predict staging dir for materialize (one-gen handoff).
+            job_id=job_id,
+        )
+        if job_id is not None and isinstance(pt, pd.Timestamp) and not pd.isna(pt):
             self.stats_manager.update_pred_time(job_id, pt)
         if job_id is not None and pred_table_num_entities is not None:
             self.stats_manager.update_pred_num_entities(
@@ -276,7 +286,8 @@ class PredictionTableGeneratorV2:
         return None
 
     def get_batch_pred_table_stats_config(
-            self, job_id: str) -> Optional[Dict[str, StatsConfig]]:
+        self, job_id: str
+    ) -> Optional[Dict[str, StatsConfig]]:
         r"""Get the prediction anchor time associated with a job ID.
 
         Args:

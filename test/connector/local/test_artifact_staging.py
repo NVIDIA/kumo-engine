@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-from test.connector.artifact_staging_contract import local_artifact_dataset
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -13,6 +12,7 @@ from kumo.connector.artifact_staging import (
     is_local_artifact_path,
     local_parquet_files,
 )
+from test.connector.artifact_staging_contract import local_artifact_dataset
 
 
 def test_local_parquet_files_accepts_file_and_nested_dataset(tmp_path):
@@ -20,20 +20,19 @@ def test_local_parquet_files_accepts_file_and_nested_dataset(tmp_path):
     pq.write_table(pa.table({'ID': [1]}), single)
     assert local_parquet_files(str(single)) == [single.resolve()]
 
-    dataset = local_artifact_dataset(
-        tmp_path, shards=2, embeddings=True, nested=True)
+    dataset = local_artifact_dataset(tmp_path, shards=2, embeddings=True, nested=True)
     (dataset / '_SUCCESS').write_text('')
 
     assert local_parquet_files(str(dataset)) == sorted(
-        path.resolve() for path in dataset.rglob('*.parquet'))
+        path.resolve() for path in dataset.rglob('*.parquet')
+    )
 
 
 @pytest.mark.parametrize(
     ('symlink_location', 'message'),
     [('root', 'may not be symlinks'), ('nested', 'may not contain symlinks')],
 )
-def test_local_parquet_files_rejects_symlinks(
-        tmp_path, symlink_location, message):
+def test_local_parquet_files_rejects_symlinks(tmp_path, symlink_location, message):
     target = tmp_path / 'outside.parquet'
     pq.write_table(pa.table({'ID': [1]}), target)
     if symlink_location == 'root':
@@ -45,7 +44,8 @@ def test_local_parquet_files_rejects_symlinks(
 
     with pytest.raises(ValueError, match=message):
         local_parquet_files(
-            str(artifact if symlink_location == 'root' else artifact.parent))
+            str(artifact if symlink_location == 'root' else artifact.parent)
+        )
 
 
 def test_is_local_artifact_path_rejects_provider_and_unknown_schemes():

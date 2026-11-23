@@ -13,7 +13,8 @@ CORE_PLATFORM_ERROR_TYPES = (PublicError, TrainingValidationError)
 
 
 def as_platform_public_exception(
-    error: BaseException, ) -> PublicException | None:
+    error: BaseException,
+) -> PublicException | None:
     """Return the legacy platform representation of a portable error."""
     if isinstance(error, PublicException):
         return error
@@ -23,8 +24,9 @@ def as_platform_public_exception(
             message=error.detail,
         )
     if isinstance(error, PublicError):
-        platform_error_type = (ProviderBackendError
-                               if error.error is not None else PublicException)
+        platform_error_type = (
+            ProviderBackendError if error.error is not None else PublicException
+        )
         platform_error = platform_error_type(
             message=error.message,
             error=error.error,
@@ -40,6 +42,6 @@ def as_platform_public_exception(
 
 
 __all__ = [
-    "CORE_PLATFORM_ERROR_TYPES",
-    "as_platform_public_exception",
+    'CORE_PLATFORM_ERROR_TYPES',
+    'as_platform_public_exception',
 ]

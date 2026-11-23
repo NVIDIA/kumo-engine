@@ -44,9 +44,8 @@ from typing import List, Mapping, Optional, Union
 
 from kumo_core.stype_inference import multicategorical_separator
 from kumoapi.source_table import CustomSQLSourceTable
-from kumoapi.table import Column
+from kumoapi.table import Column, TimestampUnit
 from kumoapi.table import TableDefinition as HostedTableDefinition
-from kumoapi.table import TimestampUnit
 from kumoapi.typing import Dtype, MulticategoricalDelimiter, Stype
 from typing_extensions import Self
 
@@ -139,8 +138,11 @@ class Table:
             time_col=time_column,
             end_time_col=end_time_column,
         )
-        return cls(connector=source_table.connector,
-                   table_name=source_table.table_name, definition=definition)
+        return cls(
+            connector=source_table.connector,
+            table_name=source_table.table_name,
+            definition=definition,
+        )
 
     @classmethod
     def from_sql(
@@ -203,17 +205,21 @@ class Table:
             end_time_column=end_time_column,
             dtypes={
                 col.name: col.dtype
-                for col in self.definition.cols if col.name in unreadable
-                and col.dtype != Dtype.unsupported
-            } if self.definition is not None else None,
+                for col in self.definition.cols
+                if col.name in unreadable and col.dtype != Dtype.unsupported
+            }
+            if self.definition is not None
+            else None,
         )
         return replace(table, table_name=self.table_name)
 
     def _source_table(self) -> SourceTable:
-        source = (self.definition.source_table
-                  if self.definition is not None else None)
-        return (self.connector.sql(source.sql) if isinstance(
-            source, CustomSQLSourceTable) else self.connector[self.table_name])
+        source = self.definition.source_table if self.definition is not None else None
+        return (
+            self.connector.sql(source.sql)
+            if isinstance(source, CustomSQLSourceTable)
+            else self.connector[self.table_name]
+        )
 
     def _inferred_stype(self, name: str, dtype: Dtype) -> Stype:
         from kumo.engine._infer import resolve_table_columns
@@ -263,46 +269,59 @@ class Table:
         """
         if self.definition is None:
             raise ValueError(
-                f"Table {self.table_name!r} has no resolved `definition` -- "
-                "call from_source_table() or infer_metadata() first.")
+                f'Table {self.table_name!r} has no resolved `definition` -- '
+                'call from_source_table() or infer_metadata() first.'
+            )
 
         columns: List[Column] = list(self.definition.cols)
         for i, column in enumerate(columns):
             if column.name == name:
                 resolved_stype = stype if stype is not None else column.stype
-                if (stype is None and dtype is not None
-                        and resolved_stype == Stype.unsupported):
+                if (
+                    stype is None
+                    and dtype is not None
+                    and resolved_stype == Stype.unsupported
+                ):
                     resolved_stype = self._inferred_stype(name, dtype)
                 resolved_dtype = dtype if dtype is not None else column.dtype
-                delimiter = (multicategorical_delimiter
-                             if multicategorical_delimiter is not None else
-                             column.multicategorical_delimiter)
-                if (multicategorical_delimiter is None
-                        and (resolved_stype != Stype.multicategorical
-                             or resolved_dtype != Dtype.string)):
+                delimiter = (
+                    multicategorical_delimiter
+                    if multicategorical_delimiter is not None
+                    else column.multicategorical_delimiter
+                )
+                if multicategorical_delimiter is None and (
+                    resolved_stype != Stype.multicategorical
+                    or resolved_dtype != Dtype.string
+                ):
                     delimiter = None
-                if (resolved_stype == Stype.multicategorical
-                        and resolved_dtype == Dtype.string
-                        and delimiter is None):
+                if (
+                    resolved_stype == Stype.multicategorical
+                    and resolved_dtype == Dtype.string
+                    and delimiter is None
+                ):
                     from kumo.engine._infer import _sample
 
-                    _, _, frame, _ = _sample(self.connector.source_backend,
-                                             self.connector, self.table_name)
+                    _, _, frame, _ = _sample(
+                        self.connector.source_backend, self.connector, self.table_name
+                    )
                     if frame is not None and name in frame:
                         delimiter = multicategorical_separator(
-                            frame[name].dropna().astype('string'))
+                            frame[name].dropna().astype('string')
+                        )
                 columns[i] = replace(
                     column,
                     stype=resolved_stype,
                     dtype=resolved_dtype,
-                    timestamp_format=(timestamp_format if timestamp_format
-                                      is not None else column.timestamp_format),
+                    timestamp_format=(
+                        timestamp_format
+                        if timestamp_format is not None
+                        else column.timestamp_format
+                    ),
                     multicategorical_delimiter=delimiter,
                 )
                 break
         else:
-            raise ValueError(
-                f"Table {self.table_name!r} has no column {name!r}.")
+            raise ValueError(f'Table {self.table_name!r} has no column {name!r}.')
 
         definition = replace(self.definition, cols=columns)
         return replace(self, definition=definition)

@@ -20,22 +20,23 @@ from kumo_core.sources.errors import (
 
 
 def _reason(error: BaseException) -> str | None:
-    direct = getattr(error, "reason", None)
+    direct = getattr(error, 'reason', None)
     if direct:
         return str(direct)
-    for detail in getattr(error, "errors", ()) or ():
-        if isinstance(detail, dict) and detail.get("reason"):
-            return str(detail["reason"])
+    for detail in getattr(error, 'errors', ()) or ():
+        if isinstance(detail, dict) and detail.get('reason'):
+            return str(detail['reason'])
     return None
 
 
 def summary(error: BaseException) -> str:
-    return diagnostics.safe_summary(error, code=getattr(error, "code", None),
-                                    reason=_reason(error))
+    return diagnostics.safe_summary(
+        error, code=getattr(error, 'code', None), reason=_reason(error)
+    )
 
 
 def _forbidden(error: BaseException) -> type[SourceError]:
-    if _reason(error) == "responseTooLarge":
+    if _reason(error) == 'responseTooLarge':
         return PermanentSourceError
     return SourceAccessDeniedError
 
@@ -50,9 +51,17 @@ def rules() -> Sequence[Rule]:
     return (
         ((exceptions.Unauthorized, RefreshError), ReconnectRequiredError),
         (exceptions.Forbidden, _forbidden),
-        ((exceptions.ServerError, exceptions.TooManyRequests,
-          exceptions.RetryError, DataCorruption, TransportError, OSError),
-         TransientSourceError),
+        (
+            (
+                exceptions.ServerError,
+                exceptions.TooManyRequests,
+                exceptions.RetryError,
+                DataCorruption,
+                TransportError,
+                OSError,
+            ),
+            TransientSourceError,
+        ),
         (exceptions.GoogleAPICallError, PermanentSourceError),
     )
 
@@ -71,9 +80,9 @@ def resolving(table: str) -> Iterator[None]:
     try:
         yield
     except exceptions.NotFound as error:
-        raise SourceNotFoundError(f"bigquery has no {table}: {summary(error)}",
-                                  table=table) from None
+        raise SourceNotFoundError(
+            f'bigquery has no {table}: {summary(error)}', table=table
+        ) from None
 
 
-translated = diagnostics.source_translator("bigquery", rules=rules,
-                                           summarize=summary)
+translated = diagnostics.source_translator('bigquery', rules=rules, summarize=summary)

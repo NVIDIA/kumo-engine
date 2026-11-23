@@ -40,13 +40,14 @@ class _GroupService:
     async def map_idp_group_ids(self, external_ids, identity_provider_id):
         self.map_calls.append((list(external_ids), identity_provider_id))
         return [
-            self.mapping[group_id] for group_id in external_ids
+            self.mapping[group_id]
+            for group_id in external_ids
             if group_id in self.mapping
         ]
 
 
 def _state_services(group_service):
-    return type("_StateServices", (), {"groups": group_service})()
+    return type('_StateServices', (), {'groups': group_service})()
 
 
 class _AuthStore:
@@ -64,41 +65,41 @@ class _AuthStore:
 
 @pytest.mark.asyncio
 async def test_provider_results_are_cached_but_mapping_is_live():
-    groups = _GroupService({"idp-a": "kumo-a"})
-    store = _AuthStore([["idp-a"]])
+    groups = _GroupService({'idp-a': 'kumo-a'})
+    store = _AuthStore([['idp-a']])
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
         auth_store=store,
         cache={},
     )
 
-    first = await resolver.resolve_groups("user", {})
-    groups.mapping = {"idp-a": "kumo-b"}
-    second = await resolver.resolve_groups("user", {})
+    first = await resolver.resolve_groups('user', {})
+    groups.mapping = {'idp-a': 'kumo-b'}
+    second = await resolver.resolve_groups('user', {})
 
-    assert first == ResolvedGroupMembership(("kumo-a", ))
-    assert second == ResolvedGroupMembership(("kumo-b", ))
-    assert store.calls == ["user"]
+    assert first == ResolvedGroupMembership(('kumo-a',))
+    assert second == ResolvedGroupMembership(('kumo-b',))
+    assert store.calls == ['user']
     assert groups.map_calls == [
-        (["idp-a"], "direct_connect"),
-        (["idp-a"], "direct_connect"),
+        (['idp-a'], 'direct_connect'),
+        (['idp-a'], 'direct_connect'),
     ]
 
 
 @pytest.mark.asyncio
 async def test_multiple_external_groups_mapping_to_one_kumo_group_are_deduped():
-    groups = _GroupService({"idp-a": "kumo-a", "idp-b": "kumo-a"})
+    groups = _GroupService({'idp-a': 'kumo-a', 'idp-b': 'kumo-a'})
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
-        auth_store=_AuthStore([["idp-a", "idp-b"]]),
+        auth_store=_AuthStore([['idp-a', 'idp-b']]),
         cache={},
     )
 
-    result = await resolver.resolve_groups("user", {})
+    result = await resolver.resolve_groups('user', {})
 
-    assert result == ResolvedGroupMembership(("kumo-a", ))
+    assert result == ResolvedGroupMembership(('kumo-a',))
     assert groups.map_calls == [
-        (["idp-a", "idp-b"], "direct_connect"),
+        (['idp-a', 'idp-b'], 'direct_connect'),
     ]
 
 
@@ -112,97 +113,96 @@ async def test_negative_provider_result_is_cached():
         cache={},
     )
 
-    assert await resolver.resolve_groups("user", {}) == ResolvedGroupMembership(
-        ())
-    assert await resolver.resolve_groups("user", {}) == ResolvedGroupMembership(
-        ())
-    assert store.calls == ["user"]
+    assert await resolver.resolve_groups('user', {}) == ResolvedGroupMembership(())
+    assert await resolver.resolve_groups('user', {}) == ResolvedGroupMembership(())
+    assert store.calls == ['user']
 
 
 @pytest.mark.asyncio
 async def test_native_membership_survives_provider_outage():
-    groups = _GroupService({}, native=("native", ))
+    groups = _GroupService({}, native=('native',))
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
-        auth_store=_AuthStore([RuntimeError("provider unavailable")]),
+        auth_store=_AuthStore([RuntimeError('provider unavailable')]),
         cache={},
     )
 
-    result = await resolver.resolve_groups("user", {})
+    result = await resolver.resolve_groups('user', {})
 
     assert result == ResolvedGroupMembership(
-        ("native", ), external_membership_unavailable=True)
+        ('native',), external_membership_unavailable=True
+    )
 
 
 @pytest.mark.asyncio
 async def test_native_only_user_does_not_depend_on_provider():
-    groups = _GroupService({}, native=("native", ))
+    groups = _GroupService({}, native=('native',))
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
         auth_store=_AuthStore([None]),
         cache={},
     )
 
-    result = await resolver.resolve_groups("password-user", {})
+    result = await resolver.resolve_groups('password-user', {})
 
-    assert result == ResolvedGroupMembership(("native", ))
+    assert result == ResolvedGroupMembership(('native',))
 
 
 @pytest.mark.asyncio
 async def test_absent_external_adapter_is_a_valid_native_only_deployment():
-    groups = _GroupService({}, native=("native", ))
+    groups = _GroupService({}, native=('native',))
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
         auth_store=None,
         cache={},
     )
 
-    assert await resolver.resolve_groups("user", {}) == ResolvedGroupMembership(
-        ("native", ))
+    assert await resolver.resolve_groups('user', {}) == ResolvedGroupMembership(
+        ('native',)
+    )
 
 
 @pytest.mark.asyncio
-async def test_direct_connect_positive_and_negative_results_expire_by_five_minutes(
-):
+async def test_direct_connect_positive_and_negative_results_expire_by_five_minutes():
     now = [0.0]
     cache = cachetools.TTLCache(
         maxsize=10,
         ttl=_GROUP_CACHE_TTL_SECONDS,
         timer=lambda: now[0],
     )
-    groups = _GroupService({"idp-a": "mapped"})
-    store = _AuthStore([["idp-a"], [], RuntimeError("provider unavailable")])
+    groups = _GroupService({'idp-a': 'mapped'})
+    store = _AuthStore([['idp-a'], [], RuntimeError('provider unavailable')])
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
         auth_store=store,
         cache=cache,
     )
 
-    assert await resolver.resolve_groups("user", {}) == ResolvedGroupMembership(
-        ("mapped", ))
+    assert await resolver.resolve_groups('user', {}) == ResolvedGroupMembership(
+        ('mapped',)
+    )
     now[0] = _GROUP_CACHE_TTL_SECONDS
-    assert await resolver.resolve_groups("user", {}) == ResolvedGroupMembership(
-        ())
+    assert await resolver.resolve_groups('user', {}) == ResolvedGroupMembership(())
     now[0] = 2 * _GROUP_CACHE_TTL_SECONDS
-    assert await resolver.resolve_groups("user", {}) == ResolvedGroupMembership(
-        (), external_membership_unavailable=True)
-    assert store.calls == ["user", "user", "user"]
+    assert await resolver.resolve_groups('user', {}) == ResolvedGroupMembership(
+        (), external_membership_unavailable=True
+    )
+    assert store.calls == ['user', 'user', 'user']
 
 
 @pytest.mark.asyncio
 async def test_verified_login_seeds_only_transient_cache():
-    groups = _GroupService({"idp-login": "mapped"})
-    store = _AuthStore([RuntimeError("must not fetch")])
+    groups = _GroupService({'idp-login': 'mapped'})
+    store = _AuthStore([RuntimeError('must not fetch')])
     resolver = DirectConnectGroupResolver(
         state_services=_state_services(groups),
         auth_store=store,
         cache={},
     )
-    resolver.remember_external_groups("user",
-                                      [" idp-login ", "idp-login", "   "])
+    resolver.remember_external_groups('user', [' idp-login ', 'idp-login', '   '])
 
-    result = await resolver.resolve_groups("user", {})
+    result = await resolver.resolve_groups('user', {})
 
-    assert result == ResolvedGroupMembership(("mapped", ))
+    assert result == ResolvedGroupMembership(('mapped',))
     assert store.calls == []
-    assert groups.map_calls == [(["idp-login"], "direct_connect")]
+    assert groups.map_calls == [(['idp-login'], 'direct_connect')]

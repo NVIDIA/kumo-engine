@@ -26,7 +26,7 @@ def init(
     if logging_mode is None:
         logging_mode = logging.LoggingMode.DEBUG
     if initialize_logging:
-        logging_dir = osp.join(get_local_home_dir(), "logging")
+        logging_dir = osp.join(get_local_home_dir(), 'logging')
         fsutil.makedirs(logging_dir, exist_ok=True)
         logging.initialize_logging(
             mode=logging_mode,
@@ -51,4 +51,4 @@ def init(
     MetricsClient().job_name = name
 
 
-__all__ = ["init"]
+__all__ = ['init']

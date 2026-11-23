@@ -9,6 +9,7 @@ Worker count is sized against ``/dev/shm`` to prevent that.
 
 The probe is injected, so these need no GPU and no real ``/dev/shm``.
 """
+
 from contextlib import nullcontext
 
 import kumo_core.training.config as trainer_config
@@ -31,18 +32,21 @@ ENV_MARKERS_FORCING_ZERO_WORKERS = (
 @pytest.fixture
 def fake_shm(monkeypatch):
     """Inject a fake ``/dev/shm`` size in bytes (``None`` = unprobeable)."""
+
     def _set(total_bytes):
-        monkeypatch.setattr(trainer_config, '_dev_shm_bytes',
-                            lambda: total_bytes)
+        monkeypatch.setattr(trainer_config, '_dev_shm_bytes', lambda: total_bytes)
 
     return _set
 
 
 class TestShmSafeNumWorkers:
-    @pytest.mark.parametrize('shm,expected', [
-        (1 * GIB, 4),
-        (64 * GIB, 8),
-    ])
+    @pytest.mark.parametrize(
+        'shm,expected',
+        [
+            (1 * GIB, 4),
+            (64 * GIB, 8),
+        ],
+    )
     def test_reduces_to_what_shm_can_back(self, shm, expected, fake_shm):
         fake_shm(shm)
         assert shm_safe_num_workers(8) == expected
@@ -64,34 +68,42 @@ class TestDiskgraphAutoConfig:
     Callers overwrite ``LoaderKwargs.num_workers`` with this value, so a
     limit applied elsewhere never reaches the DataLoader.
     """
-    @pytest.mark.parametrize('estimated_edges,mode', [
-        (300_000, 'standalone'),
-        (1_000, 'fused'),
-    ])
-    def test_small_shm_forces_sync_loading(self, estimated_edges, mode,
-                                           fake_shm):
+
+    @pytest.mark.parametrize(
+        'estimated_edges,mode',
+        [
+            (300_000, 'standalone'),
+            (1_000, 'fused'),
+        ],
+    )
+    def test_small_shm_forces_sync_loading(self, estimated_edges, mode, fake_shm):
         fake_shm(DOCKER_DEFAULT_SHM)
         with pytest.warns(RuntimeWarning):
-            cfg = diskgraph_auto_config(64, int(533.7e9), int(172e9),
-                                        estimated_edges)
+            cfg = diskgraph_auto_config(64, int(533.7e9), int(172e9), estimated_edges)
         assert cfg['mode'] == mode
         assert cfg['num_workers'] == 0
 
-    @pytest.mark.parametrize('shm,expected_workers,expected_rayon', [
-        (DOCKER_DEFAULT_SHM, 0, 2),
-        (512 * MIB, 2, 8),
-        (1 * GIB, 4, 8),
-        (2 * GIB, 8, 4),
-        (4 * GIB, 16, 2),
-    ])
-    def test_recomputes_rayon_after_shm_reduction(self, shm, expected_workers,
-                                                  expected_rayon, fake_shm):
+    @pytest.mark.parametrize(
+        'shm,expected_workers,expected_rayon',
+        [
+            (DOCKER_DEFAULT_SHM, 0, 2),
+            (512 * MIB, 2, 8),
+            (1 * GIB, 4, 8),
+            (2 * GIB, 8, 4),
+            (4 * GIB, 16, 2),
+        ],
+    )
+    def test_recomputes_rayon_after_shm_reduction(
+        self, shm, expected_workers, expected_rayon, fake_shm
+    ):
         fake_shm(shm)
-        warning = (pytest.warns(RuntimeWarning)
-                   if expected_workers < 16 else nullcontext())
+        warning = (
+            pytest.warns(RuntimeWarning) if expected_workers < 16 else nullcontext()
+        )
         with warning:
-            cfg = diskgraph_auto_config(64, int(267e9), 2 * 1024**4,
-                                        estimated_edges=49_152)
+            cfg = diskgraph_auto_config(
+                64, int(267e9), 2 * 1024**4, estimated_edges=49_152
+            )
         assert cfg['num_workers'] == expected_workers
         assert cfg['rayon_threads'] == expected_rayon
 

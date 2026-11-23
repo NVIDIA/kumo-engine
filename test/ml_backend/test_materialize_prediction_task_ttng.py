@@ -4,7 +4,6 @@
 
 import importlib
 from datetime import datetime, timezone
-from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 from types import SimpleNamespace
 
 import pytest
@@ -13,9 +12,11 @@ from kumo_core.train.autoregression import AUTOREGRESSION_COL, YOY_COL
 from kumo_core.types import PredictionArtifactType, TaskType
 
 from statedb.config.jobs import MetadataField
+from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 
 mpt = importlib.import_module(
-    'rest.backends.ml_backend.activities.materialize_prediction_task')
+    'rest.backends.ml_backend.activities.materialize_prediction_task'
+)
 
 
 @pytest.mark.parametrize(
@@ -23,18 +24,24 @@ mpt = importlib.import_module(
     [
         ([PredictionArtifactType.PREDICTIONS], True, False),
         ([PredictionArtifactType.EMBEDDINGS], False, True),
-        ([
-            PredictionArtifactType.PREDICTIONS,
-            PredictionArtifactType.EMBEDDINGS
-        ], True, True),
+        (
+            [PredictionArtifactType.PREDICTIONS, PredictionArtifactType.EMBEDDINGS],
+            True,
+            True,
+        ),
     ],
 )
 def test_prediction_artifact_flags_are_derived_from_requested_outputs(
-        artifact_types, expect_predictions, expect_embeddings):
-    job_input = SimpleNamespace(config=SimpleNamespace(outputs=[
-        SimpleNamespace(artifact_type=artifact_type)
-        for artifact_type in artifact_types
-    ]))
+    artifact_types, expect_predictions, expect_embeddings
+):
+    job_input = SimpleNamespace(
+        config=SimpleNamespace(
+            outputs=[
+                SimpleNamespace(artifact_type=artifact_type)
+                for artifact_type in artifact_types
+            ]
+        )
+    )
 
     assert mpt.return_predictions(job_input) is expect_predictions
     assert mpt.return_embeddings(job_input) is expect_embeddings
@@ -42,7 +49,8 @@ def test_prediction_artifact_flags_are_derived_from_requested_outputs(
 
 def _patch_feature_schema(monkeypatch):
     materialize_training_task = importlib.import_module(
-        'rest.backends.ml_backend.activities.materialize_training_task')
+        'rest.backends.ml_backend.activities.materialize_training_task'
+    )
     monkeypatch.setattr(
         materialize_training_task,
         '_build_ttng_feature_schema',
@@ -97,6 +105,7 @@ def _patch_common(monkeypatch, calls, encoders=None):
     One-gen predict: the generator already staged the predict seeds, so the
     activity is ingest-only — it asserts the kept staging parquet exists (patched
     True) and the service returns the ingested predict-stage row count."""
+
     class FakeService:
         def materialize_prediction_task_dataset(self, handle, spec, **kwargs):
             calls.append((handle, spec, kwargs))
@@ -106,35 +115,32 @@ def _patch_common(monkeypatch, calls, encoders=None):
                 predict_row_count=5,
             )
 
-    monkeypatch.setattr('kumo.diskgraph.get_service',
-                        lambda: FakeService())
+    monkeypatch.setattr('kumo.diskgraph.get_service', lambda: FakeService())
     monkeypatch.setattr(
         'kumo.task.task.collect_encoders',
-        lambda _: SimpleNamespace(encoders=encoders or
-                                  {'users': {
-                                      'age': object()
-                                  }}),
+        lambda _: SimpleNamespace(encoders=encoders or {'users': {'age': object()}}),
     )
     # The kept predict staging parquet was written by the generator activity.
     monkeypatch.setattr(mpt.fsutil, 'exists', lambda _p: True)
     import kumo.data.generic.diskgraph_train_table as _dtt
+
     monkeypatch.setattr(_dtt, 'assert_ttng_bundle_complete', lambda _d: None)
-    monkeypatch.setattr(_dtt, 'read_tt_id_from_staging_bundle',
-                        lambda _d: 'pred_bp-job')
+    monkeypatch.setattr(
+        _dtt, 'read_tt_id_from_staging_bundle', lambda _d: 'pred_bp-job'
+    )
     monkeypatch.setattr(
         _dtt,
         'restore_durable_ttng_bundle',
         lambda _durable, local: local,
     )
-    monkeypatch.setattr(mpt, '_link_prediction_candidate_filter',
-                        lambda *_: None)
+    monkeypatch.setattr(mpt, '_link_prediction_candidate_filter', lambda *_: None)
     _patch_feature_schema(monkeypatch)
 
 
 def _materialize(**kwargs):
-    durable_staging_dir, source_tt_id = (
-        mpt._load_ttng_prediction_bundle_identity(
-            kwargs['prediction_config'].pred_table_path))
+    durable_staging_dir, source_tt_id = mpt._load_ttng_prediction_bundle_identity(
+        kwargs['prediction_config'].pred_table_path
+    )
     return mpt._materialize_ttng_prediction_task_dataset(
         durable_staging_dir=durable_staging_dir,
         source_tt_id=source_tt_id,
@@ -146,6 +152,7 @@ def _node_pquery():
     """A pquery double sufficient for the node-prediction path (static, so no
     pred timestamp needed)."""
     from kumoapi.pquery import QueryType
+
     bp_gen = SimpleNamespace(query_type=QueryType.STATIC)
     vquery = SimpleNamespace(target_stype=SimpleNamespace(value='ID'))
     return SimpleNamespace(
@@ -169,12 +176,14 @@ def _node_task():
         is_temporal=False,
         graph=graph,
         train_table=SimpleNamespace(
-            fkeys=[SimpleNamespace(name='CUSTOMER_ID', dst_table='src.users')]),
+            fkeys=[SimpleNamespace(name='CUSTOMER_ID', dst_table='src.users')]
+        ),
     )
 
 
 def _forecasting_pquery():
     from kumoapi.pquery import QueryType
+
     bp_gen = SimpleNamespace(
         query_type=QueryType.TEMPORAL,
         generate_pred_timestamp=lambda: SimpleNamespace(value=123),
@@ -202,7 +211,8 @@ def _forecasting_task():
         graph=graph,
         train_table=SimpleNamespace(
             table_name='pred_table',
-            fkeys=[SimpleNamespace(name='CUSTOMER_ID', dst_table='src.users')]),
+            fkeys=[SimpleNamespace(name='CUSTOMER_ID', dst_table='src.users')],
+        ),
     )
 
 
@@ -222,14 +232,12 @@ def test_ttng_node_prediction_materialize_writes_single_bundle(monkeypatch):
 
     # The ingested predict-stage row count is returned (drives output parts).
     assert row_count == 5
-    assert pred_config.diskgraph_task_dataset_bundle_dir == (
-        '/dg/task_datasets/bp-job')
+    assert pred_config.diskgraph_task_dataset_bundle_dir == ('/dg/task_datasets/bp-job')
     assert len(calls) == 1
     handle, spec, kwargs = calls[0]
     # Ingest-only one-gen: node prediction now hands the kept staging dir to the
     # service (NOT a predict plan); the gen already ran in the generator.
-    assert kwargs['predict_staging_dir'] == (
-        '/dg/train_tables/.pred_bp-job.staging')
+    assert kwargs['predict_staging_dir'] == ('/dg/train_tables/.pred_bp-job.staging')
     assert spec.job_id == 'bp-job'
     assert spec.artifact_root == '/dg/task_datasets/bp-job'
     # Durable staging fields are recorded so every predict shard pod can
@@ -246,12 +254,12 @@ def test_ttng_node_prediction_materialize_writes_single_bundle(monkeypatch):
     assert kwargs.get('predict_seed_time_ns') is None
 
 
-def test_ttng_forecasting_prediction_schema_uses_train_table_namespace(
-        monkeypatch):
+def test_ttng_forecasting_prediction_schema_uses_train_table_namespace(monkeypatch):
     calls = []
     _patch_common(monkeypatch, calls)
     materialize_training_task = importlib.import_module(
-        'rest.backends.ml_backend.activities.materialize_training_task')
+        'rest.backends.ml_backend.activities.materialize_training_task'
+    )
     monkeypatch.setattr(
         materialize_training_task,
         '_build_ttng_feature_schema',
@@ -265,17 +273,11 @@ def test_ttng_forecasting_prediction_schema_uses_train_table_namespace(
                 },
                 'pred_table': {
                     'feature_columns': [AUTOREGRESSION_COL, YOY_COL],
-                    'mapper_key':
-                    'pred_table',
-                    'time_column':
-                    None,
+                    'mapper_key': 'pred_table',
+                    'time_column': None,
                     'column_specs': [
-                        {
-                            'column_name': AUTOREGRESSION_COL
-                        },
-                        {
-                            'column_name': YOY_COL
-                        },
+                        {'column_name': AUTOREGRESSION_COL},
+                        {'column_name': YOY_COL},
                     ],
                 },
             },
@@ -362,6 +364,7 @@ def test_ttng_node_prediction_bp_uses_temporal_prediction_anchor(monkeypatch):
 
 def _lp_pquery():
     from kumoapi.pquery import QueryType
+
     bp_gen = SimpleNamespace(query_type=QueryType.STATIC)
     vquery = SimpleNamespace(target_stype=SimpleNamespace(value='ID'))
     return SimpleNamespace(
@@ -389,17 +392,15 @@ def _lp_task(task_type):
     )
     graph = SimpleNamespace(
         tables=[users, items],
-        table=lambda n: {
-            'users': users,
-            'items': items
-        }[n],
+        table=lambda n: {'users': users, 'items': items}[n],
     )
     return SimpleNamespace(
         task_type=task_type,
         is_temporal=task_type == TaskType.TEMPORAL_LINK_PREDICTION,
         graph=graph,
         train_table=SimpleNamespace(
-            fkeys=[SimpleNamespace(name='USER_ID', dst_table='src.users')]),
+            fkeys=[SimpleNamespace(name='USER_ID', dst_table='src.users')]
+        ),
     )
 
 
@@ -408,8 +409,7 @@ def test_ttng_lp_materialize_is_lp_aware(monkeypatch):
     get_rhs_lp_table), and is_temporal True for temporal LP."""
     calls = []
     _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table', lambda *a, **k: 'items')
 
     _materialize(
         task=_lp_task(TaskType.TEMPORAL_LINK_PREDICTION),
@@ -428,18 +428,19 @@ def test_ttng_lp_materialize_is_lp_aware(monkeypatch):
     assert spec.seed_node_type == 'users'
     assert spec.entity_table_name == 'users'
     # Ingest-only one-gen: the kept staging dir is threaded (no predict plan).
-    assert kwargs['predict_staging_dir'] == (
-        '/dg/train_tables/.pred_bp-job.staging')
+    assert kwargs['predict_staging_dir'] == ('/dg/train_tables/.pred_bp-job.staging')
 
 
 def test_ttng_lp_materialize_threads_candidates(monkeypatch):
     calls, requests = [], []
     _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table', lambda *a, **k: 'items')
     row_filter = '{"compare": {}}'
-    monkeypatch.setattr(mpt, '_link_prediction_candidate_filter',
-                        lambda *args: requests.append(args) or row_filter)
+    monkeypatch.setattr(
+        mpt,
+        '_link_prediction_candidate_filter',
+        lambda *args: requests.append(args) or row_filter,
+    )
     pquery = _lp_pquery()
 
     _materialize(
@@ -459,8 +460,7 @@ def test_ttng_lp_static_not_temporal(monkeypatch):
     """Static LP is link_prediction but is_temporal False."""
     calls = []
     _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table', lambda *a, **k: 'items')
 
     _materialize(
         task=_lp_task(TaskType.STATIC_LINK_PREDICTION),
@@ -484,6 +484,7 @@ def _temporal_lp_pquery(anchor_ns):
     """Temporal LP pquery double whose batch-pred generator returns a fixed
     prediction anchor (ns)."""
     from kumoapi.pquery import QueryType
+
     bp_gen = SimpleNamespace(
         query_type=QueryType.TEMPORAL,
         generate_pred_timestamp=lambda: SimpleNamespace(value=anchor_ns),
@@ -502,8 +503,7 @@ def test_ttng_lp_temporal_threads_prediction_anchor(monkeypatch):
     seed time so the RHS NodeRange loader seeds at the LHS query time."""
     calls = []
     _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table', lambda *a, **k: 'items')
 
     _materialize(
         task=_lp_task(TaskType.TEMPORAL_LINK_PREDICTION),
@@ -523,15 +523,16 @@ def test_ttng_lp_temporal_threads_prediction_anchor(monkeypatch):
 def _materialize_custom_lp(monkeypatch, tmp_path, anchors_ns):
     import pyarrow as pa
     import pyarrow.parquet as pq
+
     calls = []
     _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table', lambda *a, **k: 'items')
     table = tmp_path / 'train_tables' / '.pred_bp-job.staging' / 'tt.parquet'
     table.mkdir(parents=True)
     pq.write_table(
         pa.table({'TIMESTAMP': pa.array(anchors_ns, pa.timestamp('ns'))}),
-        table / 'part-00000.parquet')
+        table / 'part-00000.parquet',
+    )
     _materialize(
         task=_lp_task(TaskType.TEMPORAL_LINK_PREDICTION),
         pquery=_temporal_lp_pquery(anchor_ns=9_000_000_000),
@@ -550,12 +551,12 @@ def test_ttng_lp_custom_table_is_anchored_at_its_rows(monkeypatch, tmp_path):
     assert kwargs['predict_seed_time_ns'] == 4_000
 
 
-def test_ttng_lp_custom_table_with_two_anchors_is_rejected(
-        monkeypatch, tmp_path):
+def test_ttng_lp_custom_table_with_two_anchors_is_rejected(monkeypatch, tmp_path):
     from statedb.utils.errors import PredictionDataMaterializationError
 
-    with pytest.raises(PredictionDataMaterializationError,
-                       match='one table per anchor time') as error:
+    with pytest.raises(
+        PredictionDataMaterializationError, match='one table per anchor time'
+    ) as error:
         _materialize_custom_lp(monkeypatch, tmp_path, [4_000, 5_000])
     assert error.value.non_retryable
 
@@ -563,8 +564,7 @@ def test_ttng_lp_custom_table_with_two_anchors_is_rejected(
 def test_ttng_lp_static_custom_table_seeds_zero(monkeypatch):
     calls = []
     _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table', lambda *a, **k: 'items')
 
     _materialize(
         task=_lp_task(TaskType.STATIC_LINK_PREDICTION),
@@ -579,12 +579,15 @@ def test_ttng_lp_static_custom_table_seeds_zero(monkeypatch):
     assert kwargs['predict_seed_time_ns'] == 0
 
 
-@pytest.mark.parametrize('fields', [
-    [],
-    [MetadataField.JOB_TIMESTAMP],
-    [MetadataField.ANCHOR_TIMESTAMP],
-    [MetadataField.ANCHOR_TIMESTAMP, MetadataField.JOB_TIMESTAMP],
-])
+@pytest.mark.parametrize(
+    'fields',
+    [
+        [],
+        [MetadataField.JOB_TIMESTAMP],
+        [MetadataField.ANCHOR_TIMESTAMP],
+        [MetadataField.ANCHOR_TIMESTAMP, MetadataField.JOB_TIMESTAMP],
+    ],
+)
 @pytest.mark.parametrize(
     'task_type',
     [task_type for task_type in TaskType if task_type != TaskType.FORECASTING],
@@ -610,10 +613,10 @@ def test_prediction_config_writes_time_only_on_request(task_type, fields):
 
     anchor = MetadataField.ANCHOR_TIMESTAMP in fields
     assert pred_config.ignore_time_col is not anchor
-    assert pred_config.pred_time_col_name == ('ANCHOR_TIMESTAMP'
-                                              if anchor else None)
-    assert pred_config.start_time == (start_time if MetadataField.JOB_TIMESTAMP
-                                      in fields else None)
+    assert pred_config.pred_time_col_name == ('ANCHOR_TIMESTAMP' if anchor else None)
+    assert pred_config.start_time == (
+        start_time if MetadataField.JOB_TIMESTAMP in fields else None
+    )
     assert pred_config.output_extra_fields == {
         'PREDICTIONS': sorted(field.value for field in fields)
     }
@@ -699,8 +702,9 @@ def test_prediction_config_keeps_artifact_specific_requested_times():
 
 def _partition_doubles():
     pred_config = SimpleNamespace(return_embeddings=False, top_k=None)
-    settings = SimpleNamespace(pred_max_num_rows_per_partition=1000,
-                               pred_max_num_entities_per_partition=1000)
+    settings = SimpleNamespace(
+        pred_max_num_rows_per_partition=1000, pred_max_num_entities_per_partition=1000
+    )
     job_input = SimpleNamespace(
         id='bp-job',
         config=SimpleNamespace(num_parallel_workers_limit=1),
@@ -714,9 +718,9 @@ def test_output_partitions_from_rows():
     predict-stage row_count (no pred_table file read)."""
     pred_config, settings, job_input, task = _partition_doubles()
 
-    from_rows = mpt._pred_num_partitions_from_rows(2500, pred_config, job_input,
-                                                   settings, task,
-                                                   id_is_string=False)
+    from_rows = mpt._pred_num_partitions_from_rows(
+        2500, pred_config, job_input, settings, task, id_is_string=False
+    )
 
     assert from_rows == 3  # int(2500/1000)+1
 
@@ -736,13 +740,11 @@ def _patch_common_real_fs(monkeypatch, calls):
                 predict_row_count=5,
             )
 
-    monkeypatch.setattr('kumo.diskgraph.get_service',
-                        lambda: FakeService())
+    monkeypatch.setattr('kumo.diskgraph.get_service', lambda: FakeService())
     monkeypatch.setattr(
         'kumo.task.task.collect_encoders',
-        lambda _: SimpleNamespace(encoders={'users': {
-            'age': object()
-        }}))
+        lambda _: SimpleNamespace(encoders={'users': {'age': object()}}),
+    )
     _patch_feature_schema(monkeypatch)
     # NOTE: real fsutil.exists / copy here (no exists patch).
 
@@ -767,12 +769,14 @@ def _write_bundle(d, tt_id='pred_bp-job', *, publish=False):
         )
     if publish:
         from kumo.data.generic import diskgraph_train_table
+
         diskgraph_train_table.persist_durable_ttng_bundle(bundle_dir, d)
     return bundle_dir
 
 
 def test_ttng_materialize_restores_from_durable_when_index_torn_down(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """The reported bug: the ephemeral ``<index>/train_tables/.<tt_id>.staging``
     was wiped by delete_snapshot before materialize ran. With the durable
     staging present, materialize restores it into the index and ingests."""
@@ -786,17 +790,28 @@ def test_ttng_materialize_restores_from_durable_when_index_torn_down(
     unpublished = str(tmp_path / '.pred_bp-job.staging')
     _write_bundle(unpublished)
     from kumo.data.generic import diskgraph_train_table
+
     diskgraph_train_table.persist_durable_ttng_bundle(unpublished, durable)
 
-    pred_config = PredictionConfig(home_dir='/h', train_dir='/t',
-                                   task_name='task', model_dir='/m',
-                                   output_dir='/o', return_embeddings=False,
-                                   return_predictions=True,
-                                   pred_table_path=pred_table_path)
+    pred_config = PredictionConfig(
+        home_dir='/h',
+        train_dir='/t',
+        task_name='task',
+        model_dir='/m',
+        output_dir='/o',
+        return_embeddings=False,
+        return_predictions=True,
+        pred_table_path=pred_table_path,
+    )
 
-    _materialize(task=_node_task(), pquery=_node_pquery(),
-                 prediction_config=pred_config, job_input=_make_job_input(),
-                 diskgraph_index_path=index_path, train_table_name='train_tt')
+    _materialize(
+        task=_node_task(),
+        pquery=_node_pquery(),
+        prediction_config=pred_config,
+        job_input=_make_job_input(),
+        diskgraph_index_path=index_path,
+        train_table_name='train_tt',
+    )
 
     _, _, kwargs = calls[0]
     ephemeral = f'{index_path}/train_tables/.pred_bp-job.staging'
@@ -804,6 +819,7 @@ def test_ttng_materialize_restores_from_durable_when_index_torn_down(
     # durable), so the DG publish (rename within the index FS) works.
     assert kwargs['predict_staging_dir'] == ephemeral
     import os
+
     assert os.path.isdir(f'{ephemeral}/tt.parquet')
     assert os.path.isfile(f'{ephemeral}/tt_ingest_spec.json')
     assert pred_config.diskgraph_pred_staging_dir == durable
@@ -811,7 +827,8 @@ def test_ttng_materialize_restores_from_durable_when_index_torn_down(
 
 
 def test_ttng_materialize_decouples_source_and_target_tt_id_for_bp(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """Real batch prediction: generate_pred_table_job_id != BP job id. The SOURCE
     id is read from the durable bundle spec (gen stamped ``pred_gen-job`` there),
     while the TARGET extension tt_id recorded for predict shards is BP-job-keyed
@@ -836,15 +853,25 @@ def test_ttng_materialize_decouples_source_and_target_tt_id_for_bp(
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
 
-    pred_config = PredictionConfig(home_dir='/h', train_dir='/t',
-                                   task_name='task', model_dir='/m',
-                                   output_dir='/o', return_embeddings=False,
-                                   return_predictions=True,
-                                   pred_table_path=pred_table_path)
+    pred_config = PredictionConfig(
+        home_dir='/h',
+        train_dir='/t',
+        task_name='task',
+        model_dir='/m',
+        output_dir='/o',
+        return_embeddings=False,
+        return_predictions=True,
+        pred_table_path=pred_table_path,
+    )
 
-    _materialize(task=_node_task(), pquery=_node_pquery(),
-                 prediction_config=pred_config, job_input=job_input,
-                 diskgraph_index_path=index_path, train_table_name='train_tt')
+    _materialize(
+        task=_node_task(),
+        pquery=_node_pquery(),
+        prediction_config=pred_config,
+        job_input=job_input,
+        diskgraph_index_path=index_path,
+        train_table_name='train_tt',
+    )
 
     _, spec, kwargs = calls[0]
     # SOURCE id is read from the bundle spec (gen-job-keyed); the ephemeral
@@ -871,15 +898,25 @@ def test_ttng_materialize_prefers_ephemeral_when_present(monkeypatch, tmp_path):
     ephemeral = f'{index_path}/train_tables/.pred_bp-job.staging'
     _write_bundle(ephemeral)  # same-pod: ephemeral present -> no restore copy
 
-    pred_config = PredictionConfig(home_dir='/h', train_dir='/t',
-                                   task_name='task', model_dir='/m',
-                                   output_dir='/o', return_embeddings=False,
-                                   return_predictions=True,
-                                   pred_table_path=pred_table_path)
+    pred_config = PredictionConfig(
+        home_dir='/h',
+        train_dir='/t',
+        task_name='task',
+        model_dir='/m',
+        output_dir='/o',
+        return_embeddings=False,
+        return_predictions=True,
+        pred_table_path=pred_table_path,
+    )
 
-    _materialize(task=_node_task(), pquery=_node_pquery(),
-                 prediction_config=pred_config, job_input=_make_job_input(),
-                 diskgraph_index_path=index_path, train_table_name='train_tt')
+    _materialize(
+        task=_node_task(),
+        pquery=_node_pquery(),
+        prediction_config=pred_config,
+        job_input=_make_job_input(),
+        diskgraph_index_path=index_path,
+        train_table_name='train_tt',
+    )
 
     _, _, kwargs = calls[0]
     assert kwargs['predict_staging_dir'] == ephemeral
@@ -887,25 +924,33 @@ def test_ttng_materialize_prefers_ephemeral_when_present(monkeypatch, tmp_path):
     assert pred_config.diskgraph_pred_staging_dir == f'{pred_table_path}.ttng_staging'
 
 
-def test_ttng_materialize_raises_when_no_staging_anywhere(
-        monkeypatch, tmp_path):
+def test_ttng_materialize_raises_when_no_staging_anywhere(monkeypatch, tmp_path):
     calls = []
     _patch_common_real_fs(monkeypatch, calls)
 
     index_path = str(tmp_path / 'index')
     pred_table_path = str(tmp_path / 'home' / 'pred_table')  # nothing written
 
-    pred_config = PredictionConfig(home_dir='/h', train_dir='/t',
-                                   task_name='task', model_dir='/m',
-                                   output_dir='/o', return_embeddings=False,
-                                   return_predictions=True,
-                                   pred_table_path=pred_table_path)
+    pred_config = PredictionConfig(
+        home_dir='/h',
+        train_dir='/t',
+        task_name='task',
+        model_dir='/m',
+        output_dir='/o',
+        return_embeddings=False,
+        return_predictions=True,
+        pred_table_path=pred_table_path,
+    )
 
     with pytest.raises(mpt.PredictionDataMaterializationError):
-        _materialize(task=_node_task(), pquery=_node_pquery(),
-                     prediction_config=pred_config, job_input=_make_job_input(),
-                     diskgraph_index_path=index_path,
-                     train_table_name='train_tt')
+        _materialize(
+            task=_node_task(),
+            pquery=_node_pquery(),
+            prediction_config=pred_config,
+            job_input=_make_job_input(),
+            diskgraph_index_path=index_path,
+            train_table_name='train_tt',
+        )
     assert calls == []  # service never called
 
 

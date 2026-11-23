@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class LogLevel(Enum):
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
+    INFO = 'info'
+    WARNING = 'warning'
+    ERROR = 'error'
 
     @property
     def python_level(self) -> int:
@@ -30,7 +30,7 @@ class LogLevel(Enum):
             return pylogging.WARNING
         elif self == LogLevel.ERROR:
             return pylogging.ERROR
-        raise RuntimeError(f"Invalid LogLevel {self}")
+        raise RuntimeError(f'Invalid LogLevel {self}')
 
 
 @kumo_dataclass
@@ -41,27 +41,21 @@ class LogErrorArgs:
 
 
 class LogResource:
-    """Allows the frontend javascript code to report error logs to the backend.
-    """
+    """Allows the frontend javascript code to report error logs to the backend."""
+
     def __init__(self, auth: Authentication) -> None:
         self.router = APIRouter(
-            prefix="/v0/log",
-            tags=["Log"],
+            prefix='/v0/log',
+            tags=['Log'],
             dependencies=[Depends(auth.authenticate_request_header)],
             responses={
-                HTTPStatus.NOT_FOUND: {
-                    "description": "Not found"
-                },
-                HTTPStatus.OK: {
-                    "content": {
-                        "image/svg+xml": {}
-                    }
-                }
+                HTTPStatus.NOT_FOUND: {'description': 'Not found'},
+                HTTPStatus.OK: {'content': {'image/svg+xml': {}}},
             },
         )
 
         self.router.add_api_route(
-            "/log_ui_error",
+            '/log_ui_error',
             self.log_ui_error,
             response_model=EmptyResponse,
             methods=['POST'],
@@ -81,6 +75,10 @@ class LogResource:
                 message
         """
         # TODO: generate structured logs to Loki, rather than stderr.
-        logger.log(args.level.python_level, "Received error from UI: %s\n%s",
-                   args.message, args.stacktrace)
+        logger.log(
+            args.level.python_level,
+            'Received error from UI: %s\n%s',
+            args.message,
+            args.stacktrace,
+        )
         return EmptyResponse()

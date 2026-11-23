@@ -14,13 +14,13 @@ from pydantic import Field
 from io_utils import kumo_dataclass
 from statedb.config.common import DBEntry
 
-DirectConnectUserRole = Literal["admin", "user"]
-DirectConnectPasswordLoginStatus = Literal["ok", "password_reset_required"]
+DirectConnectUserRole = Literal['admin', 'user']
+DirectConnectPasswordLoginStatus = Literal['ok', 'password_reset_required']
 
 # These fields intentionally remain plain strings: io_utils.json rejects
 # pydantic.SecretStr during normal state persistence unless insecure=True, while
 # these values must round-trip through JsonRepository as their stored strings.
-_REDACTED = "<redacted>"
+_REDACTED = '<redacted>'
 
 
 def _redacted_dataclass_dict(
@@ -28,11 +28,11 @@ def _redacted_dataclass_dict(
     redacted_fields: set[str],
 ) -> dict[str, Any]:
     if not is_dataclass(value):
-        raise TypeError(f"Expected dataclass instance, got {type(value)!r}")
+        raise TypeError(f'Expected dataclass instance, got {type(value)!r}')
     return {
-        field.name:
-        _REDACTED if field.name in redacted_fields else getattr(
-            value, field.name)
+        field.name: _REDACTED
+        if field.name in redacted_fields
+        else getattr(value, field.name)
         for field in fields(value)
     }
 
@@ -41,22 +41,25 @@ def _redacted_dataclass_repr(
     value: object,
     redacted_fields: set[str],
 ) -> str:
-    fields_repr = ", ".join(f"{name}={field_value!r}"
-                            for name, field_value in _redacted_dataclass_dict(
-                                value, redacted_fields).items())
-    return f"{type(value).__name__}({fields_repr})"
+    fields_repr = ', '.join(
+        f'{name}={field_value!r}'
+        for name, field_value in _redacted_dataclass_dict(
+            value, redacted_fields
+        ).items()
+    )
+    return f'{type(value).__name__}({fields_repr})'
 
 
 _DIRECT_CONNECT_AUTH_CONFIG_REDACTED_FIELDS = {
-    "encrypted_client_secret",
-    "encrypted_google_sa_key",
+    'encrypted_client_secret',
+    'encrypted_google_sa_key',
 }
 _DIRECT_CONNECT_IDENTITY_LINK_REDACTED_FIELDS = {
-    "encrypted_refresh_token",
+    'encrypted_refresh_token',
 }
 _DIRECT_CONNECT_PASSWORD_CREDENTIAL_REDACTED_FIELDS = {
-    "password_hash_b64",
-    "salt_b64",
+    'password_hash_b64',
+    'salt_b64',
 }
 
 
@@ -67,13 +70,13 @@ class DirectConnectAuthConfigRecord(DBEntry):
     issuer: str
     client_id: str
     encrypted_client_secret: str
-    groups_claim: str = "groups"
+    groups_claim: str = 'groups'
     admin_emails: List[str] = Field(default_factory=list)
     enabled: bool = True
     # Google Workspace Directory API lookup; empty means "read groups from
     # the ID-token claim" (the default for every other IdP).
-    encrypted_google_sa_key: str = ""
-    google_admin_email: str = ""
+    encrypted_google_sa_key: str = ''
+    google_admin_email: str = ''
 
     def __repr__(self) -> str:
         return _redacted_dataclass_repr(
@@ -96,8 +99,8 @@ class DirectConnectUserRecord(DBEntry):
     """Stored Kumo user created from a Direct Connect IdP login."""
 
     email: str
-    display_name: str = ""
-    role: DirectConnectUserRole = "user"
+    display_name: str = ''
+    role: DirectConnectUserRole = 'user'
     disabled: bool = False
 
 
@@ -134,8 +137,8 @@ class DirectConnectSessionRecord(DBEntry):
 @kumo_dataclass
 class DirectConnectUserCreateRequest:
     email: str
-    display_name: str = ""
-    role: DirectConnectUserRole = "user"
+    display_name: str = ''
+    role: DirectConnectUserRole = 'user'
     disabled: bool = False
     password: Optional[str] = None
 
@@ -165,7 +168,7 @@ class DirectConnectPasswordCredentialRecord(DBEntry):
     # so the cost factor can be raised in future without invalidating
     # already-stored hashes: verification uses the params recorded here.
     hash_params: Dict[str, int]
-    hash_algorithm: str = "scrypt"
+    hash_algorithm: str = 'scrypt'
     must_reset_password: bool = True
 
     def __repr__(self) -> str:
@@ -199,13 +202,15 @@ def direct_connect_password_credential_tag(
 ) -> Optional[str]:
     if credential is None:
         return None
-    material = "|".join((
-        credential.hash_algorithm,
-        credential.salt_b64,
-        credential.password_hash_b64,
-        str(bool(credential.must_reset_password)),
-    ))
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    material = '|'.join(
+        (
+            credential.hash_algorithm,
+            credential.salt_b64,
+            credential.password_hash_b64,
+            str(bool(credential.must_reset_password)),
+        )
+    )
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()
 
 
 @kumo_dataclass

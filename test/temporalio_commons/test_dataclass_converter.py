@@ -24,8 +24,9 @@ class StringSubclass(str):
 
 
 def scan_test_cases() -> List[str]:
-    dir = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                       '../rest/integ/test_cases')
+    dir = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), '../rest/integ/test_cases'
+    )
     return fsutil.listdir(dir, suffix='.json')
 
 
@@ -51,12 +52,10 @@ def _round_trip_encode_type_hint(obj):
 
 def test_convert_complex_dataclass(create_args_fixture: FixtureDefinition):
     value = _round_trip_encode(create_args_fixture)
-    assert to_json_dict(value) == to_json_dict(
-        to_json_dict(create_args_fixture))
+    assert to_json_dict(value) == to_json_dict(to_json_dict(create_args_fixture))
 
     value = _round_trip_encode_type_hint(create_args_fixture)
-    assert to_json_dict(value) == to_json_dict(
-        to_json_dict(create_args_fixture))
+    assert to_json_dict(value) == to_json_dict(to_json_dict(create_args_fixture))
 
 
 def test_convert_simple_dataclass():
@@ -83,5 +82,5 @@ def test_convert_dict(create_args_fixture: FixtureDefinition):
 
 
 def test_convert_string_subtype():
-    s = StringSubclass("abc")
+    s = StringSubclass('abc')
     _validate(s)

@@ -23,9 +23,12 @@ class IntEnumValue(Enum):
 def test_instance_discovery_respects_deployment_stage(monkeypatch, stage):
     monkeypatch.setenv('DEPLOY_STAGE', stage.value)
     monkeypatch.setattr(deploy_env.socket, 'gethostname', lambda: 'local-host')
-    with patch.object(type(deploy_env.ec2_metadata), 'instance_id',
-                      new_callable=PropertyMock,
-                      return_value='i-test-instance') as metadata:
+    with patch.object(
+        type(deploy_env.ec2_metadata),
+        'instance_id',
+        new_callable=PropertyMock,
+        return_value='i-test-instance',
+    ) as metadata:
         loaded = runpy.run_path(deploy_env.__file__)
         local = stage in (DeployStage.TEST, DeployStage.DEV_LOCAL)
         expected = 'local-host' if local else 'i-test-instance'
@@ -41,23 +44,27 @@ def test_instance_discovery_respects_deployment_stage(monkeypatch, stage):
 def test_instance_discovery_keeps_cloud_fallbacks(monkeypatch, snowflake):
     monkeypatch.setenv('DEPLOY_STAGE', 'prod')
     monkeypatch.setattr(deploy_env.socket, 'gethostname', lambda: 'local-host')
-    monkeypatch.setattr(deploy_env, 'SNOWFLAKE_ACCOUNT',
-                        'account' if snowflake else None)
+    monkeypatch.setattr(
+        deploy_env, 'SNOWFLAKE_ACCOUNT', 'account' if snowflake else None
+    )
     monkeypatch.setattr(deploy_env, 'SNOWFLAKE_DATABASE', 'database')
     monkeypatch.setattr(deploy_env, 'SNOWFLAKE_SCHEMA', 'schema')
     monkeypatch.setattr(deploy_env, 'SNOWFLAKE_SERVICE', 'service')
-    with patch.object(type(deploy_env.ec2_metadata), 'instance_id',
-                      new_callable=PropertyMock,
-                      side_effect=RuntimeError('metadata unavailable')):
+    with patch.object(
+        type(deploy_env.ec2_metadata),
+        'instance_id',
+        new_callable=PropertyMock,
+        side_effect=RuntimeError('metadata unavailable'),
+    ):
         expected = 'account_database_schema_service' if snowflake else 'local-host'
         assert deploy_env.get_instance_id() == expected
 
 
 def test_env_var_default(monkeypatch: pytest.MonkeyPatch):
-    name = "TEST_VAR"
-    val = "val1"
-    default1 = "default_val1"
-    default2 = "default_val2"
+    name = 'TEST_VAR'
+    val = 'val1'
+    default1 = 'default_val1'
+    default2 = 'default_val2'
 
     var = EnvVar(name=name, type=str, default_value=default1)
 
@@ -113,8 +120,9 @@ def test_env_var_parsing(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(ValueError):
         optional_float.parse_value()
 
-    int_enum_var = EnvVar('INT_ENUM_VAR', IntEnumValue, False,
-                          default_value=IntEnumValue.UNDEFINED)
+    int_enum_var = EnvVar(
+        'INT_ENUM_VAR', IntEnumValue, False, default_value=IntEnumValue.UNDEFINED
+    )
     assert int_enum_var.parse_value() == IntEnumValue.UNDEFINED
     monkeypatch.setenv('INT_ENUM_VAR', 'VALUE_1')
     assert int_enum_var.parse_value() == IntEnumValue.VALUE_1
@@ -123,8 +131,9 @@ def test_env_var_parsing(monkeypatch: pytest.MonkeyPatch):
         int_enum_var.parse_value()
 
     # str enum type
-    deploy_stage_var = EnvVar('DEPLOY_STAGE_VAR', DeployStage, False,
-                              default_value=DeployStage.TEST)
+    deploy_stage_var = EnvVar(
+        'DEPLOY_STAGE_VAR', DeployStage, False, default_value=DeployStage.TEST
+    )
     assert deploy_stage_var.parse_value() == DeployStage.TEST
     monkeypatch.setenv('DEPLOY_STAGE_VAR', '')
     assert deploy_stage_var.parse_value() == DeployStage.TEST

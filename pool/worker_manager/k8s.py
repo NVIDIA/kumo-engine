@@ -21,6 +21,7 @@ Snapshot ingest, restore, deletion, heartbeat tracking, and rebind
 orchestration are handled by controller code.
 
 """
+
 import asyncio
 import contextlib
 import copy
@@ -114,17 +115,20 @@ log = logging.getLogger(__name__)
 # POOL_ACTIVITY_JOB_DEADLINE_HOURS for environments with unusually long
 # training budgets.
 _ACTIVITY_JOB_DEADLINE_SECS = (
-    int(os.environ.get('POOL_ACTIVITY_JOB_DEADLINE_HOURS', '48')) * 3600)
+    int(os.environ.get('POOL_ACTIVITY_JOB_DEADLINE_HOURS', '48')) * 3600
+)
 # Pod waiting.reason values that indicate the pod will never start without
 # operator intervention — fail-fast immediately on first detection.
 # ErrImagePull is intentionally excluded (transient; kubelet retries it →
 # eventual ImagePullBackOff).
-_IMMEDIATE_TERMINAL_REASONS = frozenset([
-    'CrashLoopBackOff',
-    'CreateContainerConfigError',
-    'CreateContainerError',
-    'RunContainerError',
-])
+_IMMEDIATE_TERMINAL_REASONS = frozenset(
+    [
+        'CrashLoopBackOff',
+        'CreateContainerConfigError',
+        'CreateContainerError',
+        'RunContainerError',
+    ]
+)
 
 # ImagePullBackOff can be transient (ECR auth refresh, brief network blip).
 # Allow it to retry for this long before treating it as terminal.  Kubelet
@@ -132,18 +136,19 @@ _IMMEDIATE_TERMINAL_REASONS = frozenset([
 # wait so a genuinely bad image tag doesn't block the slot indefinitely.
 # Override via POOL_IMAGE_PULL_BACKOFF_GRACE_MINS.
 _IMAGE_PULL_BACKOFF_GRACE_SECS = (
-    int(os.environ.get('POOL_IMAGE_PULL_BACKOFF_GRACE_MINS', '10')) * 60)
+    int(os.environ.get('POOL_IMAGE_PULL_BACKOFF_GRACE_MINS', '10')) * 60
+)
 
 
 def _runtime_pod_security_context(
-        fs_group: Optional[int] = None) -> V1PodSecurityContext:
+    fs_group: Optional[int] = None,
+) -> V1PodSecurityContext:
     """Restricted-compatible baseline, with an optional CSI volume group."""
     kwargs: Dict[str, Any] = {
         'seccomp_profile': V1SeccompProfile(type='RuntimeDefault'),
     }
     if fs_group is not None:
-        kwargs.update(fs_group=fs_group,
-                      fs_group_change_policy='OnRootMismatch')
+        kwargs.update(fs_group=fs_group, fs_group_change_policy='OnRootMismatch')
     return V1PodSecurityContext(**kwargs)
 
 
@@ -163,7 +168,10 @@ def _runtime_container_security_context() -> V1SecurityContext:
         run_as_user=int(run_as_user) if run_as_user else None,
         run_as_group=int(run_as_group) if run_as_group else None,
         read_only_root_filesystem=os.environ.get(
-            'POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', 'true').strip().lower()
+            'POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', 'true'
+        )
+        .strip()
+        .lower()
         not in ('0', 'false', 'no', 'off'),
         capabilities=V1Capabilities(drop=['ALL']),
     )
@@ -278,8 +286,7 @@ def _resolve_service_account(service_account: Optional[str]) -> str:
     (``kumo-temporal``). ``None`` and ``''`` both mean unset
     — empty strings fall through, matching the POD_NAMESPACE sites.
     """
-    return (service_account or os.environ.get('POD_SERVICE_ACCOUNT')
-            or 'kumo-temporal')
+    return service_account or os.environ.get('POD_SERVICE_ACCOUNT') or 'kumo-temporal'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -290,6 +297,7 @@ class _PoolScheduling:
     :meth:`eph_canary_scheduling` so the init canary reproduces the real
     daemon / eph pod's scheduling envelope exactly.
     """
+
     node_selector: Dict[str, str]
     tolerations: List[V1Toleration]
 
@@ -302,6 +310,7 @@ class K8sPoolWorkerManager:
     public methods are async; sync API calls are dispatched via
     ``asyncio.to_thread``.
     """
+
     def __init__(
         self,
         namespace: str,
@@ -440,8 +449,7 @@ class K8sPoolWorkerManager:
         # `dedicated` key to schedule.
         self._cache_pool_taint_value = f'diskgraph-{tenant}'
         self._eph_pool_taint_value = f'diskgraph-eph-{tenant}'
-        self._pool_extra_tolerations = copy.deepcopy(pool_extra_tolerations
-                                                     or [])
+        self._pool_extra_tolerations = copy.deepcopy(pool_extra_tolerations or [])
         self._service_account = _resolve_service_account(service_account)
         self._runtime_fs_group = runtime_fs_group
         # Default daemon resource shape (Burstable QoS) — small CPU /
@@ -449,7 +457,8 @@ class K8sPoolWorkerManager:
         # promotes to Guaranteed by passing a fully-populated
         # ResourceSpec.
         self._daemon_resources = daemon_resources or ResourceSpec(
-            cpu_request='1', memory_request='2Gi')
+            cpu_request='1', memory_request='2Gi'
+        )
         self._default_storage_request = default_storage_request
         self._ebs_scratch_mount_path = ebs_scratch_mount_path
         self._pod_env_configmap = pod_env_configmap
@@ -460,19 +469,22 @@ class K8sPoolWorkerManager:
         self._statedb_ca_secret = statedb_ca_secret
         self._statedb_ca_secret_key = statedb_ca_secret_key or 'ca.pem'
         self._secrets_mount_path = secrets_mount_path
-        self._gcp_application_credentials_secret = (
-            gcp_application_credentials_secret)
+        self._gcp_application_credentials_secret = gcp_application_credentials_secret
         self._gcp_application_credentials_secret_key = (
-            gcp_application_credentials_secret_key)
-        self._gcp_application_credentials_path = (
-            gcp_application_credentials_path)
+            gcp_application_credentials_secret_key
+        )
+        self._gcp_application_credentials_path = gcp_application_credentials_path
         self._pod_template_labels = dict(pod_template_labels or {})
 
         self._kube_context = kube_context
         self._load_kube_config_on_init = load_kube_config
         self._refresh_task: Optional['asyncio.Task[None]'] = None
-        if (core_v1_api is not None and apps_v1_api is not None
-                and batch_v1_api is not None and policy_v1_api is not None):
+        if (
+            core_v1_api is not None
+            and apps_v1_api is not None
+            and batch_v1_api is not None
+            and policy_v1_api is not None
+        ):
             self._core = core_v1_api
             self._apps = apps_v1_api
             self._batch = batch_v1_api
@@ -492,12 +504,16 @@ class K8sPoolWorkerManager:
                 host = k8s_client.Configuration.get_default_copy().host
                 log.info(
                     'K8sPoolWorkerManager bound to k8s API server: %s '
-                    '(context=%s, namespace=%s)', host, kube_context
-                    or '<incluster-or-current>', namespace)
+                    '(context=%s, namespace=%s)',
+                    host,
+                    kube_context or '<incluster-or-current>',
+                    namespace,
+                )
             except Exception:
                 log.exception(
                     'K8sPoolWorkerManager could not determine the k8s '
-                    'API server it is bound to.')
+                    'API server it is bound to.'
+                )
 
     @property
     def namespace(self) -> str:
@@ -548,11 +564,15 @@ class K8sPoolWorkerManager:
         Periodically reload kubeconfig so a fresh exec invocation gets
         called; this rebuilds the API clients against new credentials.
         """
-        if (self._refresh_task is not None and not self._refresh_task.done()
-                or not self._load_kube_config_on_init):
+        if (
+            self._refresh_task is not None
+            and not self._refresh_task.done()
+            or not self._load_kube_config_on_init
+        ):
             return
         self._refresh_task = asyncio.create_task(
-            self._kube_config_refresh_loop(), name='k8s-kubeconfig-refresh')
+            self._kube_config_refresh_loop(), name='k8s-kubeconfig-refresh'
+        )
 
     async def stop(self) -> None:
         """Cancel the background kubeconfig refresh task. Idempotent."""
@@ -569,20 +589,21 @@ class K8sPoolWorkerManager:
         while True:
             await asyncio.sleep(interval_secs)
             try:
-                await asyncio.to_thread(_load_kube_config,
-                                        context=self._kube_context)
+                await asyncio.to_thread(_load_kube_config, context=self._kube_context)
                 self._core = k8s_client.CoreV1Api()
                 self._apps = k8s_client.AppsV1Api()
                 self._batch = k8s_client.BatchV1Api()
                 self._policy = k8s_client.PolicyV1Api()
                 log.info(
-                    'K8sPoolWorkerManager refreshed kubeconfig '
-                    '(context=%s).', self._kube_context
-                    or '<incluster-or-current>')
+                    'K8sPoolWorkerManager refreshed kubeconfig (context=%s).',
+                    self._kube_context or '<incluster-or-current>',
+                )
             except Exception:
                 log.exception(
                     'K8sPoolWorkerManager kubeconfig refresh failed; '
-                    'will retry in %ds.', interval_secs)
+                    'will retry in %ds.',
+                    interval_secs,
+                )
 
     # ------------------------------------------------------------------
     # Pool-worker lifecycle
@@ -662,15 +683,19 @@ class K8sPoolWorkerManager:
         deployment_name = _deployment_name_for_uid(uid)
         if require_existing_resources:
             if pool_worker_uid is None:
-                raise ValueError('require_existing_resources needs an '
-                                 'explicit pool_worker_uid.')
+                raise ValueError(
+                    'require_existing_resources needs an explicit pool_worker_uid.'
+                )
             await self._require_live_pool_worker_resources(uid)
             info = await self._wait_for_daemon_registered(uid, timeout)
             await self._require_live_pool_worker_resources(uid)
             return info
 
-        storage_size = (self._storage_size_from_pvc_spec(pvc_spec) if pvc_spec
-                        is not None else self._default_storage_request)
+        storage_size = (
+            self._storage_size_from_pvc_spec(pvc_spec)
+            if pvc_spec is not None
+            else self._default_storage_request
+        )
         # SSD-size label for the daemon's nodeSelector (= the chosen PVC size).
         # None on the rebind path (pvc_spec unset): the existing PVC's bound PV
         # pins the daemon to its node, so no size selector is applied.
@@ -681,31 +706,43 @@ class K8sPoolWorkerManager:
         # already created it — continue.
         existing_pvc_bound = False
         try:
-            await asyncio.to_thread(self._create_pvc_sync, pvc_name, uid,
-                                    storage_size)
+            await asyncio.to_thread(self._create_pvc_sync, pvc_name, uid, storage_size)
         except PoolWorkerAlreadyExistsError:
             if not is_reclaim:
                 raise
             existing_pvc_bound = await asyncio.to_thread(
-                self._pvc_is_bound_sync, pvc_name)
+                self._pvc_is_bound_sync, pvc_name
+            )
             log.info(
                 'provision_pool_worker: PVC %s already exists for '
-                'uid=%s; reclaiming bound=%s', pvc_name, uid,
-                existing_pvc_bound)
+                'uid=%s; reclaiming bound=%s',
+                pvc_name,
+                uid,
+                existing_pvc_bound,
+            )
 
         try:
             try:
                 # A Bound portable PV may constrain only a zone, so preserve
                 # the known SSD/GPU tier in the Deployment's node selector.
-                await asyncio.to_thread(self._create_daemon_deployment_sync,
-                                        deployment_name, pvc_name, uid, env,
-                                        ssd_size_gib, gpu_count)
+                await asyncio.to_thread(
+                    self._create_daemon_deployment_sync,
+                    deployment_name,
+                    pvc_name,
+                    uid,
+                    env,
+                    ssd_size_gib,
+                    gpu_count,
+                )
             except PoolWorkerAlreadyExistsError:
                 if not is_reclaim:
                     raise
                 log.info(
                     'provision_pool_worker: Deployment %s already '
-                    'exists for uid=%s; reclaiming', deployment_name, uid)
+                    'exists for uid=%s; reclaiming',
+                    deployment_name,
+                    uid,
+                )
             # Create the PodDisruptionBudget right after the Deployment
             # exists — it does NOT need to wait for Registered, and
             # protecting the daemon pod the moment it can be scheduled
@@ -740,13 +777,18 @@ class K8sPoolWorkerManager:
                 if dep_exc.status != 404:
                     log.warning(
                         'provision_pool_worker rollback: deployment '
-                        'cleanup returned %s for uid=%s', dep_exc.status, uid)
+                        'cleanup returned %s for uid=%s',
+                        dep_exc.status,
+                        uid,
+                    )
             try:
                 await self._try_delete_pvc(pvc_name, timeout=5.0)
             except Exception as pvc_exc:
                 log.warning(
-                    'provision_pool_worker rollback: PVC cleanup '
-                    'failed for uid=%s: %s', uid, pvc_exc)
+                    'provision_pool_worker rollback: PVC cleanup failed for uid=%s: %s',
+                    uid,
+                    pvc_exc,
+                )
             try:
                 await asyncio.to_thread(
                     self._policy.delete_namespaced_pod_disruption_budget,
@@ -757,7 +799,10 @@ class K8sPoolWorkerManager:
                 if pdb_exc.status != 404:
                     log.warning(
                         'provision_pool_worker rollback: PDB cleanup '
-                        'returned %s for uid=%s', pdb_exc.status, uid)
+                        'returned %s for uid=%s',
+                        pdb_exc.status,
+                        uid,
+                    )
             raise
 
         return info
@@ -782,8 +827,8 @@ class K8sPoolWorkerManager:
             if exc.status == 404:
                 _mark_api_error_restricted(exc)
                 raise PoolWorkerNotFoundError(
-                    f'PVC {pvc_name} for pool worker {pool_worker_uid} '
-                    'does not exist.') from exc
+                    f'PVC {pvc_name} for pool worker {pool_worker_uid} does not exist.'
+                ) from exc
             raise _translate_api_error(exc) from exc
 
         try:
@@ -800,25 +845,31 @@ class K8sPoolWorkerManager:
                 _mark_api_error_restricted(exc)
                 raise PoolWorkerNotFoundError(
                     f'Deployment {deployment_name} for pool worker '
-                    f'{pool_worker_uid} does not exist.') from exc
+                    f'{pool_worker_uid} does not exist.'
+                ) from exc
             raise _translate_api_error(exc) from exc
 
-        if (pvc.metadata is None
-                or pvc.metadata.deletion_timestamp is not None):
+        if pvc.metadata is None or pvc.metadata.deletion_timestamp is not None:
             raise PoolWorkerNotReadyError(
-                f'PVC {pvc_name} for pool worker {pool_worker_uid} is '
-                'terminating.')
-        if (deployment.metadata is None
-                or deployment.metadata.deletion_timestamp is not None):
-            raise PoolWorkerNotReadyError(
-                f'Deployment {deployment_name} for pool worker '
-                f'{pool_worker_uid} is terminating.')
-        if (deployment.spec is not None
-                and deployment.spec.replicas is not None
-                and deployment.spec.replicas <= 0):
+                f'PVC {pvc_name} for pool worker {pool_worker_uid} is terminating.'
+            )
+        if (
+            deployment.metadata is None
+            or deployment.metadata.deletion_timestamp is not None
+        ):
             raise PoolWorkerNotReadyError(
                 f'Deployment {deployment_name} for pool worker '
-                f'{pool_worker_uid} is scaled down for teardown.')
+                f'{pool_worker_uid} is terminating.'
+            )
+        if (
+            deployment.spec is not None
+            and deployment.spec.replicas is not None
+            and deployment.spec.replicas <= 0
+        ):
+            raise PoolWorkerNotReadyError(
+                f'Deployment {deployment_name} for pool worker '
+                f'{pool_worker_uid} is scaled down for teardown.'
+            )
 
     async def delete_pool_worker(
         self,
@@ -893,14 +944,13 @@ class K8sPoolWorkerManager:
                 self._apps.patch_namespaced_deployment_scale,
                 name=deployment_name,
                 namespace=self._namespace,
-                body={'spec': {
-                    'replicas': 0
-                }},
+                body={'spec': {'replicas': 0}},
             )
         except ApiException as exc:
             if exc.status == 404:
-                log.info('delete_pool_worker: deployment %s already gone',
-                         deployment_name)
+                log.info(
+                    'delete_pool_worker: deployment %s already gone', deployment_name
+                )
             else:
                 _mark_api_error_restricted(exc)
                 raise
@@ -1006,13 +1056,13 @@ class K8sPoolWorkerManager:
         """
         worker_info = await self._get_pool_worker_info(pool_worker_uid)
         if worker_info is None:
-            raise PoolWorkerNotFoundError(
-                f'pool worker {pool_worker_uid!r} not found')
+            raise PoolWorkerNotFoundError(f'pool worker {pool_worker_uid!r} not found')
         _require_current_extra_tolerations(worker_info)
         if worker_info.status != 'Registered':
             raise PoolWorkerNotReadyError(
                 f'pool worker {pool_worker_uid!r} is not Registered '
-                f'(current status: {worker_info.status!r})')
+                f'(current status: {worker_info.status!r})'
+            )
 
         # job_id is hashed for the Job name too: Job names are
         # DNS-1123 subdomains ([a-z0-9-]), which raw Temporal
@@ -1047,8 +1097,11 @@ class K8sPoolWorkerManager:
         except PoolWorkerAlreadyExistsError:
             log.info(
                 'provision_activity_pod: Job %s already exists for '
-                'job_id=%s pool_worker_uid=%s; reclaiming', job_name, job_id,
-                pool_worker_uid)
+                'job_id=%s pool_worker_uid=%s; reclaiming',
+                job_name,
+                job_id,
+                pool_worker_uid,
+            )
 
     async def provision_ephemeral_activity_pod(
         self,
@@ -1119,7 +1172,10 @@ class K8sPoolWorkerManager:
         except PoolWorkerAlreadyExistsError:
             log.info(
                 'provision_ephemeral_activity_pod: Job %s already '
-                'exists for job_id=%s; reclaiming', job_name, job_id)
+                'exists for job_id=%s; reclaiming',
+                job_name,
+                job_id,
+            )
 
     async def delete_activity_pods(
         self,
@@ -1152,14 +1208,12 @@ class K8sPoolWorkerManager:
         has already been tainted so the pods are abandoned anyway).
         ``None`` keeps K8s's default behavior.
         """
-        selector = self._activity_label_selector(pool_worker_uid, pool_type,
-                                                 job_id)
+        selector = self._activity_label_selector(pool_worker_uid, pool_type, job_id)
 
         kwargs: Dict[str, Any] = {
             'namespace': self._namespace,
             'label_selector': selector,
-            'propagation_policy': ('Foreground'
-                                   if wait_for_deletion else 'Background'),
+            'propagation_policy': ('Foreground' if wait_for_deletion else 'Background'),
         }
         if grace_period_seconds is not None:
             kwargs['grace_period_seconds'] = grace_period_seconds
@@ -1186,8 +1240,7 @@ class K8sPoolWorkerManager:
                     'namespace': self._namespace,
                 }
                 if grace_period_seconds is not None:
-                    pod_delete_kwargs[
-                        'grace_period_seconds'] = grace_period_seconds
+                    pod_delete_kwargs['grace_period_seconds'] = grace_period_seconds
                 try:
                     await asyncio.to_thread(
                         self._core.delete_namespaced_pod,
@@ -1225,7 +1278,8 @@ class K8sPoolWorkerManager:
             await asyncio.sleep(_POLL_INTERVAL_SECS)
         raise PoolWorkerCleanupFailedError(
             'activity Jobs or pods were not deleted within '
-            f'{deletion_timeout:.0f}s for selector={selector!r}')
+            f'{deletion_timeout:.0f}s for selector={selector!r}'
+        )
 
     # ------------------------------------------------------------------
     # Status / listing
@@ -1239,8 +1293,7 @@ class K8sPoolWorkerManager:
         """
         info = await self._get_pool_worker_info(pool_worker_uid)
         if info is None:
-            raise PoolWorkerNotFoundError(
-                f'pool worker {pool_worker_uid!r} not found')
+            raise PoolWorkerNotFoundError(f'pool worker {pool_worker_uid!r} not found')
         return info
 
     async def list_pool_workers(self) -> List[PoolWorkerInfo]:
@@ -1263,7 +1316,8 @@ class K8sPoolWorkerManager:
         return results
 
     async def registered_worker_matches_current_cache_tier(
-            self, worker: PoolWorkerInfo, spec: PvcSpec) -> bool:
+        self, worker: PoolWorkerInfo, spec: PvcSpec
+    ) -> bool:
         """Whether a Registered worker still matches this cache tier.
 
         Persisted tier metadata identifies a candidate, but an old or rebound
@@ -1271,8 +1325,11 @@ class K8sPoolWorkerManager:
         object is ordinary reconciliation drift and returns ``False``; other
         API failures remain unexpected and propagate.
         """
-        if (worker.status != 'Registered' or not worker.daemon_pod_name
-                or not worker.pvc_name):
+        if (
+            worker.status != 'Registered'
+            or not worker.daemon_pod_name
+            or not worker.pvc_name
+        ):
             return False
         try:
             pod = cast(
@@ -1296,58 +1353,61 @@ class K8sPoolWorkerManager:
                 return False
             raise _translate_api_error(exc) from exc
 
-        scheduling = self.cache_canary_scheduling(
-            spec.size_gib, spec.gpu_count)
+        scheduling = self.cache_canary_scheduling(spec.size_gib, spec.gpu_count)
         pod_spec = pod.spec
-        if (_derive_pod_status(pod) != 'Registered' or pod_spec is None
-                or pod_spec.node_selector != scheduling.node_selector):
+        if (
+            _derive_pod_status(pod) != 'Registered'
+            or pod_spec is None
+            or pod_spec.node_selector != scheduling.node_selector
+        ):
             return False
-        expected_tolerations = {
-            _toleration_key(t)
-            for t in scheduling.tolerations
-        }
-        actual_tolerations = {
-            _toleration_key(t)
-            for t in (pod_spec.tolerations or [])
-        }
+        expected_tolerations = {_toleration_key(t) for t in scheduling.tolerations}
+        actual_tolerations = {_toleration_key(t) for t in (pod_spec.tolerations or [])}
         # Admission may add tolerations, including another effect for a key
         # configured in extras. Require our entries without rejecting those
         # additions; retain the existing exact check for our tenant taint key.
         if not expected_tolerations.issubset(actual_tolerations):
             return False
-        if {t
-                for t in actual_tolerations
-                if t[0] == self._pool_taint_key} != {
-                    t
-                    for t in expected_tolerations
-                    if t[0] == self._pool_taint_key
-                }:
+        if {t for t in actual_tolerations if t[0] == self._pool_taint_key} != {
+            t for t in expected_tolerations if t[0] == self._pool_taint_key
+        }:
             return False
         # A subset check alone misses removed extras. The pod's fingerprint
         # records what Kumo configured, not what admission later injected.
         annotations = (pod.metadata.annotations or {}) if pod.metadata else {}
         if annotations.get(_ANNOTATION_POOL_EXTRA_TOLERATIONS_HASH) != (
-                self._cache_extra_tolerations_hash()):
+            self._cache_extra_tolerations_hash()
+        ):
             return False
         if not any(
-                volume.persistent_volume_claim is not None
-                and volume.persistent_volume_claim.claim_name
-                == worker.pvc_name for volume in (pod_spec.volumes or [])):
+            volume.persistent_volume_claim is not None
+            and volume.persistent_volume_claim.claim_name == worker.pvc_name
+            for volume in (pod_spec.volumes or [])
+        ):
             return False
 
         pvc_metadata = pvc.metadata
         pvc_spec = pvc.spec
         pvc_status = pvc.status
-        if (pvc_metadata is None or pvc_metadata.deletion_timestamp is not None
-                or pvc_spec is None or pvc_status is None):
+        if (
+            pvc_metadata is None
+            or pvc_metadata.deletion_timestamp is not None
+            or pvc_spec is None
+            or pvc_status is None
+        ):
             return False
-        storage_request = ((pvc_spec.resources.requests or {}).get('storage')
-                           if pvc_spec.resources is not None else None)
-        return (pvc_spec.storage_class_name == self._storage_class
-                and set(pvc_spec.access_modes or []) == {'ReadWriteOnce'}
-                and str(storage_request) == self.cache_pvc_size_str(spec)
-                and pvc_status.phase == 'Bound'
-                and bool(pvc_spec.volume_name))
+        storage_request = (
+            (pvc_spec.resources.requests or {}).get('storage')
+            if pvc_spec.resources is not None
+            else None
+        )
+        return (
+            pvc_spec.storage_class_name == self._storage_class
+            and set(pvc_spec.access_modes or []) == {'ReadWriteOnce'}
+            and str(storage_request) == self.cache_pvc_size_str(spec)
+            and pvc_status.phase == 'Bound'
+            and bool(pvc_spec.volume_name)
+        )
 
     async def list_activity_pods(
         self,
@@ -1361,8 +1421,7 @@ class K8sPoolWorkerManager:
         callers see accurate Running/Succeeded/Failed status. Filters
         compose with AND.
         """
-        selector = self._activity_label_selector(pool_worker_uid, pool_type,
-                                                 job_id)
+        selector = self._activity_label_selector(pool_worker_uid, pool_type, job_id)
 
         pods = await asyncio.to_thread(
             self._core.list_namespaced_pod,
@@ -1396,12 +1455,14 @@ class K8sPoolWorkerManager:
                 access_modes=['ReadWriteOnce'],
                 storage_class_name=self._storage_class,
                 resources=V1ResourceRequirements(
-                    requests={'storage': storage_size}, ),
+                    requests={'storage': storage_size},
+                ),
             ),
         )
         try:
             self._core.create_namespaced_persistent_volume_claim(
-                namespace=self._namespace, body=pvc)
+                namespace=self._namespace, body=pvc
+            )
         except ApiException as exc:
             raise _translate_api_error(exc) from exc
 
@@ -1427,8 +1488,9 @@ class K8sPoolWorkerManager:
         if not self._pod_env_configmap:
             return []
         return [
-            V1EnvFromSource(config_map_ref=V1ConfigMapEnvSource(
-                name=self._pod_env_configmap))
+            V1EnvFromSource(
+                config_map_ref=V1ConfigMapEnvSource(name=self._pod_env_configmap)
+            )
         ]
 
     def _tenant_secret_env(self) -> List[V1EnvVar]:
@@ -1443,12 +1505,14 @@ class K8sPoolWorkerManager:
         """
         if self._tenant_secret_key_ref is None:
             return []
-        ref = V1EnvVarSource(secret_key_ref=V1SecretKeySelector(
-            name=self._tenant_secret_key_ref.secret_name,
-            key=self._tenant_secret_key_ref.key))
+        ref = V1EnvVarSource(
+            secret_key_ref=V1SecretKeySelector(
+                name=self._tenant_secret_key_ref.secret_name,
+                key=self._tenant_secret_key_ref.key,
+            )
+        )
         return [
-            V1EnvVar(name='FERNET_SECRET_NAME',
-                     value='credentials_encryption_key'),
+            V1EnvVar(name='FERNET_SECRET_NAME', value='credentials_encryption_key'),
             V1EnvVar(name='credentials_encryption_key', value_from=ref),
             V1EnvVar(name='API_KEY_PEPPER', value_from=ref),
             V1EnvVar(name='PASSWORD_RESET_TOKEN_PEPPER', value_from=ref),
@@ -1462,9 +1526,12 @@ class K8sPoolWorkerManager:
         if self._temporal_cert_secret and self._temporal_cert_dir:
             vols.append(
                 V1Volume(
-                    name='temporal-mtls', secret=V1SecretVolumeSource(
-                        secret_name=self._temporal_cert_secret,
-                        default_mode=420)))
+                    name='temporal-mtls',
+                    secret=V1SecretVolumeSource(
+                        secret_name=self._temporal_cert_secret, default_mode=420
+                    ),
+                )
+            )
         # Password auth points metadata_storage at dsn_secret_name, which the
         # app resolves as a FILE under secrets.mount_path. Runtime pods open
         # StateDB just like the chart-managed ones, so without this mount every
@@ -1473,9 +1540,12 @@ class K8sPoolWorkerManager:
         if self._statedb_secret and self._secrets_mount_path:
             vols.append(
                 V1Volume(
-                    name='kumo-secrets', secret=V1SecretVolumeSource(
-                        secret_name=self._statedb_secret,
-                        default_mode=420)))
+                    name='kumo-secrets',
+                    secret=V1SecretVolumeSource(
+                        secret_name=self._statedb_secret, default_mode=420
+                    ),
+                )
+            )
         # A CA the image does not already trust (Cloud SQL's per-instance CA,
         # self-hosted, internal PKI). Mounted in a subdirectory so it does not
         # shadow the connection Secret's keys.
@@ -1488,66 +1558,84 @@ class K8sPoolWorkerManager:
                         # Remapped to a fixed filename, matching the chart, so
                         # tls.sslrootcert is one constant everywhere.
                         items=[
-                            V1KeyToPath(key=self._statedb_ca_secret_key,
-                                        path='ca.pem')
+                            V1KeyToPath(key=self._statedb_ca_secret_key, path='ca.pem')
                         ],
-                        default_mode=420)))
-        if (self._gcp_application_credentials_secret
-                and self._gcp_application_credentials_secret_key
-                and self._gcp_application_credentials_path):
+                        default_mode=420,
+                    ),
+                )
+            )
+        if (
+            self._gcp_application_credentials_secret
+            and self._gcp_application_credentials_secret_key
+            and self._gcp_application_credentials_path
+        ):
             vols.append(
                 V1Volume(
                     name=_GCP_APPLICATION_CREDENTIALS_VOLUME,
                     secret=V1SecretVolumeSource(
-                        secret_name=(
-                            self._gcp_application_credentials_secret),
+                        secret_name=(self._gcp_application_credentials_secret),
                         items=[
                             V1KeyToPath(
                                 key=self._gcp_application_credentials_secret_key,
                                 path=os.path.basename(
-                                    self._gcp_application_credentials_path))
+                                    self._gcp_application_credentials_path
+                                ),
+                            )
                         ],
-                        default_mode=292)))
+                        default_mode=292,
+                    ),
+                )
+            )
         return vols
 
     def _substrate_volume_mounts(self) -> List[V1VolumeMount]:
         mounts = [
             V1VolumeMount(name='runtime-tmp', mount_path='/tmp'),
-            V1VolumeMount(name='runtime-cache',
-                          mount_path='/home/kumouser/.cache'),
+            V1VolumeMount(name='runtime-cache', mount_path='/home/kumouser/.cache'),
         ]
         if self._temporal_cert_secret and self._temporal_cert_dir:
             mounts.append(
-                V1VolumeMount(name='temporal-mtls',
-                              mount_path=self._temporal_cert_dir,
-                              read_only=True))
+                V1VolumeMount(
+                    name='temporal-mtls',
+                    mount_path=self._temporal_cert_dir,
+                    read_only=True,
+                )
+            )
         if self._statedb_secret and self._secrets_mount_path:
             mounts.append(
-                V1VolumeMount(name='kumo-secrets',
-                              mount_path=self._secrets_mount_path,
-                              read_only=True))
+                V1VolumeMount(
+                    name='kumo-secrets',
+                    mount_path=self._secrets_mount_path,
+                    read_only=True,
+                )
+            )
         if self._statedb_ca_secret and self._secrets_mount_path:
             mounts.append(
-                V1VolumeMount(name='kumo-statedb-ca',
-                              mount_path=f'{self._secrets_mount_path}/ca',
-                              read_only=True))
-        if (self._gcp_application_credentials_secret
-                and self._gcp_application_credentials_secret_key
-                and self._gcp_application_credentials_path):
+                V1VolumeMount(
+                    name='kumo-statedb-ca',
+                    mount_path=f'{self._secrets_mount_path}/ca',
+                    read_only=True,
+                )
+            )
+        if (
+            self._gcp_application_credentials_secret
+            and self._gcp_application_credentials_secret_key
+            and self._gcp_application_credentials_path
+        ):
             mounts.append(
                 V1VolumeMount(
                     name=_GCP_APPLICATION_CREDENTIALS_VOLUME,
-                    mount_path=os.path.dirname(
-                        self._gcp_application_credentials_path),
-                    read_only=True))
+                    mount_path=os.path.dirname(self._gcp_application_credentials_path),
+                    read_only=True,
+                )
+            )
         return mounts
 
     def _apply_substrate_wiring(self, workload: 'V1Deployment | V1Job') -> None:
         """Append the substrate envFrom + volumes/mounts to the pool pod's
         single container, in place on ``workload``'s pod template."""
         spec = workload.spec
-        if (spec is None or spec.template is None
-                or spec.template.spec is None):
+        if spec is None or spec.template is None or spec.template.spec is None:
             return
         pod_spec = spec.template.spec
         containers = pod_spec.containers
@@ -1587,17 +1675,20 @@ class K8sPoolWorkerManager:
                 # spawns, so we never have two daemons heartbeating on
                 # the same node during a rollout.
                 strategy=V1DeploymentStrategy(type='Recreate'),
-                selector=V1LabelSelector(match_labels={
-                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: uid,
-                }),
+                selector=V1LabelSelector(
+                    match_labels={
+                        LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                        LABEL_POOL_WORKER_UID: uid,
+                    }
+                ),
                 template=V1PodTemplateSpec(
                     metadata=V1ObjectMeta(
                         labels=self._runtime_pod_labels(labels),
                         annotations={
-                            _ANNOTATION_POOL_EXTRA_TOLERATIONS_HASH:
-                            extras_hash,
-                        } if extras_hash else None,
+                            _ANNOTATION_POOL_EXTRA_TOLERATIONS_HASH: extras_hash,
+                        }
+                        if extras_hash
+                        else None,
                         # NB: voluntary-disruption protection for the
                         # node hosting this daemon is provided by a
                         # PodDisruptionBudget (maxUnavailable:0) created
@@ -1616,30 +1707,38 @@ class K8sPoolWorkerManager:
                         # Azure Disk and other CSI PVCs are root-owned at
                         # creation; stock Kumo images write as gid 999.
                         security_context=_runtime_pod_security_context(
-                            self._runtime_fs_group),
+                            self._runtime_fs_group
+                        ),
                         service_account_name=self._service_account,
                         node_selector=self._cache_node_selector(
-                            ssd_size_gib, gpu_count),
+                            ssd_size_gib, gpu_count
+                        ),
                         tolerations=self._pool_tolerations(
-                            self._cache_pool_taint_value),
+                            self._cache_pool_taint_value
+                        ),
                         # Structural guardrail: at most one daemon pod per
                         # node (design §7.2). The diskgraph-ssd-size
                         # nodeSelector already picks a big-enough pool, so no
                         # node affinity is needed.
                         affinity=V1Affinity(
-                            pod_anti_affinity=_daemon_anti_affinity(), ),
+                            pod_anti_affinity=_daemon_anti_affinity(),
+                        ),
                         containers=[
                             V1Container(
                                 name='daemon',
                                 image=self._daemon_image,
                                 security_context=(
-                                    _runtime_container_security_context()),
+                                    _runtime_container_security_context()
+                                ),
                                 command=self._daemon_command,
                                 args=self._daemon_args,
-                                env=(_env_dict_to_v1envvar_list(env) +
-                                     self._tenant_secret_env()),
+                                env=(
+                                    _env_dict_to_v1envvar_list(env)
+                                    + self._tenant_secret_env()
+                                ),
                                 resources=_compose_resource_requirements(
-                                    self._daemon_resources),
+                                    self._daemon_resources
+                                ),
                                 volume_mounts=[
                                     V1VolumeMount(
                                         mount_path=NVME_MOUNT_PATH,
@@ -1649,8 +1748,7 @@ class K8sPoolWorkerManager:
                                     # kubelet ephemeral storage.
                                     # Activity pods do not mount it.
                                     V1VolumeMount(
-                                        mount_path=(
-                                            self._ebs_scratch_mount_path),
+                                        mount_path=(self._ebs_scratch_mount_path),
                                         name='ebs-scratch',
                                     ),
                                 ],
@@ -1661,7 +1759,9 @@ class K8sPoolWorkerManager:
                                 name='ssd',
                                 persistent_volume_claim=(
                                     V1PersistentVolumeClaimVolumeSource(
-                                        claim_name=pvc_name, )),
+                                        claim_name=pvc_name,
+                                    )
+                                ),
                             ),
                             # emptyDir uses the cache node's kubelet
                             # ephemeral-storage path. EKS provisions
@@ -1678,8 +1778,7 @@ class K8sPoolWorkerManager:
         )
         self._apply_substrate_wiring(dep)
         try:
-            self._apps.create_namespaced_deployment(namespace=self._namespace,
-                                                    body=dep)
+            self._apps.create_namespaced_deployment(namespace=self._namespace, body=dep)
         except ApiException as exc:
             raise _translate_api_error(exc) from exc
 
@@ -1700,15 +1799,18 @@ class K8sPoolWorkerManager:
             ),
             spec=V1PodDisruptionBudgetSpec(
                 max_unavailable=0,
-                selector=V1LabelSelector(match_labels={
-                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: uid,
-                }),
+                selector=V1LabelSelector(
+                    match_labels={
+                        LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                        LABEL_POOL_WORKER_UID: uid,
+                    }
+                ),
             ),
         )
         try:
             self._policy.create_namespaced_pod_disruption_budget(
-                namespace=self._namespace, body=pdb)
+                namespace=self._namespace, body=pdb
+            )
         except ApiException as exc:
             if exc.status == 409:
                 # Reclaim-idempotent: a prior provision attempt (or a
@@ -1716,7 +1818,9 @@ class K8sPoolWorkerManager:
                 log.info(
                     '_create_daemon_pdb_sync: PDB %s already exists for '
                     'uid=%s; treating as already-created',
-                    _pdb_name_for_uid(uid), uid)
+                    _pdb_name_for_uid(uid),
+                    uid,
+                )
                 return
             raise _translate_api_error(exc) from exc
 
@@ -1776,7 +1880,8 @@ class K8sPoolWorkerManager:
                         restart_policy='Never',
                         termination_grace_period_seconds=30,
                         security_context=_runtime_pod_security_context(
-                            self._runtime_fs_group),
+                            self._runtime_fs_group
+                        ),
                         service_account_name=self._service_account,
                         # The daemon affinity is required for zonal RWO volumes
                         # such as Azure Disk: PV affinity alone selects a zone,
@@ -1786,20 +1891,23 @@ class K8sPoolWorkerManager:
                         # so no size selector is needed.
                         node_selector=self._cache_node_selector(None),
                         tolerations=self._pool_tolerations(
-                            self._cache_pool_taint_value),
+                            self._cache_pool_taint_value
+                        ),
                         containers=[
                             V1Container(
                                 name='activity',
                                 image=image,
                                 security_context=(
-                                    _runtime_container_security_context()),
+                                    _runtime_container_security_context()
+                                ),
                                 command=command,
                                 args=args,
-                                env=(_env_dict_to_v1envvar_list(env) +
-                                     [_activity_worker_pod_name_env()] +
-                                     self._tenant_secret_env()),
-                                resources=_compose_resource_requirements(
-                                    resources),
+                                env=(
+                                    _env_dict_to_v1envvar_list(env)
+                                    + [_activity_worker_pod_name_env()]
+                                    + self._tenant_secret_env()
+                                ),
+                                resources=_compose_resource_requirements(resources),
                                 volume_mounts=[
                                     V1VolumeMount(
                                         mount_path=NVME_MOUNT_PATH,
@@ -1816,7 +1924,9 @@ class K8sPoolWorkerManager:
                                 # volume on one host (design §6.2).
                                 persistent_volume_claim=(
                                     V1PersistentVolumeClaimVolumeSource(
-                                        claim_name=pvc_name, )),
+                                        claim_name=pvc_name,
+                                    )
+                                ),
                             ),
                             *extra_volumes,
                         ],
@@ -1826,8 +1936,7 @@ class K8sPoolWorkerManager:
         )
         self._apply_substrate_wiring(job)
         try:
-            self._batch.create_namespaced_job(namespace=self._namespace,
-                                              body=job)
+            self._batch.create_namespaced_job(namespace=self._namespace, body=job)
         except ApiException as exc:
             raise _translate_api_error(exc) from exc
 
@@ -1882,19 +1991,21 @@ class K8sPoolWorkerManager:
                         security_context=_runtime_pod_security_context(),
                         service_account_name=self._service_account,
                         node_selector=self._eph_node_selector(),
-                        tolerations=self._pool_tolerations(
-                            self._eph_pool_taint_value),
+                        tolerations=self._pool_tolerations(self._eph_pool_taint_value),
                         containers=[
                             V1Container(
                                 name='activity',
                                 image=image,
                                 security_context=(
-                                    _runtime_container_security_context()),
+                                    _runtime_container_security_context()
+                                ),
                                 command=command,
                                 args=args,
-                                env=(_env_dict_to_v1envvar_list(env) +
-                                     [_activity_worker_pod_name_env()] +
-                                     self._tenant_secret_env()),
+                                env=(
+                                    _env_dict_to_v1envvar_list(env)
+                                    + [_activity_worker_pod_name_env()]
+                                    + self._tenant_secret_env()
+                                ),
                                 # request = ceil(snapshot×1.2) is the scheduling
                                 # floor only; deliberately NO limit so the
                                 # dedicated/disposable eph node's full instance-store
@@ -1929,8 +2040,7 @@ class K8sPoolWorkerManager:
         )
         self._apply_substrate_wiring(job)
         try:
-            self._batch.create_namespaced_job(namespace=self._namespace,
-                                              body=job)
+            self._batch.create_namespaced_job(namespace=self._namespace, body=job)
         except ApiException as exc:
             raise _translate_api_error(exc) from exc
 
@@ -1972,7 +2082,8 @@ class K8sPoolWorkerManager:
                 if info.status == 'Failed':
                     raise ProvisionTimeoutError(
                         f'pool worker {uid!r} daemon pod entered Failed '
-                        f'state during provisioning')
+                        f'state during provisioning'
+                    )
             await asyncio.sleep(_POLL_INTERVAL_SECS)
 
         last_status = last.status if last else 'unknown'
@@ -1996,21 +2107,26 @@ class K8sPoolWorkerManager:
                     namespace=self._namespace,
                 ),
             )
-            pvc_phase = (pvc.status.phase if pvc.status else None)
+            pvc_phase = pvc.status.phase if pvc.status else None
             if pvc_phase == 'Pending':
-                pvc_disp = (pvc.metadata.name if pvc.metadata
-                            and pvc.metadata.name else _pvc_name_for_uid(uid))
+                pvc_disp = (
+                    pvc.metadata.name
+                    if pvc.metadata and pvc.metadata.name
+                    else _pvc_name_for_uid(uid)
+                )
                 raise PVCBindTimeoutError(
                     f'PVC {pvc_disp!r} stuck in Pending '
                     f'after {timeout:.0f}s — likely a CSI capacity '
                     f'miss; retry on a different instance type '
-                    f'(design §8.3)')
+                    f'(design §8.3)'
+                )
         except ApiException:
             # PVC unreadable — fall through to generic timeout.
             pass
         raise ProvisionTimeoutError(
             f'pool worker {uid!r} did not reach Registered within '
-            f'{timeout:.0f}s (last status: {last_status})')
+            f'{timeout:.0f}s (last status: {last_status})'
+        )
 
     async def wait_for_activity_job_pod_running(
         self,
@@ -2049,92 +2165,104 @@ class K8sPoolWorkerManager:
                 raise _translate_api_error(exc) from exc
 
             non_terminating_pods = [
-                pod for pod in pods.items
-                if _derive_pod_status(pod) != 'Terminating'
+                pod for pod in pods.items if _derive_pod_status(pod) != 'Terminating'
             ]
             if not non_terminating_pods:
                 await self._require_activity_job_status(job_name)
                 if pods.items:
                     last_phase = 'Terminating'
             else:
-                pod = max(non_terminating_pods,
-                          key=_activity_attempt_priority_key)
+                pod = max(non_terminating_pods, key=_activity_attempt_priority_key)
                 state = _derive_pod_status(pod)
                 last_phase = state
                 if state in {'Running', 'Registered'}:
                     return _pod_to_activity_pod_info(pod)
 
-                if (state == 'Pending' and pod.status
-                        and pod.status.container_statuses):
+                if state == 'Pending' and pod.status and pod.status.container_statuses:
                     for cs in pod.status.container_statuses:
-                        if not (cs.state and cs.state.waiting
-                                and cs.state.waiting.reason):
+                        if not (
+                            cs.state and cs.state.waiting and cs.state.waiting.reason
+                        ):
                             continue
                         reason = cs.state.waiting.reason
                         if reason in _IMMEDIATE_TERMINAL_REASONS:
                             raise ProvisionTerminalError(
                                 f'activity Job {job_name!r} pod is stuck: '
-                                f'{reason} (container {cs.name!r})')
+                                f'{reason} (container {cs.name!r})'
+                            )
                         if reason == 'ImagePullBackOff':
                             now = time.monotonic()
-                            pod_key = ((pod.metadata.uid or pod.metadata.name
-                                        or '<unknown>')
-                                       if pod.metadata else '<unknown>')
+                            pod_key = (
+                                (pod.metadata.uid or pod.metadata.name or '<unknown>')
+                                if pod.metadata
+                                else '<unknown>'
+                            )
                             first_seen = image_pull_backoff_at.get(pod_key)
                             if first_seen is None:
                                 image_pull_backoff_at[pod_key] = now
                                 log.warning(
                                     'activity Job %r: ImagePullBackOff '
-                                    '(grace window %.0fs)', job_name,
-                                    _IMAGE_PULL_BACKOFF_GRACE_SECS)
-                            elif (now - first_seen
-                                  > _IMAGE_PULL_BACKOFF_GRACE_SECS):
+                                    '(grace window %.0fs)',
+                                    job_name,
+                                    _IMAGE_PULL_BACKOFF_GRACE_SECS,
+                                )
+                            elif now - first_seen > _IMAGE_PULL_BACKOFF_GRACE_SECS:
                                 raise ProvisionTerminalError(
                                     f'activity Job {job_name!r} pod stuck '
                                     f'in ImagePullBackOff for >'
                                     f'{_IMAGE_PULL_BACKOFF_GRACE_SECS:.0f}s '
-                                    f'(container {cs.name!r})')
+                                    f'(container {cs.name!r})'
+                                )
                 elif state == 'Succeeded':
                     raise ProvisionTerminalError(
                         f'activity Job {job_name!r} completed before its '
-                        'Temporal poller became ready')
+                        'Temporal poller became ready'
+                    )
                 elif state == 'Failed':
                     await self._require_activity_job_status(job_name)
             await asyncio.sleep(_POLL_INTERVAL_SECS)
 
         raise ProvisionTimeoutError(
             f'activity Job {job_name!r} pod did not reach Running '
-            f'within {timeout:.0f}s (last phase: {last_phase})')
+            f'within {timeout:.0f}s (last phase: {last_phase})'
+        )
 
     async def _require_activity_job_status(self, job_name: str) -> V1Job:
         """Return active Job status or raise for a terminal/missing Job."""
         try:
-            job = cast(V1Job, await asyncio.to_thread(
-                self._batch.read_namespaced_job_status,
-                name=job_name,
-                namespace=self._namespace,
-            ))
-            conditions = (
-                (job.status.conditions if job.status else None) or [])
-            if any(condition.type == 'Failed'
-                   and str(condition.status).lower() == 'true'
-                   for condition in conditions):
+            job = cast(
+                V1Job,
+                await asyncio.to_thread(
+                    self._batch.read_namespaced_job_status,
+                    name=job_name,
+                    namespace=self._namespace,
+                ),
+            )
+            conditions = (job.status.conditions if job.status else None) or []
+            if any(
+                condition.type == 'Failed' and str(condition.status).lower() == 'true'
+                for condition in conditions
+            ):
                 raise ProvisionTimeoutError(
                     f'activity Job {job_name!r} exhausted its pod attempts '
-                    'in Failed state during provisioning')
-            if any(condition.type == 'Complete'
-                   and str(condition.status).lower() == 'true'
-                   for condition in conditions):
+                    'in Failed state during provisioning'
+                )
+            if any(
+                condition.type == 'Complete' and str(condition.status).lower() == 'true'
+                for condition in conditions
+            ):
                 raise ProvisionTerminalError(
                     f'activity Job {job_name!r} completed before its '
-                    'Temporal poller became ready')
+                    'Temporal poller became ready'
+                )
             return job
         except ApiException as exc:
             if exc.status == 404:
                 _mark_api_error_restricted(exc)
                 raise ProvisionTimeoutError(
                     f'activity Job {job_name!r} disappeared before its pod '
-                    'reached Running') from exc
+                    'reached Running'
+                ) from exc
             raise _translate_api_error(exc) from exc
 
     async def _get_pool_worker_info(
@@ -2144,8 +2272,9 @@ class K8sPoolWorkerManager:
         pods = await asyncio.to_thread(
             self._core.list_namespaced_pod,
             namespace=self._namespace,
-            label_selector=(f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON},'
-                            f'{LABEL_POOL_WORKER_UID}={uid}'),
+            label_selector=(
+                f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON},{LABEL_POOL_WORKER_UID}={uid}'
+            ),
         )
         if not pods.items:
             return None
@@ -2154,8 +2283,7 @@ class K8sPoolWorkerManager:
         # expose both generations; select the newest so callers see the live
         # pod rather than a tombstoned predecessor.
         pod = max(pods.items, key=_pod_recency_key)
-        return _pod_to_pool_worker_info(
-            pod, uid, self._cache_extra_tolerations_hash())
+        return _pod_to_pool_worker_info(pod, uid, self._cache_extra_tolerations_hash())
 
     async def _try_delete_pvc(
         self,
@@ -2206,7 +2334,8 @@ class K8sPoolWorkerManager:
         raise PoolWorkerCleanupFailedError(
             f'PVC {pvc_name!r} still exists {timeout:.0f}s after '
             'deletion; CSI cleanup is incomplete and must succeed '
-            'before this worker can be retired')
+            'before this worker can be retired'
+        )
 
     async def _wait_for_daemon_pod_gone(
         self,
@@ -2236,8 +2365,10 @@ class K8sPoolWorkerManager:
             pods = await asyncio.to_thread(
                 self._core.list_namespaced_pod,
                 namespace=self._namespace,
-                label_selector=(f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON},'
-                                f'{LABEL_POOL_WORKER_UID}={uid}'),
+                label_selector=(
+                    f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON},'
+                    f'{LABEL_POOL_WORKER_UID}={uid}'
+                ),
             )
             if not pods.items:
                 return
@@ -2246,14 +2377,18 @@ class K8sPoolWorkerManager:
             log.warning(
                 '_wait_for_daemon_pod_gone: pod for uid=%s still '
                 'present after %.0fs; force_on_timeout=True (DEAD '
-                'node path), proceeding to PVC delete anyway', uid, timeout)
+                'node path), proceeding to PVC delete anyway',
+                uid,
+                timeout,
+            )
             return
         raise PoolWorkerCleanupFailedError(
             f'daemon pod for uid={uid!r} did not terminate within '
             f'{timeout:.0f}s; refusing to delete PVC under a still-'
             f'mounted kubelet (would wedge the CSI attacher '
             f'finalizer). Caller can retry, or pass '
-            f'force_on_timeout=True for the DEAD-node teardown path.')
+            f'force_on_timeout=True for the DEAD-node teardown path.'
+        )
 
     # ------------------------------------------------------------------
     # Pure helpers (no I/O)
@@ -2266,14 +2401,16 @@ class K8sPoolWorkerManager:
             LABEL_POOL_WORKER_UID: uid,
         }
 
-    def _runtime_pod_labels(self,
-                            owned_labels: Dict[str, str]) -> Dict[str, str]:
+    def _runtime_pod_labels(self, owned_labels: Dict[str, str]) -> Dict[str, str]:
         # Routing/cleanup labels must not be overridden by chart-global labels.
         return {**self._pod_template_labels, **owned_labels}
 
-    def _activity_label_selector(self, pool_worker_uid: Optional[str],
-                                 pool_type: Optional[str],
-                                 job_id: Optional[str]) -> str:
+    def _activity_label_selector(
+        self,
+        pool_worker_uid: Optional[str],
+        pool_type: Optional[str],
+        job_id: Optional[str],
+    ) -> str:
         selector_parts = [
             f'{LABEL_APP} in ({LABEL_APP_VALUE_ACTIVITY},'
             f'{LABEL_APP_VALUE_ACTIVITY_EPH})',
@@ -2288,8 +2425,7 @@ class K8sPoolWorkerManager:
         return ','.join(selector_parts)
 
     def _daemon_label_selector(self) -> str:
-        return (f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON},'
-                f'{LABEL_TENANT}={self._tenant}')
+        return f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON},{LABEL_TENANT}={self._tenant}'
 
     def _storage_size_from_pvc_spec(self, spec: PvcSpec) -> str:
         return f'{spec.size_gib}Gi'
@@ -2305,8 +2441,8 @@ class K8sPoolWorkerManager:
     # label keys or taint-value derivation in the canary module.
 
     def cache_canary_scheduling(
-            self, ssd_size_gib: int,
-            gpu_count: Optional[int] = 1) -> '_PoolScheduling':
+        self, ssd_size_gib: int, gpu_count: Optional[int] = 1
+    ) -> '_PoolScheduling':
         """nodeSelector + tolerations the daemon uses for a cache tier."""
         return _PoolScheduling(
             node_selector=self._cache_node_selector(ssd_size_gib, gpu_count),
@@ -2323,8 +2459,12 @@ class K8sPoolWorkerManager:
     def _pool_tolerations(self, tenant_taint_value: str) -> List[V1Toleration]:
         """Keep the tenant toleration first, then append unique configured extras."""
         tolerations = [
-            V1Toleration(key=self._pool_taint_key, operator='Equal',
-                         value=tenant_taint_value, effect='NoSchedule')
+            V1Toleration(
+                key=self._pool_taint_key,
+                operator='Equal',
+                value=tenant_taint_value,
+                effect='NoSchedule',
+            )
         ]
         seen = {_toleration_key(tolerations[0])}
         for extra in self._pool_extra_tolerations:
@@ -2339,8 +2479,7 @@ class K8sPoolWorkerManager:
         if not extras:
             # Preserve legacy pod metadata and reuse when no extras are set.
             return None
-        payload = '\n'.join(
-            sorted(json.dumps(_toleration_key(t)) for t in extras))
+        payload = '\n'.join(sorted(json.dumps(_toleration_key(t)) for t in extras))
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     @property
@@ -2362,8 +2501,9 @@ class K8sPoolWorkerManager:
         """PVC ``requests.storage`` string the daemon uses for a tier."""
         return self._storage_size_from_pvc_spec(spec)
 
-    def _cache_node_selector(self, ssd_size_gib: Optional[int],
-                             gpu_count: Optional[int] = None) -> Dict[str, str]:
+    def _cache_node_selector(
+        self, ssd_size_gib: Optional[int], gpu_count: Optional[int] = None
+    ) -> Dict[str, str]:
         """``nodeSelector`` for cache-pool pods.
 
         Always pins the cache pool role via ``kumo.ai/diskgraph-pool-type``.
@@ -2390,11 +2530,15 @@ class K8sPoolWorkerManager:
 # ---------------------------------------------------------------------------
 
 
-def _toleration_key(
-        t: V1Toleration) -> tuple[str, str, str, str, Optional[int]]:
+def _toleration_key(t: V1Toleration) -> tuple[str, str, str, str, Optional[int]]:
     """Compare all toleration fields, accounting for Kubernetes defaulting."""
-    return (t.key or '', t.operator or 'Equal', t.value or '', t.effect
-            or '', t.toleration_seconds)
+    return (
+        t.key or '',
+        t.operator or 'Equal',
+        t.value or '',
+        t.effect or '',
+        t.toleration_seconds,
+    )
 
 
 def _load_kube_config(context: Optional[str] = None) -> None:
@@ -2433,10 +2577,12 @@ def _daemon_anti_affinity() -> V1PodAntiAffinity:
         required_during_scheduling_ignored_during_execution=[
             V1PodAffinityTerm(
                 label_selector=V1LabelSelector(
-                    match_labels={LABEL_APP: LABEL_APP_VALUE_DAEMON}, ),
+                    match_labels={LABEL_APP: LABEL_APP_VALUE_DAEMON},
+                ),
                 topology_key='kubernetes.io/hostname',
             ),
-        ], )
+        ],
+    )
 
 
 def _daemon_pod_affinity(uid: str) -> V1Affinity:
@@ -2445,20 +2591,25 @@ def _daemon_pod_affinity(uid: str) -> V1Affinity:
         pod_affinity=V1PodAffinity(
             required_during_scheduling_ignored_during_execution=[
                 V1PodAffinityTerm(
-                    label_selector=V1LabelSelector(match_labels={
-                        LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                        LABEL_POOL_WORKER_UID: uid,
-                    }),
+                    label_selector=V1LabelSelector(
+                        match_labels={
+                            LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                            LABEL_POOL_WORKER_UID: uid,
+                        }
+                    ),
                     topology_key='kubernetes.io/hostname',
                 ),
-            ], ), )
+            ],
+        ),
+    )
 
 
 def _pod_recency_key(pod: V1Pod) -> tuple[float, str]:
     metadata = pod.metadata
     return (
         metadata.creation_timestamp.timestamp()
-        if metadata and metadata.creation_timestamp else 0.0,
+        if metadata and metadata.creation_timestamp
+        else 0.0,
         metadata.name if metadata and metadata.name else '',
     )
 
@@ -2477,12 +2628,13 @@ def _require_current_extra_tolerations(worker: PoolWorkerInfo) -> None:
         raise PoolWorkerNotReadyError(
             f'pool worker {worker.pool_worker_uid!r} has outdated extra '
             'tolerations; maintenance cleanup must retire its daemon and '
-            'cache PVC before it can be replaced')
+            'cache PVC before it can be replaced'
+        )
 
 
 def _pod_to_pool_worker_info(
-        pod: V1Pod, uid: str,
-        expected_extra_tolerations_hash: Optional[str] = None) -> PoolWorkerInfo:
+    pod: V1Pod, uid: str, expected_extra_tolerations_hash: Optional[str] = None
+) -> PoolWorkerInfo:
     metadata = pod.metadata
     annotations = (metadata.annotations or {}) if metadata else {}
     return PoolWorkerInfo(
@@ -2491,14 +2643,20 @@ def _pod_to_pool_worker_info(
         daemon_pod_name=metadata.name if metadata else None,
         node_name=(pod.spec.node_name if pod.spec else None) or None,
         status=_derive_pod_status(pod),
-        created_at=(metadata.creation_timestamp.timestamp()
-                    if metadata and metadata.creation_timestamp else None),
-        deletion_started_at=(metadata.deletion_timestamp.timestamp()
-                             if metadata and metadata.deletion_timestamp else
-                             None),
+        created_at=(
+            metadata.creation_timestamp.timestamp()
+            if metadata and metadata.creation_timestamp
+            else None
+        ),
+        deletion_started_at=(
+            metadata.deletion_timestamp.timestamp()
+            if metadata and metadata.deletion_timestamp
+            else None
+        ),
         extra_tolerations_match=(
             annotations.get(_ANNOTATION_POOL_EXTRA_TOLERATIONS_HASH)
-            == expected_extra_tolerations_hash),
+            == expected_extra_tolerations_hash
+        ),
     )
 
 
@@ -2508,7 +2666,7 @@ def _pod_to_activity_pod_info(pod: V1Pod) -> ActivityPodInfo:
     # holds the truncated SHA-256 hash so K8s-side filtering stays
     # well-formed, while the annotation preserves the raw Temporal
     # workflow_id for callers (and for `kubectl describe pod`).
-    annotations = ((pod.metadata.annotations or {}) if pod.metadata else {})
+    annotations = (pod.metadata.annotations or {}) if pod.metadata else {}
     return ActivityPodInfo(
         pod_name=pod.metadata.name if pod.metadata else '',
         pool_worker_uid=labels.get(LABEL_POOL_WORKER_UID),
@@ -2548,7 +2706,8 @@ def _derive_pod_status(pod: V1Pod) -> PodStatus:
 
 
 def _unschedulable_reason(  # pyright: ignore[reportUnusedFunction]
-        pod: V1Pod) -> Optional[str]:
+    pod: V1Pod,
+) -> Optional[str]:
     # NOTE: not dead — imported and called by
     # ``pool.worker_manager.init_canary``. The pragma suppresses pyright's
     # reportUnusedFunction false positive: pyright treats this underscore-
@@ -2598,8 +2757,7 @@ def _hash_job_id(job_id: str) -> str:
     Returns the first :data:`_LABEL_HASH_HEX_LEN` hex chars of
     SHA-256(``job_id``).
     """
-    return hashlib.sha256(
-        job_id.encode('utf-8')).hexdigest()[:_LABEL_HASH_HEX_LEN]
+    return hashlib.sha256(job_id.encode('utf-8')).hexdigest()[:_LABEL_HASH_HEX_LEN]
 
 
 def _hash_snapshot_id(snapshot_id: str) -> str:
@@ -2611,8 +2769,7 @@ def _hash_snapshot_id(snapshot_id: str) -> str:
     ``_hash_label_value``) so the call sites self-document which
     field is being normalised.
     """
-    return hashlib.sha256(
-        snapshot_id.encode('utf-8')).hexdigest()[:_LABEL_HASH_HEX_LEN]
+    return hashlib.sha256(snapshot_id.encode('utf-8')).hexdigest()[:_LABEL_HASH_HEX_LEN]
 
 
 def _dshm_volume(
@@ -2649,13 +2806,15 @@ def _activity_worker_pod_name_env() -> V1EnvVar:
     """Downward-API pod name used to make the Temporal poller identity unique."""
     return V1EnvVar(
         name=ACTIVITY_WORKER_POD_NAME_ENV,
-        value_from=V1EnvVarSource(field_ref=V1ObjectFieldSelector(
-            field_path='metadata.name')),
+        value_from=V1EnvVarSource(
+            field_ref=V1ObjectFieldSelector(field_path='metadata.name')
+        ),
     )
 
 
 def _env_dict_to_v1envvar_list(
-    env: Optional[Dict[str, str]], ) -> List[V1EnvVar]:
+    env: Optional[Dict[str, str]],
+) -> List[V1EnvVar]:
     """Translate a caller-provided ``Dict[str, str]`` of env vars to
     the ``List[V1EnvVar]`` shape ``V1Container.env`` expects.
 
@@ -2716,8 +2875,10 @@ def _compose_resource_requirements(
 
 def _mark_api_error_restricted(exc: ApiException) -> str:
     status = exc.status
-    safe_message = ('Kubernetes API operation failed '
-                    f'(status={status if status is not None else "unknown"})')
+    safe_message = (
+        'Kubernetes API operation failed '
+        f'(status={status if status is not None else "unknown"})'
+    )
     mark_exception_restricted(exc, safe_message=safe_message)
     return safe_message
 

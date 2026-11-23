@@ -37,7 +37,7 @@ def _active_type_filter(tx: StateTx, start_index: int) -> tuple[str, list[str]]:
         _placeholder(tx, start_index + 1),
     ]
     return (
-        f"{_json_value(tx, 'type')} IN ({', '.join(placeholders)})",
+        f'{_json_value(tx, "type")} IN ({", ".join(placeholders)})',
         [APIKeyType.ADMIN.value, APIKeyType.USER.value],
     )
 
@@ -45,12 +45,12 @@ def _active_type_filter(tx: StateTx, start_index: int) -> tuple[str, list[str]]:
 class APIKeyRepository:
     def __init__(self) -> None:
         self._metadata = JsonRepository(
-            "api_keys",
+            'api_keys',
             APIKeyMetadataRecord,
             store_payload_only=True,
         )
         self._secrets = JsonRepository(
-            "api_key_secrets",
+            'api_key_secrets',
             APIKeySecretRecord,
             store_payload_only=True,
         )
@@ -84,39 +84,37 @@ class APIKeyRepository:
         args: list[object] = []
         if type is not None:
             args.append(type.value)
-            filters.append(
-                f"{_json_value(tx, 'type')} = {_placeholder(tx, len(args))}")
+            filters.append(f'{_json_value(tx, "type")} = {_placeholder(tx, len(args))}')
         else:
             active_type_filter, active_type_args = _active_type_filter(
-                tx,
-                len(args) + 1)
+                tx, len(args) + 1
+            )
             filters.append(active_type_filter)
             args.extend(active_type_args)
         if owner_user_id is not None:
             args.append(owner_user_id)
             filters.append(
-                f"{_json_value(tx, 'owner_user_id')} = {_placeholder(tx, len(args))}"
+                f'{_json_value(tx, "owner_user_id")} = {_placeholder(tx, len(args))}'
             )
-        search_term = search.strip().lower(
-        ) if search and search.strip() else None
+        search_term = search.strip().lower() if search and search.strip() else None
         if search_term is not None:
             search_fields = (
-                "id",
-                "name",
-                "owner_display_name",
-                "value_preview",
+                'id',
+                'name',
+                'owner_display_name',
+                'value_preview',
             )
             like_clauses: list[str] = []
             for field_name in search_fields:
-                args.append(f"%{search_term}%")
-                expression = "id" if field_name == "id" else _json_value(
-                    tx, field_name)
+                args.append(f'%{search_term}%')
+                expression = 'id' if field_name == 'id' else _json_value(tx, field_name)
                 like_clauses.append(
-                    f"LOWER({expression}) LIKE {_placeholder(tx, len(args))}")
-            filters.append(f"({' OR '.join(like_clauses)})")
+                    f'LOWER({expression}) LIKE {_placeholder(tx, len(args))}'
+                )
+            filters.append(f'({" OR ".join(like_clauses)})')
         rows = await self._metadata.list_where_sql(
             tx,
-            " AND ".join(filters) or "1 = 1",
+            ' AND '.join(filters) or '1 = 1',
             args,
         )
         return [row.payload for row in rows]
@@ -203,7 +201,7 @@ class APIKeyRepository:
         tx: StateTx,
         rows: Sequence[object],
     ) -> list[StateRow[APIKeyMetadataRecord]]:
-        ids = [APIKeyID(row_str(row, "id", 0)) for row in rows]
+        ids = [APIKeyID(row_str(row, 'id', 0)) for row in rows]
         try:
             metadata_rows = await self._metadata.list_by_ids(tx, ids)
         except ValidationError:

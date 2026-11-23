@@ -12,6 +12,7 @@ Used by :meth:`SnowflakeConnector.aggregate` for one-round-trip SQL
 pushdown of pre-ingest col-stats, and by ``kumo/testing/snowflake.py``
 for test-fixture setup.
 """
+
 from typing import Any, Dict, NamedTuple, Optional
 
 from cryptography.hazmat.primitives import serialization
@@ -24,7 +25,8 @@ from service_framework.deploy_env import get_snowflake_connection_string
 
 
 def build_snowpark_session_from_connector(
-    snow_connector: SnowflakeConnector, ) -> SnowparkSession:
+    snow_connector: SnowflakeConnector,
+) -> SnowparkSession:
     r"""Build a Snowpark ``Session`` directly from a :class:`SnowflakeConnector`.
 
     Reuses the connector's credential helper to assemble the
@@ -57,7 +59,8 @@ def build_snowpark_session_from_connector(
     if snow_connector.role is not None:
         connection_parameters['role'] = snow_connector.role
     return ensure_logged_snowpark_session(
-        SnowparkSession.builder.configs(connection_parameters).create(), )
+        SnowparkSession.builder.configs(connection_parameters).create(),
+    )
 
 
 class CredentialsKey(NamedTuple):
@@ -72,6 +75,7 @@ class CredentialsKey(NamedTuple):
     raw credential material; tokens rotate, secrets shouldn't be
     cached as keys.
     """
+
     account: str
     user: Optional[str]
     role: Optional[str]
@@ -138,7 +142,9 @@ def _credentials_key(connector: SnowflakeConnector) -> CredentialsKey:
     )
 
 
-def get_or_build_session(connector: SnowflakeConnector, ) -> SnowparkSession:
+def get_or_build_session(
+    connector: SnowflakeConnector,
+) -> SnowparkSession:
     r"""Return a cached or freshly-built Snowpark session for ``connector``.
 
     Production and test callers both go through here.

@@ -182,18 +182,16 @@ log = logging.getLogger(__name__)
 # If there are more than this number of jobs, the oldest jobs will be deleted
 # in batches.
 DELETE_OLD_BP_JOBS = EnvVar(
-    "DELETE_OLD_BP_JOBS",
+    'DELETE_OLD_BP_JOBS',
     bool,
     default_value=False,
-    description=(
-        "If True Delete old bp jobs when number of BP jobs crosses a limit"),
+    description=('If True Delete old bp jobs when number of BP jobs crosses a limit'),
 )
 MAX_BP_JOBS_PER_WORKFLOW = EnvVar(
-    "MAX_BP_JOBS_PER_WORKFLOW",
+    'MAX_BP_JOBS_PER_WORKFLOW',
     int,
     default_value=500,
-    description=(
-        "Delete BP jobs if total number of BP jobs per workflow exceeds this"),
+    description=('Delete BP jobs if total number of BP jobs per workflow exceeds this'),
 )
 
 # Maximum no.of supported parallel workers for a batch prediction job.
@@ -223,10 +221,15 @@ def _validate_trained_model_artifact_support(
     """
     if not task_type.is_link_pred:
         return
-    embeddings = any(output.artifact_type == PredictionArtifactType.EMBEDDINGS
-                     for output in request.outputs)
-    if not embeddings and candidate_query(
-            query_config.validated_predictive_query, graph, task_type) is None:
+    embeddings = any(
+        output.artifact_type == PredictionArtifactType.EMBEDDINGS
+        for output in request.outputs
+    )
+    if (
+        not embeddings
+        and candidate_query(query_config.validated_predictive_query, graph, task_type)
+        is None
+    ):
         return
 
     from kumo_core.training.config import LinkPredModuleType, TrainerConfig
@@ -239,8 +242,7 @@ def _validate_trained_model_artifact_support(
 
     train_dir = get_job_dir(get_job_base_dir(), training_job_id)
     model_dir = HomeDirManager(train_dir).get_best_trainer_dir('')
-    trainer_config = load_json(os.path.join(model_dir, 'config.json'),
-                               TrainerConfig)
+    trainer_config = load_json(os.path.join(model_dir, 'config.json'), TrainerConfig)
     module_kwargs = getattr(trainer_config, 'module_kwargs', None)
     if getattr(module_kwargs, 'module', None) != LinkPredModuleType.ID:
         return
@@ -248,7 +250,8 @@ def _validate_trained_model_artifact_support(
         raise ValueError(
             'Embeddings are not available for ID-GNN link-prediction models. '
             'Request predictions instead, or train a two-tower, shallow-RHS, '
-            'or hybrid link-prediction model.')
+            'or hybrid link-prediction model.'
+        )
     raise ValueError(PAIRWISE_CANDIDATES)
 
 
@@ -272,23 +275,25 @@ class _ConflictInfo:
 
 @dataclass
 class _PendingOutputs:
-    warehouse_tables: Dict[_WarehouseTablePath,
-                           _ConflictInfo] = field(default_factory=dict)
+    warehouse_tables: Dict[_WarehouseTablePath, _ConflictInfo] = field(
+        default_factory=dict
+    )
     # file_paths stores both S3 (s3://) and GCS (gs://) output paths
-    file_paths: Dict[_FileOutputPath,
-                     _ConflictInfo] = field(default_factory=dict)
+    file_paths: Dict[_FileOutputPath, _ConflictInfo] = field(default_factory=dict)
 
 
 def _file_output_path(output) -> _FileOutputPath:
     coordinate = output.canonical_file_path
-    connector_id = (None if urlsplit(coordinate).scheme else ConnectorID(
-        output.connector_id))
+    connector_id = (
+        None if urlsplit(coordinate).scheme else ConnectorID(output.connector_id)
+    )
     return _FileOutputPath(connector_id, coordinate)
 
 
 @dataclass(frozen=True)
 class _DecoupledPredictionGraphContext:
     """Immutable graph identity recorded by a gen-pred-table job."""
+
     graph_data_compute_input: GraphDataComputeInput
     graph_version_info: GraphDataVersionInfo
     graph_data_version: str
@@ -314,8 +319,9 @@ class BatchPredictionJobLogic:
         ml_job_service = self._ml_job_service_or_none()
         if ml_job_service is None:
             raise RuntimeError(
-                "BatchPredictionJobLogic requires StateServices.ml_jobs for "
-                "batch prediction metadata mutations.")
+                'BatchPredictionJobLogic requires StateServices.ml_jobs for '
+                'batch prediction metadata mutations.'
+            )
         return ml_job_service
 
     def _pquery_service_or_none(self):
@@ -327,8 +333,9 @@ class BatchPredictionJobLogic:
         pquery_service = self._pquery_service_or_none()
         if pquery_service is None:
             raise RuntimeError(
-                "BatchPredictionJobLogic requires StateServices.pqueries for "
-                "batch prediction pquery resolution.")
+                'BatchPredictionJobLogic requires StateServices.pqueries for '
+                'batch prediction pquery resolution.'
+            )
         return pquery_service
 
     async def _pqueries_by_id(
@@ -354,7 +361,8 @@ class BatchPredictionJobLogic:
             ids = [
                 BatchPredictionJobID(id)
                 for id in await ml_job_service.list_job_ids_by_type(
-                    JobType.BATCH_PREDICTION_JOB)
+                    JobType.BATCH_PREDICTION_JOB
+                )
             ]
 
         return await ml_job_service.get_batch_prediction_rows(
@@ -383,10 +391,8 @@ class BatchPredictionJobLogic:
         predictive_query_id: PredictiveQueryID,
         filter_override_args: Optional[FilterOverrideArgs] = None,
         top_k: Optional[int] = None,
-        generate_pred_table_job_id: Optional[
-            GeneratePredictionTableJobID] = None,
-        custom_pred_table_source: Optional[
-            jobs_api.PredictionTableSource] = None,
+        generate_pred_table_job_id: Optional[GeneratePredictionTableJobID] = None,
+        custom_pred_table_source: Optional[jobs_api.PredictionTableSource] = None,
         custom_pred_table_connector: Optional[ConnectorExecutionRef] = None,
         graph_snapshot_id: Optional[str] = None,
         job_source: Optional[JobSource] = None,
@@ -398,21 +404,20 @@ class BatchPredictionJobLogic:
         directly off a `BatchPredictionRequest`."""
         id = BatchPredictionJobID.make_random_id()
 
-        training_job = await self._ml_backend.get_training_job(
-            ctx, training_job_id)
+        training_job = await self._ml_backend.get_training_job(ctx, training_job_id)
         assert training_job
         assert training_job.execution.status == JobStatus.DONE
 
         if training_job.project_id != project_id:
             raise TrainingJobNotInProjectError(
-                f"Training job with id {training_job.id} must belong to "
-                "the same project as the initiated batch prediction job.")
+                f'Training job with id {training_job.id} must belong to '
+                'the same project as the initiated batch prediction job.'
+            )
 
         # Compute the threshold without mutating the request. Multilabel
         # classification uses the same sigmoid-threshold output contract as
         # binary classification.
-        requested_threshold = (
-            request.predict_options.binary_classification_threshold)
+        requested_threshold = request.predict_options.binary_classification_threshold
         effective_threshold = resolve_classification_threshold(
             task_type,
             requested_threshold,
@@ -424,7 +429,8 @@ class BatchPredictionJobLogic:
         elif requested_threshold is not None and effective_threshold is None:
             log.warning(
                 'binary_classification_threshold is only available for '
-                'binary and multilabel classification queries. Reset to None.')
+                'binary and multilabel classification queries. Reset to None.'
+            )
 
         # Compute effective num_classes_to_return (handles top_k default and
         # only_embeddings override).
@@ -436,17 +442,18 @@ class BatchPredictionJobLogic:
         )
 
         gen_tt_job, train_table_options = await self._compute_bp_train_options(
-            training_job, task_type, query_type, project_id=project_id)
+            training_job, task_type, query_type, project_id=project_id
+        )
 
         graph_id, graph_data_ver = await self._resolve_bp_graph_id(
-            pq_resource, graph_snapshot_id, predictive_query_id)
-        trained_precision = await self._trained_timestamp_precision(
-            training_job_id)
+            pq_resource, graph_snapshot_id, predictive_query_id
+        )
+        trained_precision = await self._trained_timestamp_precision(training_job_id)
         if graph_snapshot_id:
-            _, snapshot_info = await self._get_graph_snapshot_info(
-                graph_snapshot_id)
-            check_prediction_precision(trained_precision,
-                                       snapshot_info.timestamp_precision)
+            _, snapshot_info = await self._get_graph_snapshot_info(graph_snapshot_id)
+            check_prediction_precision(
+                trained_precision, snapshot_info.timestamp_precision
+            )
 
         config = request.to_config(
             predictive_query_id=predictive_query_id,
@@ -458,23 +465,24 @@ class BatchPredictionJobLogic:
             effective_threshold=effective_threshold,
         )
         config.graph_data_version = graph_data_ver
-        self._apply_train_table_params_to_bp_config(config, gen_tt_job,
-                                                    training_job)
+        self._apply_train_table_params_to_bp_config(config, gen_tt_job, training_job)
 
         if custom_pred_table_source and generate_pred_table_job_id:
             raise ValueError(
-                "Custom prediction table source and "
-                "generate-prediction-table job ID cannot be specified at "
-                "the same time.")
-        if ((custom_pred_table_source is None) != (custom_pred_table_connector
-                                                   is None)):
+                'Custom prediction table source and '
+                'generate-prediction-table job ID cannot be specified at '
+                'the same time.'
+            )
+        if (custom_pred_table_source is None) != (custom_pred_table_connector is None):
             raise ValueError(
                 'Custom prediction source and connector reference must be '
-                'provided together')
+                'provided together'
+            )
         if custom_pred_table_source is None:
             generate_pred_table_job_id = (
                 generate_pred_table_job_id
-                or GeneratePredictionTableJobID.as_child_of(id))
+                or GeneratePredictionTableJobID.as_child_of(id)
+            )
         config.generate_pred_table_job_id = generate_pred_table_job_id
         config.custom_pred_table_source = custom_pred_table_source
 
@@ -489,16 +497,21 @@ class BatchPredictionJobLogic:
             graph_version_info = None
 
             job_input = await self.make_batch_prediction_job_input_v2(
-                pq_resource, pq_def_fpid, id, config,
+                pq_resource,
+                pq_def_fpid,
+                id,
+                config,
                 train_table_options=train_table_options,
                 custom_pred_table_connector=custom_pred_table_connector,
                 graph_data_compute_input=graph_data_compute_input,
-                graph_version_info=graph_version_info, project_id=project_id)
+                graph_version_info=graph_version_info,
+                project_id=project_id,
+            )
         except Exception as ex:
             if isinstance(ex, ValueError):
                 raise
             raise ValueError(
-                f"Invalid batch prediction job input due to {type(ex).__name__}: {ex}"
+                f'Invalid batch prediction job input due to {type(ex).__name__}: {ex}'
             ) from ex
         await asyncio.to_thread(
             _validate_trained_model_artifact_support,
@@ -509,8 +522,7 @@ class BatchPredictionJobLogic:
             pq_resource.graph,
         )
         # Unpinned, the graph refresh builds in the model's clock.
-        job_input.graph_data_compute_input.timestamp_precision = (
-            trained_precision)
+        job_input.graph_data_compute_input.timestamp_precision = trained_precision
 
         # Submit must write the full row before the workflow starts; a separate
         # REST-metadata write afterwards left an early GET racing a 404.
@@ -547,10 +559,7 @@ class BatchPredictionJobLogic:
         if not training_job.generate_train_table_job_id:
             return None, None
         gen_tt_jobs = await self._ml_backend.get_generate_train_table_jobs(
-            job_ids={
-                GenerateTrainTableJobID(
-                    training_job.generate_train_table_job_id)
-            },
+            job_ids={GenerateTrainTableJobID(training_job.generate_train_table_job_id)},
             project_ids={project_id},
         )
         if len(gen_tt_jobs) != 1:
@@ -579,12 +588,15 @@ class BatchPredictionJobLogic:
         if not graph_snapshot_id:
             return pq_graph_id, None
         override_graph_id, graph_ver_info = await self._get_graph_snapshot_info(
-            graph_snapshot_id)
+            graph_snapshot_id
+        )
         if override_graph_id != pq_graph_id:
-            log.warning(f"Launching batch prediction with snapshot override: "
-                        f"Graph data snapshot id={graph_snapshot_id} "
-                        f"overrides the graph defined in predictive query "
-                        f"{pquery_id_for_log}")
+            log.warning(
+                f'Launching batch prediction with snapshot override: '
+                f'Graph data snapshot id={graph_snapshot_id} '
+                f'overrides the graph defined in predictive query '
+                f'{pquery_id_for_log}'
+            )
             return override_graph_id, graph_ver_info.graph_data_version
         return pq_graph_id, graph_ver_info.graph_data_version
 
@@ -595,12 +607,14 @@ class BatchPredictionJobLogic:
         return await get_graph_snapshot_info(graph_snapshot_id)
 
     async def _trained_timestamp_precision(
-            self, training_job_id: TrainingJobID) -> TimestampPrecision:
+        self, training_job_id: TrainingJobID
+    ) -> TimestampPrecision:
         r"""The clock of the graph a training job ran on: its pinned
         snapshot's, else the one its refresh built (seconds for older jobs)."""
         home_dir = await self._ml_backend.get_job_home_dir(training_job_id)
         job_input = await load_json_async(
-            HomeDirManager(home_dir).training_job_input_file, TrainingJobInput)
+            HomeDirManager(home_dir).training_job_input_file, TrainingJobInput
+        )
         if job_input is None:
             return 'seconds'
         if job_input.graph_version_info is not None:
@@ -625,34 +639,43 @@ class BatchPredictionJobLogic:
         """
         ml_job_service = self._ml_job_service_or_none()
         if ml_job_service is None:
-            raise RuntimeError(
-                "Generate-prediction-table lookup requires StateDB")
+            raise RuntimeError('Generate-prediction-table lookup requires StateDB')
         matching_jobs = await ml_job_service.get_generate_pred_table_jobs(
-            [gen_pred_table_job_id], project_ids={project_id})
+            [gen_pred_table_job_id], project_ids={project_id}
+        )
         if not matching_jobs:
-            raise ValueError('Cannot reuse generate-prediction-table job '
-                             f'{gen_pred_table_job_id}: job not found.')
+            raise ValueError(
+                'Cannot reuse generate-prediction-table job '
+                f'{gen_pred_table_job_id}: job not found.'
+            )
         gen_job = matching_jobs[0]
 
         gen_job_home_dir = await self._ml_backend.get_job_home_dir(
-            gen_pred_table_job_id)
+            gen_pred_table_job_id
+        )
         input_path = HomeDirManager(gen_job_home_dir).prediction_job_input_file
 
         async def fallback_or_raise(
-            reason: str, ) -> _DecoupledPredictionGraphContext:
+            reason: str,
+        ) -> _DecoupledPredictionGraphContext:
             graph_context = await self._gen_pred_table_graph_context_from_state(
-                gen_pred_table_job_id, gen_job=gen_job)
+                gen_pred_table_job_id, gen_job=gen_job
+            )
             if graph_context is not None:
                 log.warning(
                     'Saved input %r for decoupled generate-prediction-table '
                     'job %s is %s; falling back to StateDB graph metadata.',
-                    input_path, gen_pred_table_job_id, reason)
+                    input_path,
+                    gen_pred_table_job_id,
+                    reason,
+                )
                 return graph_context
             raise ValueError(
                 'Cannot reuse decoupled generate-prediction-table job '
                 f'{gen_pred_table_job_id}: saved input {input_path!r} is '
                 f'{reason}. Regenerate the prediction table before starting '
-                'batch prediction.')
+                'batch prediction.'
+            )
 
         try:
             gen_job_input = await load_json_async(
@@ -671,7 +694,8 @@ class BatchPredictionJobLogic:
                 'Cannot reuse decoupled generate-prediction-table job '
                 f'{gen_pred_table_job_id}: its saved input lacks the complete '
                 '(graph_key, graph_data_version) identity. Regenerate the '
-                'prediction table before starting batch prediction.')
+                'prediction table before starting batch prediction.'
+            )
         return _DecoupledPredictionGraphContext(
             graph_data_compute_input=graph_data_compute_input,
             graph_version_info=graph_version_info,
@@ -709,10 +733,12 @@ class BatchPredictionJobLogic:
             self._state_services,
         )
         cache = get_active_cache()
-        graph_version_info = (await load_many_json.coroutine(
-            [cache.graph_cache.version_info_path(graph_id, graph_data_version)],
-            GraphDataVersionInfo,
-        ))[0]
+        graph_version_info = (
+            await load_many_json.coroutine(
+                [cache.graph_cache.version_info_path(graph_id, graph_data_version)],
+                GraphDataVersionInfo,
+            )
+        )[0]
         if graph_version_info is None:
             return None
 
@@ -733,20 +759,22 @@ class BatchPredictionJobLogic:
         the training job's advanced options (fallback)."""
         if gen_tt_job is not None:
             plan = gen_tt_job.config.plan
-            config.lag_timesteps = inferred_or_missing_type_to_none(
-                plan.lag_timesteps)
+            config.lag_timesteps = inferred_or_missing_type_to_none(plan.lag_timesteps)
             config.year_over_year = inferred_or_missing_type_to_false(
-                plan.year_over_year)
+                plan.year_over_year
+            )
             config.forecast_length = inferred_or_missing_type_to_none(
-                plan.forecast_length)
+                plan.forecast_length
+            )
         elif training_job.advanced_options is not None:
             ttg = training_job.advanced_options.training_table_generation
-            config.lag_timesteps = inferred_or_missing_type_to_none(
-                ttg.lag_timesteps)
+            config.lag_timesteps = inferred_or_missing_type_to_none(ttg.lag_timesteps)
             config.year_over_year = inferred_or_missing_type_to_false(
-                ttg.year_over_year)
+                ttg.year_over_year
+            )
             config.forecast_length = inferred_or_missing_type_to_none(
-                ttg.forecast_length)
+                ttg.forecast_length
+            )
 
     async def _apply_bp_job_tags(
         self,
@@ -759,24 +787,25 @@ class BatchPredictionJobLogic:
         implicit gen-pred-table child job, if any)."""
         job_tags: Dict[JobTagKey, JobTagValue] = {}
         if custom_tags is not None:
-            job_tags.update(
-                {JobTagKey(tag): JobTagValue(tag)
-                 for tag in custom_tags})
+            job_tags.update({JobTagKey(tag): JobTagValue(tag) for tag in custom_tags})
         job_tags[TAG_KEY_PQUERY_NAME] = JobTagValue.of_pquery_name(
-            config.predictive_query_id)
-        job_tags[TAG_KEY_PQUERY_ID] = JobTagValue.of_pquery_id(
-            config.pquery_def_fpid)
+            config.predictive_query_id
+        )
+        job_tags[TAG_KEY_PQUERY_ID] = JobTagValue.of_pquery_id(config.pquery_def_fpid)
         job_tags[TAG_KEY_MODEL_ID] = JobTagValue(training_job_id)
-        await self._ml_backend.apply_job_tags(JobType.BATCH_PREDICTION_JOB, id,
-                                              dict(job_tags))
+        await self._ml_backend.apply_job_tags(
+            JobType.BATCH_PREDICTION_JOB, id, dict(job_tags)
+        )
         pred_table_job_id = config.generate_pred_table_job_id
-        if (pred_table_job_id and pred_table_job_id
-                == GeneratePredictionTableJobID.as_child_of(id)):
+        if (
+            pred_table_job_id
+            and pred_table_job_id == GeneratePredictionTableJobID.as_child_of(id)
+        ):
             del job_tags[TAG_KEY_MODEL_ID]
             job_tags[TAG_KEY_PARENT_JOB] = JobTagValue(id)
             await self._ml_backend.apply_job_tags(
-                JobType.GENERATE_PREDICTION_TABLE_JOB, pred_table_job_id,
-                job_tags)
+                JobType.GENERATE_PREDICTION_TABLE_JOB, pred_table_job_id, job_tags
+            )
 
     async def _delete_old_bp_jobs(
         self,
@@ -795,12 +824,15 @@ class BatchPredictionJobLogic:
                 workflow_id,
                 project_ids={project_id},
                 keep_most_recent=max_bp_jobs,
-            ))
+            )
+        )
         if job_ids_to_delete:
             await self.delete_many_batch_prediction_jobs(ctx, job_ids_to_delete)
-            log.info(f"Deleted {len(job_ids_to_delete)} BP jobs, from "
-                     f"workflow {workflow_id}, "
-                     "to prevent overloading the system.")
+            log.info(
+                f'Deleted {len(job_ids_to_delete)} BP jobs, from '
+                f'workflow {workflow_id}, '
+                'to prevent overloading the system.'
+            )
 
     async def get_batch_prediction_job(
         self,
@@ -813,16 +845,18 @@ class BatchPredictionJobLogic:
         assert len(jobs) == 1
         return jobs[0]
 
-    async def delete_batch_prediction(self, ctx: RequestContext,
-                                      id: BatchPredictionJobID) -> bool:
+    async def delete_batch_prediction(
+        self, ctx: RequestContext, id: BatchPredictionJobID
+    ) -> bool:
         r"""Delete a batch prediction job with its metadata and tags.
         Return True if the job was deleted, False if no such job is visible
         to the caller."""
         ml_job_service = self._ml_job_service_or_none()
         if ml_job_service is None:
             raise RuntimeError(
-                "BatchPredictionJobLogic requires StateServices.ml_jobs for "
-                "batch prediction deletion.")
+                'BatchPredictionJobLogic requires StateServices.ml_jobs for '
+                'batch prediction deletion.'
+            )
         try:
             deleted = await self._ml_backend.delete_batch_prediction(ctx, id)
         except RpcError as rpc_error:
@@ -836,7 +870,8 @@ class BatchPredictionJobLogic:
         return True
 
     async def delete_many_batch_prediction_jobs(
-            self, ctx: RequestContext, ids: Set[BatchPredictionJobID]) -> bool:
+        self, ctx: RequestContext, ids: Set[BatchPredictionJobID]
+    ) -> bool:
         r"""Delete multiple batch prediction jobs.
         Return True if all jobs are deleted, False otherwise."""
         jobs_wont_delete = set()
@@ -850,21 +885,25 @@ class BatchPredictionJobLogic:
             jobs_to_delete.update(found_ids)
         else:
             raise RuntimeError(
-                "BatchPredictionJobLogic requires StateServices.ml_jobs for "
-                "batch prediction deletion.")
+                'BatchPredictionJobLogic requires StateServices.ml_jobs for '
+                'batch prediction deletion.'
+            )
 
         # First delete from the ML backend
         deleted_from_ml_db = set()
         try:
             out = await self._ml_backend.delete_many_batch_prediction_jobs(
-                ctx, jobs_to_delete)
+                ctx, jobs_to_delete
+            )
             deleted_from_ml_db = out
         except RpcError as rpc_error:
             if rpc_error.error_type == ValueError.__name__:
                 asyncio.create_task(
                     send_slack_message.coroutine(
-                        f"Error deleting batch prediction jobs from StateDB "
-                        f"Error: {rpc_error.message}"))
+                        f'Error deleting batch prediction jobs from StateDB '
+                        f'Error: {rpc_error.message}'
+                    )
+                )
             else:
                 raise
 
@@ -872,8 +911,7 @@ class BatchPredictionJobLogic:
         # successfully deleted from the ML backend.
         jobs_wont_delete.update(jobs_to_delete - deleted_from_ml_db)
         jobs_to_delete = deleted_from_ml_db
-        await ml_job_service.delete_batch_prediction_metadata_and_tags(
-            jobs_to_delete)
+        await ml_job_service.delete_batch_prediction_metadata_and_tags(jobs_to_delete)
         return not jobs_wont_delete
 
     def list_batch_prediction_job_entries(
@@ -884,9 +922,10 @@ class BatchPredictionJobLogic:
     ) -> List[BatchPredictionJobDBEntry]:
         del ctx, job_entry_predicate, sort_by_create_time
         raise RuntimeError(
-            "Synchronous batch prediction metadata listing is no longer backed "
-            "by legacy REST metadata. Use _list_batch_prediction_job_entries "
-            "with StateServices.ml_jobs.")
+            'Synchronous batch prediction metadata listing is no longer backed '
+            'by legacy REST metadata. Use _list_batch_prediction_job_entries '
+            'with StateServices.ml_jobs.'
+        )
 
     async def _list_batch_prediction_job_entries(
         self,
@@ -903,15 +942,18 @@ class BatchPredictionJobLogic:
         match_pquery_def_fpid: bool = True,
         project_id: Optional[ProjectID] = None,
     ) -> List[BatchPredictionJobDBEntry]:
-        project_ids = ({project_id} if project_id is not None else
-                       visible_project_ids_or_none(ctx.user_authorization))
+        project_ids = (
+            {project_id}
+            if project_id is not None
+            else visible_project_ids_or_none(ctx.user_authorization)
+        )
         rows = await self._require_ml_job_service().list_batch_prediction_rows(
             project_ids=project_ids,
             model_id=model_id,
             pquery_id=pquery_id,
             job_ids=job_ids,
             status=job_status,
-            sort_created_at="desc" if sort_desc else "asc",
+            sort_created_at='desc' if sort_desc else 'asc',
             limit=limit,
             offset=offset,
             match_pquery_def_fpid=match_pquery_def_fpid,
@@ -930,8 +972,9 @@ class BatchPredictionJobLogic:
         jobs: Iterable[BatchPredictionJobDBEntry],
     ) -> List[Optional[BatchPredictionJobID]]:
         pquery_id_set = set(pquery_ids)
-        id_map: Dict[PredictiveQueryID,
-                     List[BatchPredictionJobDBEntry]] = defaultdict(list)
+        id_map: Dict[PredictiveQueryID, List[BatchPredictionJobDBEntry]] = defaultdict(
+            list
+        )
         for job in jobs:
             pqid = job.config.predictive_query_id
             if pqid not in pquery_id_set:
@@ -943,8 +986,7 @@ class BatchPredictionJobLogic:
                 result.append(None)
                 continue
             jobs_for_pquery = id_map[pqid]
-            job = max(jobs_for_pquery,
-                      key=lambda job: job.timestamps.created_at)
+            job = max(jobs_for_pquery, key=lambda job: job.timestamps.created_at)
             result.append(job.id)
         return result
 
@@ -958,19 +1000,21 @@ class BatchPredictionJobLogic:
         """
         del ctx, pquery_ids
         raise RuntimeError(
-            "Synchronous current batch prediction lookup is no longer backed "
-            "by legacy REST metadata. Use get_current_pred_job_ids_v2 with "
-            "StateServices.ml_jobs.")
+            'Synchronous current batch prediction lookup is no longer backed '
+            'by legacy REST metadata. Use get_current_pred_job_ids_v2 with '
+            'StateServices.ml_jobs.'
+        )
 
     async def get_current_pred_job_ids_v2(
         self,
         ctx: RequestContext,
         pquery_ids: List[PredictiveQueryID],
     ) -> List[Optional[BatchPredictionJobID]]:
-        id_map = await self._require_ml_job_service(
-        ).get_current_batch_prediction_job_ids(
-            pquery_ids,
-            project_ids=visible_project_ids_or_none(ctx.user_authorization),
+        id_map = (
+            await self._require_ml_job_service().get_current_batch_prediction_job_ids(
+                pquery_ids,
+                project_ids=visible_project_ids_or_none(ctx.user_authorization),
+            )
         )
         return [id_map.get(pquery_id) for pquery_id in pquery_ids]
 
@@ -989,11 +1033,9 @@ class BatchPredictionJobLogic:
         allow_missing_pquery: bool = False,
     ) -> Tuple[PredictiveQueryLink, GraphLink]:
         pq_id = config.predictive_query_id
-        is_from_sdk = pq_id is not None and (pq_id.is_public
-                                             or pq_id.name == "NA")
+        is_from_sdk = pq_id is not None and (pq_id.is_public or pq_id.name == 'NA')
         if is_from_sdk and config.pquery_def_fpid is not None:
-            public_pq_id = PredictiveQueryID.compose(
-                fpid=config.pquery_def_fpid)
+            public_pq_id = PredictiveQueryID.compose(fpid=config.pquery_def_fpid)
             graph_id = config.graph_id
             assert graph_id is not None
             return (
@@ -1021,7 +1063,8 @@ class BatchPredictionJobLogic:
             assert graph_id.fpid is not None
             assert config.graph_data_version is not None
             snapshot_id = DataSnapshot.GRAPH.format_id(
-                graph_id.fpid, config.graph_data_version)
+                graph_id.fpid, config.graph_data_version
+            )
             return (
                 PredictiveQueryLink(
                     name=config.training_job_id,
@@ -1072,12 +1115,15 @@ class BatchPredictionJobLogic:
 
         jobs_by_id = {job.id: job for job in jobs}
         job_outputs = await self._ml_backend.get_batch_prediction_jobs(
-            ctx, set(job.id for job in jobs), job_status, limit)
+            ctx, set(job.id for job in jobs), job_status, limit
+        )
 
-        pqs_by_id = await self._pqueries_by_id(pq_ids=[
-            jobs_by_id[job_id].config.predictive_query_id
-            for job_id in job_outputs.keys()
-        ])
+        pqs_by_id = await self._pqueries_by_id(
+            pq_ids=[
+                jobs_by_id[job_id].config.predictive_query_id
+                for job_id in job_outputs.keys()
+            ]
+        )
 
         result: List[BatchPredictionJobResponse] = []
         for job_id, job_output in job_outputs.items():
@@ -1091,20 +1137,21 @@ class BatchPredictionJobLogic:
                     config=job.config,
                     timestamps=ResourceTimestamps(
                         created_at=job.timestamps.created_at,
-                        updated_at=(job_output.last_updated_at
-                                    or job.timestamps.created_at),
+                        updated_at=(
+                            job_output.last_updated_at or job.timestamps.created_at
+                        ),
                     ),
                     predictive_query_link=pq_link,
                     execution=job_output,
                     graph_link=graph_link,
                     project_id=job.project_id,
                     description=job.description,
-                    batch_prediction_workflow_id=job.
-                    batch_prediction_workflow_id,
+                    batch_prediction_workflow_id=job.batch_prediction_workflow_id,
                     job_source=job.source,
                     user=job.user,
                     kumo_version=job.kumo_version,
-                ))
+                )
+            )
 
         return sorted(result, key=lambda job: job.timestamps.created_at)
 
@@ -1132,17 +1179,18 @@ class BatchPredictionJobLogic:
             PaginatedBatchPredictionJobResponse
         """
         num_jobs_to_get: int = LIMIT_BP_JOBS_PER_PAGE
-        if (pagination_args.page_size > LIMIT_BP_JOBS_PER_PAGE
-                or pagination_args.page_size < 1):
+        if (
+            pagination_args.page_size > LIMIT_BP_JOBS_PER_PAGE
+            or pagination_args.page_size < 1
+        ):
             raise HTTPException(
                 status_code=HTTPStatus.BAD_REQUEST,
-                detail="page_size has to be a number between 1 and 200.",
+                detail='page_size has to be a number between 1 and 200.',
             )
         else:
             num_jobs_to_get = pagination_args.page_size
 
-        total_jobs = await self._require_ml_job_service(
-        ).count_batch_prediction_rows(
+        total_jobs = await self._require_ml_job_service().count_batch_prediction_rows(
             project_ids=visible_project_ids_or_none(ctx.user_authorization),
             model_id=model_id,
             pquery_id=pquery_id,
@@ -1154,12 +1202,12 @@ class BatchPredictionJobLogic:
         if pagination_args.page > page_limit:
             raise HTTPException(
                 status_code=HTTPStatus.BAD_REQUEST,
-                detail=f"page cannot be larger than {page_limit}.",
+                detail=f'page cannot be larger than {page_limit}.',
             )
         elif pagination_args.page < 1:
             raise HTTPException(
                 status_code=HTTPStatus.BAD_REQUEST,
-                detail="page cannot be smaller than 1.",
+                detail='page cannot be smaller than 1.',
             )
 
         result: List[BatchPredictionJobResponse] = []
@@ -1182,36 +1230,41 @@ class BatchPredictionJobLogic:
 
         jobs_by_id = {job.id: job for job in jobs}
         job_outputs = await self._ml_backend.get_batch_prediction_jobs(
-            ctx, set(job.id for job in jobs), job_status, num_jobs_to_get)
+            ctx, set(job.id for job in jobs), job_status, num_jobs_to_get
+        )
 
-        pqs_by_id = await self._pqueries_by_id(pq_ids=[
-            jobs_by_id[job_id].config.predictive_query_id
-            for job_id in job_outputs.keys()
-        ])
+        pqs_by_id = await self._pqueries_by_id(
+            pq_ids=[
+                jobs_by_id[job_id].config.predictive_query_id
+                for job_id in job_outputs.keys()
+            ]
+        )
 
         for job_id, job_output in job_outputs.items():
             job = jobs_by_id[job_id]
             pq = pqs_by_id[job.config.predictive_query_id]
             predictive_query_link, graph_link = self._batch_prediction_links(
-                job.config, pq, allow_missing_pquery=True)
+                job.config, pq, allow_missing_pquery=True
+            )
             result.append(
                 BatchPredictionJobResponse(
                     id=job.id,
                     config=job.config,
                     timestamps=ResourceTimestamps(
                         created_at=job.timestamps.created_at,
-                        updated_at=(job_output.last_updated_at
-                                    or job.timestamps.created_at),
+                        updated_at=(
+                            job_output.last_updated_at or job.timestamps.created_at
+                        ),
                     ),
                     predictive_query_link=predictive_query_link,
                     execution=job_output,
                     graph_link=graph_link,
                     project_id=job.project_id,
                     description=job.description,
-                    batch_prediction_workflow_id=job.
-                    batch_prediction_workflow_id,
+                    batch_prediction_workflow_id=job.batch_prediction_workflow_id,
                     kumo_version=job.kumo_version,
-                ))
+                )
+            )
         return PaginatedBatchPredictionJobResponse(
             jobs=sorted(result, key=lambda job: job.timestamps.created_at),
             current_page=pagination_args.page,
@@ -1234,8 +1287,7 @@ class BatchPredictionJobLogic:
         ctx: RequestContext,
         ids: List[BatchPredictionJobID],
     ) -> List[Optional[MaterializationTaskInfo]]:
-        materialization_info = await self._ml_backend.get_many_materialization_info(
-            ids)
+        materialization_info = await self._ml_backend.get_many_materialization_info(ids)
         return materialization_info
 
     async def get_prediction_stat_args(
@@ -1249,12 +1301,15 @@ class BatchPredictionJobLogic:
             raise BatchPredictionDoesNotExistError(id)
         bp_job_config = bp_db_entry.config
         if not bp_job_config:
-            raise ValueError(f"Batch Prediction Job with ID {id} does not "
-                             f"have an associated config object in the DB.")
+            raise ValueError(
+                f'Batch Prediction Job with ID {id} does not '
+                f'have an associated config object in the DB.'
+            )
         bp_job_home_dir = await self._ml_backend.get_job_home_dir(id)
         home_dir_mgr = HomeDirManager(bp_job_home_dir)
         bp_job_input = await load_json_async(
-            home_dir_mgr.prediction_job_input_file, BatchPredictionJobInput)
+            home_dir_mgr.prediction_job_input_file, BatchPredictionJobInput
+        )
         pquery_config = bp_job_input.predictive_query
         entity_col_name = pquery_config.get_bp_entity_col_name()
 
@@ -1265,9 +1320,11 @@ class BatchPredictionJobLogic:
             is_temporal=(pquery_config.query_type == QueryType.TEMPORAL),
             entity_col_name=entity_col_name,
             use_transformed_output=use_transformed_output,
-            data_version_override=(str(bp_db_entry.id)
-                                   if has_only_databricks_outputs(
-                                       bp_job_input.config) else None),
+            data_version_override=(
+                str(bp_db_entry.id)
+                if has_only_databricks_outputs(bp_job_input.config)
+                else None
+            ),
         )
 
     async def get_prediction_stats(
@@ -1282,7 +1339,8 @@ class BatchPredictionJobLogic:
             _,
             col_stats_set,
         ) = await self.get_prediction_stat_args(
-            ctx=ctx, id=id, use_transformed_output=use_transformed_output)
+            ctx=ctx, id=id, use_transformed_output=use_transformed_output
+        )
 
         # Try to load stats from col_stats file first
         bp_job = await self._get_batch_prediction_entry_if_exists(ctx, id)
@@ -1295,12 +1353,11 @@ class BatchPredictionJobLogic:
                 job_home_dir=job_home_dir,
             )
             if stats_response:
-                log.info(
-                    "we are able to retrieve stats from per job directory.")
+                log.info('we are able to retrieve stats from per job directory.')
                 return stats_response
 
         log.info(
-            "Falling back to previous logic to retrieve stats from data backend cache."
+            'Falling back to previous logic to retrieve stats from data backend cache.'
         )
         # Fall back to existing logic if stats couldn't be loaded from file
         return await _get_col_stats_and_sample_rows(
@@ -1331,84 +1388,108 @@ class BatchPredictionJobLogic:
         if num_workers <= 0:
             ctas.append(
                 CallToAction.crit(
-                    f"num_workers must be a positive "
-                    f"integer. Currently the supported values of "
-                    f"parallelism are "
-                    f"{set(range(1, MAX_NUM_PARALLEL_WORKERS_BP + 1))}"))
+                    f'num_workers must be a positive '
+                    f'integer. Currently the supported values of '
+                    f'parallelism are '
+                    f'{set(range(1, MAX_NUM_PARALLEL_WORKERS_BP + 1))}'
+                )
+            )
         if num_workers > MAX_NUM_PARALLEL_WORKERS_BP:
             ctas.append(
                 CallToAction.crit(
-                    "For efficiency reasons, our platform currently "
-                    "supports a maximum job parallelism of "
-                    f"{MAX_NUM_PARALLEL_WORKERS_BP} but you have requested "
-                    f"{num_workers}. Please reduce the "
-                    "parallelism of the batch prediction job and try again."))
+                    'For efficiency reasons, our platform currently '
+                    'supports a maximum job parallelism of '
+                    f'{MAX_NUM_PARALLEL_WORKERS_BP} but you have requested '
+                    f'{num_workers}. Please reduce the '
+                    'parallelism of the batch prediction job and try again.'
+                )
+            )
         try:
             _validate_task_type_options_v2(task_type, request)
         except Exception as e:
             ctas.append(CallToAction.crit(str(e)))
 
         # --- Prediction time (replaces _validate_prediction_time) ---
-        prediction_time = getattr(request.predict_options, 'prediction_time',
-                                  None)
+        prediction_time = getattr(request.predict_options, 'prediction_time', None)
         if prediction_time:
             if prediction_time.tzinfo:
                 res.errors.append(
                     ValidationError(
-                        title="Timezone not allowed in prediction_time",
-                        message=("The timezone included in the specified "
-                                 "prediction time will be ignored. Please "
-                                 "convert to UTC if data is timezone-aware, "
-                                 "otherwise convert to the timezone of the "
-                                 "data"),
-                    ))
+                        title='Timezone not allowed in prediction_time',
+                        message=(
+                            'The timezone included in the specified '
+                            'prediction time will be ignored. Please '
+                            'convert to UTC if data is timezone-aware, '
+                            'otherwise convert to the timezone of the '
+                            'data'
+                        ),
+                    )
+                )
             if query_type == QueryType.STATIC:
                 res.errors.append(
                     ValidationError(
-                        title=("Prediction Anchor Time not "
-                               "supported for static queries"),
-                        message=("Your query is static, so it doesn't "
-                                 "consider time when generating predictions, "
-                                 "so specifying a prediction time is not "
-                                 "allowed."),
-                    ))
+                        title=(
+                            'Prediction Anchor Time not supported for static queries'
+                        ),
+                        message=(
+                            "Your query is static, so it doesn't "
+                            'consider time when generating predictions, '
+                            'so specifying a prediction time is not '
+                            'allowed.'
+                        ),
+                    )
+                )
 
         # --- Outputs (replaces _validate_outputs) ---
         if request.outputs is not None:  # type: ignore
             pending_outputs = await self._get_outputs_of_running_jobs(
-                ctx, request.outputs, project_id=project_id)
+                ctx, request.outputs, project_id=project_id
+            )
             for output in request.outputs:
-                if (MetadataField.ANCHOR_TIMESTAMP in output.extra_fields
-                        and query_type == QueryType.STATIC):
+                if (
+                    MetadataField.ANCHOR_TIMESTAMP in output.extra_fields
+                    and query_type == QueryType.STATIC
+                ):
                     ctas.append(
                         CallToAction.crit(
-                            "ANCHOR_TIMESTAMP is only supported for temporal "
-                            "prediction tasks."))
+                            'ANCHOR_TIMESTAMP is only supported for temporal '
+                            'prediction tasks.'
+                        )
+                    )
                     continue
-                if (isinstance(output, DatabricksPredictionOutput)
-                        or isinstance(output, SnowflakePredictionOutput)
-                        or isinstance(output, BigQueryPredictionOutput)):
+                if (
+                    isinstance(output, DatabricksPredictionOutput)
+                    or isinstance(output, SnowflakePredictionOutput)
+                    or isinstance(output, BigQueryPredictionOutput)
+                ):
                     if not output.table_name:
                         ctas.append(
                             CallToAction(
                                 level=CallToActionLevel.CRITICAL,
-                                message=("Table name is not specified for "
-                                         "this batch prediction. Please "
-                                         "specify a table name."),
-                            ))
+                                message=(
+                                    'Table name is not specified for '
+                                    'this batch prediction. Please '
+                                    'specify a table name.'
+                                ),
+                            )
+                        )
                         continue
-                elif isinstance(output,
-                                (S3PredictionOutput, GCSPredictionOutput,
-                                 ADLSPredictionOutput)):
+                elif isinstance(
+                    output,
+                    (S3PredictionOutput, GCSPredictionOutput, ADLSPredictionOutput),
+                ):
                     coordinate = output.file_path
                     if not coordinate:
                         ctas.append(
                             CallToAction(
                                 level=CallToActionLevel.CRITICAL,
-                                message=("File name is not specified for "
-                                         "this batch prediction. Please "
-                                         "specify a file name."),
-                            ))
+                                message=(
+                                    'File name is not specified for '
+                                    'this batch prediction. Please '
+                                    'specify a file name.'
+                                ),
+                            )
+                        )
                         continue
                 cta = await self._validate_output(
                     output,
@@ -1421,15 +1502,17 @@ class BatchPredictionJobLogic:
         # --- Convert CTAs to ValidationResponse ---
         def _cta_to_validation(cta: CallToAction) -> ValidationResponse:
             if cta.level == CallToActionLevel.CRITICAL:
-                return ValidationResponse(errors=[
-                    ValidationError(title="Validation Error",
-                                    message=cta.message)
-                ])
+                return ValidationResponse(
+                    errors=[
+                        ValidationError(title='Validation Error', message=cta.message)
+                    ]
+                )
             elif cta.level == CallToActionLevel.WARNING:
-                return ValidationResponse(warnings=[
-                    ValidationWarning(title="Validation Error",
-                                      message=cta.message)
-                ])
+                return ValidationResponse(
+                    warnings=[
+                        ValidationWarning(title='Validation Error', message=cta.message)
+                    ]
+                )
             return ValidationResponse()
 
         for cta in ctas:
@@ -1457,8 +1540,7 @@ class BatchPredictionJobLogic:
             cancelled.
         """
         if bp_job_id:
-            rows = await self._require_ml_job_service(
-            ).list_batch_prediction_rows(
+            rows = await self._require_ml_job_service().list_batch_prediction_rows(
                 project_ids=visible_project_ids_or_none(ctx.user_authorization),
                 pquery_id=id,
                 job_ids={bp_job_id},
@@ -1466,15 +1548,13 @@ class BatchPredictionJobLogic:
                 match_pquery_def_fpid=False,
             )
             if not rows:
-                raise ValueError(
-                    f"No batch prediction job with id: {bp_job_id} found.")
+                raise ValueError(f'No batch prediction job with id: {bp_job_id} found.')
             job_to_cancel = bp_job_id
         else:
             job_to_cancel = await self.get_current_pred_job_id_v2(ctx, id)
         if job_to_cancel is None:
-            raise ValueError(
-                f"No batch prediction job with pquery id: {id} found.")
-        log.info(f"Cancelling batch predict job: {job_to_cancel}")
+            raise ValueError(f'No batch prediction job with pquery id: {id} found.')
+        log.info(f'Cancelling batch predict job: {job_to_cancel}')
         return await self._ml_backend.cancel_batch_prediction_job(job_to_cancel)
 
     @measure_blocking_code
@@ -1486,7 +1566,7 @@ class BatchPredictionJobLogic:
         job_config: BatchPredictionJobConfig,
         *,
         train_table_options: Optional[TrainingTableGenerationPlan] = None,
-        graph_data_compute_input: Optional["GraphDataComputeInput"] = None,
+        graph_data_compute_input: Optional['GraphDataComputeInput'] = None,
         graph_version_info: Optional[GraphDataVersionInfo] = None,
         custom_pred_table_connector: Optional[ConnectorExecutionRef] = None,
         project_id: ProjectID,
@@ -1501,7 +1581,8 @@ class BatchPredictionJobLogic:
             project_id,
         )
         output_connectors = await self._get_output_connectors(
-            job_config.outputs, project_id)
+            job_config.outputs, project_id
+        )
 
         job_input = await _make_bp_input_v2(
             pq_resource,
@@ -1522,7 +1603,7 @@ class BatchPredictionJobLogic:
 
     async def _reauthorize_graph_compute_input(
         self,
-        graph_input: Optional["GraphDataComputeInput"],
+        graph_input: Optional['GraphDataComputeInput'],
         project_id: ProjectID,
     ) -> None:
         """Recheck every project connector loaded from a prior job input."""
@@ -1537,23 +1618,26 @@ class BatchPredictionJobLogic:
         ]
         if invalid:
             raise ValueError(
-                'Graph inputs must contain only project connector references')
+                'Graph inputs must contain only project connector references'
+            )
         if self._state_services is None:
             raise RuntimeError(
-                'Batch prediction connector resolution requires StateServices')
+                'Batch prediction connector resolution requires StateServices'
+            )
         for connector_id, reference in graph_input.connectors.items():
             assert isinstance(reference, ConnectorExecutionRef)
             if reference.project_id != project_id:
                 raise ValueError(
-                    f'Connector {connector_id} was authorized for a '
-                    'different project')
-            graph_input.connectors[connector_id] = await (
-                self._state_services.connectors.execution_ref_for_project(
-                    _current_user_ctx.get(),
-                    project_id,
-                    connector_id,
-                    CONNECTOR_GRAPH_ACTIONS,
-                ))
+                    f'Connector {connector_id} was authorized for a different project'
+                )
+            graph_input.connectors[
+                connector_id
+            ] = await self._state_services.connectors.execution_ref_for_project(
+                _current_user_ctx.get(),
+                project_id,
+                connector_id,
+                CONNECTOR_GRAPH_ACTIONS,
+            )
 
     async def _get_output_connectors(
         self,
@@ -1562,43 +1646,44 @@ class BatchPredictionJobLogic:
     ) -> Dict[ConnectorID, ConnectorExecutionRef]:
         if self._state_services is None:
             raise RuntimeError(
-                'Batch prediction connector resolution requires StateServices')
+                'Batch prediction connector resolution requires StateServices'
+            )
         expected_types: Dict[ConnectorID, ConnectorType] = {}
         for output in outputs:
             if isinstance(output, jobs_api.SnowflakePredictionOutput):
-                expected_types[ConnectorID(
-                    output.connector_id)] = ConnectorType.SNOWFLAKE
+                expected_types[ConnectorID(output.connector_id)] = (
+                    ConnectorType.SNOWFLAKE
+                )
             elif isinstance(output, jobs_api.DatabricksPredictionOutput):
-                expected_types[ConnectorID(
-                    output.connector_id)] = ConnectorType.DATABRICKS
+                expected_types[ConnectorID(output.connector_id)] = (
+                    ConnectorType.DATABRICKS
+                )
             elif isinstance(output, jobs_api.BigQueryPredictionOutput):
-                expected_types[ConnectorID(
-                    output.connector_id)] = ConnectorType.BIGQUERY
+                expected_types[ConnectorID(output.connector_id)] = (
+                    ConnectorType.BIGQUERY
+                )
             elif isinstance(output, jobs_api.S3PredictionOutput):
-                expected_types[ConnectorID(
-                    output.connector_id)] = ConnectorType.S3
+                expected_types[ConnectorID(output.connector_id)] = ConnectorType.S3
             elif isinstance(output, jobs_api.GCSPredictionOutput):
-                expected_types[ConnectorID(
-                    output.connector_id)] = ConnectorType.GCS
+                expected_types[ConnectorID(output.connector_id)] = ConnectorType.GCS
             elif isinstance(output, jobs_api.ADLSPredictionOutput):
-                expected_types[ConnectorID(
-                    output.connector_id)] = ConnectorType.ADLS
+                expected_types[ConnectorID(output.connector_id)] = ConnectorType.ADLS
 
         if not expected_types:
             return {}
         if project_id is None:
-            raise ValueError(
-                'project_id is required for external prediction outputs')
+            raise ValueError('project_id is required for external prediction outputs')
 
         return {
-            connector_id:
-            await self._state_services.connectors.execution_ref_for_project(
+            connector_id: await self._state_services.connectors.execution_ref_for_project(
                 _current_user_ctx.get(),
                 project_id,
                 connector_id,
-                (CONNECTOR_DATABRICKS_BATCH_PREDICTION_OUTPUT_ACTIONS
-                 if expected_type == ConnectorType.DATABRICKS else
-                 CONNECTOR_OUTPUT_ACTIONS),
+                (
+                    CONNECTOR_DATABRICKS_BATCH_PREDICTION_OUTPUT_ACTIONS
+                    if expected_type == ConnectorType.DATABRICKS
+                    else CONNECTOR_OUTPUT_ACTIONS
+                ),
                 expected_type=expected_type,
             )
             for connector_id, expected_type in expected_types.items()
@@ -1615,15 +1700,16 @@ class BatchPredictionJobLogic:
 
         # Load all XAI data in parallel.
         column_file_path = os.path.join(
-            home_mgr.column_analysis_dir(TrainingStage.PRED),
-            "column_analysis.json")
+            home_mgr.column_analysis_dir(TrainingStage.PRED), 'column_analysis.json'
+        )
         column_analysis = await asyncio.gather(
             json.load_json_async(
                 column_file_path,
                 ColumnAnalysisOutput,
                 default=None,
                 raise_on_missing=False,
-            ))
+            )
+        )
 
         root_table_id = None
         navigation_tree: Dict[str, List[str]] = defaultdict(list)
@@ -1632,11 +1718,11 @@ class BatchPredictionJobLogic:
             table_id = to_table_id(table.name)
             resp.tables[table_id] = {}
             # Populate the root_table if we've found the entity table
-            if f"{table_id.table_name}.{table.pkey_name}" == entity:
+            if f'{table_id.table_name}.{table.pkey_name}' == entity:
                 root_table_id = table_id
 
             for col in table.cols:
-                navigation_tree[table_id].append(f"{table_id}.{col.name}")
+                navigation_tree[table_id].append(f'{table_id}.{col.name}')
                 col_stypes[str(ColumnID(table_id, col.name))] = col.stype
 
         assert root_table_id is not None
@@ -1644,16 +1730,17 @@ class BatchPredictionJobLogic:
         # Merge BFS tree to navigation.
         for table_id, adj_table_ids in bfs_tree.items():
             navigation_tree[table_id].extend(adj_table_ids)
-        resp.navigation = NavigationInfo(root_table_name=root_table_id,
-                                         navigation_tree=navigation_tree)
+        resp.navigation = NavigationInfo(
+            root_table_name=root_table_id, navigation_tree=navigation_tree
+        )
 
         # Populate variance score and column analysis in response.
         name_to_table = {table.table_name: table for table in tables}
         column_analysis = column_analysis[0]
         if column_analysis is None or column_analysis.cohorts is None:
             log.warning(
-                "Batch prediction XAI column analysis is unavailable for %s; "
-                "returning navigation-only XAI response.",
+                'Batch prediction XAI column analysis is unavailable for %s; '
+                'returning navigation-only XAI response.',
                 home_mgr.home_dir,
             )
             return resp
@@ -1688,9 +1775,11 @@ class BatchPredictionJobLogic:
             raise_on_missing=False,
         )
         if strategy_mappings is None:
-            log.warning(f"Strategy mappings could not be found on S3 at "
-                        f"path '{mappings_file_path}'. Return empty mappings "
-                        f"instead.")
+            log.warning(
+                f'Strategy mappings could not be found on S3 at '
+                f"path '{mappings_file_path}'. Return empty mappings "
+                f'instead.'
+            )
             return StrategyMappings()
         return strategy_mappings
 
@@ -1700,7 +1789,8 @@ class BatchPredictionJobLogic:
         entity_id: str,
     ) -> OldSubgraph:
         subgraph_file_path = home_mgr.subgraph_json_path(
-            TrainingStage.PRED, entity_id, old=True)
+            TrainingStage.PRED, entity_id, old=True
+        )
         subgraph = await load_json_async(
             subgraph_file_path,
             OldSubgraph,
@@ -1709,9 +1799,10 @@ class BatchPredictionJobLogic:
         )
         if subgraph is None:
             log.warning(
-                f"Entity {entity_id} subgraph could not be found on S3 at "
+                f'Entity {entity_id} subgraph could not be found on S3 at '
                 f"path '{subgraph_file_path}'. Return an empty subgraph "
-                f"instead.")
+                f'instead.'
+            )
             return OldSubgraph(id=entity_id, table_name=None, task_type=None)
         return subgraph
 
@@ -1721,7 +1812,8 @@ class BatchPredictionJobLogic:
         entity_id: str,
     ) -> Subgraph:
         subgraph_file_path = home_mgr.subgraph_json_path(
-            TrainingStage.PRED, entity_id, old=False)
+            TrainingStage.PRED, entity_id, old=False
+        )
         subgraph = await load_json_async(
             subgraph_file_path,
             Subgraph,
@@ -1730,9 +1822,10 @@ class BatchPredictionJobLogic:
         )
         if subgraph is None:
             log.warning(
-                f"Entity {entity_id} subgraph could not be found on S3 at "
+                f'Entity {entity_id} subgraph could not be found on S3 at '
                 f"path '{subgraph_file_path}'. Return an empty subgraph "
-                f"instead.")
+                f'instead.'
+            )
             return Subgraph()
         return subgraph
 
@@ -1741,8 +1834,7 @@ class BatchPredictionJobLogic:
         home_mgr: HomeDirManager,
         entity_id: str,
     ) -> EntityOutput:
-        output_file_path = home_mgr.subgraph_output_path(
-            TrainingStage.PRED, entity_id)
+        output_file_path = home_mgr.subgraph_output_path(TrainingStage.PRED, entity_id)
         output = await load_json_async(
             output_file_path,
             EntityOutput,
@@ -1751,9 +1843,10 @@ class BatchPredictionJobLogic:
         )
         if output is None:
             log.warning(
-                f"Entity {entity_id} output could not be found on S3 at "
+                f'Entity {entity_id} output could not be found on S3 at '
                 f"path '{output_file_path}'. Return an empty entity output "
-                f"instead.")
+                f'instead.'
+            )
             return EntityOutput(task_type=None)
         return output
 
@@ -1763,14 +1856,17 @@ class BatchPredictionJobLogic:
         entity_id: str,
     ) -> HistoricalItems:
         items_file_path = home_mgr.subgraph_historical_items_path(
-            TrainingStage.PRED, entity_id)
-        items = await load_json_async(items_file_path, HistoricalItems,
-                                      default=None, raise_on_missing=False)
+            TrainingStage.PRED, entity_id
+        )
+        items = await load_json_async(
+            items_file_path, HistoricalItems, default=None, raise_on_missing=False
+        )
         if items is None:
             log.warning(
-                f"Entity {entity_id} historical items could not be found on "
+                f'Entity {entity_id} historical items could not be found on '
                 f"S3 at path '{items_file_path}'. Return empty historical "
-                f"items instead.")
+                f'items instead.'
+            )
             return HistoricalItems()
         return items
 
@@ -1782,31 +1878,35 @@ class BatchPredictionJobLogic:
         project_id: ProjectID,
     ) -> _PendingOutputs:
         ids = await self._ml_backend.get_running_batch_prediction_job_ids(
-            project_ids={project_id})
-        running_jobs = await self.list_batch_prediction_jobs(
-            ctx, job_ids=set(ids))
+            project_ids={project_id}
+        )
+        running_jobs = await self.list_batch_prediction_jobs(ctx, job_ids=set(ids))
 
         pending_outputs = _PendingOutputs()
 
         for job in running_jobs:
             for output in job.config.outputs:
-                if (isinstance(output, DatabricksPredictionOutput)
-                        or isinstance(output, SnowflakePredictionOutput)
-                        or isinstance(output, BigQueryPredictionOutput)):
-                    table = _WarehouseTablePath(output.connector_id,
-                                                output.table_name)
+                if (
+                    isinstance(output, DatabricksPredictionOutput)
+                    or isinstance(output, SnowflakePredictionOutput)
+                    or isinstance(output, BigQueryPredictionOutput)
+                ):
+                    table = _WarehouseTablePath(output.connector_id, output.table_name)
                     pending_outputs.warehouse_tables[table] = _ConflictInfo(
-                        is_other_job=True, bp_id=job.id)
-                elif isinstance(output,
-                                (S3PredictionOutput, GCSPredictionOutput,
-                                 ADLSPredictionOutput)):
+                        is_other_job=True, bp_id=job.id
+                    )
+                elif isinstance(
+                    output,
+                    (S3PredictionOutput, GCSPredictionOutput, ADLSPredictionOutput),
+                ):
                     path = _file_output_path(output)
                     pending_outputs.file_paths[path] = _ConflictInfo(
-                        is_other_job=True, bp_id=job.id)
+                        is_other_job=True, bp_id=job.id
+                    )
                 elif isinstance(output, LocalPredictionOutput):
                     continue
                 else:
-                    log.error(f"Invalid storage type {type(output)} for {job}")
+                    log.error(f'Invalid storage type {type(output)} for {job}')
         return pending_outputs
 
     async def _validate_output(
@@ -1828,27 +1928,28 @@ class BatchPredictionJobLogic:
         )
         if isinstance(output, warehouse_output_types):
             return await self._validate_warehouse_output(
-                output, pending_outputs, project_id)
+                output, pending_outputs, project_id
+            )
         elif isinstance(output, file_output_types):
-            return await self._validate_object_output(output, allow_local_paths,
-                                                      pending_outputs,
-                                                      project_id)
+            return await self._validate_object_output(
+                output, allow_local_paths, pending_outputs, project_id
+            )
         elif isinstance(output, LocalPredictionOutput):
             return None
         else:
-            raise ValueError(f"Invalid storage type `{type(output)}`")
+            raise ValueError(f'Invalid storage type `{type(output)}`')
 
     async def _validate_object_output(
         self,
-        output: Union[S3PredictionOutput, GCSPredictionOutput,
-                      ADLSPredictionOutput],
+        output: Union[S3PredictionOutput, GCSPredictionOutput, ADLSPredictionOutput],
         allow_local_paths: bool,
         pending_outputs: _PendingOutputs,
         project_id: ProjectID,
     ) -> Optional[CallToAction]:
         if self._state_services is None:
             return CallToAction.crit(
-                'Object-store output connector validation is unavailable.')
+                'Object-store output connector validation is unavailable.'
+            )
         connector_id = ConnectorID(output.connector_id)
         expected_type = {
             S3PredictionOutput: ConnectorType.S3,
@@ -1858,32 +1959,40 @@ class BatchPredictionJobLogic:
         principal = _current_user_ctx.get()
         try:
             connector = await self._state_services.connectors.get_for_project(
-                project_id, connector_id, principal)
-        except (IdentityForbiddenError, ConnectorDoesNotExistError,
-                ProjectForbiddenError, ProjectNotFoundError):
+                project_id, connector_id, principal
+            )
+        except (
+            IdentityForbiddenError,
+            ConnectorDoesNotExistError,
+            ProjectForbiddenError,
+            ProjectNotFoundError,
+        ):
             return CallToAction.crit(
-                f"Output connector with ID {output.connector_id} does not exist."
+                f'Output connector with ID {output.connector_id} does not exist.'
             )
         try:
             normalize_object_prediction_output(output, connector.config)
         except (TypeError, ValueError) as error:
             return CallToAction.crit(str(error))
         try:
-            reference = await (
-                self._state_services.connectors.execution_ref_for_project(
-                    principal,
-                    project_id,
-                    connector_id,
-                    CONNECTOR_OUTPUT_ACTIONS,
-                    expected_type=expected_type,
-                ))
+            reference = await self._state_services.connectors.execution_ref_for_project(
+                principal,
+                project_id,
+                connector_id,
+                CONNECTOR_OUTPUT_ACTIONS,
+                expected_type=expected_type,
+            )
             if reference.project_id != project_id:
-                raise ValueError(
-                    'Connector was authorized for a different project')
-        except (IdentityForbiddenError, ConnectorDoesNotExistError,
-                ProjectForbiddenError, ProjectNotFoundError, ValueError):
+                raise ValueError('Connector was authorized for a different project')
+        except (
+            IdentityForbiddenError,
+            ConnectorDoesNotExistError,
+            ProjectForbiddenError,
+            ProjectNotFoundError,
+            ValueError,
+        ):
             return CallToAction.crit(
-                f"Output connector with ID {output.connector_id} does not exist."
+                f'Output connector with ID {output.connector_id} does not exist.'
             )
         conflict = self._reserve_file_output(output, pending_outputs)
         if conflict is not None:
@@ -1911,18 +2020,21 @@ class BatchPredictionJobLogic:
             conflict_info = pending_outputs.warehouse_tables[table]
             if conflict_info.is_other_job:
                 return CallToAction.crit(
-                    f"Job output has the same output table as a "
+                    f'Job output has the same output table as a '
                     f"currently running job: '{table.connector_id}."
                     f"{table.table}'. Please pick a different "
-                    f"output table, or wait for the current job to "
-                    f"complete: {conflict_info.bp_id}")
+                    f'output table, or wait for the current job to '
+                    f'complete: {conflict_info.bp_id}'
+                )
             else:
                 return CallToAction.crit(
-                    f"Multiple outputs with the same output table were "
-                    f"detected. Please ensure that all outputs are unique: "
-                    f"{table.connector_id}.{table.table}")
+                    f'Multiple outputs with the same output table were '
+                    f'detected. Please ensure that all outputs are unique: '
+                    f'{table.connector_id}.{table.table}'
+                )
         pending_outputs.warehouse_tables[table] = _ConflictInfo(
-            is_other_job=False, bp_id=None)
+            is_other_job=False, bp_id=None
+        )
 
         # TODO(zack): Validate whether table exists, and give error if the
         # schema doesn't match, and give warning that we will append to the
@@ -1930,7 +2042,8 @@ class BatchPredictionJobLogic:
 
         if self._state_services is None:
             return CallToAction.crit(
-                'Warehouse output connector validation is unavailable.')
+                'Warehouse output connector validation is unavailable.'
+            )
 
         expected_type = {
             SnowflakePredictionOutput: ConnectorType.SNOWFLAKE,
@@ -1946,12 +2059,16 @@ class BatchPredictionJobLogic:
                 expected_type=expected_type,
             )
             if reference.project_id != project_id:
-                raise ValueError(
-                    'Connector was authorized for a different project')
-        except (IdentityForbiddenError, ConnectorDoesNotExistError,
-                ProjectForbiddenError, ProjectNotFoundError, ValueError):
+                raise ValueError('Connector was authorized for a different project')
+        except (
+            IdentityForbiddenError,
+            ConnectorDoesNotExistError,
+            ProjectForbiddenError,
+            ProjectNotFoundError,
+            ValueError,
+        ):
             return CallToAction.crit(
-                f"Output connector with ID {output.connector_id} does not exist."
+                f'Output connector with ID {output.connector_id} does not exist.'
             )
         result = await DataBackend._execute_single_activity(
             self._data_backend_ctx,
@@ -1962,7 +2079,8 @@ class BatchPredictionJobLogic:
         if result is None and _has_non_uppercase_chars(output.table_name):
             return CallToAction.warn(
                 'For the optimal experience, output table names should use '
-                'only uppercase characters, numbers, and underscores.')
+                'only uppercase characters, numbers, and underscores.'
+            )
         return result
 
     @staticmethod
@@ -1975,16 +2093,19 @@ class BatchPredictionJobLogic:
             conflict_info = pending_outputs.file_paths[output_path]
             if conflict_info.is_other_job:
                 return CallToAction.crit(
-                    f"Job output has the same file path as a "
+                    f'Job output has the same file path as a '
                     f"currently running job: '{conflict_info.bp_id}' Please "
-                    f"pick a different output path: {output_path.coordinate}")
+                    f'pick a different output path: {output_path.coordinate}'
+                )
             else:
                 return CallToAction.crit(
-                    f"Multiple artifacts with the same file path were "
-                    f"detected. Please ensure that all outputs paths "
-                    f"are unique: {output_path.coordinate}")
+                    f'Multiple artifacts with the same file path were '
+                    f'detected. Please ensure that all outputs paths '
+                    f'are unique: {output_path.coordinate}'
+                )
         pending_outputs.file_paths[output_path] = _ConflictInfo(
-            is_other_job=False, bp_id=None)
+            is_other_job=False, bp_id=None
+        )
         return None
 
     def filters_are_query_compatible(
@@ -2005,21 +2126,24 @@ class BatchPredictionJobLogic:
         failure.
         """
         if filter_overrides is not None and (
-                filter_overrides.temporal_entity_filter_override is not None
-                and filter_overrides.temporal_entity_filter_override != ""):
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title="Incorrect filter override",
-                    message="temporal_entity_filter is not supported in PQL "
-                    "v2. Please use entity_filter instead even if your filter "
-                    "contains an aggregation.",
-                )
-            ])
+            filter_overrides.temporal_entity_filter_override is not None
+            and filter_overrides.temporal_entity_filter_override != ''
+        ):
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Incorrect filter override',
+                        message='temporal_entity_filter is not supported in PQL '
+                        'v2. Please use entity_filter instead even if your filter '
+                        'contains an aggregation.',
+                    )
+                ]
+            )
         return None
 
 
 def _has_non_uppercase_chars(name: str) -> bool:
-    return re.search(r"[^A-Z0-9_]", name) is not None
+    return re.search(r'[^A-Z0-9_]', name) is not None
 
 
 async def _make_bp_input_v2(
@@ -2031,10 +2155,9 @@ async def _make_bp_input_v2(
     *,
     state_services: Optional[StateServices] = None,
     train_table_options: Optional[TrainingTableGenerationPlan] = None,
-    output_connectors: Optional[Dict[ConnectorID,
-                                     ConnectorExecutionRef]] = None,
+    output_connectors: Optional[Dict[ConnectorID, ConnectorExecutionRef]] = None,
     project_id: ProjectID,
-    graph_data_compute_input: Optional["GraphDataComputeInput"] = None,
+    graph_data_compute_input: Optional['GraphDataComputeInput'] = None,
     graph_version_info: Optional[GraphDataVersionInfo] = None,
     custom_pred_table_connector: Optional[ConnectorExecutionRef] = None,
 ) -> BatchPredictionJobInput:
@@ -2048,8 +2171,7 @@ async def _make_bp_input_v2(
     """
     output_connectors = output_connectors or {}
     if state_services is None:
-        raise RuntimeError(
-            'Batch prediction input generation requires StateServices')
+        raise RuntimeError('Batch prediction input generation requires StateServices')
 
     graph_id = GraphIDv2.compose(fpid=pq_resource.graph.fpid)
     assert graph_id == job_config.graph_id
@@ -2062,12 +2184,11 @@ async def _make_bp_input_v2(
     val_args = PQueryValidationArgs(
         query_string=pq_resource.query_string,
         graph=pq_resource.graph,
-        name=pq_resource.name or "",
-        desc=pq_resource.desc or "",
+        name=pq_resource.name or '',
+        desc=pq_resource.desc or '',
         train_table_options=train_table_options,
         runtime_options=pquery_runtime_options_or_none(
-            list_distinct_target_is_array=(
-                pq_resource.list_distinct_target_is_array),
+            list_distinct_target_is_array=(pq_resource.list_distinct_target_is_array),
             lp_bp_layout=pq_resource.lp_bp_layout,
         ),
     )
@@ -2076,8 +2197,7 @@ async def _make_bp_input_v2(
         state_services=state_services,
         project_id=project_id,
     )._make_graph_from_graph_def_v2(pq_resource.graph)
-    train_query_config = await pq_logic.make_predictive_config_v2(
-        val_args, graph=graph)
+    train_query_config = await pq_logic.make_predictive_config_v2(val_args, graph=graph)
 
     job_config.pquery_def_fpid = pq_def_fpid
 
@@ -2086,40 +2206,51 @@ async def _make_bp_input_v2(
             new_val_args,
             validation_response,
         ) = await pq_logic.make_v2_query_with_overrides_v2(
-            val_args, job_config.filter_override_args)
+            val_args, job_config.filter_override_args
+        )
         assert validation_response.ok
         assert new_val_args is not None
         query_config = await pq_logic.make_predictive_config_v2(
-            new_val_args, graph=graph)
+            new_val_args, graph=graph
+        )
     else:
         query_config = train_query_config
 
     if graph_data_compute_input is None:
         graph_data_compute_input = await _get_graph_data_compute_input_v2(
-            graph_id, project_id, state_services)
+            graph_id, project_id, state_services
+        )
     if graph_version_info is None and job_config.graph_data_version:
         cache = get_active_cache()
-        graph_version_info = (await load_many_json.coroutine(
-            [
-                cache.graph_cache.version_info_path(
-                    graph_id, job_config.graph_data_version)
-            ],
-            GraphDataVersionInfo,
-        ))[0]
+        graph_version_info = (
+            await load_many_json.coroutine(
+                [
+                    cache.graph_cache.version_info_path(
+                        graph_id, job_config.graph_data_version
+                    )
+                ],
+                GraphDataVersionInfo,
+            )
+        )[0]
 
     if graph_version_info:
         for table in query_config.graph.tables:
             assert isinstance(table, TableConfig)
             old_version = table.data_version
-            new_version = graph_version_info.table_data_versions[TableName(
-                table.table_name)]
+            new_version = graph_version_info.table_data_versions[
+                TableName(table.table_name)
+            ]
             table.data_version = new_version
-            log.info(f"Set table data version for {table.table_name} to "
-                     f"{new_version} from {old_version}.")
+            log.info(
+                f'Set table data version for {table.table_name} to '
+                f'{new_version} from {old_version}.'
+            )
     else:
-        log.warning(f"Creating batch prediction job input for {id} without "
-                    f"a graph version info object. Please be sure this is "
-                    f"intended.")
+        log.warning(
+            f'Creating batch prediction job input for {id} without '
+            f'a graph version info object. Please be sure this is '
+            f'intended.'
+        )
 
     job_input = BatchPredictionJobInput(
         id=id,
@@ -2148,12 +2279,14 @@ async def _get_graph_data_compute_input_v2(
             user_authorization=_current_user_ctx.get(),
         )
 
-    raise RuntimeError("Batch prediction input generation requires "
-                       "StateServices.graphs.")
+    raise RuntimeError(
+        'Batch prediction input generation requires StateServices.graphs.'
+    )
 
 
-def _validate_task_type_options_v2(task_type: TaskType,
-                                   request: BatchPredictionRequest) -> None:
+def _validate_task_type_options_v2(
+    task_type: TaskType, request: BatchPredictionRequest
+) -> None:
     """Validate prediction options without mutating the request.
 
     The
@@ -2172,7 +2305,8 @@ def _validate_task_type_options_v2(task_type: TaskType,
     resolve_num_classes_to_return(
         task_type,
         request.predict_options.num_classes_to_return,
-        has_predictions=any(output.artifact_type ==
-                            PredictionArtifactType.PREDICTIONS
-                            for output in request.outputs),
+        has_predictions=any(
+            output.artifact_type == PredictionArtifactType.PREDICTIONS
+            for output in request.outputs
+        ),
     )

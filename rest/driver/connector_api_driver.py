@@ -125,25 +125,28 @@ S3_VALIDATE_TIMEOUT = 30  # Seconds
 MAX_UPLOADED_FILE_SIZE = 100 * 1024**3  # 100 GiB
 MAX_STAGED_DOWNLOAD_SIZE = 1 * 10**9  # 1 GB
 
-_CONNECTOR_ACTIVITY_PUBLIC_ERROR_TYPES = frozenset({
-    'ConnectorValidationError',
-    # Custom SQL query rejected by the warehouse (bad syntax / unknown
-    # function / missing table). A ConnectorValidationError subclass, but this
-    # allowlist matches on the Temporal-serialized class *name*, so the
-    # subclass must be listed explicitly to keep its warehouse-reason message.
-    'CustomSqlQueryError',
-    'IdentityResolutionUnavailableError',
-    'IdentityValidationError',
-    'MultipleIdentitiesValidateTargetError',
-    'NoIdentityValidatesTargetError',
-})
+_CONNECTOR_ACTIVITY_PUBLIC_ERROR_TYPES = frozenset(
+    {
+        'ConnectorValidationError',
+        # Custom SQL query rejected by the warehouse (bad syntax / unknown
+        # function / missing table). A ConnectorValidationError subclass, but this
+        # allowlist matches on the Temporal-serialized class *name*, so the
+        # subclass must be listed explicitly to keep its warehouse-reason message.
+        'CustomSqlQueryError',
+        'IdentityResolutionUnavailableError',
+        'IdentityValidationError',
+        'MultipleIdentitiesValidateTargetError',
+        'NoIdentityValidatesTargetError',
+    }
+)
 _CONNECTOR_ACTIVITY_EXACT_PUBLIC_ERROR_TYPES: Dict[object, Dict[str, type]] = {
     create_project_connector_activity: {
         ConnectorNameConflictError.__name__: ConnectorNameConflictError,
     },
 }
 _CONNECTOR_ACTIVITY_FAILURE_MESSAGE = (
-    'Connector operation is temporarily unavailable. Please retry.')
+    'Connector operation is temporarily unavailable. Please retry.'
+)
 
 # Interactive connector reads run in a Temporal workflow with this execution
 # deadline. Operators can raise it for slow providers or large sources.
@@ -155,7 +158,8 @@ _INTERACTIVE_CONNECTOR_READ_TIMEOUT_ENV = EnvVar(
     default_value=120.0,
 )
 _INTERACTIVE_CONNECTOR_READ_TIMEOUT_SECONDS = (
-    _INTERACTIVE_CONNECTOR_READ_TIMEOUT_ENV.parse_value())
+    _INTERACTIVE_CONNECTOR_READ_TIMEOUT_ENV.parse_value()
+)
 _CONNECTOR_RESULT_DELIVERY_GRACE_SECONDS = 5.0
 
 
@@ -165,13 +169,16 @@ def _connector_read_timeout_message(timeout: float) -> str:
         f'Connector source read exceeded the configured {budget}-second '
         'budget. Set INTERACTIVE_CONNECTOR_READ_TIMEOUT_SECONDS to a larger '
         'value for this source, and keep any fronting proxy read timeout '
-        'greater than the configured connector budget.')
+        'greater than the configured connector budget.'
+    )
 
 
 def _is_connector_read_workflow_timeout(error: BaseException) -> bool:
-    return (isinstance(error, WorkflowFailureError)
-            and isinstance(error.cause, TemporalTimeoutError)
-            and error.cause.type == TimeoutType.START_TO_CLOSE)
+    return (
+        isinstance(error, WorkflowFailureError)
+        and isinstance(error.cause, TemporalTimeoutError)
+        and error.cause.type == TimeoutType.START_TO_CLOSE
+    )
 
 
 def _connector_activity_workflow_id_prefix(activity_fn) -> str:
@@ -198,7 +205,7 @@ class ConnectorApiDriver:
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError("ConnectorApiDriver requires StateServices")
+            raise RuntimeError('ConnectorApiDriver requires StateServices')
         return self._state_services
 
     @property
@@ -221,7 +228,8 @@ class ConnectorApiDriver:
         actions=CONNECTOR_DISCOVERY_ACTIONS,
     ) -> ConnectorExecutionRef:
         return await self._connector_service.execution_ref_for_project(
-            principal, project_id, connector_id, actions)
+            principal, project_id, connector_id, actions
+        )
 
     async def _validated_source_coordinate(
         self,
@@ -237,22 +245,26 @@ class ConnectorApiDriver:
         connectors require a canonical full provider URI.
         """
         connector = await self._connector_service.source_table_connector_for_project(
-            project_id, connector_id, principal)
+            project_id, connector_id, principal
+        )
         config = None if connector is None else connector.config
-        if (isinstance(config, api.S3ConnectorResourceConfig)
-                and isinstance(config.target, api.S3AnyURIConnectorTarget)):
+        if isinstance(config, api.S3ConnectorResourceConfig) and isinstance(
+            config.target, api.S3AnyURIConnectorTarget
+        ):
             return normalize_s3_source_uri(source_table_name), connector
         if isinstance(config, api.S3ConnectorResourceConfig):
-            return normalize_s3_source_relative_path(
-                source_table_name), connector
-        file_configs = (api.GCSConnectorResourceConfig,
-                        api.ADLSConnectorResourceConfig)
+            return normalize_s3_source_relative_path(source_table_name), connector
+        file_configs = (api.GCSConnectorResourceConfig, api.ADLSConnectorResourceConfig)
         if isinstance(config, file_configs):
-            source = object_store_source_for_connector(config,
-                                                       source_table_name)
-            coordinate = (source.path if isinstance(
-                source, (source_api.GCSRelativeSource,
-                         source_api.ADLSRelativeSource)) else source.uri)
+            source = object_store_source_for_connector(config, source_table_name)
+            coordinate = (
+                source.path
+                if isinstance(
+                    source,
+                    (source_api.GCSRelativeSource, source_api.ADLSRelativeSource),
+                )
+                else source.uri
+            )
             return coordinate, connector
         if isinstance(config, api.DatabricksConnectorResourceConfig):
             try:
@@ -277,7 +289,8 @@ class ConnectorApiDriver:
         principal: AuthPrincipal,
     ) -> api.ConnectorResponse:
         authorizations = await self._connector_service.authorize_create(
-            project_id, args, principal)
+            project_id, args, principal
+        )
         response, _ = await self._execute_connector_activity(
             create_project_connector_activity,
             [project_id, args, authorizations],
@@ -293,36 +306,38 @@ class ConnectorApiDriver:
     ) -> api.ConnectorResponse:
         target_project_id = ProjectID(args.target_project_id)
         if target_project_id == project_id:
-            raise ValueError(
-                'Target project must differ from the source project')
+            raise ValueError('Target project must differ from the source project')
         source = await self._connector_service.get_for_project(
-            project_id, connector_id, principal)
+            project_id, connector_id, principal
+        )
         create_args = api.CreateConnectorArgs(
             name=args.name if args.name is not None else source.name,
             config=source.config,
             identity_id=source.identity_id,
-            description=(args.description if args.description is not None
-                         else source.description),
+            description=(
+                args.description if args.description is not None else source.description
+            ),
         )
         existing_names = {
             normalize_display_name(connector.name)
             for connector in await self._connector_service.list_for_project(
-                target_project_id, principal)
+                target_project_id, principal
+            )
         }
         if normalize_display_name(create_args.name) in existing_names:
             raise ConnectorNameConflictError(
-                f"Connector named '{create_args.name}' already exists in "
-                'this project')
-        return await self.create_project_connector(target_project_id,
-                                                   create_args, principal)
+                f"Connector named '{create_args.name}' already exists in this project"
+            )
+        return await self.create_project_connector(
+            target_project_id, create_args, principal
+        )
 
     async def list_project_connectors(
         self,
         project_id: ProjectID,
         principal: AuthPrincipal,
     ) -> list[api.ConnectorResponse]:
-        return await self._connector_service.list_for_project(
-            project_id, principal)
+        return await self._connector_service.list_for_project(project_id, principal)
 
     async def get_project_connector(
         self,
@@ -331,7 +346,8 @@ class ConnectorApiDriver:
         principal: AuthPrincipal,
     ) -> api.ConnectorResponse:
         return await self._connector_service.get_for_project(
-            project_id, connector_id, principal)
+            project_id, connector_id, principal
+        )
 
     async def update_project_connector_metadata(
         self,
@@ -341,7 +357,8 @@ class ConnectorApiDriver:
         principal: AuthPrincipal,
     ) -> api.ConnectorResponse:
         return await self._connector_service.update_metadata(
-            project_id, connector_id, args, principal)
+            project_id, connector_id, args, principal
+        )
 
     async def delete_project_connector(
         self,
@@ -349,16 +366,14 @@ class ConnectorApiDriver:
         connector_id: ConnectorID,
         principal: AuthPrincipal,
     ) -> api.ConnectorResponse:
-        return await self._connector_service.delete(project_id, connector_id,
-                                                    principal)
+        return await self._connector_service.delete(project_id, connector_id, principal)
 
     async def get_or_create_project_upload_connector(
         self,
         project_id: ProjectID,
         principal: AuthPrincipal,
     ) -> ConnectorID:
-        await self._connector_service.require_project_access(
-            principal, project_id)
+        await self._connector_service.require_project_access(principal, project_id)
         upload_root = osp.join(
             deploy_env().data_plane_storage_root,
             'uploaded-datasets',
@@ -366,15 +381,19 @@ class ConnectorApiDriver:
         )
         await asyncio.to_thread(fsutil.makedirs, upload_root, exist_ok=True)
         return await self._connector_service.register_project_upload_connector(
-            project_id, upload_root)
+            project_id, upload_root
+        )
 
     async def test_identity_credentials(
         self,
         identity_id: IdentityID,
         principal: AuthPrincipal,
     ) -> api.IdentityResponse:
-        authorization = await self._require_state_services(
-        ).identities.authorize_test_credentials(identity_id, principal)
+        authorization = (
+            await self._require_state_services().identities.authorize_test_credentials(
+                identity_id, principal
+            )
+        )
         response, _ = await self._execute_connector_activity(
             validate_identity_credentials_activity,
             [identity_id, authorization],
@@ -400,22 +419,25 @@ class ConnectorApiDriver:
                 if description.status == WorkflowExecutionStatus.RUNNING:
                     return None, response_token
                 if response_token.startswith(
-                        _connector_activity_workflow_id_prefix(activity_fn)):
+                    _connector_activity_workflow_id_prefix(activity_fn)
+                ):
                     exact_public_error_types = (
                         _CONNECTOR_ACTIVITY_EXACT_PUBLIC_ERROR_TYPES.get(
-                            activity_fn, {}))
+                            activity_fn, {}
+                        )
+                    )
                 waiting_for_result = True
                 result = handle.result()
                 if timeout is not None:
                     result = asyncio.wait_for(
                         result,
-                        timeout=(timeout +
-                                 _CONNECTOR_RESULT_DELIVERY_GRACE_SECONDS),
+                        timeout=(timeout + _CONNECTOR_RESULT_DELIVERY_GRACE_SECONDS),
                     )
                 return await result, ''
 
-            workflow_id = (_connector_activity_workflow_id_prefix(activity_fn) +
-                           uuid.uuid4().hex)
+            workflow_id = (
+                _connector_activity_workflow_id_prefix(activity_fn) + uuid.uuid4().hex
+            )
             kwargs = dict(
                 args=[activity_fn.__name__, activity_inputs],
                 id=workflow_id,
@@ -424,36 +446,38 @@ class ConnectorApiDriver:
             if timeout is not None:
                 kwargs['execution_timeout'] = timedelta(seconds=timeout)
             if asynchronous:
-                await client.start_workflow(RunSingleActivityWorkflow.run,
-                                            **kwargs)
+                await client.start_workflow(RunSingleActivityWorkflow.run, **kwargs)
                 return None, workflow_id
-            execution = client.execute_workflow(RunSingleActivityWorkflow.run,
-                                                **kwargs)
-            exact_public_error_types = (
-                _CONNECTOR_ACTIVITY_EXACT_PUBLIC_ERROR_TYPES.get(
-                    activity_fn, {}))
+            execution = client.execute_workflow(RunSingleActivityWorkflow.run, **kwargs)
+            exact_public_error_types = _CONNECTOR_ACTIVITY_EXACT_PUBLIC_ERROR_TYPES.get(
+                activity_fn, {}
+            )
             waiting_for_result = True
             if timeout is not None:
                 execution = asyncio.wait_for(
                     execution,
-                    timeout=(timeout +
-                             _CONNECTOR_RESULT_DELIVERY_GRACE_SECONDS),
+                    timeout=(timeout + _CONNECTOR_RESULT_DELIVERY_GRACE_SECONDS),
                 )
             return await execution, ''
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            read_timed_out = (timeout is not None and waiting_for_result
-                              and _is_connector_read_workflow_timeout(error))
-            allowed_error_types = (_CONNECTOR_ACTIVITY_PUBLIC_ERROR_TYPES
-                                   | frozenset(exact_public_error_types))
-            public_error = (data_backend_module.
-                            _extract_allowlisted_temporal_public_exception(
-                                error,
-                                allowed_error_types=allowed_error_types,
-                                allow_timeout=False,
-                                exact_error_types=exact_public_error_types,
-                            ))
+            read_timed_out = (
+                timeout is not None
+                and waiting_for_result
+                and _is_connector_read_workflow_timeout(error)
+            )
+            allowed_error_types = _CONNECTOR_ACTIVITY_PUBLIC_ERROR_TYPES | frozenset(
+                exact_public_error_types
+            )
+            public_error = (
+                data_backend_module._extract_allowlisted_temporal_public_exception(
+                    error,
+                    allowed_error_types=allowed_error_types,
+                    allow_timeout=False,
+                    exact_error_types=exact_public_error_types,
+                )
+            )
             if public_error is not None:
                 failure = public_error
             else:
@@ -490,29 +514,48 @@ class ConnectorApiDriver:
         sync: bool = False,
     ) -> SourceTablesResponse:
         connector = await self._connector_service.source_table_connector_for_project(
-            project_id, connector_id, principal)
-        if (connector is not None and isinstance(
+            project_id, connector_id, principal
+        )
+        if (
+            connector is not None
+            and isinstance(
                 connector.config,
-            (api.S3ConnectorResourceConfig, api.GCSConnectorResourceConfig,
-             api.ADLSConnectorResourceConfig)) and isinstance(
-                 connector.config.target,
-                 (api.S3AnyURIConnectorTarget, api.GCSAnyURIConnectorTarget,
-                  api.ADLSAnyURIConnectorTarget))):
+                (
+                    api.S3ConnectorResourceConfig,
+                    api.GCSConnectorResourceConfig,
+                    api.ADLSConnectorResourceConfig,
+                ),
+            )
+            and isinstance(
+                connector.config.target,
+                (
+                    api.S3AnyURIConnectorTarget,
+                    api.GCSAnyURIConnectorTarget,
+                    api.ADLSAnyURIConnectorTarget,
+                ),
+            )
+        ):
             raise ConnectorError(
                 'Any-URI connectors require an exact full table URI and do '
-                'not support listing')
+                'not support listing'
+            )
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         existing = await self._table_service.list_tables(
-            project_id, connector_id=connector_id)
+            project_id, connector_id=connector_id
+        )
         response, pending_token = await self._execute_connector_activity(
             list_connector_source_tables,
             [reference, existing, schema_name or None],
             response_token=response_token,
             asynchronous=not sync,
         )
-        return (response if response is not None else SourceTablesResponse(
-            response_token=pending_token))
+        return (
+            response
+            if response is not None
+            else SourceTablesResponse(response_token=pending_token)
+        )
 
     async def get_project_source_table_names(
         self,
@@ -537,9 +580,11 @@ class ConnectorApiDriver:
     ) -> tuple[str | None, str | None]:
         """Resolve file type in an activity without request-side credentials."""
         source_table_name, _ = await self._validated_source_coordinate(
-            project_id, connector_id, principal, source_table_name)
+            project_id, connector_id, principal, source_table_name
+        )
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         response, _ = await self._execute_connector_activity(
             get_connector_source_table_file_type,
             [reference, source_table_name],
@@ -554,7 +599,8 @@ class ConnectorApiDriver:
         source_table_name: str,
     ) -> list[str]:
         source_table_name, _ = await self._validated_source_coordinate(
-            project_id, connector_id, principal, source_table_name)
+            project_id, connector_id, principal, source_table_name
+        )
         reference = await self._connector_reference_for_project(
             connector_id,
             project_id,
@@ -563,8 +609,7 @@ class ConnectorApiDriver:
         )
         staging_path, _ = await self._execute_connector_activity(
             stage_connector_source_download,
-            [reference, source_table_name,
-             uuid.uuid4().hex],
+            [reference, source_table_name, uuid.uuid4().hex],
         )
         if not isinstance(staging_path, str):
             raise ConnectorValidationError('Connector source staging failed')
@@ -587,12 +632,14 @@ class ConnectorApiDriver:
         table input, while unrelated connector failures propagate.
         """
         source_table_name, connector = await self._validated_source_coordinate(
-            project_id, connector_id, principal, source_table_name)
+            project_id, connector_id, principal, source_table_name
+        )
         config = None if connector is None else connector.config
 
         if isinstance(config, api.SnowflakeConnectorResourceConfig):
             await self._require_project_warehouse_source_table(
-                project_id, connector_id, principal, source_table_name)
+                project_id, connector_id, principal, source_table_name
+            )
             source_table = source_api.SnowflakeSourceTable(
                 snowflake_connector_id=str(connector_id),
                 database=config.database,
@@ -601,14 +648,16 @@ class ConnectorApiDriver:
             )
         elif isinstance(config, api.DatabricksConnectorResourceConfig):
             await self._require_project_warehouse_source_table(
-                project_id, connector_id, principal, source_table_name)
+                project_id, connector_id, principal, source_table_name
+            )
             source_table = source_api.DatabricksSourceTable(
                 databricks_connector_id=str(connector_id),
                 table=source_table_name,
             )
         elif isinstance(config, api.BigQueryConnectorResourceConfig):
             await self._require_project_warehouse_source_table(
-                project_id, connector_id, principal, source_table_name)
+                project_id, connector_id, principal, source_table_name
+            )
             source_table = source_api.BigQuerySourceTable(
                 bigquery_connector_id=str(connector_id),
                 table_name=source_table_name,
@@ -632,20 +681,17 @@ class ConnectorApiDriver:
                 if fsutil.is_gcs(root):
                     source_table = source_api.GCSSourceTable(
                         **common,
-                        source=source_api.GCSRelativeSource(
-                            path=source_table_name),
+                        source=source_api.GCSRelativeSource(path=source_table_name),
                     )
                 elif fsutil.is_adls(root):
                     source_table = source_api.ADLSSourceTable(
                         **common,
-                        source=source_api.ADLSRelativeSource(
-                            path=source_table_name),
+                        source=source_api.ADLSRelativeSource(path=source_table_name),
                     )
                 else:
                     source_table = source_api.S3SourceTable(
                         **common,
-                        source=source_api.S3RelativeSource(
-                            path=source_table_name),
+                        source=source_api.S3RelativeSource(path=source_table_name),
                     )
             elif isinstance(config, api.S3ConnectorResourceConfig):
                 if isinstance(config.target, api.S3RootedConnectorTarget):
@@ -656,18 +702,13 @@ class ConnectorApiDriver:
                     raise ValueError('Unsupported S3 connector target')
                 source_table = source_api.S3SourceTable(**common, source=source)
             elif isinstance(config, api.GCSConnectorResourceConfig):
-                source = object_store_source_for_connector(
-                    config, source_table_name)
-                source_table = source_api.GCSSourceTable(
-                    **common, source=source)
+                source = object_store_source_for_connector(config, source_table_name)
+                source_table = source_api.GCSSourceTable(**common, source=source)
             elif isinstance(config, api.ADLSConnectorResourceConfig):
-                source = object_store_source_for_connector(
-                    config, source_table_name)
-                source_table = source_api.ADLSSourceTable(
-                    **common, source=source)
+                source = object_store_source_for_connector(config, source_table_name)
+                source_table = source_api.ADLSSourceTable(**common, source=source)
             else:
-                raise ValueError(
-                    'Connector does not expose file-backed source tables')
+                raise ValueError('Connector does not expose file-backed source tables')
 
         return source_api.SourceTableConfigResponse(source_table=source_table)
 
@@ -684,7 +725,8 @@ class ConnectorApiDriver:
         unrelated connector failures propagate.
         """
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         exists, _ = await self._execute_connector_activity(
             validate_connector_source_table_exists,
             [reference, source_table_name],
@@ -702,18 +744,21 @@ class ConnectorApiDriver:
     ) -> source_api.FileType:
         if config is None:
             uploaded = await self._uploaded_file_service.get_completed(
-                project_id, connector_id, source_table_name)
+                project_id, connector_id, source_table_name
+            )
             if uploaded is None:
                 raise KeyError(f'Unable to find table {source_table_name}')
             return source_api.FileType(uploaded.file_type.value.upper())
 
-        if not isinstance(config, (
+        if not isinstance(
+            config,
+            (
                 api.S3ConnectorResourceConfig,
                 api.GCSConnectorResourceConfig,
                 api.ADLSConnectorResourceConfig,
-        )):
-            raise ValueError(
-                'Connector does not expose file-backed source tables')
+            ),
+        ):
+            raise ValueError('Connector does not expose file-backed source tables')
         file_type_value, error = await self.get_project_source_table_file_type(
             project_id,
             connector_id,
@@ -723,8 +768,7 @@ class ConnectorApiDriver:
         if error == 'not_found':
             raise KeyError(f'Unable to find table {source_table_name}')
         if error is not None or file_type_value is None:
-            raise ValueError(
-                'Connector does not expose file-backed source tables')
+            raise ValueError('Connector does not expose file-backed source tables')
         return source_api.FileType(file_type_value)
 
     async def get_project_source_columns(
@@ -747,9 +791,11 @@ class ConnectorApiDriver:
         # schema (no data scan), so it has no source coordinate to validate.
         if query is None:
             source_table_name, _ = await self._validated_source_coordinate(
-                project_id, connector_id, principal, source_table_name)
+                project_id, connector_id, principal, source_table_name
+            )
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         # Append ``query`` only in query mode so the physical path retains its
         # prior activity arity during rolling worker deployments.
         activity_inputs = [reference, source_table_name, skip_cache]
@@ -787,9 +833,11 @@ class ConnectorApiDriver:
         # no source coordinate or asynchronous response-token flow.
         if query is None:
             source_table_name, _ = await self._validated_source_coordinate(
-                project_id, connector_id, principal, source_table_name)
+                project_id, connector_id, principal, source_table_name
+            )
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         # Append ``query`` only in query mode so the physical path retains its
         # prior activity arity during rolling worker deployments.
         activity_inputs = [
@@ -809,8 +857,11 @@ class ConnectorApiDriver:
             asynchronous=is_async and query is None,
             timeout=timeout,
         )
-        return (response if response is not None else SampleRowsResponse(
-            response_token=pending_token))
+        return (
+            response
+            if response is not None
+            else SampleRowsResponse(response_token=pending_token)
+        )
 
     async def is_project_source_table_view(
         self,
@@ -820,7 +871,8 @@ class ConnectorApiDriver:
         source_table_name: str,
     ) -> bool:
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         result, _ = await self._execute_connector_activity(
             is_connector_source_table_view,
             [reference, source_table_name],
@@ -834,7 +886,8 @@ class ConnectorApiDriver:
         principal: AuthPrincipal,
     ) -> None:
         reference = await self._connector_reference_for_project(
-            connector_id, project_id, principal)
+            connector_id, project_id, principal
+        )
         await self._execute_connector_activity(
             validate_connector_reference,
             [reference],
@@ -852,17 +905,19 @@ class ConnectorApiDriver:
         root_dir = deploy_env().data_plane_storage_root
         if not fsutil.is_local(root_dir):
             raise ValueError(
-                FILE_UPLOAD_NOT_SUPPORTED_MESSAGE.format(root_dir=root_dir))
+                FILE_UPLOAD_NOT_SUPPORTED_MESSAGE.format(root_dir=root_dir)
+            )
         validate_local_upload_path(temp_upload_path, root_dir)
         rel = osp.relpath(osp.abspath(temp_upload_path), osp.abspath(root_dir))
-        project_prefix = osp.join('temporary-uploaded-datasets',
-                                  str(project_id)) + osp.sep
+        project_prefix = (
+            osp.join('temporary-uploaded-datasets', str(project_id)) + osp.sep
+        )
         if not rel.startswith(project_prefix):
             raise ValueError(
                 "Upload path must be under the active project's temporary "
-                "upload directory")
-        part_path = local_upload_part_path(temp_upload_path, upload_id,
-                                           part_number)
+                'upload directory'
+            )
+        part_path = local_upload_part_path(temp_upload_path, upload_id, part_number)
         fsutil.makedirs(osp.dirname(part_path), exist_ok=True)
         fsutil.write_binary(part_path, body)
         return hashlib.md5(body, usedforsecurity=False).hexdigest()
@@ -876,8 +931,7 @@ class ConnectorApiDriver:
         part_number: int,
         body: bytes,
     ) -> str:
-        await self._connector_service.require_project_access(
-            principal, project_id)
+        await self._connector_service.require_project_access(principal, project_id)
         return await self._upload_file_part.coroutine(
             project_id,
             temp_upload_path,
@@ -895,9 +949,9 @@ class ConnectorApiDriver:
         root_dir = deploy_env().data_plane_storage_root
         if not supports_backend_file_upload(root_dir):
             raise ValueError(
-                FILE_UPLOAD_NOT_SUPPORTED_MESSAGE.format(root_dir=root_dir))
-        connector = await self._connector_service.get_internal(
-            project_id, connector_id)
+                FILE_UPLOAD_NOT_SUPPORTED_MESSAGE.format(root_dir=root_dir)
+            )
+        connector = await self._connector_service.get_internal(project_id, connector_id)
         if not isinstance(connector.config, FileConnectorResourceConfig):
             raise ValueError('Project upload connector is invalid')
         source_table_name = SourceTableName(request.source_table_name)
@@ -906,15 +960,15 @@ class ConnectorApiDriver:
         suffix = self._upload_suffix(request.file_type)
         upload_path = osp.join(
             root_dir,
-            "temporary-uploaded-datasets",
+            'temporary-uploaded-datasets',
             str(project_id),
             uuid.uuid4().hex,
             str(source_table_name) + suffix,
         )
         helper = fsutil.get_presigned_helper(upload_path)
-        upload_id, presigned_urls = (await
-                                     helper.create_multipart_upload.coroutine(
-                                         request.num_parts))
+        upload_id, presigned_urls = await helper.create_multipart_upload.coroutine(
+            request.num_parts
+        )
 
         return api.StartFileUploadResponse(
             temp_upload_path=upload_path,
@@ -923,9 +977,8 @@ class ConnectorApiDriver:
         )
 
     @blocking_method()
-    def _validate_uploaded_file(self, file_path: str, *,
-                                validate_data: bool = True):
-        log.debug(f"Validating uploaded file at {file_path}")
+    def _validate_uploaded_file(self, file_path: str, *, validate_data: bool = True):
+        log.debug(f'Validating uploaded file at {file_path}')
         # Enforce the upload contract even when a caller skips schema/data
         # validation.
         file_size = fsutil.filesize(file_path) or 0
@@ -937,7 +990,7 @@ class ConnectorApiDriver:
             return
 
         suffix = osp.splitext(file_path)[1]
-        if suffix == ".csv":
+        if suffix == '.csv':
             validate_csv_file(file_path)
         else:
             validate_parquet_file(file_path)
@@ -951,19 +1004,18 @@ class ConnectorApiDriver:
         root_dir = deploy_env().data_plane_storage_root
         if not supports_backend_file_upload(root_dir):
             raise ValueError(
-                FILE_UPLOAD_NOT_SUPPORTED_MESSAGE.format(root_dir=root_dir))
-        connector = await self._connector_service.get_internal(
-            project_id, connector_id)
+                FILE_UPLOAD_NOT_SUPPORTED_MESSAGE.format(root_dir=root_dir)
+            )
+        connector = await self._connector_service.get_internal(project_id, connector_id)
         if not isinstance(connector.config, FileConnectorResourceConfig):
             raise ValueError('Project upload connector is invalid')
         source_table_name = SourceTableName(request.source_table_name)
         suffix = self._upload_suffix(request.file_type)
-        temporary_root = osp.join(root_dir, 'temporary-uploaded-datasets',
-                                  str(project_id))
-        self._validate_scoped_upload_path(request.temp_upload_path,
-                                          temporary_root)
-        if osp.basename(
-                request.temp_upload_path) != str(source_table_name) + suffix:
+        temporary_root = osp.join(
+            root_dir, 'temporary-uploaded-datasets', str(project_id)
+        )
+        self._validate_scoped_upload_path(request.temp_upload_path, temporary_root)
+        if osp.basename(request.temp_upload_path) != str(source_table_name) + suffix:
             raise ValueError('Temporary upload path does not match request')
 
         @blocking_func()
@@ -983,19 +1035,18 @@ class ConnectorApiDriver:
             )
         except Exception as e:
             # Delete the file stored at the temporary path:
-            log.info("Validation failed for the uploaded file: "
-                     f"{request.temp_upload_path}. Deleting the file.")
+            log.info(
+                'Validation failed for the uploaded file: '
+                f'{request.temp_upload_path}. Deleting the file.'
+            )
             log.exception(e)
             await remove_file.coroutine(request.temp_upload_path)
             raise e
 
         @blocking_func()
         def post_process_file(temp_path: str, dest_path: str):
-            log.info(
-                f"Copying validated upload file from {temp_path} to {dest_path}"
-            )
-            fsutil.copy(temp_path, dest_path, overwrite=True,
-                        raise_on_exists=False)
+            log.info(f'Copying validated upload file from {temp_path} to {dest_path}')
+            fsutil.copy(temp_path, dest_path, overwrite=True, raise_on_exists=False)
 
         dest_path = osp.join(
             connector.config.root_dir,
@@ -1021,7 +1072,8 @@ class ConnectorApiDriver:
         Returns True if the file was deleted, False if the file did not exist.
         """
         connector_entry = await self._connector_service.get_internal(
-            project_id, connector_id)
+            project_id, connector_id
+        )
         config = connector_entry.config
         if not isinstance(config, FileConnectorResourceConfig):
             raise ValueError('Project upload connector is invalid')
@@ -1035,7 +1087,7 @@ class ConnectorApiDriver:
         if uploaded_file is None:
             return False
         file_path = uploaded_file.path
-        log.debug(f"Deleting file at {file_path}")
+        log.debug(f'Deleting file at {file_path}')
         if fsutil.exists(file_path):
             fsutil.rm(file_path)
         await self._uploaded_file_service.delete(
@@ -1048,8 +1100,7 @@ class ConnectorApiDriver:
 
     @staticmethod
     def _upload_suffix(file_type: api.UploadFileType) -> str:
-        return ('.parquet'
-                if file_type == api.UploadFileType.PARQUET else '.csv')
+        return '.parquet' if file_type == api.UploadFileType.PARQUET else '.csv'
 
     @staticmethod
     def _validate_scoped_upload_path(path: str, root_dir: str) -> None:
@@ -1059,41 +1110,44 @@ class ConnectorApiDriver:
         root_prefix = root_dir.rstrip('/') + '/'
         if not path.startswith(root_prefix):
             raise ValueError('Upload path is outside the active project')
-        relative_path = path[len(root_prefix):]
+        relative_path = path[len(root_prefix) :]
         if '..' in relative_path.split('/'):
             raise ValueError('Upload path is outside the active project')
 
     @staticmethod
     def _connector_config_for_sdk(
-        connector: Connector, ) -> Optional[Dict[str, str]]:
+        connector: Connector,
+    ) -> Optional[Dict[str, str]]:
         if isinstance(connector, SnowflakeConnector):
             return {
-                "name": connector.name,
-                "account": connector.account,
-                "warehouse": connector.warehouse,
-                "database": connector.database,
-                "schema_name": connector.schema_name,
-                "data_source_type": DataSourceType.SNOWFLAKE.value,
+                'name': connector.name,
+                'account': connector.account,
+                'warehouse': connector.warehouse,
+                'database': connector.database,
+                'schema_name': connector.schema_name,
+                'data_source_type': DataSourceType.SNOWFLAKE.value,
             }
         if isinstance(connector, DatabricksConnector):
             return {
-                "name": connector.name,
-                "host": connector.host,
-                "cluster_id": connector.cluster_id,
-                "warehouse_id": connector.warehouse_id,
-                "catalog": connector.catalog,
-                "data_source_type": DataSourceType.DATABRICKS.value,
+                'name': connector.name,
+                'host': connector.host,
+                'cluster_id': connector.cluster_id,
+                'warehouse_id': connector.warehouse_id,
+                'catalog': connector.catalog,
+                'data_source_type': DataSourceType.DATABRICKS.value,
             }
         if isinstance(connector, BigQueryConnector):
             return {
-                "name": connector.name,
-                "project_id": connector.project_id,
-                "dataset_id": connector.dataset_id,
-                "data_source_type": DataSourceType.BIGQUERY.value,
+                'name': connector.name,
+                'project_id': connector.project_id,
+                'dataset_id': connector.dataset_id,
+                'data_source_type': DataSourceType.BIGQUERY.value,
             }
-        raise ValueError("Unsupported connector type "
-                         f"{connector._get_connector_type()} to create Ui to "
-                         "SDK script.")
+        raise ValueError(
+            'Unsupported connector type '
+            f'{connector._get_connector_type()} to create Ui to '
+            'SDK script.'
+        )
 
     async def get_bp_connector_metadata_for_sdk(
         self,
@@ -1112,10 +1166,10 @@ class ConnectorApiDriver:
         """
         if not connector_metadata:
             return None
-        connector_id = connector_metadata.get("connector_id")
+        connector_id = connector_metadata.get('connector_id')
         if connector_id is None:
             raise ValueError(
-                "Connector ID is required in connector_metadata to fetch metadata."
+                'Connector ID is required in connector_metadata to fetch metadata.'
             )
         connector = await self._connector_service.get_for_project(
             project_id,
@@ -1125,8 +1179,10 @@ class ConnectorApiDriver:
         expected_type = connector_metadata.get('data_source_type')
         actual_type = connector.config.type.value.upper()
         if expected_type != actual_type:
-            raise ValueError(f"Output connector '{connector_id}' has type "
-                             f"'{actual_type}', not '{expected_type}'.")
+            raise ValueError(
+                f"Output connector '{connector_id}' has type "
+                f"'{actual_type}', not '{expected_type}'."
+            )
         return {
             'connector_id': str(connector.id),
             'lookup_name': connector.name,
@@ -1150,7 +1206,8 @@ def _source_table_from_config_and_existing_tables(
                 TableLink(
                     name=alias,
                     id=TableIDv2.public(TableName(alias), entry.id, None),
-                ))
+                )
+            )
 
     path = None
     if isinstance(connector, CompositeFileConnector):
@@ -1194,20 +1251,23 @@ def _get_source_tables_raw(
         if isinstance(connector, AnyURIS3Connector):
             raise ConnectorError(
                 'Any-URI S3 connectors require an exact s3:// table URI and '
-                'do not support listing')
+                'do not support listing'
+            )
         empty_connector = False
-        is_project_upload = (isinstance(resolved_spec, ConnectorSpec)
-                             and resolved_spec.is_project_upload)
+        is_project_upload = (
+            isinstance(resolved_spec, ConnectorSpec) and resolved_spec.is_project_upload
+        )
         if is_project_upload:
             if not isinstance(connector, FileConnector):
                 raise ConnectorValidationError(
-                    'Project upload connector has an invalid configuration')
+                    'Project upload connector has an invalid configuration'
+                )
             # A newly provisioned project upload connector has an empty root.
             # This is the only connector allowed to inspect its root outside
             # an external identity credential scope. The attestation is
             # derived from canonical active StateDB metadata in this activity.
             files_list = fsutil.listdir(connector.root_dir)
-            log.debug(f"Files list for connector {id}: {files_list}")
+            log.debug(f'Files list for connector {id}: {files_list}')
             if len(files_list) == 0:
                 empty_connector = True
 
@@ -1215,11 +1275,13 @@ def _get_source_tables_raw(
             table_names = connector.list_tables(schema_name)
             tables = [
                 _source_table_from_config_and_existing_tables(
-                    t, existing_v2_tables, connector) for t in table_names
+                    t, existing_v2_tables, connector
+                )
+                for t in table_names
             ]
             ret = SourceTablesResponse(
                 source_tables=sorted(tables, key=lambda table: table.name),
-                response_token="",
+                response_token='',
             )
 
     except ConnectorValidationError:
@@ -1229,11 +1291,10 @@ def _get_source_tables_raw(
         # request bodies. Keep diagnostics useful without copying exception
         # text into application logs.
         log.warning(
-            "Connector source discovery failed (error_type=%s)",
+            'Connector source discovery failed (error_type=%s)',
             type(e).__name__,
         )
-        raise ConnectorValidationError(
-            'Connector source discovery failed') from None
+        raise ConnectorValidationError('Connector source discovery failed') from None
 
     return ret
 
@@ -1252,8 +1313,9 @@ def list_connector_source_tables(
             # This non-Temporal spec is composed from the active StateDB row
             # inside the activity. No caller-provided flag can grant internal
             # upload behavior to an external or stale connector reference.
-            resolved_spec = (
-                connector_broker.connector_credential_broker.resolve(reference))
+            resolved_spec = connector_broker.connector_credential_broker.resolve(
+                reference
+            )
             connector = get_connector_from_spec(resolved_spec)
             return _get_source_tables_raw(
                 reference.connector_id,
@@ -1268,10 +1330,10 @@ def list_connector_source_tables(
     except ConnectorValidationError:
         raise
     except Exception as error:
-        log.warning('Connector source discovery failed (error_type=%s)',
-                    type(error).__name__)
-        raise ConnectorValidationError(
-            'Connector source discovery failed') from None
+        log.warning(
+            'Connector source discovery failed (error_type=%s)', type(error).__name__
+        )
+        raise ConnectorValidationError('Connector source discovery failed') from None
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -1293,9 +1355,9 @@ def get_connector_source_table_file_type(
                 return None, 'not_found'
             except Exception as error:
                 log.warning(
-                    'Object-store source type resolution failed '
-                    '(error_type=%s)',
-                    type(error).__name__)
+                    'Object-store source type resolution failed (error_type=%s)',
+                    type(error).__name__,
+                )
                 return None, 'access_failed'
             return str(file_type).upper(), None
         finally:
@@ -1304,10 +1366,13 @@ def get_connector_source_table_file_type(
     except (ConnectorValidationError, ValidationException):
         raise
     except Exception as error:
-        log.warning('Connector source type resolution failed (error_type=%s)',
-                    type(error).__name__)
+        log.warning(
+            'Connector source type resolution failed (error_type=%s)',
+            type(error).__name__,
+        )
         raise ConnectorValidationError(
-            'Connector source type resolution failed') from None
+            'Connector source type resolution failed'
+        ) from None
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -1321,7 +1386,8 @@ def stage_connector_source_download(
         connector = get_connector_from_spec(reference)
         if not isinstance(connector, CompositeFileConnector):
             raise ConnectorValidationError(
-                'Download references require an object-store connector')
+                'Download references require an object-store connector'
+            )
         if not staging_id or not staging_id.isalnum():
             raise ConnectorValidationError('Invalid download staging ID')
         if isinstance(connector, AnyURIFileConnector):
@@ -1330,18 +1396,23 @@ def stage_connector_source_download(
             validate_connector_relative_source_name(source_table_name)
         with connector.filesystem_credential_scope(source_table_name):
             path = connector._get_path(source_table_name)
-            files = (_list_dataset_files(path, ('csv',
-                                                'parquet'), MAX_SUPPORTED_FILES)
-                     if fsutil.isdir(path) else [path])
+            files = (
+                _list_dataset_files(path, ('csv', 'parquet'), MAX_SUPPORTED_FILES)
+                if fsutil.isdir(path)
+                else [path]
+            )
             if not files or any(
-                    connector._supported_file_type(file) != 'parquet'
-                    for file in files):
+                connector._supported_file_type(file) != 'parquet' for file in files
+            ):
                 raise ConnectorValidationError(
-                    'Prediction-table readback requires Parquet data')
+                    'Prediction-table readback requires Parquet data'
+                )
         with connector._local_source(
-                source_table_name, transform=False,
-                max_entries=MAX_SUPPORTED_FILES,
-                max_bytes=MAX_STAGED_DOWNLOAD_SIZE) as (staged, _):
+            source_table_name,
+            transform=False,
+            max_entries=MAX_SUPPORTED_FILES,
+            max_bytes=MAX_STAGED_DOWNLOAD_SIZE,
+        ) as (staged, _):
             staging_path = osp.join(
                 deploy_env().data_plane_storage_root,
                 'temporary-uploaded-datasets',
@@ -1352,16 +1423,17 @@ def stage_connector_source_download(
             )
             fsutil.rm(staging_path, ignore_errors=True)
             fsutil.makedirs(osp.dirname(staging_path), exist_ok=True)
-            fsutil.copy(staged.directory, staging_path, overwrite=True,
-                        raise_on_exists=False)
+            fsutil.copy(
+                staged.directory, staging_path, overwrite=True, raise_on_exists=False
+            )
             return staging_path
     except ConnectorValidationError:
         raise
     except Exception as error:
-        log.warning('Connector source staging failed (error_type=%s)',
-                    type(error).__name__)
-        raise ConnectorValidationError(
-            'Connector source staging failed') from None
+        log.warning(
+            'Connector source staging failed (error_type=%s)', type(error).__name__
+        )
+        raise ConnectorValidationError('Connector source staging failed') from None
     finally:
         if connector is not None:
             connector.close()
@@ -1399,26 +1471,25 @@ def get_connector_source_columns(
             if connector is not None:
                 connector.close()
     except (
-            FileNotFoundError,
-            ConnectorSourceTableNotFoundError,
-            SourceTableNotFoundError,
-            SourceTableUnavailableError,
+        FileNotFoundError,
+        ConnectorSourceTableNotFoundError,
+        SourceTableNotFoundError,
+        SourceTableUnavailableError,
     ):
         if query is not None:
-            raise ConnectorValidationError(
-                'Connector source access failed') from None
+            raise ConnectorValidationError('Connector source access failed') from None
         raise ConnectorSourceTableNotFoundError(
-            f'Unable to find table {source_table_name}') from None
+            f'Unable to find table {source_table_name}'
+        ) from None
     except (ValidationException, ConnectorValidationError) as error:
-        if (type(error).__name__ == ConnectorSourceTableNotFoundError.__name__):
-            raise ConnectorValidationError(
-                'Connector source access failed') from None
+        if type(error).__name__ == ConnectorSourceTableNotFoundError.__name__:
+            raise ConnectorValidationError('Connector source access failed') from None
         raise
     except Exception as error:
-        log.warning('Connector columns read failed (error_type=%s)',
-                    type(error).__name__)
-        raise ConnectorValidationError(
-            'Connector source access failed') from None
+        log.warning(
+            'Connector columns read failed (error_type=%s)', type(error).__name__
+        )
+        raise ConnectorValidationError('Connector source access failed') from None
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -1441,10 +1512,10 @@ def validate_connector_source_table_exists(
             if connector is not None:
                 connector.close()
     except (
-            FileNotFoundError,
-            SourceTableNotFoundError,
-            SourceTableUnavailableError,
-            ValidationException,
+        FileNotFoundError,
+        SourceTableNotFoundError,
+        SourceTableUnavailableError,
+        ValidationException,
     ):
         return False
     except ConnectorValidationError:
@@ -1454,8 +1525,7 @@ def validate_connector_source_table_exists(
             'Connector exact source validation failed (error_type=%s)',
             type(error).__name__,
         )
-        raise ConnectorValidationError(
-            'Connector source access failed') from None
+        raise ConnectorValidationError('Connector source access failed') from None
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -1494,44 +1564,47 @@ def get_connector_sample_rows(
                 return response
             connector, connector_type = resolve_connector_and_type(reference)
             return get_query_sample_rows_response(
-                connector, query, connector_type, num_rows,
-                serialize_to_json=serialize_to_json)
+                connector,
+                query,
+                connector_type,
+                num_rows,
+                serialize_to_json=serialize_to_json,
+            )
         finally:
             if connector is not None:
                 connector.close()
     except (
-            FileNotFoundError,
-            ConnectorSourceTableNotFoundError,
-            SourceTableNotFoundError,
-            SourceTableUnavailableError,
+        FileNotFoundError,
+        ConnectorSourceTableNotFoundError,
+        SourceTableNotFoundError,
+        SourceTableUnavailableError,
     ):
         if query is not None:
-            raise ConnectorValidationError(
-                'Connector source access failed') from None
+            raise ConnectorValidationError('Connector source access failed') from None
         raise ConnectorSourceTableNotFoundError(
-            f'Unable to find table {source_table_name}') from None
+            f'Unable to find table {source_table_name}'
+        ) from None
     except (ValidationException, ConnectorValidationError) as error:
-        if (type(error).__name__ == ConnectorSourceTableNotFoundError.__name__):
-            raise ConnectorValidationError(
-                'Connector source access failed') from None
+        if type(error).__name__ == ConnectorSourceTableNotFoundError.__name__:
+            raise ConnectorValidationError('Connector source access failed') from None
         raise
     except Exception as error:
-        log.warning('Connector sample read failed (error_type=%s)',
-                    type(error).__name__)
-        raise ConnectorValidationError(
-            'Connector source access failed') from None
+        log.warning(
+            'Connector sample read failed (error_type=%s)', type(error).__name__
+        )
+        raise ConnectorValidationError('Connector source access failed') from None
 
 
-_CONNECTOR_ACTIVITY_EXACT_PUBLIC_ERROR_TYPES.update({
-    get_connector_source_columns: {
-        ConnectorSourceTableNotFoundError.__name__:
-        ConnectorSourceTableNotFoundError,
-    },
-    get_connector_sample_rows: {
-        ConnectorSourceTableNotFoundError.__name__:
-        ConnectorSourceTableNotFoundError,
-    },
-})
+_CONNECTOR_ACTIVITY_EXACT_PUBLIC_ERROR_TYPES.update(
+    {
+        get_connector_source_columns: {
+            ConnectorSourceTableNotFoundError.__name__: ConnectorSourceTableNotFoundError,
+        },
+        get_connector_sample_rows: {
+            ConnectorSourceTableNotFoundError.__name__: ConnectorSourceTableNotFoundError,
+        },
+    }
+)
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -1550,10 +1623,8 @@ def is_connector_source_table_view(
     except ConnectorValidationError:
         raise
     except Exception as error:
-        log.warning('Connector view check failed (error_type=%s)',
-                    type(error).__name__)
-        raise ConnectorValidationError(
-            'Connector source view check failed') from None
+        log.warning('Connector view check failed (error_type=%s)', type(error).__name__)
+        raise ConnectorValidationError('Connector source view check failed') from None
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -1563,7 +1634,8 @@ def validate_connector_reference(reference: ConnectorExecutionRef) -> None:
 
     try:
         validate_resolved_connector(
-            connector_broker.connector_credential_broker.resolve(reference))
+            connector_broker.connector_credential_broker.resolve(reference)
+        )
     except Exception as error:
         # Warehouse/provider exceptions routinely include assertions, tokens,
         # and request details. Never serialize them through Temporal or expose
@@ -1575,9 +1647,12 @@ def validate_connector_reference(reference: ConnectorExecutionRef) -> None:
         diagnostic_code = connector_validation_diagnostic_value(error)
         log.warning(
             'Connector target validation failed (correlation_id=%s '
-            'error_type=%s diagnostic_code=%s)', correlation_id,
-            type(error).__name__, diagnostic_code or 'unclassified')
+            'error_type=%s diagnostic_code=%s)',
+            correlation_id,
+            type(error).__name__,
+            diagnostic_code or 'unclassified',
+        )
         category = f' [{diagnostic_code}]' if diagnostic_code else ''
         raise ConnectorValidationError(
-            'Connector target validation failed'
-            f'{category}; reference: {correlation_id}') from None
+            f'Connector target validation failed{category}; reference: {correlation_id}'
+        ) from None

@@ -14,8 +14,8 @@ from typing import Any
 from zlib import crc32
 
 MODIFIED = datetime(2016, 3, 12, 1, 30, 13, tzinfo=timezone.utc)
-SCHEMA = ("state", "gender", "year", "name", "number")
-PROBE_MARKER = "SELECT 1 AS probe"
+SCHEMA = ('state', 'gender', 'year', 'name', 'number')
+PROBE_MARKER = 'SELECT 1 AS probe'
 
 
 @dataclass(frozen=True)
@@ -27,10 +27,11 @@ class FakeField:
 class FakeTable:
     """The metadata ``get_table`` returns for one object."""
 
-    table_type: str = "TABLE"
+    table_type: str = 'TABLE'
     modified: datetime | None = MODIFIED
     schema: Sequence[FakeField] = field(
-        default_factory=lambda: tuple(FakeField(n) for n in SCHEMA))
+        default_factory=lambda: tuple(FakeField(n) for n in SCHEMA)
+    )
 
 
 @dataclass(frozen=True)
@@ -42,15 +43,20 @@ class FakeTableReference:
 
 @dataclass(frozen=True)
 class FakeSessionInfo:
-    session_id: str | None = "session-0f1e"
+    session_id: str | None = 'session-0f1e'
 
 
 class FakeQueryJob:
-    def __init__(self, destination: Any, bytes_processed: int,
-                 schema: Sequence[FakeField] = (),
-                 statement_type: str = "SELECT", session_info: Any = None,
-                 ddl_target_table: Any = None,
-                 result_timeouts: list[float | None] | None = None) -> None:
+    def __init__(
+        self,
+        destination: Any,
+        bytes_processed: int,
+        schema: Sequence[FakeField] = (),
+        statement_type: str = 'SELECT',
+        session_info: Any = None,
+        ddl_target_table: Any = None,
+        result_timeouts: list[float | None] | None = None,
+    ) -> None:
         self.destination = destination
         self.total_bytes_processed = bytes_processed
         self.schema = schema
@@ -65,7 +71,7 @@ class FakeQueryJob:
         return self
 
 
-DESTINATION = FakeTableReference("example-project", "_anon", "anon0f1e")
+DESTINATION = FakeTableReference('example-project', '_anon', 'anon0f1e')
 
 
 class FakeBigQueryClient:
@@ -74,21 +80,29 @@ class FakeBigQueryClient:
     Probes are recorded apart from the statements a read issues, so a test
     asserting what a read ran does not have to filter them out.
     """
-    def __init__(self, tables: Mapping[str, FakeTable] | None = None,
-                 destination: Any = DESTINATION,
-                 bytes_processed: int = 66629424,
-                 raises: Mapping[str, BaseException] | None = None,
-                 probe_raises: BaseException | None = None,
-                 table_raises: BaseException | None = None,
-                 missing: bool = False, project: str = "example-project",
-                 on_export: Any = None, statement_type: str = "SELECT",
-                 query_schema: Sequence[FakeField] | None = None,
-                 session_id: str | None = "session-0f1e") -> None:
+
+    def __init__(
+        self,
+        tables: Mapping[str, FakeTable] | None = None,
+        destination: Any = DESTINATION,
+        bytes_processed: int = 66629424,
+        raises: Mapping[str, BaseException] | None = None,
+        probe_raises: BaseException | None = None,
+        table_raises: BaseException | None = None,
+        missing: bool = False,
+        project: str = 'example-project',
+        on_export: Any = None,
+        statement_type: str = 'SELECT',
+        query_schema: Sequence[FakeField] | None = None,
+        session_id: str | None = 'session-0f1e',
+    ) -> None:
         self.statement_type = statement_type
         self.session_id = session_id
-        self.query_schema = (tuple(
-            FakeField(n)
-            for n in SCHEMA) if query_schema is None else query_schema)
+        self.query_schema = (
+            tuple(FakeField(n) for n in SCHEMA)
+            if query_schema is None
+            else query_schema
+        )
         self.dry_runs: list[str] = []
         self.on_export = on_export
         self.project = project
@@ -112,46 +126,55 @@ class FakeBigQueryClient:
         return self.tables.get(name, FakeTable())
 
     def query(self, sql: str, **kwargs: Any) -> FakeQueryJob:
-        config = kwargs.get("job_config")
+        config = kwargs.get('job_config')
         self.job_configs.append(config)
-        if getattr(kwargs.get("job_config"), "dry_run", False):
+        if getattr(kwargs.get('job_config'), 'dry_run', False):
             self.dry_runs.append(sql)
-            return FakeQueryJob(self.destination, self.bytes_processed,
-                                self.query_schema, self.statement_type,
-                                result_timeouts=self.result_timeouts)
+            return FakeQueryJob(
+                self.destination,
+                self.bytes_processed,
+                self.query_schema,
+                self.statement_type,
+                result_timeouts=self.result_timeouts,
+            )
         if PROBE_MARKER in sql:
             self.probes.append(sql)
             if self.probe_raises is not None:
                 raise self.probe_raises
-            return FakeQueryJob(self.destination, self.bytes_processed,
-                                result_timeouts=self.result_timeouts)
+            return FakeQueryJob(
+                self.destination,
+                self.bytes_processed,
+                result_timeouts=self.result_timeouts,
+            )
         self.statements.append(sql)
         for marker, error in self.raises.items():
             if marker in sql:
                 raise error
-        if self.on_export is not None and sql.startswith("EXPORT DATA"):
+        if self.on_export is not None and sql.startswith('EXPORT DATA'):
             self.on_export()
-        creates_session_table = sql.startswith("CREATE TEMP TABLE")
+        creates_session_table = sql.startswith('CREATE TEMP TABLE')
         return FakeQueryJob(
             self.destination,
             self.bytes_processed,
-            session_info=(FakeSessionInfo(self.session_id) if getattr(
-                config, "create_session", False) else None),
-            ddl_target_table=(self.destination
-                              if creates_session_table else None),
+            session_info=(
+                FakeSessionInfo(self.session_id)
+                if getattr(config, 'create_session', False)
+                else None
+            ),
+            ddl_target_table=(self.destination if creates_session_table else None),
             result_timeouts=self.result_timeouts,
         )
 
     def matching(self, marker: str) -> list[str]:
-        return [
-            statement for statement in self.statements if marker in statement
-        ]
+        return [statement for statement in self.statements if marker in statement]
 
 
 class FakeBlob:
     """One object in the staging bucket, checksummed as the client does."""
-    def __init__(self, name: str, body: bytes, owner: FakeStorageClient,
-                 stale: bool = False) -> None:
+
+    def __init__(
+        self, name: str, body: bytes, owner: FakeStorageClient, stale: bool = False
+    ) -> None:
         self.name = name
         self.body = body
         self.size = len(body)
@@ -163,7 +186,8 @@ class FakeBlob:
         runs."""
         if self.stale:
             from google.api_core.exceptions import NotFound
-            raise NotFound(f"No such object: {self.name}")
+
+            raise NotFound(f'No such object: {self.name}')
         self.owner.fetched.append(self.name)
         if self.owner.arrive is not None:
             self.owner.arrive(self.name)
@@ -173,15 +197,16 @@ class FakeBlob:
         landed = self.owner.corrupt(self.body)
         if crc32(landed) != crc32(self.body):
             from google.cloud.storage.exceptions import DataCorruption
-            raise DataCorruption(None, f"checksum mismatch for {self.name}")
-        with open(target, "wb") as handle:
+
+            raise DataCorruption(None, f'checksum mismatch for {self.name}')
+        with open(target, 'wb') as handle:
             handle.write(landed)
 
     def upload_from_string(self, data: bytes) -> None:
         self.owner.bodies[self.name] = data
 
     def upload_from_filename(self, path: str, **_: Any) -> None:
-        with open(path, "rb") as handle:
+        with open(path, 'rb') as handle:
             self.owner.bodies[self.name] = handle.read()
         self.owner.uploaded.append(self.name)
 
@@ -189,7 +214,7 @@ class FakeBlob:
         pass
 
     def delete(self) -> None:
-        batch = getattr(self.owner.open_batch, "names", None)
+        batch = getattr(self.owner.open_batch, 'names', None)
         if batch is not None:
             batch.append(self.name)
         else:
@@ -229,15 +254,19 @@ class FakeStorageClient:
     while the rest are held at ``arrive``, which every download calls before
     it can fail.
     """
-    def __init__(self, bodies: Mapping[str, bytes] | None = None,
-                 stale_listing: bool = False,
-                 download_raises: Mapping[str, BaseException] | None = None,
-                 list_raises: BaseException | None = None,
-                 corrupt: Callable[[bytes], bytes] = lambda body: body,
-                 arrive: Callable[[str], Any] | None = None,
-                 delete_raises: Mapping[str, BaseException] | None = None,
-                 on_batch: Callable[[list[str]], Any] | None = None,
-                 location: str = "US") -> None:
+
+    def __init__(
+        self,
+        bodies: Mapping[str, bytes] | None = None,
+        stale_listing: bool = False,
+        download_raises: Mapping[str, BaseException] | None = None,
+        list_raises: BaseException | None = None,
+        corrupt: Callable[[bytes], bytes] = lambda body: body,
+        arrive: Callable[[str], Any] | None = None,
+        delete_raises: Mapping[str, BaseException] | None = None,
+        on_batch: Callable[[list[str]], Any] | None = None,
+        location: str = 'US',
+    ) -> None:
         self.location = location
         self.uploaded: list[str] = []
         self.bodies = dict(bodies or {})
@@ -256,15 +285,16 @@ class FakeStorageClient:
     def get_bucket(self, name: str) -> Any:
         return SimpleNamespace(name=name, location=self.location)
 
-    def list_blobs(self, bucket: str, prefix: str | None = None,
-                   max_results: int | None = None) -> list[FakeBlob]:
-        self.listed.append(prefix or "")
+    def list_blobs(
+        self, bucket: str, prefix: str | None = None, max_results: int | None = None
+    ) -> list[FakeBlob]:
+        self.listed.append(prefix or '')
         if self.list_raises is not None:
             raise self.list_raises
         return [
             FakeBlob(name, body, self, stale=self.stale_listing)
             for name, body in sorted(self.bodies.items())
-            if name.startswith(prefix or "")
+            if name.startswith(prefix or '')
         ][:max_results]
 
     def bucket(self, name: str) -> FakeBucket:
@@ -275,20 +305,22 @@ class FakeStorageClient:
 
     def remove(self, name: str) -> None:
         from google.api_core.exceptions import NotFound
+
         if name in self.delete_raises:
             raise self.delete_raises[name]
         if self.bodies.pop(name, None) is None:
-            raise NotFound(f"No such object: {name}")
+            raise NotFound(f'No such object: {name}')
 
 
 class FakeBucket:
     """Hands out live object handles, unpinned by any listing."""
+
     def __init__(self, name: str, owner: FakeStorageClient) -> None:
         self.name = name
         self.owner = owner
 
     def blob(self, name: str) -> FakeBlob:
-        return FakeBlob(name, self.owner.bodies.get(name, b""), self.owner)
+        return FakeBlob(name, self.owner.bodies.get(name, b''), self.owner)
 
 
 @dataclass(frozen=True)
@@ -321,6 +353,7 @@ class FakeReadSession:
 
 class FakeTransport:
     """The private attribute a real client exposes its credential through."""
+
     def __init__(self, credentials: Any) -> None:
         self._credentials = credentials
 
@@ -339,15 +372,20 @@ class FakeCredentials:
 def fake_workers(count: int, *, credentials: Any) -> tuple[Any, ...]:
     """Stands in for building real gRPC clients, which test_streaming covers
     against the real transport."""
-    return (credentials.client, ) * count
+    return (credentials.client,) * count
 
 
 class FakeReadClient:
     """Records every session it opens and replays canned record batches."""
-    def __init__(self, pages: Mapping[str, Sequence[Any]] | None = None,
-                 schema: Any = None, raises: BaseException | None = None,
-                 arrive: Callable[[], Any] | None = None,
-                 credentials: Any = None) -> None:
+
+    def __init__(
+        self,
+        pages: Mapping[str, Sequence[Any]] | None = None,
+        schema: Any = None,
+        raises: BaseException | None = None,
+        arrive: Callable[[], Any] | None = None,
+        credentials: Any = None,
+    ) -> None:
         self.transport = FakeTransport(credentials)
         self.pages = dict(pages or {})
         self.schema = schema
@@ -357,8 +395,9 @@ class FakeReadClient:
         self.parents: list[str] = []
         self.stream_counts: list[int] = []
 
-    def create_read_session(self, parent: str = "", read_session: Any = None,
-                            max_stream_count: int = -1) -> FakeReadSession:
+    def create_read_session(
+        self, parent: str = '', read_session: Any = None, max_stream_count: int = -1
+    ) -> FakeReadSession:
         self.parents.append(parent)
         self.sessions.append(read_session)
         self.stream_counts.append(max_stream_count)
@@ -366,7 +405,8 @@ class FakeReadClient:
             raise self.raises
         return FakeReadSession(
             tuple(FakeStream(name) for name in self.pages),
-            _ArrowSchema(self.schema.serialize().to_pybytes()))
+            _ArrowSchema(self.schema.serialize().to_pybytes()),
+        )
 
     def read_rows(self, name: str) -> list[FakeMessage]:
         if self.arrive is not None:

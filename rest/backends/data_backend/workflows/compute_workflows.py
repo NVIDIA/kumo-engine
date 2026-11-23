@@ -84,8 +84,7 @@ class TableIngestionWorkflow:
                 self._data_version,
                 table.fingerprint(),
             ],
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+            schedule_to_close_timeout=timedelta(hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
         )
 
         try:
@@ -105,7 +104,8 @@ class TableIngestionWorkflow:
                         graph_table_count,
                     ],
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
+                    ),
                     heartbeat_timeout=HEARTBEAT_TIMEOUT_COMPUTE_ACTIVITY,
                     retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
                 )
@@ -120,9 +120,11 @@ class TableIngestionWorkflow:
                 if len(val_errors) > 0:
                     for error in val_errors:
                         if validator.error_should_retry(error):
-                            log.info(f"Ingestion of table {table}"
-                                     f" with snowflake connector resulted in 0"
-                                     " rows, retrying ingest activity.")
+                            log.info(
+                                f'Ingestion of table {table}'
+                                f' with snowflake connector resulted in 0'
+                                ' rows, retrying ingest activity.'
+                            )
                             await run_ingest()
                             break
 
@@ -131,10 +133,10 @@ class TableIngestionWorkflow:
         except FailureError as e:
             self._result.status = AsyncDataTaskStatus.FAILED
             error_message = maybe_get_public_message(e)
-            error_title = ("Ingestion failed for table "
-                           f"{table.get_source_table_name()}")
+            error_title = f'Ingestion failed for table {table.get_source_table_name()}'
             self._result.validation.errors.append(
-                ValidationError(error_title, error_message))
+                ValidationError(error_title, error_message)
+            )
             log.error('Ingestion failed (error_type=%s)', type(e).__name__)
 
         await workflow.execute_activity(
@@ -146,8 +148,7 @@ class TableIngestionWorkflow:
                 data_version,
                 self._result.ok,
             ],
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+            schedule_to_close_timeout=timedelta(hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
         )
 
         await self._save_task_result()
@@ -161,6 +162,5 @@ class TableIngestionWorkflow:
                 self._data_version,
                 self._result,
             ],
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+            schedule_to_close_timeout=timedelta(hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
         )

@@ -25,8 +25,8 @@ class MonolithTrainingArtifactRuntime(TrainingArtifactRuntime):
 
 def monolith_trainer_runtime_kwargs() -> dict[str, Any]:
     return {
-        "explain_runtime": MonolithExplainRuntime(),
-        "artifact_runtime": MonolithTrainingArtifactRuntime(),
-        "diskgraph_runtime": LocalDiskgraphTrainingRuntime(),
-        "embedding_models": embedding_model_store(),
+        'explain_runtime': MonolithExplainRuntime(),
+        'artifact_runtime': MonolithTrainingArtifactRuntime(),
+        'diskgraph_runtime': LocalDiskgraphTrainingRuntime(),
+        'embedding_models': embedding_model_store(),
     }

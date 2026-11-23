@@ -5,10 +5,6 @@
 import os
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import contextmanager, nullcontext
-from test.connector.artifact_staging_contract import (
-    assert_indexed_parquet_parts,
-    local_artifact_dataset,
-)
 from types import SimpleNamespace
 from unittest.mock import Mock, PropertyMock, patch
 
@@ -35,6 +31,10 @@ from kumo.connector.sql_connector import InternalWriteMode
 from statedb.utils.errors import (
     ConnectorValidationDiagnosticCode,
     sql_query_error_message,
+)
+from test.connector.artifact_staging_contract import (
+    assert_indexed_parquet_parts,
+    local_artifact_dataset,
 )
 
 
@@ -65,7 +65,6 @@ class FakeGcsClient:
 
 
 class _FakeGcsBlob:
-
     def __init__(self, owner, name):
         self.owner = owner
         self.name = name
@@ -104,8 +103,7 @@ def test_bigquery_table_listing_keeps_lightweight_names_sorted():
     ]
 
     assert connector.list_tables() == ['customers', 'orders']
-    connector.context.list_tables.assert_called_once_with(
-        dataset=connector.dataset_id)
+    connector.context.list_tables.assert_called_once_with(dataset=connector.dataset_id)
     connector.context.get_table.assert_not_called()
 
 
@@ -113,8 +111,7 @@ def test_bigquery_missing_table_metadata_is_typed():
     connector = _mocked_bigquery_output_connector()
     connector.context.get_table.side_effect = NotFound('missing')
 
-    with pytest.raises(SourceTableNotFoundError,
-                       match="Source table 'missing_table'"):
+    with pytest.raises(SourceTableNotFoundError, match="Source table 'missing_table'"):
         connector._get_bigquery_table('missing_table')
 
 
@@ -124,9 +121,9 @@ def test_bigquery_metadata_ignore_errors_preserves_available_tables():
     missing = SourceTableNotFoundError('missing', connector.name)
 
     with patch.object(
-            connector,
-            '_get_one_table_metadata',
-            side_effect=[missing, metadata],
+        connector,
+        '_get_one_table_metadata',
+        side_effect=[missing, metadata],
     ):
         result = connector._get_table_metadata(
             ['missing', 'orders'],
@@ -141,12 +138,12 @@ def test_bigquery_metadata_ignore_errors_surfaces_unrelated_failure():
     connector = _mocked_bigquery_output_connector()
 
     with (
-            patch.object(
-                connector,
-                '_get_one_table_metadata',
-                side_effect=ConnectorError('metadata service failed'),
-            ),
-            pytest.raises(ConnectorError, match='metadata service failed'),
+        patch.object(
+            connector,
+            '_get_one_table_metadata',
+            side_effect=ConnectorError('metadata service failed'),
+        ),
+        pytest.raises(ConnectorError, match='metadata service failed'),
     ):
         connector._get_table_metadata(
             ['orders'],
@@ -170,8 +167,7 @@ def test_bigquery_output_write_probe_is_unique_expiring_and_cleaned_up():
     assert probe.dataset_id == 'authorized_dataset'
     assert probe.project == 'customer-project'
     assert probe.expires is not None
-    connector.context.delete_table.assert_called_once_with(
-        probe, not_found_ok=True)
+    connector.context.delete_table.assert_called_once_with(probe, not_found_ok=True)
     connector.context.test_iam_permissions.assert_not_called()
 
 
@@ -215,8 +211,7 @@ def test_bigquery_existing_output_with_permissions_still_probes_create():
     )
 
     probe = connector.context.create_table.call_args.args[0]
-    connector.context.delete_table.assert_called_once_with(
-        probe, not_found_ok=True)
+    connector.context.delete_table.assert_called_once_with(probe, not_found_ok=True)
 
 
 def test_bigquery_output_probe_denial_is_sanitized(caplog):
@@ -296,21 +291,21 @@ def test_bigquery_s3_artifact_output_fails_before_credentials_or_io(caplog):
     secret_path = 's3://secret-bucket/private/access-token/part-0.parquet'
 
     with (
-            patch('google.auth.default', side_effect=AssertionError) as adc,
-            patch.object(
-                connector,
-                '_use_credentials',
-                side_effect=AssertionError,
-            ) as secret_lookup,
-            patch.object(
-                connector,
-                '_initialize_gcs_client',
-                side_effect=AssertionError,
-            ) as gcs_client,
-            pytest.raises(
-                ConnectorError,
-                match='does not support s3://',
-            ) as exc_info,
+        patch('google.auth.default', side_effect=AssertionError) as adc,
+        patch.object(
+            connector,
+            '_use_credentials',
+            side_effect=AssertionError,
+        ) as secret_lookup,
+        patch.object(
+            connector,
+            '_initialize_gcs_client',
+            side_effect=AssertionError,
+        ) as gcs_client,
+        pytest.raises(
+            ConnectorError,
+            match='does not support s3://',
+        ) as exc_info,
     ):
         connector.write_artifacts_to_table('predictions', secret_path)
 
@@ -327,11 +322,12 @@ def test_bigquery_gcs_artifact_output_keeps_direct_load_path():
 
     with patch.object(connector, '_write_artifacts_from_gcs') as gcs_load:
         connector.write_artifacts_to_table(
-            'predictions', 'gs://internal-artifacts/predictions/', replace=True)
+            'predictions', 'gs://internal-artifacts/predictions/', replace=True
+        )
 
-    gcs_load.assert_called_once_with('predictions',
-                                     'gs://internal-artifacts/predictions/',
-                                     replace=True)
+    gcs_load.assert_called_once_with(
+        'predictions', 'gs://internal-artifacts/predictions/', replace=True
+    )
 
 
 @pytest.mark.parametrize(
@@ -340,10 +336,10 @@ def test_bigquery_gcs_artifact_output_keeps_direct_load_path():
     ids=['predictions', 'embeddings'],
 )
 def test_bigquery_local_artifact_stages_with_brokered_gcs_client(
-        monkeypatch, tmp_path, embeddings):
+    monkeypatch, tmp_path, embeddings
+):
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
-    artifact_path = local_artifact_dataset(tmp_path, shards=2,
-                                           embeddings=embeddings)
+    artifact_path = local_artifact_dataset(tmp_path, shards=2, embeddings=embeddings)
     connector = _mocked_bigquery_output_connector()
     connector.context.get_table.side_effect = NotFound('missing')
     gcs = FakeGcsClient()
@@ -354,15 +350,19 @@ def test_bigquery_local_artifact_stages_with_brokered_gcs_client(
         directory = directory.removesuffix('part-*.parquet')
         names = [blob.name for blob in gcs.list_blobs('b', prefix=directory)]
         loaded.update(
-            uris=source_uris, config=job_config, destination=destination,
+            uris=source_uris,
+            config=job_config,
+            destination=destination,
             names=names,
-            rows=sum(_uploaded_table(gcs, name).num_rows for name in names))
+            rows=sum(_uploaded_table(gcs, name).num_rows for name in names),
+        )
         return Mock()
 
     connector.context.load_table_from_uri.side_effect = load
     with patch.object(connector, '_initialize_gcs_client', return_value=gcs):
-        connector.write_artifacts_to_table('predictions', str(artifact_path),
-                                           replace=True)
+        connector.write_artifacts_to_table(
+            'predictions', str(artifact_path), replace=True
+        )
 
     prefix = assert_indexed_parquet_parts(list(gcs.uploaded))
     assert prefix.startswith('artifact-export/')
@@ -370,60 +370,67 @@ def test_bigquery_local_artifact_stages_with_brokered_gcs_client(
     assert loaded['uris'] == f'gs://internal-transfer/{prefix}/part-*.parquet'
     assert loaded['names'] == sorted(gcs.uploaded)
     assert loaded['rows'] == 2
-    assert loaded['destination'] == (
-        'customer-project.authorized_dataset.predictions')
+    assert loaded['destination'] == ('customer-project.authorized_dataset.predictions')
     config = loaded['config']
     assert config.write_disposition == 'WRITE_TRUNCATE'
     assert config.parquet_options.enable_list_inference
     assert not config.autodetect
     assert [(f.name, f.mode) for f in config.schema] == [
         ('ENTITY_ID', 'NULLABLE'),
-        ('EMBEDDING' if embeddings else 'SCORE',
-         'REPEATED' if embeddings else 'NULLABLE'),
+        (
+            'EMBEDDING' if embeddings else 'SCORE',
+            'REPEATED' if embeddings else 'NULLABLE',
+        ),
     ]
     assert gcs.bodies == {}
 
 
 def test_bigquery_local_artifact_append_conforms_to_existing_table(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
     artifact_path = local_artifact_dataset(tmp_path)
     connector = _mocked_bigquery_output_connector()
-    existing = Mock(table_type='TABLE', schema=[
-        bigquery.SchemaField('ENTITY_ID', 'INT64'),
-        bigquery.SchemaField('SCORE', 'FLOAT64'),
-    ])
+    existing = Mock(
+        table_type='TABLE',
+        schema=[
+            bigquery.SchemaField('ENTITY_ID', 'INT64'),
+            bigquery.SchemaField('SCORE', 'FLOAT64'),
+        ],
+    )
     connector.context.get_table.return_value = existing
 
-    with patch.object(connector, '_initialize_gcs_client',
-                      return_value=FakeGcsClient()):
+    with patch.object(
+        connector, '_initialize_gcs_client', return_value=FakeGcsClient()
+    ):
         connector.write_artifacts_to_table('predictions', str(artifact_path))
 
-    config = connector.context.load_table_from_uri.call_args.kwargs[
-        'job_config']
+    config = connector.context.load_table_from_uri.call_args.kwargs['job_config']
     assert config.schema == existing.schema
     assert config.write_disposition == 'WRITE_APPEND'
 
 
 def test_bigquery_local_artifact_append_rejects_incompatible_table(
-        monkeypatch, tmp_path, caplog):
+    monkeypatch, tmp_path, caplog
+):
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
     artifact_path = local_artifact_dataset(tmp_path)
     connector = _mocked_bigquery_output_connector()
     connector.context.get_table.return_value = Mock(
-        table_type='TABLE',
-        schema=[bigquery.SchemaField('ENTITY_ID', 'STRING')])
+        table_type='TABLE', schema=[bigquery.SchemaField('ENTITY_ID', 'STRING')]
+    )
     gcs = FakeGcsClient()
 
     with (
-            patch.object(connector, '_initialize_gcs_client',
-                         return_value=gcs),
-            pytest.raises(BigQueryOutputSchemaError) as error,
+        patch.object(connector, '_initialize_gcs_client', return_value=gcs),
+        pytest.raises(BigQueryOutputSchemaError) as error,
     ):
         connector.write_artifacts_to_table('predictions', str(artifact_path))
 
-    detail = ('ENTITY_ID is INTEGER NULLABLE but the table column is STRING '
-              'NULLABLE; SCORE (FLOAT NULLABLE) is not a table column')
+    detail = (
+        'ENTITY_ID is INTEGER NULLABLE but the table column is STRING '
+        'NULLABLE; SCORE (FLOAT NULLABLE) is not a table column'
+    )
     assert detail in error.value.message
     assert detail in caplog.text
 
@@ -434,23 +441,23 @@ def test_bigquery_local_artifact_append_rejects_incompatible_table(
 
 @pytest.mark.parametrize('scenario', ['partial_upload', 'load_failure'])
 def test_bigquery_local_artifact_failure_cleanup_contract(
-        monkeypatch, tmp_path, caplog, scenario):
+    monkeypatch, tmp_path, caplog, scenario
+):
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
     artifact_path = local_artifact_dataset(tmp_path, shards=2)
     connector = _mocked_bigquery_output_connector()
     connector.context.get_table.side_effect = NotFound('missing')
     gcs = FakeGcsClient()
     if scenario == 'partial_upload':
-        gcs.upload_raises['part-00000001.parquet'] = RuntimeError(
-            'provider detail')
+        gcs.upload_raises['part-00000001.parquet'] = RuntimeError('provider detail')
     else:
-        connector.context.load_table_from_uri.return_value.result.\
-            side_effect = BadRequest('provider detail')
+        connector.context.load_table_from_uri.return_value.result.side_effect = (
+            BadRequest('provider detail')
+        )
 
     with (
-            patch.object(connector, '_initialize_gcs_client',
-                         return_value=gcs),
-            pytest.raises(ConnectorError) as exc_info,
+        patch.object(connector, '_initialize_gcs_client', return_value=gcs),
+        pytest.raises(ConnectorError) as exc_info,
     ):
         connector.write_artifacts_to_table('predictions', str(artifact_path))
 
@@ -468,16 +475,17 @@ def test_bigquery_local_artifact_failure_cleanup_contract(
 
 
 def test_bigquery_local_artifact_requires_configured_transfer_bucket(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     monkeypatch.delenv('GCP_STORAGE_TRANSFER_BUCKET', raising=False)
     artifact_path = local_artifact_dataset(tmp_path)
     connector = _mocked_bigquery_output_connector()
 
     with (
-            patch.object(connector, '_initialize_gcs_client') as gcs_client,
-            pytest.raises(
-                ConnectorError,
-                match='GCP_STORAGE_TRANSFER_BUCKET is not configured'),
+        patch.object(connector, '_initialize_gcs_client') as gcs_client,
+        pytest.raises(
+            ConnectorError, match='GCP_STORAGE_TRANSFER_BUCKET is not configured'
+        ),
     ):
         connector.write_artifacts_to_table('predictions', str(artifact_path))
 
@@ -489,8 +497,9 @@ def test_bigquery_gcs_artifact_output_waits_for_load_job():
     connector.context.get_table.side_effect = NotFound('missing')
     load_job = connector.context.load_table_from_uri.return_value
 
-    connector._write_artifacts_from_gcs('predictions',
-                                        'gs://internal-artifacts/predictions/')
+    connector._write_artifacts_from_gcs(
+        'predictions', 'gs://internal-artifacts/predictions/'
+    )
 
     load_job.result.assert_called_once_with()
 
@@ -504,7 +513,8 @@ def test_bigquery_gcs_artifact_load_failure_is_sanitized(caplog):
 
     with pytest.raises(ConnectorError, match='Failed to load artifacts') as exc:
         connector._write_artifacts_from_gcs(
-            'predictions', 'gs://internal-artifacts/predictions/')
+            'predictions', 'gs://internal-artifacts/predictions/'
+        )
 
     assert exc.value.__cause__ is None
     assert secret not in exc.value.get_user_message()
@@ -520,11 +530,13 @@ def test_bigquery_empty_credentials_and_open():
     # Empty explicit credentials use the deployment's stored-credential path.
     # Keep this unit test independent of AWS Secrets Manager availability.
     with patch.object(
-            connector, '_use_credentials',
-            side_effect=ConnectorError('stored credentials unavailable')):
+        connector,
+        '_use_credentials',
+        side_effect=ConnectorError('stored credentials unavailable'),
+    ):
         with pytest.raises(
-                ConnectorError,
-                match='An error occured while trying to connect to BigQuery'):
+            ConnectorError, match='An error occured while trying to connect to BigQuery'
+        ):
             connector.open()
 
 
@@ -538,13 +550,16 @@ def test_bigquery_opens_with_activity_local_google_credential_object():
         location='EU',
         billing_project_id='billing-project',
     )
-    connector.set_credentials({
-        'provider': 'bigquery',
-        'credential': credential,
-    })
+    connector.set_credentials(
+        {
+            'provider': 'bigquery',
+            'credential': credential,
+        }
+    )
 
-    with patch('kumo.connector.bigquery_connector.Client',
-               return_value=client) as constructor:
+    with patch(
+        'kumo.connector.bigquery_connector.Client', return_value=client
+    ) as constructor:
         assert connector._open_with_credentials() is client
 
     constructor.assert_called_once_with(
@@ -560,10 +575,12 @@ def test_bigquery_rejects_cross_provider_runtime_credential_safely():
         project_id='customer-data-project',
         dataset_id='events',
     )
-    connector.set_credentials({
-        'provider': 'gcs',
-        'credential': Mock(token='poison-token'),
-    })
+    connector.set_credentials(
+        {
+            'provider': 'gcs',
+            'credential': Mock(token='poison-token'),
+        }
+    )
 
     with pytest.raises(ConnectorError, match='another provider') as caught:
         connector._open_with_credentials()
@@ -601,7 +618,8 @@ def test_bigquery_write_failure_hides_provider_text_target_and_logs(caplog):
 
     public_message = str(caught.value)
     assert 'Failed to export data from the configured BigQuery table' in (
-        public_message)
+        public_message
+    )
     assert poison not in public_message
     assert 'private-bucket' not in public_message
     assert 'private-write-path' not in public_message
@@ -616,8 +634,8 @@ class TestValidatePermissions:
         """An empty dataset is valid and does not require a table read."""
         # Arrange
         mock_instance = Mock()
-        mock_instance.project_id = "test-project"
-        mock_instance.dataset_id = "empty_dataset"
+        mock_instance.project_id = 'test-project'
+        mock_instance.dataset_id = 'empty_dataset'
 
         mock_real_client = Mock()
         mock_instance.client._client = mock_real_client
@@ -636,8 +654,8 @@ class TestValidatePermissions:
         permission failure and classifies as TARGET_ACCESS_DENIED."""
         # Arrange
         mock_instance = Mock()
-        mock_instance.project_id = "test-project"
-        mock_instance.dataset_id = "restricted_dataset"
+        mock_instance.project_id = 'test-project'
+        mock_instance.dataset_id = 'restricted_dataset'
 
         mock_real_client = Mock()
         mock_instance.client._client = mock_real_client
@@ -645,10 +663,8 @@ class TestValidatePermissions:
         # Mock Forbidden exception carrying the structured access reason.
         provider_secret = 'signed-provider-request-secret'
         mock_real_client.query.side_effect = Forbidden(
-            f'Access denied: {provider_secret}', errors=[{
-                'reason':
-                'accessDenied'
-            }])
+            f'Access denied: {provider_secret}', errors=[{'reason': 'accessDenied'}]
+        )
 
         # Act & Assert
         with pytest.raises(ConnectorError) as exc_info:
@@ -657,9 +673,11 @@ class TestValidatePermissions:
         message = str(exc_info.value)
         assert message == (
             'The selected identity does not have the required BigQuery '
-            'dataset read permissions.')
+            'dataset read permissions.'
+        )
         assert exc_info.value.diagnostic_code == (
-            ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED)
+            ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED
+        )
         assert 'INFORMATION_SCHEMA.TABLES' not in message
         assert 'restricted_dataset' not in message
         assert 'test-project' not in message
@@ -675,15 +693,17 @@ class TestValidatePermissions:
             'userRateLimitExceeded',
             'responseTooLarge',
             None,  # a 403 with no structured reason must also stay unclassified
-        ])
+        ],
+    )
     def test_validate_permissions_forbidden_operational_is_unclassified(
-            self, reason, caplog):
+        self, reason, caplog
+    ):
         """Operational 403s (quota/rate-limit/billing) and reason-less 403s must
         not be mislabeled as a non-retriable target-access problem."""
         # Arrange
         mock_instance = Mock()
-        mock_instance.project_id = "test-project"
-        mock_instance.dataset_id = "restricted_dataset"
+        mock_instance.project_id = 'test-project'
+        mock_instance.dataset_id = 'restricted_dataset'
 
         mock_real_client = Mock()
         mock_instance.client._client = mock_real_client
@@ -691,7 +711,8 @@ class TestValidatePermissions:
         provider_secret = 'signed-provider-request-secret'
         errors = [{'reason': reason}] if reason is not None else []
         mock_real_client.query.side_effect = Forbidden(
-            f'Quota exceeded: {provider_secret}', errors=errors)
+            f'Quota exceeded: {provider_secret}', errors=errors
+        )
 
         # Act & Assert
         with pytest.raises(ConnectorError) as exc_info:
@@ -707,15 +728,16 @@ class TestValidatePermissions:
         """A gRPC/IAM PERMISSION_DENIED is unambiguously access-denied."""
         # Arrange
         mock_instance = Mock()
-        mock_instance.project_id = "test-project"
-        mock_instance.dataset_id = "restricted_dataset"
+        mock_instance.project_id = 'test-project'
+        mock_instance.dataset_id = 'restricted_dataset'
 
         mock_real_client = Mock()
         mock_instance.client._client = mock_real_client
 
         provider_secret = 'signed-provider-request-secret'
         mock_real_client.query.side_effect = PermissionDenied(
-            f'Permission denied: {provider_secret}')
+            f'Permission denied: {provider_secret}'
+        )
 
         # Act & Assert
         with pytest.raises(ConnectorError) as exc_info:
@@ -724,9 +746,11 @@ class TestValidatePermissions:
         message = str(exc_info.value)
         assert message == (
             'The selected identity does not have the required BigQuery '
-            'dataset read permissions.')
+            'dataset read permissions.'
+        )
         assert exc_info.value.diagnostic_code == (
-            ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED)
+            ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED
+        )
         assert provider_secret not in message
         assert provider_secret not in caplog.text
 
@@ -734,14 +758,14 @@ class TestValidatePermissions:
         """Test validation fails when dataset doesn't exist."""
         # Arrange
         mock_instance = Mock()
-        mock_instance.project_id = "test-project"
-        mock_instance.dataset_id = "nonexistent_dataset"
+        mock_instance.project_id = 'test-project'
+        mock_instance.dataset_id = 'nonexistent_dataset'
 
         mock_real_client = Mock()
         mock_instance.client._client = mock_real_client
 
         # Mock NotFound exception
-        mock_real_client.query.side_effect = NotFound("Dataset not found")
+        mock_real_client.query.side_effect = NotFound('Dataset not found')
 
         # Act & Assert
         with pytest.raises(ConnectorError) as exc_info:
@@ -750,16 +774,17 @@ class TestValidatePermissions:
         message = str(exc_info.value)
         assert message == (
             'The configured BigQuery dataset was not found or is not '
-            'accessible to the selected identity.')
+            'accessible to the selected identity.'
+        )
         assert exc_info.value.diagnostic_code == (
-            ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND)
+            ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND
+        )
         assert 'nonexistent_dataset' not in message
         assert 'test-project' not in message
 
 
 def test_bigquery_validate_permissions_timeout_fails_closed():
-    timeout_const = (
-        bigquery_connector.BIGQUERY_CONNECTOR_PERMISSIONS_CHECK_TIMEOUT)
+    timeout_const = bigquery_connector.BIGQUERY_CONNECTOR_PERMISSIONS_CHECK_TIMEOUT
     connector = BigQueryConnector(
         name='bigquery',
         project_id='data-project',
@@ -773,16 +798,17 @@ def test_bigquery_validate_permissions_timeout_fails_closed():
     fake_executor.__exit__ = Mock(return_value=False)
     fake_executor.submit = Mock(return_value=fake_future)
 
-    with patch('kumo.connector.bigquery_connector.ThreadPoolExecutor',
-               return_value=fake_executor):
+    with patch(
+        'kumo.connector.bigquery_connector.ThreadPoolExecutor',
+        return_value=fake_executor,
+    ):
         with pytest.raises(ConnectorError, match='validation timed out'):
             connector.validate_permissions()
 
     fake_executor.submit.assert_called_once()
     fake_future.result.assert_called_once_with(timeout=timeout_const)
     fake_future.cancel.assert_called_once_with()
-    fake_executor.shutdown.assert_called_once_with(wait=False,
-                                                   cancel_futures=True)
+    fake_executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
 
 
 @pytest.mark.parametrize('columns', [None, ['ID', 'column with spaces']])
@@ -792,19 +818,32 @@ def test_export_table_to_blob_storage_uses_shared_direct_export(columns):
     connector = _make_unopened_bq_connector()
     connector._context = Mock()
     connector.context.query.return_value.total_bytes_processed = 123
-    with patch.object(connector, '_source_reader',
-                      side_effect=AssertionError('local materialization')), \
-            patch.object(WrappedClient, '_get_query_source_size_internal'), \
-            patch.object(WrappedClient, 'poll_job_completion') as poll:
-        assert connector.export_table_to_blob_storage('orders',
-                                                      'gs://bucket/final/',
-                                                      columns=columns) is None
+    with (
+        patch.object(
+            connector,
+            '_source_reader',
+            side_effect=AssertionError('local materialization'),
+        ),
+        patch.object(WrappedClient, '_get_query_source_size_internal'),
+        patch.object(WrappedClient, 'poll_job_completion') as poll,
+    ):
+        assert (
+            connector.export_table_to_blob_storage(
+                'orders', 'gs://bucket/final/', columns=columns
+            )
+            is None
+        )
     query = connector.context.query.call_args.kwargs['query']
-    poll.assert_called_once_with(connector.context.query.return_value,
-                                 WrappedClient.BQ_INGEST_TIMEOUT_SECONDS, query)
+    poll.assert_called_once_with(
+        connector.context.query.return_value,
+        WrappedClient.BQ_INGEST_TIMEOUT_SECONDS,
+        query,
+    )
     assert "uri='gs://bucket/final/part-*.parquet'" in query
     projection = '*' if columns is None else '`ID`, `column with spaces`'
-    assert f'AS SELECT {projection} FROM `test-project`.`test_dataset`.`orders`' in query
+    assert (
+        f'AS SELECT {projection} FROM `test-project`.`test_dataset`.`orders`' in query
+    )
     connector.context.query.return_value.result.assert_called_once_with()
 
 
@@ -854,7 +893,8 @@ def _bq_read_client(schema: pa.Schema, pages: dict) -> Mock:
             encoded = list(pa.ipc.MessageReader.open_stream(sink.getvalue()))
             message = Mock()
             message.arrow_record_batch.serialized_record_batch = (
-                encoded[1].serialize().to_pybytes())
+                encoded[1].serialize().to_pybytes()
+            )
             messages.append(message)
         return iter(messages)
 
@@ -866,42 +906,61 @@ def _bq_read_client(schema: pa.Schema, pages: dict) -> Mock:
 def _query_export(connector, schema, pages, destination):
     read_client = _bq_read_client(schema, pages)
     job = Mock(
-        total_bytes_processed=123, statement_type='SELECT',
-        schema=[bigquery.SchemaField(name, 'INTEGER') for name in schema.names])
+        total_bytes_processed=123,
+        statement_type='SELECT',
+        schema=[bigquery.SchemaField(name, 'INTEGER') for name in schema.names],
+    )
     job.ddl_target_table = bigquery.TableReference.from_string(
-        'result-project.session.query_result')
+        'result-project.session.query_result'
+    )
     job.session_info.session_id = 'session-id'
     connector._context = Mock()
     connector._context.query.return_value = job
 
     def materialize_path(fingerprint, version, stage):
-        return str(destination /
-                   f'{fingerprint.ingest_path_fpid}-{version}-{stage.name}')
+        return str(
+            destination / f'{fingerprint.ingest_path_fpid}-{version}-{stage.name}'
+        )
 
-    with patch.dict(os.environ, {'GCP_STORAGE_TRANSFER_BUCKET': ''}), \
-            patch('kumo.connector.bigquery_connector.BigQueryReadClient',
-                  return_value=read_client), \
-            patch('kumo_bigquery.streaming.read_clients',
-                  side_effect=lambda count, **kwargs: (read_client,) * count), \
-            patch('kumo.connector.source_bridge.get_materialize_path',
-                  side_effect=materialize_path), \
-            patch('kumo.data.utils.get_materialize_path',
-                  side_effect=materialize_path):
+    with (
+        patch.dict(os.environ, {'GCP_STORAGE_TRANSFER_BUCKET': ''}),
+        patch(
+            'kumo.connector.bigquery_connector.BigQueryReadClient',
+            return_value=read_client,
+        ),
+        patch(
+            'kumo_bigquery.streaming.read_clients',
+            side_effect=lambda count, **kwargs: (read_client,) * count,
+        ),
+        patch(
+            'kumo.connector.source_bridge.get_materialize_path',
+            side_effect=materialize_path,
+        ),
+        patch('kumo.data.utils.get_materialize_path', side_effect=materialize_path),
+    ):
         yield read_client
 
 
 @pytest.mark.parametrize('billing_project', [None, 'billing-project'])
 @pytest.mark.parametrize('empty', [False, True])
 def test_bigquery_export_query_then_download_reads_that_artifact(
-        tmp_path, billing_project, empty):
-    connector = BigQueryConnector(name='bigquery', project_id='test-project',
-                                  dataset_id='test_dataset',
-                                  billing_project_id=billing_project)
+    tmp_path, billing_project, empty
+):
+    connector = BigQueryConnector(
+        name='bigquery',
+        project_id='test-project',
+        dataset_id='test_dataset',
+        billing_project_id=billing_project,
+    )
     schema = pa.schema([('ID', pa.int64())])
-    pages = {} if empty else {
-        'stream-0': [pa.record_batch({'ID': [1, 2]})],
-        'stream-1': [pa.record_batch({'ID': [3]})],
-    }
+    pages = (
+        {}
+        if empty
+        else {
+            'stream-0': [pa.record_batch({'ID': [1, 2]})],
+            'stream-1': [pa.record_batch({'ID': [3]})],
+        }
+    )
     table_fp = Mock(ingest_path_fpid='fpid_sql', cols={'ID': Dtype.int})
     destination, downloaded = tmp_path / 'persisted', tmp_path / 'downloaded'
     sql = 'SELECT id AS ID FROM orders WHERE amount > 0; -- user comment'
@@ -915,16 +974,17 @@ def test_bigquery_export_query_then_download_reads_that_artifact(
     assert calls[0].kwargs['job_config'].dry_run
     assert calls[-2].args[0] == (
         'CREATE TEMP TABLE _SESSION.kumo_read_target AS '
-        'SELECT `ID` FROM (SELECT id AS ID FROM orders WHERE amount > 0)')
+        'SELECT `ID` FROM (SELECT id AS ID FROM orders WHERE amount > 0)'
+    )
     assert calls[-2].kwargs['job_config'].create_session
     assert calls[-1].args[0] == 'DROP TABLE _SESSION.kumo_read_target'
     properties = calls[-1].kwargs['job_config'].connection_properties
-    assert [(p.key, p.value)
-            for p in properties] == [('session_id', 'session-id')]
+    assert [(p.key, p.value) for p in properties] == [('session_id', 'session-id')]
     request = read_client.create_read_session.call_args.kwargs
     assert request['parent'] == f'projects/{billing_project or "test-project"}'
     assert request['read_session'].table == (
-        'projects/result-project/datasets/session/tables/query_result')
+        'projects/result-project/datasets/session/tables/query_result'
+    )
     assert request['read_session'].read_options.selected_fields == ['ID']
     parts = list(downloaded.glob('*.parquet'))
     result = pa.concat_tables([pq.read_table(part) for part in parts])
@@ -934,8 +994,7 @@ def test_bigquery_export_query_then_download_reads_that_artifact(
     assert metrics.source_size == sum(p.stat().st_size for p in parts)
 
 
-@pytest.mark.parametrize('phase',
-                         ['create_read_session', 'read_rows', 'publish'])
+@pytest.mark.parametrize('phase', ['create_read_session', 'read_rows', 'publish'])
 def test_bigquery_export_query_cleans_partial_on_failure(tmp_path, phase):
     connector = _make_unopened_bq_connector()
     schema = pa.schema([('ID', pa.int64())])
@@ -945,18 +1004,21 @@ def test_bigquery_export_query_cleans_partial_on_failure(tmp_path, phase):
     failure = RuntimeError('private provider detail')
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
-    with _query_export(connector, schema, pages, destination) as read_client, \
-            patch('kumo.connector.source_bridge._scratch_dir',
-                  return_value=str(scratch)), \
-            patch('kumo.connector.source_bridge.publish_source',
-                  side_effect=failure) if phase == 'publish' else nullcontext():
+    with (
+        _query_export(connector, schema, pages, destination) as read_client,
+        patch('kumo.connector.source_bridge._scratch_dir', return_value=str(scratch)),
+        patch('kumo.connector.source_bridge.publish_source', side_effect=failure)
+        if phase == 'publish'
+        else nullcontext(),
+    ):
         if phase != 'publish':
             getattr(read_client, phase).side_effect = failure
         with pytest.raises(ConnectorError) as error:
             connector.export_query('SELECT id AS ID FROM t', table_fp, '9')
 
     assert connector.context.query.call_args.args[0] == (
-        'DROP TABLE _SESSION.kumo_read_target')
+        'DROP TABLE _SESSION.kumo_read_target'
+    )
     read_client.transport.close.assert_called_once_with()
     assert not scratch.exists()
     assert not destination.exists()
@@ -965,6 +1027,7 @@ def test_bigquery_export_query_cleans_partial_on_failure(tmp_path, phase):
 
 class _FakeGCSClient:
     """Objects keyed by name, listed and deleted by prefix like GCS."""
+
     def __init__(self, names):
         self.names = set(names)
 
@@ -980,8 +1043,7 @@ class _FakeGCSClient:
         return nullcontext()
 
     def _blob(self, name):
-        return SimpleNamespace(name=name,
-                               delete=lambda: self.names.discard(name))
+        return SimpleNamespace(name=name, delete=lambda: self.names.discard(name))
 
 
 def test_bigquery_source_reader_stages_each_attempt_separately(monkeypatch):
@@ -996,27 +1058,24 @@ def test_bigquery_source_reader_stages_each_attempt_separately(monkeypatch):
     connector._context = Mock()
     table_fp = Mock(ingest_path_fpid='fpid_abc')
 
-    with patch.object(connector, '_initialize_gcs_client',
-                      return_value=Mock()), \
-            patch('kumo_bigquery.BigQuerySourceReader') as reader, \
-            patch('kumo.connector.bigquery_connector.BigQueryReadClient'):
+    with (
+        patch.object(connector, '_initialize_gcs_client', return_value=Mock()),
+        patch('kumo_bigquery.BigQuerySourceReader') as reader,
+        patch('kumo.connector.bigquery_connector.BigQueryReadClient'),
+    ):
         with connector._source_reader(table_fp.ingest_path_fpid, '3'):
             pass
         with connector._source_reader(table_fp.ingest_path_fpid, '3'):
             pass
 
-    first, second = [
-        call.kwargs['staging_uri'] for call in reader.call_args_list
-    ]
+    first, second = [call.kwargs['staging_uri'] for call in reader.call_args_list]
     root = 'gs://example-bucket/source-reader/fpid_abc/3/'
     assert first.startswith(root) and second.startswith(root)
     assert first != second
 
     # Each attempt exports one object under its own prefix; the clear that
     # brackets either read leaves the other attempt's object untouched.
-    locations = [
-        StagingLocation.parse(uri).child('orders') for uri in (first, second)
-    ]
+    locations = [StagingLocation.parse(uri).child('orders') for uri in (first, second)]
     objects = [f'{location.directory}part-0.parquet' for location in locations]
     storage = _FakeGCSClient(objects)
     clear_prefix(storage, locations[0])
@@ -1039,39 +1098,39 @@ def test_bigquery_export_query_needs_no_gcs_staging_authority(tmp_path):
     schema = pa.schema([('ID', pa.int64())])
     pages = {'stream-0': [pa.record_batch({'ID': [1]})]}
     table_fp = Mock(ingest_path_fpid='fpid_sql', cols={'ID': Dtype.int})
-    with _query_export(connector, schema, pages, tmp_path / 'persisted'), \
-            patch('google.auth.default', side_effect=AssertionError('ADC')), \
-            patch('google.cloud.storage.Client',
-                  side_effect=AssertionError('GCS staging')), \
-            patch.object(connector, '_use_credentials',
-                         side_effect=AssertionError('internal credentials')):
-        assert connector.export_query('SELECT 1 AS ID', table_fp,
-                                      '9').num_rows == 1
+    with (
+        _query_export(connector, schema, pages, tmp_path / 'persisted'),
+        patch('google.auth.default', side_effect=AssertionError('ADC')),
+        patch('google.cloud.storage.Client', side_effect=AssertionError('GCS staging')),
+        patch.object(
+            connector,
+            '_use_credentials',
+            side_effect=AssertionError('internal credentials'),
+        ),
+    ):
+        assert connector.export_query('SELECT 1 AS ID', table_fp, '9').num_rows == 1
 
 
 @pytest.mark.parametrize(
     'credentials',
     [
         {},
-        {
-            'provider': 'bigquery'
-        },
+        {'provider': 'bigquery'},
         {
             'provider': 'gcs',
             'credential': Mock(name='wrong_provider_credential'),
         },
     ],
 )
-def test_bigquery_staging_rejects_missing_or_wrong_provider_credentials(
-        credentials):
+def test_bigquery_staging_rejects_missing_or_wrong_provider_credentials(credentials):
     """Staging fails closed instead of falling back to ambient authority."""
     connector = _make_unopened_bq_connector()
     connector.set_credentials(credentials)
 
     with patch('google.cloud.storage.Client') as storage_client:
         with pytest.raises(
-                ConnectorError,
-                match='Authorized BigQuery staging credentials are unavailable',
+            ConnectorError,
+            match='Authorized BigQuery staging credentials are unavailable',
         ) as excinfo:
             connector._initialize_gcs_client()
 
@@ -1088,10 +1147,12 @@ _REDACTION_BODY = 'provider rejected'
 def _bad_query_error() -> BadRequest:
     return BadRequest(
         'Unrecognized name: a at [1:8]',
-        errors=[{
-            'message': 'Unrecognized name: a at [1:8]',
-            'reason': 'invalidQuery',
-        }],
+        errors=[
+            {
+                'message': 'Unrecognized name: a at [1:8]',
+                'reason': 'invalidQuery',
+            }
+        ],
     )
 
 
@@ -1101,10 +1162,12 @@ _NON_QUERY_400_DETAIL = 'internal-account-detail-42'
 def _non_query_bad_request() -> BadRequest:
     return BadRequest(
         _NON_QUERY_400_DETAIL,
-        errors=[{
-            'message': _NON_QUERY_400_DETAIL,
-            'reason': 'jobInternalError',
-        }],
+        errors=[
+            {
+                'message': _NON_QUERY_400_DETAIL,
+                'reason': 'jobInternalError',
+            }
+        ],
     )
 
 
@@ -1126,7 +1189,8 @@ def test_bigquery_get_query_metadata_bad_request_surfaces_reason():
     # Full composition the authoring UI renders (CustomSqlQueryError body).
     assert sql_query_error_message(exc_info.value) == (
         'The warehouse could not run this query. '
-        'BigQuery could not run the query: Unrecognized name: a at [1:8]')
+        'BigQuery could not run the query: Unrecognized name: a at [1:8]'
+    )
 
 
 def test_bigquery_get_query_metadata_forbidden_stays_redacted():
@@ -1162,8 +1226,9 @@ def test_bigquery_get_query_metadata_not_found_has_location_guidance():
 def test_bigquery_rejects_non_select_statement_classification(statement_type):
     connector = _make_unopened_bq_connector()
     connector._context = Mock()
-    connector.context.query.return_value = Mock(statement_type=statement_type,
-                                                schema=[])
+    connector.context.query.return_value = Mock(
+        statement_type=statement_type, schema=[]
+    )
 
     with pytest.raises(ConnectorError, match='single read-only SELECT'):
         connector.get_query_metadata('warehouse-specific syntax')
@@ -1206,8 +1271,9 @@ def test_bigquery_sample_query_bad_request_surfaces_reason():
     mock_client = Mock()
     mock_client.query.side_effect = _bad_query_error()
 
-    with patch.object(BigQueryConnector, 'client', new_callable=PropertyMock,
-                      return_value=mock_client):
+    with patch.object(
+        BigQueryConnector, 'client', new_callable=PropertyMock, return_value=mock_client
+    ):
         with pytest.raises(ConnectorError) as exc_info:
             connector.sample_query('SELECT a', 10)
 
@@ -1218,7 +1284,8 @@ def test_bigquery_sample_query_bad_request_surfaces_reason():
     assert 'failed while reading table data' not in msg
     assert sql_query_error_message(exc_info.value) == (
         'The warehouse could not run this query. '
-        'BigQuery could not run the query: Unrecognized name: a at [1:8]')
+        'BigQuery could not run the query: Unrecognized name: a at [1:8]'
+    )
 
 
 def test_bigquery_sample_query_forbidden_stays_redacted():
@@ -1231,8 +1298,9 @@ def test_bigquery_sample_query_forbidden_stays_redacted():
     mock_client = Mock()
     mock_client.query.side_effect = Forbidden(secret)
 
-    with patch.object(BigQueryConnector, 'client', new_callable=PropertyMock,
-                      return_value=mock_client):
+    with patch.object(
+        BigQueryConnector, 'client', new_callable=PropertyMock, return_value=mock_client
+    ):
         with pytest.raises(ConnectorError) as exc_info:
             connector.sample_query('SELECT 1', 10)
 
@@ -1249,8 +1317,9 @@ def test_bigquery_sample_query_carries_a_ceiling_the_warehouse_enforces():
     mock_client = Mock()
     mock_client.query.side_effect = RuntimeError('stop after the job config')
 
-    with patch.object(BigQueryConnector, 'client', new_callable=PropertyMock,
-                      return_value=mock_client):
+    with patch.object(
+        BigQueryConnector, 'client', new_callable=PropertyMock, return_value=mock_client
+    ):
         with pytest.raises(ConnectorError):
             connector.sample_query('SELECT 1', 10)
 
@@ -1274,8 +1343,9 @@ def test_bigquery_sample_query_generic_error_stays_masked():
     mock_client = Mock()
     mock_client.query.side_effect = RuntimeError(secret)
 
-    with patch.object(BigQueryConnector, 'client', new_callable=PropertyMock,
-                      return_value=mock_client):
+    with patch.object(
+        BigQueryConnector, 'client', new_callable=PropertyMock, return_value=mock_client
+    ):
         with pytest.raises(ConnectorError) as exc_info:
             connector.sample_query('SELECT 1', 10)
 
@@ -1285,21 +1355,25 @@ def test_bigquery_sample_query_generic_error_stays_masked():
 
 
 @pytest.mark.parametrize('operation', ['metadata', 'estimate', 'preview'])
-def test_bigquery_structured_resource_error_is_actionable_and_redacted(
-        operation):
+def test_bigquery_structured_resource_error_is_actionable_and_redacted(operation):
     connector = _make_unopened_bq_connector()
     connector._context = Mock()
     secret = 'private recursive planner detail'
     error = BadRequest(
-        secret, errors=[{
-            'reason': 'resourcesExceeded',
-            'message': secret,
-        }])
+        secret,
+        errors=[
+            {
+                'reason': 'resourcesExceeded',
+                'message': secret,
+            }
+        ],
+    )
     if operation == 'preview':
         client = Mock()
         client.query.side_effect = error
-        context = patch.object(BigQueryConnector, 'client',
-                               new_callable=PropertyMock, return_value=client)
+        context = patch.object(
+            BigQueryConnector, 'client', new_callable=PropertyMock, return_value=client
+        )
     else:
         connector.context.query.side_effect = error
         context = nullcontext()
@@ -1321,24 +1395,38 @@ def test_bigquery_safe_query_diagnostic_allowlists_not_found_only():
     diagnostic = bigquery_connector._bq_safe_query_diagnostic(NotFound(secret))
     assert 'configured location' in diagnostic
     assert secret not in diagnostic
-    assert bigquery_connector._bq_safe_query_diagnostic(
-        BadRequest(secret, errors=[{
-            'reason': 'jobInternalError',
-            'message': secret,
-        }])) is None
+    assert (
+        bigquery_connector._bq_safe_query_diagnostic(
+            BadRequest(
+                secret,
+                errors=[
+                    {
+                        'reason': 'jobInternalError',
+                        'message': secret,
+                    }
+                ],
+            )
+        )
+        is None
+    )
 
 
 def test_bigquery_wrapped_preview_dry_run_preserves_safe_diagnostic():
     secret = 'private recursive planner detail'
     raw_client = Mock()
     raw_client.query.side_effect = BadRequest(
-        secret, errors=[{
-            'reason': 'resourcesExceeded',
-            'message': secret,
-        }])
+        secret,
+        errors=[
+            {
+                'reason': 'resourcesExceeded',
+                'message': secret,
+            }
+        ],
+    )
     with pytest.raises(ConnectorError) as caught:
         bigquery_connector.WrappedClient(raw_client).query(
-            'WITH RECURSIVE ...', surface_query_diagnostics=True)
+            'WITH RECURSIVE ...', surface_query_diagnostics=True
+        )
     assert 'resource limits' in caught.value.get_user_message()
     assert secret not in caught.value.get_user_message()
 
@@ -1347,14 +1435,22 @@ def test_bq_query_error_detail_prefers_structured_then_falls_back():
     """The reason extractor prefers the structured compile diagnostic, then the
     exception ``message``, then ``str`` — defensively, even when ``errors`` is
     missing or empty."""
-    assert bigquery_connector._bq_query_error_detail(
-        _bad_query_error()) == 'Unrecognized name: a at [1:8]'
+    assert (
+        bigquery_connector._bq_query_error_detail(_bad_query_error())
+        == 'Unrecognized name: a at [1:8]'
+    )
     # No structured errors → fall back to .message (stripped).
-    assert bigquery_connector._bq_query_error_detail(
-        BadRequest('  Syntax error near X  ')) == 'Syntax error near X'
+    assert (
+        bigquery_connector._bq_query_error_detail(BadRequest('  Syntax error near X  '))
+        == 'Syntax error near X'
+    )
     # Empty errors list → still fall back to .message.
-    assert bigquery_connector._bq_query_error_detail(
-        BadRequest('Table not found', errors=[])) == 'Table not found'
+    assert (
+        bigquery_connector._bq_query_error_detail(
+            BadRequest('Table not found', errors=[])
+        )
+        == 'Table not found'
+    )
 
 
 def test_bigquery_get_query_metadata_non_query_400_stays_redacted():
@@ -1381,8 +1477,9 @@ def test_bigquery_sample_query_non_query_400_stays_redacted():
     mock_client = Mock()
     mock_client.query.side_effect = _non_query_bad_request()
 
-    with patch.object(BigQueryConnector, 'client', new_callable=PropertyMock,
-                      return_value=mock_client):
+    with patch.object(
+        BigQueryConnector, 'client', new_callable=PropertyMock, return_value=mock_client
+    ):
         with pytest.raises(ConnectorError) as exc_info:
             connector.sample_query('SELECT 1', 10)
 
@@ -1417,9 +1514,9 @@ def test_bigquery_sample_query_non_query_400_stays_redacted():
         ('BIGNUMERIC', None, None, Dtype.float64),
         ('DECIMAL', None, None, Dtype.float64),
         ('BIGDECIMAL', None, None, Dtype.float64),
-    ])
-def test_bigquery_decimal_types_are_scale_aware(bq_type, precision, scale,
-                                                dtype):
+    ],
+)
+def test_bigquery_decimal_types_are_scale_aware(bq_type, precision, scale, dtype):
     api_repr = {'name': 'amount', 'type': bq_type, 'mode': 'NULLABLE'}
     if precision is not None:
         api_repr['precision'] = precision
@@ -1427,12 +1524,14 @@ def test_bigquery_decimal_types_are_scale_aware(bq_type, precision, scale,
         api_repr['scale'] = scale
     field = bigquery.SchemaField.from_api_repr(api_repr)
 
-    assert field.precision == (int(precision)
-                               if precision is not None else None)
+    assert field.precision == (int(precision) if precision is not None else None)
     assert field.scale == (int(scale) if scale is not None else None)
-    assert BigQueryConnector.to_kumo_dtype(field.field_type, field.mode,
-                                           field.precision,
-                                           field.scale) is dtype
+    assert (
+        BigQueryConnector.to_kumo_dtype(
+            field.field_type, field.mode, field.precision, field.scale
+        )
+        is dtype
+    )
 
 
 def test_bigquery_decimal_columns_carry_their_parameters_into_inference():
@@ -1440,19 +1539,23 @@ def test_bigquery_decimal_columns_carry_their_parameters_into_inference():
     type name alone reads every decimal as a float."""
     connector = _mocked_bigquery_output_connector()
     schema = [
-        bigquery.SchemaField.from_api_repr({
-            'name': 'merchant_key',
-            'type': 'BIGNUMERIC',
-            'mode': 'NULLABLE',
-            'precision': '18',
-        }),
-        bigquery.SchemaField.from_api_repr({
-            'name': 'loan_amount',
-            'type': 'NUMERIC',
-            'mode': 'NULLABLE',
-            'precision': '38',
-            'scale': '9',
-        }),
+        bigquery.SchemaField.from_api_repr(
+            {
+                'name': 'merchant_key',
+                'type': 'BIGNUMERIC',
+                'mode': 'NULLABLE',
+                'precision': '18',
+            }
+        ),
+        bigquery.SchemaField.from_api_repr(
+            {
+                'name': 'loan_amount',
+                'type': 'NUMERIC',
+                'mode': 'NULLABLE',
+                'precision': '38',
+                'scale': '9',
+            }
+        ),
     ]
 
     cols = connector._cols_from_schema(schema)
@@ -1467,15 +1570,19 @@ def test_bigquery_repeated_decimals_stay_unsupported(bq_type):
     ``list<decimal128|256>`` fails there with "float array type mismatch".
     Calling these float arrays would trade a clear "unsupported" at table
     create for an ingest failure."""
-    assert BigQueryConnector.to_kumo_dtype(bq_type, 'REPEATED', 38,
-                                           None) is Dtype.unsupported
+    assert (
+        BigQueryConnector.to_kumo_dtype(bq_type, 'REPEATED', 38, None)
+        is Dtype.unsupported
+    )
 
 
 def test_bigquery_repeated_numeric_keeps_its_existing_mapping():
     r"""``NUMERIC`` has always mapped this way; it is left alone so this
     change adds no new behaviour to the repeated path."""
-    assert BigQueryConnector.to_kumo_dtype('NUMERIC', 'REPEATED', None,
-                                           None) is Dtype.floatlist
+    assert (
+        BigQueryConnector.to_kumo_dtype('NUMERIC', 'REPEATED', None, None)
+        is Dtype.floatlist
+    )
 
 
 _BIGQUERY_TYPES = [
@@ -1503,28 +1610,39 @@ _BIGQUERY_TYPES = [
 ]
 
 
-_PRECISION_AND_SCALE = [(None, None), (18, None), (29, None), (38, None),
-                        (18, 2), (10, 0)]
+_PRECISION_AND_SCALE = [
+    (None, None),
+    (18, None),
+    (29, None),
+    (38, None),
+    (18, 2),
+    (10, 0),
+]
 
 
 @pytest.mark.parametrize('bq_type', _BIGQUERY_TYPES)
 @pytest.mark.parametrize('mode', ['NULLABLE', 'REQUIRED', 'REPEATED'])
 @pytest.mark.parametrize('precision,scale', _PRECISION_AND_SCALE)
 def test_the_sdk_plugin_maps_bigquery_types_exactly_as_the_connector_does(
-        bq_type, mode, precision, scale):
+    bq_type, mode, precision, scale
+):
     from kumo_bigquery.types import dtype_for
 
-    assert dtype_for(bq_type, mode, precision, scale) is \
-        BigQueryConnector.to_kumo_dtype(bq_type, mode, precision, scale)
+    assert dtype_for(
+        bq_type, mode, precision, scale
+    ) is BigQueryConnector.to_kumo_dtype(bq_type, mode, precision, scale)
 
 
-@pytest.mark.parametrize('field_type,mode,expected', [
-    ('INT64', 'NULLABLE', Dtype.int64),
-    ('int64', 'NULLABLE', Dtype.int64),
-    (' INT64 ', 'NULLABLE', Dtype.int64),
-    ('INT64', 'repeated', Dtype.intlist),
-    ('INT64', ' REPEATED ', Dtype.intlist),
-])
+@pytest.mark.parametrize(
+    'field_type,mode,expected',
+    [
+        ('INT64', 'NULLABLE', Dtype.int64),
+        ('int64', 'NULLABLE', Dtype.int64),
+        (' INT64 ', 'NULLABLE', Dtype.int64),
+        ('INT64', 'repeated', Dtype.intlist),
+        ('INT64', ' REPEATED ', Dtype.intlist),
+    ],
+)
 def test_bigquery_hosted_type_name_normalization(field_type, mode, expected):
     from kumo_bigquery.types import dtype_for
 
@@ -1535,6 +1653,7 @@ def test_bigquery_hosted_type_name_normalization(field_type, mode, expected):
 def test_bigquery_scan_estimate_does_not_require_select_classification():
     connector = _make_unopened_bq_connector()
     connector._context = Mock()
-    connector.context.query.return_value = Mock(statement_type='SCRIPT',
-                                                total_bytes_processed=123)
+    connector.context.query.return_value = Mock(
+        statement_type='SCRIPT', total_bytes_processed=123
+    )
     assert connector.get_query_scan_estimate_bytes('SELECT 1; SELECT 2') == 123

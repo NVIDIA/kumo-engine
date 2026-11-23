@@ -21,11 +21,13 @@ from kumo.graph.graph import Graph
 
 @pytest.fixture(scope='module')
 def snowflake_connector(snowflake_credentials) -> SnowflakeConnector:
-    connector = SnowflakeConnector('snowflake',
-                                   account='xva19026',
-                                   warehouse='WH_XS',
-                                   database='KUMO',
-                                   schema_name='FINANCIAL')
+    connector = SnowflakeConnector(
+        'snowflake',
+        account='xva19026',
+        warehouse='WH_XS',
+        database='KUMO',
+        schema_name='FINANCIAL',
+    )
     return connector
 
 
@@ -65,22 +67,24 @@ def static_node_pred_invalid_test_graph(
     assert mode in ['duplicate', 'time']
 
     user_ids = [0, 1, 2, pd.NA] if target_key_has_nones else [0, 1, 2, 3]
-    entity_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3],
-        'DATE': ['1990-01-01', '1990-01-02', '1990-01-03', '1990-01-04'],
-        'PAYMENTS': [10.0, 20.0, 40.0, 80.0],
-    })
+    entity_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3],
+            'DATE': ['1990-01-01', '1990-01-02', '1990-01-03', '1990-01-04'],
+            'PAYMENTS': [10.0, 20.0, 40.0, 80.0],
+        }
+    )
 
     status_values = ['A', 'B', pd.NA, 'B']
     if target_key_has_empty_strings:
         status_values = ['A', 'B', '', 'B']
-    target_df = pd.DataFrame({
-        'USER_ID':
-        user_ids * 2,
-        'STATUS':
-        status_values * 2,
-        'DATE': ['1990-01-01', '1990-01-02', '1990-01-03', '1990-01-04'] * 2,
-    })
+    target_df = pd.DataFrame(
+        {
+            'USER_ID': user_ids * 2,
+            'STATUS': status_values * 2,
+            'DATE': ['1990-01-01', '1990-01-02', '1990-01-03', '1990-01-04'] * 2,
+        }
+    )
     if mode == 'duplicate':
         target_df = target_df.drop(columns=['DATE'])
 
@@ -89,74 +93,126 @@ def static_node_pred_invalid_test_graph(
 
     graph = Graph(name=name)
     if user_has_pkey:
-        add_df(graph, entity_df, 'USERS', tmp_path, pkey='USER_ID',
-               cols=['PAYMENTS'], time_col='DATE')
+        add_df(
+            graph,
+            entity_df,
+            'USERS',
+            tmp_path,
+            pkey='USER_ID',
+            cols=['PAYMENTS'],
+            time_col='DATE',
+        )
     else:
-        add_df(graph, entity_df, 'USERS', tmp_path, fkeys=['USER_ID'],
-               cols=['PAYMENTS'], time_col='DATE')
+        add_df(
+            graph,
+            entity_df,
+            'USERS',
+            tmp_path,
+            fkeys=['USER_ID'],
+            cols=['PAYMENTS'],
+            time_col='DATE',
+        )
     if mode == 'duplicate':
         if user_has_pkey:
-            add_df(graph, target_df, 'USERS_TARGET', tmp_path,
-                   fkeys=['USER_ID'], cols=['STATUS'])
+            add_df(
+                graph,
+                target_df,
+                'USERS_TARGET',
+                tmp_path,
+                fkeys=['USER_ID'],
+                cols=['STATUS'],
+            )
         else:
-            add_df(graph, target_df, 'USERS_TARGET', tmp_path, pkey='USER_ID',
-                   cols=['STATUS'])
+            add_df(
+                graph,
+                target_df,
+                'USERS_TARGET',
+                tmp_path,
+                pkey='USER_ID',
+                cols=['STATUS'],
+            )
     if mode == 'time':
         if user_has_pkey:
-            add_df(graph, target_df, 'USERS_TARGET', tmp_path,
-                   fkeys=['USER_ID'], cols=['STATUS'], time_col='DATE')
+            add_df(
+                graph,
+                target_df,
+                'USERS_TARGET',
+                tmp_path,
+                fkeys=['USER_ID'],
+                cols=['STATUS'],
+                time_col='DATE',
+            )
         else:
-            add_df(graph, target_df, 'USERS_TARGET', tmp_path, pkey='USER_ID',
-                   cols=['STATUS'], time_col='DATE')
+            add_df(
+                graph,
+                target_df,
+                'USERS_TARGET',
+                tmp_path,
+                pkey='USER_ID',
+                cols=['STATUS'],
+                time_col='DATE',
+            )
 
     return graph.infer_links().infer_metadata().infer_encoders()
 
 
 @pytest.fixture(scope='function')
 def candidate_test_graph(tempdir) -> Graph:
-    entity_df = pd.DataFrame({
-        'USER_ID': range(2),
-        'AGE': [17, 25],
-        'DUMMY_ID': range(2),
-        'DATE': pd.to_datetime(['1/1/2018', '1/10/2018']),
-    })
-    new_entity_df = pd.DataFrame({
-        'USER_ID': range(2, 4),
-        'AGE': [18, 26],
-        'DUMMY_ID': range(2)
-    })
-    new2_entity_df = pd.DataFrame({
-        'USER_ID': [0, 1] * 2,
-        'FUTURE_SPEND': [2.0, 5.0] * 2,
-    })
-    na_entity_df = pd.DataFrame({
-        'USER_ID': [0, 1] * 2,
-        'FUTURE_SPEND': [None, 3.0] * 2,
-    })
-    str_agg_entity_df = pd.DataFrame({
-        'USER_ID': [0, 1] * 2,
-        'FUTURE_SPEND': ['a', 'b'] * 2,
-    })
-    wrong_pkey_entity_df = pd.DataFrame({
-        'USER_ID': [2, 1] * 2,
-        'FUTURE_SPEND': [2.0, 3.0] * 2,
-    })
-    binary_entity_df = pd.DataFrame({
-        'USER_ID': [0, 1] * 2,
-        'FUTURE_SPEND': [True, False] * 2,
-    })
+    entity_df = pd.DataFrame(
+        {
+            'USER_ID': range(2),
+            'AGE': [17, 25],
+            'DUMMY_ID': range(2),
+            'DATE': pd.to_datetime(['1/1/2018', '1/10/2018']),
+        }
+    )
+    new_entity_df = pd.DataFrame(
+        {'USER_ID': range(2, 4), 'AGE': [18, 26], 'DUMMY_ID': range(2)}
+    )
+    new2_entity_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1] * 2,
+            'FUTURE_SPEND': [2.0, 5.0] * 2,
+        }
+    )
+    na_entity_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1] * 2,
+            'FUTURE_SPEND': [None, 3.0] * 2,
+        }
+    )
+    str_agg_entity_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1] * 2,
+            'FUTURE_SPEND': ['a', 'b'] * 2,
+        }
+    )
+    wrong_pkey_entity_df = pd.DataFrame(
+        {
+            'USER_ID': [2, 1] * 2,
+            'FUTURE_SPEND': [2.0, 3.0] * 2,
+        }
+    )
+    binary_entity_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1] * 2,
+            'FUTURE_SPEND': [True, False] * 2,
+        }
+    )
 
     dummy_df = pd.DataFrame({'DUMMY_ID': range(2), 'IQ': range(10, 12)})
     dates = pd.Series(pd.date_range(start='1/1/2018', end='1/30/2018'))
     dates = pd.concat([dates, dates], axis=0, ignore_index=True)
     types = ['A', 'B', 'C'] * 20
-    target_df = pd.DataFrame({
-        'TRANS_ID': range(len(dates)),
-        'USER_ID': [0] * 30 + [1] * 30,
-        'AMOUNT': [1.0] * len(dates),
-        'DATE': dates,
-        'TYPE': types
-    })
+    target_df = pd.DataFrame(
+        {
+            'TRANS_ID': range(len(dates)),
+            'USER_ID': [0] * 30 + [1] * 30,
+            'AMOUNT': [1.0] * len(dates),
+            'DATE': dates,
+            'TYPE': types,
+        }
+    )
     # Save tables to csv files:
     tables_dir = 'tables-' + uuid.uuid4().hex[:16]
     tables_path = osp.join(tempdir.name, tables_dir)
@@ -188,9 +244,7 @@ def candidate_test_graph(tempdir) -> Graph:
         table.to_csv(table_path, index=False)
 
     graph = Graph('test')
-    graph.connect(CSVConnector('csv',
-                               root_dir=tables_path,
-                               na_values='?'))
+    graph.connect(CSVConnector('csv', root_dir=tables_path, na_values='?'))
     graph.add('USERS', pkey='USER_ID')
     graph.add('DUMMIES', pkey='DUMMY_ID')
     graph.add('TRANS', pkey='TRANS_ID')
@@ -235,30 +289,32 @@ def lp_test_graph_invalid_targets(
     entity1_path = os.path.join(tables_path, 'USERS.csv')
     entity2_path = os.path.join(tables_path, 'PRODUCTS.csv')
     trans_path = os.path.join(tables_path, 'TRANS.csv')
-    entity2_extra_connect_path = os.path.join(tables_path,
-                                              'PRODUCT_BRANDS.csv')
+    entity2_extra_connect_path = os.path.join(tables_path, 'PRODUCT_BRANDS.csv')
 
     # Create user entity table
     ages = list(range(17, 17 + (num_entities) * 8, 8))
     user_ids = list(range(num_entities))
-    pd.DataFrame({
-        'USER_ID': user_ids,
-        'AGE': ages
-    }).to_csv(entity1_path, index=False)
+    pd.DataFrame({'USER_ID': user_ids, 'AGE': ages}).to_csv(entity1_path, index=False)
 
     # Create product entity table
-    pd.DataFrame({
-        'PRODUCT_ID': range(2),
-        'BRAND': ['PATAGONIA', 'KUMO']
-    }).to_csv(entity2_path, index=False)
+    pd.DataFrame({'PRODUCT_ID': range(2), 'BRAND': ['PATAGONIA', 'KUMO']}).to_csv(
+        entity2_path, index=False
+    )
 
     # Create product feature table
-    pd.DataFrame({
-        'BRAND': ['PATAGONIA', 'KUMO', 'PATAGONIA', 'PATAGONIA', 'KUMO'],
-        'BRAND_VALUE': [5, 5, 10, 20, 5],
-        'DATE':
-        ['2018-01-01', '2018-01-01', '2018-01-10', '2018-01-20', '2018-01-15']
-    }).to_csv(entity2_extra_connect_path, index=False)
+    pd.DataFrame(
+        {
+            'BRAND': ['PATAGONIA', 'KUMO', 'PATAGONIA', 'PATAGONIA', 'KUMO'],
+            'BRAND_VALUE': [5, 5, 10, 20, 5],
+            'DATE': [
+                '2018-01-01',
+                '2018-01-01',
+                '2018-01-10',
+                '2018-01-20',
+                '2018-01-15',
+            ],
+        }
+    ).to_csv(entity2_extra_connect_path, index=False)
 
     # Create Transaction table with some invalid product_ids:
     dates = pd.Series(pd.date_range(start='1/1/2018', end='1/30/2018'))
@@ -271,18 +327,18 @@ def lp_test_graph_invalid_targets(
         product_ids += [0] * 10 + [1] * 10 + [None] * 5 + [100] * 5
         amounts += [1.0, 2.0, 3.0] * 10
 
-    pd.DataFrame({
-        'TRANS_ID': range(len(dates)),
-        'USER_ID': user_ids,
-        'PRODUCT_ID': product_ids,
-        'AMOUNT': amounts,
-        'DATE': dates,
-    }).to_csv(trans_path, index=False)
+    pd.DataFrame(
+        {
+            'TRANS_ID': range(len(dates)),
+            'USER_ID': user_ids,
+            'PRODUCT_ID': product_ids,
+            'AMOUNT': amounts,
+            'DATE': dates,
+        }
+    ).to_csv(trans_path, index=False)
 
     graph = Graph('test')
-    graph.connect(CSVConnector('csv',
-                               root_dir=tables_path,
-                               na_values='?'))
+    graph.connect(CSVConnector('csv', root_dir=tables_path, na_values='?'))
 
     graph.add(name='USERS', pkey='USER_ID', cols=['AGE'])
     graph.add(name='PRODUCTS', pkey='PRODUCT_ID', cols=['BRAND'])
@@ -311,21 +367,25 @@ def lp_test_graph_invalid_targets(
 def link_pred_same_node_test_graph(tmp_path: pathlib.Path) -> Graph:
     """Graph used to test link prediction queries. Graph has
     tables `USERS`, and `TRANS`. `TRANS` has two foreign key to
-    `USERS`. """
+    `USERS`."""
 
     entity_df = pd.DataFrame({'USER_ID': range(3), 'AGE': [17, 25, 33]})
     dates = pd.Series(pd.date_range(start='1/1/2018', end='1/30/2018'))
     dates = pd.concat([dates, dates, dates], axis=0, ignore_index=True)
-    target_df = pd.DataFrame({
-        'TRANS_ID':
-        range(len(dates)),
-        'SENDER_ID': [0] * 30 + [1] * 30 + [2] * 30,
-        'RECEIVER_ID':
-        [0] * 15 + [1] * 15 + [0] * 15 + [4] * 15 + [0] * 15 + [1] * 15,
-        'AMOUNT': [1.0, 2.0, 3.0] * 30,
-        'DATE':
-        dates,
-    })
+    target_df = pd.DataFrame(
+        {
+            'TRANS_ID': range(len(dates)),
+            'SENDER_ID': [0] * 30 + [1] * 30 + [2] * 30,
+            'RECEIVER_ID': [0] * 15
+            + [1] * 15
+            + [0] * 15
+            + [4] * 15
+            + [0] * 15
+            + [1] * 15,
+            'AMOUNT': [1.0, 2.0, 3.0] * 30,
+            'DATE': dates,
+        }
+    )
 
     graph = Graph('test')
     add_df(graph, entity_df, 'USERS', tmp_path, pkey='USER_ID')
@@ -369,19 +429,22 @@ def _graph_with_entity_dates(
         add_na_timestamps: If `True`, tables will additionally include rows
             with pd.NA timestamps.
     """
-    entity_df = pd.DataFrame({
-        'USER_ID': range(3),
-        'AGE': [17, 25, 40],
-        'JOINED': ['1/1/2016', '1/21/2018', '1/1/2018'],
-        'LEFT': ['1/15/2018', '1/27/2018', 'N/A'],
-    })
-    product_df = pd.DataFrame({
-        'PRODUCT_ID':
-        range(5, 8),
-        'BRAND': ['AA', 'BB', 'CC'],
-        'CREATED': ['1/1/2018', '1/10/2018', '1/1/2018'],
-        'DISCONTINUED': ['1/10/2018', '1/27/2018', 'N/A'],
-    })
+    entity_df = pd.DataFrame(
+        {
+            'USER_ID': range(3),
+            'AGE': [17, 25, 40],
+            'JOINED': ['1/1/2016', '1/21/2018', '1/1/2018'],
+            'LEFT': ['1/15/2018', '1/27/2018', 'N/A'],
+        }
+    )
+    product_df = pd.DataFrame(
+        {
+            'PRODUCT_ID': range(5, 8),
+            'BRAND': ['AA', 'BB', 'CC'],
+            'CREATED': ['1/1/2018', '1/10/2018', '1/1/2018'],
+            'DISCONTINUED': ['1/10/2018', '1/27/2018', 'N/A'],
+        }
+    )
     if add_na_pkeys:
         entity_df.loc[len(entity_df)] = [pd.NA, 33, '1/2/2018', 'N/A']
         entity_df.loc[len(entity_df)] = [pd.NA, 34, '1/1/2018', '1/20/2018']
@@ -394,34 +457,48 @@ def _graph_with_entity_dates(
     dates = pd.Series(pd.date_range(start='1/1/2018', end='1/30/2018'))
     dates = pd.concat([dates, dates, dates], axis=0, ignore_index=True)
     types = ['A', 'B', 'C'] * 30
-    target_df = pd.DataFrame({
-        'TRANS_ID': range(len(dates)),
-        'USER_ID': [0] * 30 + [1] * 30 + [2] * 30,
-        'AMOUNT': [1.0] * len(dates),
-        'PRODUCT_ID': [5, 6, 7] * 30,
-        'DATE': dates,
-        'TYPE': types
-    })
+    target_df = pd.DataFrame(
+        {
+            'TRANS_ID': range(len(dates)),
+            'USER_ID': [0] * 30 + [1] * 30 + [2] * 30,
+            'AMOUNT': [1.0] * len(dates),
+            'PRODUCT_ID': [5, 6, 7] * 30,
+            'DATE': dates,
+            'TYPE': types,
+        }
+    )
     if add_year_ago_data:
         # Duplicate the data to exactly a year ago (364 days)
         year_ago_data = target_df.copy()
         year_ago_data['DATE'] = year_ago_data['DATE'] - pd.Timedelta(days=364)
         year_ago_data['AMOUNT'] = year_ago_data['AMOUNT']
         year_ago_data['TRANS_ID'] = year_ago_data['TRANS_ID'] + len(dates)
-        target_df = pd.concat([target_df, year_ago_data], axis=0,
-                              ignore_index=True)
+        target_df = pd.concat([target_df, year_ago_data], axis=0, ignore_index=True)
 
     if add_na_pkeys:
         target_df.loc[len(target_df)] = [
-            pd.NA, 0, 1.0, 5, pd.Timestamp('1/10/2018'), 'A'
+            pd.NA,
+            0,
+            1.0,
+            5,
+            pd.Timestamp('1/10/2018'),
+            'A',
         ]
         target_df.loc[len(target_df)] = [
-            len(dates), pd.NA, 1.0, 5,
-            pd.Timestamp('1/10/2018'), 'A'
+            len(dates),
+            pd.NA,
+            1.0,
+            5,
+            pd.Timestamp('1/10/2018'),
+            'A',
         ]
         target_df.loc[len(target_df)] = [
-            len(dates) + 1, 1, 1.0, pd.NA,
-            pd.Timestamp('1/10/2018'), 'A'
+            len(dates) + 1,
+            1,
+            1.0,
+            pd.NA,
+            pd.Timestamp('1/10/2018'),
+            'A',
         ]
     if add_na_timestamps:
         target_df.loc[len(target_df)] = [len(target_df), 0, 1.0, 5, pd.NA, 'A']
@@ -497,8 +574,9 @@ def add_df(
     path: str = osp.join(tmp_path.resolve().as_posix(), 'parquet')
     os.makedirs(path, exist_ok=True)
     # Use int96 timestamps for PyArrow 14 compatibility
-    df.to_parquet(osp.join(path, f'{name}.parquet'),
-                  use_deprecated_int96_timestamps=True)
+    df.to_parquet(
+        osp.join(path, f'{name}.parquet'), use_deprecated_int96_timestamps=True
+    )
 
     # The data source is named 'parquet_source' and not 'parquet'
     # to avoid conflict with other fixtures that are using the same

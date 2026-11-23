@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Judge the selected engine checks without waiving full qualification gaps."""
+
 import argparse
 import json
 import os
@@ -15,8 +16,9 @@ def verdict(report):
     if report.get('status') not in ('passed', 'blocked'):
         raise ValueError('Notebook runner did not complete cleanly')
     checks = report.get('engine_checks') or {}
-    if checks.get('status') != 'passed' or checks.get(
-            'phases') != dict.fromkeys(PHASES, 'passed'):
+    if checks.get('status') != 'passed' or checks.get('phases') != dict.fromkeys(
+        PHASES, 'passed'
+    ):
         raise ValueError('All four engine phases must pass')
     stages = report.get('stages', {})
     if stages.get('preflight', {}).get('status') != 'passed':
@@ -24,17 +26,18 @@ def verdict(report):
     if stages.get('lifecycle', {}).get('status') not in ('passed', 'blocked'):
         raise ValueError('Lifecycle execution did not complete')
     for item in [report, *stages.values()]:
-        if any(
-                item.get(name)
-                for name in ('error', 'close_error', 'collection_error')):
+        if any(item.get(name) for name in ('error', 'close_error', 'collection_error')):
             raise ValueError('Runner, collection, or cleanup error remains')
     gaps = checks.get('remaining_requirements', {})
     if set(gaps) != KNOWN_GAPS:
         raise ValueError('Both unverified requirements must remain explicit')
     if report['status'] == 'blocked' and not gaps:
         raise ValueError('Unexplained blocked result')
-    return dict(engine_checks='passed', full_qualification='incomplete',
-                remaining_requirements=gaps)
+    return dict(
+        engine_checks='passed',
+        full_qualification='incomplete',
+        remaining_requirements=gaps,
+    )
 
 
 def main():
@@ -44,9 +47,10 @@ def main():
     result = verdict(json.loads(args.summary.read_text()))
     result_path = args.summary.with_name('ci-verdict.json')
     result_path.write_text(json.dumps(result, indent=2) + '\n')
-    text = ('Selected Snowflake notebook engine checks: PASSED\n\n'
-            'Full qualification: ' + result['full_qualification'].upper() +
-            '\n')
+    text = (
+        'Selected Snowflake notebook engine checks: PASSED\n\n'
+        'Full qualification: ' + result['full_qualification'].upper() + '\n'
+    )
     for name, gap in result['remaining_requirements'].items():
         text += '\n- ' + name + ': ' + gap['status']
     print(text)

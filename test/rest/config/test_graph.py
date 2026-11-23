@@ -19,7 +19,7 @@ from statedb.config.common import SourceTableName, TableIDv2, TableName
 
 def test_validate_graph_args():
     tab_b = TableDefinition(
-        cols=(Column('pk', Stype.ID, Dtype.string), ),
+        cols=(Column('pk', Stype.ID, Dtype.string),),
         source_table=DatabricksSourceTable(
             databricks_connector_id='dc_b',
             table=SourceTableName('src'),
@@ -27,24 +27,26 @@ def test_validate_graph_args():
         pkey='pk',
     )
     tab_c = TableDefinition(
-        cols=(Column('pk', Stype.ID, Dtype.string), ),
+        cols=(Column('pk', Stype.ID, Dtype.string),),
         source_table=DatabricksSourceTable(
             databricks_connector_id='dc_c',
             table=SourceTableName('src'),
         ),
         pkey='pk',
     )
-    col_group = ColumnKeyGroup(columns=(
-        ColumnKey(table_name=TableName('b'), col_name='1'),
-        ColumnKey(table_name=TableName('c'), col_name='2'),
-    ))
+    col_group = ColumnKeyGroup(
+        columns=(
+            ColumnKey(table_name=TableName('b'), col_name='1'),
+            ColumnKey(table_name=TableName('c'), col_name='2'),
+        )
+    )
 
-    with pytest.raises(ValueError,
-                       match=r"Table name is missing from the map: c"):
-        col_group.as_column_group({
-            TableName('b'):
-            TableIDv2.compose(None, TableName('b'), tab_b.fpid),
-        })
+    with pytest.raises(ValueError, match=r'Table name is missing from the map: c'):
+        col_group.as_column_group(
+            {
+                TableName('b'): TableIDv2.compose(None, TableName('b'), tab_b.fpid),
+            }
+        )
 
     name_to_tid = {
         TableName('b'): TableIDv2.compose(None, TableName('b'), tab_b.fpid),
@@ -101,7 +103,7 @@ def test_graph_edges_share_resolution_and_keep_legacy_orientation():
         pkey='id',
     )
     events = TableDefinition(
-        cols=(Column('user_id', Stype.ID, Dtype.string), ),
+        cols=(Column('user_id', Stype.ID, Dtype.string),),
         source_table=DatabricksSourceTable(
             databricks_connector_id='dc',
             table=SourceTableName('events'),
@@ -113,11 +115,13 @@ def test_graph_edges_share_resolution_and_keep_legacy_orientation():
             TableName('events'): events,
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(TableName('users'), 'id'),
-                ColumnKey(TableName('users'), 'legacy_id'),
-                ColumnKey(TableName('events'), 'user_id'),
-            ))
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(TableName('users'), 'id'),
+                    ColumnKey(TableName('users'), 'legacy_id'),
+                    ColumnKey(TableName('events'), 'user_id'),
+                )
+            )
         ],
     )
 

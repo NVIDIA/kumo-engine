@@ -53,6 +53,7 @@ class ParquetConnector(FileConnector):
         suffix (str, optional): Suffix of the files.
             (default: :obj:`"parquet"`)
     """
+
     def __init__(
         self,
         name: str,
@@ -63,10 +64,10 @@ class ParquetConnector(FileConnector):
         super().__init__(name, root_dir, suffix=suffix, **kwargs)
 
     def _get_connector_type(self) -> str:
-        return "parquet"
+        return 'parquet'
 
     def _supports_nested_dataset(self, path: str) -> bool:
-        return bool(_list_dataset_files(path, (self.suffix, )))
+        return bool(_list_dataset_files(path, (self.suffix,)))
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
     def _load(
@@ -85,7 +86,8 @@ class ParquetConnector(FileConnector):
             # `offset` option at the moment.
             raise NotImplementedError(
                 f"'{self.__class__.__name__}' does not support the 'offset' "
-                f"argument yet (got '{offset}')")
+                f"argument yet (got '{offset}')"
+            )
 
         columns = None if pkey is None and cols is None else []
         col_types: Dict[str, Any] = {}
@@ -103,12 +105,24 @@ class ParquetConnector(FileConnector):
                     col_types[col.name] = dtype_to_pandas(col.dtype)
 
         if fsutil.isdir(path):
-            df = self.load_dataset(path, self.suffix, cols=columns,
-                                   num_rows=num_rows, frac=frac, sample=sample,
-                                   col_types=col_types)
+            df = self.load_dataset(
+                path,
+                self.suffix,
+                cols=columns,
+                num_rows=num_rows,
+                frac=frac,
+                sample=sample,
+                col_types=col_types,
+            )
         else:
-            df = self.load_file(path, cols=columns, num_rows=num_rows,
-                                frac=frac, sample=sample, col_types=col_types)
+            df = self.load_file(
+                path,
+                cols=columns,
+                num_rows=num_rows,
+                frac=frac,
+                sample=sample,
+                col_types=col_types,
+            )
 
         # Cast the dataframe columns to the correct type.
         if len(df) > 0:
@@ -118,9 +132,7 @@ class ParquetConnector(FileConnector):
             df.set_index(pkey.name, inplace=True)
 
         # drop any parquet indexes that got read as columns
-        drop_cols = [
-            col for col in df.columns if re.match(r'__index_level_\d+__', col)
-        ]
+        drop_cols = [col for col in df.columns if re.match(r'__index_level_\d+__', col)]
         df = df.drop(labels=drop_cols, axis=1)
         return df
 
@@ -132,56 +144,60 @@ class ParquetConnector(FileConnector):
         skip_inferral: bool = False,
     ) -> TableMetadataConfig:
 
-        metadata = TableMetadataConfig(table_name=table_name,
-                                       source_name=table_name,
-                                       data_source=self.name)
+        metadata = TableMetadataConfig(
+            table_name=table_name, source_name=table_name, data_source=self.name
+        )
 
         reader, source_name = self._source_reader(table_name)
         metadata.cols.extend(
             BaseColumnConfig(name, dtype=dtype)
             for name, dtype in iter_column_dtypes(
-                reader.dataset(source_name, validate=False).schema))
+                reader.dataset(source_name, validate=False).schema
+            )
+        )
         return metadata
 
     @trace(TraceOptions(trace_params=True))
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None) -> int:
+    def _get_table_num_rows(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
 
         table_path = self._get_path(table_name, data_version)
         if not fsutil.exists(table_path):
-            raise FileNotFoundError(f"File does not exist: {table_path}")
+            raise FileNotFoundError(f'File does not exist: {table_path}')
 
         return parquet_util.parquet_num_rows(table_path, skip_check=True)
 
     @trace(TraceOptions(trace_params=True))
-    def _get_single_file_source_size(self, table_name: str,
-                                     table_path: str) -> int:
+    def _get_single_file_source_size(self, table_name: str, table_path: str) -> int:
         if fsutil.exists(table_path):
             return fsutil.filesize(table_path) or 0
 
         raise FileNotFoundError(
             f"Obtaining the source storage size for table '{table_name}' "
-            f"is not implemented for the remote directory "
-            f"{osp.join(self.root_dir, table_name)} or file does not exist")
+            f'is not implemented for the remote directory '
+            f'{osp.join(self.root_dir, table_name)} or file does not exist'
+        )
 
     @trace(TraceOptions(trace_params=True))
-    def _get_directory_source_size(self, table_name: str,
-                                   table_path: str) -> int:
+    def _get_directory_source_size(self, table_name: str, table_path: str) -> int:
         total_size = 0
         if fsutil.exists(table_path):
-            file_name_list = _list_dataset_files(table_path, (self.suffix, ))
+            file_name_list = _list_dataset_files(table_path, (self.suffix,))
             for file_name in file_name_list:
                 total_size += fsutil.filesize(file_name) or 0
             return total_size
 
         raise FileNotFoundError(
             f"Obtaining the source storage size for table '{table_name}' "
-            f"is not implemented for the remote directory "
-            f"{osp.join(self.root_dir, table_name)} or file does not exist")
+            f'is not implemented for the remote directory '
+            f'{osp.join(self.root_dir, table_name)} or file does not exist'
+        )
 
     @trace(TraceOptions(trace_params=True))
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         table_path = self._get_path(table_name, data_version)
         if fsutil.isdir(table_path):
             return self._get_directory_source_size(table_name, table_path)
@@ -194,11 +210,10 @@ class ParquetConnector(FileConnector):
         cols: Optional[List[BaseColumnConfig]] = None,
     ) -> Iterator[pd.DataFrame]:
         if fsutil.isdir(path):
-            file_paths = _list_dataset_files(path, (self.suffix, ))
+            file_paths = _list_dataset_files(path, (self.suffix,))
             df = pd.DataFrame()
             for file_path in file_paths:
-                df = pd.concat(
-                    [df, self._load(file_path, pkey=pkey, cols=cols)])
+                df = pd.concat([df, self._load(file_path, pkey=pkey, cols=cols)])
                 if df.memory_usage(deep=True).sum() > BATCH_READ_SIZE:
                     yield df
                     df = pd.DataFrame()
@@ -213,26 +228,23 @@ class ParquetConnector(FileConnector):
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
     @retry(RuntimeError, tries=9, delay=1, backoff=2, logger=logger)
-    def _parquet_dataset(self, path: str,
-                         use_prebuffer: bool = False) -> ds.Dataset:
+    def _parquet_dataset(self, path: str, use_prebuffer: bool = False) -> ds.Dataset:
         from kumo.connector.object_store_access import source_reader
 
         try:
-            reader = source_reader(path, file_format='parquet',
-                                   file_suffix=self.suffix)
+            reader = source_reader(path, file_format='parquet', file_suffix=self.suffix)
             return reader.dataset('', validate=False, pre_buffer=use_prebuffer)
         except (FileNotFoundError, ArrowInvalid) as e:
             raise ConnectorError(
                 message=f"The uploaded file with path '{path}'"
-                " is either missing or is not a valid parquet file.",
+                ' is either missing or is not a valid parquet file.',
                 error=e,
             )
         except PublicException:
             raise
         except Exception as e:
             raise ConnectorError(
-                message="There was a problem uploading the file "
-                f"with path '{path}'.",
+                message=f"There was a problem uploading the file with path '{path}'.",
                 error=e,
             )
 
@@ -258,9 +270,10 @@ class ParquetConnector(FileConnector):
                 return table
 
         parquet_file = self._parquet_dataset(
-            path, use_prebuffer=bool(sample and num_rows is None))
+            path, use_prebuffer=bool(sample and num_rows is None)
+        )
 
-        logger.info(f"[load_file] path: {path}, num_rows: {num_rows}")
+        logger.info(f'[load_file] path: {path}, num_rows: {num_rows}')
 
         if num_rows is not None:
             table = read_bounded_dataset(parquet_file, cols, num_rows)
@@ -284,16 +297,16 @@ class ParquetConnector(FileConnector):
             return pd.DataFrame()
 
         table = self._load_table(path, cols, num_rows, sample)
-        clean_table = clean_parquet_table(table, col_types=col_types,
-                                          sample=sample)
+        clean_table = clean_parquet_table(table, col_types=col_types, sample=sample)
         # :obj:`to_pandas` sometimes silently drops columns if pandas
         # metadata is not ignored.
         # Setting ``ignore_metadata=False`` can reproduce the issue.
         # :obj:`to_pandas_ns_safe` keeps datetime columns at nanosecond
         # resolution (Kumo's ``datetime64[ns]`` contract) while clamping any
         # out-of-range temporal values instead of silently wrapping them.
-        df = to_pandas_ns_safe(clean_table, types_mapper=to_pandas_type,
-                               ignore_metadata=True)
+        df = to_pandas_ns_safe(
+            clean_table, types_mapper=to_pandas_type, ignore_metadata=True
+        )
 
         return df
 
@@ -314,20 +327,23 @@ class ParquetConnector(FileConnector):
         that this function may duplicate memory usage for single table.
         """
         if sample:
-            logger.warning("No random sample support for parquet connectors as"
-                           " it slows down the UI. Return limit query.")
+            logger.warning(
+                'No random sample support for parquet connectors as'
+                ' it slows down the UI. Return limit query.'
+            )
 
         from kumo.connector.file_connector import MAX_NUM_FILES_TO_SAMPLE
+
         start_time = time.time()
         if num_rows is not None:
-            files = _list_dataset_files(path, (self.suffix, ))
+            files = _list_dataset_files(path, (self.suffix,))
             if files and any(
-                    osp.dirname(file_path).rstrip('/') != path.rstrip('/')
-                    for file_path in files):
+                osp.dirname(file_path).rstrip('/') != path.rstrip('/')
+                for file_path in files
+            ):
                 dataset = self._parquet_dataset(path, use_prebuffer=False)
                 table = read_bounded_dataset(dataset, cols, num_rows)
-                table = clean_parquet_table(table, col_types=col_types,
-                                            sample=sample)
+                table = clean_parquet_table(table, col_types=col_types, sample=sample)
                 return to_pandas_ns_safe(
                     table,
                     types_mapper=to_pandas_type,
@@ -344,7 +360,8 @@ class ParquetConnector(FileConnector):
             # Check first 10 files to prevent OOM.
             # checking all is too expensive.
             warn_on_large_parquet_partition(
-                files[:10], [fsutil.filesize(f) for f in files[:10]])
+                files[:10], [fsutil.filesize(f) for f in files[:10]]
+            )
 
             partial_dfs: List[pd.DataFrame] = []
             num_files_scanned = 0
@@ -352,38 +369,45 @@ class ParquetConnector(FileConnector):
                 # Files that are not directories and are either empty or do
                 # not have a Parquet suffix are not data files, so do not try
                 # to read them.
-                if (fsutil.filesize(file_path) == 0
-                        or not file_path.endswith(suffix)):
+                if fsutil.filesize(file_path) == 0 or not file_path.endswith(suffix):
                     continue
                 partial_dfs.append(
-                    self.load_file(file_path, cols=cols, num_rows=num_rows,
-                                   col_types=col_types))
+                    self.load_file(
+                        file_path, cols=cols, num_rows=num_rows, col_types=col_types
+                    )
+                )
                 num_files_scanned += 1
                 num_rows -= partial_dfs[-1].shape[0]
-                if (num_rows <= 0
-                        or num_files_scanned >= MAX_NUM_FILES_TO_SAMPLE
-                        or time.time() - start_time >= _MAX_READ_SAMPLE_TIME):
+                if (
+                    num_rows <= 0
+                    or num_files_scanned >= MAX_NUM_FILES_TO_SAMPLE
+                    or time.time() - start_time >= _MAX_READ_SAMPLE_TIME
+                ):
                     break
 
             ignore_index = isinstance(partial_dfs[0].index, pd.RangeIndex)
             df = pd.concat(partial_dfs, ignore_index=ignore_index)
 
         else:
-            if fsutil.is_s3(path) or fsutil.is_gcs(path) or fsutil.is_ucv(
-                    path) or fsutil.is_adls(path):
+            if (
+                fsutil.is_s3(path)
+                or fsutil.is_gcs(path)
+                or fsutil.is_ucv(path)
+                or fsutil.is_adls(path)
+            ):
                 df = self._load_pandas_df_from_directory(path, cols)
             else:
                 pf = pq.ParquetDataset(path, pre_buffer=sample)
                 table = pf.read(columns=cols)
-                table = clean_parquet_table(table, col_types=col_types,
-                                            sample=sample)
+                table = clean_parquet_table(table, col_types=col_types, sample=sample)
                 df = to_pandas_ns_safe(table, types_mapper=to_pandas_type)
 
         assert len(df) > 0
         return df
 
     def _load_pandas_df_from_directory(
-            self, path: str, cols: Optional[List[str]] = None) -> pd.DataFrame:
+        self, path: str, cols: Optional[List[str]] = None
+    ) -> pd.DataFrame:
         r"""
         Create a pandas dataframe from a directory containing parquet files.
 
@@ -392,7 +416,7 @@ class ParquetConnector(FileConnector):
                         s3 path or UC volume path).
             cols (List[str], optional): The columns to be loaded.
         """
-        file_paths = _list_dataset_files(path, (self.suffix, ))
+        file_paths = _list_dataset_files(path, (self.suffix,))
 
         # N.B. in the timeout case, rely on workflow-level retry
         # Retry here would quiet the issue into performance impact
@@ -404,13 +428,11 @@ class ParquetConnector(FileConnector):
             )
         parts = list(loaded)
         ignore_index = isinstance(parts[0].index, pd.RangeIndex)
-        df = pd.concat(filter(lambda x: len(x) > 0, parts),
-                       ignore_index=ignore_index)
+        df = pd.concat(filter(lambda x: len(x) > 0, parts), ignore_index=ignore_index)
         return df
 
 
 # Explicit dataclass definition ###############################################
 
-ParquetConnectorConfig = to_dataclass(ParquetConnector,
-                                      base_cls=ConnectorConfig)
+ParquetConnectorConfig = to_dataclass(ParquetConnector, base_cls=ConnectorConfig)
 register(ParquetConnector, ParquetConnectorConfig, group='connector')

@@ -6,6 +6,7 @@
 
 Discover repository Markdown through Git, including untracked, unignored files.
 """
+
 import argparse
 import json
 import os
@@ -19,8 +20,9 @@ from urllib.parse import unquote, urlsplit
 
 def prose(text):
     """Remove fenced examples and HTML comments while preserving line numbers."""
-    text = re.sub(r'<!--.*?-->', lambda m: '\n' * m[0].count('\n'), text,
-                  flags=re.DOTALL)
+    text = re.sub(
+        r'<!--.*?-->', lambda m: '\n' * m[0].count('\n'), text, flags=re.DOTALL
+    )
     lines = []
     fence = None
     for line in text.splitlines():
@@ -59,24 +61,43 @@ def links(text):
         line = re.sub(r'`+[^`]*`+', '', line)
         # One nested pair covers ordinary Markdown paths containing parentheses.
         for match in re.finditer(
-                r'!?\[[^]\n]*\]\(\s*(<[^>]+>|(?:[^\s()]|\([^()]*\))+)', line):
+            r'!?\[[^]\n]*\]\(\s*(<[^>]+>|(?:[^\s()]|\([^()]*\))+)', line
+        ):
             yield number, match[1].strip('<>')
         definition = re.match(r'^\s*\[[^]]+\]:\s*(<[^>]+>|\S+)', line)
         if definition:
             yield number, definition[1].strip('<>')
-        for match in re.finditer(r'<(?:img|a)\b[^>]*\b(?:src|href)=["\']([^"\']+)', line):
+        for match in re.finditer(
+            r'<(?:img|a)\b[^>]*\b(?:src|href)=["\']([^"\']+)', line
+        ):
             yield number, match[1]
 
 
 def markdown_files(root):
     """Include tracked and new Markdown, excluding ignored local files."""
     result = subprocess.run(
-        ['git', '-C', str(root), 'ls-files', '--cached', '--others',
-         '--exclude-standard', '-z'], check=True, capture_output=True)
-    return {root / os.fsdecode(name) for name in result.stdout.split(b'\0')
-            if name.lower().endswith(b'.md')
-            and ((root / os.fsdecode(name)).is_file()
-                 or (root / os.fsdecode(name)).is_symlink())}
+        [
+            'git',
+            '-C',
+            str(root),
+            'ls-files',
+            '--cached',
+            '--others',
+            '--exclude-standard',
+            '-z',
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return {
+        root / os.fsdecode(name)
+        for name in result.stdout.split(b'\0')
+        if name.lower().endswith(b'.md')
+        and (
+            (root / os.fsdecode(name)).is_file()
+            or (root / os.fsdecode(name)).is_symlink()
+        )
+    }
 
 
 def check(root):
@@ -108,8 +129,13 @@ def check(root):
             if parsed.scheme or parsed.netloc:
                 continue
             relative = unquote(parsed.path)
-            dest = ((root / relative.lstrip('/')) if relative.startswith('/')
-                    else (path.resolve().parent / relative) if relative else path).resolve()
+            dest = (
+                (root / relative.lstrip('/'))
+                if relative.startswith('/')
+                else (path.resolve().parent / relative)
+                if relative
+                else path
+            ).resolve()
             label = f'{display}:{line}: {target}'
             if not dest.is_relative_to(root):
                 file_errors.append(f'{label}: outside repository')
@@ -131,14 +157,27 @@ def check(root):
         if here != root and ('.git' in dirs or '.git' in filenames):
             dirs[:] = []
             continue
-        dirs[:] = [name for name in dirs
-                   if name not in {'.git', 'node_modules', '.venv', 'venv',
-                                   '__pycache__', '.worktrees', 'worktrees'}]
+        dirs[:] = [
+            name
+            for name in dirs
+            if name
+            not in {
+                '.git',
+                'node_modules',
+                '.venv',
+                'venv',
+                '__pycache__',
+                '.worktrees',
+                'worktrees',
+            }
+        ]
         for instruction in ('AGENTS.md', 'CLAUDE.md'):
             if instruction in filenames:
                 scope = here.relative_to(root).as_posix()
                 if scope not in expected_scopes | imported_scopes:
-                    errors.append(f'{scope}/{instruction}: undeclared instruction scope')
+                    errors.append(
+                        f'{scope}/{instruction}: undeclared instruction scope'
+                    )
     for scope in sorted(expected_scopes):
         source = root / scope / 'AGENTS.md'
         adapter = root / scope / 'CLAUDE.md'
@@ -149,11 +188,18 @@ def check(root):
             errors.append(f'{scope}/AGENTS.md: missing instruction source')
         if scope in aliases:
             if not adapter.is_symlink() or adapter.resolve() != source.resolve():
-                errors.append(f'{scope}/CLAUDE.md: declared instruction alias must link to adjacent AGENTS.md')
+                errors.append(
+                    f'{scope}/CLAUDE.md: declared instruction alias must link to adjacent AGENTS.md'
+                )
         elif not adapter.is_file() or adapter.read_text() != '@AGENTS.md\n':
             errors.append(f'{scope}/CLAUDE.md: must import only adjacent AGENTS.md')
-    collections = [(contract['skill_source'], contract['skill_adapter'],
-                    contract.get('skill_adapter_kind', 'directory'))]
+    collections = [
+        (
+            contract['skill_source'],
+            contract['skill_adapter'],
+            contract.get('skill_adapter_kind', 'directory'),
+        )
+    ]
     names = {}
     entries = []
     for source_path, adapter_path, kind in collections:
@@ -167,15 +213,28 @@ def check(root):
                     errors.append(f'{adapter_path}/{name}: canonical skill is missing')
                     continue
                 command = adapter / name
-                wrapper = (f'Read and follow `{target.relative_to(root)}` from the repository root.\n'
-                           'Apply that procedure to this request: $ARGUMENTS\n')
+                wrapper = (
+                    f'Read and follow `{target.relative_to(root)}` from the repository root.\n'
+                    'Apply that procedure to this request: $ARGUMENTS\n'
+                )
                 linked = command.is_symlink() and command.resolve() == target.resolve()
-                imported = (not command.is_symlink() and command.is_file()
-                            and command.read_text() == wrapper)
+                imported = (
+                    not command.is_symlink()
+                    and command.is_file()
+                    and command.read_text() == wrapper
+                )
                 if not linked and not imported:
-                    errors.append(f'{adapter_path}/{name}: command adapter must reference its canonical skill')
-        elif not source.is_dir() or not adapter.is_symlink() or adapter.resolve() != source.resolve():
-            errors.append(f'{adapter_path}: skill adapter must link to its canonical skill directory')
+                    errors.append(
+                        f'{adapter_path}/{name}: command adapter must reference its canonical skill'
+                    )
+        elif (
+            not source.is_dir()
+            or not adapter.is_symlink()
+            or adapter.resolve() != source.resolve()
+        ):
+            errors.append(
+                f'{adapter_path}: skill adapter must link to its canonical skill directory'
+            )
         if not source.resolve().is_relative_to(root):
             errors.append(f'{source_path}: canonical skill source outside repository')
         else:
@@ -186,20 +245,36 @@ def check(root):
             continue
         text = entry.read_text()
         header = re.match(r'^---\n(.*?)\n---(?:\n|$)', text, re.DOTALL)
-        name = re.search(r'^name:\s*([a-z0-9-]+)\s*$', header[1], re.MULTILINE) if header else None
-        description = re.search(r'^description:\s*\S', header[1], re.MULTILINE) if header else None
+        name = (
+            re.search(r'^name:\s*([a-z0-9-]+)\s*$', header[1], re.MULTILINE)
+            if header
+            else None
+        )
+        description = (
+            re.search(r'^description:\s*\S', header[1], re.MULTILINE)
+            if header
+            else None
+        )
         if not name or not description:
-            errors.append(f'{entry.relative_to(root)}: missing valid skill name/description')
+            errors.append(
+                f'{entry.relative_to(root)}: missing valid skill name/description'
+            )
             continue
         if name[1] in names:
             errors.append(f'duplicate skill name {name[1]}: {entry.relative_to(root)}')
         names[name[1]] = entry
         if name[1] != entry.parent.name:
-            errors.append(f'{entry.relative_to(root)}: skill name differs from directory')
+            errors.append(
+                f'{entry.relative_to(root)}: skill name differs from directory'
+            )
     if not names:
         errors.append('no canonical public skills found')
     commands = root / '.claude/commands'
-    if contract.get('skill_adapter_kind') != 'commands' and commands.exists() and any(commands.iterdir()):
+    if (
+        contract.get('skill_adapter_kind') != 'commands'
+        and commands.exists()
+        and any(commands.iterdir())
+    ):
         errors.append('legacy Claude commands may duplicate canonical skills')
     return errors, len(files)
 
@@ -207,7 +282,9 @@ def check(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
-    parser.add_argument('--check', action='store_true', help='Explicit read-only check (the default).')
+    parser.add_argument(
+        '--check', action='store_true', help='Explicit read-only check (the default).'
+    )
     args = parser.parse_args()
     errors, count = check(args.root.resolve())
     for error in errors:
@@ -215,7 +292,9 @@ def main():
     if errors:
         print(f'{len(errors)} documentation/agent errors')
         return 1
-    print(f'Checked {count} repository Markdown files and the agent interface (read-only).')
+    print(
+        f'Checked {count} repository Markdown files and the agent interface (read-only).'
+    )
     return 0
 
 

@@ -9,6 +9,7 @@ prediction output DataFrames with minimal dependencies (only pandas).
 
 Re-exported from ``kumo.utils.output`` for backwards compatibility.
 """
+
 import pandas as pd
 
 
@@ -46,35 +47,35 @@ def prettify_prediction_columns(
     df = df.copy()
 
     # Remove ANCHOR_TIMESTAMP if present
-    if "ANCHOR_TIMESTAMP" in df.columns:
-        df = df.drop(columns=["ANCHOR_TIMESTAMP"])
+    if 'ANCHOR_TIMESTAMP' in df.columns:
+        df = df.drop(columns=['ANCHOR_TIMESTAMP'])
 
     # Rename ENTITY column
-    if entity_col_name and "ENTITY" in df.columns:
-        df = df.rename(columns={"ENTITY": entity_col_name})
+    if entity_col_name and 'ENTITY' in df.columns:
+        df = df.rename(columns={'ENTITY': entity_col_name})
 
     # Rename and round TARGET_PRED column
-    if target_col_name and "TARGET_PRED" in df.columns:
-        df = df.rename(columns={"TARGET_PRED": target_col_name})
+    if target_col_name and 'TARGET_PRED' in df.columns:
+        df = df.rename(columns={'TARGET_PRED': target_col_name})
         if df[target_col_name].dtype in ['float64', 'float32']:
             rounded = df[target_col_name].round(round_decimals)
             df[target_col_name] = rounded.astype(str) if convert_to_string else rounded
-    elif "TARGET_PRED" in df.columns:
+    elif 'TARGET_PRED' in df.columns:
         # Round TARGET_PRED even if not renamed
-        if df["TARGET_PRED"].dtype in ['float64', 'float32']:
-            rounded = df["TARGET_PRED"].round(round_decimals)
-            df["TARGET_PRED"] = rounded.astype(str) if convert_to_string else rounded
+        if df['TARGET_PRED'].dtype in ['float64', 'float32']:
+            rounded = df['TARGET_PRED'].round(round_decimals)
+            df['TARGET_PRED'] = rounded.astype(str) if convert_to_string else rounded
 
     # Round SCORE column if present (for link prediction / multiclass)
-    if "SCORE" in df.columns and df["SCORE"].dtype in ['float64', 'float32']:
-        rounded = df["SCORE"].round(round_decimals)
-        df["SCORE"] = rounded.astype(str) if convert_to_string else rounded
+    if 'SCORE' in df.columns and df['SCORE'].dtype in ['float64', 'float32']:
+        rounded = df['SCORE'].round(round_decimals)
+        df['SCORE'] = rounded.astype(str) if convert_to_string else rounded
 
     # Prettify probability columns: *_PROB -> * Probability
-    prob_cols = [col for col in df.columns if "_PROB" in col]
+    prob_cols = [col for col in df.columns if '_PROB' in col]
     for col in prob_cols:
-        label = col.split("_PROB")[0]
-        new_name = f"{label} Probability"
+        label = col.split('_PROB')[0]
+        new_name = f'{label} Probability'
         if df[col].dtype in ['float64', 'float32']:
             rounded = df[col].round(round_decimals)
             df[new_name] = rounded.astype(str) if convert_to_string else rounded

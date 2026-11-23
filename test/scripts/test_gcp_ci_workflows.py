@@ -18,44 +18,70 @@ def evaluate(expression, repository, event, source_repository, target):
     expression = expression.removeprefix('${{').removesuffix('}}').strip()
     expression = expression.replace('&&', 'and').replace('||', 'or')
     github = SimpleNamespace(
-        repository=repository, event_name=event,
-        event=SimpleNamespace(pull_request=SimpleNamespace(
-            head=SimpleNamespace(repo=SimpleNamespace(
-                full_name=source_repository)))))
-    return eval(expression, {'__builtins__': {}}, {
-        'github': github, 'matrix': SimpleNamespace(test_dir=target),
-        'contains': lambda value, substring: substring in value,
-    })
+        repository=repository,
+        event_name=event,
+        event=SimpleNamespace(
+            pull_request=SimpleNamespace(
+                head=SimpleNamespace(repo=SimpleNamespace(full_name=source_repository))
+            )
+        ),
+    )
+    return eval(
+        expression,
+        {'__builtins__': {}},
+        {
+            'github': github,
+            'matrix': SimpleNamespace(test_dir=target),
+            'contains': lambda value, substring: substring in value,
+        },
+    )
 
 
 @pytest.mark.parametrize('repository', ['NVIDIA/kumo-engine', 'other/repo'])
-@pytest.mark.parametrize('event,source', [
-    ('pull_request', 'NVIDIA/kumo-engine'), ('pull_request', 'other/fork'),
-    ('push', ''), ('merge_group', ''), ('workflow_dispatch', ''),
-])
-@pytest.mark.parametrize('target,gcp', [
-    ('test/io_utils/', True), ('test/connector/', True),
-    ('--splits 2 --group 1 test/rest/test_*.py', True),
-    ('test/data/', False),
-])
+@pytest.mark.parametrize(
+    'event,source',
+    [
+        ('pull_request', 'NVIDIA/kumo-engine'),
+        ('pull_request', 'other/fork'),
+        ('push', ''),
+        ('merge_group', ''),
+        ('workflow_dispatch', ''),
+    ],
+)
+@pytest.mark.parametrize(
+    'target,gcp',
+    [
+        ('test/io_utils/', True),
+        ('test/connector/', True),
+        ('--splits 2 --group 1 test/rest/test_*.py', True),
+        ('test/data/', False),
+    ],
+)
 def test_general_auth_routing(repository, event, source, target, gcp):
     job = workflow('testing')['jobs']['pytest']
-    eligible = (repository == 'NVIDIA/kumo-engine' and gcp
-                and (event != 'pull_request' or source == repository))
-    enabled = evaluate(job['env']['KUMO_RUN_GCP_TESTS'], repository,
-                       event, source, target)
-    environment = evaluate(job['environment']['name'], repository,
-                           event, source, target)
+    eligible = (
+        repository == 'NVIDIA/kumo-engine'
+        and gcp
+        and (event != 'pull_request' or source == repository)
+    )
+    enabled = evaluate(
+        job['env']['KUMO_RUN_GCP_TESTS'], repository, event, source, target
+    )
+    environment = evaluate(
+        job['environment']['name'], repository, event, source, target
+    )
 
     assert enabled == ('1' if eligible else '0')
-    assert environment == ('gha-kumo-workflow-tests' if eligible
-                           else 'azure-adls-tests')
+    assert environment == (
+        'gha-kumo-workflow-tests' if eligible else 'azure-adls-tests'
+    )
 
 
 def test_snowflake_has_no_google():
     job = workflow('testing_snowflake')['jobs']['pytest']
-    assert not any('google-github-actions/auth' in step.get('uses', '')
-                   for step in job['steps'])
+    assert not any(
+        'google-github-actions/auth' in step.get('uses', '') for step in job['steps']
+    )
     assert job['name'] == 'all-snowflake-tests'
 
 

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Bind same-dispatch wheels before AWS credentials or notebook execution."""
+
 import importlib.util
 import json
 import zipfile
@@ -20,12 +21,17 @@ SPEC.loader.exec_module(candidate)
 def wheel(tmp_path, monkeypatch):
     import platform_candidate
 
-    monkeypatch.setattr(platform_candidate.subprocess, 'check_output',
-                        lambda *a, **kw: 'a' * 40 + '\n')
-    path = tmp_path / 'kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl'
+    monkeypatch.setattr(
+        platform_candidate.subprocess, 'check_output', lambda *a, **kw: 'a' * 40 + '\n'
+    )
+    path = (
+        tmp_path / 'kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl'
+    )
     with zipfile.ZipFile(path, 'w') as archive:
-        archive.writestr('kumo_engine-1.0.0.dev0+aaaaaaa.dist-info/METADATA',
-                         'Name: kumo-engine\nVersion: 1.0.0.dev0+aaaaaaa\n')
+        archive.writestr(
+            'kumo_engine-1.0.0.dev0+aaaaaaa.dist-info/METADATA',
+            'Name: kumo-engine\nVersion: 1.0.0.dev0+aaaaaaa\n',
+        )
     return path
 
 
@@ -40,8 +46,7 @@ def test_current_wheel_produces_runtime_manifest(wheel, tmp_path):
 
 
 @pytest.mark.parametrize('change', ['source', 'metadata', 'symlink', 'run'])
-def test_reject_substituted_wheel_before_writing_manifest(
-        wheel, tmp_path, change):
+def test_reject_substituted_wheel_before_writing_manifest(wheel, tmp_path, change):
     source, run = 'a' * 40, 123
     if change == 'source':
         source = 'b' * 40
@@ -49,7 +54,8 @@ def test_reject_substituted_wheel_before_writing_manifest(
         with zipfile.ZipFile(wheel, 'w') as archive:
             archive.writestr(
                 'x.dist-info/METADATA',
-                'Name: kumo-engine\nVersion: 1.0.0.dev0+bbbbbbb\n')
+                'Name: kumo-engine\nVersion: 1.0.0.dev0+bbbbbbb\n',
+            )
     elif change == 'symlink':
         target = wheel.with_suffix('.target')
         wheel.rename(target)
@@ -66,24 +72,37 @@ def test_workflow_builds_and_downloads_this_dispatch_without_historical_pin():
     import yaml
 
     workflow = yaml.safe_load(
-        (DIRECTORY /
-         '.github/workflows/kumo-engine-sagemaker-notebook.yml').read_text())
+        (DIRECTORY / '.github/workflows/kumo-engine-sagemaker-notebook.yml').read_text()
+    )
     jobs = workflow['jobs']
     assert jobs['notebook']['needs'] == ['configuration', 'wheel']
     assert jobs['wheel']['uses'] == './.github/workflows/kumo-engine-pr.yml'
     assert jobs['wheel']['with'] == {'build_only': True}
     shared = yaml.safe_load(
-        (DIRECTORY / '.github/workflows/kumo-engine-pr.yml').read_text())
-    upload = next(s for s in shared['jobs']['wheel']['steps']
-                  if s.get('name') == 'Retain the candidate wheel')
-    download = next(s for s in jobs['notebook']['steps']
-                    if s.get('name') == "Download this dispatch's wheel")
-    assert upload['with']['name'] == download['with'][
-        'name'] == 'engine-pr-wheel-${{ github.sha }}'
+        (DIRECTORY / '.github/workflows/kumo-engine-pr.yml').read_text()
+    )
+    upload = next(
+        s
+        for s in shared['jobs']['wheel']['steps']
+        if s.get('name') == 'Retain the candidate wheel'
+    )
+    download = next(
+        s
+        for s in jobs['notebook']['steps']
+        if s.get('name') == "Download this dispatch's wheel"
+    )
+    assert (
+        upload['with']['name']
+        == download['with']['name']
+        == 'engine-pr-wheel-${{ github.sha }}'
+    )
     assert 'run-id' not in download['with']
     assert 'outputs' not in jobs['configuration']
-    identify = next(s for s in jobs['notebook']['steps']
-                    if s.get('name') == "Identify this dispatch's wheel")
+    identify = next(
+        s
+        for s in jobs['notebook']['steps']
+        if s.get('name') == "Identify this dispatch's wheel"
+    )
     assert '--source-ref "$GITHUB_SHA"' in identify['run']
 
 
@@ -91,11 +110,14 @@ def test_runner_paths_are_initialized_in_steps_not_job_env():
     import yaml
 
     workflow = yaml.safe_load(
-        (DIRECTORY /
-         '.github/workflows/kumo-engine-sagemaker-notebook.yml').read_text())
+        (DIRECTORY / '.github/workflows/kumo-engine-sagemaker-notebook.yml').read_text()
+    )
     for job in workflow['jobs'].values():
         assert 'runner.' not in json.dumps(job.get('env', {}))
-    identify = next(s for s in workflow['jobs']['notebook']['steps']
-                    if s.get('name') == "Identify this dispatch's wheel")
+    identify = next(
+        s
+        for s in workflow['jobs']['notebook']['steps']
+        if s.get('name') == "Identify this dispatch's wheel"
+    )
     assert 'export SAGEMAKER_TEST_CANDIDATE="$RUNNER_TEMP/' in identify['run']
     assert '>> "$GITHUB_ENV"' in identify['run']

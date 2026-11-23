@@ -85,6 +85,7 @@ class ThreadLocalBotoSession(threading.local):
     all situations where a boto client may be called from multiple threads, is
     it required to use `threadsafe_boto.s3_client()`.
     """
+
     def __init__(self) -> None:
         self._region: Optional[str] = None
         self._endpoint_url: Optional[str] = None
@@ -100,17 +101,14 @@ class ThreadLocalBotoSession(threading.local):
         # Here we retry for about 7.5 minutes.
         self._config = botocore.config.Config(
             signature_version='s3v4',
-            retries={
-                'max_attempts': 24,
-                'mode': 'standard'
-            },
+            retries={'max_attempts': 24, 'mode': 'standard'},
         )
 
     @staticmethod
     def _has_session_credentials(credentials: Mapping[str, object]) -> bool:
         return bool(credentials.get('ambient_session')) or all(
-            map(credentials.get,
-                ('aws_access_key_id', 'aws_secret_access_key')))
+            map(credentials.get, ('aws_access_key_id', 'aws_secret_access_key'))
+        )
 
     def core_session(self) -> botocore.session.Session:
         """botocore Session containing parameters, but no connection"""
@@ -118,7 +116,8 @@ class ThreadLocalBotoSession(threading.local):
             self._core_session = botocore.session.Session()
             if self._credentials:
                 provider_component = self._core_session.get_component(
-                    'credential_provider')
+                    'credential_provider'
+                )
                 provider_component.insert_before('env', self._credentials)
         return self._core_session
 
@@ -134,26 +133,31 @@ class ThreadLocalBotoSession(threading.local):
                 if ambient_session is not None:
                     if not isinstance(ambient_session, boto3.session.Session):
                         raise RuntimeError(
-                            'Invalid ambient AWS session for S3 identity')
+                            'Invalid ambient AWS session for S3 identity'
+                        )
                     scope.cache[key] = ambient_session
                     return ambient_session
                 if not self._has_session_credentials(credentials):
                     raise RuntimeError(
-                        'Incomplete federated AWS credentials for S3 identity')
+                        'Incomplete federated AWS credentials for S3 identity'
+                    )
                 connection = active_s3_connection()
                 session = boto3.session.Session(
                     aws_access_key_id=credentials['aws_access_key_id'],
                     aws_secret_access_key=credentials['aws_secret_access_key'],
                     aws_session_token=credentials['aws_session_token'],
                     region_name=(connection.region if connection else None)
-                    or credentials.get('region') or self._region,
+                    or credentials.get('region')
+                    or self._region,
                 )
                 scope.cache[key] = session
             return session
         connection = active_s3_connection()
         if connection is not None:
-            if (self._session is None
-                    or self._deployment_identity != connection.identity):
+            if (
+                self._session is None
+                or self._deployment_identity != connection.identity
+            ):
                 self._session = boto3.session.Session(
                     aws_access_key_id=connection.access_key,
                     aws_secret_access_key=connection.secret_key,
@@ -183,18 +187,20 @@ class ThreadLocalBotoSession(threading.local):
                 client = self.session().client(
                     's3',
                     config=config,
-                    endpoint_url=(connection.endpoint_url
-                                  if connection else None),
+                    endpoint_url=(connection.endpoint_url if connection else None),
                     region_name=(connection.region if connection else None)
-                    or credentials.get('region') or self._region,
+                    or credentials.get('region')
+                    or self._region,
                     verify=(connection.boto_verify if connection else None),
                 )
                 scope.cache[key] = client
             return client
         connection = active_s3_connection()
         if connection is not None:
-            if (self._s3_client is None
-                    or self._deployment_identity != connection.identity):
+            if (
+                self._s3_client is None
+                or self._deployment_identity != connection.identity
+            ):
                 config = self._config.merge(connection.boto_config)
                 self._s3_client = self.session().client(
                     's3',
@@ -209,12 +215,14 @@ class ThreadLocalBotoSession(threading.local):
             if self._endpoint_url is not None:
                 # Use virtual addressing for custom endpoints
                 config = self._config.merge(
-                    botocore.config.Config(s3={'addressing_style': 'virtual'}))
+                    botocore.config.Config(s3={'addressing_style': 'virtual'})
+                )
             else:
                 # Use default addressing style for AWS endpoints
                 config = self._config
             self._s3_client = self.session().client(
-                's3', config=config, endpoint_url=self._endpoint_url)
+                's3', config=config, endpoint_url=self._endpoint_url
+            )
         return self._s3_client
 
     def s3_resource(self) -> mypy_boto3_s3.service_resource.S3ServiceResource:
@@ -231,18 +239,20 @@ class ThreadLocalBotoSession(threading.local):
                 resource = self.session().resource(
                     's3',
                     config=config,
-                    endpoint_url=(connection.endpoint_url
-                                  if connection else None),
+                    endpoint_url=(connection.endpoint_url if connection else None),
                     region_name=(connection.region if connection else None)
-                    or credentials.get('region') or self._region,
+                    or credentials.get('region')
+                    or self._region,
                     verify=(connection.boto_verify if connection else None),
                 )
                 scope.cache[key] = resource
             return resource
         connection = active_s3_connection()
         if connection is not None:
-            if (self._s3_resource is None
-                    or self._deployment_identity != connection.identity):
+            if (
+                self._s3_resource is None
+                or self._deployment_identity != connection.identity
+            ):
                 config = self._config.merge(connection.boto_config)
                 self._s3_resource = self.session().resource(
                     's3',
@@ -257,12 +267,14 @@ class ThreadLocalBotoSession(threading.local):
             if self._endpoint_url is not None:
                 # Use virtual addressing for custom endpoints
                 config = self._config.merge(
-                    botocore.config.Config(s3={'addressing_style': 'virtual'}))
+                    botocore.config.Config(s3={'addressing_style': 'virtual'})
+                )
             else:
                 # Use default addressing style for AWS endpoints
                 config = self._config
             self._s3_resource = self.session().resource(
-                's3', config=config, endpoint_url=self._endpoint_url)
+                's3', config=config, endpoint_url=self._endpoint_url
+            )
         return self._s3_resource
 
     def _reset(self) -> None:
@@ -292,8 +304,9 @@ def select_s3_region(path: str) -> None:
         return
     if scope is None and threadsafe_boto._endpoint_url is not None:
         return
-    if (scope is not None and not threadsafe_boto._has_session_credentials(
-            scope.credentials or {})):
+    if scope is not None and not threadsafe_boto._has_session_credentials(
+        scope.credentials or {}
+    ):
         return
     uri = ParseURI(path)
     if not isinstance(uri, S3URI):
@@ -311,9 +324,9 @@ def select_s3_region(path: str) -> None:
         except botocore.exceptions.ClientError as error:
             failure = error
             response = error.response
-        region = (response.get('BucketRegion')
-                  or response.get('ResponseMetadata', {}).get(
-                      'HTTPHeaders', {}).get('x-amz-bucket-region'))
+        region = response.get('BucketRegion') or response.get(
+            'ResponseMetadata', {}
+        ).get('HTTPHeaders', {}).get('x-amz-bucket-region')
         if region is None:
             if failure is not None:
                 raise failure
@@ -336,7 +349,8 @@ def select_s3_region(path: str) -> None:
 
 def _unsigned_s3_client() -> mypy_boto3_s3.client.S3Client:
     config = threadsafe_boto._config.merge(  # pylint: disable=protected-access
-        botocore.config.Config(signature_version=botocore.UNSIGNED))
+        botocore.config.Config(signature_version=botocore.UNSIGNED)
+    )
     return threadsafe_boto.session().client(
         's3',
         config=config,
@@ -361,8 +375,8 @@ def parse_s3(path: str) -> Tuple[str, str]:
     """
     uri = ParseURI(path)
     if not isinstance(uri, S3URI):
-        raise ValueError(f"S3 path must use the s3 scheme, got {path}")
-    return uri.bucket, uri.path.strip("/")
+        raise ValueError(f'S3 path must use the s3 scheme, got {path}')
+    return uri.bucket, uri.path.strip('/')
 
 
 def parse_s3_file(s3_path: str) -> Tuple[str, str]:
@@ -370,16 +384,18 @@ def parse_s3_file(s3_path: str) -> Tuple[str, str]:
     a directory (ends in trailing slash). Raise exception if not an S3 URL.
     """
     if not (s3_path.startswith('s3://') or s3_path.startswith('s3a://')):
-        raise ValueError(f"S3 path must start with 's3://' or 's3a://"
-                         f", but got {s3_path})")
+        raise ValueError(
+            f"S3 path must start with 's3://' or 's3a://, but got {s3_path})"
+        )
     uri = ParseURI(s3_path)
     if not isinstance(uri, S3URI):
-        raise ValueError(f"S3 path must use the s3 scheme, got {s3_path}")
+        raise ValueError(f'S3 path must use the s3 scheme, got {s3_path}')
     bucket = uri.bucket
     path = uri.path
     if len(path) == 0 or path[-1] == '/':
-        raise ValueError(f"S3 path must point to a file (no trailing slash)"
-                         f", but got {s3_path})")
+        raise ValueError(
+            f'S3 path must point to a file (no trailing slash), but got {s3_path})'
+        )
     return bucket, path
 
 
@@ -392,11 +408,12 @@ def parse_s3_dir(s3_path: str) -> Tuple[str, str]:
         path (str): A s3 file path.
     """
     if not (s3_path.startswith('s3://') or s3_path.startswith('s3a://')):
-        raise ValueError(f"S3 path must start with 's3://' or 's3a://"
-                         f", but got {s3_path})")
+        raise ValueError(
+            f"S3 path must start with 's3://' or 's3a://, but got {s3_path})"
+        )
     uri = ParseURI(s3_path)
     if not isinstance(uri, S3URI):
-        raise ValueError(f"S3 path must use the s3 scheme, got {s3_path}")
+        raise ValueError(f'S3 path must use the s3 scheme, got {s3_path}')
     bucket = uri.bucket
     path = uri.path
     if len(path) > 0 and path[-1] != '/':
@@ -405,8 +422,9 @@ def parse_s3_dir(s3_path: str) -> Tuple[str, str]:
 
 
 def executeWithRetry(
-        max_num_retries: int = DEFAULT_MAX_NUM_RETRIES,
-        delay_s: float = DEFAULT_DELAY_SECONDS) -> Callable[[T], T]:
+    max_num_retries: int = DEFAULT_MAX_NUM_RETRIES,
+    delay_s: float = DEFAULT_DELAY_SECONDS,
+) -> Callable[[T], T]:
     r"""Decorator to retry executing a function. By default only tries once
     i.e. no retries
 
@@ -417,6 +435,7 @@ def executeWithRetry(
         # For executing only once i.e. no retries
         @executeWithRetry()
     """
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):  # noqa pylint: disable=inconsistent-return-statements
@@ -426,11 +445,11 @@ def executeWithRetry(
                 try:
                     res = func(*args, **kwargs)
                     if i > 0:
-                        logger.info(f"Try {i} (of {total_tries}) succeeded")
+                        logger.info(f'Try {i} (of {total_tries}) succeeded')
                     return res
                 except Exception as e:  # pylint: disable=broad-except
                     logger.error(
-                        "Try %s of %s for %s failed (error_type=%s)",
+                        'Try %s of %s for %s failed (error_type=%s)',
                         i,
                         total_tries,
                         func.__name__,
@@ -455,11 +474,12 @@ class S3FileSystem:
 
     This class is thread safe
     """
+
     def __init__(
         self,
         process_pool_cls: Union[
-            Type[ProcessPoolExecutor],
-            Type[ContextPropagatingThreadPoolExecutor]] = ProcessPoolExecutor,
+            Type[ProcessPoolExecutor], Type[ContextPropagatingThreadPoolExecutor]
+        ] = ProcessPoolExecutor,
         retry_delay_sec: int = 5,
     ):
         self._process_pool_cls = process_pool_cls
@@ -493,14 +513,15 @@ s3_ctx = S3FileSystem()
 
 
 def _delete_batch(bucket: str, keys: List[str]) -> None:
-    """ Call the s3 batch delete endpoint.
-    """
+    """Call the s3 batch delete endpoint."""
     threadsafe_boto.lazy_auth()  # required in threadpool
     objects = []
     for key in keys:
-        objects.append({
-            'Key': key,
-        })
+        objects.append(
+            {
+                'Key': key,
+            }
+        )
 
     result = s3_ctx._s3_client.delete_objects(
         Bucket=bucket,
@@ -513,9 +534,10 @@ def _delete_batch(bucket: str, keys: List[str]) -> None:
     if len(errors) > 0:
         error = errors[0]
         raise RuntimeError(
-            f"Failed to delete {len(errors)} keys in batch. Example error "
-            f"for Key={error.get('Key')}: Code={error.get('Code')} "
-            f"Message={error.get('Message')}")
+            f'Failed to delete {len(errors)} keys in batch. Example error '
+            f'for Key={error.get("Key")}: Code={error.get("Code")} '
+            f'Message={error.get("Message")}'
+        )
 
 
 @trace(TraceOptions(trace_params=True))
@@ -523,11 +545,11 @@ def rmdir(path: str, include: Optional[List[str]] = None) -> None:
     r"""Highly optimized version of recursive S3 delete. Able to delete 10k
     files in < 10 seconds.
     """
-    logger.debug("Delete recursive %s", path)
+    logger.debug('Delete recursive %s', path)
     bucket_name, _ = parse_s3_dir(path)
     keys = listdir_recursive(path)
     keys = [k for k in keys if should_include(k, include)]
-    logger.debug("Found %s files to delete within %s", len(keys), path)
+    logger.debug('Found %s files to delete within %s', len(keys), path)
 
     _s3_delete_batch_with_retry = executeWithRetry(
         max_num_retries=2,
@@ -539,7 +561,7 @@ def rmdir(path: str, include: Optional[List[str]] = None) -> None:
         task = fsutil_ctx.thread_pool.submit(
             _s3_delete_batch_with_retry,
             bucket_name,
-            keys[i:i + s3_ctx._delete_object_batch_size],
+            keys[i : i + s3_ctx._delete_object_batch_size],
         )
         tasks.append(task)
     for task in tasks:
@@ -547,16 +569,16 @@ def rmdir(path: str, include: Optional[List[str]] = None) -> None:
 
     keys = listdir_recursive(path)
     if len(keys) > 0:
-        logger.warning("Failed to delete the following keys in batch: "
-                       f"{keys}")
-    logger.debug("Done deleting %s", path)
+        logger.warning(f'Failed to delete the following keys in batch: {keys}')
+    logger.debug('Done deleting %s', path)
 
 
 # ----------------------- COPY -----------------------
 
 
-def _copy_one(src_bucket: str, src_key: str, dst_bucket: str, dst_key: str,
-              s3_client: S3Client) -> None:
+def _copy_one(
+    src_bucket: str, src_key: str, dst_bucket: str, dst_key: str, s3_client: S3Client
+) -> None:
     threadsafe_boto.lazy_auth()  # required in threadpool
     copy_source = CopySourceTypeDef(
         Bucket=src_bucket,
@@ -566,9 +588,16 @@ def _copy_one(src_bucket: str, src_key: str, dst_bucket: str, dst_key: str,
     s3_client.copy(copy_source, dst_bucket, dst_key, ExtraArgs=dict(extra_args))
 
 
-def _copy_batch(src_bucket: str, src_prefix: str, src_keys: List[str],
-                dst_bucket: str, dst_prefix: str, retry_delay_sec: int,
-                executor: Executor, s3_client: S3Client) -> None:
+def _copy_batch(
+    src_bucket: str,
+    src_prefix: str,
+    src_keys: List[str],
+    dst_bucket: str,
+    dst_prefix: str,
+    retry_delay_sec: int,
+    executor: Executor,
+    s3_client: S3Client,
+) -> None:
 
     _s3_copy_one_with_retry = executeWithRetry(
         max_num_retries=2,
@@ -577,22 +606,43 @@ def _copy_batch(src_bucket: str, src_prefix: str, src_keys: List[str],
 
     tasks: List[Future] = []
     for src_key in src_keys:
-        dst_key = dst_prefix + src_key[len(src_prefix):]
+        dst_key = dst_prefix + src_key[len(src_prefix) :]
         tasks.append(
-            executor.submit(_s3_copy_one_with_retry, src_bucket, src_key,
-                            dst_bucket, dst_key, s3_client))
+            executor.submit(
+                _s3_copy_one_with_retry,
+                src_bucket,
+                src_key,
+                dst_bucket,
+                dst_key,
+                s3_client,
+            )
+        )
     for task in tasks:
         task.result()
 
 
-def _copy_batch_new_process(src_bucket: str, src_prefix: str,
-                            src_keys: List[str], dst_bucket: str,
-                            dst_prefix: str, retry_delay_sec: int) -> None:
+def _copy_batch_new_process(
+    src_bucket: str,
+    src_prefix: str,
+    src_keys: List[str],
+    dst_bucket: str,
+    dst_prefix: str,
+    retry_delay_sec: int,
+) -> None:
     client = threadsafe_boto.s3_client()
     with ContextPropagatingThreadPoolExecutor(
-            max_workers=S3FileSystem._THREAD_POOL_SIZE) as executor:
-        _copy_batch(src_bucket, src_prefix, src_keys, dst_bucket, dst_prefix,
-                    retry_delay_sec, executor, client)
+        max_workers=S3FileSystem._THREAD_POOL_SIZE
+    ) as executor:
+        _copy_batch(
+            src_bucket,
+            src_prefix,
+            src_keys,
+            dst_bucket,
+            dst_prefix,
+            retry_delay_sec,
+            executor,
+            client,
+        )
 
 
 @trace(TraceOptions(trace_params=True))
@@ -601,7 +651,7 @@ def copydir(
     src: str,
     dst: str,
 ) -> None:
-    """ Optimized function for doing s3->s3 copy. As this operation does
+    """Optimized function for doing s3->s3 copy. As this operation does
     not perform any local IO, the only bottleneck is the number of
     concurrent requests we can make to AWS. For large directories, this
     function will launch multiple thread and Python processes, in order to
@@ -609,17 +659,18 @@ def copydir(
 
     TODO: Replace fsutil.copy() with this function once it is battle-tested
     """
-    logger.debug("Copying %s to %s", src, dst)
+    logger.debug('Copying %s to %s', src, dst)
     src_bucket, src_prefix = parse_s3_dir(src)
     dst_bucket, dst_prefix = parse_s3_dir(dst)
 
     keys = listdir_recursive(src)
-    logger.debug("Found %s files in %s", len(keys), src)
-    logger.debug("Estimated copy time: %.1f minutes", len(keys) / 20000)
+    logger.debug('Found %s files in %s', len(keys), src)
+    logger.debug('Estimated copy time: %.1f minutes', len(keys) / 20000)
 
     if len(keys) == 0:
-        raise ValueError("Cannot copy because source directory "
-                         "is empty or does not exist: {src}")
+        raise ValueError(
+            'Cannot copy because source directory is empty or does not exist: {src}'
+        )
 
     # For small number of files, use the current thread pool as it will be
     # fast enough
@@ -627,13 +678,22 @@ def copydir(
     # backed operations therefore stay in context-propagating threads even
     # for large copies; otherwise a child process could silently enter the
     # deployment's ambient AWS provider chain.
-    if (len(keys) < s3_ctx._copy_multiprocessing_threshold
-            or credentials_for_provider('s3') is not None):
-        logger.debug("Using thread-pool for copy")
-        _copy_batch(src_bucket, src_prefix, keys, dst_bucket, dst_prefix,
-                    s3_ctx._retry_delay_sec, fsutil_ctx.thread_pool,
-                    s3_ctx._s3_client)
-        logger.debug("Done copying %s to %s", src, dst)
+    if (
+        len(keys) < s3_ctx._copy_multiprocessing_threshold
+        or credentials_for_provider('s3') is not None
+    ):
+        logger.debug('Using thread-pool for copy')
+        _copy_batch(
+            src_bucket,
+            src_prefix,
+            keys,
+            dst_bucket,
+            dst_prefix,
+            s3_ctx._retry_delay_sec,
+            fsutil_ctx.thread_pool,
+            s3_ctx._s3_client,
+        )
+        logger.debug('Done copying %s to %s', src, dst)
         return
 
     # Since there are 50 threads per process, a maximum of 5 processes will
@@ -648,23 +708,27 @@ def copydir(
     # single process from handling the most-expensive files.
     random.shuffle(keys)
 
-    logger.debug("Using mutiprocessing for copy")
+    logger.debug('Using mutiprocessing for copy')
     with s3_ctx._process_pool_cls(max_workers=processes) as executor:
         tasks: List[Future] = []
         for i in range(0, len(keys), batch_size):
-            logger.info(
-                f'Copying batch {i} of {len(keys) // batch_size} for {src}')
-            task = executor.submit(_copy_batch_new_process, src_bucket,
-                                   src_prefix, keys[i:i + batch_size],
-                                   dst_bucket, dst_prefix,
-                                   s3_ctx._retry_delay_sec)
+            logger.info(f'Copying batch {i} of {len(keys) // batch_size} for {src}')
+            task = executor.submit(
+                _copy_batch_new_process,
+                src_bucket,
+                src_prefix,
+                keys[i : i + batch_size],
+                dst_bucket,
+                dst_prefix,
+                s3_ctx._retry_delay_sec,
+            )
             tasks.append(task)
         for task in tasks:
             logger.info(f'Waiting for task {task} to complete')
             task.result()
             logger.info(f'Task {task} completed')
 
-    logger.debug("Done copying %s to %s", src, dst)
+    logger.debug('Done copying %s to %s', src, dst)
 
 
 @trace(TraceOptions(trace_params=True))
@@ -707,7 +771,7 @@ def _list_objects_v2(bucket: str, prefix: str) -> _ListResponse:
 @trace(TraceOptions(trace_params=True))
 def listdir_recursive(path: str) -> List[str]:
     """List all keys below an S3 path, fetching each directory in parallel."""
-    logger.debug("Listing directory %s", path)
+    logger.debug('Listing directory %s', path)
     _list_objects_v2_with_retry = executeWithRetry(
         max_num_retries=2,
         delay_s=s3_ctx._retry_delay_sec,
@@ -721,8 +785,9 @@ def listdir_recursive(path: str) -> List[str]:
     def submit(current_prefix: str) -> None:
         nonlocal pending
         pending += 1
-        request = fsutil_ctx.thread_pool.submit(_list_objects_v2_with_retry,
-                                                bucket, current_prefix)
+        request = fsutil_ctx.thread_pool.submit(
+            _list_objects_v2_with_retry, bucket, current_prefix
+        )
         request.add_done_callback(completed.put)
 
     submit(prefix)
@@ -751,7 +816,7 @@ def exists_s3_object(path: str) -> bool:
         s3_ctx._s3_client.head_object(Bucket=bucket, Key=key)
         return True
     except botocore.exceptions.ClientError as e:
-        if e.response.get('Error', {}).get('Code') != "404":
+        if e.response.get('Error', {}).get('Code') != '404':
             raise
         return False
 
@@ -764,7 +829,7 @@ def head_object_with_unsigned_fallback(path: str) -> HeadObjectOutputTypeDef:
     except _NO_CREDENTIALS_EXCEPTIONS:
         if credentials_for_provider('s3') is not None:
             raise
-        logger.info("No AWS credentials found; retrying S3 head anonymously")
+        logger.info('No AWS credentials found; retrying S3 head anonymously')
         return _unsigned_s3_client().head_object(Bucket=bucket, Key=key)
 
 
@@ -774,8 +839,9 @@ def head_object_with_unsigned_fallback(path: str) -> HeadObjectOutputTypeDef:
 @trace(TraceOptions(trace_params=True))
 def get_handle(path: str, compressed: bool = False) -> IO:
     if compressed and not path.endswith('.gz'):
-        raise ValueError(f"We only support gzip encoded file for s3,"
-                         f" current path: {path}")
+        raise ValueError(
+            f'We only support gzip encoded file for s3, current path: {path}'
+        )
 
     bucket, key = parse_s3_file(path)
     try:
@@ -786,7 +852,7 @@ def get_handle(path: str, compressed: bool = False) -> IO:
         else:
             return gzip.open(BytesIO(body.read()), 'rt')  # type: ignore
     except s3_ctx._s3_client.exceptions.NoSuchKey:
-        raise FileNotFoundError(f"No such key {key}")
+        raise FileNotFoundError(f'No such key {key}')
 
 
 @trace(TraceOptions(trace_params=True))
@@ -797,20 +863,28 @@ def download_file(src: str, dst: str):
 
     try:
         download_s3_file(
-            bucket_name, key, dst, client=lambda: s3_ctx._s3_client,
+            bucket_name,
+            key,
+            dst,
+            client=lambda: s3_ctx._s3_client,
             unsigned_client=_unsigned_s3_client
-            if credentials_for_provider('s3') is None else None)
+            if credentials_for_provider('s3') is None
+            else None,
+        )
     except botocore.exceptions.ClientError as error:
         # Preserve fsutil's missing-file contract before generic.copy_file
         # sanitizes other provider errors into a transfer failure.
-        if error.response.get(
-                'Error', {}).get('Code') in {'404', 'NoSuchKey', 'NotFound'}:
+        if error.response.get('Error', {}).get('Code') in {
+            '404',
+            'NoSuchKey',
+            'NotFound',
+        }:
             raise FileNotFoundError('S3 source object not found') from None
         raise
 
     time_spend = time.time() - start_time
     logger.debug(
-        "Download %s takes %.2f sec, %.2f MB/s",
+        'Download %s takes %.2f sec, %.2f MB/s',
         src,
         time_spend,
         os.path.getsize(dst) / time_spend / 1024 / 1024,
@@ -856,11 +930,14 @@ def dirsize(path: str) -> int:
     and HeadObject many times. If you have a large number of S3 objects
     that are under this path, then this could incur a significant cost."""
     bucket, key = parse_s3_dir(path)
-    return sum([
-        obj.size
-        for obj in threadsafe_boto.s3_resource().Bucket(bucket).objects.filter(
-            Prefix=key)
-    ])
+    return sum(
+        [
+            obj.size
+            for obj in threadsafe_boto.s3_resource()
+            .Bucket(bucket)
+            .objects.filter(Prefix=key)
+        ]
+    )
 
 
 # ----------------------- OTHER ---------------------
@@ -876,16 +953,13 @@ def generate_presigned_url_for_download(path: str) -> str:
         bucket, key = parse_s3_file(path)
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
-            Params={
-                'Bucket': bucket,
-                'Key': key
-            },
+            Params={'Bucket': bucket, 'Key': key},
         )
         return presigned_url
     except Exception:
         raise ValueError(
-            f"Permission error for generating presigned URL for path: "
-            f"{path}.")
+            f'Permission error for generating presigned URL for path: {path}.'
+        )
 
 
 @trace(TraceOptions(trace_params=True))
@@ -901,17 +975,15 @@ def get_bucket_aws_region(bucket: str) -> str:
         try:
             response = _unsigned_s3_client().head_bucket(Bucket=bucket)
         except Exception as e:
-            raise ValueError(
-                f"Error getting AWS region for bucket: {bucket}.") from e
+            raise ValueError(f'Error getting AWS region for bucket: {bucket}.') from e
     except Exception as e:
-        raise ValueError(
-            f"Error getting AWS region for bucket: {bucket}.") from e
+        raise ValueError(f'Error getting AWS region for bucket: {bucket}.') from e
 
-    region = response.get('BucketRegion') or response.get(
-        'ResponseMetadata', {}).get('HTTPHeaders',
-                                    {}).get('x-amz-bucket-region')
+    region = response.get('BucketRegion') or response.get('ResponseMetadata', {}).get(
+        'HTTPHeaders', {}
+    ).get('x-amz-bucket-region')
     if not region:
-        raise ValueError(f"Error getting AWS region for bucket: {bucket}.")
+        raise ValueError(f'Error getting AWS region for bucket: {bucket}.')
     return region
 
 
@@ -920,7 +992,7 @@ class S3FileLock:
         self.lock_acquired = False
         self._s3_client = threadsafe_boto.s3_client()
         o = parse.urlparse(path)
-        self.bucket, self.key = o.netloc, o.path.strip("/")
+        self.bucket, self.key = o.netloc, o.path.strip('/')
         self.timeout = timeout
 
     def __enter__(self):
@@ -937,12 +1009,14 @@ class S3FileLock:
                 self.lock_acquired = True
                 return self
             except botocore.exceptions.ClientError as e:
-                logger.error("File lock %s acquire error (error_type=%s)",
-                             self.key,
-                             type(e).__name__)
+                logger.error(
+                    'File lock %s acquire error (error_type=%s)',
+                    self.key,
+                    type(e).__name__,
+                )
                 time.sleep(1)
 
-        raise TimeoutError("Timeout while acquiring the S3 lock")
+        raise TimeoutError('Timeout while acquiring the S3 lock')
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.lock_acquired:
@@ -951,8 +1025,11 @@ class S3FileLock:
 
 
 @blocking_func(tracing_options=TraceOptions(trace_params=True))
-def zip_files_with_same_prefix(prefix: str, output_path: Optional[str] = None,
-                               object_keys: Optional[List[str]] = None) -> str:
+def zip_files_with_same_prefix(
+    prefix: str,
+    output_path: Optional[str] = None,
+    object_keys: Optional[List[str]] = None,
+) -> str:
     r"""Zip a list of files on s3 with the same prefix. And return the output
     path.
 
@@ -973,8 +1050,11 @@ def zip_files_with_same_prefix(prefix: str, output_path: Optional[str] = None,
             return output_path
 
         # Setup the input objects.
-        object_keys = (listdir_recursive(prefix + '/')
-                       if object_keys is None else list(object_keys))
+        object_keys = (
+            listdir_recursive(prefix + '/')
+            if object_keys is None
+            else list(object_keys)
+        )
         if not object_keys:
             raise ValueError('No S3 objects were selected for the archive')
         if len(set(object_keys)) != len(object_keys):
@@ -984,20 +1064,19 @@ def zip_files_with_same_prefix(prefix: str, output_path: Optional[str] = None,
         try:
             # Download the S3 objects and add them to the zip file
             with TemporaryDirectory() as temp_dir:
-                temp_output_path = os.path.join(temp_dir, "output.zip")
+                temp_output_path = os.path.join(temp_dir, 'output.zip')
                 with ZipFile(temp_output_path, 'w') as zipf:
                     for object_key in object_keys:
-                        logger.info("zipping object %s to %s", object_key,
-                                    output_path)
+                        logger.info('zipping object %s to %s', object_key, output_path)
                         response = s3_util._s3_client.get_object(
-                            Bucket=bucket, Key=object_key)
+                            Bucket=bucket, Key=object_key
+                        )
                         object_data = response['Body'].read()
                         with BytesIO(object_data) as obj_file:
                             zipf.writestr(object_key, obj_file.getvalue())
 
                 put_file(temp_output_path, output_path)
         except Exception:
-            raise ValueError(
-                f"Permission error for zip files with prefix: {prefix}.")
+            raise ValueError(f'Permission error for zip files with prefix: {prefix}.')
 
         return output_path

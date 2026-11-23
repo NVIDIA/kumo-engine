@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 def _scratch_dir(data_version: str) -> str:
     try:
         from statedb.config.diskgraph import get_diskgraph_local_ingest_root
+
         root = osp.join(get_diskgraph_local_ingest_root(), 'source-reader')
         os.makedirs(root, exist_ok=True)
     except Exception:
@@ -41,8 +42,7 @@ def _scratch_dir(data_version: str) -> str:
 
 
 def _metrics(staged: StagedTable) -> ExportMetrics:
-    return ExportMetrics(num_rows=staged.num_rows,
-                         source_size=staged.source_size)
+    return ExportMetrics(num_rows=staged.num_rows, source_size=staged.source_size)
 
 
 def worker_ceiling(graph_table_count: int | None) -> int | None:
@@ -52,8 +52,8 @@ def worker_ceiling(graph_table_count: int | None) -> int | None:
         return None
     from rest.constants import DATA_BACKEND_WORKER_NAME
     from temporalio_commons.worker_main import GLOBAL_WORKER_OPTIONS
-    pool_width = GLOBAL_WORKER_OPTIONS[
-        DATA_BACKEND_WORKER_NAME].max_worker_threads
+
+    pool_width = GLOBAL_WORKER_OPTIONS[DATA_BACKEND_WORKER_NAME].max_worker_threads
     assert pool_width is not None
     return max(1, cpu_budget() // min(max(graph_table_count, 1), pool_width))
 
@@ -74,11 +74,15 @@ def read_source(
     ``source_name`` is then only the name staging prefixes and errors key on.
     """
     return stage_source(
-        reader, source_name,
-        get_materialize_path(table_fp, data_version,
-                             MaterializationStage.INGEST),
-        columns=dict(table_fp.cols), sql=sql, version=data_version,
-        graph_table_count=graph_table_count, scratch_key=data_version)
+        reader,
+        source_name,
+        get_materialize_path(table_fp, data_version, MaterializationStage.INGEST),
+        columns=dict(table_fp.cols),
+        sql=sql,
+        version=data_version,
+        graph_table_count=graph_table_count,
+        scratch_key=data_version,
+    )
 
 
 def stage_source(
@@ -111,14 +115,25 @@ def stage_source(
     """
     scratch = _scratch_dir(scratch_key)
     try:
-        staged = read_table(reader, source_name, scratch, columns=columns,
-                            sql=sql, mode=mode, version=version,
-                            worker_ceiling=worker_ceiling(graph_table_count))
+        staged = read_table(
+            reader,
+            source_name,
+            scratch,
+            columns=columns,
+            sql=sql,
+            mode=mode,
+            version=version,
+            worker_ceiling=worker_ceiling(graph_table_count),
+        )
         publish_source(staged, destination)
         logger.info(
             'Read %s with a %s source reader (mode=%s rows=%s scanned=%s)',
-            source_name, reader.source_type.value, staged.mode_used.value,
-            staged.num_rows, staged.scanned_bytes)
+            source_name,
+            reader.source_type.value,
+            staged.mode_used.value,
+            staged.num_rows,
+            staged.scanned_bytes,
+        )
         return _metrics(staged)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -131,6 +146,7 @@ def publish_source(staged: StagedTable, destination: str) -> ExportMetrics:
     except Exception as error:
         raise RuntimeError(
             f'could not clear {destination} before publishing; a partial delete '
-            'would mix the previous attempt\'s shards into this one') from error
+            "would mix the previous attempt's shards into this one"
+        ) from error
     fsutil.copy(staged.directory, destination, overwrite=True)
     return _metrics(staged)

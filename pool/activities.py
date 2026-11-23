@@ -8,6 +8,7 @@
 the worker bootstrap (see ``pool.worker_main``) registers whichever
 subset of its ``@activity.defn`` methods that process serves.
 """
+
 import asyncio
 import contextlib
 import contextvars
@@ -76,6 +77,7 @@ from pool.dataclasses import (
 from pool.diskgraph_args import DiskgraphIngestArgs
 from pool.locks import PerSnapshotLocks
 from pool.pidfd import pidfd_open, pidfd_process_exited, pidfd_send_signal
+
 # Single source of truth for the heartbeat cadence — controller side owns it.
 from pool.service import POOL_HEARTBEAT_INTERVAL_SECS
 from pool.snapshot_paths import normalized_diskgraph_snapshot_id_from_path
@@ -141,8 +143,7 @@ _DISK_TELEMETRY_MAX_AGE_SECS = 2 * POOL_HEARTBEAT_INTERVAL_SECS
 _DiskProbeResult = Tuple[int, int, Optional[int]]
 _DiskTelemetry = Tuple[_DiskProbeResult, _DiskProbeResult]
 _UNKNOWN_DISK_PROBE: _DiskProbeResult = (0, 0, None)
-_UNKNOWN_DISK_TELEMETRY: _DiskTelemetry = (_UNKNOWN_DISK_PROBE,
-                                           _UNKNOWN_DISK_PROBE)
+_UNKNOWN_DISK_TELEMETRY: _DiskTelemetry = (_UNKNOWN_DISK_PROBE, _UNKNOWN_DISK_PROBE)
 _BACKGROUND_DISKGRAPH_CLEANUPS: set[asyncio.Task] = set()
 
 
@@ -152,15 +153,12 @@ def _load_prediction_artifact_stats_payload(
 ) -> PredictionArtifactStatsPayload:
     """Read and validate the producer's attempt-local bounded payload."""
     size = fsutil.filesize(path)
-    if (size is None or size <= 0
-            or size > PREDICTION_ARTIFACT_STATS_MAX_PAYLOAD_BYTES):
-        raise ValueError(
-            'Prediction artifact stats payload has an invalid size')
+    if size is None or size <= 0 or size > PREDICTION_ARTIFACT_STATS_MAX_PAYLOAD_BYTES:
+        raise ValueError('Prediction artifact stats payload has an invalid size')
     with fsutil.get_binary_handle(path, 'rb') as handle:
         encoded = handle.read(PREDICTION_ARTIFACT_STATS_MAX_PAYLOAD_BYTES + 1)
         if len(encoded) != size or handle.read(1):
-            raise ValueError(
-                'Prediction artifact stats payload changed while reading')
+            raise ValueError('Prediction artifact stats payload changed while reading')
     payload = PredictionArtifactStatsPayload.from_json(encoded.decode())
     payload.validate(request)
     return payload
@@ -189,8 +187,9 @@ def _probe_local_disk(path: Optional[str]) -> _DiskProbeResult:
                     return 0, 0, None
                 current = parent
     except (OSError, ValueError):
-        log.debug('Local disk probe failed for %s; reporting unknown', path,
-                  exc_info=True)
+        log.debug(
+            'Local disk probe failed for %s; reporting unknown', path, exc_info=True
+        )
         return 0, 0, None
 
 
@@ -202,8 +201,7 @@ def _probe_local_disks(
     try:
         return (_probe_local_disk(data_root), _probe_local_disk(dataplane_root))
     except Exception:
-        log.debug('Combined local disk probe failed; reporting unknown',
-                  exc_info=True)
+        log.debug('Combined local disk probe failed; reporting unknown', exc_info=True)
         return _UNKNOWN_DISK_TELEMETRY
 
 
@@ -219,8 +217,9 @@ def _cleanup_diskgraph_paths(cleanup_dir: Optional[str]) -> None:
         try:
             _rmtree_if_present(cleanup_dir)
         except Exception:
-            log.warning('Failed to clean up DiskGraph directory %s',
-                        cleanup_dir, exc_info=True)
+            log.warning(
+                'Failed to clean up DiskGraph directory %s', cleanup_dir, exc_info=True
+            )
 
 
 def _schedule_diskgraph_cleanup(
@@ -277,22 +276,22 @@ def _upload_prediction_artifact_to_databricks(
 
     connector = get_connector_from_spec(connector_spec)
     if not isinstance(connector, DatabricksConnector):
-        raise TypeError('Databricks prediction output has a non-Databricks '
-                        'connector')
+        raise TypeError('Databricks prediction output has a non-Databricks connector')
     with connector:
         connector.ensure_managed_volume()
         metadata = parquet_util.get_parquet_metadata(artifact_path)
         if metadata.num_rows <= 0:
             raise PredictionOutputProcessingError(
-                message=('Batch prediction produced an empty '
-                         f'{artifact_type.value.lower()} artifact.'),
+                message=(
+                    'Batch prediction produced an empty '
+                    f'{artifact_type.value.lower()} artifact.'
+                ),
                 non_retryable=True,
             )
         local_files = local_parquet_files(artifact_path)
         uploaded_bytes = sum(path.stat().st_size for path in local_files)
         producer_abi = prediction_shard_producer_abi(num_shards)
-        stage_key = (f'batch-prediction:{job_id}:{output_index}:'
-                     f'{artifact_type.value}')
+        stage_key = f'batch-prediction:{job_id}:{output_index}:{artifact_type.value}'
         if num_shards > 1:
             # Older finalizers reject mixed stage paths.
             stage_key += f':{producer_abi}'
@@ -412,7 +411,9 @@ async def _run_diskgraph_async(
                         _uncancel_task(current_task)
                         log.info(
                             'Repeated cancellation while joining abandoned '
-                            'DiskGraph %s; continuing cleanup.', description)
+                            'DiskGraph %s; continuing cleanup.',
+                            description,
+                        )
                         continue
                     except BaseException as exc:
                         log.warning(
@@ -420,22 +421,24 @@ async def _run_diskgraph_async(
                             'cancelled; preserving cancellation as the public '
                             'outcome.',
                             description,
-                            exc_info=(type(exc), exc, exc.__traceback__))
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                        )
                     break
 
             await _join(task, 'operation')
             if cancellation_cleanup_dir is not None:
+
                 def cleanup_cancelled_source() -> None:
                     _rmtree_if_present_strict(cancellation_cleanup_dir)
 
                 cleanup_task = submit_off_loop(cleanup_cancelled_source)
                 await _join(cleanup_task, 'source cleanup')
             log.info(
-                'Cancelled DiskGraph operation joined and cleaned after '
-                '%.3fs.', time.monotonic() - started)
+                'Cancelled DiskGraph operation joined and cleaned after %.3fs.',
+                time.monotonic() - started,
+            )
             raise cancelled
-        _schedule_diskgraph_cleanup(task,
-                                    cleanup_dir=abandonment_cleanup_dir)
+        _schedule_diskgraph_cleanup(task, cleanup_dir=abandonment_cleanup_dir)
         raise
 
 
@@ -464,14 +467,17 @@ def _materialize_and_upload_prediction_task(
         # Preserve the materializer's precise config error. If an unexpected
         # implementation returns successfully, fail closed rather than report
         # success without publishing its sidecars.
-        materialize_prediction_task(job_input, settings, serving,
-                                    pred_config_path, home_dir)
+        materialize_prediction_task(
+            job_input, settings, serving, pred_config_path, home_dir
+        )
         raise ValueError(
             'Prediction materialization completed without '
-            'diskgraph_index_path; sidecars cannot be safely published')
+            'diskgraph_index_path; sidecars cannot be safely published'
+        )
     with prediction_materialization_ownership(index_path, str(job_input.id)):
-        result = materialize_prediction_task(job_input, settings, serving,
-                                             pred_config_path, home_dir)
+        result = materialize_prediction_task(
+            job_input, settings, serving, pred_config_path, home_dir
+        )
         upload_job_sidecars_from_config_path(
             snapshot_id,
             result[0],
@@ -501,8 +507,7 @@ def _build_diskgraph_ingest_config(ingest_args: DiskgraphIngestArgs):
         TableName(name): str(version)
         for name, version in ingest_args.table_data_versions.items()
     }
-    graph_config = _build_ingest_graph_config(graph, table_versions,
-                                              graph_definition)
+    graph_config = _build_ingest_graph_config(graph, table_versions, graph_definition)
     # Source files were already downloaded above and ``service.ingest`` always
     # receives their explicit paths. Connector configs are therefore neither
     # needed by DiskGraph nor safe to cross its spawned-process boundary:
@@ -512,24 +517,26 @@ def _build_diskgraph_ingest_config(ingest_args: DiskgraphIngestArgs):
     return graph_config
 
 
-async def _snapshot_dir_size_bytes(snapshot_id: SnapshotID,
-                                   local_dir: str) -> int:
+async def _snapshot_dir_size_bytes(snapshot_id: SnapshotID, local_dir: str) -> int:
     size_bytes = await asyncio.to_thread(fsutil.dirsize, local_dir)
     if size_bytes is None or size_bytes <= 0:
         raise RuntimeError(
             f'Could not compute positive local snapshot size for '
-            f'snapshot={snapshot_id} at {local_dir}: {size_bytes}')
+            f'snapshot={snapshot_id} at {local_dir}: {size_bytes}'
+        )
     return int(size_bytes)
 
 
-def _iter_local_snapshot_dirs(
-        local_ssd_root: str) -> list[tuple[SnapshotID, Path]]:
+def _iter_local_snapshot_dirs(local_ssd_root: str) -> list[tuple[SnapshotID, Path]]:
     root = Path(local_ssd_root)
     root.mkdir(parents=True, exist_ok=True)
     snapshots: list[tuple[SnapshotID, Path]] = []
     for child in sorted(root.iterdir(), key=lambda p: p.name):
-        if (not child.is_dir() or child.name == RESERVED_DAEMON_DIR
-                or child.name.startswith('.')):
+        if (
+            not child.is_dir()
+            or child.name == RESERVED_DAEMON_DIR
+            or child.name.startswith('.')
+        ):
             continue
         if '@' not in child.name:
             try:
@@ -542,15 +549,16 @@ def _iter_local_snapshot_dirs(
                 # can likewise fail ``iterdir``. Skip such entries instead of
                 # aborting daemon startup on the first unreadable one.
                 log.warning(
-                    'Skipping unreadable entry under snapshot root: %s (%s)',
-                    child, exc)
+                    'Skipping unreadable entry under snapshot root: %s (%s)', child, exc
+                )
                 continue
             nested_snapshots: list[tuple[SnapshotID, Path]] = []
             for version_dir in version_dirs:
                 if not version_dir.is_dir() or version_dir.name.startswith('.'):
                     continue
                 snapshot_id = normalized_diskgraph_snapshot_id_from_path(
-                    child.name, version_dir.name)
+                    child.name, version_dir.name
+                )
                 if snapshot_id is not None:
                     nested_snapshots.append((snapshot_id, version_dir))
             if nested_snapshots:
@@ -559,7 +567,8 @@ def _iter_local_snapshot_dirs(
             continue
         graph_key, _, graph_data_version = child.name.partition('@')
         snapshot_id = normalized_diskgraph_snapshot_id_from_path(
-            graph_key, graph_data_version)
+            graph_key, graph_data_version
+        )
         if snapshot_id is not None:
             snapshots.append((snapshot_id, child))
     return snapshots
@@ -598,15 +607,17 @@ def _visible_gpus() -> list[str]:
     # Torch's count stops at an invalid entry, as CUDA does.
     count = torch.cuda.device_count()
     listed = os.environ.get('CUDA_VISIBLE_DEVICES')
-    return ([device.strip() for device in listed.split(',')]
-            if listed is not None else [str(i) for i in range(count)])[:count]
+    return (
+        [device.strip() for device in listed.split(',')]
+        if listed is not None
+        else [str(i) for i in range(count)]
+    )[:count]
 
 
 class _GpuSlots:
     """Bounds concurrent GPU activities, pinning each to its own GPU."""
 
-    def __init__(self, count: int,
-                 devices: Optional[list[str]] = None) -> None:
+    def __init__(self, count: int, devices: Optional[list[str]] = None) -> None:
         if count < 1:
             raise ValueError(f'GPU concurrency must be >= 1, got {count}')
         self._free: asyncio.Queue[int] = asyncio.Queue()
@@ -618,7 +629,8 @@ class _GpuSlots:
         if 0 < len(self._devices) < count:
             raise ValueError(
                 f'GPU concurrency {count} needs one GPU per slot, but this '
-                f'worker sees {len(self._devices)} GPU(s)')
+                f'worker sees {len(self._devices)} GPU(s)'
+            )
 
     @contextlib.asynccontextmanager
     async def acquire(self) -> AsyncIterator[dict[str, str]]:
@@ -627,8 +639,9 @@ class _GpuSlots:
             if not self._devices:
                 yield {}
             else:
-                log.info('GPU slot %d -> CUDA_VISIBLE_DEVICES=%s', slot,
-                         self._devices[slot])
+                log.info(
+                    'GPU slot %d -> CUDA_VISIBLE_DEVICES=%s', slot, self._devices[slot]
+                )
                 yield {'CUDA_VISIBLE_DEVICES': self._devices[slot]}
         finally:
             self._free.put_nowait(slot)
@@ -643,6 +656,7 @@ class SnapshotActivities:
     bound methods with a Temporal :class:`Worker`, run the worker, and
     call :meth:`stop` on shutdown.
     """
+
     def __init__(
         self,
         *,
@@ -716,18 +730,21 @@ class SnapshotActivities:
         # controller.
         if self._storage_mode.is_long_lived:
             from service_framework._raw_deploy_config import DiskgraphConfig
+
             data_compute = deploy_env().data_compute
             if isinstance(data_compute, DiskgraphConfig):
                 cleaned_snapshot_ids = await asyncio.to_thread(
-                    _clean_in_progress_snapshots, data_compute.data_root)
+                    _clean_in_progress_snapshots, data_compute.data_root
+                )
                 if cleaned_snapshot_ids:
                     log.info(
                         'SnapshotActivities.start: cleaned in-progress '
-                        'snapshots at startup: %s', cleaned_snapshot_ids)
+                        'snapshots at startup: %s',
+                        cleaned_snapshot_ids,
+                    )
             handles = await get_service().list_ready_handles.coroutine()
             self._ready_snapshots = {
-                DataSnapshot.GRAPH.canonicalize(
-                    f'{h.graph_key}@{h.graph_data_version}')
+                DataSnapshot.GRAPH.canonicalize(f'{h.graph_key}@{h.graph_data_version}')
                 for h in handles
             }
 
@@ -739,19 +756,19 @@ class SnapshotActivities:
         # raise so worker init fails loudly rather than silently never
         # registering with the controller.
         async for attempt in tenacity.AsyncRetrying(
-                retry=tenacity.retry_if_exception_type(_RpcError),
-                stop=tenacity.stop_after_delay(
-                    timedelta(minutes=10).total_seconds()),
-                wait=tenacity.wait_exponential(multiplier=1, min=1, max=8),
-                before_sleep=tenacity.before_sleep_log(log, _logging.WARNING),
-                reraise=True,
+            retry=tenacity.retry_if_exception_type(_RpcError),
+            stop=tenacity.stop_after_delay(timedelta(minutes=10).total_seconds()),
+            wait=tenacity.wait_exponential(multiplier=1, min=1, max=8),
+            before_sleep=tenacity.before_sleep_log(log, _logging.WARNING),
+            reraise=True,
         ):
             with attempt:
                 await self._send_status_report()
         if self._storage_mode.is_long_lived:
             if self._heartbeat_task is None or self._heartbeat_task.done():
                 self._heartbeat_task = asyncio.create_task(
-                    self._heartbeat_loop(), name='pool-heartbeat')
+                    self._heartbeat_loop(), name='pool-heartbeat'
+                )
 
     async def stop(self) -> None:
         """Cancel background tasks and wait for them to exit. Idempotent."""
@@ -824,14 +841,16 @@ class SnapshotActivities:
             # The synchronous helper is deliberately non-raising. Keep this
             # second boundary so optional telemetry can never fail startup or
             # an event-carrying report if that contract regresses.
-            log.debug('Local disk probe task failed; reporting unknown',
-                      exc_info=True)
+            log.debug('Local disk probe task failed; reporting unknown', exc_info=True)
             telemetry = _UNKNOWN_DISK_TELEMETRY
 
         finished_at = self._monotonic()
         if self._disk_probe_timeout_warned:
-            elapsed = (finished_at - self._disk_probe_started_at
-                       if self._disk_probe_started_at is not None else 0.0)
+            elapsed = (
+                finished_at - self._disk_probe_started_at
+                if self._disk_probe_started_at is not None
+                else 0.0
+            )
             log.info('Local disk probe completed after %.1fs', elapsed)
         self._disk_telemetry = telemetry
         # A late sample is considered fresh when it is harvested. Its age
@@ -868,21 +887,26 @@ class SnapshotActivities:
             task = self._start_disk_probe(data_root, dataplane_root)
 
         now = self._monotonic()
-        if (self._disk_telemetry_at is not None and
-                now - self._disk_telemetry_at < _DISK_TELEMETRY_MAX_AGE_SECS):
+        if (
+            self._disk_telemetry_at is not None
+            and now - self._disk_telemetry_at < _DISK_TELEMETRY_MAX_AGE_SECS
+        ):
             return self._disk_telemetry
 
         try:
-            await asyncio.wait_for(asyncio.shield(task),
-                                   timeout=_DISK_PROBE_WAIT_SECS)
+            await asyncio.wait_for(asyncio.shield(task), timeout=_DISK_PROBE_WAIT_SECS)
         except TimeoutError:
             if not self._disk_probe_timeout_warned:
-                elapsed = (self._monotonic() - self._disk_probe_started_at
-                           if self._disk_probe_started_at is not None else
-                           _DISK_PROBE_WAIT_SECS)
+                elapsed = (
+                    self._monotonic() - self._disk_probe_started_at
+                    if self._disk_probe_started_at is not None
+                    else _DISK_PROBE_WAIT_SECS
+                )
                 log.warning(
                     'Local disk probe has not completed after %.1fs; '
-                    'reporting unknown capacity', elapsed)
+                    'reporting unknown capacity',
+                    elapsed,
+                )
                 self._disk_probe_timeout_warned = True
             return _UNKNOWN_DISK_TELEMETRY
         except asyncio.CancelledError:
@@ -897,7 +921,7 @@ class SnapshotActivities:
             pass
 
         harvested = self._harvest_disk_probe()
-        return (harvested if harvested is not None else _UNKNOWN_DISK_TELEMETRY)
+        return harvested if harvested is not None else _UNKNOWN_DISK_TELEMETRY
 
     async def _heartbeat_loop(self) -> None:
         """Periodic heartbeat. Cancellation propagates; transient send
@@ -922,8 +946,7 @@ class SnapshotActivities:
         does not query K8s node capacity or report authoritative GPU slots.
         """
         async with self._status_report_lock:
-            await self._send_status_report_locked(event,
-                                                  raise_on_error=raise_on_error)
+            await self._send_status_report_locked(event, raise_on_error=raise_on_error)
 
     async def _send_status_report_locked(
         self,
@@ -932,18 +955,21 @@ class SnapshotActivities:
         raise_on_error: bool,
     ) -> None:
         from service_framework._raw_deploy_config import DiskgraphConfig
+
         config = deploy_env()
         dc = config.data_compute
         data_root = dc.data_root if isinstance(dc, DiskgraphConfig) else None
 
         ssd_probe, dataplane_probe = await self._resolve_disk_telemetry(
-            data_root, config.data_plane_storage_root)
+            data_root, config.data_plane_storage_root
+        )
         ssd_total_bytes, ssd_used_bytes, ssd_device = ssd_probe
-        dataplane_total_bytes, dataplane_used_bytes, dataplane_device = (
-            dataplane_probe)
-        same_filesystem = (ssd_device == dataplane_device
-                           if ssd_device is not None
-                           and dataplane_device is not None else None)
+        dataplane_total_bytes, dataplane_used_bytes, dataplane_device = dataplane_probe
+        same_filesystem = (
+            ssd_device == dataplane_device
+            if ssd_device is not None and dataplane_device is not None
+            else None
+        )
 
         # Only the daemon reports ``ready_snapshots`` — it owns the
         # PVC and is authoritative for what's WARM on this worker.
@@ -952,8 +978,7 @@ class SnapshotActivities:
         # doesn't double-count or mistake transient emptyDir snapshots
         # for durably cached ones.
         is_long_lived = self._storage_mode.is_long_lived
-        ready_snapshots = (sorted(self._ready_snapshots)
-                           if is_long_lived else [])
+        ready_snapshots = sorted(self._ready_snapshots) if is_long_lived else []
         report = WorkerStatusReport(
             worker_name=self._uid,
             state=WorkerStateSnapshot(
@@ -972,9 +997,11 @@ class SnapshotActivities:
         except _RpcError:
             if raise_on_error:
                 raise
-            log.error('report_status failed (event=%s)',
-                      event.type.value if event is not None else None,
-                      exc_info=True)
+            log.error(
+                'report_status failed (event=%s)',
+                event.type.value if event is not None else None,
+                exc_info=True,
+            )
 
     # -----------------------------------------------------------------
     # Activity-scoped (job-scoped) body wrapper — every job-scoped
@@ -1020,6 +1047,7 @@ class SnapshotActivities:
         restarted pod has no task to pick up.
         """
         from temporalio_commons.error_utils import is_error_non_retryable
+
         try:
             yield
         except BaseException as ex:
@@ -1051,12 +1079,14 @@ class SnapshotActivities:
         the full ingest duration.
         """
         if self._temporal_client is None:
-            return await self._ensure_snapshot_local(snapshot_id,
-                                                     ingest_args=ingest_args)
+            return await self._ensure_snapshot_local(
+                snapshot_id, ingest_args=ingest_args
+            )
         assert ingest_args is None, (
             'activity-pod must never run daemon-mode (ingest_args set) '
             'ensure_snapshot — DiskgraphIngestWorkflow dispatches that '
-            'directly to the daemon')
+            'directly to the daemon'
+        )
         info = activity.info()
         client = await self._temporal_client.get()
         # ID is stable across retries of the parent activity. If the
@@ -1071,8 +1101,7 @@ class SnapshotActivities:
                 SnapshotActivities.ensure_snapshot.__name__,
                 [snapshot_id],
             ],
-            id=(f'ensure-snapshot:{snapshot_id}:{info.workflow_id}:'
-                f'{info.activity_id}'),
+            id=(f'ensure-snapshot:{snapshot_id}:{info.workflow_id}:{info.activity_id}'),
             task_queue=daemon_dispatch_queue(self._uid),
             execution_timeout=_DAEMON_ENSURE_SNAPSHOT_TIMEOUT,
             id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
@@ -1119,8 +1148,7 @@ class SnapshotActivities:
         # collapse onto the same lock; parse failures also surface
         # without holding any lock.
         snapshot_id = DataSnapshot.GRAPH.canonicalize(snapshot_id)
-        graph_fpid, graph_data_version = DataSnapshot.GRAPH.parse_id(
-            snapshot_id)
+        graph_fpid, graph_data_version = DataSnapshot.GRAPH.parse_id(snapshot_id)
         # The diskgraph runtime keys snapshots by the v2 ``GraphIDv2``
         # form (``"NA-<fpid>"`` for snapshot-attached graphs — the only
         # graph form the diskgraph pool serves), not the bare fpid.
@@ -1154,15 +1182,19 @@ class SnapshotActivities:
             #     ingests. Rmtree the dir before falling through so
             #     the next step (fsutil.copy from dataplane, or fresh
             #     ingest) doesn't get tangled with leftover files.
-            with kumo_timing("snapshot.ensure.ssd_check"):
+            with kumo_timing('snapshot.ensure.ssd_check'):
                 if not await asyncio.to_thread(os.path.isdir, local_dir):
                     log.info(
                         '_ensure_snapshot: %s SSD miss (no local dir at %s)',
-                        snapshot_id, local_dir)
-                    reuse_persisted_config = (await _run_diskgraph_async(
-                        service.has_persisted_ingest_config,
-                        handle,
-                    )) is True
+                        snapshot_id,
+                        local_dir,
+                    )
+                    reuse_persisted_config = (
+                        await _run_diskgraph_async(
+                            service.has_persisted_ingest_config,
+                            handle,
+                        )
+                    ) is True
                     self._ready_snapshots.discard(snapshot_id)
                     await _run_diskgraph_async(
                         service.cleanup_ingest_sidecars,
@@ -1172,40 +1204,53 @@ class SnapshotActivities:
                 else:
                     try:
                         resume_incomplete = await _run_diskgraph_async(
-                            service.has_resumable_ingest, handle)
+                            service.has_resumable_ingest, handle
+                        )
                         if resume_incomplete:
                             log.info(
                                 '_ensure_snapshot: %s has a durable Encode '
-                                'marker; preserving it for resume', snapshot_id)
+                                'marker; preserving it for resume',
+                                snapshot_id,
+                            )
                             self._ready_snapshots.discard(snapshot_id)
                             cached = None
                         else:
                             cached = await _run_diskgraph_async(
-                                service.verify_integrity, handle)
+                                service.verify_integrity, handle
+                            )
                         if cached is not None:
                             log.info(
                                 '_ensure_snapshot: %s SSD hit (integrity OK)',
-                                snapshot_id)
+                                snapshot_id,
+                            )
                             size_bytes = await _snapshot_dir_size_bytes(
-                                snapshot_id, local_dir)
+                                snapshot_id, local_dir
+                            )
                             self._ready_snapshots.add(snapshot_id)
                             if self._storage_mode.is_long_lived:
                                 await self._send_status_report(
                                     event=WorkerEvent(
                                         type=WorkerEventType.SNAPSHOT_READY,
                                         snapshot_id=snapshot_id,
-                                        size_bytes=size_bytes),
-                                    raise_on_error=False)
+                                        size_bytes=size_bytes,
+                                    ),
+                                    raise_on_error=False,
+                                )
                             return cached
                     except DiskgraphCorruptionError as exc:
                         log.warning(
                             '_ensure_snapshot: %s SSD cache CORRUPT at %s '
-                            '(%s); invalidating and cleaning up', snapshot_id,
-                            local_dir, exc)
-                        reuse_persisted_config = (await _run_diskgraph_async(
-                            service.has_persisted_ingest_config,
-                            handle,
-                        )) is True
+                            '(%s); invalidating and cleaning up',
+                            snapshot_id,
+                            local_dir,
+                            exc,
+                        )
+                        reuse_persisted_config = (
+                            await _run_diskgraph_async(
+                                service.has_persisted_ingest_config,
+                                handle,
+                            )
+                        ) is True
                         self._ready_snapshots.discard(snapshot_id)
                         await self._send_status_report(
                             event=WorkerEvent(
@@ -1216,8 +1261,7 @@ class SnapshotActivities:
                         )
                         try:
                             try:
-                                await asyncio.to_thread(shutil.rmtree,
-                                                        local_dir)
+                                await asyncio.to_thread(shutil.rmtree, local_dir)
                             except FileNotFoundError:
                                 pass
                             await _run_diskgraph_async(
@@ -1235,39 +1279,50 @@ class SnapshotActivities:
             # local-disk failure looks the same as bad remote bytes here.
             # Clean only the incomplete local target and let the existing
             # bounded activity/workflow policy retry. L2 remains trusted.
-            dataplane_dir = service.dataplane_snapshot_path(
-                handle, dataplane_root)
+            dataplane_dir = service.dataplane_snapshot_path(handle, dataplane_root)
             restored = None
             if not resume_incomplete:
-                log.info('_ensure_snapshot: %s attempting dataplane restore',
-                         snapshot_id)
+                log.info(
+                    '_ensure_snapshot: %s attempting dataplane restore', snapshot_id
+                )
                 await self._send_status_report(
                     event=WorkerEvent(
                         type=WorkerEventType.SNAPSHOT_RESTORE_STARTED,
-                        snapshot_id=snapshot_id), raise_on_error=False)
+                        snapshot_id=snapshot_id,
+                    ),
+                    raise_on_error=False,
+                )
                 activity_loop = asyncio.get_running_loop()
 
                 def restore_heartbeat() -> None:
                     _schedule_activity_heartbeat(activity_loop)
 
                 try:
-                    with kumo_timing("snapshot.ensure.dataplane_restore"):
+                    with kumo_timing('snapshot.ensure.dataplane_restore'):
                         restored = await _run_diskgraph_async(
-                            service.restore_snapshot, handle, dataplane_root,
+                            service.restore_snapshot,
+                            handle,
+                            dataplane_root,
                             heartbeat=restore_heartbeat,
                             # ``to_thread`` cannot stop ``fsutil.copy`` while
                             # it is writing into ``local_dir``. Keep the lock
                             # until that writer exits, then remove its
                             # partial tree.
                             join_on_cancel=True,
-                            cancellation_cleanup_dir=local_dir)
+                            cancellation_cleanup_dir=local_dir,
+                        )
                 except Exception as exc:
                     log.warning(
                         '_ensure_snapshot: %s dataplane restore failed from %s '
                         'into %s (%s); cleaning only the partial local copy',
-                        snapshot_id, dataplane_dir, local_dir, exc)
-                    await asyncio.to_thread(shutil.rmtree, local_dir,
-                                            ignore_errors=True)
+                        snapshot_id,
+                        dataplane_dir,
+                        local_dir,
+                        exc,
+                    )
+                    await asyncio.to_thread(
+                        shutil.rmtree, local_dir, ignore_errors=True
+                    )
                     await _run_diskgraph_async(
                         service.cleanup_ingest_sidecars,
                         handle,
@@ -1276,34 +1331,42 @@ class SnapshotActivities:
                     raise RuntimeError(
                         f'failed to restore snapshot {snapshot_id} from '
                         f'dataplane {dataplane_dir} into local {local_dir}: '
-                        f'{exc}') from exc
+                        f'{exc}'
+                    ) from exc
 
             if restored is not None:
-                log.info('_ensure_snapshot: %s restored from dataplane',
-                         snapshot_id)
+                log.info('_ensure_snapshot: %s restored from dataplane', snapshot_id)
                 if reuse_persisted_config:
                     await _run_diskgraph_async(
                         service.cleanup_ingest_sidecars,
                         handle,
                     )
-                size_bytes = await _snapshot_dir_size_bytes(
-                    snapshot_id, local_dir)
+                size_bytes = await _snapshot_dir_size_bytes(snapshot_id, local_dir)
                 self._ready_snapshots.add(snapshot_id)
                 await self._send_status_report(
                     event=WorkerEvent(
                         type=WorkerEventType.SNAPSHOT_PERSIST_UPLOADED,
-                        snapshot_id=snapshot_id, size_bytes=size_bytes,
-                        dataplane_path=dataplane_dir), raise_on_error=False)
+                        snapshot_id=snapshot_id,
+                        size_bytes=size_bytes,
+                        dataplane_path=dataplane_dir,
+                    ),
+                    raise_on_error=False,
+                )
                 await self._send_status_report(
-                    event=WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                                      snapshot_id=snapshot_id,
-                                      size_bytes=size_bytes),
-                    raise_on_error=False)
+                    event=WorkerEvent(
+                        type=WorkerEventType.SNAPSHOT_READY,
+                        snapshot_id=snapshot_id,
+                        size_bytes=size_bytes,
+                    ),
+                    raise_on_error=False,
+                )
                 return restored
             if not resume_incomplete:
                 log.info(
                     '_ensure_snapshot: %s no dataplane mirror; falling '
-                    'through to fresh ingest', snapshot_id)
+                    'through to fresh ingest',
+                    snapshot_id,
+                )
 
             # 3. Neither SSD nor dataplane has the snapshot.
             if ingest_args is None:
@@ -1338,11 +1401,16 @@ class SnapshotActivities:
             # callers serialize on the cheaper lock first.
             log.info(
                 '_ensure_snapshot: %s SSD miss + dataplane miss; fresh '
-                'ingest with streaming dataplane mirror', snapshot_id)
+                'ingest with streaming dataplane mirror',
+                snapshot_id,
+            )
             await self._send_status_report(
-                event=WorkerEvent(type=WorkerEventType.SNAPSHOT_INGEST_STARTED,
-                                  snapshot_id=snapshot_id),
-                raise_on_error=False)
+                event=WorkerEvent(
+                    type=WorkerEventType.SNAPSHOT_INGEST_STARTED,
+                    snapshot_id=snapshot_id,
+                ),
+                raise_on_error=False,
+            )
             subprocess_environment: dict[str, Optional[str]] = {}
             try:
                 if resume_incomplete or reuse_persisted_config:
@@ -1357,15 +1425,16 @@ class SnapshotActivities:
                         data_persist_dir=ingest_args.data_persist_dir,
                         table_data_versions=ingest_args.table_data_versions,
                         source_size_bytes_by_table=(
-                            ingest_args.source_size_bytes_by_table),
+                            ingest_args.source_size_bytes_by_table
+                        ),
                     )
                     source_paths = {
-                        alias:
-                        get_diskgraph_snapshot_ingest_path(
-                            snapshot_id, table.fingerprint(),
-                            str(ingest_args.table_data_versions[alias]))
-                        for alias, table in
-                        ingest_args.all_graph_tables.items()
+                        alias: get_diskgraph_snapshot_ingest_path(
+                            snapshot_id,
+                            table.fingerprint(),
+                            str(ingest_args.table_data_versions[alias]),
+                        )
+                        for alias, table in ingest_args.all_graph_tables.items()
                         if alias not in source_specs
                     }
                     # Only staged/ineligible file sources are downloaded
@@ -1373,14 +1442,13 @@ class SnapshotActivities:
                     # sources have no staged file or marker.
                     if source_paths:
                         with kumo_timing(
-                                "snapshot.ensure.download_table_files",
-                                table_count=len(source_paths),
+                            'snapshot.ensure.download_table_files',
+                            table_count=len(source_paths),
                         ):
                             await _run_diskgraph_async(
                                 service.download_table_files,
                                 connector_specs=ingest_args.connector_specs,
-                                table_data_versions=(
-                                    ingest_args.table_data_versions),
+                                table_data_versions=(ingest_args.table_data_versions),
                                 all_graph_tables=(ingest_args.all_graph_tables),
                                 source_paths=source_paths,
                                 # ``to_thread`` cannot stop a connector that
@@ -1389,17 +1457,21 @@ class SnapshotActivities:
                                 # cannot recreate data behind workflow cleanup.
                                 join_on_cancel=True,
                                 cancellation_cleanup_dir=(
-                                    get_diskgraph_snapshot_ingest_dir(
-                                        snapshot_id)),
+                                    get_diskgraph_snapshot_ingest_dir(snapshot_id)
+                                ),
                             )
                     graph_config = await asyncio.to_thread(
-                        _build_diskgraph_ingest_config, ingest_args)
+                        _build_diskgraph_ingest_config, ingest_args
+                    )
                 subprocess_environment = await _run_diskgraph_async(
                     service.prepare_subprocess_environment,
                     connector_specs=ingest_args.connector_specs,
                     all_graph_tables=ingest_args.all_graph_tables,
-                    source_specs=(None if resume_incomplete
-                                  or reuse_persisted_config else source_specs),
+                    source_specs=(
+                        None
+                        if resume_incomplete or reuse_persisted_config
+                        else source_specs
+                    ),
                     data_persist_dir=ingest_args.data_persist_dir,
                     table_data_versions=ingest_args.table_data_versions,
                 )
@@ -1411,8 +1483,8 @@ class SnapshotActivities:
 
                 async with self._ingest_semaphore:
                     with kumo_timing(
-                            "snapshot.ensure.diskgraph_ingest",
-                            table_count=len(ingest_args.all_graph_tables),
+                        'snapshot.ensure.diskgraph_ingest',
+                        table_count=len(ingest_args.all_graph_tables),
                     ):
                         try:
                             result = await _run_diskgraph_async(
@@ -1420,14 +1492,11 @@ class SnapshotActivities:
                                 graph_config=graph_config,
                                 handle=handle,
                                 data_persist_dir=ingest_args.data_persist_dir,
-                                table_data_versions=(
-                                    ingest_args.table_data_versions),
-                                timestamp_precision=(
-                                    ingest_args.timestamp_precision),
+                                table_data_versions=(ingest_args.table_data_versions),
+                                timestamp_precision=(ingest_args.timestamp_precision),
                                 source_paths=(source_paths or None),
                                 source_specs=(source_specs or None),
-                                subprocess_environment=(subprocess_environment
-                                                        or None),
+                                subprocess_environment=(subprocess_environment or None),
                                 heartbeat=heartbeat,
                                 dataplane_root=dataplane_root,
                                 join_on_cancel=True,
@@ -1440,29 +1509,39 @@ class SnapshotActivities:
                             # disk, and keeping a partial dataplane mirror
                             # would mix attempts from different workers.
                             self._ready_snapshots.discard(snapshot_id)
-                            await asyncio.to_thread(shutil.rmtree, local_dir,
-                                                    ignore_errors=True)
-                            await asyncio.to_thread(fsutil.rm, dataplane_dir,
-                                                    ignore_errors=True)
+                            await asyncio.to_thread(
+                                shutil.rmtree, local_dir, ignore_errors=True
+                            )
+                            await asyncio.to_thread(
+                                fsutil.rm, dataplane_dir, ignore_errors=True
+                            )
                             await _run_diskgraph_async(
-                                service.cleanup_ingest_sidecars, handle)
+                                service.cleanup_ingest_sidecars, handle
+                            )
                             raise
             finally:
                 subprocess_environment.clear()
             await _run_diskgraph_async(service.cleanup_ingest_sidecars, handle)
-            with kumo_timing("snapshot.ensure.snapshot_dir_size"):
-                size_bytes = await _snapshot_dir_size_bytes(
-                    snapshot_id, local_dir)
+            with kumo_timing('snapshot.ensure.snapshot_dir_size'):
+                size_bytes = await _snapshot_dir_size_bytes(snapshot_id, local_dir)
             self._ready_snapshots.add(snapshot_id)
             await self._send_status_report(
                 event=WorkerEvent(
                     type=WorkerEventType.SNAPSHOT_PERSIST_UPLOADED,
-                    snapshot_id=snapshot_id, size_bytes=size_bytes,
-                    dataplane_path=dataplane_dir), raise_on_error=False)
+                    snapshot_id=snapshot_id,
+                    size_bytes=size_bytes,
+                    dataplane_path=dataplane_dir,
+                ),
+                raise_on_error=False,
+            )
             await self._send_status_report(
-                event=WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                                  snapshot_id=snapshot_id,
-                                  size_bytes=size_bytes), raise_on_error=False)
+                event=WorkerEvent(
+                    type=WorkerEventType.SNAPSHOT_READY,
+                    snapshot_id=snapshot_id,
+                    size_bytes=size_bytes,
+                ),
+                raise_on_error=False,
+            )
             return result
 
     # -----------------------------------------------------------------
@@ -1486,8 +1565,7 @@ class SnapshotActivities:
         returns ``DiskgraphIngestResult``), and the activity-pod-side
         delegation in :meth:`_ensure_snapshot` (without, returns ``None``).
         """
-        return await self._ensure_snapshot_local(snapshot_id,
-                                                 ingest_args=ingest_args)
+        return await self._ensure_snapshot_local(snapshot_id, ingest_args=ingest_args)
 
     @activity.defn
     async def delete_snapshot(self, snapshot_id: SnapshotID) -> None:
@@ -1505,17 +1583,14 @@ class SnapshotActivities:
         """
         snapshot_id = DataSnapshot.GRAPH.canonicalize(snapshot_id)
         async with self._snapshot_locks.acquire(snapshot_id):
-            graph_fpid, graph_data_version = DataSnapshot.GRAPH.parse_id(
-                snapshot_id)
+            graph_fpid, graph_data_version = DataSnapshot.GRAPH.parse_id(snapshot_id)
             handle = DiskgraphHandle(
                 graph_key=f'NA-{graph_fpid}',
                 graph_data_version=graph_data_version,
             )
             local_dir = get_service().local_snapshot_path(handle)
-            await asyncio.to_thread(shutil.rmtree, local_dir,
-                                    ignore_errors=True)
-            await _run_diskgraph_async(get_service().cleanup_ingest_sidecars,
-                                       handle)
+            await asyncio.to_thread(shutil.rmtree, local_dir, ignore_errors=True)
+            await _run_diskgraph_async(get_service().cleanup_ingest_sidecars, handle)
             self._ready_snapshots.discard(snapshot_id)
 
         await self._send_status_report(raise_on_error=False)
@@ -1543,11 +1618,16 @@ class SnapshotActivities:
         async with self._activity_scope():
             await self._ensure_snapshot(snapshot_id)
             if isinstance(job_input, BatchPredictionJobInput):
-                return await _run_diskgraph_async(generate_prediction_table,
-                                                  job_input, settings, home_dir,
-                                                  is_child_job)
-            return await _run_diskgraph_async(generate_training_table,
-                                              job_input, settings)
+                return await _run_diskgraph_async(
+                    generate_prediction_table,
+                    job_input,
+                    settings,
+                    home_dir,
+                    is_child_job,
+                )
+            return await _run_diskgraph_async(
+                generate_training_table, job_input, settings
+            )
 
     @connector_activity_registry.connector_authorized_activity
     async def build_ttng_custom_train_table_bundle(
@@ -1651,9 +1731,12 @@ class SnapshotActivities:
             # loop, rather than from inside the diskgraph worker thread (where
             # it previously ran via ``AsyncToSync``). This keeps every
             # job-output StateDB write on the same loop the store is reused on.
-            await update_job_status(job_input.id, job_type,
-                                    self._get_job_output_store(),
-                                    JobEventLogEntry.materializing())
+            await update_job_status(
+                job_input.id,
+                job_type,
+                self._get_job_output_store(),
+                JobEventLogEntry.materializing(),
+            )
             return await _run_diskgraph_async(
                 _materialize_and_upload_prediction_task,
                 snapshot_id,
@@ -1667,8 +1750,9 @@ class SnapshotActivities:
             )
 
     @connector_activity_registry.connector_authorized_activity
-    async def train(self, snapshot_id: SnapshotID, job_id: JobID,
-                    job_config_path: str) -> JobState:
+    async def train(
+        self, snapshot_id: SnapshotID, job_id: JobID, job_config_path: str
+    ) -> JobState:
         """Run GNN training in a kumo-auto subprocess."""
         snapshot_id = DataSnapshot.GRAPH.canonicalize(snapshot_id)
         # ``_activity_scope`` outer so its ``finally`` (which sets
@@ -1677,11 +1761,13 @@ class SnapshotActivities:
         async with self._activity_scope():
             async with self._gpu_slots.acquire() as gpu_environment:
                 with kumo_timing(
-                        "pool.train.ensure_snapshot",
-                        activity="train",
+                    'pool.train.ensure_snapshot',
+                    activity='train',
                 ):
                     await self._ensure_snapshot(snapshot_id)
-                use_ttng_sidecars = True  # TT-NG is the only mode; sidecar hand-off always on
+                use_ttng_sidecars = (
+                    True  # TT-NG is the only mode; sidecar hand-off always on
+                )
                 sidecars = None
                 try:
                     if use_ttng_sidecars:
@@ -1690,8 +1776,8 @@ class SnapshotActivities:
                         # restore failure is a real bug -- let it propagate
                         # (fail loud). Temporal retries transient failures.
                         with kumo_timing(
-                                "pool.train.restore_sidecars",
-                                activity="train",
+                            'pool.train.restore_sidecars',
+                            activity='train',
                         ):
                             sidecars = await asyncio.to_thread(
                                 restore_job_sidecars_for_use_from_config_path,
@@ -1701,21 +1787,26 @@ class SnapshotActivities:
                                 data_persist_dir=get_persist_dir(),
                             )
                     with kumo_timing(
-                            "pool.train.subprocess",
-                            activity="train",
-                            binary="kumo-auto",
+                        'pool.train.subprocess',
+                        activity='train',
+                        binary='kumo-auto',
                     ):
                         return await _run_kumo_subprocess(
-                            'kumo-auto', job_id, job_config_path,
+                            'kumo-auto',
+                            job_id,
+                            job_config_path,
                             self._get_job_output_store(),
-                            **({
-                                'subprocess_environment': gpu_environment
-                            } if gpu_environment else {}))
+                            **(
+                                {'subprocess_environment': gpu_environment}
+                                if gpu_environment
+                                else {}
+                            ),
+                        )
                 finally:
                     if use_ttng_sidecars and sidecars is not None:
                         with kumo_timing(
-                                "pool.train.cleanup_sidecars",
-                                activity="train",
+                            'pool.train.cleanup_sidecars',
+                            activity='train',
                         ):
                             await asyncio.to_thread(sidecars.cleanup)
 
@@ -1754,35 +1845,44 @@ class SnapshotActivities:
         snapshot_id = DataSnapshot.GRAPH.canonicalize(snapshot_id)
         async with self._activity_scope():
             async with self._gpu_slots.acquire() as gpu_environment:
-                outputs = (job_input.config.outputs
-                           if job_input is not None else [])
+                outputs = job_input.config.outputs if job_input is not None else []
                 if artifact_ownership_enabled and job_input is None:
                     raise ValueError(
                         'Batch prediction ownership requires persisted job input'
                     )
                 if producer_stats_enabled and not artifact_ownership_enabled:
                     raise ValueError(
-                        'Prediction producer stats require artifact ownership')
-                requested_artifacts = (tuple(
-                    sorted(
-                        requested_prediction_artifact_types(job_input.config),
-                        key=lambda value: value.value,
-                    )) if artifact_ownership_enabled else ())
+                        'Prediction producer stats require artifact ownership'
+                    )
+                requested_artifacts = (
+                    tuple(
+                        sorted(
+                            requested_prediction_artifact_types(job_input.config),
+                            key=lambda value: value.value,
+                        )
+                    )
+                    if artifact_ownership_enabled
+                    else ()
+                )
                 databricks_outputs = [
-                    (index, output) for index, output in enumerate(outputs)
+                    (index, output)
+                    for index, output in enumerate(outputs)
                     if isinstance(output, DatabricksPredictionOutput)
                 ]
-                needs_durable_artifact = (not outputs or any(
+                needs_durable_artifact = not outputs or any(
                     not isinstance(output, DatabricksPredictionOutput)
-                    for output in outputs))
+                    for output in outputs
+                )
                 original_config = await asyncio.to_thread(
-                    PredictionConfig.load, job_config_path)
+                    PredictionConfig.load, job_config_path
+                )
                 original_output_dir = original_config.output_dir
                 attempt_id = uuid.uuid4().hex
                 source_config_sha256 = None
                 if artifact_ownership_enabled:
                     source_config_sha256 = await asyncio.to_thread(
-                        hash_prediction_config, job_config_path)
+                        hash_prediction_config, job_config_path
+                    )
                     generation_output_dir = osp.join(
                         original_output_dir,
                         '_attempts',
@@ -1794,8 +1894,7 @@ class SnapshotActivities:
                 local_output_dir = None
                 subprocess_output_dir = generation_output_dir
                 if databricks_outputs:
-                    data_root = getattr(deploy_env().data_compute, 'data_root',
-                                        None)
+                    data_root = getattr(deploy_env().data_compute, 'data_root', None)
                     if data_root is not None:
                         os.makedirs(data_root, exist_ok=True)
                     local_output_dir = tempfile.mkdtemp(
@@ -1804,28 +1903,35 @@ class SnapshotActivities:
                     )
                     subprocess_output_dir = local_output_dir
                 with kumo_timing(
-                        "pool.predict.shard_config",
-                        activity="predict",
-                        shard_index=shard_index,
-                        num_shards=num_shards,
+                    'pool.predict.shard_config',
+                    activity='predict',
+                    shard_index=shard_index,
+                    num_shards=num_shards,
                 ):
                     sharded_config_path = await _run_diskgraph_async(
-                        _shard_pred_config, job_config_path, shard_index,
-                        num_shards, subprocess_output_dir,
-                        attempt_id if artifact_ownership_enabled else None)
+                        _shard_pred_config,
+                        job_config_path,
+                        shard_index,
+                        num_shards,
+                        subprocess_output_dir,
+                        attempt_id if artifact_ownership_enabled else None,
+                    )
                 runtime_config = await asyncio.to_thread(
-                    PredictionConfig.load, sharded_config_path)
+                    PredictionConfig.load, sharded_config_path
+                )
                 runtime_config_sha256 = None
                 if artifact_ownership_enabled:
                     runtime_config_sha256 = await asyncio.to_thread(
-                        hash_prediction_config, sharded_config_path)
+                        hash_prediction_config, sharded_config_path
+                    )
                 artifact_stats_request = None
                 artifact_stats_dir = None
                 artifact_stats_path = None
                 if producer_stats_enabled and needs_durable_artifact:
                     assert runtime_config_sha256 is not None
-                    output_start, output_stop = (
-                        prediction_output_partition_range(runtime_config))
+                    output_start, output_stop = prediction_output_partition_range(
+                        runtime_config
+                    )
                     artifact_stats_request = PredictionArtifactStatsRequest(
                         attempt_id=attempt_id,
                         job_id=str(job_id),
@@ -1838,8 +1944,7 @@ class SnapshotActivities:
                         expected_artifact_types=requested_artifacts,
                     )
                     artifact_stats_request.validate()
-                    data_root = getattr(deploy_env().data_compute, 'data_root',
-                                        None)
+                    data_root = getattr(deploy_env().data_compute, 'data_root', None)
                     if data_root is not None and fsutil.is_local(data_root):
                         os.makedirs(data_root, exist_ok=True)
                     else:
@@ -1848,17 +1953,20 @@ class SnapshotActivities:
                         prefix=(f'kumo-pred-stats-{job_id}-{shard_index:05d}-'),
                         dir=data_root,
                     )
-                    artifact_stats_path = osp.join(artifact_stats_dir,
-                                                   'producer-stats.json')
-                use_ttng_sidecars = True  # TT-NG is the only mode; sidecar hand-off always on
+                    artifact_stats_path = osp.join(
+                        artifact_stats_dir, 'producer-stats.json'
+                    )
+                use_ttng_sidecars = (
+                    True  # TT-NG is the only mode; sidecar hand-off always on
+                )
                 sidecars = None
                 completed_uploads: list[tuple[Any, DatabricksVolumeShard]] = []
                 try:
                     with kumo_timing(
-                            "pool.predict.ensure_snapshot",
-                            activity="predict",
-                            shard_index=shard_index,
-                            num_shards=num_shards,
+                        'pool.predict.ensure_snapshot',
+                        activity='predict',
+                        shard_index=shard_index,
+                        num_shards=num_shards,
                     ):
                         await self._ensure_snapshot(snapshot_id)
                     if use_ttng_sidecars:
@@ -1867,10 +1975,10 @@ class SnapshotActivities:
                         # restore failure is a real bug -- let it propagate
                         # (fail loud). Temporal retries transient failures.
                         with kumo_timing(
-                                "pool.predict.restore_sidecars",
-                                activity="predict",
-                                shard_index=shard_index,
-                                num_shards=num_shards,
+                            'pool.predict.restore_sidecars',
+                            activity='predict',
+                            shard_index=shard_index,
+                            num_shards=num_shards,
                         ):
                             sidecars = await asyncio.to_thread(
                                 restore_job_sidecars_for_use_from_config_path,
@@ -1880,11 +1988,11 @@ class SnapshotActivities:
                                 data_persist_dir=get_persist_dir(),
                             )
                     with kumo_timing(
-                            "pool.predict.subprocess",
-                            activity="predict",
-                            binary="kumo-pred",
-                            shard_index=shard_index,
-                            num_shards=num_shards,
+                        'pool.predict.subprocess',
+                        activity='predict',
+                        binary='kumo-pred',
+                        shard_index=shard_index,
+                        num_shards=num_shards,
                     ):
                         # predict never publishes training progress (only the
                         # kumo-auto branch does), so it needs no store and must
@@ -1893,28 +2001,30 @@ class SnapshotActivities:
                         if artifact_stats_request is not None:
                             assert artifact_stats_path is not None
                             subprocess_environment |= {
-                                PREDICTION_ARTIFACT_STATS_REQUEST_ENV:
-                                json.dumps(
+                                PREDICTION_ARTIFACT_STATS_REQUEST_ENV: json.dumps(
                                     artifact_stats_request.to_dict(),
                                     sort_keys=True,
                                     separators=(',', ':'),
                                 ),
-                                PREDICTION_ARTIFACT_STATS_PATH_ENV:
-                                artifact_stats_path,
+                                PREDICTION_ARTIFACT_STATS_PATH_ENV: artifact_stats_path,
                             }
                         job_state = await _run_kumo_subprocess(
                             'kumo-pred',
                             job_id,
                             sharded_config_path,
                             None,
-                            **({
-                                'subprocess_environment': subprocess_environment
-                            } if subprocess_environment else {}),
+                            **(
+                                {'subprocess_environment': subprocess_environment}
+                                if subprocess_environment
+                                else {}
+                            ),
                         )
 
                     artifact_stats_payload = None
-                    if (job_state == JobState.SUCCEEDED
-                            and artifact_stats_request is not None):
+                    if (
+                        job_state == JobState.SUCCEEDED
+                        and artifact_stats_request is not None
+                    ):
                         assert artifact_stats_path is not None
                         artifact_stats_payload = await asyncio.to_thread(
                             _load_prediction_artifact_stats_payload,
@@ -1922,26 +2032,25 @@ class SnapshotActivities:
                             artifact_stats_request,
                         )
 
-                    if (job_state == JobState.SUCCEEDED
-                            and local_output_dir is not None):
+                    if job_state == JobState.SUCCEEDED and local_output_dir is not None:
                         assert job_input is not None
                         for output_index, output in databricks_outputs:
-                            reference = job_input.output_connectors[ConnectorID(
-                                output.connector_id)]
-                            resolved = (
-                                await
-                                connector_broker.connector_credential_broker.
-                                resolve_async(reference))
+                            reference = job_input.output_connectors[
+                                ConnectorID(output.connector_id)
+                            ]
+                            resolved = await connector_broker.connector_credential_broker.resolve_async(
+                                reference
+                            )
                             artifact_path = osp.join(
                                 local_output_dir,
                                 output.artifact_type.output_file_name,
                             )
                             with kumo_timing(
-                                    "pool.predict.databricks_upload",
-                                    activity="predict",
-                                    shard_index=shard_index,
-                                    num_shards=num_shards,
-                                    output_index=output_index,
+                                'pool.predict.databricks_upload',
+                                activity='predict',
+                                shard_index=shard_index,
+                                num_shards=num_shards,
+                                output_index=output_index,
                             ):
                                 try:
                                     upload = await _run_diskgraph_async(
@@ -1973,9 +2082,11 @@ class SnapshotActivities:
                             )
 
                     artifact_manifest = None
-                    if (artifact_ownership_enabled
-                            and job_state == JobState.SUCCEEDED
-                            and needs_durable_artifact):
+                    if (
+                        artifact_ownership_enabled
+                        and job_state == JobState.SUCCEEDED
+                        and needs_durable_artifact
+                    ):
                         assert source_config_sha256 is not None
                         assert runtime_config_sha256 is not None
                         inventories = await asyncio.to_thread(
@@ -1984,8 +2095,9 @@ class SnapshotActivities:
                             requested_artifacts,
                             artifact_stats_payload,
                         )
-                        output_start, output_stop = (
-                            prediction_output_partition_range(runtime_config))
+                        output_start, output_stop = prediction_output_partition_range(
+                            runtime_config
+                        )
                         manifest = PredictionShardManifest(
                             schema_version=PREDICTION_ARTIFACT_MANIFEST_VERSION,
                             job_id=str(job_id),
@@ -1993,8 +2105,7 @@ class SnapshotActivities:
                             graph_snapshot_id=str(snapshot_id),
                             source_config_sha256=source_config_sha256,
                             runtime_config_sha256=runtime_config_sha256,
-                            producer_abi=prediction_shard_producer_abi(
-                                num_shards),
+                            producer_abi=prediction_shard_producer_abi(num_shards),
                             canonical_output_root=original_output_dir,
                             generation_root=generation_output_dir,
                             runtime_shard_id=shard_index,
@@ -2006,9 +2117,9 @@ class SnapshotActivities:
                             producer_stats=producer_stats_enabled,
                         )
                         artifact_manifest = await asyncio.to_thread(
-                            publish_shard_manifest, manifest)
-                    elif (artifact_ownership_enabled
-                          and job_state != JobState.SUCCEEDED):
+                            publish_shard_manifest, manifest
+                        )
+                    elif artifact_ownership_enabled and job_state != JobState.SUCCEEDED:
                         await asyncio.to_thread(
                             fsutil.rm,
                             generation_output_dir,
@@ -2022,18 +2133,19 @@ class SnapshotActivities:
                         # pod with its log, so return them to the workflow.
                         try:
                             status = await asyncio.to_thread(
-                                PredStatus.load, runtime_config.home_dir)
+                                PredStatus.load, runtime_config.home_dir
+                            )
                             failure_info = JobFailureInfo(
                                 message=status.error_msg or '',
-                                stacktrace=status.stacktrace or '')
+                                stacktrace=status.stacktrace or '',
+                            )
                         except Exception:
-                            log.warning('Could not load the prediction status',
-                                        exc_info=True)
+                            log.warning(
+                                'Could not load the prediction status', exc_info=True
+                            )
                     return PredictionShardResult(
                         state=job_state,
-                        databricks_uploads=[
-                            upload for _, upload in completed_uploads
-                        ],
+                        databricks_uploads=[upload for _, upload in completed_uploads],
                         artifact_manifest=artifact_manifest,
                         failure_info=failure_info,
                     )
@@ -2051,9 +2163,9 @@ class SnapshotActivities:
                                 '(error_type=%s)',
                                 type(cleanup_error).__name__,
                             )
-                    if (artifact_ownership_enabled and not fsutil.exists(
-                            osp.join(generation_output_dir,
-                                     '_artifact_manifest.json'))):
+                    if artifact_ownership_enabled and not fsutil.exists(
+                        osp.join(generation_output_dir, '_artifact_manifest.json')
+                    ):
                         try:
                             fsutil.rm(generation_output_dir, ignore_errors=True)
                         except BaseException:
@@ -2067,13 +2179,14 @@ class SnapshotActivities:
                             )
                     raise
                 finally:
+
                     async def _cleanup_prediction_attempt() -> None:
                         if use_ttng_sidecars and sidecars is not None:
                             with kumo_timing(
-                                    "pool.predict.cleanup_sidecars",
-                                    activity="predict",
-                                    shard_index=shard_index,
-                                    num_shards=num_shards,
+                                'pool.predict.cleanup_sidecars',
+                                activity='predict',
+                                shard_index=shard_index,
+                                num_shards=num_shards,
                             ):
                                 await asyncio.to_thread(sidecars.cleanup)
                         # Sharded configs are throwaway per-attempt; clean up
@@ -2085,7 +2198,8 @@ class SnapshotActivities:
                                 log.debug(
                                     'pool predict: cleanup failed for sharded '
                                     'config %s (best-effort)',
-                                    sharded_config_path)
+                                    sharded_config_path,
+                                )
                         if local_output_dir is not None:
                             await asyncio.to_thread(
                                 shutil.rmtree,
@@ -2133,6 +2247,7 @@ def _shard_pred_config(
     from kumo_core.job_config import PredictionConfig
 
     from io_utils.json import load_json, save_json
+
     orig = load_json(orig_config_path, PredictionConfig)
     sharded = copy.deepcopy(orig)
     if num_shards <= 1:
@@ -2145,9 +2260,11 @@ def _shard_pred_config(
             raise ValueError(
                 f'num_partitions={orig.num_partitions} < num_shards='
                 f'{num_shards} for {orig_config_path}: the workflow must cap '
-                f'num_shards at the materialized num_partitions')
-        start, stop = split_partitions_across_jobs(orig.num_partitions,
-                                                   num_shards)[shard_index]
+                f'num_shards at the materialized num_partitions'
+            )
+        start, stop = split_partitions_across_jobs(orig.num_partitions, num_shards)[
+            shard_index
+        ]
     sharded.start_partition_id = start
     sharded.stop_partition_id = stop
     if output_dir is not None:
@@ -2155,8 +2272,7 @@ def _shard_pred_config(
         # Databricks recommends roughly 128 MiB compressed ingestion files.
         # This uncompressed bound is conservative and, critically, prevents
         # databricks-sql-connector from buffering multi-GiB PUT sources.
-        sharded.max_prediction_file_size_bytes = (
-            _DATABRICKS_PARQUET_FILE_TARGET_BYTES)
+        sharded.max_prediction_file_size_bytes = _DATABRICKS_PARQUET_FILE_TARGET_BYTES
     base, ext = os.path.splitext(orig_config_path)
     attempt_suffix = f'-{attempt_id}' if attempt_id is not None else ''
     sharded_path = f'{base}-{start}-{stop}{attempt_suffix}{ext}'
@@ -2203,8 +2319,7 @@ class _ProcessIdentity:
             # read. A live leader is sufficient; for a zombie leader, use the
             # whole-thread-group pidfd observation and retain conservatively
             # if pidfd allocation or polling failed.
-            return (self.state not in ('X', 'Z')
-                    or self.task_group_exited is not True)
+            return self.state not in ('X', 'Z') or self.task_group_exited is not True
         return any(state not in ('X', 'Z') for _, state in self.task_states)
 
 
@@ -2219,12 +2334,11 @@ def _read_process_task_states(
                 if not entry.name.isdigit():
                     continue
                 try:
-                    with open(f'/proc/{pid}/task/{entry.name}/stat',
-                              'rb') as stat_file:
+                    with open(f'/proc/{pid}/task/{entry.name}/stat', 'rb') as stat_file:
                         task_stat = stat_file.read()
                 except (FileNotFoundError, PermissionError, ProcessLookupError):
                     continue
-                fields = task_stat[task_stat.rfind(b')') + 2:].split()
+                fields = task_stat[task_stat.rfind(b')') + 2 :].split()
                 if fields:
                     task_states.append((int(entry.name), fields[0].decode()))
     except (FileNotFoundError, PermissionError, ProcessLookupError):
@@ -2242,18 +2356,20 @@ def _read_process_identity(pid: int) -> _ProcessIdentity:
     with open(f'{proc_path}/stat', 'rb') as stat_file:
         process_stat = stat_file.read()
     proc_after = os.stat(proc_path)
-    if ((proc_before.st_dev, proc_before.st_ino)
-            != (proc_after.st_dev, proc_after.st_ino)):
+    if (proc_before.st_dev, proc_before.st_ino) != (
+        proc_after.st_dev,
+        proc_after.st_ino,
+    ):
         raise ProcessLookupError(pid)
 
     # comm is parenthesized and may itself contain spaces or parentheses.
-    fields = process_stat[process_stat.rfind(b')') + 2:].split()
+    fields = process_stat[process_stat.rfind(b')') + 2 :].split()
     if len(fields) < 20:
         raise RuntimeError(f'Unexpected /proc/{pid}/stat contents')
     state = fields[0].decode()
     task_states = _read_process_task_states(pid)
     task_group_exited = None
-    if (task_states is None or (not task_states and state in ('X', 'Z'))):
+    if task_states is None or (not task_states and state in ('X', 'Z')):
         try:
             task_group_exited = pidfd_process_exited(pid)
         except ProcessLookupError:
@@ -2263,8 +2379,10 @@ def _read_process_identity(pid: int) -> _ProcessIdentity:
             # is temporarily unavailable under resource pressure.
             pass
         proc_final = os.stat(proc_path)
-        if ((proc_after.st_dev, proc_after.st_ino)
-                != (proc_final.st_dev, proc_final.st_ino)):
+        if (proc_after.st_dev, proc_after.st_ino) != (
+            proc_final.st_dev,
+            proc_final.st_ino,
+        ):
             raise ProcessLookupError(pid)
 
     return _ProcessIdentity(
@@ -2291,20 +2409,25 @@ class _OwnedSubprocessSession:
     Enumerating the session and signalling identity-checked pidfds covers those
     nested groups without selecting unrelated processes by a reusable bare PID.
     """
+
     leader: _ProcessIdentity
 
     @classmethod
     def capture(cls, pid: int) -> '_OwnedSubprocessSession':
         leader = _read_process_identity(pid)
         own_pid_namespace = os.stat('/proc/self/ns/pid')
-        if ((leader.pid_namespace_device, leader.pid_namespace_inode)
-                != (own_pid_namespace.st_dev, own_pid_namespace.st_ino)):
+        if (leader.pid_namespace_device, leader.pid_namespace_inode) != (
+            own_pid_namespace.st_dev,
+            own_pid_namespace.st_ino,
+        ):
             raise RuntimeError(
-                f'Subprocess pid={pid} is outside the worker PID namespace')
+                f'Subprocess pid={pid} is outside the worker PID namespace'
+            )
         if leader.process_group_id != pid or leader.session_id != pid:
             raise RuntimeError(
                 f'Subprocess pid={pid} does not own its process session '
-                f'(pgid={leader.process_group_id}, sid={leader.session_id})')
+                f'(pgid={leader.process_group_id}, sid={leader.session_id})'
+            )
         return cls(leader)
 
     def members(self) -> list[_ProcessIdentity]:
@@ -2314,11 +2437,12 @@ class _OwnedSubprocessSession:
             current_leader = _read_process_identity(self.leader.pid)
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             current_leader = None
-        if (current_leader is not None
-                and not self._same_stable_identity(current_leader,
-                                                   self.leader)):
+        if current_leader is not None and not self._same_stable_identity(
+            current_leader, self.leader
+        ):
             raise RuntimeError(
-                f'Owned subprocess leader pid={self.leader.pid} was reused')
+                f'Owned subprocess leader pid={self.leader.pid} was reused'
+            )
 
         members = []
         with os.scandir('/proc') as entries:
@@ -2329,28 +2453,29 @@ class _OwnedSubprocessSession:
                     identity = _read_process_identity(int(entry.name))
                 except (FileNotFoundError, ProcessLookupError, PermissionError):
                     continue
-                if (identity.session_id == self.leader.session_id
-                        and identity.pid_namespace_device
-                        == self.leader.pid_namespace_device
-                        and identity.pid_namespace_inode
-                        == self.leader.pid_namespace_inode):
+                if (
+                    identity.session_id == self.leader.session_id
+                    and identity.pid_namespace_device
+                    == self.leader.pid_namespace_device
+                    and identity.pid_namespace_inode == self.leader.pid_namespace_inode
+                ):
                     members.append(identity)
         try:
             current_leader = _read_process_identity(self.leader.pid)
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             current_leader = None
-        if (current_leader is not None
-                and not self._same_stable_identity(current_leader,
-                                                   self.leader)):
+        if current_leader is not None and not self._same_stable_identity(
+            current_leader, self.leader
+        ):
             raise RuntimeError(
-                f'Owned subprocess leader pid={self.leader.pid} was reused')
+                f'Owned subprocess leader pid={self.leader.pid} was reused'
+            )
         return members
 
     def live_members(self) -> list[_ProcessIdentity]:
         return [member for member in self.members() if member.has_live_tasks]
 
-    def reap_adopted_descendant_zombies(
-            self, members: list[_ProcessIdentity]) -> int:
+    def reap_adopted_descendant_zombies(self, members: list[_ProcessIdentity]) -> int:
         """Reap exact session zombies only when this worker adopted them."""
         reaped = 0
         for member in members:
@@ -2368,18 +2493,19 @@ class _OwnedSubprocessSession:
         return reaped
 
     @staticmethod
-    def _same_stable_identity(current: _ProcessIdentity,
-                              expected: _ProcessIdentity) -> bool:
-        return (current.pid == expected.pid
-                and current.process_group_id == expected.process_group_id
-                and current.session_id == expected.session_id
-                and current.start_time_ticks == expected.start_time_ticks
-                and current.proc_device == expected.proc_device
-                and current.proc_inode == expected.proc_inode
-                and current.pid_namespace_device
-                == expected.pid_namespace_device
-                and current.pid_namespace_inode
-                == expected.pid_namespace_inode)
+    def _same_stable_identity(
+        current: _ProcessIdentity, expected: _ProcessIdentity
+    ) -> bool:
+        return (
+            current.pid == expected.pid
+            and current.process_group_id == expected.process_group_id
+            and current.session_id == expected.session_id
+            and current.start_time_ticks == expected.start_time_ticks
+            and current.proc_device == expected.proc_device
+            and current.proc_inode == expected.proc_inode
+            and current.pid_namespace_device == expected.pid_namespace_device
+            and current.pid_namespace_inode == expected.pid_namespace_inode
+        )
 
     @classmethod
     def _identity_still_matches(cls, expected: _ProcessIdentity) -> bool:
@@ -2410,8 +2536,7 @@ class _OwnedSubprocessSession:
         return signalled
 
     async def terminate(self, binary_name: str, job_id: JobID) -> None:
-        deadline = (asyncio.get_running_loop().time()
-                    + _SUBPROCESS_TERM_GRACE_SECS)
+        deadline = asyncio.get_running_loop().time() + _SUBPROCESS_TERM_GRACE_SECS
         while True:
             members = self.members()
             self.reap_adopted_descendant_zombies(members)
@@ -2419,23 +2544,23 @@ class _OwnedSubprocessSession:
             if not members:
                 return
             self.signal_members(
-                [member for member in members if member.has_live_tasks],
-                signal.SIGTERM)
+                [member for member in members if member.has_live_tasks], signal.SIGTERM
+            )
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             await asyncio.sleep(min(_SUBPROCESS_EXIT_POLL_SECS, remaining))
 
-        descendants = [
-            member for member in members if member.pid != self.leader.pid
-        ]
+        descendants = [member for member in members if member.pid != self.leader.pid]
         log.warning(
             'pool %s subprocess session for job=%s still has %s descendant '
             'member(s) after %.1fs of SIGTERM; sending descendant SIGKILL.',
-            binary_name, job_id, len(descendants),
-            _SUBPROCESS_TERM_GRACE_SECS)
-        deadline = (asyncio.get_running_loop().time()
-                    + _SUBPROCESS_KILL_GRACE_SECS)
+            binary_name,
+            job_id,
+            len(descendants),
+            _SUBPROCESS_TERM_GRACE_SECS,
+        )
+        deadline = asyncio.get_running_loop().time() + _SUBPROCESS_KILL_GRACE_SECS
         while True:
             members = self.members()
             self.reap_adopted_descendant_zombies(members)
@@ -2447,21 +2572,22 @@ class _OwnedSubprocessSession:
             ]
             self.signal_members(
                 [member for member in descendants if member.has_live_tasks],
-                signal.SIGKILL)
+                signal.SIGKILL,
+            )
             remaining = deadline - asyncio.get_running_loop().time()
             if descendants and remaining > 0:
-                await asyncio.sleep(
-                    min(_SUBPROCESS_EXIT_POLL_SECS, remaining))
+                await asyncio.sleep(min(_SUBPROCESS_EXIT_POLL_SECS, remaining))
                 continue
             if descendants:
                 raise RuntimeError(
                     f'pool {binary_name} subprocess supervisor for job={job_id} '
-                    f'did not reap {len(descendants)} descendant(s)')
+                    f'did not reap {len(descendants)} descendant(s)'
+                )
             # The subreaping leader has no child left to protect. A final KILL
             # is now safe and cannot orphan an owned zombie.
             self.signal_members(
-                [member for member in members if member.has_live_tasks],
-                signal.SIGKILL)
+                [member for member in members if member.has_live_tasks], signal.SIGKILL
+            )
             return
 
     async def wait_for_quiescence(self, timeout: float) -> None:
@@ -2479,7 +2605,8 @@ class _OwnedSubprocessSession:
         if members:
             raise RuntimeError(
                 f'Owned subprocess session sid={self.leader.session_id} still '
-                f'has {len(members)} member(s), including zombies')
+                f'has {len(members)} member(s), including zombies'
+            )
 
 
 @dataclasses.dataclass
@@ -2491,6 +2618,7 @@ class _OwnedProcessGroup:
     orphaned grandchildren; production Linux workers therefore use
     ``_OwnedSubprocessSession`` whenever its stronger capabilities are present.
     """
+
     process_group_id: int
     _termination_attempted: bool = False
 
@@ -2524,8 +2652,11 @@ class _OwnedProcessGroup:
             return
         log.warning(
             'pool %s subprocess process group for job=%s did not exit within '
-            '%.1fs of SIGTERM; sending SIGKILL.', binary_name, job_id,
-            _SUBPROCESS_TERM_GRACE_SECS)
+            '%.1fs of SIGTERM; sending SIGKILL.',
+            binary_name,
+            job_id,
+            _SUBPROCESS_TERM_GRACE_SECS,
+        )
         try:
             os.killpg(self.process_group_id, signal.SIGKILL)
         except ProcessLookupError:
@@ -2538,7 +2669,10 @@ class _OwnedProcessGroup:
             log.warning(
                 'pool %s subprocess process group for job=%s remained '
                 'observable after SIGKILL; degraded fallback cannot prove '
-                'whether only unreaped zombies remain.', binary_name, job_id)
+                'whether only unreaped zombies remain.',
+                binary_name,
+                job_id,
+            )
 
     async def wait_for_quiescence(self, timeout: float) -> None:
         if await self._wait_until_absent(timeout):
@@ -2546,15 +2680,15 @@ class _OwnedProcessGroup:
         if self._termination_attempted:
             return
         raise RuntimeError(
-            f'Owned subprocess process group pgid={self.process_group_id} '
-            'is still live')
+            f'Owned subprocess process group pgid={self.process_group_id} is still live'
+        )
 
 
-def _log_subprocess_output(record: bytes, binary_name: str,
-                           job_id: JobID) -> None:
+def _log_subprocess_output(record: bytes, binary_name: str, job_id: JobID) -> None:
     if record:
-        log.info('[%s/%s] %s', binary_name, job_id,
-                 record.decode('utf-8', errors='replace'))
+        log.info(
+            '[%s/%s] %s', binary_name, job_id, record.decode('utf-8', errors='replace')
+        )
 
 
 async def _drain_subprocess_output(
@@ -2581,9 +2715,11 @@ async def _drain_subprocess_output(
         if progress_record is None:
             return
         now = time.monotonic()
-        if (force or last_progress_log_at is None or
-                now - last_progress_log_at >=
-                _SUBPROCESS_PROGRESS_LOG_INTERVAL_SECS):
+        if (
+            force
+            or last_progress_log_at is None
+            or now - last_progress_log_at >= _SUBPROCESS_PROGRESS_LOG_INTERVAL_SECS
+        ):
             _log_subprocess_output(progress_record, binary_name, job_id)
             progress_record = None
             last_progress_log_at = now
@@ -2603,14 +2739,13 @@ async def _drain_subprocess_output(
                 _flush_progress(force=False)
             elif record.endswith(b'\n'):
                 _flush_progress(force=True)
-                _log_subprocess_output(record.rstrip(b'\r\n'), binary_name,
-                                       job_id)
+                _log_subprocess_output(record.rstrip(b'\r\n'), binary_name, job_id)
             else:
                 pending = record
         while len(pending) >= _SUBPROCESS_OUTPUT_MAX_RECORD_BYTES:
             _log_subprocess_output(
-                pending[:_SUBPROCESS_OUTPUT_MAX_RECORD_BYTES], binary_name,
-                job_id)
+                pending[:_SUBPROCESS_OUTPUT_MAX_RECORD_BYTES], binary_name, job_id
+            )
             pending = pending[_SUBPROCESS_OUTPUT_MAX_RECORD_BYTES:]
         _flush_progress(force=False)
     _flush_progress(force=True)
@@ -2650,9 +2785,15 @@ async def _launch_process_group_fallback(
     can_own_group = callable(getattr(os, 'killpg', None))
     log.warning(
         'pool %s subprocess supervisor capabilities are unavailable for '
-        'job=%s; using %s.', binary_name, job_id,
-        ('bounded process-group TERM/KILL fallback' if can_own_group else
-         'bounded direct-child TERM/KILL fallback'))
+        'job=%s; using %s.',
+        binary_name,
+        job_id,
+        (
+            'bounded process-group TERM/KILL fallback'
+            if can_own_group
+            else 'bounded direct-child TERM/KILL fallback'
+        ),
+    )
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -2661,8 +2802,7 @@ async def _launch_process_group_fallback(
         start_new_session=can_own_group,
     )
     # Unit tests use a Process stand-in and retain direct-child behavior.
-    if (not can_own_group
-            or not isinstance(proc, asyncio.subprocess.Process)):
+    if not can_own_group or not isinstance(proc, asyncio.subprocess.Process):
         return proc, None
     return proc, _OwnedProcessGroup(proc.pid)
 
@@ -2673,13 +2813,12 @@ async def _launch_owned_subprocess(
     binary_name: str,
     job_id: JobID,
 ) -> tuple[
-        asyncio.subprocess.Process,
-        Optional[_OwnedSubprocessSession | _OwnedProcessGroup],
+    asyncio.subprocess.Process,
+    Optional[_OwnedSubprocessSession | _OwnedProcessGroup],
 ]:
     """Handshake ownership before the supervisor can start the real CLI."""
     if not _subprocess_supervisor_capabilities_available():
-        return await _launch_process_group_fallback(
-            cmd, child_env, binary_name, job_id)
+        return await _launch_process_group_fallback(cmd, child_env, binary_name, job_id)
 
     ready_read, ready_write = os.pipe()
     ack_read, ack_write = os.pipe()
@@ -2736,13 +2875,13 @@ async def _launch_owned_subprocess(
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
         with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(
-                proc.wait(), timeout=_SUBPROCESS_KILL_GRACE_SECS)
+            await asyncio.wait_for(proc.wait(), timeout=_SUBPROCESS_KILL_GRACE_SECS)
 
     async def _wait_for_unacknowledged_supervisor_abort() -> None:
         cleanup_task = asyncio.create_task(
             _abort_unacknowledged_supervisor(),
-            name=f'pool-{binary_name}-handshake-abort')
+            name=f'pool-{binary_name}-handshake-abort',
+        )
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
@@ -2770,23 +2909,31 @@ async def _launch_owned_subprocess(
 
     try:
         ready = await asyncio.wait_for(
-            _read_ready_byte(),
-            timeout=_SUBPROCESS_OWNERSHIP_HANDSHAKE_SECS)
+            _read_ready_byte(), timeout=_SUBPROCESS_OWNERSHIP_HANDSHAKE_SECS
+        )
         if ready == b'U':
             raise _SubprocessSupervisorUnavailable(
-                'subreaper setup was rejected by the worker runtime')
+                'subreaper setup was rejected by the worker runtime'
+            )
         if ready != b'R':
             raise RuntimeError(
                 f'pool {binary_name} supervisor for job={job_id} exited '
-                'before ownership handshake')
+                'before ownership handshake'
+            )
         owned_session = _OwnedSubprocessSession.capture(proc.pid)
         leader = owned_session.leader
         log.info(
             'pool %s subprocess ownership for job=%s: '
             'pid=pgid=sid=%s start_time=%s proc=%s:%s pid_ns=%s:%s',
-            binary_name, job_id, leader.pid, leader.start_time_ticks,
-            leader.proc_device, leader.proc_inode,
-            leader.pid_namespace_device, leader.pid_namespace_inode)
+            binary_name,
+            job_id,
+            leader.pid,
+            leader.start_time_ticks,
+            leader.proc_device,
+            leader.proc_inode,
+            leader.pid_namespace_device,
+            leader.pid_namespace_inode,
+        )
         assert ack_write_fd is not None
         os.write(ack_write_fd, b'G')
         return proc, owned_session
@@ -2797,7 +2944,8 @@ async def _launch_owned_subprocess(
         await _wait_for_unacknowledged_supervisor_abort()
         if isinstance(error, _SubprocessSupervisorUnavailable):
             return await _launch_process_group_fallback(
-                cmd, child_env, binary_name, job_id)
+                cmd, child_env, binary_name, job_id
+            )
         raise
     finally:
         os.close(ready_read)
@@ -2805,9 +2953,12 @@ async def _launch_owned_subprocess(
 
 
 async def _run_kumo_subprocess(
-        binary_name: str, job_id: JobID, job_config_path: str,
-        job_output_store: Optional[MLJobOutputStore],
-        subprocess_environment: Optional[dict[str, str]] = None) -> JobState:
+    binary_name: str,
+    job_id: JobID,
+    job_config_path: str,
+    job_output_store: Optional[MLJobOutputStore],
+    subprocess_environment: Optional[dict[str, str]] = None,
+) -> JobState:
     """Run ``binary_name`` (kumo-auto / kumo-pred) and wait for it to exit.
 
     Heartbeats periodically so Temporal sees the activity alive; on
@@ -2816,15 +2967,17 @@ async def _run_kumo_subprocess(
     leak GPU + SSD until natural exit.
     """
     # Prefer the repo-local script; fall back to PATH.
-    repo_local = osp.join(osp.dirname(osp.dirname(osp.abspath(__file__))),
-                          'bin', binary_name)
+    repo_local = osp.join(
+        osp.dirname(osp.dirname(osp.abspath(__file__))), 'bin', binary_name
+    )
     if osp.exists(repo_local):
         cmd = [sys.executable, repo_local, '--json', job_config_path]
     else:
         cmd = [binary_name, '--json', job_config_path]
 
-    log.info('pool %s subprocess starting for job=%s: %s', binary_name, job_id,
-             ' '.join(cmd))
+    log.info(
+        'pool %s subprocess starting for job=%s: %s', binary_name, job_id, ' '.join(cmd)
+    )
     # PYTHONUNBUFFERED=1: piped stderr is block-buffered by default, which
     # would silence kumo-auto's per-step Python logging until process exit.
     child_env = {
@@ -2832,8 +2985,7 @@ async def _run_kumo_subprocess(
         **(subprocess_environment or {}),
         'PYTHONUNBUFFERED': '1',
     }
-    if (binary_name == 'kumo-pred'
-            and 'KUMO_BP_OUTPUT_SPOOL_ROOT' not in child_env):
+    if binary_name == 'kumo-pred' and 'KUMO_BP_OUTPUT_SPOOL_ROOT' not in child_env:
         # DiskGraph's configured data root is the authoritative local-storage
         # path inside both single-host workers and activity pods. Keep the
         # bounded Parquet spool on that same local filesystem without exposing
@@ -2841,16 +2993,18 @@ async def _run_kumo_subprocess(
         data_root = getattr(deploy_env().data_compute, 'data_root', None)
         if data_root is not None:
             child_env['KUMO_BP_OUTPUT_SPOOL_ROOT'] = osp.join(
-                data_root, 'bp-output-spool')
+                data_root, 'bp-output-spool'
+            )
     proc, owned_session = await _launch_owned_subprocess(
-        cmd, child_env, binary_name, job_id)
+        cmd, child_env, binary_name, job_id
+    )
 
     assert proc.stdout is not None
     drain_task = asyncio.create_task(
         _drain_subprocess_output(proc.stdout, binary_name, job_id),
-        name=f'pool-{binary_name}-drain')
-    proc_wait_task = asyncio.create_task(
-        proc.wait(), name=f'pool-{binary_name}-wait')
+        name=f'pool-{binary_name}-drain',
+    )
+    proc_wait_task = asyncio.create_task(proc.wait(), name=f'pool-{binary_name}-wait')
 
     async def _terminate_subprocess() -> None:
         if owned_session is not None:
@@ -2860,13 +3014,16 @@ async def _run_kumo_subprocess(
                 proc.terminate()
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(proc_wait_task),
-                    timeout=_SUBPROCESS_TERM_GRACE_SECS)
+                    asyncio.shield(proc_wait_task), timeout=_SUBPROCESS_TERM_GRACE_SECS
+                )
             except asyncio.TimeoutError:
                 log.warning(
                     'pool %s subprocess for job=%s did not exit within %.1fs '
-                    'of SIGTERM; sending SIGKILL.', binary_name, job_id,
-                    _SUBPROCESS_TERM_GRACE_SECS)
+                    'of SIGTERM; sending SIGKILL.',
+                    binary_name,
+                    job_id,
+                    _SUBPROCESS_TERM_GRACE_SECS,
+                )
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
 
@@ -2875,8 +3032,8 @@ async def _run_kumo_subprocess(
         # above closes those inherited descriptors before this bounded reap.
         if not proc_wait_task.done():
             await asyncio.wait_for(
-                asyncio.shield(proc_wait_task),
-                timeout=_SUBPROCESS_KILL_GRACE_SECS)
+                asyncio.shield(proc_wait_task), timeout=_SUBPROCESS_KILL_GRACE_SECS
+            )
 
     async def _cancel_output_drain() -> None:
         if not drain_task.done():
@@ -2890,8 +3047,11 @@ async def _run_kumo_subprocess(
             # Supervision is already failing or being cancelled. Preserve that
             # original exception while retaining visibility into drain cleanup.
             log.warning(
-                'pool %s output drain cleanup failed for job=%s', binary_name,
-                job_id, exc_info=True)
+                'pool %s output drain cleanup failed for job=%s',
+                binary_name,
+                job_id,
+                exc_info=True,
+            )
 
     async def _cleanup_subprocess() -> None:
         await _terminate_subprocess()
@@ -2900,7 +3060,8 @@ async def _run_kumo_subprocess(
     async def _run_cleanup_uncancelled() -> None:
         """Finish ownership cleanup even if cancellation is delivered again."""
         cleanup_task = asyncio.create_task(
-            _cleanup_subprocess(), name=f'pool-{binary_name}-cleanup')
+            _cleanup_subprocess(), name=f'pool-{binary_name}-cleanup'
+        )
         while True:
             try:
                 await asyncio.shield(cleanup_task)
@@ -2913,7 +3074,10 @@ async def _run_kumo_subprocess(
                     return
                 log.warning(
                     'pool %s cleanup for job=%s was cancelled again; waiting '
-                    'for bounded process-session cleanup.', binary_name, job_id)
+                    'for bounded process-session cleanup.',
+                    binary_name,
+                    job_id,
+                )
 
     cancellation_requested = False
     try:
@@ -2940,20 +3104,26 @@ async def _run_kumo_subprocess(
                     assert job_output_store is not None
                     try:
                         await asyncio.wait_for(
-                            publish_training_progress(job_id, job_config_path,
-                                                      job_output_store),
+                            publish_training_progress(
+                                job_id, job_config_path, job_output_store
+                            ),
                             timeout=TRAINING_PROGRESS_PUBLISH_TIMEOUT_SECS,
                         )
                     except Exception:
                         log.exception(
-                            'Failed to publish pool training progress for '
-                            'job=%s', job_id)
+                            'Failed to publish pool training progress for job=%s',
+                            job_id,
+                        )
         await proc_wait_task
     except asyncio.CancelledError:
         cancellation_requested = True
         log.info(
             'pool %s subprocess for job=%s: workflow cancelled, '
-            'terminating subprocess (pid=%s).', binary_name, job_id, proc.pid)
+            'terminating subprocess (pid=%s).',
+            binary_name,
+            job_id,
+            proc.pid,
+        )
         try:
             await _run_cleanup_uncancelled()
         except BaseException:
@@ -2961,13 +3131,15 @@ async def _run_kumo_subprocess(
             # still visible, and finalization below makes one last bounded
             # attempt, but they must not replace CancelledError.
             log.exception(
-                'pool %s cancellation cleanup failed for job=%s', binary_name,
-                job_id)
+                'pool %s cancellation cleanup failed for job=%s', binary_name, job_id
+            )
         raise
     except Exception:
         log.exception(
-            'pool %s subprocess supervision failed for job=%s; '
-            'terminating subprocess.', binary_name, job_id)
+            'pool %s subprocess supervision failed for job=%s; terminating subprocess.',
+            binary_name,
+            job_id,
+        )
         await _cleanup_subprocess()
         raise
     else:
@@ -2975,29 +3147,27 @@ async def _run_kumo_subprocess(
         await drain_task
     finally:
         if owned_session is not None:
+
             async def _finalize_owned_session() -> None:
                 if isinstance(owned_session, _OwnedProcessGroup):
                     # The fallback directly runs the CLI, so its parent may
                     # exit before a descendant. Reclaim the group proactively.
                     if not owned_session._termination_attempted:
                         await owned_session.terminate(binary_name, job_id)
-                    await owned_session.wait_for_quiescence(
-                        _SUBPROCESS_KILL_GRACE_SECS)
+                    await owned_session.wait_for_quiescence(_SUBPROCESS_KILL_GRACE_SECS)
                     return
                 try:
-                    await owned_session.wait_for_quiescence(
-                        _SUBPROCESS_KILL_GRACE_SECS)
+                    await owned_session.wait_for_quiescence(_SUBPROCESS_KILL_GRACE_SECS)
                 except Exception:
                     # Preserve the quiescence error, but first reclaim an
                     # exact session whose supervisor exited unexpectedly.
                     await owned_session.terminate(binary_name, job_id)
-                    await owned_session.wait_for_quiescence(
-                        _SUBPROCESS_KILL_GRACE_SECS)
+                    await owned_session.wait_for_quiescence(_SUBPROCESS_KILL_GRACE_SECS)
                     raise
 
             quiescence_task = asyncio.create_task(
-                _finalize_owned_session(),
-                name=f'pool-{binary_name}-quiescence')
+                _finalize_owned_session(), name=f'pool-{binary_name}-quiescence'
+            )
             while not quiescence_task.done():
                 try:
                     await asyncio.shield(quiescence_task)
@@ -3014,14 +3184,19 @@ async def _run_kumo_subprocess(
                     raise
                 log.exception(
                     'pool %s final cancellation quiescence failed for job=%s',
-                    binary_name, job_id)
+                    binary_name,
+                    job_id,
+                )
         if proc.returncode is None:
             # A second cancellation can interrupt the graceful termination
             # await above. Always deliver a final synchronous SIGKILL before
             # abandoning supervision so the GPU/SSD-holding child cannot leak.
             log.warning(
                 'pool %s subprocess for job=%s still alive during cleanup; '
-                'sending SIGKILL.', binary_name, job_id)
+                'sending SIGKILL.',
+                binary_name,
+                job_id,
+            )
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
         if not proc_wait_task.done():
@@ -3032,30 +3207,33 @@ async def _run_kumo_subprocess(
             # Expected when final cleanup cancels a still-pending wait task.
             pass
     rc = proc.returncode
-    log.info('pool %s subprocess for job=%s exited with rc=%s', binary_name,
-             job_id, rc)
+    log.info('pool %s subprocess for job=%s exited with rc=%s', binary_name, job_id, rc)
     return JobState.SUCCEEDED if rc == 0 else JobState.FAILED
 
 
 _PLACEMENT_ERROR_MESSAGES = {
-    'ProvisionTimeoutError':
-    ('Your job could not acquire a GPU/compute worker within the '
-     'allowed time. GPU capacity may be temporarily limited. '
-     'Please retry; if the problem persists, contact Kumo support.'),
-    'ProvisionTerminalError':
-    ('Your job could not start because the compute pod failed to '
-     'initialize (e.g. bad image tag, missing secret, or invalid '
-     'container configuration). This is an infrastructure issue — '
-     'please contact Kumo support.'),
-    'InsufficientDataplaneCapacityError':
-    ('Your graph cannot be ingested because the local dataplane volume '
-     'does not have enough available space. Free or expand that volume, '
-     'move the dataplane root to supported object storage, or reduce the '
-     'dataset size.'),
-    'ExistingWorkerUnavailableError':
-    ('The DiskGraph worker reserved for your job is no longer available. '
-     'This is an infrastructure issue, not a problem with your graph or '
-     'model. Please retry; if the problem persists, contact Kumo support.'),
+    'ProvisionTimeoutError': (
+        'Your job could not acquire a GPU/compute worker within the '
+        'allowed time. GPU capacity may be temporarily limited. '
+        'Please retry; if the problem persists, contact Kumo support.'
+    ),
+    'ProvisionTerminalError': (
+        'Your job could not start because the compute pod failed to '
+        'initialize (e.g. bad image tag, missing secret, or invalid '
+        'container configuration). This is an infrastructure issue — '
+        'please contact Kumo support.'
+    ),
+    'InsufficientDataplaneCapacityError': (
+        'Your graph cannot be ingested because the local dataplane volume '
+        'does not have enough available space. Free or expand that volume, '
+        'move the dataplane root to supported object storage, or reduce the '
+        'dataset size.'
+    ),
+    'ExistingWorkerUnavailableError': (
+        'The DiskGraph worker reserved for your job is no longer available. '
+        'This is an infrastructure issue, not a problem with your graph or '
+        'model. Please retry; if the problem persists, contact Kumo support.'
+    ),
 }
 
 
@@ -3069,13 +3247,15 @@ def _raise_as_application_error(ex: _RpcError) -> None:
     deterministic controller failures (RBAC denial, missing IRSA,
     invalid spec) for the full ``schedule_to_close`` budget.
     """
-    raise ApplicationError(ex.message, type=ex.error_type,
-                           non_retryable=ex.non_retryable) from ex
+    raise ApplicationError(
+        ex.message, type=ex.error_type, non_retryable=ex.non_retryable
+    ) from ex
 
 
 @activity.defn
 async def place_snapshot_activity(request: PlacementRequest) -> PlacementResult:
     from statedb.config.common import DataSnapshot
+
     request = dataclasses.replace(
         request,
         snapshot_id=DataSnapshot.GRAPH.canonicalize(request.snapshot_id),
@@ -3103,9 +3283,9 @@ async def place_snapshot_activity(request: PlacementRequest) -> PlacementResult:
 
 
 @activity.defn
-async def release_snapshot_activity(snapshot_id: SnapshotID,
-                                    job_id: JobID) -> None:
+async def release_snapshot_activity(snapshot_id: SnapshotID, job_id: JobID) -> None:
     from statedb.config.common import DataSnapshot
+
     snapshot_id = DataSnapshot.GRAPH.canonicalize(snapshot_id)
     client = get_controller_client(deploy_env())
     try:
@@ -3116,7 +3296,8 @@ async def release_snapshot_activity(snapshot_id: SnapshotID,
 
 @activity.defn
 async def get_pool_stats_activity(
-        filter: Optional[PoolStatsFilter] = None) -> PoolStats:
+    filter: Optional[PoolStatsFilter] = None,
+) -> PoolStats:
     """Read-only pool-stats probe used by ``run_pooled_activity`` to poll a
     placed worker's health after an activity failure (STALE-wait / READY-retry
     / DEAD-reroute). Thin wrapper around the controller RPC so workflow code

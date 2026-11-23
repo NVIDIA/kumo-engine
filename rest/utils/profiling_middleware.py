@@ -24,13 +24,14 @@ from service_framework.deploy_env_config import deploy_env
 log = logging.getLogger(__name__)
 
 profile_format_dict: Dict[str, Tuple[Type[FrameRenderer], str]] = {
-    "html": (HTMLRenderer, '.html'),
-    "json": (JSONRenderer, '.json'),
+    'html': (HTMLRenderer, '.html'),
+    'json': (JSONRenderer, '.json'),
     'speedscope': (SpeedscopeRenderer, '.json'),  # default
 }
 
 PROFILING_THREAD_POOL = ThreadPoolExecutor(
-    thread_name_prefix='DataBackendCache-Threadpool')
+    thread_name_prefix='DataBackendCache-Threadpool'
+)
 
 
 class ProfilingMiddleware:
@@ -42,11 +43,12 @@ class ProfilingMiddleware:
     Args:
         app: The ASGI application callable to forward requests to.
     """
+
     def __init__(self, app):
         self._app = guarantee_single_callable(app)
         self._output_base_dir = os.path.join(
-            deploy_env().control_plane_storage_root, 'profiling',
-            get_kumo_version())
+            deploy_env().control_plane_storage_root, 'profiling', get_kumo_version()
+        )
         self._output_tasks: Set[asyncio.Task] = set()
 
     async def __call__(self, scope, receive, send):
@@ -57,7 +59,7 @@ class ProfilingMiddleware:
             receive: An awaitable callable yielding dictionaries
             send: An awaitable callable taking a single dictionary as argument.
         """
-        if scope["type"] != "http":
+        if scope['type'] != 'http':
             return await self._app(scope, receive, send)
 
         req = Request(scope)
@@ -66,23 +68,23 @@ class ProfilingMiddleware:
             return await self._app(scope, receive, send)
 
         log.debug('Profling is enabled.')
-        with Profiler(interval=0.001, async_mode="enabled") as profiler:
+        with Profiler(interval=0.001, async_mode='enabled') as profiler:
             response = await self._app(scope, receive, send)
 
         # we dump the profiling into a file
-        format = req.query_params.get("profile_format", "speedscope")
+        format = req.query_params.get('profile_format', 'speedscope')
         if format not in profile_format_dict:
-            log.warning('Profile format %s is not supported, use default',
-                        format)
+            log.warning('Profile format %s is not supported, use default', format)
             format = 'speedscope'
         renderer_cls, suffix = profile_format_dict[format]
         renderer = renderer_cls()
 
         method = req.method
         req_path = req.url.path.strip('/').replace('/', '_')
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(self._output_base_dir,
-                                   f'{method}-{req_path}-{ts}{suffix}')
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = os.path.join(
+            self._output_base_dir, f'{method}-{req_path}-{ts}{suffix}'
+        )
 
         @blocking_func(PROFILING_THREAD_POOL)
         def _write_output():

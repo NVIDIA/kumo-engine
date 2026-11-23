@@ -31,7 +31,7 @@ from kumo.engine.connector.identity import GCSIdentity
 def _parse_gcs_root_dir(root_dir: str) -> GCSConnectorTarget:
     parsed = urlsplit(root_dir)
     if parsed.scheme != 'gs':
-        raise ValueError(f"root_dir must be a gs:// URI, got {root_dir!r}.")
+        raise ValueError(f'root_dir must be a gs:// URI, got {root_dir!r}.')
     prefix = parsed.path.strip('/')
     return GCSRootedConnectorTarget(bucket=parsed.netloc, prefix=prefix)
 
@@ -58,6 +58,7 @@ class GCSConnector(Connector):
         requester_pays_project: Optional GCP project to bill for
             requester-pays buckets.
     """
+
     def __init__(
         self,
         *,
@@ -77,10 +78,12 @@ class GCSConnector(Connector):
         )
         self.target = target
         self.any_uri = isinstance(target, GCSAnyURIConnectorTarget)
-        self.bucket = (target.bucket if isinstance(
-            target, GCSRootedConnectorTarget) else None)
-        self.prefix = (target.prefix if isinstance(
-            target, GCSRootedConnectorTarget) else None)
+        self.bucket = (
+            target.bucket if isinstance(target, GCSRootedConnectorTarget) else None
+        )
+        self.prefix = (
+            target.prefix if isinstance(target, GCSRootedConnectorTarget) else None
+        )
         self.requester_pays_project = self._config.requester_pays_project
 
     @property
@@ -93,20 +96,19 @@ class GCSConnector(Connector):
 
     @cached_property
     def source_backend(self):
-        GCSSourceBackend = import_provider("kumo_gcs.backend",
-                                           "gcs").GCSSourceBackend
+        GCSSourceBackend = import_provider('kumo_gcs.backend', 'gcs').GCSSourceBackend
         return GCSSourceBackend(identity=self.identity)
 
     @cached_property
     def sink_backend(self):
-        GCSSinkBackend = import_provider("kumo_gcs.sink", "gcs").GCSSinkBackend
+        GCSSinkBackend = import_provider('kumo_gcs.sink', 'gcs').GCSSinkBackend
         return GCSSinkBackend(identity=self.identity)
 
     def source_table_for(self, table_name: str) -> GCSSourceTable:
         """Resolve source format and addressing through the provider reader."""
-        return self.source_backend.get_table_config(self,
-                                                    table_name).source_table
+        return self.source_backend.get_table_config(self, table_name).source_table
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(bucket={self.bucket!r}, "
-                f"prefix={self.prefix!r})")
+        return (
+            f'{self.__class__.__name__}(bucket={self.bucket!r}, prefix={self.prefix!r})'
+        )

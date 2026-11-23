@@ -59,7 +59,8 @@ def get_send_heartbeat(file_path: str):
 
 @process_pool_activity_defn(
     # effectively disable auto heartbeater!
-    heartbeat_interval=timedelta(hours=24))
+    heartbeat_interval=timedelta(hours=24)
+)
 def hc_sync_activity(
     duration_seconds: int,
     send_heartbeat_file_path: str,
@@ -89,6 +90,7 @@ class HealthCheckTestWorkflow_Async:  # pylint: disable=too-few-public-methods
     This test workflow executes async activities with option to block either
     workflow task executor's event loop or block async activity event loop.
     """
+
     @workflow.run
     async def run(self, total_seconds: int, block_activity_loop: bool) -> str:
         await workflow.execute_activity(
@@ -106,22 +108,26 @@ class HealthCheckTestWorkflow_Sync:  # pylint: disable=too-few-public-methods
     """
     This test workflow executes sync activities.
     """
+
     @workflow.run
-    async def run(self, duration_seconds: int, num_activities: int,
-                  send_heartbeat_file_path: str) -> str:
+    async def run(
+        self, duration_seconds: int, num_activities: int, send_heartbeat_file_path: str
+    ) -> str:
         base_dir = os.path.dirname(send_heartbeat_file_path)
         sync_activity_tasks = [
             workflow.start_activity(
                 hc_sync_activity,
                 args=[
-                    duration_seconds, send_heartbeat_file_path,
-                    os.path.join(base_dir, f'first_heartbeat_{i}')
+                    duration_seconds,
+                    send_heartbeat_file_path,
+                    os.path.join(base_dir, f'first_heartbeat_{i}'),
                 ],
                 schedule_to_close_timeout=timedelta(minutes=2),
                 retry_policy=RetryPolicy(maximum_attempts=1),
                 # set to None to disable auto heartbeater.
                 heartbeat_timeout=None,
-            ) for i in range(num_activities)
+            )
+            for i in range(num_activities)
         ]
         # Also execute async activities and make sure that we detect stuck
         # executor for sync activities even when async activities are alive and
@@ -134,7 +140,8 @@ class HealthCheckTestWorkflow_Sync:  # pylint: disable=too-few-public-methods
                 retry_policy=RetryPolicy(maximum_attempts=1),
                 # set to None to disable auto heartbeater.
                 heartbeat_timeout=None,
-            ) for _ in range(num_activities)
+            )
+            for _ in range(num_activities)
         ]
 
         await asyncio.wait(sync_activity_tasks)
@@ -151,25 +158,26 @@ async def test_healthcheck_no_worker(temporal_config: DeployEnvConfig):
 
     # Health check failed when there is no worker running.
     with pytest.raises(WorkflowFailureError):
-        await health_check(temporal_config, [test_worker_task_queue],
-                           timeout=timedelta(seconds=2))
+        await health_check(
+            temporal_config, [test_worker_task_queue], timeout=timedelta(seconds=2)
+        )
 
     worker_options = WorkerOptions(task_queue=test_worker_task_queue)
     worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
 
     worker = await worker_env.build_worker(
-        activities=[hc_async_activity],
-        workflows=[HealthCheckTestWorkflow_Async])
+        activities=[hc_async_activity], workflows=[HealthCheckTestWorkflow_Async]
+    )
     async with worker:
         # Now health check should pass after worker goes alive.
         await health_check(temporal_config, [test_worker_task_queue])
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("use_process_pool", [False, True])
-async def test_healthcheck_stuck_executor(use_process_pool: bool,
-                                          tmp_path: pathlib.Path,
-                                          temporal_config: DeployEnvConfig):
+@pytest.mark.parametrize('use_process_pool', [False, True])
+async def test_healthcheck_stuck_executor(
+    use_process_pool: bool, tmp_path: pathlib.Path, temporal_config: DeployEnvConfig
+):
     """Detect the case when activity executor executor is stuck."""
     test_worker_task_queue = 'test-healthcheck-task-queue'
     max_workers = 3
@@ -184,17 +192,20 @@ async def test_healthcheck_stuck_executor(use_process_pool: bool,
 
     worker = await worker_env.build_worker(
         activities=[hc_sync_activity, hc_async_activity],
-        workflows=[HealthCheckTestWorkflow_Sync])
+        workflows=[HealthCheckTestWorkflow_Sync],
+    )
 
     # By default all activities should heartbeat.
-    send_heartbeat_file_path = (tmp_path /
-                                'send_heartbeat.json').absolute().as_posix()
+    send_heartbeat_file_path = (tmp_path / 'send_heartbeat.json').absolute().as_posix()
     set_send_heartbeat(send_heartbeat_file_path, True)
 
     async with worker:
         # pass health check when no activity is running.
-        await health_check(worker_env.deploy_config, [test_worker_task_queue],
-                           unresponsive_threshold=timedelta(seconds=2))
+        await health_check(
+            worker_env.deploy_config,
+            [test_worker_task_queue],
+            unresponsive_threshold=timedelta(seconds=2),
+        )
 
         client = await worker_env.client()
 
@@ -211,25 +222,31 @@ async def test_healthcheck_stuck_executor(use_process_pool: bool,
         print('Waiting for all activities to start sending first heartbeat.')
         while True:
             if all(
-                    fsutil.exists(
-                        os.path.join(tmp_path.absolute().as_posix(),
-                                     f'first_heartbeat_{i}'))
-                    for i in range(max_workers)):
+                fsutil.exists(
+                    os.path.join(tmp_path.absolute().as_posix(), f'first_heartbeat_{i}')
+                )
+                for i in range(max_workers)
+            ):
                 break
             await asyncio.sleep(0.1)
         print('All activities have started running.')
 
         # Passing health check as we see heartbeats from the worker.
-        await health_check(worker_env.deploy_config, [test_worker_task_queue],
-                           unresponsive_threshold=timedelta(seconds=2.0))
+        await health_check(
+            worker_env.deploy_config,
+            [test_worker_task_queue],
+            unresponsive_threshold=timedelta(seconds=2.0),
+        )
 
         # Disable heartbeat to simulate stuck worker!
         set_send_heartbeat(send_heartbeat_file_path, False)
         await asyncio.sleep(3.0)  # 3sec > 2sec (unresponsive threshold)
         with pytest.raises(RuntimeError):
-            await health_check(worker_env.deploy_config,
-                               [test_worker_task_queue],
-                               unresponsive_threshold=timedelta(seconds=2))
+            await health_check(
+                worker_env.deploy_config,
+                [test_worker_task_queue],
+                unresponsive_threshold=timedelta(seconds=2),
+            )
 
         # Now we remove the heartbeat command file this would interrupt
         # execution of activities in the process pool due to FileNotFound.
@@ -248,8 +265,8 @@ async def test_healthcheck_block_event_loop(temporal_config: DeployEnvConfig):
     worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
 
     worker = await worker_env.build_worker(
-        activities=[hc_async_activity],
-        workflows=[HealthCheckTestWorkflow_Async])
+        activities=[hc_async_activity], workflows=[HealthCheckTestWorkflow_Async]
+    )
 
     async with worker:
         client = await worker_env.client()
@@ -272,15 +289,21 @@ async def test_healthcheck_block_event_loop(temporal_config: DeployEnvConfig):
 
         # Now perform health check in a subprocess -- because we are going to
         # block the asyncio event loop in the current process.
-        cmd = ('sleep 2; echo "starting health check"; '
-               f'{shlex.quote(sys.executable)} '
-               'temporalio_commons/health_check.py --timeout 2')
+        cmd = (
+            'sleep 2; echo "starting health check"; '
+            f'{shlex.quote(sys.executable)} '
+            'temporalio_commons/health_check.py --timeout 2'
+        )
         subproc_env = os.environ.copy()
         subproc_env['WORKERS'] = 'test-worker'
 
         hc_proc = await asyncio.create_subprocess_shell(
-            cmd, stdout=asyncio.subprocess.PIPE, env=subproc_env,
-            stderr=asyncio.subprocess.PIPE, shell=True)
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            env=subproc_env,
+            stderr=asyncio.subprocess.PIPE,
+            shell=True,
+        )
 
         # Kick off a few async workflow that blocks workflow task executor's
         # event loop

@@ -14,11 +14,13 @@ REPOSITORY_README = Path(__file__).parents[3] / 'README.md'
 
 def _quickstart_code(readme: Path = README) -> str:
     text = readme.read_text(encoding='utf-8')
-    section = re.search(r'^## Quickstart\n(.*?)(?=^## |\Z)', text,
-                        re.MULTILINE | re.DOTALL)
+    section = re.search(
+        r'^## Quickstart\n(.*?)(?=^## |\Z)', text, re.MULTILINE | re.DOTALL
+    )
     assert section, f'{readme} has no "## Quickstart" section'
-    blocks = re.findall(r'^```python\n(.*?)^```$', section.group(1),
-                        re.MULTILINE | re.DOTALL)
+    blocks = re.findall(
+        r'^```python\n(.*?)^```$', section.group(1), re.MULTILINE | re.DOTALL
+    )
     assert blocks, f'the quickstart in {readme} has no python code block'
     return '\n'.join(blocks)
 

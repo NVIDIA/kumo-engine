@@ -7,14 +7,21 @@
 from .mixin import ConfigMixin
 from .connector import ConnectorConfig
 from .stats import StatsConfig
-from .graph import (BaseColumnConfig, ColumnConfig, ForeignKeyConfig,
-                    GraphConfig, PrimaryKeyConfig, TableConfig,
-                    TableFingerprint, TableMetadataConfig,
-                    TableOrViewMetadataConfig, TimeColumnConfig,
-                    BoolColumnConfig)
+from .graph import (
+    BaseColumnConfig,
+    ColumnConfig,
+    ForeignKeyConfig,
+    GraphConfig,
+    PrimaryKeyConfig,
+    TableConfig,
+    TableFingerprint,
+    TableMetadataConfig,
+    TableOrViewMetadataConfig,
+    TimeColumnConfig,
+    BoolColumnConfig,
+)
 from .task import SplitConfig, TaskConfig, TrainingTableConfig
-from .predictive_query import (PredictiveQueryConfigBase,
-                               PredictiveQueryV2Config)
+from .predictive_query import PredictiveQueryConfigBase, PredictiveQueryV2Config
 from .model import (
     ModelEncoderConfig,
     ModelConfig,

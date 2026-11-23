@@ -55,14 +55,18 @@ class PredictionExplanationManifest(BaseModel):
         checkpoint = coverage.checkpoint_path
         if checkpoint is not None:
             path = PurePosixPath(checkpoint)
-            if (not checkpoint or '\\' in checkpoint or ':' in checkpoint
-                    or path.is_absolute()
-                    or any(part in {'', '.', '..'}
-                           for part in checkpoint.split('/'))):
+            if (
+                not checkpoint
+                or '\\' in checkpoint
+                or ':' in checkpoint
+                or path.is_absolute()
+                or any(part in {'', '.', '..'} for part in checkpoint.split('/'))
+            ):
                 raise ValueError('Expected a relative published checkpoint path')
         if checkpoint is None and any(
-                outcome.status == 'complete'
-                for outcome in (self.result.cohorts, self.result.samples)):
+            outcome.status == 'complete'
+            for outcome in (self.result.cohorts, self.result.samples)
+        ):
             raise ValueError('Completed producers require checkpoint identity')
         return self
 
@@ -71,8 +75,8 @@ def write_record(root: str, record: PredictionExplanationManifest) -> None:
     record.validate_record()
     filesystem.makedirs(f'{root}/xai', exist_ok=True)
     filesystem.atomic_write_bytes(
-        f'{root}/{MANIFEST_PATH}',
-        (record.model_dump_json(indent=2) + '\n').encode())
+        f'{root}/{MANIFEST_PATH}', (record.model_dump_json(indent=2) + '\n').encode()
+    )
 
 
 def read_record(root: str) -> PredictionExplanationManifest:

@@ -18,6 +18,8 @@ def test_provider_import_boundary():
 
 def test_top_level_import_is_cheap():
     assert_top_level_import_is_cheap(
-        ROOT, 'kumo_adls', 'ADLS_NAMESPACE',
-        unloaded=('kumo_adls.backend', 'azure.identity',
-                  'azure.storage.filedatalake'))
+        ROOT,
+        'kumo_adls',
+        'ADLS_NAMESPACE',
+        unloaded=('kumo_adls.backend', 'azure.identity', 'azure.storage.filedatalake'),
+    )

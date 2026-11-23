@@ -26,8 +26,9 @@ def withTestDataFrame(dataset: str, filename: str, key='df', **kwargs):
     def decorator(func: Callable):
         import pytest
 
-        return pytest.mark.parametrize(
-            key, [load_df(dataset, filename, **kwargs)])(func)
+        return pytest.mark.parametrize(key, [load_df(dataset, filename, **kwargs)])(
+            func
+        )
 
     return decorator
 
@@ -50,7 +51,7 @@ def connect_financial_csv(graph: Graph):
 def load_financial_csv() -> Graph:
     root_dir = financial_csv_dir()
     path = osp.join(root_dir, 'metadata.json')
-    graph = Graph(name="FINANCIAL")
+    graph = Graph(name='FINANCIAL')
     connect_financial_csv(graph)
     graph.add_from_config(path, data_source='csv')
     return graph

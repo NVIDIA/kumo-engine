@@ -54,45 +54,55 @@ _PERMANENT_DELEGATION_DENIALS = (
     ProjectNotFoundError,
 )
 
-_TABLE_WORKFLOWS = frozenset({
-    'TableRefreshWorkflow',
-    'TableIngestionWorkflow',
-})
+_TABLE_WORKFLOWS = frozenset(
+    {
+        'TableRefreshWorkflow',
+        'TableIngestionWorkflow',
+    }
+)
 _SNAPSHOT_WORKFLOWS = frozenset({'DiskgraphIngestWorkflow'})
 _TRAINING_JOB_WORKFLOWS = frozenset({'TrainingJobWorkflow'})
 _OUTPUT_DELEGATING_WORKFLOWS = frozenset({'BatchPredictionJobWorkflow'})
-_OUTPUT_WORKFLOWS = frozenset({
-    'ArtifactExportWorkflow',
-})
-_CHILD_DELEGATING_WORKFLOWS = frozenset({
-    *_OUTPUT_DELEGATING_WORKFLOWS,
-    'BatchPredictionParentWorkflow',
-    'GeneratePredictionTableWorkflow',
-    'GenerateTrainingTableWorkflow',
-    'GraphRefreshWorkflow',
-    'TableRefreshWorkflow',
-    'TrainingWorkflow',
-})
-_KNOWN_CONNECTOR_WORKFLOWS = frozenset({
-    *_TABLE_WORKFLOWS,
-    *_SNAPSHOT_WORKFLOWS,
-    *_TRAINING_JOB_WORKFLOWS,
-    *_OUTPUT_DELEGATING_WORKFLOWS,
-    *_OUTPUT_WORKFLOWS,
-    *_CHILD_DELEGATING_WORKFLOWS,
-    'BatchPredictionStatsWorkflow',
-    'CustomTrainTableWorkflow',
-    'MaterializePredictionTaskWorkflow',
-    'MaterializeTrainingTaskWorkflow',
-    'SplitTrainingTableWorkflow',
-})
+_OUTPUT_WORKFLOWS = frozenset(
+    {
+        'ArtifactExportWorkflow',
+    }
+)
+_CHILD_DELEGATING_WORKFLOWS = frozenset(
+    {
+        *_OUTPUT_DELEGATING_WORKFLOWS,
+        'BatchPredictionParentWorkflow',
+        'GeneratePredictionTableWorkflow',
+        'GenerateTrainingTableWorkflow',
+        'GraphRefreshWorkflow',
+        'TableRefreshWorkflow',
+        'TrainingWorkflow',
+    }
+)
+_KNOWN_CONNECTOR_WORKFLOWS = frozenset(
+    {
+        *_TABLE_WORKFLOWS,
+        *_SNAPSHOT_WORKFLOWS,
+        *_TRAINING_JOB_WORKFLOWS,
+        *_OUTPUT_DELEGATING_WORKFLOWS,
+        *_OUTPUT_WORKFLOWS,
+        *_CHILD_DELEGATING_WORKFLOWS,
+        'BatchPredictionStatsWorkflow',
+        'CustomTrainTableWorkflow',
+        'MaterializePredictionTaskWorkflow',
+        'MaterializeTrainingTaskWorkflow',
+        'SplitTrainingTableWorkflow',
+    }
+)
 
 
 def _actions_for_child_workflow(
-    workflow_type: str, ) -> set[ConnectorCapabilityAction]:
+    workflow_type: str,
+) -> set[ConnectorCapabilityAction]:
     if workflow_type not in _KNOWN_CONNECTOR_WORKFLOWS:
         raise ValueError(
-            f'Workflow {workflow_type!r} cannot receive connector authority')
+            f'Workflow {workflow_type!r} cannot receive connector authority'
+        )
     if workflow_type in _SNAPSHOT_WORKFLOWS:
         # The pool-side snapshot activity downloads every warehouse source
         # before DiskGraph ingest.  This child carries no other connector-
@@ -137,9 +147,11 @@ def delegate_connector_authorizations(
         # authorization context, or capability validation reasons through
         # Temporal history.
         raise ConnectorDelegationDeniedError(
-            message=('Connector access changed before the child workflow could '
-                     'start. Submit a new job with a connector that is still '
-                     'available to this project.'),
+            message=(
+                'Connector access changed before the child workflow could '
+                'start. Submit a new job with a connector that is still '
+                'available to this project.'
+            ),
             non_retryable=True,
         ) from None
 
@@ -147,6 +159,7 @@ def delegate_connector_authorizations(
 @activity.defn
 def revoke_connector_authorizations(tokens: list[str]) -> None:
     """Best-effort child-start rollback without exposing token values."""
+
     async def revoke(services) -> None:
         for token in tokens:
             await services.connector_authorizations.revoke(token)

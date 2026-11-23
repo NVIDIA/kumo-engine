@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Prometheus metrics for Kumo-owned Postgres interactions."""
+
 import time
 from contextlib import contextmanager
 from enum import Enum
@@ -137,11 +138,11 @@ POSTGRES_OPERATION_ERRORS = Counter(
 )
 
 
-def observe_postgres_duration(db: str, operation: str,
-                              duration_seconds: float) -> None:
+def observe_postgres_duration(db: str, operation: str, duration_seconds: float) -> None:
     _validate_labels(db, operation)
-    POSTGRES_OPERATION_DURATION.labels(
-        db=db, operation=operation).observe(duration_seconds)
+    POSTGRES_OPERATION_DURATION.labels(db=db, operation=operation).observe(
+        duration_seconds
+    )
 
 
 def record_postgres_error(db: str, operation: str, exc: BaseException) -> None:
@@ -187,8 +188,7 @@ def _classify_sqlstate(exc: BaseException) -> str:
         return PostgresMetricErrorType.UNKNOWN.value
     if sqlstate in _SQLSTATE_EXACT:
         return _SQLSTATE_EXACT[sqlstate]
-    return _SQLSTATE_CLASS.get(sqlstate[:2],
-                               PostgresMetricErrorType.UNKNOWN.value)
+    return _SQLSTATE_CLASS.get(sqlstate[:2], PostgresMetricErrorType.UNKNOWN.value)
 
 
 def _classify_client_exception(exc: BaseException) -> str:
@@ -222,5 +222,4 @@ def _validate_labels(db: str, operation: str) -> None:
     if db not in _VALID_DBS:
         raise ValueError(f'Invalid postgres metric db label: {db!r}')
     if operation not in _VALID_OPERATIONS:
-        raise ValueError(
-            f'Invalid postgres metric operation label: {operation!r}')
+        raise ValueError(f'Invalid postgres metric operation label: {operation!r}')

@@ -66,8 +66,9 @@ DERIVED_FKEY_STATS = [
 # CATEGORY_COUNTS and MULTI_CATEGORY_COUNTS (at most 1000000 categories)
 # Meanwhile, the databackend required at least MAX_NUM_CLASSES (1000) in order
 # to support multi-label and multi-class tasks.
-MIN_CATEGORY_FREQUENCY_FRAC = EnvVar('MIN_CATEGORY_FREQUENCY_FRAC', type=float,
-                                     default_value=1e-6).parse_value(0.000001)
+MIN_CATEGORY_FREQUENCY_FRAC = EnvVar(
+    'MIN_CATEGORY_FREQUENCY_FRAC', type=float, default_value=1e-6
+).parse_value(0.000001)
 
 # Type for histogram represented by list of (bin_lower_bound, percent) pairs.
 # Both bin and percent are rounded to 2 places, and percent is on the scale of
@@ -86,6 +87,7 @@ class Stats(ConfigMixin, CastMixin):
     r"""A representation of a single statistic. Stats are used to represent
     information about the data that is independent of Kumo structures.
     """
+
     def __init__(
         self,
         value: Any,
@@ -101,9 +103,11 @@ class Stats(ConfigMixin, CastMixin):
         self.timestamp = timestamp
 
     def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}(value={self.value}, '
-                f'approx={self.approx}, data_version={self.data_version}, '
-                f'num_entries={self.num_entries or "???"})')
+        return (
+            f'{self.__class__.__name__}(value={self.value}, '
+            f'approx={self.approx}, data_version={self.data_version}, '
+            f'num_entries={self.num_entries or "???"})'
+        )
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type: Any, handler: Any):
@@ -111,6 +115,7 @@ class Stats(ConfigMixin, CastMixin):
         # the value unchanged, no validation). The v2 equivalent is a plain
         # validator that returns the input as-is.
         from pydantic_core import core_schema
+
         return core_schema.no_info_plain_validator_function(lambda value: value)
 
 

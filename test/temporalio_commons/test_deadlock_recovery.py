@@ -11,6 +11,7 @@ permanently consume executor slots.
 Prior to SDK v1.11.0, deadlocked threads leaked their slots, eventually
 exhausting the workflow task executor and silently freezing the worker.
 """
+
 import asyncio
 import time
 import uuid
@@ -43,6 +44,7 @@ class BlockingWorkflow:
     can interrupt Python bytecode execution but NOT OS-level blocking
     calls like time.sleep() or threading.Event.wait().
     """
+
     @workflow.run
     async def run(self) -> str:
         # Busy-wait for 30s — exceeds the 2s deadlock detection threshold.
@@ -58,6 +60,7 @@ class BlockingWorkflow:
 @workflow.defn
 class SimpleWorkflow:
     """Workflow that returns immediately — used to verify recovery."""
+
     @workflow.run
     async def run(self) -> str:
         return 'ok'
@@ -85,7 +88,7 @@ async def test_deadlock_recovery(temporal_config: DeployEnvConfig):
     # Small thread pool to make exhaustion fast (3 threads).
     wf_task_executor = ThreadPoolExecutor(
         max_workers=3,
-        thread_name_prefix="test_deadlock_wf_",
+        thread_name_prefix='test_deadlock_wf_',
     )
 
     worker = Worker(

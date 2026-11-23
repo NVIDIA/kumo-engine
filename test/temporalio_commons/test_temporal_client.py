@@ -32,8 +32,7 @@ from temporalio_commons.temporal_client import (
 
 def test_tmp_payload_offload_requires_explicit_lifecycle_readiness(monkeypatch):
     makedirs = Mock()
-    monkeypatch.setattr('temporalio_commons.temporal_client.fsutil.makedirs',
-                        makedirs)
+    monkeypatch.setattr('temporalio_commons.temporal_client.fsutil.makedirs', makedirs)
     config = DeployEnvConfig.for_test()
     storage = dataclasses.replace(
         config.storage,
@@ -49,14 +48,14 @@ def test_tmp_payload_offload_requires_explicit_lifecycle_readiness(monkeypatch):
         storage=dataclasses.replace(storage, lifecycle_ready=True),
     )
     assert _tmp_payloads_dir(config) == 'gs://dataplane/root/tmp_payloads'
-    makedirs.assert_called_once_with('gs://dataplane/root/tmp_payloads',
-                                     exist_ok=True)
+    makedirs.assert_called_once_with('gs://dataplane/root/tmp_payloads', exist_ok=True)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('lifecycle_ready', [False, True])
 async def test_lifecycle_readiness_controls_codec_offload_round_trip(
-        monkeypatch, tmp_path: pathlib.Path, lifecycle_ready: bool):
+    monkeypatch, tmp_path: pathlib.Path, lifecycle_ready: bool
+):
     monkeypatch.setenv('CODEC_COMPRESS_SIZE_THRESHOLD', '1')
     monkeypatch.setenv('CODEC_OFFLOAD_SIZE_THRESHOLD', '1')
     loop = asyncio.get_running_loop()
@@ -88,8 +87,11 @@ async def test_lifecycle_readiness_controls_codec_offload_round_trip(
 
     if lifecycle_ready:
         assert encoded.metadata['encoding'] == BINARY_OFFLOADED_ENCODING
-        assert encoded.metadata['offload_path'].decode().startswith(
-            f'{tmp_path.as_posix()}/tmp_payloads/payload_')
+        assert (
+            encoded.metadata['offload_path']
+            .decode()
+            .startswith(f'{tmp_path.as_posix()}/tmp_payloads/payload_')
+        )
     else:
         assert encoded.metadata['encoding'] == BINARY_COMPRESSION_ENCODING
         assert not (tmp_path / 'tmp_payloads').exists()
@@ -119,27 +121,36 @@ async def test_result_uses_exact_run_id() -> None:
     handle = Mock()
     handle.result = AsyncMock(return_value='done')
     temporal_client.get_workflow_handle = AsyncMock(  # type: ignore[method-assign]
-        return_value=handle)
+        return_value=handle
+    )
 
-    assert await temporal_client.result(
-        'child-workflow',
-        run_id='completed-run',
-        disable_backoff=True,
-    ) == 'done'
+    assert (
+        await temporal_client.result(
+            'child-workflow',
+            run_id='completed-run',
+            disable_backoff=True,
+        )
+        == 'done'
+    )
     temporal_client.get_workflow_handle.assert_awaited_once_with(
-        'child-workflow', run_id='completed-run')
+        'child-workflow', run_id='completed-run'
+    )
 
 
 async def mock_describe_namespace(
-        namespace: str,
-        not_found: bool = False) -> wsv1.DescribeNamespaceResponse:
+    namespace: str, not_found: bool = False
+) -> wsv1.DescribeNamespaceResponse:
     if not_found:
         from temporalio.api.common.v1 import GrpcStatus
 
-        raise RPCError(status=RPCStatusCode.NOT_FOUND, message='failed',
-                       raw_grpc_status=GrpcStatus(code=5).SerializeToString())
-    return wsv1.DescribeNamespaceResponse(namespace_info=nsv1.NamespaceInfo(
-        name=namespace))
+        raise RPCError(
+            status=RPCStatusCode.NOT_FOUND,
+            message='failed',
+            raw_grpc_status=GrpcStatus(code=5).SerializeToString(),
+        )
+    return wsv1.DescribeNamespaceResponse(
+        namespace_info=nsv1.NamespaceInfo(name=namespace)
+    )
 
 
 async def mock_register_namespace():
@@ -190,8 +201,7 @@ def test_service_client_manager_isolates_two_thread_event_loops() -> None:
 
     async def connect(*_args, **_kwargs):
         with calls_lock:
-            service_client = _mock_service_client(
-                f'loop-client-{len(connected)}')
+            service_client = _mock_service_client(f'loop-client-{len(connected)}')
             connected.append(service_client)
         await asyncio.sleep(0.01)
         return service_client
@@ -260,8 +270,7 @@ async def test_service_client_manager_reinitialize_and_close() -> None:
     manager._connect = connect  # type: ignore[method-assign]
     assert await manager.get_service_client(config) is first
     assert await manager.get_service_client(config) is first
-    assert await manager.get_service_client(config,
-                                            re_initialize=True) is second
+    assert await manager.get_service_client(config, re_initialize=True) is second
     assert first._bridge_client is None
 
     await manager.close()
@@ -269,8 +278,7 @@ async def test_service_client_manager_reinitialize_and_close() -> None:
 
 
 @pytest.mark.asyncio
-async def test_service_client_manager_failed_reinitialize_preserves_old(
-) -> None:
+async def test_service_client_manager_failed_reinitialize_preserves_old() -> None:
     manager = _TemporalServiceClientManager()
     config = DeployEnvConfig.for_test()
     first = _mock_service_client('first')
@@ -304,13 +312,15 @@ async def test_service_client_manager_lock_wait_is_bounded() -> None:
     await state.lock.acquire()
     try:
         with (
-                patch(
-                    'temporalio_commons.temporal_client.'
-                    '_TEMPORAL_CLIENT_ACQUISITION_TIMEOUT_SEC', 0.01),
-                pytest.raises(
-                    TimeoutError,
-                    match=r'loop_id=.*initializer_locked=True',
-                ),
+            patch(
+                'temporalio_commons.temporal_client.'
+                '_TEMPORAL_CLIENT_ACQUISITION_TIMEOUT_SEC',
+                0.01,
+            ),
+            pytest.raises(
+                TimeoutError,
+                match=r'loop_id=.*initializer_locked=True',
+            ),
         ):
             await manager.get_service_client(config)
     finally:
@@ -323,15 +333,15 @@ def test_temporal_client_wrapper_isolates_two_thread_event_loops() -> None:
     temporal_client = TemporalClient(DeployEnvConfig.for_test())
     temporal_client._client_manager = manager
     temporal_client._create_client = (  # type: ignore[method-assign]
-        lambda service: service)
+        lambda service: service
+    )
     start_barrier = threading.Barrier(2)
     calls_lock = threading.Lock()
     connected: list[Mock] = []
 
     async def connect(*_args, **_kwargs):
         with calls_lock:
-            service_client = _mock_service_client(
-                f'wrapper-client-{len(connected)}')
+            service_client = _mock_service_client(f'wrapper-client-{len(connected)}')
             connected.append(service_client)
         await asyncio.sleep(0.01)
         return service_client
@@ -365,7 +375,8 @@ def test_temporal_client_never_uses_stale_legacy_client_alias() -> None:
     new_client = _mock_service_client('current-loop')
     temporal_client._client = stale_client
     temporal_client._create_client = (  # type: ignore[method-assign]
-        lambda service: service)
+        lambda service: service
+    )
 
     async def connect(*_args, **_kwargs):
         return new_client
@@ -391,19 +402,19 @@ async def test_temporal_existing_namespace(sleep):
     temporal_client = TemporalClient(temporal_config)
     mock_client = Mock()
     mock_workflow_service = Mock()
-    mock_workflow_service_property = PropertyMock(
-        return_value=mock_workflow_service)
+    mock_workflow_service_property = PropertyMock(return_value=mock_workflow_service)
     # pylint: disable=protected-access
-    temporal_client._set_client_for_loop(asyncio.get_running_loop(),
-                                         mock_client)
+    temporal_client._set_client_for_loop(asyncio.get_running_loop(), mock_client)
     type(mock_client).workflow_service = mock_workflow_service_property
 
     # Get an existing namespace
-    mock_workflow_service.describe_namespace.return_value = \
-        mock_describe_namespace(test_namespace)
+    mock_workflow_service.describe_namespace.return_value = mock_describe_namespace(
+        test_namespace
+    )
     await temporal_client.create_namespace()
     mock_workflow_service.describe_namespace.assert_called_once_with(
-        wsv1.DescribeNamespaceRequest(namespace=test_namespace))
+        wsv1.DescribeNamespaceRequest(namespace=test_namespace)
+    )
 
 
 @patch('asyncio.sleep')
@@ -415,11 +426,9 @@ async def test_temporal_new_namespace(sleep):
     temporal_client = TemporalClient(temporal_config)
     mock_client = Mock()
     mock_workflow_service = Mock()
-    mock_workflow_service_property = PropertyMock(
-        return_value=mock_workflow_service)
+    mock_workflow_service_property = PropertyMock(return_value=mock_workflow_service)
     # pylint: disable=protected-access
-    temporal_client._set_client_for_loop(asyncio.get_running_loop(),
-                                         mock_client)
+    temporal_client._set_client_for_loop(asyncio.get_running_loop(), mock_client)
     type(mock_client).workflow_service = mock_workflow_service_property
 
     mock_workflow_service.describe_namespace.side_effect = [
@@ -427,8 +436,7 @@ async def test_temporal_new_namespace(sleep):
         mock_describe_namespace(test_namespace, not_found=False),
         mock_describe_namespace(test_namespace, not_found=False),
     ]
-    mock_workflow_service.register_namespace.return_value = \
-        mock_register_namespace()
+    mock_workflow_service.register_namespace.return_value = mock_register_namespace()
 
     await temporal_client.create_namespace()
 
@@ -436,7 +444,7 @@ async def test_temporal_new_namespace(sleep):
     assert mock_workflow_service.describe_namespace.call_count == 3
     mock_workflow_service.register_namespace.assert_called_once()
     assert sleep.call_count == 2
-    sleep.assert_has_calls([
-        call(_REGISTER_NAMESPACE_POLL_INTERVAL_SEC),
-        call(_NEW_NAMESPACE_WAIT_SEC)
-    ], any_order=False)
+    sleep.assert_has_calls(
+        [call(_REGISTER_NAMESPACE_POLL_INTERVAL_SEC), call(_NEW_NAMESPACE_WAIT_SEC)],
+        any_order=False,
+    )

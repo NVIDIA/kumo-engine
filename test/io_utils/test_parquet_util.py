@@ -40,16 +40,16 @@ def _parquet_bytes(values):
 
 def _mock_cloud_parquet(monkeypatch, payloads, children=None):
     children = children or {}
-    monkeypatch.setattr(parquet_util.fsutil, 'isdir',
-                        lambda path: path in children)
+    monkeypatch.setattr(parquet_util.fsutil, 'isdir', lambda path: path in children)
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda _: False)
     monkeypatch.setattr(parquet_util.fsutil, 'is_gcs', lambda _: True)
     monkeypatch.setattr(parquet_util, 'is_ucv', lambda _: False)
-    monkeypatch.setattr(parquet_util.fsutil, 'listdir',
-                        lambda path: children[path])
+    monkeypatch.setattr(parquet_util.fsutil, 'listdir', lambda path: children[path])
     monkeypatch.setattr(
-        parquet_util, '_get_dataset',
-        lambda _: pytest.fail('cloud parquet must use fsutil handles'))
+        parquet_util,
+        '_get_dataset',
+        lambda _: pytest.fail('cloud parquet must use fsutil handles'),
+    )
 
     @contextlib.contextmanager
     def binary_handle(path, mode):
@@ -77,18 +77,21 @@ def test_get_dataset_uses_scoped_cloud_filesystem(
 ):
     scoped_filesystem = object()
     dataset = object()
-    monkeypatch.setattr(parquet_util, 'has_filesystem_credential_scope',
-                        lambda: True)
-    monkeypatch.setattr(parquet_util.fsutil, 'pyarrow_filesystem',
-                        lambda _: scoped_filesystem)
+    monkeypatch.setattr(parquet_util, 'has_filesystem_credential_scope', lambda: True)
     monkeypatch.setattr(
-        parquet_util, 'arrow_cloud_filesystem',
-        lambda _: pytest.fail('ambient filesystem must not be used'))
+        parquet_util.fsutil, 'pyarrow_filesystem', lambda _: scoped_filesystem
+    )
+    monkeypatch.setattr(
+        parquet_util,
+        'arrow_cloud_filesystem',
+        lambda _: pytest.fail('ambient filesystem must not be used'),
+    )
     monkeypatch.setattr(
         parquet_util.fsutil,
         'copy',
         lambda *_args, **_kwargs: pytest.fail(
-            'cloud parquet must not be staged locally'),
+            'cloud parquet must not be staged locally'
+        ),
     )
 
     def fake_dataset(path, *, filesystem, **kwargs):
@@ -105,13 +108,15 @@ def test_get_dataset_uses_scoped_cloud_filesystem(
 def test_get_dataset_preserves_ambient_cloud_filesystem(monkeypatch):
     ambient_filesystem = object()
     dataset = object()
-    monkeypatch.setattr(parquet_util, 'has_filesystem_credential_scope',
-                        lambda: False)
-    monkeypatch.setattr(parquet_util, 'arrow_cloud_filesystem',
-                        lambda _: ambient_filesystem)
+    monkeypatch.setattr(parquet_util, 'has_filesystem_credential_scope', lambda: False)
     monkeypatch.setattr(
-        parquet_util.fsutil, 'pyarrow_filesystem',
-        lambda _: pytest.fail('scoped filesystem must not be used'))
+        parquet_util, 'arrow_cloud_filesystem', lambda _: ambient_filesystem
+    )
+    monkeypatch.setattr(
+        parquet_util.fsutil,
+        'pyarrow_filesystem',
+        lambda _: pytest.fail('scoped filesystem must not be used'),
+    )
 
     def fake_dataset(path, *, filesystem, **kwargs):
         assert path == 'bucket/path'
@@ -125,8 +130,7 @@ def test_get_dataset_preserves_ambient_cloud_filesystem(monkeypatch):
 
 
 @pytest.mark.parametrize(('values', 'expected'), [([], True), ([1], False)])
-def test_exact_cloud_is_empty_reads_through_fsutil(monkeypatch, values,
-                                                   expected):
+def test_exact_cloud_is_empty_reads_through_fsutil(monkeypatch, values, expected):
     path = 'gs://bucket/table.parquet'
     _mock_cloud_parquet(monkeypatch, {path: _parquet_bytes(values)})
 
@@ -135,7 +139,8 @@ def test_exact_cloud_is_empty_reads_through_fsutil(monkeypatch, values,
 
 @pytest.mark.parametrize(('values', 'expected'), [([], True), ([1], False)])
 def test_cloud_directory_is_empty_reads_exact_parquet_files(
-        monkeypatch, values, expected):
+    monkeypatch, values, expected
+):
     root = 'gs://bucket/table'
     part = f'{root}/part.parquet'
     _mock_cloud_parquet(
@@ -152,8 +157,9 @@ def test_local_directory_is_empty_preserves_dataset_scan(monkeypatch):
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda _: False)
     monkeypatch.setattr(parquet_util.fsutil, 'is_gcs', lambda _: False)
     monkeypatch.setattr(parquet_util, 'is_ucv', lambda _: False)
-    monkeypatch.setattr(parquet_util.fsutil, 'listdir',
-                        lambda _: ['/tmp/table/part.parquet'])
+    monkeypatch.setattr(
+        parquet_util.fsutil, 'listdir', lambda _: ['/tmp/table/part.parquet']
+    )
 
     class Dataset:
         def count_rows(self):
@@ -205,12 +211,12 @@ def test_cloud_directory_num_rows_recurses_and_filters_sidecars(monkeypatch):
     'remote_path',
     [
         'gs://bucket/artifact.parquet',
-        ('abfss://container@account.dfs.core.windows.net/'
-         'artifact.parquet'),
+        ('abfss://container@account.dfs.core.windows.net/artifact.parquet'),
     ],
 )
 def test_cloud_parquet_metadata_reads_remote_dataset_directly(
-        monkeypatch, tmp_path, remote_path):
+    monkeypatch, tmp_path, remote_path
+):
     local_source = tmp_path / 'source.parquet'
     expected = pd.DataFrame({'value': [1, 2, 3]})
     expected.to_parquet(local_source)
@@ -227,7 +233,8 @@ def test_cloud_parquet_metadata_reads_remote_dataset_directly(
         parquet_util.fsutil,
         'copy',
         lambda *_args, **_kwargs: pytest.fail(
-            'metadata must not copy the cloud payload'),
+            'metadata must not copy the cloud payload'
+        ),
     )
 
     metadata = parquet_util.get_parquet_metadata(remote_path)
@@ -246,13 +253,14 @@ def test_cloud_parquet_metadata_reads_remote_dataset_directly(
     ],
 )
 def test_cloud_directory_metadata_reads_fragments_directly(
-        monkeypatch, tmp_path, remote_path):
+    monkeypatch, tmp_path, remote_path
+):
     local_source = tmp_path / 'source'
     (local_source / 'date=2026').mkdir(parents=True)
     pd.DataFrame({'value': [1, 2]}).to_parquet(local_source / 'part-0.parquet')
-    pd.DataFrame({
-        'value': [3, 4, 5]
-    }).to_parquet(local_source / 'date=2026' / 'part-1.parquet')
+    pd.DataFrame({'value': [3, 4, 5]}).to_parquet(
+        local_source / 'date=2026' / 'part-1.parquet'
+    )
     (local_source / '_SUCCESS').touch()
     local_dataset = parquet_util._get_dataset
 
@@ -267,7 +275,8 @@ def test_cloud_directory_metadata_reads_fragments_directly(
         parquet_util.fsutil,
         'copy',
         lambda *_args, **_kwargs: pytest.fail(
-            'metadata must not copy the cloud payload'),
+            'metadata must not copy the cloud payload'
+        ),
     )
 
     metadata = parquet_util.get_parquet_metadata(remote_path)
@@ -285,7 +294,8 @@ def test_count_rows(tmp_path: pathlib.Path):
     a.to_parquet(osp.join(tmp_path, 'test_parquet_util', 'a.parquet'))
     assert not parquet_util.is_empty(osp.join(tmp_path, 'test_parquet_util'))
     info = parquet_util.get_parquet_metadata(
-        osp.join(tmp_path, 'test_parquet_util', 'a.parquet'))
+        osp.join(tmp_path, 'test_parquet_util', 'a.parquet')
+    )
     assert set(info.cols) == {'a', 'v'}
     assert info.num_cols == 2
     assert info.num_rows == 5
@@ -298,21 +308,21 @@ def test_count_rows_paritions(tmp_path: pathlib.Path):
     a.to_parquet(osp.join(tmp_path, 'test_parquet_util', 'a_0.parquet'))
     a.to_parquet(osp.join(tmp_path, 'test_parquet_util', 'a_1.parquet'))
     assert not parquet_util.is_empty(osp.join(tmp_path, 'test_parquet_util'))
-    info = parquet_util.get_parquet_metadata(
-        osp.join(tmp_path, 'test_parquet_util'))
+    info = parquet_util.get_parquet_metadata(osp.join(tmp_path, 'test_parquet_util'))
     assert set(info.cols) == {'a', 'v'}
     assert info.num_cols == 2
     assert info.num_rows == 10
 
 
-def test_get_parquet_metadata_wildcard(tmp_path: pathlib.Path,
-                                       deploy_env_config):
+def test_get_parquet_metadata_wildcard(tmp_path: pathlib.Path, deploy_env_config):
     # parquet_util.get_parquet_metadata on subsets of .parquet files in a
     # dir that match a prefix+wildcard path
     a = pd.DataFrame({'a': [1, 2, 4, 5, 6], 'v': ['a', 'b', 'c', 'd', 'e']})
 
     # Unique prefix per session avoids race conditions between concurrent CI runs
-    s3_base = f"s3://kumo-test-dataplane-bucket/fsutil-test/{deploy_env_config.instance_id}/"
+    s3_base = (
+        f's3://kumo-test-dataplane-bucket/fsutil-test/{deploy_env_config.instance_id}/'
+    )
     for base_path in [tmp_path, s3_base]:
         test_path = osp.join(base_path, 'test_parquet_util')
         fsutil.makedirs(test_path)
@@ -361,7 +371,7 @@ def test_to_shards(tmp_path):
 
     # write to 10 shards, totaling 80MB
     for i in range(10):
-        df.to_parquet(str(tmp_path / f"part-{i}.parquet"))
+        df.to_parquet(str(tmp_path / f'part-{i}.parquet'))
 
     # iter_parquet with 1MB target should return about 80 shards
     shards = list(parquet_util.to_batches(str(tmp_path), 1 << 10))
@@ -376,9 +386,8 @@ def test_to_batches_multi_file_unchanged(tmp_path):
     num_files = 5
     rows_per_file = 100
     for i in range(num_files):
-        df = pd.DataFrame(
-            {'x': np.arange(i * rows_per_file, (i + 1) * rows_per_file)})
-        df.to_parquet(str(tmp_path / f"part-{i}.parquet"))
+        df = pd.DataFrame({'x': np.arange(i * rows_per_file, (i + 1) * rows_per_file)})
+        df.to_parquet(str(tmp_path / f'part-{i}.parquet'))
     total_rows = num_files * rows_per_file
 
     shards = list(parquet_util.to_batches(str(tmp_path), 1 << 10))
@@ -393,8 +402,9 @@ def test_to_batches_multi_file_unchanged(tmp_path):
     assert values == list(range(total_rows))
     # A repeated scan yields the identical order.
     shards_again = list(parquet_util.to_batches(str(tmp_path), 1 << 10))
-    values_again = pd.concat([s.df for s in shards_again],
-                             ignore_index=True)['x'].tolist()
+    values_again = pd.concat([s.df for s in shards_again], ignore_index=True)[
+        'x'
+    ].tolist()
     assert values_again == values
 
 
@@ -407,12 +417,12 @@ def test_to_batches_nested_dir_not_truncated(tmp_path):
     (tmp_path / 'a').mkdir()
     (tmp_path / 'b').mkdir()
     rows_per_file = 100
-    pd.DataFrame({
-        'x': np.arange(0, rows_per_file)
-    }).to_parquet(str(tmp_path / 'a' / 'part-0.parquet'))
-    pd.DataFrame({
-        'x': np.arange(rows_per_file, 2 * rows_per_file)
-    }).to_parquet(str(tmp_path / 'b' / 'part-1.parquet'))
+    pd.DataFrame({'x': np.arange(0, rows_per_file)}).to_parquet(
+        str(tmp_path / 'a' / 'part-0.parquet')
+    )
+    pd.DataFrame({'x': np.arange(rows_per_file, 2 * rows_per_file)}).to_parquet(
+        str(tmp_path / 'b' / 'part-1.parquet')
+    )
     total_rows = 2 * rows_per_file
 
     shards = list(parquet_util.to_batches(str(tmp_path), 1 << 10))
@@ -430,7 +440,7 @@ def test_to_batches_reacquires_dataset_per_file(tmp_path, monkeypatch):
     num_files = 4
     for i in range(num_files):
         df = pd.DataFrame({'x': np.arange(0, 100)})
-        df.to_parquet(str(tmp_path / f"part-{i}.parquet"))
+        df.to_parquet(str(tmp_path / f'part-{i}.parquet'))
 
     real_get_dataset = parquet_util._get_dataset
     acquired: list[str] = []
@@ -459,9 +469,8 @@ def test_to_batches_wildcard_local(tmp_path):
     num_files = 4
     rows_per_file = 100
     for i in range(num_files):
-        df = pd.DataFrame(
-            {'x': np.arange(i * rows_per_file, (i + 1) * rows_per_file)})
-        df.to_parquet(str(tmp_path / f"part-{i}.parquet"))
+        df = pd.DataFrame({'x': np.arange(i * rows_per_file, (i + 1) * rows_per_file)})
+        df.to_parquet(str(tmp_path / f'part-{i}.parquet'))
     total_rows = num_files * rows_per_file
 
     wildcard = osp.join(str(tmp_path), 'part-*')
@@ -543,30 +552,30 @@ def test_to_batches_normalizes_s3a_wildcard_scheme(monkeypatch):
 
 
 def test_save_df_timestamp(tmp_path):
-    table = pa.table({
-        'timestamp':
-        pa.array(
-            [1717386536614035456, 1717386536614035126, 1717386536614035226],
-            type=pa.timestamp('ns'),
-        ),
-        'string_col':
-        pa.array(['A', 'B', 'C'], type=pa.string())
-    })
+    table = pa.table(
+        {
+            'timestamp': pa.array(
+                [1717386536614035456, 1717386536614035126, 1717386536614035226],
+                type=pa.timestamp('ns'),
+            ),
+            'string_col': pa.array(['A', 'B', 'C'], type=pa.string()),
+        }
+    )
 
     # Convert the table to a Pandas DataFrame
     df = table.to_pandas()
 
     # PyArrow 14 now supports nanosecond timestamps natively
     # Test that both df.to_parquet and parquet_util.write_df work
-    df.to_parquet(osp.join(tmp_path, "test_standard.parquet"))
-    assert fsutil.exists(osp.join(tmp_path, "test_standard.parquet"))
+    df.to_parquet(osp.join(tmp_path, 'test_standard.parquet'))
+    assert fsutil.exists(osp.join(tmp_path, 'test_standard.parquet'))
 
-    parquet_util.write_df(df, osp.join(tmp_path, "test_util.parquet"))
-    assert fsutil.exists(osp.join(tmp_path, "test_util.parquet"))
+    parquet_util.write_df(df, osp.join(tmp_path, 'test_util.parquet'))
+    assert fsutil.exists(osp.join(tmp_path, 'test_util.parquet'))
 
     # Verify both files can be read back
-    df_standard = pd.read_parquet(osp.join(tmp_path, "test_standard.parquet"))
-    df_util = pd.read_parquet(osp.join(tmp_path, "test_util.parquet"))
+    df_standard = pd.read_parquet(osp.join(tmp_path, 'test_standard.parquet'))
+    df_util = pd.read_parquet(osp.join(tmp_path, 'test_util.parquet'))
 
     # Check that timestamps are preserved correctly
     assert len(df_standard) == 3
@@ -590,8 +599,7 @@ def test_is_parquet_table_empty(tmp_path):
 
     pd_df = pd.DataFrame()
     pd_df.to_parquet(osp.join(path, 'empty_df.parquet'))
-    assert parquet_util.parquet_num_rows(osp.join(path,
-                                                  'empty_df.parquet')) == 0
+    assert parquet_util.parquet_num_rows(osp.join(path, 'empty_df.parquet')) == 0
 
     pd_df['test'] = [1, 2, 3]
     pd_df.to_parquet(osp.join(path, 'test_df.parquet'))
@@ -603,11 +611,11 @@ def test_write_df(tmp_path):
     path = tmp_path.resolve().as_posix()
 
     df_a = pd.DataFrame({'a': [1, 2, 4, 5, 6], 'v': ['a', 'b', 'c', 'd', 'e']})
-    path_a = osp.join(path, "a")
+    path_a = osp.join(path, 'a')
     df_a.to_parquet(path_a)
 
     df_b: pd.DataFrame = df_a[0:0]  # empty with schema
-    path_b = osp.join(path, "b")
+    path_b = osp.join(path, 'b')
     fsutil.makedirs(path_b)
     # to_parquet cannot handle an existing dir
     with pytest.raises(IsADirectoryError):
@@ -621,20 +629,25 @@ def test_write_df(tmp_path):
     parquet_util.write_df(df_b, file_b)
 
 
-@pytest.mark.parametrize('uri', [
-    'gs://bucket/output.parquet',
-    's3://bucket/output.parquet',
-])
+@pytest.mark.parametrize(
+    'uri',
+    [
+        'gs://bucket/output.parquet',
+        's3://bucket/output.parquet',
+    ],
+)
 def test_write_df_cloud_uses_fsutil_binary_handle(monkeypatch, uri):
     payload = io.BytesIO()
     real_write_table = parquet_util.pq.write_table
 
     monkeypatch.setattr(parquet_util.fsutil, 'isdir', lambda _: False)
     monkeypatch.setattr(parquet_util.fsutil, 'is_local', lambda _: False)
-    monkeypatch.setattr(parquet_util.fsutil, 'is_s3',
-                        lambda path: path.startswith('s3://'))
-    monkeypatch.setattr(parquet_util.fsutil, 'is_gcs',
-                        lambda path: path.startswith('gs://'))
+    monkeypatch.setattr(
+        parquet_util.fsutil, 'is_s3', lambda path: path.startswith('s3://')
+    )
+    monkeypatch.setattr(
+        parquet_util.fsutil, 'is_gcs', lambda path: path.startswith('gs://')
+    )
 
     @contextlib.contextmanager
     def binary_handle(path, mode):
@@ -644,7 +657,8 @@ def test_write_df_cloud_uses_fsutil_binary_handle(monkeypatch, uri):
 
     def guarded_write_table(destination_table, destination, **kwargs):
         assert not isinstance(destination, str), (
-            'cloud URI must not reach PyArrow implicit filesystem resolution')
+            'cloud URI must not reach PyArrow implicit filesystem resolution'
+        )
         assert kwargs == {
             'use_deprecated_int96_timestamps': True,
             'flavor': 'spark',
@@ -666,8 +680,10 @@ def test_write_df_local_preserves_direct_path(monkeypatch, tmp_path):
     real_write_table = parquet_util.pq.write_table
 
     monkeypatch.setattr(
-        parquet_util.fsutil, 'get_binary_handle',
-        lambda *_: pytest.fail('local path must remain a direct PyArrow write'))
+        parquet_util.fsutil,
+        'get_binary_handle',
+        lambda *_: pytest.fail('local path must remain a direct PyArrow write'),
+    )
 
     def guarded_write_table(destination_table, destination, **kwargs):
         assert destination == output_path
@@ -681,17 +697,22 @@ def test_write_df_local_preserves_direct_path(monkeypatch, tmp_path):
     pd.testing.assert_frame_equal(pd.read_parquet(output_path), expected)
 
 
-@pytest.mark.parametrize('prefix', [
-    'gs://bucket/output',
-    's3://bucket/output',
-])
+@pytest.mark.parametrize(
+    'prefix',
+    [
+        'gs://bucket/output',
+        's3://bucket/output',
+    ],
+)
 def test_write_in_chunks_cloud_uses_fsutil_binary_handle(monkeypatch, prefix):
     payloads = {}
 
-    monkeypatch.setattr(parquet_util.fsutil, 'is_s3',
-                        lambda path: path.startswith('s3://'))
-    monkeypatch.setattr(parquet_util.fsutil, 'is_gcs',
-                        lambda path: path.startswith('gs://'))
+    monkeypatch.setattr(
+        parquet_util.fsutil, 'is_s3', lambda path: path.startswith('s3://')
+    )
+    monkeypatch.setattr(
+        parquet_util.fsutil, 'is_gcs', lambda path: path.startswith('gs://')
+    )
     monkeypatch.setattr(parquet_util.fsutil, 'is_local', lambda _: False)
 
     @contextlib.contextmanager
@@ -708,8 +729,7 @@ def test_write_in_chunks_cloud_uses_fsutil_binary_handle(monkeypatch, prefix):
     parquet_util.write_in_chunks(expected, prefix, 1 << 20, save_index=False)
 
     payload = payloads[f'{prefix}-00000.parquet'].getvalue()
-    pd.testing.assert_frame_equal(pd.read_parquet(io.BytesIO(payload)),
-                                  expected)
+    pd.testing.assert_frame_equal(pd.read_parquet(io.BytesIO(payload)), expected)
 
 
 def test_head_parquet_ucv(temp_ucv, tmp_path: pathlib.Path):
@@ -726,10 +746,10 @@ def test_head_parquet_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 1: Single parquet file
     single_file = deepcopy(temp_ucv)
-    single_file.path = f"single-{random_letters()}.parquet"
+    single_file.path = f'single-{random_letters()}.parquet'
 
     # Write to local temp file first
-    local_file = osp.join(tmp_path, "single.parquet")
+    local_file = osp.join(tmp_path, 'single.parquet')
     df.to_parquet(local_file)
 
     # Copy to UCV
@@ -743,15 +763,16 @@ def test_head_parquet_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 2: Directory with all parquet files
     parquet_dir = deepcopy(temp_ucv)
-    parquet_dir.path = f"parquet_dir-{random_letters()}"
+    parquet_dir.path = f'parquet_dir-{random_letters()}'
     fsutil.makedirs(parquet_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"parquet_{i}.parquet")
+        local_file = osp.join(tmp_path, f'parquet_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(parquet_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(
+            local_file, osp.join(parquet_dir.as_url(), f'file_{i}.parquet')
+        )
 
     # Test head_parquet on directory with all parquet files
     result = parquet_util.head_parquet(parquet_dir.as_url())
@@ -761,19 +782,18 @@ def test_head_parquet_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 3: Directory with multiple files (2 parquets and 1 non-parquet file)
     multi_dir = deepcopy(temp_ucv)
-    multi_dir.path = f"multi-{random_letters()}"
+    multi_dir.path = f'multi-{random_letters()}'
     fsutil.makedirs(multi_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"multi_{i}.parquet")
+        local_file = osp.join(tmp_path, f'multi_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(multi_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(local_file, osp.join(multi_dir.as_url(), f'file_{i}.parquet'))
 
     # Create a dummy non-parquet file
-    dummy_file = osp.join(multi_dir.as_url(), "dummy.txt")
-    fsutil.write_binary(dummy_file, b"dummy content")
+    dummy_file = osp.join(multi_dir.as_url(), 'dummy.txt')
+    fsutil.write_binary(dummy_file, b'dummy content')
 
     # Test head_parquet on directory
     result = parquet_util.head_parquet(multi_dir.as_url())
@@ -789,16 +809,15 @@ def test_head_parquet_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 5: Non-existent directory
     nonexistent_path = deepcopy(temp_ucv)
-    nonexistent_path.path = f"nonexistent-{random_letters()}"
+    nonexistent_path.path = f'nonexistent-{random_letters()}'
 
     # Test head_parquet on non-existent path
-    with pytest.raises(
-            Exception):  # Should raise an error for non-existent path
+    with pytest.raises(Exception):  # Should raise an error for non-existent path
         parquet_util.head_parquet(nonexistent_path.as_url())
 
     # Case 6: Empty directory
     empty_dir = deepcopy(temp_ucv)
-    empty_dir.path = f"empty_dir-{random_letters()}"
+    empty_dir.path = f'empty_dir-{random_letters()}'
     fsutil.makedirs(empty_dir.as_url())
 
     # Test head_parquet on empty directory
@@ -819,10 +838,10 @@ def test_parquet_num_rows_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 1: Single parquet file
     single_file = deepcopy(temp_ucv)
-    single_file.path = f"single-{random_letters()}.parquet"
+    single_file.path = f'single-{random_letters()}.parquet'
 
     # Write to local temp file first
-    local_file = osp.join(tmp_path, "single.parquet")
+    local_file = osp.join(tmp_path, 'single.parquet')
     df.to_parquet(local_file)
 
     # Copy to UCV
@@ -830,65 +849,62 @@ def test_parquet_num_rows_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Test parquet_num_rows on single file
     assert parquet_util.parquet_num_rows(single_file.as_url()) == 5
-    assert parquet_util.parquet_num_rows(single_file.as_url(),
-                                         skip_check=True) == 5
+    assert parquet_util.parquet_num_rows(single_file.as_url(), skip_check=True) == 5
 
     # Case 2: Directory with all parquet files
     parquet_dir = deepcopy(temp_ucv)
-    parquet_dir.path = f"parquet_dir-{random_letters()}"
+    parquet_dir.path = f'parquet_dir-{random_letters()}'
     fsutil.makedirs(parquet_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"parquet_{i}.parquet")
+        local_file = osp.join(tmp_path, f'parquet_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(parquet_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(
+            local_file, osp.join(parquet_dir.as_url(), f'file_{i}.parquet')
+        )
 
     # Test parquet_num_rows on directory with all parquet files
     assert parquet_util.parquet_num_rows(parquet_dir.as_url()) == 10
-    assert parquet_util.parquet_num_rows(parquet_dir.as_url(),
-                                         skip_check=True) == 10
+    assert parquet_util.parquet_num_rows(parquet_dir.as_url(), skip_check=True) == 10
 
     # Case 3: Directory with mixed file types
     multi_dir = deepcopy(temp_ucv)
-    multi_dir.path = f"multi_dir-{random_letters()}"
+    multi_dir.path = f'multi_dir-{random_letters()}'
     fsutil.makedirs(multi_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"multi_{i}.parquet")
+        local_file = osp.join(tmp_path, f'multi_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(multi_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(local_file, osp.join(multi_dir.as_url(), f'file_{i}.parquet'))
 
     # Create a dummy non-parquet file
-    dummy_file = osp.join(multi_dir.as_url(), "dummy.txt")
-    fsutil.write_binary(dummy_file, b"dummy content")
+    dummy_file = osp.join(multi_dir.as_url(), 'dummy.txt')
+    fsutil.write_binary(dummy_file, b'dummy content')
 
     # Test parquet_num_rows on directory with mixed files
     assert parquet_util.parquet_num_rows(multi_dir.as_url()) == 10
-    assert parquet_util.parquet_num_rows(multi_dir.as_url(),
-                                         skip_check=True) == 10
+    assert parquet_util.parquet_num_rows(multi_dir.as_url(), skip_check=True) == 10
 
     # Case 4: Non-existent path
     nonexistent_path = deepcopy(temp_ucv)
-    nonexistent_path.path = f"nonexistent-{random_letters()}"
+    nonexistent_path.path = f'nonexistent-{random_letters()}'
 
     # Test parquet_num_rows on non-existent path
     assert parquet_util.parquet_num_rows(nonexistent_path.as_url()) == 0
-    assert parquet_util.parquet_num_rows(nonexistent_path.as_url(),
-                                         skip_check=True) == 0
+    assert (
+        parquet_util.parquet_num_rows(nonexistent_path.as_url(), skip_check=True) == 0
+    )
 
     # Case 5: Empty directory
     empty_dir = deepcopy(temp_ucv)
-    empty_dir.path = f"empty_dir-{random_letters()}"
+    empty_dir.path = f'empty_dir-{random_letters()}'
     fsutil.makedirs(empty_dir.as_url())
 
     # Test parquet_num_rows on empty directory
     assert parquet_util.parquet_num_rows(empty_dir.as_url()) == 0
-    assert parquet_util.parquet_num_rows(empty_dir.as_url(),
-                                         skip_check=True) == 0
+    assert parquet_util.parquet_num_rows(empty_dir.as_url(), skip_check=True) == 0
 
 
 def test_get_parquet_metadata_ucv(temp_ucv, tmp_path: pathlib.Path):
@@ -901,17 +917,19 @@ def test_get_parquet_metadata_ucv(temp_ucv, tmp_path: pathlib.Path):
     5. Empty directory
     """
     # Create test data
-    df = pd.DataFrame({
-        'a': [1, 2, 3, 4, 5],
-        'b': ['x', 'y', 'z', 'w', 'v'],
-        'c': [1.1, 2.2, 3.3, 4.4, 5.5]
-    })
+    df = pd.DataFrame(
+        {
+            'a': [1, 2, 3, 4, 5],
+            'b': ['x', 'y', 'z', 'w', 'v'],
+            'c': [1.1, 2.2, 3.3, 4.4, 5.5],
+        }
+    )
 
     # Case 1: Single parquet file
     single_file = deepcopy(temp_ucv)
-    single_file.path = f"single-{random_letters()}.parquet"
+    single_file.path = f'single-{random_letters()}.parquet'
 
-    local_file = osp.join(tmp_path, "single.parquet")
+    local_file = osp.join(tmp_path, 'single.parquet')
     df.to_parquet(local_file)
 
     # Copy to UCV
@@ -925,15 +943,16 @@ def test_get_parquet_metadata_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 2: Directory with all parquet files
     parquet_dir = deepcopy(temp_ucv)
-    parquet_dir.path = f"parquet_dir-{random_letters()}"
+    parquet_dir.path = f'parquet_dir-{random_letters()}'
     fsutil.makedirs(parquet_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"parquet_{i}.parquet")
+        local_file = osp.join(tmp_path, f'parquet_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(parquet_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(
+            local_file, osp.join(parquet_dir.as_url(), f'file_{i}.parquet')
+        )
 
     # Test get_parquet_metadata on directory with all parquet files
     metadata = parquet_util.get_parquet_metadata(parquet_dir.as_url())
@@ -944,19 +963,18 @@ def test_get_parquet_metadata_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 3: Directory with mixed file types
     multi_dir = deepcopy(temp_ucv)
-    multi_dir.path = f"multi_dir-{random_letters()}"
+    multi_dir.path = f'multi_dir-{random_letters()}'
     fsutil.makedirs(multi_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"multi_{i}.parquet")
+        local_file = osp.join(tmp_path, f'multi_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(multi_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(local_file, osp.join(multi_dir.as_url(), f'file_{i}.parquet'))
 
     # Create a dummy non-parquet file
-    dummy_file = osp.join(multi_dir.as_url(), "dummy.txt")
-    fsutil.write_binary(dummy_file, b"dummy content")
+    dummy_file = osp.join(multi_dir.as_url(), 'dummy.txt')
+    fsutil.write_binary(dummy_file, b'dummy content')
 
     # Test get_parquet_metadata on directory with mixed files
     metadata = parquet_util.get_parquet_metadata(multi_dir.as_url())
@@ -967,9 +985,8 @@ def test_get_parquet_metadata_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 3b: Wildcard path matching multiple but not all files in directory,
     # reusing dir from case 2:
-    fsutil.copy_file(local_file,
-                     osp.join(multi_dir.as_url(), f"diff_{i}.parquet"))
-    prefix_dir = osp.join(multi_dir.as_url(), "file*")
+    fsutil.copy_file(local_file, osp.join(multi_dir.as_url(), f'diff_{i}.parquet'))
+    prefix_dir = osp.join(multi_dir.as_url(), 'file*')
     metadata = parquet_util.get_parquet_metadata(prefix_dir)
     assert set(metadata.cols) == {'a', 'b', 'c'}
     assert metadata.num_rows == 10  # 5 rows from each parquet file
@@ -977,25 +994,24 @@ def test_get_parquet_metadata_ucv(temp_ucv, tmp_path: pathlib.Path):
     assert metadata.avg_row_size > 0
 
     # for now verify that matching a non-parquet file raises an error
-    extenionless_file = osp.join(multi_dir.as_url(), "file_0")
-    fsutil.write_binary(extenionless_file, b"dummy content")
+    extenionless_file = osp.join(multi_dir.as_url(), 'file_0')
+    fsutil.write_binary(extenionless_file, b'dummy content')
 
-    with pytest.raises(ValueError, match="Found non-parquet file"):
+    with pytest.raises(ValueError, match='Found non-parquet file'):
         parquet_util.get_parquet_metadata(prefix_dir)
 
     # Create two parquet files
     # Case 4: Non-existent path
     nonexistent_path = deepcopy(temp_ucv)
-    nonexistent_path.path = f"nonexistent-{random_letters()}"
+    nonexistent_path.path = f'nonexistent-{random_letters()}'
 
     # Test get_parquet_metadata on non-existent path
-    with pytest.raises(
-            Exception):  # Should raise an error for non-existent path
+    with pytest.raises(Exception):  # Should raise an error for non-existent path
         parquet_util.get_parquet_metadata(nonexistent_path.as_url())
 
     # Case 5: Empty directory
     empty_dir = deepcopy(temp_ucv)
-    empty_dir.path = f"empty_dir-{random_letters()}"
+    empty_dir.path = f'empty_dir-{random_letters()}'
     fsutil.makedirs(empty_dir.as_url())
 
     # Test get_parquet_metadata on empty directory
@@ -1018,10 +1034,10 @@ def test_is_empty_helper_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 1: Single parquet file with data
     single_file = deepcopy(temp_ucv)
-    single_file.path = f"single-{random_letters()}.parquet"
+    single_file.path = f'single-{random_letters()}.parquet'
 
     # Write to local temp file first
-    local_file = osp.join(tmp_path, "single.parquet")
+    local_file = osp.join(tmp_path, 'single.parquet')
     df.to_parquet(local_file)
 
     # Copy to UCV
@@ -1032,10 +1048,10 @@ def test_is_empty_helper_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 2: Single empty parquet file
     empty_file = deepcopy(temp_ucv)
-    empty_file.path = f"empty-{random_letters()}.parquet"
+    empty_file.path = f'empty-{random_letters()}.parquet'
 
     # Write to local temp file first
-    local_file = osp.join(tmp_path, "empty.parquet")
+    local_file = osp.join(tmp_path, 'empty.parquet')
     empty_df.to_parquet(local_file)
 
     # Copy to UCV
@@ -1046,48 +1062,48 @@ def test_is_empty_helper_ucv(temp_ucv, tmp_path: pathlib.Path):
 
     # Case 3: Directory with all parquet files
     parquet_dir = deepcopy(temp_ucv)
-    parquet_dir.path = f"parquet_dir-{random_letters()}"
+    parquet_dir.path = f'parquet_dir-{random_letters()}'
     fsutil.makedirs(parquet_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"parquet_{i}.parquet")
+        local_file = osp.join(tmp_path, f'parquet_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(parquet_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(
+            local_file, osp.join(parquet_dir.as_url(), f'file_{i}.parquet')
+        )
 
     # Test _is_empty_helper on directory with all parquet files
     assert not parquet_util._is_empty_helper(parquet_dir.as_url())
 
     # Case 4: Directory with mixed file types
     multi_dir = deepcopy(temp_ucv)
-    multi_dir.path = f"multi_dir-{random_letters()}"
+    multi_dir.path = f'multi_dir-{random_letters()}'
     fsutil.makedirs(multi_dir.as_url())
 
     # Create two parquet files
     for i in range(2):
-        local_file = osp.join(tmp_path, f"multi_{i}.parquet")
+        local_file = osp.join(tmp_path, f'multi_{i}.parquet')
         df.to_parquet(local_file)
-        fsutil.copy_file(local_file,
-                         osp.join(multi_dir.as_url(), f"file_{i}.parquet"))
+        fsutil.copy_file(local_file, osp.join(multi_dir.as_url(), f'file_{i}.parquet'))
 
     # Create a dummy non-parquet file
-    dummy_file = osp.join(multi_dir.as_url(), "dummy.txt")
-    fsutil.write_binary(dummy_file, b"dummy content")
+    dummy_file = osp.join(multi_dir.as_url(), 'dummy.txt')
+    fsutil.write_binary(dummy_file, b'dummy content')
 
     # Test _is_empty_helper on directory with mixed files
     assert not parquet_util._is_empty_helper(multi_dir.as_url())
 
     # Case 5: Non-existent path
     nonexistent_path = deepcopy(temp_ucv)
-    nonexistent_path.path = f"nonexistent-{random_letters()}"
+    nonexistent_path.path = f'nonexistent-{random_letters()}'
 
     # Test _is_empty_helper on non-existent path
     assert parquet_util._is_empty_helper(nonexistent_path.as_url())
 
     # Case 6: Empty directory
     empty_dir = deepcopy(temp_ucv)
-    empty_dir.path = f"empty_dir-{random_letters()}"
+    empty_dir.path = f'empty_dir-{random_letters()}'
     fsutil.makedirs(empty_dir.as_url())
 
     # Test _is_empty_helper on empty directory
@@ -1123,10 +1139,9 @@ def test_run_in_isolated_subprocess_uses_fork_context(monkeypatch):
         requested['method'] = method
         return real_get_context(method)
 
-    monkeypatch.setattr(parquet_util.multiprocessing, 'get_context',
-                        spy_get_context)
+    monkeypatch.setattr(parquet_util.multiprocessing, 'get_context', spy_get_context)
 
-    result = parquet_util._run_in_isolated_subprocess(int, ('7', ))
+    result = parquet_util._run_in_isolated_subprocess(int, ('7',))
     assert result == 7
     assert requested['method'] == 'fork'
 
@@ -1135,7 +1150,7 @@ def test_run_in_isolated_subprocess_times_out_and_raises(monkeypatch):
     # On timeout the helper must raise TimeoutError (never block or fall back
     # in-process) and tear the pool down promptly rather than hang.
     if 'fork' not in multiprocessing.get_all_start_methods():
-        pytest.skip("fork start method unavailable on this platform")
+        pytest.skip('fork start method unavailable on this platform')
 
     monkeypatch.setenv('PARQUET_ISOLATED_SUBPROCESS_TIMEOUT_SECS', '1')
 
@@ -1156,10 +1171,13 @@ def test_run_in_isolated_subprocess_forks_under_fork_lock(monkeypatch):
         held.append(parquet_util._FORK_LOCK.locked())
         return ctx.Pool(processes)
 
-    monkeypatch.setattr(parquet_util.multiprocessing, 'get_context',
-                        lambda method: types.SimpleNamespace(Pool=pool))
+    monkeypatch.setattr(
+        parquet_util.multiprocessing,
+        'get_context',
+        lambda method: types.SimpleNamespace(Pool=pool),
+    )
 
-    assert parquet_util._run_in_isolated_subprocess(int, ('7', )) == 7
+    assert parquet_util._run_in_isolated_subprocess(int, ('7',)) == 7
     assert held == [True]
 
 
@@ -1167,8 +1185,9 @@ def test_s3_branch_routes_through_isolated_subprocess(monkeypatch):
     # The S3 branch must go through the py3.14-safe helper.
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda path: True)
     monkeypatch.setattr(parquet_util, '_is_empty_helper', lambda path: False)
-    monkeypatch.setattr(parquet_util, '_parquet_num_rows_helper',
-                        lambda path, skip_check: 42)
+    monkeypatch.setattr(
+        parquet_util, '_parquet_num_rows_helper', lambda path, skip_check: 42
+    )
 
     calls = []
 
@@ -1191,14 +1210,14 @@ def test_gcs_branch_stays_in_process(monkeypatch):
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda path: False)
     monkeypatch.setattr(parquet_util.fsutil, 'is_gcs', lambda path: True)
     monkeypatch.setattr(parquet_util, '_is_empty_helper', lambda path: False)
-    monkeypatch.setattr(parquet_util, '_parquet_num_rows_helper',
-                        lambda path, skip_check: 42)
+    monkeypatch.setattr(
+        parquet_util, '_parquet_num_rows_helper', lambda path, skip_check: 42
+    )
 
     def fail_isolation(*args):
         raise AssertionError('GCS must not use fork isolation')
 
-    monkeypatch.setattr(parquet_util, '_run_in_isolated_subprocess',
-                        fail_isolation)
+    monkeypatch.setattr(parquet_util, '_run_in_isolated_subprocess', fail_isolation)
 
     assert parquet_util.is_empty('gs://bucket/key') is False
     assert parquet_util.parquet_num_rows('gs://bucket/key') == 42
@@ -1216,12 +1235,8 @@ def test_num_rows_skip_check_counts_multi_file_dir(tmp_path):
     path = tmp_path.resolve().as_posix()
     table_dir = osp.join(path, 'multi')
     fsutil.makedirs(table_dir)
-    pd.DataFrame({
-        'a': [1, 2, 3]
-    }).to_parquet(osp.join(table_dir, 'part-0.parquet'))
-    pd.DataFrame({
-        'a': [4, 5]
-    }).to_parquet(osp.join(table_dir, 'part-1.parquet'))
+    pd.DataFrame({'a': [1, 2, 3]}).to_parquet(osp.join(table_dir, 'part-0.parquet'))
+    pd.DataFrame({'a': [4, 5]}).to_parquet(osp.join(table_dir, 'part-1.parquet'))
     fsutil.touch(osp.join(table_dir, '_SUCCESS'))
 
     assert parquet_util.parquet_num_rows(table_dir, skip_check=True) == 5
@@ -1236,12 +1251,12 @@ def test_num_rows_counts_partitioned_dir(tmp_path):
     table_dir = osp.join(path, 'partitioned')
     fsutil.makedirs(osp.join(table_dir, 'part=1'))
     fsutil.makedirs(osp.join(table_dir, 'part=2'))
-    pd.DataFrame({
-        'a': [1, 2, 3]
-    }).to_parquet(osp.join(table_dir, 'part=1', 'data.parquet'))
-    pd.DataFrame({
-        'a': [4, 5]
-    }).to_parquet(osp.join(table_dir, 'part=2', 'data.parquet'))
+    pd.DataFrame({'a': [1, 2, 3]}).to_parquet(
+        osp.join(table_dir, 'part=1', 'data.parquet')
+    )
+    pd.DataFrame({'a': [4, 5]}).to_parquet(
+        osp.join(table_dir, 'part=2', 'data.parquet')
+    )
 
     assert parquet_util.parquet_num_rows(table_dir, skip_check=True) == 5
     assert parquet_util.parquet_num_rows(table_dir, skip_check=False) == 5
@@ -1255,11 +1270,10 @@ def test_num_rows_raises_on_corrupt_fragment(tmp_path):
     path = tmp_path.resolve().as_posix()
     table_dir = osp.join(path, 'corrupt')
     fsutil.makedirs(table_dir)
-    pd.DataFrame({
-        'a': [1, 2, 3]
-    }).to_parquet(osp.join(table_dir, 'good.parquet'))
-    fsutil.write_binary(osp.join(table_dir, 'bad.parquet'),
-                        b'not a parquet file at all, garbage bytes')
+    pd.DataFrame({'a': [1, 2, 3]}).to_parquet(osp.join(table_dir, 'good.parquet'))
+    fsutil.write_binary(
+        osp.join(table_dir, 'bad.parquet'), b'not a parquet file at all, garbage bytes'
+    )
 
     with pytest.raises(pa.lib.ArrowInvalid):
         parquet_util.parquet_num_rows(table_dir, skip_check=True)
@@ -1316,8 +1330,7 @@ def test_cloud_dir_num_rows_recurses_parquet_suffixed_directory(monkeypatch):
     # single footer.
     tree = {
         'gs://bucket/big': ['gs://bucket/big/col=a.parquet'],
-        'gs://bucket/big/col=a.parquet':
-        ['gs://bucket/big/col=a.parquet/p.parquet'],
+        'gs://bucket/big/col=a.parquet': ['gs://bucket/big/col=a.parquet/p.parquet'],
     }
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda _: False)
     monkeypatch.setattr(parquet_util.fsutil, 'is_gcs', lambda _: True)
@@ -1338,15 +1351,13 @@ def test_num_rows_skip_check_propagates_access_error(tmp_path, monkeypatch):
     path = tmp_path.resolve().as_posix()
     table_dir = osp.join(path, 'multi')
     fsutil.makedirs(table_dir)
-    pd.DataFrame({
-        'a': [1, 2, 3]
-    }).to_parquet(osp.join(table_dir, 'part-0.parquet'))
+    pd.DataFrame({'a': [1, 2, 3]}).to_parquet(osp.join(table_dir, 'part-0.parquet'))
 
     def boom(p, **kwargs):
-        raise OSError("AWS Error ACCESS_DENIED: Forbidden (403)")
+        raise OSError('AWS Error ACCESS_DENIED: Forbidden (403)')
 
     monkeypatch.setattr(parquet_util, '_get_dataset', boom)
-    with pytest.raises(OSError, match="ACCESS_DENIED"):
+    with pytest.raises(OSError, match='ACCESS_DENIED'):
         parquet_util.parquet_num_rows(table_dir, skip_check=True)
 
 
@@ -1355,15 +1366,13 @@ def test_is_empty_propagates_access_error(tmp_path, monkeypatch):
     path = tmp_path.resolve().as_posix()
     table_dir = osp.join(path, 'multi')
     fsutil.makedirs(table_dir)
-    pd.DataFrame({
-        'a': [1, 2, 3]
-    }).to_parquet(osp.join(table_dir, 'part-0.parquet'))
+    pd.DataFrame({'a': [1, 2, 3]}).to_parquet(osp.join(table_dir, 'part-0.parquet'))
 
     def boom(p, **kwargs):
-        raise OSError("AWS Error ACCESS_DENIED: Forbidden (403)")
+        raise OSError('AWS Error ACCESS_DENIED: Forbidden (403)')
 
     monkeypatch.setattr(parquet_util, '_get_dataset', boom)
-    with pytest.raises(OSError, match="ACCESS_DENIED"):
+    with pytest.raises(OSError, match='ACCESS_DENIED'):
         parquet_util.is_empty(table_dir)
 
 
@@ -1371,21 +1380,21 @@ def test_is_empty_propagates_access_error_from_isdir(monkeypatch):
     # The isdir probe is the earliest read; an access/IO failure there must
     # surface too, not be swallowed as "empty".
     def boom(path):
-        raise OSError("connection timed out")
+        raise OSError('connection timed out')
 
-    monkeypatch.setattr(parquet_util.fsutil, "isdir", boom)
-    with pytest.raises(OSError, match="timed out"):
-        parquet_util.is_empty("/tmp/some-table")
+    monkeypatch.setattr(parquet_util.fsutil, 'isdir', boom)
+    with pytest.raises(OSError, match='timed out'):
+        parquet_util.is_empty('/tmp/some-table')
 
 
 def test_is_access_or_io_error_classifier():
     # Access/IO failures are classified by exception type; a missing or
     # parse-error path is not an access error.
-    assert parquet_util._is_access_or_io_error(OSError("ACCESS_DENIED 403"))
-    assert parquet_util._is_access_or_io_error(ConnectionError("reset"))
+    assert parquet_util._is_access_or_io_error(OSError('ACCESS_DENIED 403'))
+    assert parquet_util._is_access_or_io_error(ConnectionError('reset'))
     assert parquet_util._is_access_or_io_error(TimeoutError())
-    assert not parquet_util._is_access_or_io_error(ValueError("bad footer"))
-    assert not parquet_util._is_access_or_io_error(FileNotFoundError("missing"))
+    assert not parquet_util._is_access_or_io_error(ValueError('bad footer'))
+    assert not parquet_util._is_access_or_io_error(FileNotFoundError('missing'))
 
 
 def test_streaming_dataframe_writer_appends_and_rotates(tmp_path):
@@ -1402,8 +1411,7 @@ def test_streaming_dataframe_writer_appends_and_rotates(tmp_path):
 
     files = sorted(tmp_path.glob('part-00003-*.parquet'))
     assert len(files) == 2
-    actual = pd.concat([pd.read_parquet(path) for path in files],
-                       ignore_index=True)
+    actual = pd.concat([pd.read_parquet(path) for path in files], ignore_index=True)
     pd.testing.assert_frame_equal(actual, pd.DataFrame({'value': [1, 2, 3, 4]}))
 
 
@@ -1433,10 +1441,10 @@ def test_streaming_dataframe_writer_slices_before_arrow_conversion(tmp_path):
 def test_streaming_dataframe_writer_preserves_contiguous_index(tmp_path):
     prefix = str(tmp_path / 'embedding-part')
     with parquet_util.StreamingDataFrameParquetWriter(
-            prefix,
-            max_file_size=1024,
-            max_buffer_size=1024,
-            save_index=True,
+        prefix,
+        max_file_size=1024,
+        max_buffer_size=1024,
+        save_index=True,
     ) as writer:
         writer.write(pd.DataFrame({'value': ['a', 'b']}))
         writer.write(pd.DataFrame({'value': ['c']}))
@@ -1463,8 +1471,9 @@ def test_streaming_dataframe_writer_cloud_uses_fsutil_handle(monkeypatch):
     payload = io.BytesIO()
     expected_path = 's3://bucket/part-00000.parquet'
     monkeypatch.setattr(parquet_util.fsutil, 'is_local', lambda _: False)
-    monkeypatch.setattr(parquet_util.fsutil, 'is_s3',
-                        lambda path: path.startswith('s3://'))
+    monkeypatch.setattr(
+        parquet_util.fsutil, 'is_s3', lambda path: path.startswith('s3://')
+    )
     monkeypatch.setattr(parquet_util.fsutil, 'is_gcs', lambda _: False)
 
     @contextlib.contextmanager
@@ -1475,10 +1484,10 @@ def test_streaming_dataframe_writer_cloud_uses_fsutil_handle(monkeypatch):
 
     monkeypatch.setattr(parquet_util.fsutil, 'get_binary_handle', binary_handle)
     with parquet_util.StreamingDataFrameParquetWriter(
-            's3://bucket/part',
-            max_file_size=1024,
-            max_buffer_size=1024,
-            save_index=False,
+        's3://bucket/part',
+        max_file_size=1024,
+        max_buffer_size=1024,
+        save_index=False,
     ) as writer:
         writer.write(pd.DataFrame({'value': [1, 2]}))
         writer.write(pd.DataFrame({'value': [3]}))

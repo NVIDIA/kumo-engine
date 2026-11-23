@@ -23,8 +23,8 @@ import sdm.processing as sp
 import torch
 from sklearn.model_selection import ShuffleSplit
 
-TARGET_COLUMN = "price"
-TEXT_COLUMNS = ("name", "item_description")
+TARGET_COLUMN = 'price'
+TEXT_COLUMNS = ('name', 'item_description')
 
 
 def _build_model(
@@ -32,28 +32,30 @@ def _build_model(
     device: torch.device,
     local_checkpoint: Path | None = None,
 ) -> sdm.models.ICLModel:
-    if name == "tabiclv2":
-        return sdm.models.TabICLv2(task="regression", device=device)
-    size = "small" if name == "kumo-small" else "large"
+    if name == 'tabiclv2':
+        return sdm.models.TabICLv2(task='regression', device=device)
+    size = 'small' if name == 'kumo-small' else 'large'
     if local_checkpoint is None:
-        return sdm.models.KumoTabular(task="regression", size=size,
-                                      device=device)
-    model = sdm.models.KumoTabular(task="regression", size=size,
-                                   pretrained=False, device=device)
+        return sdm.models.KumoTabular(task='regression', size=size, device=device)
+    model = sdm.models.KumoTabular(
+        task='regression', size=size, pretrained=False, device=device
+    )
     state = torch.load(local_checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def _text_recipe(model: sdm.models.ICLModel, text_model: str,
-                 embedding_dim: int) -> sp.Recipe:
+def _text_recipe(
+    model: sdm.models.ICLModel, text_model: str, embedding_dim: int
+) -> sp.Recipe:
     """Embed text and fit PCA on the context before the default numeric recipe."""
     recipe = model.default_recipe()
     recipe.prepend_features(
         sp.StypeDispatch(
-            text=[sp.SentenceTransformer(text_model),
-                  sp.PCA(embedding_dim)]))
+            text=[sp.SentenceTransformer(text_model), sp.PCA(embedding_dim)]
+        )
+    )
     return recipe
 
 
@@ -75,12 +77,13 @@ def _predict(
     device = x_context.device
     effective_num_estimators: int | None = num_estimators
     if max_context_size is not None and x_context.size(0) > max_context_size:
-        num_repeats = math.ceil(num_estimators * max_context_size /
-                                x_context.size(0))
-        perm = torch.cat([
-            torch.randperm(x_context.size(0), generator=generator,
-                           device=device) for _ in range(num_repeats)
-        ])[:num_estimators * max_context_size]
+        num_repeats = math.ceil(num_estimators * max_context_size / x_context.size(0))
+        perm = torch.cat(
+            [
+                torch.randperm(x_context.size(0), generator=generator, device=device)
+                for _ in range(num_repeats)
+            ]
+        )[: num_estimators * max_context_size]
         shape = (num_estimators, max_context_size)
         x_context = x_context[perm].unflatten(0, shape)
         y_context = y_context[perm].unflatten(0, shape)
@@ -88,9 +91,8 @@ def _predict(
         effective_num_estimators = None
 
     with (
-            torch.inference_mode(),
-            torch.amp.autocast(device.type, torch.float16,
-                               enabled=x_context.is_cuda),
+        torch.inference_mode(),
+        torch.amp.autocast(device.type, torch.float16, enabled=x_context.is_cuda),
     ):
         model.fit(
             x=x_context,
@@ -102,10 +104,7 @@ def _predict(
         # Row dim is always -2 (there may be a leading ensemble dim from
         # the max_context_size branch above).
         out = torch.cat(
-            [
-                model.predict(batch)
-                for batch in x_query.split(query_batch_size, dim=-2)
-            ],
+            [model.predict(batch) for batch in x_query.split(query_batch_size, dim=-2)],
             dim=-2,
         )
     model.clear()
@@ -113,83 +112,86 @@ def _predict(
 
 
 def _load(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path, sep="\t")
+    frame = pd.read_csv(path, sep='\t')
     for column in TEXT_COLUMNS:
-        frame[column] = frame[column].fillna("")
+        frame[column] = frame[column].fillna('')
     return frame
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--data-dir",
+        '--data-dir',
         type=Path,
         required=True,
-        help="Directory written by synthetic-data/sdm/generate.py.",
+        help='Directory written by synthetic-data/sdm/generate.py.',
     )
     parser.add_argument(
-        "--model",
-        choices=("kumo-small", "kumo-large", "tabiclv2"),
-        default="kumo-large",
+        '--model',
+        choices=('kumo-small', 'kumo-large', 'tabiclv2'),
+        default='kumo-large',
     )
     parser.add_argument(
-        "--local-checkpoint",
+        '--local-checkpoint',
         type=Path,
         default=None,
         help=(
-            "KumoTabular state_dict saved from the same model size and task; bypasses "
-            "Hugging Face Hub download (for --model kumo-small/kumo-large)."
+            'KumoTabular state_dict saved from the same model size and task; bypasses '
+            'Hugging Face Hub download (for --model kumo-small/kumo-large).'
         ),
     )
     parser.add_argument(
-        "--text-model",
-        default="sentence-transformers/all-MiniLM-L6-v2",
+        '--text-model',
+        default='sentence-transformers/all-MiniLM-L6-v2',
     )
-    parser.add_argument("--text-embedding-dim", type=int, default=64)
-    parser.add_argument("--num-estimators", type=int, default=8)
-    parser.add_argument("--num-splits", type=int, default=5)
+    parser.add_argument('--text-embedding-dim', type=int, default=64)
+    parser.add_argument('--num-estimators', type=int, default=8)
+    parser.add_argument('--num-splits', type=int, default=5)
     parser.add_argument(
-        "--val-size",
+        '--val-size',
         type=int,
         default=1000,
-        help="Held-out row count; must be smaller than the generated training set.",
+        help='Held-out row count; must be smaller than the generated training set.',
     )
     parser.add_argument(
-        "--max-context-size",
+        '--max-context-size',
         type=int,
         default=8000,
         help=(
-            "Per-estimator context row cap; larger input datasets are subsampled "
-            "to bound attention memory."),
+            'Per-estimator context row cap; larger input datasets are subsampled '
+            'to bound attention memory.'
+        ),
     )
-    parser.add_argument("--query-batch-size", type=int, default=20000)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output", type=Path, default=Path("submission.csv"))
+    parser.add_argument('--query-batch-size', type=int, default=20000)
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--output', type=Path, default=Path('submission.csv'))
     args = parser.parse_args()
     if args.num_estimators < 1 or args.num_splits < 1:
-        parser.error("num-estimators and num-splits must be positive")
+        parser.error('num-estimators and num-splits must be positive')
     if args.max_context_size is not None and args.max_context_size < 2:
-        parser.error("max-context-size must be at least two")
+        parser.error('max-context-size must be at least two')
     if args.query_batch_size < 1:
-        parser.error("query-batch-size must be positive")
+        parser.error('query-batch-size must be positive')
 
     torch.manual_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     generator = torch.Generator(device).manual_seed(args.seed)
 
-    train_frame = _load(args.data_dir / "train.tsv").drop(columns=["train_id"])
+    train_frame = _load(args.data_dir / 'train.tsv').drop(columns=['train_id'])
     if not 1 <= args.val_size < len(train_frame):
-        parser.error("val-size must be positive and smaller than the training row count")
+        parser.error(
+            'val-size must be positive and smaller than the training row count'
+        )
     train_frame[TARGET_COLUMN] = np.log1p(train_frame[TARGET_COLUMN])
-    test_frame_full = _load(args.data_dir / "test_stg2.tsv")
-    test_ids = test_frame_full["test_id"]
-    test_frame = test_frame_full.drop(columns=["test_id"])
+    test_frame_full = _load(args.data_dir / 'test_stg2.tsv')
+    test_ids = test_frame_full['test_id']
+    test_frame = test_frame_full.drop(columns=['test_id'])
 
     stypes = sdm.infer_stypes(
         train_frame,
         overrides={
-            TARGET_COLUMN: "numerical",
-            **dict.fromkeys(TEXT_COLUMNS, "text"),
+            TARGET_COLUMN: 'numerical',
+            **dict.fromkeys(TEXT_COLUMNS, 'text'),
         },
     )
     feature_stypes = {k: v for k, v in stypes.items() if k != TARGET_COLUMN}
@@ -232,20 +234,25 @@ def main() -> None:
         # point estimate (a point estimate). Both
         # sides are still log1p-transformed here, so plain RMSE == RMSLE.
         pred_log = out.numerical.mean(dim=-1).float().cpu().numpy()
-        actual_log = (split_val[:, TARGET_COLUMN].numerical.squeeze(
-            -1).float().cpu().numpy())
-        rmsles.append(float(np.sqrt(np.mean((pred_log - actual_log)**2))))
+        actual_log = (
+            split_val[:, TARGET_COLUMN].numerical.squeeze(-1).float().cpu().numpy()
+        )
+        rmsles.append(float(np.sqrt(np.mean((pred_log - actual_log) ** 2))))
 
     rmsle = np.array(rmsles)
-    print(f"{args.model}  val_rmsle={rmsle.mean():.4f}+-{rmsle.std():.4f}  "
-          f"({args.num_splits} splits, val_size={args.val_size}, "
-          f"max_context_size={args.max_context_size})")
+    print(
+        f'{args.model}  val_rmsle={rmsle.mean():.4f}+-{rmsle.std():.4f}  '
+        f'({args.num_splits} splits, val_size={args.val_size}, '
+        f'max_context_size={args.max_context_size})'
+    )
 
     # Batch predictions: score competition rows without target labels.
-    full_train = sdm.TableTensor.from_pandas(df=train_frame, stypes=stypes,
-                                             device=device)
-    query = sdm.TableTensor.from_pandas(df=test_frame, stypes=feature_stypes,
-                                        device=device)
+    full_train = sdm.TableTensor.from_pandas(
+        df=train_frame, stypes=stypes, device=device
+    )
+    query = sdm.TableTensor.from_pandas(
+        df=test_frame, stypes=feature_stypes, device=device
+    )
     out = _predict(
         model,
         x_context=full_train.drop_columns(TARGET_COLUMN),
@@ -260,19 +267,15 @@ def main() -> None:
     pred_log = out.numerical.mean(dim=-1).float().cpu().numpy()
     predicted_price = np.clip(np.expm1(pred_log), a_min=0.0, a_max=None)
 
-    submission = pd.DataFrame({
-        "test_id": test_ids,
-        TARGET_COLUMN: predicted_price
-    })
+    submission = pd.DataFrame({'test_id': test_ids, TARGET_COLUMN: predicted_price})
     if len(submission) != len(test_frame) or len(submission) < 2:
-        raise ValueError(
-            "Expected one prediction for each of at least two test rows")
+        raise ValueError('Expected one prediction for each of at least two test rows')
     # Each row follows the original test-file order; columns hold the task outputs.
     print(submission.head(10).to_string(index=False))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     submission.to_csv(args.output, index=False)
-    print(f"wrote {args.output}")
+    print(f'wrote {args.output}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

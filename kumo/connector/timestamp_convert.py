@@ -24,6 +24,7 @@ is computed in the integer epoch-ticks / epoch-days domain; only
 The stats path is best-effort: an out-of-range or unconvertible value becomes
 ``None`` and is dropped from the MIN/MAX reduction rather than raising.
 """
+
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -87,7 +88,7 @@ def timestamp_from_int(value: int, unit: Optional[str]) -> int:
         return value
     divisor = _NATIVE_UNIT_DIVISOR.get(unit)
     if divisor is None:
-        raise ValueError(f"unsupported timestamp unit: {unit!r}")
+        raise ValueError(f'unsupported timestamp unit: {unit!r}')
     return div_ceil(value, divisor)
 
 
@@ -104,8 +105,13 @@ def days_from_secs(secs: int) -> int:
 # ---------------------------------------------------------------------------
 # The DiskGraph crossing: one call per column, no per-value Python work.
 # ---------------------------------------------------------------------------
-def _resolve(series: pd.Series, hint: TemporalHint, *, days: bool,
-             timestamp_precision: str = 'seconds') -> np.ndarray:
+def _resolve(
+    series: pd.Series,
+    hint: TemporalHint,
+    *,
+    days: bool,
+    timestamp_precision: str = 'seconds',
+) -> np.ndarray:
     r"""Apply ``hint`` to a whole column, returning epoch days or epoch ticks
     of the ``timestamp_precision`` clock.
 
@@ -113,8 +119,9 @@ def _resolve(series: pd.Series, hint: TemporalHint, *, days: bool,
     declared hint is what stops DiskGraph re-detecting the column at apply time.
     """
     unit = hint.unit or ('s' if hint.kind is HintKind.UNRESOLVED else None)
-    epochs, _, _ = resolve_temporal(_as_arrow(series), hint.strftime, unit,
-                                    days, timestamp_unit=timestamp_precision)
+    epochs, _, _ = resolve_temporal(
+        _as_arrow(series), hint.strftime, unit, days, timestamp_unit=timestamp_precision
+    )
     out = np.empty(len(epochs), dtype=object)
     out[:] = epochs
     return out
@@ -159,7 +166,8 @@ def _native_divisor(dtype) -> int:
 
 
 def timestamp_ticks_from_array(
-        series: pd.Series, timestamp_precision: str = 'seconds') -> np.ndarray:
+    series: pd.Series, timestamp_precision: str = 'seconds'
+) -> np.ndarray:
     r"""Convert a native temporal series to ticks of ``timestamp_precision``.
 
     Reads the series' own native unit and ceiling-divides each value into a
@@ -178,7 +186,8 @@ def timestamp_ticks_from_array(
     s = _as_naive_utc_datetime_series(series)
     native_ns = 1_000_000_000 // _native_divisor(s.dtype)
     tick_ns = pd.Timedelta(
-        1, unit=PANDAS_UNIT_OF_INDEX_CLOCK[timestamp_precision]).value
+        1, unit=PANDAS_UNIT_OF_INDEX_CLOCK[timestamp_precision]
+    ).value
     ints = s.to_numpy().view('int64')
     isna = pd.isna(s).to_numpy()
     # An object dtype array initializes to None, which is the NaT/null result.
@@ -195,8 +204,10 @@ def timestamp_ticks_from_array(
         factor = native_ns // tick_ns
         limit = np.iinfo(np.int64).max // factor
         ticks = np.where(
-            sub > limit, np.iinfo(np.int64).max,
-            np.where(sub < -limit, np.iinfo(np.int64).min, sub * factor))
+            sub > limit,
+            np.iinfo(np.int64).max,
+            np.where(sub < -limit, np.iinfo(np.int64).min, sub * factor),
+        )
     out[computable] = ticks.tolist()  # store Python ints, leave nulls as None
     return out
 
@@ -215,15 +226,15 @@ def to_epoch_seconds(series: pd.Series, hint: TemporalHint) -> np.ndarray:
     return to_epoch_ticks(series, hint, 'seconds')
 
 
-def to_epoch_ticks(series: pd.Series, hint: TemporalHint,
-                   timestamp_precision: str) -> np.ndarray:
+def to_epoch_ticks(
+    series: pd.Series, hint: TemporalHint, timestamp_precision: str
+) -> np.ndarray:
     r"""Like :func:`to_epoch_seconds`, in ticks of the ``timestamp_precision``
     index clock.
     """
     if hint.kind is HintKind.NATIVE or is_datetime64_any_dtype(series):
         return timestamp_ticks_from_array(series, timestamp_precision)
-    return _resolve(series, hint, days=False,
-                    timestamp_precision=timestamp_precision)
+    return _resolve(series, hint, days=False, timestamp_precision=timestamp_precision)
 
 
 def to_epoch_days(series: pd.Series, hint: TemporalHint) -> np.ndarray:
@@ -234,13 +245,14 @@ def to_epoch_days(series: pd.Series, hint: TemporalHint) -> np.ndarray:
     if hint.kind is HintKind.NATIVE or is_datetime64_any_dtype(series):
         secs = timestamp_ticks_from_array(series)
         return np.array(
-            [None if x is None else days_from_secs(int(x)) for x in secs],
-            dtype=object)
+            [None if x is None else days_from_secs(int(x)) for x in secs], dtype=object
+        )
     return _resolve(series, hint, days=True)
 
 
-def min_max_epoch(series: pd.Series,
-                  hint: TemporalHint) -> Tuple[Optional[int], Optional[int]]:
+def min_max_epoch(
+    series: pd.Series, hint: TemporalHint
+) -> Tuple[Optional[int], Optional[int]]:
     r"""Return ``(min, max)`` epoch seconds for a column, or ``(None, None)``.
 
     Uses the monotonic fast path for ``UNIT`` and ``NATIVE``: take the raw min/max
@@ -256,14 +268,15 @@ def min_max_epoch(series: pd.Series,
         s = series.dropna()
         if s.empty:
             return (None, None)
-        return (timestamp_from_int(int(s.min()), hint.unit),
-                timestamp_from_int(int(s.max()), hint.unit))
+        return (
+            timestamp_from_int(int(s.min()), hint.unit),
+            timestamp_from_int(int(s.max()), hint.unit),
+        )
 
     return _reduce_min_max(to_epoch_seconds(series, hint))
 
 
-def _min_max_native(
-        series: pd.Series) -> Tuple[Optional[int], Optional[int]]:
+def _min_max_native(series: pd.Series) -> Tuple[Optional[int], Optional[int]]:
     s = _as_naive_utc_datetime_series(series).dropna()
     if s.empty:
         return (None, None)
@@ -274,8 +287,7 @@ def _min_max_native(
     return (div_ceil(raw_min, divisor), div_ceil(raw_max, divisor))
 
 
-def _reduce_min_max(
-        converted: np.ndarray) -> Tuple[Optional[int], Optional[int]]:
+def _reduce_min_max(converted: np.ndarray) -> Tuple[Optional[int], Optional[int]]:
     ints: List[int] = [int(x) for x in converted if x is not None]
     if not ints:
         return (None, None)

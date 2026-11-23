@@ -91,8 +91,7 @@ def construct_split_workflow_input(
 ) -> Tuple[SplitWorkflowInput, str]:
     split_str = training_table_generation_plan.split
     assert isinstance(split_str, str)
-    split: Optional[Split] = (
-        training_table_generation_plan.get_split(split_str))
+    split: Optional[Split] = training_table_generation_plan.get_split(split_str)
     assert isinstance(split, Split)
     split_job_id = SplitJobID.as_child_of(
         parent_job_id=generate_train_table_job_id,
@@ -139,8 +138,7 @@ def _validate_native_split_manifest(
 
     row_count = parsed_split.get('row_count')
     stage_ids = parsed_split.get('stage_ids')
-    if not isinstance(row_count, int) or not isinstance(stage_ids,
-                                                        (bytes, bytearray)):
+    if not isinstance(row_count, int) or not isinstance(stage_ids, (bytes, bytearray)):
         raise RuntimeError('diskgraph parsed split payload malformed')
 
     return manifest, parsed_split, row_count, bytes(stage_ids)
@@ -162,32 +160,38 @@ def _apply_native_split_stats(
     parsed = manifest.get('parsed_split_stats')
     if not isinstance(parsed, dict):
         raise RuntimeError(
-            'diskgraph path requires parsed split stats artifact in manifest')
+            'diskgraph path requires parsed split stats artifact in manifest'
+        )
 
     _apply_native_split_stats_payload(training_table, parsed)
 
 
 def _split_train_table_stats_from_payload(
-    parsed: dict[str, Any], ) -> SplitTrainTableStats:
+    parsed: dict[str, Any],
+) -> SplitTrainTableStats:
     """Build a :class:`SplitTrainTableStats` from a validated native
     split-stats sidecar payload (``split_stats.json``)."""
+
     def _to_stage(stage_payload: Any) -> Optional[SplitTableStats]:
         if stage_payload is None:
             return None
         if not isinstance(stage_payload, dict):
             raise RuntimeError(
-                'DiskGraph split-stats stage payload must be dict or null')
+                'DiskGraph split-stats stage payload must be dict or null'
+            )
         payload = dict(stage_payload)
         for k in ('min_date', 'max_date', 'anchor_date'):
             if k in payload:
-                payload[k] = (diskgraph_native_tt_artifacts.
-                              normalize_timestamp_like_value(payload.get(k)))
+                payload[k] = (
+                    diskgraph_native_tt_artifacts.normalize_timestamp_like_value(
+                        payload.get(k)
+                    )
+                )
         return SplitTableStats(**payload)
 
     train_stage_stats = _to_stage(parsed.get('train_table_stats'))
     if train_stage_stats is None:
-        raise RuntimeError(
-            'DiskGraph split-stats payload missing train_table_stats')
+        raise RuntimeError('DiskGraph split-stats payload missing train_table_stats')
 
     return SplitTrainTableStats(
         train_table_stats=train_stage_stats,
@@ -235,7 +239,8 @@ def _assert_native_split_stats_contract(
         if stage_stats.target_distribution is None:
             raise RuntimeError(
                 'DiskGraph split-stats contract violation: '
-                f'{stage.value} missing target_distribution for {task_type}')
+                f'{stage.value} missing target_distribution for {task_type}'
+            )
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -256,8 +261,9 @@ def execute_split(
     # activity thread-safe (mirrors the materialize_training_table migration).
     if not job_input.graph_key or not job_input.graph_data_version:
         raise RuntimeError(
-            "DISKGRAPH mode requires graph_key and graph_data_version "
-            "in SplitWorkflowInput")
+            'DISKGRAPH mode requires graph_key and graph_data_version '
+            'in SplitWorkflowInput'
+        )
 
     home_dir_mgr = HomeDirManager(home_dir)
     training_table_config = load_json(
@@ -265,7 +271,8 @@ def execute_split(
         TrainingTableConfig,
     )
     training_table: TrainingTable = TrainingTable.from_config(
-        training_table_config, )
+        training_table_config,
+    )
 
     # DG already produced per-stage partitioned train-table parquet + split
     # metadata at generation; TT-NG training reads the DG bundle, never the
@@ -276,7 +283,8 @@ def execute_split(
     # is exempt) and skip the heavy load/save entirely.
     try:
         manifest, _, _, _ = _validate_native_split_manifest(
-            job_input.diskgraph_manifest_path)
+            job_input.diskgraph_manifest_path
+        )
         _apply_native_split_stats(
             training_table,
             job_input.diskgraph_manifest_path,

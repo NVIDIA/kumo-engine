@@ -55,16 +55,19 @@ def test_filter_splitter() -> None:
     splitter = TrivialFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
-            left=Condition(target=Column(fqn='entity_table.entity_id'),
-                           op=RelOp.EQ, value=42), bool_op=BoolOp.AND,
-            right=Condition(target=Column(fqn='entity_table.entity_id'),
-                            op=RelOp.EQ, value=43)),
+            left=Condition(
+                target=Column(fqn='entity_table.entity_id'), op=RelOp.EQ, value=42
+            ),
+            bool_op=BoolOp.AND,
+            right=Condition(
+                target=Column(fqn='entity_table.entity_id'), op=RelOp.EQ, value=43
+            ),
+        ),
     )
 
-    result = splitter._recursively_split_filter(entity.condition,
-                                                entity.condition)
+    result = splitter._recursively_split_filter(entity.condition, entity.condition)
     assert isinstance(entity.condition, LogicalOperation)
     assert result == SplitFilter(
         applicable_filter=entity.condition.left,

@@ -13,6 +13,7 @@ tests build specs the exact way production does — ``connector_config =
 <conn>.config()`` — and assert the type is derived from the connector class with
 no ``AttributeError``.
 """
+
 import asyncio
 
 import pytest
@@ -37,27 +38,35 @@ _CID = 'connector_00000000000000000000000000000000'
 
 
 def _databricks() -> DatabricksConnector:
-    return DatabricksConnector(name='wh',
-                               host='https://workspace.cloud.databricks.com',
-                               cluster_id='', warehouse_id='sql-warehouse',
-                               catalog='main', schema_name='sales')
+    return DatabricksConnector(
+        name='wh',
+        host='https://workspace.cloud.databricks.com',
+        cluster_id='',
+        warehouse_id='sql-warehouse',
+        catalog='main',
+        schema_name='sales',
+    )
 
 
 def _snowflake() -> SnowflakeConnector:
-    return SnowflakeConnector(name='wh', account='acc', warehouse='COMPUTE',
-                              database='DB', schema_name='SALES')
+    return SnowflakeConnector(
+        name='wh',
+        account='acc',
+        warehouse='COMPUTE',
+        database='DB',
+        schema_name='SALES',
+    )
 
 
 def _bigquery() -> BigQueryConnector:
-    return BigQueryConnector(name='wh', project_id='data-project',
-                             dataset_id='sales')
+    return BigQueryConnector(name='wh', project_id='data-project', dataset_id='sales')
 
 
 def _resolved_spec(connector) -> ResolvedConnectorSpec:
     # Mirror production: connector_config is the connector's NATIVE config.
-    return ResolvedConnectorSpec(connector_id=_CID,
-                                 connector_config=connector.config(),
-                                 credentials=None)
+    return ResolvedConnectorSpec(
+        connector_id=_CID, connector_config=connector.config(), credentials=None
+    )
 
 
 _CASES = [
@@ -100,8 +109,7 @@ def test_connector_type_from_unresolved_connector_spec(factory, expected):
 
 
 @pytest.mark.parametrize('factory,expected', _CASES)
-def test_resolve_connector_and_type_returns_instance_and_type(
-        factory, expected):
+def test_resolve_connector_and_type_returns_instance_and_type(factory, expected):
     spec = _resolved_spec(factory())
     connector, connector_type = resolve_connector_and_type(spec)
     assert isinstance(connector, type(factory()))
@@ -111,8 +119,7 @@ def test_resolve_connector_and_type_returns_instance_and_type(
 @pytest.mark.parametrize('factory,expected', _CASES)
 def test_resolve_connector_and_type_async(factory, expected):
     spec = _resolved_spec(factory())
-    connector, connector_type = asyncio.run(
-        resolve_connector_and_type_async(spec))
+    connector, connector_type = asyncio.run(resolve_connector_and_type_async(spec))
     assert isinstance(connector, type(factory()))
     assert connector_type == expected
 

@@ -16,6 +16,7 @@ FileNotFoundError. The short-circuit detects "destination already
 populated" via the ``__SUCCESS_EDGES__`` marker and returns True
 without touching the source files.
 """
+
 from dataclasses import dataclass, field
 from typing import List
 
@@ -33,8 +34,9 @@ class _FakeTable:
     fkeys: List[object] = field(default_factory=lambda: [object()])
 
 
-def _make_dst(graph_path, table_name: str, edge_keys: List[str],
-              with_mask: bool = True) -> None:
+def _make_dst(
+    graph_path, table_name: str, edge_keys: List[str], with_mask: bool = True
+) -> None:
     """Create a fully-materialized destination layout under graph_path."""
     (graph_path / f'{table_name}_{_FKEY_COLS_FILE}').touch()
     if with_mask:
@@ -53,8 +55,7 @@ def _make_bundle(edge_keys: List[str], with_mask: bool = True) -> dict:
     """
     return {
         'reverse_edges': {
-            ek: {'path': '/does/not/exist/edge.parquet'}
-            for ek in edge_keys
+            ek: {'path': '/does/not/exist/edge.parquet'} for ek in edge_keys
         },
         'fkey_cols': {'path': '/does/not/exist/fkey_cols.parquet'},
         'mask': {
@@ -73,8 +74,12 @@ def test_skip_when_all_destinations_present(tmp_path):
 
     # Bundle source paths are bogus; short-circuit must succeed without
     # touching them.
-    assert _bundle_destination_already_materialized(
-        bundle, table, str(tmp_path), edge_persist_paths) is True
+    assert (
+        _bundle_destination_already_materialized(
+            bundle, table, str(tmp_path), edge_persist_paths
+        )
+        is True
+    )
 
 
 def test_no_skip_when_success_marker_missing(tmp_path):
@@ -86,8 +91,12 @@ def test_no_skip_when_success_marker_missing(tmp_path):
     bundle = _make_bundle(edge_keys, with_mask=True)
     edge_persist_paths = {ek: str(tmp_path / ek) for ek in edge_keys}
 
-    assert _bundle_destination_already_materialized(
-        bundle, table, str(tmp_path), edge_persist_paths) is False
+    assert (
+        _bundle_destination_already_materialized(
+            bundle, table, str(tmp_path), edge_persist_paths
+        )
+        is False
+    )
 
 
 def test_no_skip_when_fkey_cols_missing(tmp_path):
@@ -101,8 +110,12 @@ def test_no_skip_when_fkey_cols_missing(tmp_path):
     bundle = _make_bundle(edge_keys, with_mask=True)
     edge_persist_paths = {ek: str(tmp_path / ek) for ek in edge_keys}
 
-    assert _bundle_destination_already_materialized(
-        bundle, table, str(tmp_path), edge_persist_paths) is False
+    assert (
+        _bundle_destination_already_materialized(
+            bundle, table, str(tmp_path), edge_persist_paths
+        )
+        is False
+    )
 
 
 def test_skip_when_mask_absent_in_bundle_and_dst(tmp_path):
@@ -112,8 +125,12 @@ def test_skip_when_mask_absent_in_bundle_and_dst(tmp_path):
     bundle = _make_bundle(edge_keys, with_mask=False)
     edge_persist_paths = {ek: str(tmp_path / ek) for ek in edge_keys}
 
-    assert _bundle_destination_already_materialized(
-        bundle, table, str(tmp_path), edge_persist_paths) is True
+    assert (
+        _bundle_destination_already_materialized(
+            bundle, table, str(tmp_path), edge_persist_paths
+        )
+        is True
+    )
 
 
 def test_no_skip_when_reverse_edges_empty(tmp_path):
@@ -124,8 +141,10 @@ def test_no_skip_when_reverse_edges_empty(tmp_path):
     (tmp_path / f'{table.name}_{_FKEY_COLS_FILE}').touch()
     (tmp_path / f'{table.name}_{_MASK_PARQUET_FILE}').touch()
     bundle = {'reverse_edges': {}, 'fkey_cols': {}, 'mask': {'present': True}}
-    assert _bundle_destination_already_materialized(
-        bundle, table, str(tmp_path), {}) is False
+    assert (
+        _bundle_destination_already_materialized(bundle, table, str(tmp_path), {})
+        is False
+    )
 
 
 def test_no_skip_when_mask_expected_but_dst_missing(tmp_path):
@@ -139,5 +158,9 @@ def test_no_skip_when_mask_expected_but_dst_missing(tmp_path):
     bundle = _make_bundle(edge_keys, with_mask=True)
     edge_persist_paths = {ek: str(tmp_path / ek) for ek in edge_keys}
 
-    assert _bundle_destination_already_materialized(
-        bundle, table, str(tmp_path), edge_persist_paths) is False
+    assert (
+        _bundle_destination_already_materialized(
+            bundle, table, str(tmp_path), edge_persist_paths
+        )
+        is False
+    )

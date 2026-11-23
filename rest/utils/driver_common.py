@@ -81,18 +81,19 @@ log = logging.getLogger(__name__)
 def get_connector_from_spec(connector_spec: ConnectorOpenSpec) -> Connector:
     if isinstance(connector_spec, ConnectorExecutionRef):
         from rest.backends.data_backend import connector_broker
+
         return get_connector_from_spec(
-            connector_broker.connector_credential_broker.resolve(
-                connector_spec))
+            connector_broker.connector_credential_broker.resolve(connector_spec)
+        )
     if isinstance(connector_spec, ResolvedConnectorSpec):
-        connector = cast(Connector,
-                         Connector.from_config(connector_spec.connector_config))
+        connector = cast(
+            Connector, Connector.from_config(connector_spec.connector_config)
+        )
         connector.require_explicit_credentials()
         if connector_spec.credentials is not None:
             connector.set_credentials(connector_spec.credentials.as_dict())
         return connector
-    connector = cast(Connector,
-                     Connector.from_config(connector_spec.connector_config))
+    connector = cast(Connector, Connector.from_config(connector_spec.connector_config))
     return connector
 
 
@@ -100,14 +101,17 @@ def get_connector_from_spec(connector_spec: ConnectorOpenSpec) -> Connector:
 async def get_connector_from_spec_async(
     connector_spec: ConnectorOpenSpec,
     *,
-    resolved_factory: Callable[[ConnectorOpenSpec],
-                               Connector] = get_connector_from_spec,
+    resolved_factory: Callable[
+        [ConnectorOpenSpec], Connector
+    ] = get_connector_from_spec,
 ) -> Connector:
     """Resolve a connector without blocking an async activity event loop."""
     if isinstance(connector_spec, ConnectorExecutionRef):
         from rest.backends.data_backend import connector_broker
+
         resolved = await connector_broker.connector_credential_broker.resolve_async(
-            connector_spec)
+            connector_spec
+        )
         return resolved_factory(resolved)
     return resolved_factory(connector_spec)
 
@@ -177,20 +181,20 @@ def hydrate_graph_config_for_activity(
     connector_configs: dict[str, Any] = {}
     credentials: Dict[ConnectorID, Credentials] = {}
     if graph_config.data_source_dict:
-        raise TypeError('Workflow graph configs must not contain connector '
-                        'configurations')
+        raise TypeError(
+            'Workflow graph configs must not contain connector configurations'
+        )
     for connector_id_value, reference in references.items():
         connector_id = ConnectorID(connector_id_value)
         if not isinstance(reference, ConnectorExecutionRef):
             raise TypeError(
-                'Activity graph configs must contain ConnectorExecutionRef '
-                'values')
+                'Activity graph configs must contain ConnectorExecutionRef values'
+            )
         if reference.connector_id != connector_id:
             raise ValueError(
-                'Activity graph connector key must match reference '
-                'connector_id')
-        resolved = connector_broker.connector_credential_broker.resolve(
-            reference)
+                'Activity graph connector key must match reference connector_id'
+            )
+        resolved = connector_broker.connector_credential_broker.resolve(reference)
         connector = get_connector_from_spec(resolved)
         primary_error: BaseException | None = None
         try:
@@ -210,8 +214,10 @@ def hydrate_graph_config_for_activity(
                     type(primary_error).__name__,
                     type(cleanup_error).__name__,
                 )
-        if (isinstance(resolved, ResolvedConnectorSpec)
-                and resolved.credentials is not None):
+        if (
+            isinstance(resolved, ResolvedConnectorSpec)
+            and resolved.credentials is not None
+        ):
             credentials[connector_id] = resolved.credentials
 
     hydrated.data_source_dict = connector_configs
@@ -232,8 +238,9 @@ def authorized_graph_for_activity(
     provider I/O, cancellation, or a sibling connector cleanup fails.
     """
     if graph_config.data_source_dict:
-        raise TypeError('Workflow graph configs must not contain connector '
-                        'configurations')
+        raise TypeError(
+            'Workflow graph configs must not contain connector configurations'
+        )
 
     hydrated = deepcopy(graph_config)
     connectors: list[Connector] = []
@@ -243,24 +250,23 @@ def authorized_graph_for_activity(
         for connector_id_value, reference in references.items():
             connector_id = ConnectorID(connector_id_value)
             if not isinstance(reference, ConnectorExecutionRef):
-                raise TypeError('Activity graph configs must contain '
-                                'ConnectorExecutionRef values')
+                raise TypeError(
+                    'Activity graph configs must contain ConnectorExecutionRef values'
+                )
             if reference.connector_id != connector_id:
                 raise ValueError(
-                    'Activity graph connector key must match reference '
-                    'connector_id')
+                    'Activity graph connector key must match reference connector_id'
+                )
             connector = get_connector_from_spec(reference)
             connectors.append(connector)
             connector_by_id[str(connector_id)] = connector
 
-        table_connector_ids = {
-            str(table.data_source)
-            for table in graph_config.tables
-        }
+        table_connector_ids = {str(table.data_source) for table in graph_config.tables}
         if set(connector_by_id) != table_connector_ids:
             raise ValueError(
                 'Activity graph connector references must exactly match its '
-                'table data sources')
+                'table data sources'
+            )
         hydrated.data_source_dict = connector_by_id
         yield Graph.from_config(hydrated)
     except BaseException as error:
@@ -275,8 +281,7 @@ def authorized_graph_for_activity(
                 if cleanup_error is None:
                     cleanup_error = error
                 log.warning(
-                    'Activity connector cleanup failed '
-                    '(cleanup_error_type=%s)',
+                    'Activity connector cleanup failed (cleanup_error_type=%s)',
                     type(error).__name__,
                 )
         if primary_error is None and cleanup_error is not None:
@@ -337,10 +342,9 @@ def hydrate_predictive_query_for_activity(
         hydrated.graph,
         references,
     )
-    hydrated = hydrated.with_credentials(credentials={
-        key: value.as_dict()
-        for key, value in credentials.items()
-    })
+    hydrated = hydrated.with_credentials(
+        credentials={key: value.as_dict() for key, value in credentials.items()}
+    )
     return hydrated, credentials
 
 
@@ -355,10 +359,11 @@ def update_timestamps(timestamps: ResourceTimestamps) -> ResourceTimestamps:
     return updated_timestamps
 
 
-def open_connectors(graph: Graph, credentials_dict: Dict[ConnectorID,
-                                                         Credentials]) -> None:
+def open_connectors(
+    graph: Graph, credentials_dict: Dict[ConnectorID, Credentials]
+) -> None:
     data_sources = graph.data_source_dict
-    for (connector_name, connector) in data_sources.items():
+    for connector_name, connector in data_sources.items():
         connector_id = ConnectorID(connector_name)
         credentials: Dict[str, EncryptedStr] = {}
         if connector_id in credentials_dict:
@@ -368,12 +373,22 @@ def open_connectors(graph: Graph, credentials_dict: Dict[ConnectorID,
 
 
 def extract_source_table_type(
-    source_table: SourceTableType
-) -> Tuple[Union[ADLSSourceTable, BigQuerySourceTable, DatabricksSourceTable,
-                 GCSSourceTable, S3SourceTable, SnowflakeSourceTable,
-                 CustomSQLSourceTable], TableName, ConnectorID]:
+    source_table: SourceTableType,
+) -> Tuple[
+    Union[
+        ADLSSourceTable,
+        BigQuerySourceTable,
+        DatabricksSourceTable,
+        GCSSourceTable,
+        S3SourceTable,
+        SnowflakeSourceTable,
+        CustomSQLSourceTable,
+    ],
+    TableName,
+    ConnectorID,
+]:
     """Returns the source table, table name and connector id for the given
-        `source_table`. Every external source table has a connector ID."""
+    `source_table`. Every external source table has a connector ID."""
     if isinstance(source_table, source_table_api.SnowflakeSourceTable):
         source_table = SnowflakeSourceTable(**dataclasses.asdict(source_table))
         source_table_name = source_table.table
@@ -406,10 +421,11 @@ def extract_source_table_type(
         # Reached from the training driver.
         # (`pquery_api_driver.py:2209`, `:2357`).
         raise ValueError(
-            "A local file custom training table is readable only by a backend "
-            "running in the calling process, not by this server.")
+            'A local file custom training table is readable only by a backend '
+            'running in the calling process, not by this server.'
+        )
     else:
-        raise ValueError(f"Invalid source table type: {source_table}")
+        raise ValueError(f'Invalid source table type: {source_table}')
 
     return (source_table, source_table_name, ConnectorID(connector_id))
 
@@ -426,8 +442,7 @@ def prediction_connector_from_job_id(job_id: str) -> ConnectorID:
     return ConnectorID(f'connector_{digest}')
 
 
-def _as_column_args(config: BaseColumnConfig,
-                    is_pkey: bool = False) -> ColumnArgs:
+def _as_column_args(config: BaseColumnConfig, is_pkey: bool = False) -> ColumnArgs:
     if is_pkey:
         stype: Stype = Stype.ID
     else:
@@ -499,9 +514,11 @@ async def generate_bp_stats_workflow_args(
             root_dir=connector_root,
         ).config(),
     )
-    source_table_name = (TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME
-                         if use_transformed_output else
-                         PREDICTIONS_SOURCE_TABLE_NAME)
+    source_table_name = (
+        TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME
+        if use_transformed_output
+        else PREDICTIONS_SOURCE_TABLE_NAME
+    )
 
     # Raw prediction artifacts use the canonical ENTITY column.
     if not use_transformed_output:
@@ -514,10 +531,10 @@ async def generate_bp_stats_workflow_args(
     if use_transformed_output:
         metadata = await load_json_async(
             home_dir_mngr.internal_transformed_predictions_metadata_file,
-            TableMetadataConfig)
+            TableMetadataConfig,
+        )
         cols = [
-            _as_column_args(c, is_pkey=c.name == entity_col_name)
-            for c in metadata.cols
+            _as_column_args(c, is_pkey=c.name == entity_col_name) for c in metadata.cols
         ]
         col_names = [c.name for c in metadata.cols]
         if entity_col_name not in col_names:
@@ -538,9 +555,14 @@ async def generate_bp_stats_workflow_args(
         elif TS_FORMAT_METADATA in col.metadata:
             ts_format = col.metadata[TS_FORMAT_METADATA]
         bp_v2_cols.append(
-            Column(name=col.name, stype=col.stype, dtype=col.dtype,
-                   timestamp_format=ts_format,
-                   multicategorical_delimiter=(col.multicategorical_delimiter)))
+            Column(
+                name=col.name,
+                stype=col.stype,
+                dtype=col.dtype,
+                timestamp_format=ts_format,
+                multicategorical_delimiter=(col.multicategorical_delimiter),
+            )
+        )
     bp_table_def = TableDefinition(
         cols=tuple(bp_v2_cols),
         source_table=bp_src_table,
@@ -558,7 +580,8 @@ async def generate_bp_stats_workflow_args(
         )
         async with async_connector_lifecycle(connector):
             bp_data_version = TableDataVersion(
-                await connector._get_data_version.coroutine(source_table_name))
+                await connector._get_data_version.coroutine(source_table_name)
+            )
     bp_col_stats_set = ColStatsSet.BP
 
     return (bp_connector_spec, bp_table_def, bp_data_version, bp_col_stats_set)

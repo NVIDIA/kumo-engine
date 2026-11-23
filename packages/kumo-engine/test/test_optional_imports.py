@@ -51,8 +51,9 @@ def _imported_modules(path: Path) -> set:
     return found
 
 
-@pytest.mark.parametrize('path', sorted(ENGINE.rglob('*.py')),
-                         ids=lambda p: str(p.relative_to(ENGINE)))
+@pytest.mark.parametrize(
+    'path', sorted(ENGINE.rglob('*.py')), ids=lambda p: str(p.relative_to(ENGINE))
+)
 def test_engine_modules_import_providers_only_through_import_provider(path):
     if path.name == '_extras.py':  # the helper itself
         return
@@ -63,7 +64,8 @@ def test_engine_modules_import_providers_only_through_import_provider(path):
         f'`import kumo.engine` on an install without the matching extra), and '
         f'inside a function it must go through '
         f'kumo.engine.connector._extras.import_provider so a missing extra '
-        f'raises an ImportError that names it.')
+        f'raises an ImportError that names it.'
+    )
 
 
 _BARE_INSTALL = textwrap.dedent('''
@@ -141,9 +143,9 @@ _BARE_INSTALL = textwrap.dedent('''
 def test_file_connector_works_without_any_extra(tmp_path):
     result = subprocess.run(
         [
-            sys.executable, '-c',
-            _BARE_INSTALL.format(blocked=set(OPTIONAL_THIRD_PARTY),
-                                 root=str(tmp_path))
+            sys.executable,
+            '-c',
+            _BARE_INSTALL.format(blocked=set(OPTIONAL_THIRD_PARTY), root=str(tmp_path)),
         ],
         capture_output=True,
         text=True,

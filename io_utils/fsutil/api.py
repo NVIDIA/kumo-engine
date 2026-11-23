@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-""" API definition for fsutil
+"""API definition for fsutil
 Functions defined in this file accept paths as str
 and re-dispatch based on the type returned by ParseURI.
 Filesystem-specific implementations live in impl_*.py
@@ -10,6 +10,7 @@ Uses singledispatch to call an overloaded function based
 on the type of the first argument, defined by type hint.
 https://peps.python.org/pep-0443/
 """
+
 import logging
 import os.path as osp
 import queue
@@ -78,31 +79,40 @@ def read_binary(path: str, compression: bool = False) -> bytes:
 
 
 @singledispatch
-def read_text(path: str, compression: bool = False,
-              encoding: Optional[str] = None) -> str:
+def read_text(
+    path: str, compression: bool = False, encoding: Optional[str] = None
+) -> str:
     return read_text(ParseURI(path), compression=compression, encoding=encoding)
 
 
-def write_binary(path: str, data: Union[bytes, BinaryIO], *,
-                 compression: bool = False, ttl: Optional[timedelta] = None):
+def write_binary(
+    path: str,
+    data: Union[bytes, BinaryIO],
+    *,
+    compression: bool = False,
+    ttl: Optional[timedelta] = None,
+):
     if isinstance(data, bytes):
-        return _write_binary(path, BytesIO(data), compression=compression,
-                             ttl=ttl)
+        return _write_binary(path, BytesIO(data), compression=compression, ttl=ttl)
     else:
         return _write_binary(path, data, compression=compression, ttl=ttl)
 
 
 @singledispatch
-def _write_binary(path: str, data: BinaryIO, compression: bool = False,
-                  ttl: Optional[timedelta] = None) -> None:
+def _write_binary(
+    path: str,
+    data: BinaryIO,
+    compression: bool = False,
+    ttl: Optional[timedelta] = None,
+) -> None:
     return _write_binary(ParseURI(path), data, compression=compression, ttl=ttl)
 
 
 @singledispatch
-def write_text(path: str, data: str, compression: bool = False,
-               encoding: Optional[str] = None) -> None:
-    return write_text(ParseURI(path), data, compression=compression,
-                      encoding=encoding)
+def write_text(
+    path: str, data: str, compression: bool = False, encoding: Optional[str] = None
+) -> None:
+    return write_text(ParseURI(path), data, compression=compression, encoding=encoding)
 
 
 @singledispatch
@@ -171,7 +181,7 @@ def get_handle(
 
 @singledispatch
 def dirsize(path: str) -> int:
-    r""" returns the sum of file sizes under path.
+    r"""returns the sum of file sizes under path.
 
     Args:
         path (str): A file path."""
@@ -200,8 +210,9 @@ def isdir(path: str) -> bool:
 
 
 @blocking_func()
-def get_many_if_present(paths: List[Optional[str]] | List[str],
-                        parallel: bool = True) -> List[Optional[bytes]]:
+def get_many_if_present(
+    paths: List[Optional[str]] | List[str], parallel: bool = True
+) -> List[Optional[bytes]]:
     if not parallel:
         return [_get_if_present(p) if p is not None else None for p in paths]
 
@@ -228,8 +239,7 @@ def listdir(
     suffix: Optional[str] = None,
     max_items: Optional[int] = None,
     detail: Literal[False] = False,
-) -> list[str]:
-    ...
+) -> list[str]: ...
 
 
 @overload
@@ -241,8 +251,7 @@ def listdir(
     suffix: Optional[str] = None,
     max_items: Optional[int] = None,
     detail: Literal[True],
-) -> list[PathDetail]:
-    ...
+) -> list[PathDetail]: ...
 
 
 def listdir(
@@ -269,7 +278,7 @@ def listdir(
             specifically include information about if the entry is file or dir.
     """
     if max_items is not None and max_items <= 0:
-        raise ValueError(f"max_items must be greater than 0, got {max_items}")
+        raise ValueError(f'max_items must be greater than 0, got {max_items}')
 
     # Without these conditions the underlying implementation can eagerly
     # filter using max_items. Same for the if statement in the else block.
@@ -339,8 +348,7 @@ def makedirs(path: str, exist_ok: bool = False) -> None:
     return makedirs(ParseURI(path), exist_ok=exist_ok)
 
 
-def list_remote_directory(source_dir: str,
-                          destination_dir: str) -> List[PathDetail]:
+def list_remote_directory(source_dir: str, destination_dir: str) -> List[PathDetail]:
     makedirs(destination_dir, exist_ok=True)
     try:
         return listdir(source_dir, detail=True)
@@ -385,16 +393,14 @@ def walk_directory_tree(
     waiting for a slot to discover more work.
     """
     transfers: List[tuple[str, str]] = []
-    with ContextPropagatingThreadPoolExecutor(
-            max_workers=max_workers) as executor:
+    with ContextPropagatingThreadPoolExecutor(max_workers=max_workers) as executor:
         completed: queue.SimpleQueue = queue.SimpleQueue()
         pending_destinations: dict = {}
         outstanding = 0
 
         def _submit(source_dir: str, destination_dir: str) -> None:
             nonlocal outstanding
-            future = executor.submit(list_remote_directory, source_dir,
-                                     destination_dir)
+            future = executor.submit(list_remote_directory, source_dir, destination_dir)
             pending_destinations[future] = destination_dir
             outstanding += 1
             future.add_done_callback(completed.put)
@@ -426,8 +432,9 @@ def walk_directory_tree(
 
 
 @singledispatch
-def rm(path: str, ignore_errors: bool = False,
-       include: Optional[List[str]] = None) -> None:
+def rm(
+    path: str, ignore_errors: bool = False, include: Optional[List[str]] = None
+) -> None:
     r"""Recursively delete the file or the directory `path`.
 
     Args:
@@ -450,8 +457,7 @@ def touch(path: str) -> None:
 
 @singledispatch
 def has_write_permission(path: str) -> bool:
-    r"""Return true if the caller has permission to write to the given file.
-    """
+    r"""Return true if the caller has permission to write to the given file."""
     return has_write_permission(ParseURI(path))
 
 
@@ -488,8 +494,8 @@ def generate_directory_read_sas(
     """Return a read/list SAS for one ADLS directory."""
     if not isinstance(path, str):
         raise NotImplementedError(
-            'Directory read SAS generation is not supported for '
-            f'{type(path).__name__}.')
+            f'Directory read SAS generation is not supported for {type(path).__name__}.'
+        )
     return generate_directory_read_sas(
         ParseURI(path),
         validity=validity,
@@ -505,6 +511,7 @@ def generate_directory_read_sas(
 class PartMetadata(Protocol):
     """Protocol matching kumoapi.data_source.PartUploadMetadata and any
     object with part_number + etag attributes."""
+
     part_number: int
     etag: str
 
@@ -530,6 +537,7 @@ class PresignedHelper(ABC, Generic[UriT]):
     * callers can ``await helper.create_multipart_upload.coroutine(...)``
       to run on the thread-pool.
     """
+
     def __init__(self, uri: UriT):
         self._uri = uri
 
@@ -550,20 +558,19 @@ class PresignedHelper(ABC, Generic[UriT]):
         uri = ParseURI(path) if isinstance(path, str) else path
         if type(uri) is not type(self._uri):
             raise ValueError(
-                f'{self.__class__} does not support path URI type: {type(uri)}')
+                f'{self.__class__} does not support path URI type: {type(uri)}'
+            )
         return uri  # type: ignore[return-value]
 
     @abstractmethod
-    def _generate_download_url(self, uri: UriT) -> str:
-        ...
+    def _generate_download_url(self, uri: UriT) -> str: ...
 
     @abstractmethod
     def _create_multipart_upload(
         self,
         uri: UriT,
         num_parts: int,
-    ) -> Tuple[str, Dict[int, str]]:
-        ...
+    ) -> Tuple[str, Dict[int, str]]: ...
 
     @abstractmethod
     def _complete_multipart_upload(
@@ -571,8 +578,7 @@ class PresignedHelper(ABC, Generic[UriT]):
         uri: UriT,
         upload_id: str,
         parts: List[PartMetadata],
-    ) -> None:
-        ...
+    ) -> None: ...
 
     @blocking_method()
     def generate_download_url(self, path: None | str | UriT = None) -> str:
@@ -618,18 +624,19 @@ def atomic_write_text(path: str, data: str, compression: bool = False) -> None:
 
 
 @blocking_func()
-def zip_directory(path: str, recursive: bool = False,
-                  output_path: Optional[str] = None) -> str:
+def zip_directory(
+    path: str, recursive: bool = False, output_path: Optional[str] = None
+) -> str:
     """Zip all files under *path* into a single archive and return the path
     to the resulting zip file."""
     return _zip_directory(path, recursive=recursive, output_path=output_path)
 
 
 @singledispatch
-def _zip_directory(path, recursive: bool = False,
-                   output_path: Optional[str] = None) -> str:
-    return _zip_directory(ParseURI(path), recursive=recursive,
-                          output_path=output_path)
+def _zip_directory(
+    path, recursive: bool = False, output_path: Optional[str] = None
+) -> str:
+    return _zip_directory(ParseURI(path), recursive=recursive, output_path=output_path)
 
 
 @blocking_func()
@@ -643,8 +650,7 @@ def zip_files(paths: Sequence[str], output_path: str) -> str:
 
 @singledispatch
 def _zip_files(path, paths: Sequence[AnyURI], output_path: str) -> str:
-    raise NotImplementedError(
-        f'zip_files is not implemented for {type(path).__name__}')
+    raise NotImplementedError(f'zip_files is not implemented for {type(path).__name__}')
 
 
 @singledispatch

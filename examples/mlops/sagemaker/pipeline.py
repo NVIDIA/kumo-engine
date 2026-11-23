@@ -42,20 +42,29 @@ def build_pipeline(
 
     # the SDK's client-side role check wants VPC rights this does not use
     os.environ.setdefault('SAGEMAKER_VALIDATE_ROLE', 'false')
-    bucket, _, prefix = artifact_root.removeprefix('s3://').rstrip(
-        '/').partition('/')
-    sagemaker_prefix = '/'.join(filter(None, [prefix.rpartition('/')[0],
-                                              'sagemaker']))
-    session = PipelineSession(default_bucket=bucket,
-                              default_bucket_prefix=sagemaker_prefix)
+    bucket, _, prefix = artifact_root.removeprefix('s3://').rstrip('/').partition('/')
+    sagemaker_prefix = '/'.join(filter(None, [prefix.rpartition('/')[0], 'sagemaker']))
+    session = PipelineSession(
+        default_bucket=bucket, default_bucket_prefix=sagemaker_prefix
+    )
     env = {
         'MLFLOW_TRACKING_URI': tracking_arn,
         'MLFLOW_EXPERIMENT_NAME': experiment,
     }
     flags = [
-        '--artifact-root', artifact_root, '--source', data_root,
-        '--registry', 'mlflow', '--model-name', model_name, '--alias',
-        alias, f'--table-prefix={table_prefix}', '--on-error', on_error
+        '--artifact-root',
+        artifact_root,
+        '--source',
+        data_root,
+        '--registry',
+        'mlflow',
+        '--model-name',
+        model_name,
+        '--alias',
+        alias,
+        f'--table-prefix={table_prefix}',
+        '--on-error',
+        on_error,
     ]
 
     trainer = ModelTrainer(
@@ -63,14 +72,22 @@ def build_pipeline(
         role=role,
         compute=Compute(instance_type=fit_instance_type, instance_count=1),
         source_code=SourceCode(
-            source_dir=code, command='python fit_job.py',
-            args=[*flags, *(['--query', query] if query else []),
-                  '--scratch-dir', '/tmp/kumo',
-                  '--model-path-file', '/opt/ml/model/model_path']),
+            source_dir=code,
+            command='python fit_job.py',
+            args=[
+                *flags,
+                *(['--query', query] if query else []),
+                '--scratch-dir',
+                '/tmp/kumo',
+                '--model-path-file',
+                '/opt/ml/model/model_path',
+            ],
+        ),
         environment=env,
         output_data_config=OutputDataConfig(
             s3_output_path=f's3://{bucket}/{sagemaker_prefix}/output',
-            compression_type='NONE'),
+            compression_type='NONE',
+        ),
         sagemaker_session=session,
     )
     fit = TrainingStep(name='Fit', step_args=trainer.train())
@@ -89,31 +106,48 @@ def build_pipeline(
         step_args=processor.run(
             inputs=[
                 ProcessingInput(
-                    input_name='code', s3_input=ProcessingS3Input(
-                        s3_uri=code, s3_data_type='S3Prefix',
-                        local_path=PROCESS_CODE, s3_input_mode='File')),
+                    input_name='code',
+                    s3_input=ProcessingS3Input(
+                        s3_uri=code,
+                        s3_data_type='S3Prefix',
+                        local_path=PROCESS_CODE,
+                        s3_input_mode='File',
+                    ),
+                ),
                 ProcessingInput(
-                    input_name='model', s3_input=ProcessingS3Input(
+                    input_name='model',
+                    s3_input=ProcessingS3Input(
                         s3_uri=fit.properties.ModelArtifacts.S3ModelArtifacts,
-                        s3_data_type='S3Prefix', local_path=PROCESS_MODEL,
-                        s3_input_mode='File')),
+                        s3_data_type='S3Prefix',
+                        local_path=PROCESS_MODEL,
+                        s3_input_mode='File',
+                    ),
+                ),
             ],
             arguments=[
-                *flags, '--scratch-dir', '/opt/ml/processing/scratch',
-                '--model-path-file', f'{PROCESS_MODEL}/model_path'
+                *flags,
+                '--scratch-dir',
+                '/opt/ml/processing/scratch',
+                '--model-path-file',
+                f'{PROCESS_MODEL}/model_path',
             ],
         ),
         depends_on=[fit],
     )
-    return Pipeline(name=name, steps=[fit, predict],
-                    sagemaker_session=session)
+    return Pipeline(name=name, steps=[fit, predict], sagemaker_session=session)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--name', default='kumo-engine-users-churn')
-    for flag in ('--role', '--image', '--code', '--data-root',
-                 '--artifact-root', '--tracking-arn'):
+    for flag in (
+        '--role',
+        '--image',
+        '--code',
+        '--data-root',
+        '--artifact-root',
+        '--tracking-arn',
+    ):
         parser.add_argument(flag, required=True)
     parser.add_argument('--experiment', default='kumo-engine-users-churn')
     parser.add_argument('--fit-instance-type', required=True)
@@ -122,8 +156,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument('--query', help="fit_job.py's query by default")
     parser.add_argument('--model-name', default='users-churn')
     parser.add_argument('--table-prefix', default='')
-    parser.add_argument('--on-error', choices=('raise', 'warn'),
-                        default='raise')
+    parser.add_argument('--on-error', choices=('raise', 'warn'), default='raise')
     parser.add_argument('--start', action='store_true')
     args = vars(parser.parse_args(argv))
     start = args.pop('start')

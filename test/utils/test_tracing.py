@@ -15,15 +15,15 @@ from io_utils import logging as kumo_logging
 from monitoring import tracing
 from monitoring.tracing import TraceOptions
 
-TEST_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), ".test_files")
+TEST_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '.test_files')
 CARRIER = None
 
 
 @pytest.fixture(autouse=True, scope='function')
 def setup_and_teardown_test():
     kumo_logging.initialize_logging(
-        log_to_file=False,
-        logging_level_overrides={'monitoring': logging.DEBUG})
+        log_to_file=False, logging_level_overrides={'monitoring': logging.DEBUG}
+    )
     fsutil.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
 
     yield
@@ -35,11 +35,11 @@ def setup_and_teardown_test():
 
 def test_tracing_simple():
     """Test a simple tracing example with three nested functions."""
-    tracing.initialize_tracing(name="test_tracing", output_dir=TEST_OUTPUT_DIR)
+    tracing.initialize_tracing(name='test_tracing', output_dir=TEST_OUTPUT_DIR)
     tracing.enable_tracing()
 
     tracing_dir = tracing.get_output_dir()
-    file = os.path.join(tracing_dir, "tracing-test_tracing.txt")
+    file = os.path.join(tracing_dir, 'tracing-test_tracing.txt')
 
     # Execution tree:
     #
@@ -49,60 +49,66 @@ def test_tracing_simple():
     #
     tts_func_one(a=1, b=2)
 
-    with open(file, "r", encoding="utf-8") as f:
+    with open(file, 'r', encoding='utf-8') as f:
         json_out = [json.loads(x) for x in f.readlines()]
 
-    keyed_by_name = {item["name"]: item for item in json_out}
+    keyed_by_name = {item['name']: item for item in json_out}
 
-    assert keyed_by_name["test.utils.test_tracing.tts_func_one"][
-        "parent_id"] is None
+    assert keyed_by_name['test.utils.test_tracing.tts_func_one']['parent_id'] is None
     expected_attributes = {
-        "params.a": 1,
-        "params.b": 2,
-        "return": -20,
+        'params.a': 1,
+        'params.b': 2,
+        'return': -20,
     }
-    assert keyed_by_name["test.utils.test_tracing.tts_func_one"][
-        "attributes"] == expected_attributes
-
-    assert (keyed_by_name["test.utils.test_tracing.tts_func_two"]["parent_id"]
-            == keyed_by_name["test.utils.test_tracing.tts_func_one"]["context"]
-            ["span_id"])
-    expected_attributes = {
-        "params.c": 1,
-        "params.d": 4,
-        "return": -20,
-    }
-    assert keyed_by_name["test.utils.test_tracing.tts_func_two"][
-        "attributes"] == expected_attributes
+    assert (
+        keyed_by_name['test.utils.test_tracing.tts_func_one']['attributes']
+        == expected_attributes
+    )
 
     assert (
-        keyed_by_name["test.utils.test_tracing.tts_func_three"]["parent_id"] ==
-        keyed_by_name["test.utils.test_tracing.tts_func_two"]["context"]
-        ["span_id"])
+        keyed_by_name['test.utils.test_tracing.tts_func_two']['parent_id']
+        == keyed_by_name['test.utils.test_tracing.tts_func_one']['context']['span_id']
+    )
     expected_attributes = {
-        "params.e": 1,
-        "params.f": 6,
-        "return": -5,
+        'params.c': 1,
+        'params.d': 4,
+        'return': -20,
     }
-    assert keyed_by_name["test.utils.test_tracing.tts_func_three"][
-        "attributes"] == expected_attributes
+    assert (
+        keyed_by_name['test.utils.test_tracing.tts_func_two']['attributes']
+        == expected_attributes
+    )
+
+    assert (
+        keyed_by_name['test.utils.test_tracing.tts_func_three']['parent_id']
+        == keyed_by_name['test.utils.test_tracing.tts_func_two']['context']['span_id']
+    )
+    expected_attributes = {
+        'params.e': 1,
+        'params.f': 6,
+        'return': -5,
+    }
+    assert (
+        keyed_by_name['test.utils.test_tracing.tts_func_three']['attributes']
+        == expected_attributes
+    )
 
 
 def test_tracing_exception_handling():
     """Tests that exceptions are handled gracefully & stored in trace logs."""
 
-    tracing.initialize_tracing(name="test_tracing", output_dir=TEST_OUTPUT_DIR)
+    tracing.initialize_tracing(name='test_tracing', output_dir=TEST_OUTPUT_DIR)
     tracing.enable_tracing()
 
     tracing_dir = tracing.get_output_dir()
-    file = os.path.join(tracing_dir, "tracing-test_tracing.txt")
+    file = os.path.join(tracing_dir, 'tracing-test_tracing.txt')
 
     try:
         func_exception()
     except CustomException:
         pass
 
-    with open(file, "r", encoding="utf-8") as f:
+    with open(file, 'r', encoding='utf-8') as f:
         json_trace = json.loads(f.readline())
 
     assert json_trace['status']['status_code'] == 'ERROR'
@@ -151,19 +157,20 @@ def test_provider_boundaries_keep_span_export_secret_free(caplog):
     sql_secret = 'snowflake-inline-credential-secret-canary'
     query = (
         "COPY INTO 's3://safe/output' FROM safe_table "
-        "CREDENTIALS = ("
+        'CREDENTIALS = ('
         f"AWS_KEY_ID = 'access' AWS_SECRET_KEY = '{sql_secret}' "
-        "AWS_TOKEN = 'token')")
+        "AWS_TOKEN = 'token')"
+    )
     context = Mock()
     context.cursor.return_value.execute.side_effect = RuntimeError(canary)
-    connector = SnowflakeConnector('snowflake', 'account', 'warehouse',
-                                   'database', 'schema')
+    connector = SnowflakeConnector(
+        'snowflake', 'account', 'warehouse', 'database', 'schema'
+    )
     with pytest.raises(RuntimeError):
         connector.execute_meta_query(context, query)
 
     tracing.shutdown_tracing()
-    trace_file = os.path.join(tracing.get_output_dir(),
-                              'tracing-provider_safe.txt')
+    trace_file = os.path.join(tracing.get_output_dir(), 'tracing-provider_safe.txt')
     with open(trace_file, 'r', encoding='utf-8') as file:
         exported = file.read()
 
@@ -177,29 +184,31 @@ def test_provider_boundaries_keep_span_export_secret_free(caplog):
     assert 'CREDENTIALS' not in caplog.text
     spans = [json.loads(line) for line in exported.splitlines()]
     assert spans
-    assert all(not any(event.get('name') == 'exception'
-                       for event in span.get('events', [])) for span in spans)
+    assert all(
+        not any(event.get('name') == 'exception' for event in span.get('events', []))
+        for span in spans
+    )
 
 
 def test_tracing_span_passing():
     """Tests that spans can successfully be passed to decorated functions."""
 
-    tracing.initialize_tracing(name="test_tracing", output_dir=TEST_OUTPUT_DIR)
+    tracing.initialize_tracing(name='test_tracing', output_dir=TEST_OUTPUT_DIR)
     tracing.enable_tracing()
 
     tracing_dir = tracing.get_output_dir()
-    file = os.path.join(tracing_dir, "tracing-test_tracing.txt")
+    file = os.path.join(tracing_dir, 'tracing-test_tracing.txt')
 
     ttsp_func(a=1, b=2)
 
-    with open(file, "r", encoding="utf-8") as f:
+    with open(file, 'r', encoding='utf-8') as f:
         json_trace = json.loads(f.readline())
 
     assert json_trace['attributes'] == {
         'params.a': 1,
         'params.b': 2,
         'a + b': 3,
-        'return': 3
+        'return': 3,
     }
 
 
@@ -210,33 +219,33 @@ def test_tracing_initialize_and_enable_tracing(caplog: LogCaptureFixture):
     tracing.enable_tracing()
     with caplog.at_level(logging.DEBUG):
         func_no_children(a=1, b=2)
-        assert "Tracing is not enabled or initialized" in caplog.text
+        assert 'Tracing is not enabled or initialized' in caplog.text
     tracing.disable_tracing()
 
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         func_no_children(a=1, b=2)
-        assert "Tracing is not enabled or initialized" in caplog.text
+        assert 'Tracing is not enabled or initialized' in caplog.text
 
     # Post-initialization tests
-    tracing.initialize_tracing(name="test_tracing", output_dir=TEST_OUTPUT_DIR)
+    tracing.initialize_tracing(name='test_tracing', output_dir=TEST_OUTPUT_DIR)
     tracing_dir = tracing.get_output_dir()
-    file = os.path.join(tracing_dir, "tracing-test_tracing.txt")
+    file = os.path.join(tracing_dir, 'tracing-test_tracing.txt')
 
     # 1) pre-enabling
     assert tracing.is_tracing_initialized()
     assert not tracing.is_tracing_enabled()
 
     func_no_children(a=1, b=2)
-    with open(file, "r", encoding="utf-8") as f:
-        assert f.readline() == ""
+    with open(file, 'r', encoding='utf-8') as f:
+        assert f.readline() == ''
 
     # 2) post-enabling
     tracing.enable_tracing()
 
     func_no_children(a=1, b=2)
-    with open(file, "r", encoding="utf-8") as f:
-        assert f.readline() != ""
+    with open(file, 'r', encoding='utf-8') as f:
+        assert f.readline() != ''
 
     assert tracing.is_tracing_enabled()
 
@@ -249,7 +258,7 @@ def test_tracing_shutdown_tracing():
     tracing.enable_tracing()
 
     tracing.initialize_tracing(
-        name="test_tracing",
+        name='test_tracing',
         span_exporters=[tracing.SpanExporterType.FILE],
         output_dir=TEST_OUTPUT_DIR,
     )
@@ -260,7 +269,7 @@ def test_tracing_shutdown_tracing():
 
     # Initialize tracing for all examples
     tracing.initialize_tracing(
-        name="test_tracing_2",
+        name='test_tracing_2',
         span_exporters=[tracing.SpanExporterType.FILE],
         output_dir=TEST_OUTPUT_DIR,
     )
@@ -268,29 +277,28 @@ def test_tracing_shutdown_tracing():
     func_no_children(a=3, b=4)
 
     tracing_dir = tracing.get_output_dir()
-    file_one = os.path.join(tracing_dir, "tracing-test_tracing.txt")
-    file_two = os.path.join(tracing_dir, "tracing-test_tracing_2.txt")
+    file_one = os.path.join(tracing_dir, 'tracing-test_tracing.txt')
+    file_two = os.path.join(tracing_dir, 'tracing-test_tracing_2.txt')
 
-    with open(file_one, "r", encoding="utf-8") as f:
+    with open(file_one, 'r', encoding='utf-8') as f:
         json_one = json.loads(f.readline())
-    with open(file_two, "r", encoding="utf-8") as f:
+    with open(file_two, 'r', encoding='utf-8') as f:
         json_two = json.loads(f.readline())
 
-    assert json_one["attributes"]["params.a"] == 1
-    assert json_one["attributes"]["params.b"] == 2
-    assert json_two["attributes"]["params.a"] == 3
-    assert json_two["attributes"]["params.b"] == 4
+    assert json_one['attributes']['params.a'] == 1
+    assert json_one['attributes']['params.b'] == 2
+    assert json_two['attributes']['params.a'] == 3
+    assert json_two['attributes']['params.b'] == 4
 
 
 def test_tracing_span_propagation():
     """Tests span propagation between two functions with a common carrier."""
 
-    tracing.initialize_tracing(name="test_tracing_sp",
-                               output_dir=TEST_OUTPUT_DIR)
+    tracing.initialize_tracing(name='test_tracing_sp', output_dir=TEST_OUTPUT_DIR)
     tracing.enable_tracing()
 
     tracing_dir = tracing.get_output_dir()
-    file = os.path.join(tracing_dir, "tracing-test_tracing_sp.txt")
+    file = os.path.join(tracing_dir, 'tracing-test_tracing_sp.txt')
 
     # client performs function, obtains CARRIER (here, stored globally)
     ttsp_func_client(a=1, b=2)
@@ -300,20 +308,27 @@ def test_tracing_span_propagation():
     ttsp_func_server(c=2, d=3, carrier=CARRIER)
 
     json_out = None
-    with open(file, "r", encoding="utf-8") as f:
+    with open(file, 'r', encoding='utf-8') as f:
         json_out = [json.loads(x) for x in f.readlines()]
 
-    keyed_by_name = {item["name"]: item for item in json_out}
+    keyed_by_name = {item['name']: item for item in json_out}
 
-    assert keyed_by_name['test.utils.test_tracing.ttsp_func_client'][
-        'context']['trace_id'] == keyed_by_name[
-            'test.utils.test_tracing.ttsp_func_server']['context']['trace_id']
+    assert (
+        keyed_by_name['test.utils.test_tracing.ttsp_func_client']['context']['trace_id']
+        == keyed_by_name['test.utils.test_tracing.ttsp_func_server']['context'][
+            'trace_id'
+        ]
+    )
 
-    assert keyed_by_name['test.utils.test_tracing.ttsp_func_client'][
-        'parent_id'] is None
-    assert keyed_by_name['test.utils.test_tracing.ttsp_func_server'][
-        'parent_id'] == keyed_by_name[
-            'test.utils.test_tracing.ttsp_func_client']['context']['span_id']
+    assert (
+        keyed_by_name['test.utils.test_tracing.ttsp_func_client']['parent_id'] is None
+    )
+    assert (
+        keyed_by_name['test.utils.test_tracing.ttsp_func_server']['parent_id']
+        == keyed_by_name['test.utils.test_tracing.ttsp_func_client']['context'][
+            'span_id'
+        ]
+    )
 
 
 # NOTE: Unable to test Jaeger (as it requires the Jaeger backend to be
@@ -326,7 +341,7 @@ def test_tracing_span_exporters():
     # real stdout file descriptor.
     buffer = io.StringIO()
     tracing.initialize_tracing(
-        name="test_tracing",
+        name='test_tracing',
         span_exporters=[
             tracing.SpanExporterType.CONSOLE,
             tracing.SpanExporterType.FILE,
@@ -338,7 +353,7 @@ def test_tracing_span_exporters():
 
     func_no_children(a=1, b=2)
 
-    assert "func_no_children" in buffer.getvalue()
+    assert 'func_no_children' in buffer.getvalue()
 
 
 # FUNCTIONS
@@ -374,8 +389,12 @@ def ttsp_func(a: int, b: int, **kwargs) -> int:
 
 
 @tracing.trace(
-    TraceOptions(trace_params=True, trace_return_value=True,
-                 propagate_span=tracing.SpanPropagatorType.TEXTMAP))
+    TraceOptions(
+        trace_params=True,
+        trace_return_value=True,
+        propagate_span=tracing.SpanPropagatorType.TEXTMAP,
+    )
+)
 def ttsp_func_client(a: int, b: int, **kwargs):
     global CARRIER
     CARRIER = kwargs['span_carrier']
@@ -384,8 +403,11 @@ def ttsp_func_client(a: int, b: int, **kwargs):
 
 @tracing.trace(
     TraceOptions(
-        trace_params=True, trace_return_value=True,
-        use_propagated_span=(tracing.SpanPropagatorType.TEXTMAP, None)))
+        trace_params=True,
+        trace_return_value=True,
+        use_propagated_span=(tracing.SpanPropagatorType.TEXTMAP, None),
+    )
+)
 def ttsp_func_server(c: int, d: int, **kwargs):
     return c + d
 
@@ -404,4 +426,4 @@ class CustomException(Exception):
 
 @tracing.trace()
 def func_exception():
-    raise CustomException("This is an exception.")
+    raise CustomException('This is an exception.')

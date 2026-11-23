@@ -48,12 +48,12 @@ def test_metadata_and_reads_keep_sdk_authority(storage, service, monkeypatch):
     assert [entry.path for entry in entries] == [path]
     with arrow.open_input_file(path) as reader:
         assert reader.read() == service.files['curated/orders/events.parquet']
-    assert native.get_file_info(
-        'curated/orders/events.parquet').type == FileType.NotFound
+    assert (
+        native.get_file_info('curated/orders/events.parquet').type == FileType.NotFound
+    )
 
 
-@pytest.mark.parametrize('key',
-                         ['orders/plain.bin', 'orders/a space %2F # ü.bin'])
+@pytest.mark.parametrize('key', ['orders/plain.bin', 'orders/a space %2F # ü.bin'])
 def test_output_is_native_stream_and_preserves_literal_key(storage, key):
     arrow, native, _ = storage
     with arrow.open_output_stream(AUTHORITY + '/' + key) as writer:
@@ -77,8 +77,7 @@ def test_generated_parquet_writer_uses_native_output(storage):
         assert pq.read_table(reader).equals(table)
 
 
-def test_shared_sink_copies_prepared_file_through_native_stream(
-        storage, tmp_path):
+def test_shared_sink_copies_prepared_file_through_native_stream(storage, tmp_path):
     arrow, native, _ = storage
     # Cross the shared sink's 8 MiB copy boundary, including a final short write.
     payload = bytes(range(256)) * ((8 << 20) // 256) + b'last chunk'
@@ -91,7 +90,8 @@ def test_shared_sink_copies_prepared_file_through_native_stream(
 
 @pytest.mark.parametrize('operation', ['open_output_stream', 'create_dir'])
 def test_wrong_account_is_rejected_before_native_output_binding(
-        storage, monkeypatch, operation):
+    storage, monkeypatch, operation
+):
     arrow, _, _ = storage
     opened = []
 
@@ -102,14 +102,14 @@ def test_wrong_account_is_rejected_before_native_output_binding(
 
     arrow.handler.output_filesystem = UnopenedOutput()
     with pytest.raises(ValueError, match='bound storage account'):
-        getattr(arrow,
-                operation)('curated@otherlake.dfs.core.windows.net/orders/x')
+        getattr(arrow, operation)('curated@otherlake.dfs.core.windows.net/orders/x')
     assert opened == []
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
 def test_sink_generated_table_routes_native_and_reads_sdk(
-        service, connector, monkeypatch, extension):
+    service, connector, monkeypatch, extension
+):
     import pandas as pd
     from fakes import FakeFile
     from kumo_adls.sink import ADLSSinkBackend
@@ -121,26 +121,27 @@ def test_sink_generated_table_routes_native_and_reads_sdk(
     monkeypatch.setattr(ADLSFileSystem, 'put_file', unexpected_upload)
     monkeypatch.setattr(FakeFile, 'upload_data', unexpected_upload)
     backend = ADLSSinkBackend()
-    backend.write_table(connector(), 'result.' + extension,
-                        pd.DataFrame({'id': [1, 2]}),
-                        write_mode=WriteMode.OVERWRITE)
+    backend.write_table(
+        connector(),
+        'result.' + extension,
+        pd.DataFrame({'id': [1, 2]}),
+        write_mode=WriteMode.OVERWRITE,
+    )
     path = 'curated/orders/result.' + extension
     payload = service.files[path]
     if extension == 'parquet':
-        assert pq.read_table(pa.BufferReader(payload)).to_pydict() == {
-            'id': [1, 2]
-        }
+        assert pq.read_table(pa.BufferReader(payload)).to_pydict() == {'id': [1, 2]}
     else:
         assert payload.decode().splitlines() == ['"id"', '1', '2']
-    filesystem, destination = backend._destination(connector(),
-                                                   'result.' + extension)
+    filesystem, destination = backend._destination(connector(), 'result.' + extension)
     assert filesystem.get_file_info(destination).size == len(payload)
     with filesystem.open_input_file(destination) as stream:
         assert stream.read() == payload
 
 
 def test_sink_factory_is_lazy_for_reads_and_reused_for_concurrent_outputs(
-        service, connector, monkeypatch):
+    service, connector, monkeypatch
+):
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
@@ -156,27 +157,27 @@ def test_sink_factory_is_lazy_for_reads_and_reused_for_concurrent_outputs(
 
     monkeypatch.setattr('kumo_adls.sink.filesystem_for', factory)
     filesystem, _ = ADLSSinkBackend()._destination(connector(), 'unused')
-    with filesystem.open_input_file(AUTHORITY +
-                                    '/orders/events.parquet') as stream:
+    with filesystem.open_input_file(AUTHORITY + '/orders/events.parquet') as stream:
         assert stream.read(4) == b'PAR1'
     assert calls == []
 
     def write(index):
         barrier.wait(timeout=5)
-        with filesystem.open_output_stream(AUTHORITY +
-                                           f'/orders/out-{index}') as stream:
+        with filesystem.open_output_stream(
+            AUTHORITY + f'/orders/out-{index}'
+        ) as stream:
             stream.write(str(index).encode())
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(write, range(4)))
     assert len(calls) == 1
     for index in range(4):
-        assert service.files[f'curated/orders/out-{index}'] == str(
-            index).encode()
+        assert service.files[f'curated/orders/out-{index}'] == str(index).encode()
 
 
 def test_sink_unsupported_output_factory_does_not_block_model_reads(
-        service, connector, monkeypatch, tmp_path):
+    service, connector, monkeypatch, tmp_path
+):
     from kumo_adls.sink import ADLSSinkBackend
 
     def unsupported(*args):
@@ -193,7 +194,8 @@ def test_sink_unsupported_output_factory_does_not_block_model_reads(
 
 
 def test_sink_integrates_real_local_native_stream_and_shared_copy(
-        service, connector, monkeypatch, tmp_path):
+    service, connector, monkeypatch, tmp_path
+):
     from kumo_adls.sink import ADLSSinkBackend
 
     native = SubTreeFileSystem(str(tmp_path), LocalFileSystem())
@@ -210,7 +212,8 @@ def test_sink_integrates_real_local_native_stream_and_shared_copy(
 
 
 def test_export_metadata_fence_rejects_other_identity_before_native_open(
-        service, connector, monkeypatch, tmp_path):
+    service, connector, monkeypatch, tmp_path
+):
     from kumo_adls.sink import ADLSSinkBackend
     from kumo_core.artifact_export import (
         ArtifactDestinationConflict,
@@ -220,8 +223,7 @@ def test_export_metadata_fence_rejects_other_identity_before_native_open(
     source = tmp_path / 'source.parquet'
     pq.write_table(pa.table({'id': [1]}), source)
     backend = ADLSSinkBackend()
-    backend.write_files(connector(), 'predictions/', [str(source)],
-                        export_id='first')
+    backend.write_files(connector(), 'predictions/', [str(source)], export_id='first')
     marker = 'curated/orders/predictions/_KUMO_EXPORT'
     assert service.files[marker].decode() == export_marker('first')
     committed = dict(service.files)
@@ -231,15 +233,16 @@ def test_export_metadata_fence_rejects_other_identity_before_native_open(
 
     monkeypatch.setattr('kumo_adls.sink.filesystem_for', unexpected_factory)
     with pytest.raises(ArtifactDestinationConflict, match='another export'):
-        backend.write_files(connector(), 'predictions/', [str(source)],
-                            export_id='second')
+        backend.write_files(
+            connector(), 'predictions/', [str(source)], export_id='second'
+        )
     assert service.files == committed
 
 
-@pytest.mark.parametrize('operation',
-                         ['write_table', 'write_files', 'publish_model'])
+@pytest.mark.parametrize('operation', ['write_table', 'write_files', 'publish_model'])
 def test_unsupported_native_config_fails_before_sdk_mutation(
-        service, connector, monkeypatch, tmp_path, operation):
+    service, connector, monkeypatch, tmp_path, operation
+):
     import pandas as pd
     from kumo_adls.sink import ADLSSinkBackend
 
@@ -261,11 +264,13 @@ def test_unsupported_native_config_fails_before_sdk_mutation(
     (bundle / 'model.bin').write_bytes(b'model')
     with pytest.raises(NotImplementedError, match='unsupported native output'):
         if operation == 'write_table':
-            backend.write_table(connector(), 'new/output.parquet',
-                                pd.DataFrame({'id': [1]}))
+            backend.write_table(
+                connector(), 'new/output.parquet', pd.DataFrame({'id': [1]})
+            )
         elif operation == 'write_files':
-            backend.write_files(connector(), 'new/predictions/', [str(source)],
-                                export_id='test')
+            backend.write_files(
+                connector(), 'new/predictions/', [str(source)], export_id='test'
+            )
         else:
             backend.publish_model(connector(), str(bundle), path='new/model')
     assert len(calls) == 1
@@ -274,18 +279,16 @@ def test_unsupported_native_config_fails_before_sdk_mutation(
     assert service.created == initial_created
 
 
-@pytest.mark.parametrize('operation',
-                         ['write_table', 'write_files', 'publish_model'])
-def test_native_exports_skip_sdk_directory_preparation(service, connector,
-                                                       monkeypatch, tmp_path,
-                                                       operation):
+@pytest.mark.parametrize('operation', ['write_table', 'write_files', 'publish_model'])
+def test_native_exports_skip_sdk_directory_preparation(
+    service, connector, monkeypatch, tmp_path, operation
+):
     import pandas as pd
     from fakes import FakeFile
     from kumo_adls.sink import ADLSSinkBackend
 
     def forbidden(*args, **kwargs):
-        pytest.fail(
-            'Native exports must not create directories through the SDK')
+        pytest.fail('Native exports must not create directories through the SDK')
 
     monkeypatch.setattr(FakeFile, 'create_directory', forbidden)
     # Preparing this root must not attempt to create its ancestor "orders".
@@ -293,19 +296,16 @@ def test_native_exports_skip_sdk_directory_preparation(service, connector,
     prefix = 'curated/orders/team/'
     backend = ADLSSinkBackend()
     if operation == 'write_table':
-        backend.write_table(target, 'new/results.parquet',
-                            pd.DataFrame({'id': [1]}))
+        backend.write_table(target, 'new/results.parquet', pd.DataFrame({'id': [1]}))
         contents = service.files[prefix + 'new/results.parquet']
-        assert pq.read_table(pa.BufferReader(contents)).to_pydict() == {
-            'id': [1]
-        }
+        assert pq.read_table(pa.BufferReader(contents)).to_pydict() == {'id': [1]}
     elif operation == 'write_files':
         source = tmp_path / 'source.parquet'
         pq.write_table(pa.table({'id': [1]}), source)
-        backend.write_files(target, 'new/predictions/', [str(source)],
-                            export_id='test')
+        backend.write_files(target, 'new/predictions/', [str(source)], export_id='test')
         outputs = [
-            data for name, data in service.files.items()
+            data
+            for name, data in service.files.items()
             if name.startswith(prefix + 'new/predictions/')
         ]
         assert source.read_bytes() in outputs
@@ -317,12 +317,12 @@ def test_native_exports_skip_sdk_directory_preparation(service, connector,
         (bundle / 'nested/weights.bin').write_bytes(b'weights')
         backend.publish_model(target, str(bundle), path='new/model')
         assert service.files[prefix + 'new/model/model.bin'] == b'model'
-        assert service.files[prefix +
-                             'new/model/nested/weights.bin'] == b'weights'
+        assert service.files[prefix + 'new/model/nested/weights.bin'] == b'weights'
 
 
 def test_directory_preparation_validates_without_creating_output(
-        service, connector, monkeypatch):
+    service, connector, monkeypatch
+):
     from conftest import FakeNativeFilesystem
     from kumo_adls.sink import ADLSSinkBackend
 
@@ -333,8 +333,7 @@ def test_directory_preparation_validates_without_creating_output(
         return FakeNativeFilesystem(service)
 
     monkeypatch.setattr('kumo_adls.sink.filesystem_for', factory)
-    filesystem, path = ADLSSinkBackend()._destination(connector(),
-                                                      'new/nested/')
+    filesystem, path = ADLSSinkBackend()._destination(connector(), 'new/nested/')
     initial_directories = set(service.directories)
     initial_files = dict(service.files)
 

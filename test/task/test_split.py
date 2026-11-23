@@ -4,7 +4,6 @@
 
 import copy
 import pathlib
-from test.fixtures.dg_indexed_graph import materialize_task_dg
 
 import pandas as pd
 import pytest
@@ -29,29 +28,34 @@ from kumo.task.split import (
     TimeRangeSplit,
 )
 from kumo.testing.pquery import disable_pre_validation, get_validated_query
+from test.fixtures.dg_indexed_graph import materialize_task_dg
 
 _SKIP_REASON_DG_GAP_FORECASTING_TIMEFRAMES = (
-    "blocked-gap: forecasting split-stats need a target_distribution that the DG "
-    "split-stats builder does not emit for forecasting tasks, so the split-stats "
-    "contract check aborts; also no DG-native fixture for the entity/actions "
-    "tiny graph.")
+    'blocked-gap: forecasting split-stats need a target_distribution that the DG '
+    'split-stats builder does not emit for forecasting tasks, so the split-stats '
+    'contract check aborts; also no DG-native fixture for the entity/actions '
+    'tiny graph.'
+)
 
 _SKIP_REASON_DG_GAP_FORECASTING_TXN_SESSIONS = (
-    "blocked-gap: SESSIONS-filtered forecasting split-stats need a "
-    "target_distribution the DG split-stats builder does not emit for "
-    "forecasting tasks; the Approx cases also use a split type DG forecasting "
-    "validation rejects.")
+    'blocked-gap: SESSIONS-filtered forecasting split-stats need a '
+    'target_distribution the DG split-stats builder does not emit for '
+    'forecasting tasks; the Approx cases also use a split type DG forecasting '
+    'validation rejects.'
+)
 
 _SKIP_REASON_DG_GAP_STATIC_TEMPORAL_SPLIT = (
-    "blocked-gap: static node-prediction under a temporal split is not "
-    "materializable on DG (TimeRangeSplit/TimeSplit is hard-guarded; "
-    "TemporalSplit yields zero training rows), so the asserted non-empty "
-    "per-split counts cannot be produced.")
+    'blocked-gap: static node-prediction under a temporal split is not '
+    'materializable on DG (TimeRangeSplit/TimeSplit is hard-guarded; '
+    'TemporalSplit yields zero training rows), so the asserted non-empty '
+    'per-split counts cannot be produced.'
+)
 
 _SKIP_REASON_DG_GAP_DATE_OFFSET_ADJUSTMENT_FIRING = (
-    "blocked-gap: the date-offset-split auto-adjustment fires only on an index "
-    "gap from an empty timeframe, but the DG producer enumerates only surviving "
-    "timeframes with consecutive indices, so the firing branch is unreachable.")
+    'blocked-gap: the date-offset-split auto-adjustment fires only on an index '
+    'gap from an empty timeframe, but the DG producer enumerates only surviving '
+    'timeframes with consecutive indices, so the firing branch is unreachable.'
+)
 
 TEST_GRAPH_NAME = 'kumo_test_graph'
 TEST_PQUERY_NAME = 'kumo_test_pquery'
@@ -65,8 +69,10 @@ def test_random_split(dg_indexed_financial_graph, tmp_path):
         name='RANDOM_SPLIT_v1',
         graph=graph,
         validated_predictive_query=get_validated_query(
-            graph, 'PREDICT TRAINING_CLASSIFICATION.STATUS '
-            'FOR EACH TRAINING_CLASSIFICATION.LOAN_ID'),
+            graph,
+            'PREDICT TRAINING_CLASSIFICATION.STATUS '
+            'FOR EACH TRAINING_CLASSIFICATION.LOAN_ID',
+        ),
         split=RandomSplit([0.8, 0.2]),
     )
     assert str(pquery.split) == 'RandomSplit([0.8, 0.2])'
@@ -84,7 +90,8 @@ def test_random_split(dg_indexed_financial_graph, tmp_path):
     assert 0.75 < train_frac < 0.85, (
         f'unexpected train fraction {train_frac:.3f} '
         f'(train={int(train_mask_tensor.sum())}, '
-        f'val={int(val_mask_tensor.sum())})')
+        f'val={int(val_mask_tensor.sum())})'
+    )
     assert (train_mask_tensor & val_mask_tensor).sum() == 0
 
 
@@ -94,8 +101,7 @@ def test_fixed_split():
     assert not split.is_temporal_split
 
 
-def test_empty_test_set(dg_indexed_temporal_synthetic_node_pred_graph,
-                        tmp_path):
+def test_empty_test_set(dg_indexed_temporal_synthetic_node_pred_graph, tmp_path):
     # A target window wide relative to the fixture's 15-day ORDERS span (SUM
     # over a 7-day window) collapses the post-filter timeframe count to 1 (< the
     # 3 needed for the default 3-way temporal split), so the post-generation
@@ -103,8 +109,10 @@ def test_empty_test_set(dg_indexed_temporal_synthetic_node_pred_graph,
     # returned ValidationResponse.
     graph, index_path = dg_indexed_temporal_synthetic_node_pred_graph
     graph.infer_metadata().infer_encoders()
-    query = ('PREDICT SUM(ORDERS.ORDER_SCORE, 0, 7) FOR EACH USERS.USER_ID '
-             'WHERE SUM(ORDERS.ORDER_SCORE, -4, 0) > 0')
+    query = (
+        'PREDICT SUM(ORDERS.ORDER_SCORE, 0, 7) FOR EACH USERS.USER_ID '
+        'WHERE SUM(ORDERS.ORDER_SCORE, -4, 0) > 0'
+    )
     validated_predictive_query = get_validated_query(graph, query)
     pquery = PredictiveQueryV2(
         name=TEST_PQUERY_NAME,
@@ -112,15 +120,18 @@ def test_empty_test_set(dg_indexed_temporal_synthetic_node_pred_graph,
         validated_predictive_query=validated_predictive_query,
     )
     _, _, validation_response = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path, destination=str(tmp_path)
+    )
     assert not validation_response.ok
     assert any(
-        error.title.startswith("Insufficient train table timeframes")
-        for error in validation_response.errors)
+        error.title.startswith('Insufficient train table timeframes')
+        for error in validation_response.errors
+    )
 
 
 def test_irregular_date_offset_split(
-        dg_indexed_short_span_temporal_node_pred_graph, tmp_path):
+    dg_indexed_short_span_temporal_node_pred_graph, tmp_path
+):
     # An irregular DateOffsetSplit([-1,0]) is rejected because the graph supplies
     # too few timeframes: the timeframe-vs-split validator raises "needs at least
     # N timeframes, but only M are available", wrapped as the producer's
@@ -138,30 +149,33 @@ def test_irregular_date_offset_split(
         split=DateOffsetSplit([-1, 0]),
     )
     _, _, validation_response = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path, destination=str(tmp_path)
+    )
     assert not validation_response.ok
     assert any(
-        "needs at least" in error.message and "timeframes" in error.message
-        for error in validation_response.errors)
+        'needs at least' in error.message and 'timeframes' in error.message
+        for error in validation_response.errors
+    )
 
 
-@pytest.mark.parametrize('split', [
-    RandomSplit,
-    TemporalSplit,
-])
+@pytest.mark.parametrize(
+    'split',
+    [
+        RandomSplit,
+        TemporalSplit,
+    ],
+)
 def test_random_and_temporal_split_value_error(split):
-    with pytest.raises(ValueError,
-                       match=r"'ratio' exceeds more than 100% of the data"):
+    with pytest.raises(ValueError, match=r"'ratio' exceeds more than 100% of the data"):
         split([0.5, 0.5, 0.5])
 
-    with pytest.raises(ValueError, match=r"No more than three training splits"):
+    with pytest.raises(ValueError, match=r'No more than three training splits'):
         split([0.3, 0.3, 0.2, 0.2])
 
-    with pytest.raises(ValueError, match=r"At least two training splits"):
+    with pytest.raises(ValueError, match=r'At least two training splits'):
         split([0.0])
 
-    with pytest.raises(ValueError,
-                       match=r"'ratio' can not contain negative values"):
+    with pytest.raises(ValueError, match=r"'ratio' can not contain negative values"):
         split([-0.3, 0.6, 0.7])
 
     if split == TemporalSplit:
@@ -170,26 +184,29 @@ def test_random_and_temporal_split_value_error(split):
 
 
 def test_time_range_split_value_error():
-    with pytest.raises(ValueError, match=r"No more than three"):
-        TimeRangeSplit([('1970-01-03', '1970-01-07'),
-                        ('1970-01-07', '1970-01-09'),
-                        ('1970-01-09', '1970-01-11'),
-                        ('1970-01-11', '1970-01-13')])
+    with pytest.raises(ValueError, match=r'No more than three'):
+        TimeRangeSplit(
+            [
+                ('1970-01-03', '1970-01-07'),
+                ('1970-01-07', '1970-01-09'),
+                ('1970-01-09', '1970-01-11'),
+                ('1970-01-11', '1970-01-13'),
+            ]
+        )
 
-    with pytest.raises(ValueError, match=r"At least two"):
+    with pytest.raises(ValueError, match=r'At least two'):
         TimeRangeSplit([('1970-01-03', '1970-01-07')])
 
-    with pytest.raises(ValueError, match=r"end date needs to be smaller"):
-        TimeRangeSplit([('1970-01-07', '1970-01-03'),
-                        ('1970-01-07', '1970-01-09')])
+    with pytest.raises(ValueError, match=r'end date needs to be smaller'):
+        TimeRangeSplit([('1970-01-07', '1970-01-03'), ('1970-01-07', '1970-01-09')])
 
-    with pytest.raises(ValueError, match=r"different time ranges can not"):
-        TimeRangeSplit([('1970-01-03', '1970-01-07'),
-                        ('1970-01-05', '1970-01-09')])
+    with pytest.raises(ValueError, match=r'different time ranges can not'):
+        TimeRangeSplit([('1970-01-03', '1970-01-07'), ('1970-01-05', '1970-01-09')])
 
 
-def test_static_node_pred_split_table_stats(dg_indexed_static_node_pred_graph,
-                                            tmp_path: pathlib.Path):
+def test_static_node_pred_split_table_stats(
+    dg_indexed_static_node_pred_graph, tmp_path: pathlib.Path
+):
     # Per-split SplitTrainTableStats counts for a static node-pred regression
     # query (PREDICT USERS.PAYMENTS FOR EACH USERS.USER_ID) over USER_ID 0..3,
     # PAYMENTS [10,20,40,80]: 3 train rows/entities/targets, 1 val, no test.
@@ -233,8 +250,9 @@ def test_static_node_pred_split_table_stats(dg_indexed_static_node_pred_graph,
     assert split_stats.test_table_stats is None
 
 
-def test_split_table_stats(dg_indexed_temporal_synthetic_node_pred_graph,
-                           tmp_path: pathlib.Path):
+def test_split_table_stats(
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path
+):
     # Per-split SplitTrainTableStats for a temporal SUM-regression query: each
     # stage gets a populated target_distribution (regression histogram) and real
     # per-split min/max dates. The fixture is USERS + ORDERS(ORDER_SCORE,
@@ -320,7 +338,8 @@ def test_split_table_stats(dg_indexed_temporal_synthetic_node_pred_graph,
 
 
 def test_validation_empty_train_split(
-        dg_indexed_temporal_node_pred_orders_graph, tmp_path):
+    dg_indexed_temporal_node_pred_orders_graph, tmp_path
+):
     # Asserts the insufficient-timeframes-for-split contract fires for both an
     # LP (LIST_DISTINCT ... RANK TOP) and a node-pred (COUNT) temporal query; a
     # target window wide relative to the fixture's ORDERS span drives the
@@ -333,12 +352,14 @@ def test_validation_empty_train_split(
     #     (LP RANK TOP) -> pre-generation timeframe-vs-split check ("<split>
     #     needs at least N timeframes, but only M are available"), wrapped as the
     #     producer's TrainingTableGenerationError in the validation_response.
-    insufficient_timeframes = ("Insufficient train table timeframes to create "
-                               "train, validation and test sets")
+    insufficient_timeframes = (
+        'Insufficient train table timeframes to create train, validation and test sets'
+    )
 
     # --- node-pred COUNT, default 3-way split: post-generation validator ---
     graph, index_path = dg_indexed_temporal_node_pred_orders_graph(
-        num_users=10, num_stores=8, num_edges=560)
+        num_users=10, num_stores=8, num_edges=560
+    )
     graph.infer_metadata().infer_encoders()
     query = 'PREDICT COUNT(ORDERS.STORE_ID, 0, 180) FOR EACH USERS.USER_ID'
     validated_predictive_query = get_validated_query(graph, query)
@@ -348,18 +369,23 @@ def test_validation_empty_train_split(
         validated_predictive_query=validated_predictive_query,
     )
     _, _, validation_response = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path / 'node'))
+        diskgraph_index_path=index_path, destination=str(tmp_path / 'node')
+    )
     assert not validation_response.ok
-    assert any(error.title == insufficient_timeframes
-               for error in validation_response.errors)
+    assert any(
+        error.title == insufficient_timeframes for error in validation_response.errors
+    )
 
     # --- LP LIST_DISTINCT RANK TOP, explicit matched DateOffsetSplit:
     #     pre-generation timeframe-vs-split validator ---
     graph_lp, index_path_lp = dg_indexed_temporal_node_pred_orders_graph(
-        num_users=10, num_stores=8, num_edges=560)
+        num_users=10, num_stores=8, num_edges=560
+    )
     graph_lp.infer_metadata().infer_encoders()
-    query_lp = ('PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 180) RANK TOP 3 '
-                'FOR EACH USERS.USER_ID')
+    query_lp = (
+        'PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 180) RANK TOP 3 '
+        'FOR EACH USERS.USER_ID'
+    )
     validated_predictive_query_lp = get_validated_query(graph_lp, query_lp)
     pquery_lp = PredictiveQueryV2(
         name='TEMPORAL_LINK_TEST_PQUERY',
@@ -368,172 +394,185 @@ def test_validation_empty_train_split(
         split=DateOffsetSplit([-180, 0], timeframe=180),
     )
     _, _, validation_response_lp = pquery_lp.generate_train_table(
-        diskgraph_index_path=index_path_lp, destination=str(tmp_path / 'lp'))
+        diskgraph_index_path=index_path_lp, destination=str(tmp_path / 'lp')
+    )
     assert not validation_response_lp.ok
     assert any(
-        "needs at least" in error.message and "timeframes" in error.message
-        for error in validation_response_lp.errors)
+        'needs at least' in error.message and 'timeframes' in error.message
+        for error in validation_response_lp.errors
+    )
 
 
-@pytest.mark.parametrize('params', [
-    dict(
-        split=[0.8, 0.2],
-        unit='days',
-        expected_sum=[546, 136],
-        expected_time_periods=[
-            ('1993-07-05', '1998-01-27'),
-            ('1998-01-29', '1998-12-08'),
-        ],
-    ),
-])
+@pytest.mark.parametrize(
+    'params',
+    [
+        dict(
+            split=[0.8, 0.2],
+            unit='days',
+            expected_sum=[546, 136],
+            expected_time_periods=[
+                ('1993-07-05', '1998-01-27'),
+                ('1998-01-29', '1998-12-08'),
+            ],
+        ),
+    ],
+)
 def test_temporal_split(params):
     split = TemporalSplit(params['split'])
     assert str(split) == f'TemporalSplit({params["split"]})'
     assert split.is_temporal_split
 
 
-@pytest.mark.parametrize('params', [
-    dict(
-        split=[-36, -14],
-        offset_unit='days',
-        unit='days',
-        anchor_start_offset=0,
-        timeframe=7,
-        timeframe_step=None,
-        flexible_boundaries=True,
-        expected_timeframe=7,
-        expected_sum=[664, 6, 10],
-        expected_time_periods=[
-            ('1993-07-05', '1998-10-27'),
-            ('1998-10-27', '1998-11-24'),
-            ('1998-11-24', '1998-12-15'),
-        ],
-    ),
-    dict(
-        split=[-15, -14],
-        offset_unit='days',
-        unit='days',
-        anchor_start_offset=0,
-        timeframe=15,
-        timeframe_step=None,
-        flexible_boundaries=True,
-        expected_timeframe=15,
-        expected_sum=[664, 1, 10],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-08'),
-            ('1998-11-08', '1998-11-23'),
-            ('1998-11-23', '1998-12-23'),
-        ],
-    ),
-    dict(
-        split=[-29, -14],
-        offset_unit='days',
-        unit='days',
-        timeframe=None,
-        anchor_start_offset=0,
-        timeframe_step=None,
-        flexible_boundaries=True,
-        expected_timeframe=15,
-        expected_sum=[664, 1, 10],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-08'),
-            ('1998-11-08', '1998-11-23'),
-            ('1998-11-23', '1998-12-23'),
-        ],
-    ),
-    dict(
-        split=[-30, -16],
-        offset_unit='days',
-        unit='days',
-        timeframe=None,
-        anchor_start_offset=0,
-        timeframe_step=6,
-        flexible_boundaries=True,
-        expected_timeframe=14,
-        expected_sum=[664, 1, 12],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-02'),
-            ('1998-11-02', '1998-11-20'),
-            ('1998-11-20', '1998-12-22'),
-        ],
-    ),
-    dict(
-        split=[-14, 0],
-        offset_unit='days',
-        unit='days',
-        timeframe=None,
-        anchor_start_offset=0,
-        timeframe_step=None,
-        flexible_boundaries=True,
-        expected_timeframe=14,
-        expected_sum=[669, 0, 1],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-24'),
-            ('1998-11-24', '1998-12-08'),
-            ('1998-12-08', '1998-12-22'),
-        ],
-    ),
-    dict(
-        split=[-14],
-        offset_unit='days',
-        unit='days',
-        timeframe=None,
-        anchor_start_offset=0,
-        timeframe_step=None,
-        flexible_boundaries=True,
-        expected_split=[-14],
-        expected_timeframe=14,
-        expected_sum=[669, 10],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-24'),
-            ('1998-11-24', '1998-12-22'),
-        ],
-    ),
-    dict(
-        split=[-15, -14],
-        offset_unit='days',
-        unit='days',
-        timeframe=15,
-        anchor_start_offset=0,
-        timeframe_step=None,
-        flexible_boundaries=False,
-        expected_timeframe=15,
-        expected_sum=[668, 0, 10],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-23'),
-            ('1998-11-23', '1998-11-24'),
-            ('1998-11-24', '1998-12-23'),
-        ],
-    ),
-    dict(
-        split=[-1, 0],
-        offset_unit='months',
-        unit='days',
-        timeframe=15,
-        anchor_start_offset=0,
-        timeframe_step=None,
-        flexible_boundaries=False,
-        expected_timeframe=15,
-        expected_sum=[664, 5, 1],
-        expected_time_periods=[
-            ('1993-07-05', '1998-11-08'),
-            ('1998-11-08', '1998-12-08'),
-            ('1998-12-08', '1998-12-23'),
-        ],
-    ),
-])
+@pytest.mark.parametrize(
+    'params',
+    [
+        dict(
+            split=[-36, -14],
+            offset_unit='days',
+            unit='days',
+            anchor_start_offset=0,
+            timeframe=7,
+            timeframe_step=None,
+            flexible_boundaries=True,
+            expected_timeframe=7,
+            expected_sum=[664, 6, 10],
+            expected_time_periods=[
+                ('1993-07-05', '1998-10-27'),
+                ('1998-10-27', '1998-11-24'),
+                ('1998-11-24', '1998-12-15'),
+            ],
+        ),
+        dict(
+            split=[-15, -14],
+            offset_unit='days',
+            unit='days',
+            anchor_start_offset=0,
+            timeframe=15,
+            timeframe_step=None,
+            flexible_boundaries=True,
+            expected_timeframe=15,
+            expected_sum=[664, 1, 10],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-08'),
+                ('1998-11-08', '1998-11-23'),
+                ('1998-11-23', '1998-12-23'),
+            ],
+        ),
+        dict(
+            split=[-29, -14],
+            offset_unit='days',
+            unit='days',
+            timeframe=None,
+            anchor_start_offset=0,
+            timeframe_step=None,
+            flexible_boundaries=True,
+            expected_timeframe=15,
+            expected_sum=[664, 1, 10],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-08'),
+                ('1998-11-08', '1998-11-23'),
+                ('1998-11-23', '1998-12-23'),
+            ],
+        ),
+        dict(
+            split=[-30, -16],
+            offset_unit='days',
+            unit='days',
+            timeframe=None,
+            anchor_start_offset=0,
+            timeframe_step=6,
+            flexible_boundaries=True,
+            expected_timeframe=14,
+            expected_sum=[664, 1, 12],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-02'),
+                ('1998-11-02', '1998-11-20'),
+                ('1998-11-20', '1998-12-22'),
+            ],
+        ),
+        dict(
+            split=[-14, 0],
+            offset_unit='days',
+            unit='days',
+            timeframe=None,
+            anchor_start_offset=0,
+            timeframe_step=None,
+            flexible_boundaries=True,
+            expected_timeframe=14,
+            expected_sum=[669, 0, 1],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-24'),
+                ('1998-11-24', '1998-12-08'),
+                ('1998-12-08', '1998-12-22'),
+            ],
+        ),
+        dict(
+            split=[-14],
+            offset_unit='days',
+            unit='days',
+            timeframe=None,
+            anchor_start_offset=0,
+            timeframe_step=None,
+            flexible_boundaries=True,
+            expected_split=[-14],
+            expected_timeframe=14,
+            expected_sum=[669, 10],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-24'),
+                ('1998-11-24', '1998-12-22'),
+            ],
+        ),
+        dict(
+            split=[-15, -14],
+            offset_unit='days',
+            unit='days',
+            timeframe=15,
+            anchor_start_offset=0,
+            timeframe_step=None,
+            flexible_boundaries=False,
+            expected_timeframe=15,
+            expected_sum=[668, 0, 10],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-23'),
+                ('1998-11-23', '1998-11-24'),
+                ('1998-11-24', '1998-12-23'),
+            ],
+        ),
+        dict(
+            split=[-1, 0],
+            offset_unit='months',
+            unit='days',
+            timeframe=15,
+            anchor_start_offset=0,
+            timeframe_step=None,
+            flexible_boundaries=False,
+            expected_timeframe=15,
+            expected_sum=[664, 5, 1],
+            expected_time_periods=[
+                ('1993-07-05', '1998-11-08'),
+                ('1998-11-08', '1998-12-08'),
+                ('1998-12-08', '1998-12-23'),
+            ],
+        ),
+    ],
+)
 def test_date_offset_split(params):
-    split = DateOffsetSplit(params['split'], offset_unit=params['offset_unit'],
-                            unit=params['unit'], timeframe=params['timeframe'],
-                            anchor_start_offset=params['anchor_start_offset'],
-                            timeframe_step=params['timeframe_step'],
-                            flexible_boundaries=params['flexible_boundaries'])
+    split = DateOffsetSplit(
+        params['split'],
+        offset_unit=params['offset_unit'],
+        unit=params['unit'],
+        timeframe=params['timeframe'],
+        anchor_start_offset=params['anchor_start_offset'],
+        timeframe_step=params['timeframe_step'],
+        flexible_boundaries=params['flexible_boundaries'],
+    )
     assert str(split) == (
         f'DateOffsetSplit({params["split"]}, '
         f'offset_unit={params["offset_unit"]}, '
         f'unit={params["unit"]}, timeframe={params["expected_timeframe"]}, '
         f'anchor_start_offset={params["anchor_start_offset"]}, '
-        f'timeframe_step={params["timeframe_step"]})')
+        f'timeframe_step={params["timeframe_step"]})'
+    )
     assert split.is_temporal_split
 
 
@@ -678,7 +717,8 @@ def test_date_offset_split(params):
                 ('1994-01-01T000000', '1994-12-31T235959'),
             ],
         ),
-    ])
+    ],
+)
 def test_time_range_split(params):
     split = TimeRangeSplit(
         params['split'],
@@ -689,14 +729,15 @@ def test_time_range_split(params):
         flexible_boundaries=params['flexible_boundaries'],
     )
 
-    time_range_repr = repr([(pd.Timestamp(start), pd.Timestamp(end))
-                            for (start, end) in params["split"]
-                            ]).replace("'", "")
+    time_range_repr = repr(
+        [(pd.Timestamp(start), pd.Timestamp(end)) for (start, end) in params['split']]
+    ).replace("'", '')
     assert str(split) == (
         f'TimeRangeSplit({time_range_repr}, '
         f'unit={params["unit"]}, timeframe={params["timeframe"]}, '
         f'anchor_start_offset={params["anchor_start_offset"]}, '
-        f'timeframe_step={params["timeframe_step"]})')
+        f'timeframe_step={params["timeframe_step"]})'
+    )
     assert split.is_temporal_split
 
 
@@ -705,15 +746,17 @@ def test_manual_split_basic():
     # The column name is quoted: a plan stores this repr and has to parse it
     # back, and a column name is arbitrary user data -- `my split` or
     # `2024_fold` are not Python identifiers and do not survive unquoted.
-    assert str(split) == ("ManualSplit(col='col', train_value=0, "
-                          "val_value=10, test_value=2)")
+    assert str(split) == (
+        "ManualSplit(col='col', train_value=0, val_value=10, test_value=2)"
+    )
     assert not split.is_temporal_split
 
 
 def test_manual_split_no_test():
     split = ManualSplit(col='col', val_value=10)
-    assert str(split) == ("ManualSplit(col='col', train_value=0, "
-                          "val_value=10, test_value=None)")
+    assert str(split) == (
+        "ManualSplit(col='col', train_value=0, val_value=10, test_value=None)"
+    )
     assert not split.is_temporal_split
 
 
@@ -726,9 +769,7 @@ def test_manual_split_reads_a_legacy_serialized_column():
     # fixture.
     legacy = {
         '_target_': 'kumo.task.split.ManualSplit',
-        'col': {
-            'name': 'SPLIT'
-        },
+        'col': {'name': 'SPLIT'},
         'train_value': 0,
         'val_value': 1,
         'test_value': 2,
@@ -741,8 +782,10 @@ def test_manual_split_reads_a_legacy_serialized_column():
 
     assert isinstance(split, ManualSplit)
     assert split.col == 'SPLIT'
-    assert split.fpid == ManualSplit(col='SPLIT', train_value=0, val_value=1,
-                                     test_value=2).fpid
+    assert (
+        split.fpid
+        == ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2).fpid
+    )
     assert legacy['col'] == {'name': 'SPLIT'}, 'must not mutate the caller'
 
 
@@ -753,14 +796,15 @@ def test_manual_split_config_still_round_trips():
 
 
 def test_manual_split_value_list():
-    split = ManualSplit(col='col', train_value=[1, 2], val_value=[3, 4],
-                        test_value=5)
-    assert str(split) == ("ManualSplit(col='col', train_value=[1, 2], "
-                          "val_value=[3, 4], test_value=5)")
+    split = ManualSplit(col='col', train_value=[1, 2], val_value=[3, 4], test_value=5)
+    assert str(split) == (
+        "ManualSplit(col='col', train_value=[1, 2], val_value=[3, 4], test_value=5)"
+    )
 
 
 def test_validation_empty_val_split(
-        dg_indexed_temporal_synthetic_node_pred_graph, tmp_path):
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path
+):
     # Asserts (a) the "Insufficient train table timeframes" error and (b) zero
     # warnings alongside it. A 7-day SUM window over the fixture's 15-day ORDERS
     # span collapses to 1 post-filter timeframe (< the 3 needed for the default
@@ -768,8 +812,10 @@ def test_validation_empty_val_split(
     # the error in the returned ValidationResponse.
     graph, index_path = dg_indexed_temporal_synthetic_node_pred_graph
     graph.infer_metadata().infer_encoders()
-    query = ('PREDICT SUM(ORDERS.ORDER_SCORE, 0, 7) FOR EACH USERS.USER_ID '
-             'WHERE SUM(ORDERS.ORDER_SCORE, -4, 0) > 0')
+    query = (
+        'PREDICT SUM(ORDERS.ORDER_SCORE, 0, 7) FOR EACH USERS.USER_ID '
+        'WHERE SUM(ORDERS.ORDER_SCORE, -4, 0) > 0'
+    )
     validated_predictive_query = get_validated_query(graph, query)
 
     pquery = PredictiveQueryV2(
@@ -779,16 +825,19 @@ def test_validation_empty_val_split(
     )
 
     _, _, validation_response = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path, destination=str(tmp_path)
+    )
     assert not validation_response.ok
     assert any(
-        error.title.startswith("Insufficient train table timeframes")
-        for error in validation_response.errors)
+        error.title.startswith('Insufficient train table timeframes')
+        for error in validation_response.errors
+    )
     assert len(validation_response.warnings) == 0
 
 
 def test_validation_empty_test_split(
-        dg_indexed_temporal_synthetic_node_pred_graph, tmp_path):
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path
+):
     # Asserts empty-training-table detection under a TimeRangeSplit. On DG a
     # gapped TimeRangeSplit is not a distinct per-split-emptiness error (a 3rd
     # window that misses the data just yields a smaller non-empty table), so a
@@ -798,25 +847,31 @@ def test_validation_empty_test_split(
     # TimeRangeSplit is kept over the fixture's 2023 ORDERS span.
     graph, index_path = dg_indexed_temporal_synthetic_node_pred_graph
     graph.infer_metadata().infer_encoders()
-    query = ('PREDICT MAX(ORDERS.ORDER_SCORE, 0, 1) FOR EACH USERS.USER_ID '
-             'WHERE SUM(ORDERS.ORDER_SCORE, -INF, 0) > 100000')
+    query = (
+        'PREDICT MAX(ORDERS.ORDER_SCORE, 0, 1) FOR EACH USERS.USER_ID '
+        'WHERE SUM(ORDERS.ORDER_SCORE, -INF, 0) > 100000'
+    )
     validated_predictive_query = get_validated_query(graph, query)
 
     pquery = PredictiveQueryV2(
         name=TEST_PQUERY_NAME,
         graph=graph,
         validated_predictive_query=validated_predictive_query,
-        split=TimeRangeSplit([
-            ('2023-01-02', '2023-01-05'),
-            ('2023-01-05', '2023-01-07'),
-            ('2023-01-10', '2023-01-12'),
-        ]),
+        split=TimeRangeSplit(
+            [
+                ('2023-01-02', '2023-01-05'),
+                ('2023-01-05', '2023-01-07'),
+                ('2023-01-10', '2023-01-12'),
+            ]
+        ),
     )
     _, _, validation_response = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path, destination=str(tmp_path)
+    )
     assert not validation_response.ok
-    assert any(error.title == 'Empty training table'
-               for error in validation_response.errors)
+    assert any(
+        error.title == 'Empty training table' for error in validation_response.errors
+    )
 
 
 def test_default_split_for_link_pred(
@@ -824,8 +879,9 @@ def test_default_split_for_link_pred(
     tmp_path,
 ):
     graph = small_temporal_graph_fixed(tmp_path=tmp_path)
-    query = ("PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 3) RANK TOP 3 FOR "
-             "EACH USERS.USER_ID")
+    query = (
+        'PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 3) RANK TOP 3 FOR EACH USERS.USER_ID'
+    )
     validated_predictive_query = get_validated_query(graph, query)
     pquery = PredictiveQueryV2(
         graph=graph,
@@ -848,10 +904,13 @@ def test_automatic_approximate_date_offset_split_adjustment_basic(
     # 2023 TIMESTAMP origin (1970-era dates clamp to a 2262 sentinel on DG);
     # absolute date values are derived for that origin.
     graph, index_path = dg_indexed_temporal_node_pred_orders_graph(
-        num_users=10, num_stores=8, num_edges=560)
+        num_users=10, num_stores=8, num_edges=560
+    )
     graph.infer_metadata()
-    query = ('PREDICT SUM(ORDERS.ORDER_VALUE_2, 0, 4) FOR EACH USERS.USER_ID '
-             'WHERE LAST(ORDERS.STORE_ID, -6, 0) = 3')
+    query = (
+        'PREDICT SUM(ORDERS.ORDER_VALUE_2, 0, 4) FOR EACH USERS.USER_ID '
+        'WHERE LAST(ORDERS.STORE_ID, -6, 0) = 3'
+    )
     validated_predictive_query = get_validated_query(graph, query)
     # Default split for a temporal query is `ApproxDateOffsetSplit`.
     pquery = PredictiveQueryV2(
@@ -903,55 +962,78 @@ def test_automatic_approximate_date_offset_split_adjustment_basic(
     [
         # Custom `DateOffsetSplit` is NOT adjusted (offsets preserved).
         dict(
-            query=(
-                'PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID'),
+            query=('PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID'),
             split=DateOffsetSplit([-24, -12], timeframe=6),
             expected_date_offset_split=DateOffsetSplit(
-                [-24, -12], unit=TimeUnit.DAYS, timeframe=6,
-                timeframe_step=None, flexible_boundaries=False),
+                [-24, -12],
+                unit=TimeUnit.DAYS,
+                timeframe=6,
+                timeframe_step=None,
+                flexible_boundaries=False,
+            ),
         ),
         # Custom train/val `DateOffsetSplit` ([0]) is NOT adjusted.
         dict(
-            query=(
-                'PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID'),
+            query=('PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID'),
             split=DateOffsetSplit([0], timeframe=6),
             expected_date_offset_split=DateOffsetSplit(
-                [0], unit=TimeUnit.DAYS, timeframe=6, timeframe_step=None,
-                flexible_boundaries=False),
+                [0],
+                unit=TimeUnit.DAYS,
+                timeframe=6,
+                timeframe_step=None,
+                flexible_boundaries=False,
+            ),
         ),
         # Custom train/val/test `DateOffsetSplit` where val/test boundary is
         # `0` is NOT adjusted (no entity filter -> no empty val timeframe).
         dict(
-            query=(
-                'PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID'),
+            query=('PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID'),
             split=DateOffsetSplit([-8, 0], timeframe=6),
             expected_date_offset_split=DateOffsetSplit(
-                [-8, 0], unit=TimeUnit.DAYS, timeframe=6, timeframe_step=None,
-                flexible_boundaries=False),
+                [-8, 0],
+                unit=TimeUnit.DAYS,
+                timeframe=6,
+                timeframe_step=None,
+                flexible_boundaries=False,
+            ),
         ),
         # `DateOffsetSplit` where unit is hours: unit / anchor_start_offset
         # preserved, offsets unchanged.
         dict(
-            query=('PREDICT COUNT(ORDERS.STORE_ID, 24, 48, hours) FOR EACH '
-                   'USERS.USER_ID'),
+            query=(
+                'PREDICT COUNT(ORDERS.STORE_ID, 24, 48, hours) FOR EACH USERS.USER_ID'
+            ),
             split=DateOffsetSplit([-48, 0], timeframe=24),
             expected_date_offset_split=DateOffsetSplit(
-                [-48, 0], unit=TimeUnit.HOURS, offset_unit=TimeUnit.HOURS,
-                timeframe=24, anchor_start_offset=24, timeframe_step=None,
-                flexible_boundaries=False),
+                [-48, 0],
+                unit=TimeUnit.HOURS,
+                offset_unit=TimeUnit.HOURS,
+                timeframe=24,
+                anchor_start_offset=24,
+                timeframe_step=None,
+                flexible_boundaries=False,
+            ),
         ),
         # `DateOffsetSplit` where unit is minutes: unit / anchor_start_offset
         # preserved, offsets unchanged.
         dict(
-            query=('PREDICT COUNT(ORDERS.STORE_ID, 1440, 2880, minutes) '
-                   'FOR EACH USERS.USER_ID'),
+            query=(
+                'PREDICT COUNT(ORDERS.STORE_ID, 1440, 2880, minutes) '
+                'FOR EACH USERS.USER_ID'
+            ),
             split=DateOffsetSplit([-2880, 0], timeframe=1440),
             expected_date_offset_split=DateOffsetSplit(
-                [-2880, 0], unit=TimeUnit.MINUTES, offset_unit=TimeUnit.MINUTES,
-                timeframe=1440, anchor_start_offset=1440, timeframe_step=None,
-                flexible_boundaries=False),
-        )
-    ])
+                [-2880, 0],
+                unit=TimeUnit.MINUTES,
+                offset_unit=TimeUnit.MINUTES,
+                timeframe=1440,
+                anchor_start_offset=1440,
+                timeframe_step=None,
+                flexible_boundaries=False,
+            ),
+        ),
+    ],
+)
 def test_automatic_date_offset_split_adjustment_basic(
     params,
     dg_indexed_temporal_node_pred_orders_graph,
@@ -971,7 +1053,8 @@ def test_automatic_date_offset_split_adjustment_basic(
     # would need a bespoke sparse-per-timeframe fixture (see
     # _SKIP_REASON_DG_GAP_DATE_OFFSET_ADJUSTMENT_FIRING).
     graph, index_path = dg_indexed_temporal_node_pred_orders_graph(
-        num_users=10, num_stores=8, num_edges=560)
+        num_users=10, num_stores=8, num_edges=560
+    )
     graph.infer_metadata()
     query = params.get('query')
     validated_predictive_query = get_validated_query(graph, query)
@@ -988,9 +1071,11 @@ def test_automatic_date_offset_split_adjustment_basic(
     )
 
     train_table_path, job_id, _ = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path))
-    task = pquery.create_task(train_table_path=train_table_path, job_id=job_id,
-                              ignore_encoders=True)
+        diskgraph_index_path=index_path, destination=str(tmp_path)
+    )
+    task = pquery.create_task(
+        train_table_path=train_table_path, job_id=job_id, ignore_encoders=True
+    )
     split = task.train_table.split
     assert isinstance(split, DateOffsetSplit)
     assert split == params.get('expected_date_offset_split')
@@ -999,8 +1084,10 @@ def test_automatic_date_offset_split_adjustment_basic(
     assert split.offsets == params.get('split').offsets
     validation_response = pquery.get_validate_train_table_response()
     if validation_response is not None:
-        assert all(w.title != 'DateOffsetSplit is adjusted to avoid empty '
-                   'validation data' for w in validation_response.warnings)
+        assert all(
+            w.title != 'DateOffsetSplit is adjusted to avoid empty validation data'
+            for w in validation_response.warnings
+        )
 
 
 @pytest.mark.skip(reason=_SKIP_REASON_DG_GAP_DATE_OFFSET_ADJUSTMENT_FIRING)
@@ -1023,10 +1110,13 @@ def test_automatic_date_offset_split_adjustment_firing(
     # assertion contract to re-enable once the DG producer indexes timeframes
     # against the full anchor grid.
     graph, index_path = dg_indexed_temporal_node_pred_orders_graph(
-        num_users=10, num_stores=8, num_edges=560)
+        num_users=10, num_stores=8, num_edges=560
+    )
     graph.infer_metadata()
-    query = ('PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID '
-             'WHERE LAST(ORDERS.STORE_ID, -6, 0) = 3')
+    query = (
+        'PREDICT COUNT(ORDERS.STORE_ID, 0, 6) FOR EACH USERS.USER_ID '
+        'WHERE LAST(ORDERS.STORE_ID, -6, 0) = 3'
+    )
     validated_predictive_query = get_validated_query(graph, query)
     split = DateOffsetSplit([-6, 0], timeframe=6)
     train_start_offset = 24 * 8
@@ -1039,51 +1129,78 @@ def test_automatic_date_offset_split_adjustment_firing(
     )
 
     train_table_path, job_id, _ = pquery.generate_train_table(
-        diskgraph_index_path=index_path, destination=str(tmp_path))
-    task = pquery.create_task(train_table_path=train_table_path, job_id=job_id,
-                              ignore_encoders=True)
+        diskgraph_index_path=index_path, destination=str(tmp_path)
+    )
+    task = pquery.create_task(
+        train_table_path=train_table_path, job_id=job_id, ignore_encoders=True
+    )
     adjusted_split = task.train_table.split
     assert isinstance(adjusted_split, DateOffsetSplit)
     # The restrictive entity filter empties the immediate-after-test timeframe,
     # so the default `[-6, 0]` split is ADJUSTED to `[-24, 0]` to keep the
     # validation set non-empty.
-    assert adjusted_split == DateOffsetSplit([-24, 0], unit=TimeUnit.DAYS,
-                                             timeframe=6, timeframe_step=None,
-                                             flexible_boundaries=False)
+    assert adjusted_split == DateOffsetSplit(
+        [-24, 0],
+        unit=TimeUnit.DAYS,
+        timeframe=6,
+        timeframe_step=None,
+        flexible_boundaries=False,
+    )
     assert adjusted_split.offsets != split.offsets
     # ... and the user-facing adjustment warning is emitted.
     validation_response = pquery.get_validate_train_table_response()
     assert validation_response is not None
-    assert (validation_response.warnings[-1].title ==
-            'DateOffsetSplit is adjusted to avoid empty validation data')
+    assert (
+        validation_response.warnings[-1].title
+        == 'DateOffsetSplit is adjusted to avoid empty validation data'
+    )
 
 
-@pytest.mark.parametrize('params', [
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.5, 0.3, 0.2]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-6, 0], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.3, 0.3, 0.4]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-9, -3], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.7, 0.3]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-3], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.98, 0.01, 0.01]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-3, 0], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-])
+@pytest.mark.parametrize(
+    'params',
+    [
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.5, 0.3, 0.2]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-6, 0],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.3, 0.3, 0.4]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-9, -3],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.7, 0.3]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-3],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.98, 0.01, 0.01]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-3, 0],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+    ],
+)
 def test_approx_date_offset_split_general(params):
     train_table_stats = TemporalLinkTrainTableStats(
         min_date=pd.Timestamp('2018-01-09 00:00:00'),
@@ -1159,43 +1276,65 @@ def test_approx_date_offset_split_general(params):
                 num_entities=4,
                 num_targets=1,
                 index=6,
-            )
+            ),
         ],
     )
     approx_split = params['approx_split']
     expected_date_offset_split = params['expected_date_offset_split']
-    approx_split.set_date_offset_boundary(train_table_stats=train_table_stats,
-                                          timeframe=3, unit=TimeUnit.DAYS,
-                                          timeframe_step=None)
+    approx_split.set_date_offset_boundary(
+        train_table_stats=train_table_stats,
+        timeframe=3,
+        unit=TimeUnit.DAYS,
+        timeframe_step=None,
+    )
     assert approx_split.split == expected_date_offset_split
 
 
-@pytest.mark.parametrize('params', [
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-6, 0], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.5, 0.2, 0.3]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-6, 0], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.1, 0.1, 0.8]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-15, -12], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-    dict(
-        approx_split=ApproxDateOffsetSplit([0.98, 0.01, 0.01]),
-        expected_date_offset_split=DateOffsetSplit(
-            [-6, 0], unit=TimeUnit.DAYS, timeframe=3, timeframe_step=None,
-            flexible_boundaries=True),
-    ),
-])
+@pytest.mark.parametrize(
+    'params',
+    [
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-6, 0],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.5, 0.2, 0.3]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-6, 0],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.1, 0.1, 0.8]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-15, -12],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+        dict(
+            approx_split=ApproxDateOffsetSplit([0.98, 0.01, 0.01]),
+            expected_date_offset_split=DateOffsetSplit(
+                [-6, 0],
+                unit=TimeUnit.DAYS,
+                timeframe=3,
+                timeframe_step=None,
+                flexible_boundaries=True,
+            ),
+        ),
+    ],
+)
 def test_approx_date_offset_split_corner_case(params):
     train_table_stats = TemporalLinkTrainTableStats(
         min_date=pd.Timestamp('2018-01-09 00:00:00'),
@@ -1271,22 +1410,23 @@ def test_approx_date_offset_split_corner_case(params):
                 num_entities=4,
                 num_targets=1,
                 index=7,
-            )
+            ),
         ],
     )
     approx_split = params['approx_split']
     expected_date_offset_split = params['expected_date_offset_split']
-    approx_split.set_date_offset_boundary(train_table_stats=train_table_stats,
-                                          timeframe=3, unit=TimeUnit.DAYS,
-                                          timeframe_step=None)
+    approx_split.set_date_offset_boundary(
+        train_table_stats=train_table_stats,
+        timeframe=3,
+        unit=TimeUnit.DAYS,
+        timeframe_step=None,
+    )
     assert approx_split.split == expected_date_offset_split
 
 
-def test_time_range_split_remove_earliest_timeframe(create_node_pred_graph,
-                                                    tempdir):
+def test_time_range_split_remove_earliest_timeframe(create_node_pred_graph, tempdir):
     graph = create_node_pred_graph('test_graph', tempdir.name)
-    query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 6, HOURS)'
-             'FOR EACH USERS.USER_ID')
+    query = 'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 6, HOURS)FOR EACH USERS.USER_ID'
     validated_query = get_validated_query(graph, query)
 
     # TRANSACTIONS.DATE contains dates between 1990-01-01 and 1990-01-05
@@ -1294,13 +1434,18 @@ def test_time_range_split_remove_earliest_timeframe(create_node_pred_graph,
     # not the first timeframe is removed.
 
     # Case 1: Remove first timeframe as it is the earliest timeframe.
-    split_remove_first = TimeRangeSplit([('1990-01-01', '1990-01-02'),
-                                         ('1990-01-02', '1990-01-03'),
-                                         ('1990-01-03', '1990-01-04')])
-    generator_remove_first = TrainingTableGeneratorV2(graph, validated_query,
-                                                      split_remove_first)
+    split_remove_first = TimeRangeSplit(
+        [
+            ('1990-01-01', '1990-01-02'),
+            ('1990-01-02', '1990-01-03'),
+            ('1990-01-03', '1990-01-04'),
+        ]
+    )
+    generator_remove_first = TrainingTableGeneratorV2(
+        graph, validated_query, split_remove_first
+    )
     timestamps_remove_first = generator_remove_first.generate_timestamps()
-    assert (timestamps_remove_first == [
+    assert timestamps_remove_first == [
         pd.Timestamp('1990-01-03 18:00:00'),
         pd.Timestamp('1990-01-03 12:00:00'),
         pd.Timestamp('1990-01-03 06:00:00'),
@@ -1311,48 +1456,57 @@ def test_time_range_split_remove_earliest_timeframe(create_node_pred_graph,
         pd.Timestamp('1990-01-02 00:00:00'),
         pd.Timestamp('1990-01-01 18:00:00'),
         pd.Timestamp('1990-01-01 12:00:00'),
-        pd.Timestamp('1990-01-01 06:00:00')
-    ])
+        pd.Timestamp('1990-01-01 06:00:00'),
+    ]
 
     # Case 2: Keep first timeframe if previous timeframe exists.
-    split_keep_first = TimeRangeSplit([('1990-01-02', '1990-01-03'),
-                                       ('1990-01-03', '1990-01-04'),
-                                       ('1990-01-04', '1990-01-05')])
-    generator_keep_first = TrainingTableGeneratorV2(graph, validated_query,
-                                                    split_keep_first)
+    split_keep_first = TimeRangeSplit(
+        [
+            ('1990-01-02', '1990-01-03'),
+            ('1990-01-03', '1990-01-04'),
+            ('1990-01-04', '1990-01-05'),
+        ]
+    )
+    generator_keep_first = TrainingTableGeneratorV2(
+        graph, validated_query, split_keep_first
+    )
     timestamps_keep_first = generator_keep_first.generate_timestamps()
-    assert timestamps_keep_first == ([
-        pd.Timestamp('1990-01-04 18:00:00'),
-        pd.Timestamp('1990-01-04 12:00:00'),
-        pd.Timestamp('1990-01-04 06:00:00'),
-        pd.Timestamp('1990-01-04 00:00:00'),
-        pd.Timestamp('1990-01-03 18:00:00'),
-        pd.Timestamp('1990-01-03 12:00:00'),
-        pd.Timestamp('1990-01-03 06:00:00'),
-        pd.Timestamp('1990-01-03 00:00:00'),
-        pd.Timestamp('1990-01-02 18:00:00'),
-        pd.Timestamp('1990-01-02 12:00:00'),
-        pd.Timestamp('1990-01-02 06:00:00'),
-        pd.Timestamp('1990-01-02 00:00:00')
-    ])
+    assert timestamps_keep_first == (
+        [
+            pd.Timestamp('1990-01-04 18:00:00'),
+            pd.Timestamp('1990-01-04 12:00:00'),
+            pd.Timestamp('1990-01-04 06:00:00'),
+            pd.Timestamp('1990-01-04 00:00:00'),
+            pd.Timestamp('1990-01-03 18:00:00'),
+            pd.Timestamp('1990-01-03 12:00:00'),
+            pd.Timestamp('1990-01-03 06:00:00'),
+            pd.Timestamp('1990-01-03 00:00:00'),
+            pd.Timestamp('1990-01-02 18:00:00'),
+            pd.Timestamp('1990-01-02 12:00:00'),
+            pd.Timestamp('1990-01-02 06:00:00'),
+            pd.Timestamp('1990-01-02 00:00:00'),
+        ]
+    )
 
     # Check an additional scenario where `train_start_offset` is not None
-    generator_with_offset = TrainingTableGeneratorV2(graph, validated_query,
-                                                     split_keep_first,
-                                                     train_start_offset=64)
+    generator_with_offset = TrainingTableGeneratorV2(
+        graph, validated_query, split_keep_first, train_start_offset=64
+    )
     timestamps_with_offset = generator_with_offset.generate_timestamps()
-    assert timestamps_with_offset == ([
-        pd.Timestamp('1990-01-04 18:00:00'),
-        pd.Timestamp('1990-01-04 12:00:00'),
-        pd.Timestamp('1990-01-04 06:00:00'),
-        pd.Timestamp('1990-01-04 00:00:00'),
-        pd.Timestamp('1990-01-03 18:00:00'),
-        pd.Timestamp('1990-01-03 12:00:00'),
-        pd.Timestamp('1990-01-03 06:00:00'),
-        pd.Timestamp('1990-01-03 00:00:00'),
-        pd.Timestamp('1990-01-02 18:00:00'),
-        pd.Timestamp('1990-01-02 12:00:00')
-    ])
+    assert timestamps_with_offset == (
+        [
+            pd.Timestamp('1990-01-04 18:00:00'),
+            pd.Timestamp('1990-01-04 12:00:00'),
+            pd.Timestamp('1990-01-04 06:00:00'),
+            pd.Timestamp('1990-01-04 00:00:00'),
+            pd.Timestamp('1990-01-03 18:00:00'),
+            pd.Timestamp('1990-01-03 12:00:00'),
+            pd.Timestamp('1990-01-03 06:00:00'),
+            pd.Timestamp('1990-01-03 00:00:00'),
+            pd.Timestamp('1990-01-02 18:00:00'),
+            pd.Timestamp('1990-01-02 12:00:00'),
+        ]
+    )
 
 
 @pytest.mark.skip(reason=_SKIP_REASON_DG_GAP_FORECASTING_TXN_SESSIONS)
@@ -1360,14 +1514,19 @@ def test_forecasting_split(create_node_pred_graph, tempdir):
     graph = create_node_pred_graph('test_graph', tempdir.name)
 
     # Forecasting with entity filter
-    query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) '
-             'FOR EACH USERS.USER_ID WHERE SUM(SESSIONS.DURATION, -INF, 0) > 0')
+    query = (
+        'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) '
+        'FOR EACH USERS.USER_ID WHERE SUM(SESSIONS.DURATION, -INF, 0) > 0'
+    )
 
     validated_query = get_validated_query(graph, query)
     pquery = PredictiveQueryV2(
-        name='user_actions', graph=graph,
+        name='user_actions',
+        graph=graph,
         validated_predictive_query=validated_query,
-        split=DateOffsetSplit([0], unit='days', timeframe=1), forecast_length=2)
+        split=DateOffsetSplit([0], unit='days', timeframe=1),
+        forecast_length=2,
+    )
 
     with disable_pre_validation():
         task = pquery.create_task(job_id='testjob', ignore_encoders=True)
@@ -1380,10 +1539,13 @@ def test_forecasting_split(create_node_pred_graph, tempdir):
     assert train_table_stats.val_table_stats.num_train_rows == 2
     assert train_table_stats.val_table_stats.num_entities == 2
 
-    pquery = PredictiveQueryV2(name='user_actions', graph=graph,
-                               validated_predictive_query=validated_query,
-                               split=ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
-                               forecast_length=2)
+    pquery = PredictiveQueryV2(
+        name='user_actions',
+        graph=graph,
+        validated_predictive_query=validated_query,
+        split=ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
+        forecast_length=2,
+    )
 
     task = pquery.create_task(job_id='testjob', ignore_encoders=True)
     task.train_table.materialize()
@@ -1399,12 +1561,19 @@ def test_forecasting_split(create_node_pred_graph, tempdir):
     assert train_table_stats.test_table_stats.num_entities == 2
 
     pquery = PredictiveQueryV2(
-        name='user_actions', graph=graph,
+        name='user_actions',
+        graph=graph,
         validated_predictive_query=validated_query,
-        split=TimeRangeSplit([('1990-01-02', '1990-01-03'),
-                              ('1990-01-03', '1990-01-04'),
-                              ('2022-01-04', '2022-01-05')],
-                             timeframe=1), forecast_length=2)
+        split=TimeRangeSplit(
+            [
+                ('1990-01-02', '1990-01-03'),
+                ('1990-01-03', '1990-01-04'),
+                ('2022-01-04', '2022-01-05'),
+            ],
+            timeframe=1,
+        ),
+        forecast_length=2,
+    )
 
     task = pquery.create_task(job_id='testjob', ignore_encoders=True)
     task.train_table.materialize()
@@ -1425,19 +1594,23 @@ def test_forecasting_split(create_node_pred_graph, tempdir):
 # are calculated without considering ENTITY_INCLUDE_BIT, we would have
 # gotten an error on empty test table.
 @pytest.mark.skip(reason=_SKIP_REASON_DG_GAP_FORECASTING_TIMEFRAMES)
-def test_forecasting_split_on_weird_distributions(create_tiny_node_pred_graph,
-                                                  tempdir):
+def test_forecasting_split_on_weird_distributions(create_tiny_node_pred_graph, tempdir):
     graph = create_tiny_node_pred_graph('test_graph', tempdir.name)
 
     # Forecasting with entity filter
-    query = ('PREDICT SUM(actions.amount, 0, 1) '
-             'FOR EACH entity.entity_id WHERE SUM(actions.amount, -2, 0) >= 5')
+    query = (
+        'PREDICT SUM(actions.amount, 0, 1) '
+        'FOR EACH entity.entity_id WHERE SUM(actions.amount, -2, 0) >= 5'
+    )
 
     validated_query = get_validated_query(graph, query)
-    pquery = PredictiveQueryV2(name='user_actions', graph=graph,
-                               validated_predictive_query=validated_query,
-                               split=ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
-                               forecast_length=2)
+    pquery = PredictiveQueryV2(
+        name='user_actions',
+        graph=graph,
+        validated_predictive_query=validated_query,
+        split=ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
+        forecast_length=2,
+    )
 
     with disable_pre_validation():
         task = pquery.create_task(job_id='testjob', ignore_encoders=True)
@@ -1455,8 +1628,7 @@ def test_forecasting_split_on_weird_distributions(create_tiny_node_pred_graph,
 
 
 @pytest.mark.skip(reason=_SKIP_REASON_DG_GAP_STATIC_TEMPORAL_SPLIT)
-def test_static_node_pred_temporal_split(
-        create_large_static_node_pred_test_graph):
+def test_static_node_pred_temporal_split(create_large_static_node_pred_test_graph):
     graph = create_large_static_node_pred_test_graph()
     query = 'PREDICT USERS.PAYMENTS FOR EACH USERS.USER_ID'
     validated_predictive_query = get_validated_query(graph, query)
@@ -1482,12 +1654,18 @@ def test_static_node_pred_temporal_split(
 
     # Test TimeRangeSplit for static queries
     pquery = PredictiveQueryV2(
-        name=TEST_PQUERY_NAME, graph=copy.deepcopy(graph),
+        name=TEST_PQUERY_NAME,
+        graph=copy.deepcopy(graph),
         validated_predictive_query=validated_predictive_query,
-        split=TimeRangeSplit([('2000-01-01', '2000-02-01'),
-                              ('2000-03-01', '2000-05-01'),
-                              ('2000-07-01', '2000-08-01')],
-                             anchor_start_offset=None))
+        split=TimeRangeSplit(
+            [
+                ('2000-01-01', '2000-02-01'),
+                ('2000-03-01', '2000-05-01'),
+                ('2000-07-01', '2000-08-01'),
+            ],
+            anchor_start_offset=None,
+        ),
+    )
     task = pquery.create_task()
     task.train_table.materialize()
     split_stats = task.get_train_table_stats(after_split=True)

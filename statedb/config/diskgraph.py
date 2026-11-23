@@ -26,9 +26,9 @@ def get_diskgraph_index_path_for_job(job_input) -> str:
     ``pool/activities.py:_ensure_snapshot_local``.
     """
     if job_input.graph_data_compute_input is None:
-        raise RuntimeError("DISKGRAPH mode requires graph_data_compute_input")
+        raise RuntimeError('DISKGRAPH mode requires graph_data_compute_input')
     if job_input.graph_version_info is None:
-        raise RuntimeError("DISKGRAPH mode requires graph_version_info")
+        raise RuntimeError('DISKGRAPH mode requires graph_version_info')
 
     dc = deploy_env().data_compute
     assert isinstance(dc, DiskgraphConfig)

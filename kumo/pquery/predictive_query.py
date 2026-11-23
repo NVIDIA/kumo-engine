@@ -81,8 +81,7 @@ TableGenerators = Union[
 _VALIDATED_PQUERY_RECONSTRUCTION = object()
 
 
-def train_table_source_name(train_table_path: str,
-                            is_custom: bool = False) -> str:
+def train_table_source_name(train_table_path: str, is_custom: bool = False) -> str:
     """
     Compose the internal data-source name for a generated training or
     prediction table.
@@ -92,13 +91,15 @@ def train_table_source_name(train_table_path: str,
     return f'{table_name}_parquet_{suffix}'
 
 
-def _force_ttng_lp_array(graph, validated_predictive_query,
-                         forecast_length: int) -> bool:
+def _force_ttng_lp_array(
+    graph, validated_predictive_query, forecast_length: int
+) -> bool:
     """True iff this is a link-prediction query -- array-mode is the only LP
     mode under TT-NG, so a persisted/deserialized explicit False must be forced
     on."""
-    return get_task_type(graph, validated_predictive_query,
-                         forecast_length=forecast_length).task_type.is_link_pred
+    return get_task_type(
+        graph, validated_predictive_query, forecast_length=forecast_length
+    ).task_type.is_link_pred
 
 
 class PQuerySettings:
@@ -128,6 +129,7 @@ class PredictiveQuery(ConfigMixin):
     Predictive Query interface/base class. All implementations of Predictive
     Query must extend from this class.
     """
+
     TIMESTAMP = 'TIMESTAMP'  # Name of the column with temporal information.
     TARGET = 'TARGET'  # Name of the column with the target labels.
 
@@ -213,8 +215,7 @@ class PredictiveQuery(ConfigMixin):
         raise NotImplementedError()
 
     def get_target_offset(self) -> Tuple[int, int]:
-        r"""Returns the start and end offset of target aggregation.
-        """
+        r"""Returns the start and end offset of target aggregation."""
         raise NotImplementedError()
 
     def get_bp_entity_col_name(self) -> str:
@@ -261,7 +262,8 @@ class PredictiveQuery(ConfigMixin):
         logger.warning(
             'Invoked predictive_query.train_df, this is deprecated. '
             'Please use predictive_query.train_table_path instead, which '
-            'points to the location of the training table.')
+            'points to the location of the training table.'
+        )
         df = parquet_util.read_parquet(self._train_table_path)
         if NODE_INDEX_COLUMN in df.columns:
             df = df.drop(columns=[NODE_INDEX_COLUMN])
@@ -275,11 +277,12 @@ class PredictiveQuery(ConfigMixin):
         """
         if not hasattr(self, '_train_table_path'):
             raise ValidationException(
-                title="Training table not generated",
+                title='Training table not generated',
                 message=(
                     "train_table_path doesn't exists for this predictive "
-                    "query. Make sure you have called generate_train_table "
-                    "function before calling for this property."),
+                    'query. Make sure you have called generate_train_table '
+                    'function before calling for this property.'
+                ),
             )
         return self._train_table_path
 
@@ -295,7 +298,8 @@ class PredictiveQuery(ConfigMixin):
         logger.warning(
             'Invoked predictive_query.pred_df, this is deprecated. '
             'Please use predictive_query.pred_table_path instead, which '
-            'points to the location of the prediction table.')
+            'points to the location of the prediction table.'
+        )
         df = parquet_util.read_parquet(self._pred_table_path)
         if NODE_INDEX_COLUMN in df.columns:
             df = df.drop(columns=[NODE_INDEX_COLUMN])
@@ -309,12 +313,13 @@ class PredictiveQuery(ConfigMixin):
         """
         if not hasattr(self, '_pred_table_path'):
             raise ValidationException(
-                title="Prediction table not generated",
+                title='Prediction table not generated',
                 message=(
                     "pred_table_path doesn't exists for this predictive "
-                    "query. Make sure you have called "
-                    "generate_current_pred_table function before calling for "
-                    "this property."),
+                    'query. Make sure you have called '
+                    'generate_current_pred_table function before calling for '
+                    'this property.'
+                ),
             )
         return self._pred_table_path
 
@@ -352,6 +357,7 @@ class PredictiveQuery(ConfigMixin):
     # Save and load ###########################################################
     def _remove_pandas_connector_from_graph(self):
         from kumo.connector.pandas_connector import PandasConnector
+
         self._removed_source_dict = {}
         for key, value in self.graph._data_source_dict.items():
             if isinstance(value, PandasConnector):
@@ -360,16 +366,18 @@ class PredictiveQuery(ConfigMixin):
             del self.graph._data_source_dict[key]
 
     def _add_pandas_connector_back_to_graph(self):
-        _removed_source_dict = ({} if hasattr(self, '_removed_source_dict') else
-                                self._removed_source_dict)
+        _removed_source_dict = (
+            {} if hasattr(self, '_removed_source_dict') else self._removed_source_dict
+        )
         self.graph._data_source_dict.update(_removed_source_dict)
         self._removed_source_dict = {}
 
     def customize_config(self, values: Dict[str, Any]) -> Dict[str, Any]:
         return values
 
-    def save(self, name: Optional[str] = None,
-             destination: Optional[str] = None) -> str:
+    def save(
+        self, name: Optional[str] = None, destination: Optional[str] = None
+    ) -> str:
         """Save the :class:`kumo.PredictiveQuery` to storage.
 
         Args:
@@ -387,18 +395,16 @@ class PredictiveQuery(ConfigMixin):
         # TODO: Persist training table DataFrame.
         path = osp.join(root_dir, 'config.json')
         save_json(self.config(), path)
-        logger.info("Successfully saved query %s to %s.", self.name, root_dir)
+        logger.info('Successfully saved query %s to %s.', self.name, root_dir)
         return name
 
     def to_yaml(self) -> str:
-        r"""Converts the :class:`kumo.PredictiveQuery` to a YAML string.
-        """
+        r"""Converts the :class:`kumo.PredictiveQuery` to a YAML string."""
         return to_yaml(self.config())
 
     @classmethod
     @abstractmethod
-    def load(cls, name: str,
-             home_dir: Optional[str] = None) -> 'PredictiveQuery':
+    def load(cls, name: str, home_dir: Optional[str] = None) -> 'PredictiveQuery':
         raise NotImplementedError
 
     def _override_task_path(self, task_path_override: str) -> None:
@@ -406,32 +412,37 @@ class PredictiveQuery(ConfigMixin):
         The overrding task config should match the generated task config.
         """
         from kumo.task import Task
+
         task = Task.from_config(load_json(task_path_override, cls=TaskConfig))
-        logger.warning(f"Overriding task with path {task_path_override}")
-        logger.warning("Comparision of the overrding task config "
-                       "and the generated task config:")
+        logger.warning(f'Overriding task with path {task_path_override}')
+        logger.warning(
+            'Comparision of the overrding task config and the generated task config:'
+        )
         task.diff_config(self.task)
         override_task_graph = task.config().graph
         generated_task_graph = self.task.config().graph
         assert override_task_graph.name == generated_task_graph.name, (
-            "The graph name in the overriding task config does not match")
-        assert (override_task_graph.data_source_dict ==
-                generated_task_graph.data_source_dict), (
-                    "The data source dict in the overriding task config "
-                    "does not match: "
-                    f"{override_task_graph.data_source_dict} vs "
-                    f"{generated_task_graph.data_source_dict}")
+            'The graph name in the overriding task config does not match'
+        )
+        assert (
+            override_task_graph.data_source_dict
+            == generated_task_graph.data_source_dict
+        ), (
+            'The data source dict in the overriding task config '
+            'does not match: '
+            f'{override_task_graph.data_source_dict} vs '
+            f'{generated_task_graph.data_source_dict}'
+        )
         override_task_table_names = {
-            table.table_name
-            for table in override_task_graph.tables
+            table.table_name for table in override_task_graph.tables
         }
         generated_task_table_names = {
-            table.table_name
-            for table in generated_task_graph.tables
+            table.table_name for table in generated_task_graph.tables
         }
-        assert (override_task_table_names == generated_task_table_names), (
-            "The table names in the overriding task config do not match: "
-            f"{override_task_table_names} vs {generated_task_table_names}")
+        assert override_task_table_names == generated_task_table_names, (
+            'The table names in the overriding task config do not match: '
+            f'{override_task_table_names} vs {generated_task_table_names}'
+        )
         task.train_table = self.task.train_table
         task.name = self.name
         self.task = task
@@ -567,9 +578,9 @@ class PredictiveQueryV2(PredictiveQuery):
         self._validate_train_table_response = ValidationResponse()
         self.drop_earliest_timeframe = drop_earliest_timeframe
         self.lag_timesteps = lag_timesteps
-        self.forecast_length = (forecast_length
-                                or self.validated_predictive_query.num_forecasts
-                                or 1)
+        self.forecast_length = (
+            forecast_length or self.validated_predictive_query.num_forecasts or 1
+        )
         self.year_over_year = year_over_year
         self.start_time = start_time
         self.end_time = end_time
@@ -578,9 +589,8 @@ class PredictiveQueryV2(PredictiveQuery):
         if list_distinct_target_is_array and not allow_array_targets():
             # Should not happen unless we turn ALLOW_ARRAY_TARGETS back off
             raise ValidationException(
-                title="Array targets disabled",
-                message=("Add ALLOW_ARRAY_TARGETS flag to use this predictive "
-                         "query."),
+                title='Array targets disabled',
+                message=('Add ALLOW_ARRAY_TARGETS flag to use this predictive query.'),
             )
         elif list_distinct_target_is_array is None:
             # Default: array-mode iff this is a link-prediction query -- the
@@ -588,11 +598,11 @@ class PredictiveQueryV2(PredictiveQuery):
             # multilabel CLASSIFY) stays scalar/multicategorical, so it is not
             # rejected as an unpredictable array target.
             list_distinct_target_is_array = _force_ttng_lp_array(
-                self.graph, self.validated_predictive_query,
-                self.forecast_length)
+                self.graph, self.validated_predictive_query, self.forecast_length
+            )
         elif not list_distinct_target_is_array and _force_ttng_lp_array(
-                self.graph, self.validated_predictive_query,
-                self.forecast_length):
+            self.graph, self.validated_predictive_query, self.forecast_length
+        ):
             # Array-mode is the ONLY LP mode under TT-NG, so a persisted/
             # deserialized explicit False must be forced on for a TT-NG LP query
             # (treat it as None); otherwise the RandomSplit->RandomLinkSplit
@@ -608,12 +618,15 @@ class PredictiveQueryV2(PredictiveQuery):
             normalized = normalize_static_link_split(
                 split,
                 default_is_random_link_split=isinstance(
-                    self.get_default_split(), RandomLinkSplit),
+                    self.get_default_split(), RandomLinkSplit
+                ),
             )
             if normalized is not split:
                 assert self.list_distinct_target_is_array
-                logger.info(f"Overwrite '{split.__class__.__name__}' to "
-                            f"'RandomLinkSplit' for static link prediction")
+                logger.info(
+                    f"Overwrite '{split.__class__.__name__}' to "
+                    f"'RandomLinkSplit' for static link prediction"
+                )
                 # Keep the hosted registered subclass for config serialization.
                 split = RandomLinkSplit(split.ratio)
 
@@ -636,13 +649,14 @@ class PredictiveQueryV2(PredictiveQuery):
 
     @property
     def is_forecasting(self) -> bool:
-        return (self.validated_predictive_query.problem_type
-                == ProblemType.FORECAST or self.forecast_length > 1)
+        return (
+            self.validated_predictive_query.problem_type == ProblemType.FORECAST
+            or self.forecast_length > 1
+        )
 
     @property
     def use_autoregression(self) -> bool:
-        r"""Whether or not we are using autoregressive labels.
-        """
+        r"""Whether or not we are using autoregressive labels."""
         return self.lag_timesteps is not None and self.lag_timesteps > 0
 
     @property
@@ -667,18 +681,16 @@ class PredictiveQueryV2(PredictiveQuery):
         if target_key is None:
             return []
 
-        target_table = self.graph.fully_qualified_table_name(
-            table_name(target_key))
+        target_table = self.graph.fully_qualified_table_name(table_name(target_key))
         entity_table = self.graph.fully_qualified_table_name(
-            table_name(self.validated_predictive_query.entity_column))
+            table_name(self.validated_predictive_query.entity_column)
+        )
         target_table_pkey = self.graph.table(target_table).pkey_name
-        entity_fkey = self.validated_predictive_query.\
-            get_single_target_fkey(lhs=True)
+        entity_fkey = self.validated_predictive_query.get_single_target_fkey(lhs=True)
 
         rhs_path = None
         if self.get_task_type().is_link_pred:
-            aggr = self.validated_predictive_query.\
-                get_final_target_aggregation()
+            aggr = self.validated_predictive_query.get_final_target_aggregation()
             fkey = self.graph.column_from_fqn(aggr._get_target_column_name())
             rhs_path = (target_table, fkey.name, fkey.dst_table)
         return resolve_target_to_entity_paths(
@@ -691,8 +703,7 @@ class PredictiveQueryV2(PredictiveQuery):
         )
 
     def set_table_generator(self):
-        self.table_generator: TrainingTableGeneratorV2 = (
-            self.get_table_generator())
+        self.table_generator: TrainingTableGeneratorV2 = self.get_table_generator()
 
     @trace(TraceOptions(trace_params=True))
     def get_table_generator(self) -> TrainingTableGeneratorV2:
@@ -716,8 +727,7 @@ class PredictiveQueryV2(PredictiveQuery):
             use_decoupled_splits=self.pquery_settings.use_decoupled_splits,
             weight_col=self.weight_col,
         )
-        generator.set_list_distinct_target_is_array(
-            self.list_distinct_target_is_array)
+        generator.set_list_distinct_target_is_array(self.list_distinct_target_is_array)
         return generator
 
     def get_batch_pred_table_generator(self) -> PredictionTableGeneratorV2:
@@ -726,8 +736,7 @@ class PredictiveQueryV2(PredictiveQuery):
             validated_query=self.validated_predictive_query,
             forecast_length=self.forecast_length,
         )
-        generator.list_distinct_target_is_array = (
-            self.list_distinct_target_is_array)
+        generator.list_distinct_target_is_array = self.list_distinct_target_is_array
         generator.lp_bp_layout = self.lp_bp_layout
         return generator
 
@@ -749,8 +758,9 @@ class PredictiveQueryV2(PredictiveQuery):
         """
         if self.query_type == QueryType.TEMPORAL:
             # Get target date offset range from the query
-            target_date_offset = (self.validated_predictive_query.
-                                  get_combined_date_offset_range())
+            target_date_offset = (
+                self.validated_predictive_query.get_combined_date_offset_range()
+            )
 
             # Set unit if not already set
             if split.unit is None:
@@ -758,8 +768,7 @@ class PredictiveQueryV2(PredictiveQuery):
 
             # Set timeframe_size if not already set
             if split.timeframe_size is None:
-                split.timeframe_size = (target_date_offset.end -
-                                        target_date_offset.start)
+                split.timeframe_size = target_date_offset.end - target_date_offset.start
 
             # Set anchor_start_offset if not already set
             if split.anchor_start_offset is None:
@@ -777,8 +786,9 @@ class PredictiveQueryV2(PredictiveQuery):
         query (such as `timeframe`). This method sets them correctly before
         setting `self.split`."""
         if self.query_type == QueryType.TEMPORAL:
-            target_date_offset = (self.validated_predictive_query.
-                                  get_combined_date_offset_range())
+            target_date_offset = (
+                self.validated_predictive_query.get_combined_date_offset_range()
+            )
             timeframe = target_date_offset.end - target_date_offset.start
             anchor_start_offset = target_date_offset.start
             unit = target_date_offset.unit
@@ -800,16 +810,24 @@ class PredictiveQueryV2(PredictiveQuery):
             anchor_start_offset = None
 
         if isinstance(split, TimeRangeSplit):
-            self.split = TimeRangeSplit(split.ranges, unit=unit,
-                                        timeframe=timeframe,
-                                        anchor_start_offset=anchor_start_offset,
-                                        timeframe_step=self.timeframe_step,
-                                        flexible_boundaries=False)
+            self.split = TimeRangeSplit(
+                split.ranges,
+                unit=unit,
+                timeframe=timeframe,
+                anchor_start_offset=anchor_start_offset,
+                timeframe_step=self.timeframe_step,
+                flexible_boundaries=False,
+            )
         elif isinstance(split, DateOffsetSplit):
             self.split = DateOffsetSplit(
-                split.offsets, unit=unit, offset_unit=offset_unit,
-                timeframe=timeframe, anchor_start_offset=anchor_start_offset,
-                timeframe_step=self.timeframe_step, flexible_boundaries=False)
+                split.offsets,
+                unit=unit,
+                offset_unit=offset_unit,
+                timeframe=timeframe,
+                anchor_start_offset=anchor_start_offset,
+                timeframe_step=self.timeframe_step,
+                flexible_boundaries=False,
+            )
         elif isinstance(split, TemporalSplit):
             self.split = TemporalSplit(
                 ratio=split.ratio,
@@ -819,11 +837,11 @@ class PredictiveQueryV2(PredictiveQuery):
             )
         else:
             raise ValidationException(
-                title="Unsupported split type",
+                title='Unsupported split type',
                 message=(
-                    "`_set_split` is not supported for "
-                    f"{split.__class__.__name__}. Supported split types: "
-                    "TimeRangeSplit, DateOffsetSplit, TemporalSplit, TimeSplit."
+                    '`_set_split` is not supported for '
+                    f'{split.__class__.__name__}. Supported split types: '
+                    'TimeRangeSplit, DateOffsetSplit, TemporalSplit, TimeSplit.'
                 ),
             )
 
@@ -847,110 +865,140 @@ class PredictiveQueryV2(PredictiveQuery):
         task_type = self.get_task_type()
         query_type = self.validated_predictive_query.query_type
 
-        suffix = ('Please go back and change your query '
-                  'to fit a supported problem type.')
+        suffix = 'Please go back and change your query to fit a supported problem type.'
 
-        if ((task_type == core_types.TaskType.STATIC_LINK_PREDICTION
-             and self.pquery_settings.disable_static_link_prediction)
-                or (task_type == core_types.TaskType.TEMPORAL_LINK_PREDICTION
-                    and self.pquery_settings.disable_temporal_link_prediction)):
+        if (
+            task_type == core_types.TaskType.STATIC_LINK_PREDICTION
+            and self.pquery_settings.disable_static_link_prediction
+        ) or (
+            task_type == core_types.TaskType.TEMPORAL_LINK_PREDICTION
+            and self.pquery_settings.disable_temporal_link_prediction
+        ):
             raise ValidationException(
-                title="Unsupported operator",
-                message=("The `LIST_DISTINCT` operator is currently not "
-                         f"supported in this version of Kumo. {suffix}"),
+                title='Unsupported operator',
+                message=(
+                    'The `LIST_DISTINCT` operator is currently not '
+                    f'supported in this version of Kumo. {suffix}'
+                ),
             )
-        elif (task_type in {
+        elif (
+            task_type
+            in {
                 core_types.TaskType.REGRESSION,
                 core_types.TaskType.FORECASTING,
-        } and self.pquery_settings.disable_temporal_node_regression):
+            }
+            and self.pquery_settings.disable_temporal_node_regression
+        ):
             raise ValidationException(
-                title="Unsupported problem type",
+                title='Unsupported problem type',
                 message=(
-                    "Regression and Forecasting are currently not supported "
-                    f"in this version of Kumo. {suffix}"),
+                    'Regression and Forecasting are currently not supported '
+                    f'in this version of Kumo. {suffix}'
+                ),
             )
-        elif (task_type == core_types.TaskType.MULTILABEL_CLASSIFICATION
-              and self.pquery_settings.disable_multilabel_classification):
+        elif (
+            task_type == core_types.TaskType.MULTILABEL_CLASSIFICATION
+            and self.pquery_settings.disable_multilabel_classification
+        ):
             raise ValidationException(
-                title="Unsupported problem type",
-                message=("Multilabel classification is currently not "
-                         f"supported in this version of Kumo. {suffix}"),
+                title='Unsupported problem type',
+                message=(
+                    'Multilabel classification is currently not '
+                    f'supported in this version of Kumo. {suffix}'
+                ),
             )
-        elif (task_type == core_types.TaskType.MULTILABEL_RANKING
-              and self.pquery_settings.disable_multilabel_ranking):
+        elif (
+            task_type == core_types.TaskType.MULTILABEL_RANKING
+            and self.pquery_settings.disable_multilabel_ranking
+        ):
             raise ValidationException(
-                title="Unsupported problem type",
-                message=("Multilabel ranking is currently not "
-                         f"supported in this version of Kumo. {suffix}"),
+                title='Unsupported problem type',
+                message=(
+                    'Multilabel ranking is currently not '
+                    f'supported in this version of Kumo. {suffix}'
+                ),
             )
-        elif (task_type == core_types.TaskType.FORECASTING
-              and self.pquery_settings.disable_forecasting):
+        elif (
+            task_type == core_types.TaskType.FORECASTING
+            and self.pquery_settings.disable_forecasting
+        ):
             raise ValidationException(
-                title="Unsupported problem type",
-                message=("Forecasting is currently not supported "
-                         f"in this version of Kumo. {suffix}"),
+                title='Unsupported problem type',
+                message=(
+                    'Forecasting is currently not supported '
+                    f'in this version of Kumo. {suffix}'
+                ),
             )
 
         if query_type == QueryType.STATIC:
             if self.pquery_settings.disable_static_node_prediction:
                 raise ValidationException(
-                    title="Unsupported problem type",
+                    title='Unsupported problem type',
                     message=(
-                        "Static prediction problems are not supported "
-                        f"in this version of Kumo. {suffix} You can use an "
-                        "aggregation operator in your PREDICT clause to make "
-                        "your problem temporal."),
+                        'Static prediction problems are not supported '
+                        f'in this version of Kumo. {suffix} You can use an '
+                        'aggregation operator in your PREDICT clause to make '
+                        'your problem temporal.'
+                    ),
                 )
 
-        final_aggr = self.validated_predictive_query.\
-            get_final_target_aggregation()
-        if (query_type == QueryType.TEMPORAL and final_aggr is not None):
-            if (final_aggr.aggr == AggregationType.FIRST
-                    or final_aggr.aggr == AggregationType.LAST):
+        final_aggr = self.validated_predictive_query.get_final_target_aggregation()
+        if query_type == QueryType.TEMPORAL and final_aggr is not None:
+            if (
+                final_aggr.aggr == AggregationType.FIRST
+                or final_aggr.aggr == AggregationType.LAST
+            ):
                 if self.pquery_settings.disable_first_last:
                     raise ValidationException(
-                        title="Unsupported operator",
-                        message=(f"{final_aggr.aggr} operator is currently not "
-                                 "supported."),
+                        title='Unsupported operator',
+                        message=(
+                            f'{final_aggr.aggr} operator is currently not supported.'
+                        ),
                     )
                 # FIRST/LAST operator on foreign key target is currently
                 # blocked on the level of PredictiveQueryValidator
                 target_col = self.graph.column_from_fqn(
-                    final_aggr._get_target_column_name())
+                    final_aggr._get_target_column_name()
+                )
                 if isinstance(target_col, ForeignKey):
                     if self.pquery_settings.disable_first_last_on_fkey:
                         raise ValidationException(
-                            title="Unsupported operator",
+                            title='Unsupported operator',
                             message=(
-                                f"{final_aggr.aggr} operator is currently not "
-                                "supported on foreign key targets "
-                                f"(`{target_col}`)."),
+                                f'{final_aggr.aggr} operator is currently not '
+                                'supported on foreign key targets '
+                                f'(`{target_col}`).'
+                            ),
                         )
 
         if task_type == core_types.TaskType.FORECASTING:
             if final_aggr is not None and final_aggr.aggr not in [
-                    AggregationType.AVG,
-                    AggregationType.COUNT,
-                    AggregationType.COUNT_DISTINCT,
-                    AggregationType.SUM,
-                    AggregationType.MIN,
-                    AggregationType.MAX,
+                AggregationType.AVG,
+                AggregationType.COUNT,
+                AggregationType.COUNT_DISTINCT,
+                AggregationType.SUM,
+                AggregationType.MIN,
+                AggregationType.MAX,
             ]:
                 raise ValidationException(
-                    title="Unsupported aggregation",
-                    message=("Forecasting is currently only supported for SUM, "
-                             "COUNT, COUNT_DISTINCT, MIN, MAX aggregations. "
-                             "Change your target aggregation to one of these."),
-                )
-            aggregation_unit = (self.validated_predictive_query.
-                                get_combined_date_offset_range().unit)
-            if (aggregation_unit == TimeUnit.MONTHS):
-                raise ValidationException(
-                    title="Unsupported aggregation unit",
+                    title='Unsupported aggregation',
                     message=(
-                        "Forecasting does not support month as aggregation "
-                        "unit because different months have different number "
-                        "of days. Consider using days instead."),
+                        'Forecasting is currently only supported for SUM, '
+                        'COUNT, COUNT_DISTINCT, MIN, MAX aggregations. '
+                        'Change your target aggregation to one of these.'
+                    ),
+                )
+            aggregation_unit = (
+                self.validated_predictive_query.get_combined_date_offset_range().unit
+            )
+            if aggregation_unit == TimeUnit.MONTHS:
+                raise ValidationException(
+                    title='Unsupported aggregation unit',
+                    message=(
+                        'Forecasting does not support month as aggregation '
+                        'unit because different months have different number '
+                        'of days. Consider using days instead.'
+                    ),
                 )
 
     def __repr__(self) -> str:
@@ -962,15 +1010,15 @@ class PredictiveQueryV2(PredictiveQuery):
             f'  name={self.name},\n'
             f'  validated_predictive_query={self.validated_predictive_query},\n'  # noqa E501
             f'  graph={self.graph},\n'
-            f')')
+            f')'
+        )
 
     @property
     def entity_table(self) -> str:
         """
         Returns the table name of the entity.
         """
-        entity_table_name = table_name(
-            self.validated_predictive_query.entity_column)
+        entity_table_name = table_name(self.validated_predictive_query.entity_column)
         return self.graph.fully_qualified_table_name(entity_table_name)
 
     @property
@@ -979,8 +1027,7 @@ class PredictiveQueryV2(PredictiveQuery):
             self.validated_predictive_query.entity_column.split('.')[-2],
         ]
         if self.get_task_type().is_link_pred:
-            aggr = self.validated_predictive_query.\
-                get_final_target_aggregation()
+            aggr = self.validated_predictive_query.get_final_target_aggregation()
             fkey = self.graph.column_from_fqn(aggr._get_target_column_name())
             entity_table_names.append(fkey.dst_table.split('.')[-1])
         return entity_table_names
@@ -989,8 +1036,7 @@ class PredictiveQueryV2(PredictiveQuery):
         r"""Returns the start and end offset of the combined target
         aggregation.
         """
-        offset_range = (
-            self.validated_predictive_query.get_combined_date_offset_range())
+        offset_range = self.validated_predictive_query.get_combined_date_offset_range()
         assert not offset_range.is_open
         start, end = offset_range.start, offset_range.end
         assert isinstance(start, int)
@@ -1012,16 +1058,22 @@ class PredictiveQueryV2(PredictiveQuery):
         Returns:
             Split: The default split for the PredictiveQuery
         """
-        task_type = get_task_type(self.graph, self.validated_predictive_query,
-                                  forecast_length=self.forecast_length)
+        task_type = get_task_type(
+            self.graph,
+            self.validated_predictive_query,
+            forecast_length=self.forecast_length,
+        )
         if self.pquery_settings.use_decoupled_splits:
             return self._get_default_split_v2(task_type.task_type)
         else:
             return self._get_default_split(task_type.task_type)
 
     def get_default_split(self) -> Split:
-        task_type = get_task_type(self.graph, self.validated_predictive_query,
-                                  forecast_length=self.forecast_length)
+        task_type = get_task_type(
+            self.graph,
+            self.validated_predictive_query,
+            forecast_length=self.forecast_length,
+        )
         if self.pquery_settings.use_decoupled_splits:
             return self._get_default_split_v2(task_type.task_type)
         else:
@@ -1064,7 +1116,6 @@ class PredictiveQueryV2(PredictiveQuery):
             unit = offset.unit
             timeframe = offset.end - offset.start
             if task_type == core_types.TaskType.TEMPORAL_LINK_PREDICTION:
-
                 # NOTE: When timeframe_step is smaller than offset.end, choose
                 # `validation_set_offset = offset.end` is good because, the
                 # validation set will be guaranteed to have one timeframe if
@@ -1074,13 +1125,13 @@ class PredictiveQueryV2(PredictiveQuery):
                 # to ensure that the validation set has at least one timeframe.
                 validation_set_offset = offset.end
                 if self.timeframe_step is not None:
-                    validation_set_offset = max(validation_set_offset,
-                                                self.timeframe_step)
+                    validation_set_offset = max(
+                        validation_set_offset, self.timeframe_step
+                    )
                 return TimeSplit(
                     offset_boundaries=[
                         ('-INF', -1 * offset.end - validation_set_offset),
-                        (-1 * offset.end - validation_set_offset,
-                         -1 * offset.end),
+                        (-1 * offset.end - validation_set_offset, -1 * offset.end),
                         (-1 * offset.end, 0),
                     ],
                     unit=unit,
@@ -1089,9 +1140,11 @@ class PredictiveQueryV2(PredictiveQuery):
                 )
             elif task_type == core_types.TaskType.FORECASTING:
                 return TimeSplit(
-                    indices=[('-INF', -2 * self.forecast_length),
-                             (-2 * self.forecast_length, -self.forecast_length),
-                             (-self.forecast_length, 0)],
+                    indices=[
+                        ('-INF', -2 * self.forecast_length),
+                        (-2 * self.forecast_length, -self.forecast_length),
+                        (-self.forecast_length, 0),
+                    ],
                     unit=unit,
                     timeframe_size=timeframe,
                     anchor_start_offset=offset.start,
@@ -1104,28 +1157,29 @@ class PredictiveQueryV2(PredictiveQuery):
                     anchor_start_offset=offset.start,
                 )
         else:
-            raise ValueError(
-                f"No default split defined for query type {query_type}")
+            raise ValueError(f'No default split defined for query type {query_type}')
 
     def _get_default_split(self, task_type: core_types.TaskType) -> Split:
-        r"""Returns the default data split for this predictive query.
-        """
+        r"""Returns the default data split for this predictive query."""
         validated_query = self.validated_predictive_query
         query_type = validated_query.query_type
         if query_type not in {QueryType.STATIC, QueryType.TEMPORAL}:
-            raise ValueError(
-                f"No default split defined for query type {query_type}")
-        offset = (None if query_type == QueryType.STATIC else
-                  validated_query.get_combined_date_offset_range())
+            raise ValueError(f'No default split defined for query type {query_type}')
+        offset = (
+            None
+            if query_type == QueryType.STATIC
+            else validated_query.get_combined_date_offset_range()
+        )
         descriptor = default_split_for_query(
             task_type,
             query_is_static=query_type == QueryType.STATIC,
-            entity_has_time_column=self.graph[table_name(
-                validated_query.entity_column)].has_time_col(),
+            entity_has_time_column=self.graph[
+                table_name(validated_query.entity_column)
+            ].has_time_col(),
             list_distinct_target_is_array=self.list_distinct_target_is_array,
             offset_start=None if offset is None else offset.start,
             offset_end=None if offset is None else offset.end,
-            unit="days" if offset is None else offset.unit,
+            unit='days' if offset is None else offset.unit,
             forecast_length=self.forecast_length,
             timeframe_step=self.timeframe_step,
         )
@@ -1138,26 +1192,31 @@ class PredictiveQueryV2(PredictiveQuery):
 
     def initialize_splits_post_train_table_generate(
         self,
-        train_table_stats: Union[TemporalNodeTrainTableStats,
-                                 TemporalLinkTrainTableStats],
+        train_table_stats: Union[
+            TemporalNodeTrainTableStats, TemporalLinkTrainTableStats
+        ],
     ):
-        if (isinstance(self.split, ApproxDateOffsetSplit)
-                and not self.split.is_initialized):
-            offset = (self.validated_predictive_query.
-                      get_combined_date_offset_range())
+        if (
+            isinstance(self.split, ApproxDateOffsetSplit)
+            and not self.split.is_initialized
+        ):
+            offset = self.validated_predictive_query.get_combined_date_offset_range()
             unit = offset.unit
             timeframe = offset.end - offset.start
 
             # fully initially `ApproxDateOffsetSplit`
             self.split.set_date_offset_boundary(
-                train_table_stats=train_table_stats, timeframe=timeframe,
-                unit=unit, timeframe_step=self.timeframe_step)
+                train_table_stats=train_table_stats,
+                timeframe=timeframe,
+                unit=unit,
+                timeframe_step=self.timeframe_step,
+            )
         elif isinstance(self.split, DateOffsetSplit):
             # adjust `DateOffsetSplit` as necessary
             if self.query_type == QueryType.TEMPORAL:
-                self.split = (
-                    self.adjust_date_offset_split_post_train_table_generate(
-                        train_table_stats))
+                self.split = self.adjust_date_offset_split_post_train_table_generate(
+                    train_table_stats
+                )
 
     def create_task(
         self,
@@ -1209,16 +1268,19 @@ class PredictiveQueryV2(PredictiveQuery):
         self.graph.validate(ignore_encoders=ignore_encoders)
         if train_table_path is None:
             train_table_path, job_id, self._validate_train_table_response = (
-                self.generate_train_table(job_id=job_id))
+                self.generate_train_table(job_id=job_id)
+            )
         self._train_table_path = train_table_path
 
         # Note: when `self._validate_train_table_response` contains more than
         # one errors, we will always raise the first one.
-        if ((self._validate_train_table_response is not None)
-                and (not self._validate_train_table_response.ok)):
+        if (self._validate_train_table_response is not None) and (
+            not self._validate_train_table_response.ok
+        ):
             validation_error = self._validate_train_table_response.errors[0]
-            raise TrainingTableGenerationError(title=validation_error.title,
-                                               message=validation_error.message)
+            raise TrainingTableGenerationError(
+                title=validation_error.title, message=validation_error.message
+            )
 
         # Splitting ###########################################################
 
@@ -1235,24 +1297,31 @@ class PredictiveQueryV2(PredictiveQuery):
         # that storage filename.
         path_to_train_table = osp.dirname(self._train_table_path)
         train_table_name = train_table_name or TRAIN_TABLE_NAME
-        physical_train_table_name = osp.splitext(
-            osp.basename(self._train_table_path))[0]
+        physical_train_table_name = osp.splitext(osp.basename(self._train_table_path))[
+            0
+        ]
         train_table_connector = ParquetConnector(
-            name=train_table_source_name(path_to_train_table, weight_col_name
-                                         is not None),
-            root_dir=path_to_train_table)
+            name=train_table_source_name(
+                path_to_train_table, weight_col_name is not None
+            ),
+            root_dir=path_to_train_table,
+        )
 
         task_type = self.get_task_type()
 
         weight_col = None
         if weight_col_name:
             weight_col = validate_weight_column(
-                weight_col_name, self._train_table_path, task_type,
-                self.list_distinct_target_is_array)
+                weight_col_name,
+                self._train_table_path,
+                task_type,
+                self.list_distinct_target_is_array,
+            )
         elif train_table_name != TRAIN_TABLE_NAME:
             raise ValueError(
                 f"Unexpected training table name '{train_table_name}' "
-                "without a weight column.")
+                'without a weight column.'
+            )
 
         # NOTE: Right now `target_table_name` is only used in static link
         # prediction for inserting pseudo time in target table
@@ -1272,8 +1341,7 @@ class PredictiveQueryV2(PredictiveQuery):
             fkeys=self.table_generator.get_fkeys(),
             cols=self.table_generator.get_cols(),
             time_col=self.table_generator.get_time_col(),
-            entity_include_bit_col=self.table_generator.
-            get_entity_include_bit_col(),
+            entity_include_bit_col=self.table_generator.get_entity_include_bit_col(),
             weight_col=weight_col,
             stats_manager=self.table_generator.stats_manager,
             **resolve_task_options(
@@ -1335,11 +1403,14 @@ class PredictiveQueryV2(PredictiveQuery):
 
         pred_table_path = osp.join(
             get_table_path(self.name, destination, training_table=False),
-            PRED_TABLE_NAME)
+            PRED_TABLE_NAME,
+        )
         if fsutil.exists(pred_table_path):
-            logger.info(f"Prediction table already exists at {pred_table_path}"
-                        ". Local test may fail but workflow will reattach to "
-                        "to existing table generation job.")
+            logger.info(
+                f'Prediction table already exists at {pred_table_path}'
+                '. Local test may fail but workflow will reattach to '
+                'to existing table generation job.'
+            )
         fsutil.makedirs(pred_table_path, exist_ok=True)
 
         from kumo.data.generic.generate_current_pred_table import (
@@ -1359,9 +1430,9 @@ class PredictiveQueryV2(PredictiveQuery):
         output_file_path = pred_table_path
         pred_table_validation_response_path = osp.join(
             osp.dirname(output_file_path),
-            train_table_validation.PRED_TABLE_VALIDATION_RESPONSE_NAME)
-        target_file_path = osp.join(osp.dirname(output_file_path),
-                                    TARGET_FILE_NAME)
+            train_table_validation.PRED_TABLE_VALIDATION_RESPONSE_NAME,
+        )
+        target_file_path = osp.join(osp.dirname(output_file_path), TARGET_FILE_NAME)
 
         if not job_id:
             job_id = uuid.uuid4().hex
@@ -1380,7 +1451,8 @@ class PredictiveQueryV2(PredictiveQuery):
 
         validation_response = ValidationResponse.load(
             pred_table_validation_response_path,
-            train_table_validation.PRED_TABLE_VALIDATION_RESPONSE_NAME)
+            train_table_validation.PRED_TABLE_VALIDATION_RESPONSE_NAME,
+        )
 
         if not validation_response.ok:
             return pred_table_path, validation_response
@@ -1411,8 +1483,8 @@ class PredictiveQueryV2(PredictiveQuery):
         from kumo.validation import ValidationResponse, train_table_validation
 
         logger.debug(
-            "Generating train table with config: weight_col=%s "
-            "list_distinct_target_is_array=%s query_type=%s",
+            'Generating train table with config: weight_col=%s '
+            'list_distinct_target_is_array=%s query_type=%s',
             self.config().weight_col,
             self.list_distinct_target_is_array,
             self.query_type,
@@ -1424,10 +1496,12 @@ class PredictiveQueryV2(PredictiveQuery):
 
         pquery_config = self.config()
         train_table_path = osp.join(
-            get_table_path(pquery_config.name, destination), TRAIN_TABLE_NAME)
+            get_table_path(pquery_config.name, destination), TRAIN_TABLE_NAME
+        )
         train_table_validation_response_path = osp.join(
             osp.dirname(train_table_path),
-            train_table_validation.TRAIN_TABLE_VALIDATION_RESPONSE_NAME)
+            train_table_validation.TRAIN_TABLE_VALIDATION_RESPONSE_NAME,
+        )
 
         if not job_id:
             job_id = uuid.uuid4().hex
@@ -1436,21 +1510,22 @@ class PredictiveQueryV2(PredictiveQuery):
             pquery_config,
             train_table_path,
             destination,
-            train_table_validation_response_path=(
-                train_table_validation_response_path),
+            train_table_validation_response_path=(train_table_validation_response_path),
             job_id=str(job_id),
             diskgraph_index_path=diskgraph_index_path,
         )
 
         validation_response = ValidationResponse.load(
             train_table_validation_response_path,
-            train_table_validation.TRAIN_TABLE_VALIDATION_RESPONSE_NAME)
+            train_table_validation.TRAIN_TABLE_VALIDATION_RESPONSE_NAME,
+        )
 
         if not validation_response.ok:
             return '', str(job_id), validation_response
         if published_train_table_path is None:
             raise RuntimeError(
-                'train table generation succeeded without publishing data')
+                'train table generation succeeded without publishing data'
+            )
 
         # TODO (xinwei): Deprecate this and adjust the unit tests
         # NOTE: This is needed to store a copy of train table stats in
@@ -1458,7 +1533,8 @@ class PredictiveQueryV2(PredictiveQuery):
         self.get_train_table_stats(job_id)
 
         validate_post_response = (
-            self.table_generator.validate_post_train_table_generate())
+            self.table_generator.validate_post_train_table_generate()
+        )
         if validate_post_response is not None:
             validation_response.merge(validate_post_response)
         # The task keeps the logical table name stable while reading the
@@ -1476,8 +1552,10 @@ class PredictiveQueryV2(PredictiveQuery):
         raise NotImplementedError
 
     def adjust_date_offset_split_post_train_table_generate(
-        self, train_table_stats: Union[TemporalNodeTrainTableStats,
-                                       TemporalLinkTrainTableStats]
+        self,
+        train_table_stats: Union[
+            TemporalNodeTrainTableStats, TemporalLinkTrainTableStats
+        ],
     ) -> DateOffsetSplit:
         r"""When a custom split is not provided, and that the inferred
         default split is `DateOffsetSplit`, we will adjust the split
@@ -1503,8 +1581,11 @@ class PredictiveQueryV2(PredictiveQuery):
         # timeframe as test set and second last timeframe as validation set.
         # We will remove this logic soon.
         is_default_split = False
-        if (len(split.offsets) == 2 and split.offsets[-1] == 0
-                and -split.offsets[0] == split.timeframe):
+        if (
+            len(split.offsets) == 2
+            and split.offsets[-1] == 0
+            and -split.offsets[0] == split.timeframe
+        ):
             is_default_split = True
 
         # When the current `DateOffsetSplit` is not a default split and
@@ -1515,8 +1596,7 @@ class PredictiveQueryV2(PredictiveQuery):
         # date offset split in this case. We will improve this in the
         # future. For now, we will skip date offset split adjustment for
         # this case.
-        if (not is_default_split or offset.start > 0
-                or self.timeframe_step is not None):
+        if not is_default_split or offset.start > 0 or self.timeframe_step is not None:
             return split
 
         # Adjust the split boundary between train/val set such that
@@ -1531,8 +1611,7 @@ class PredictiveQueryV2(PredictiveQuery):
             stats_per_timeframe[1].index,
             stats_per_timeframe[0].index,
         )
-        adjusted_timeframe = (val_timeframe_index -
-                              test_timeframe_index) * timeframe
+        adjusted_timeframe = (val_timeframe_index - test_timeframe_index) * timeframe
 
         # NOTE: the test set is actually not empty because
         # max sample timestamp is one timeframe larger than the max
@@ -1552,21 +1631,20 @@ class PredictiveQueryV2(PredictiveQuery):
             split_str = construct_object_string_from_config(split)
             adjust_split_str = construct_object_string_from_config(adjust_split)
             validation_warning = ValidationWarning(
-                title=("DateOffsetSplit is adjusted to avoid empty "
-                       "validation data"),
+                title=('DateOffsetSplit is adjusted to avoid empty validation data'),
                 message=(
-                    f"Validation set would be empty with split {split_str}, "
-                    f"so we adjusted it to {adjust_split_str} to keep all "
-                    f"splits non-empty. Edit the split and retrain if you "
-                    f"prefer a different setup."))
-            self._validate_train_table_response.warnings.append(
-                validation_warning)
+                    f'Validation set would be empty with split {split_str}, '
+                    f'so we adjusted it to {adjust_split_str} to keep all '
+                    f'splits non-empty. Edit the split and retrain if you '
+                    f'prefer a different setup.'
+                ),
+            )
+            self._validate_train_table_response.warnings.append(validation_warning)
             logger.warning(validation_warning.message)
         return adjust_split
 
     @classmethod
-    def load(cls, name: str,
-             home_dir: Optional[str] = None) -> 'PredictiveQuery':
+    def load(cls, name: str, home_dir: Optional[str] = None) -> 'PredictiveQuery':
         home_dir = home_dir if home_dir is not None else get_home_dir()
         root_dir = osp.join(home_dir, 'queries', name)
 

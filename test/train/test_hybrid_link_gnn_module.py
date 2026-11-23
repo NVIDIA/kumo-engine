@@ -32,8 +32,9 @@ def test_sampled_postprocess_step(
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=True),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=True
+        ),
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
         num_rhs_nodes=15,
@@ -51,13 +52,19 @@ def test_sampled_postprocess_step(
 
     assert model.rhs_sample_size == expected_rhs_sample_size
     if model.rhs_sample_size is not None:
-        assert isinstance(model.rhs_embedding.lookup_embedding,
-                          torch.nn.Embedding)
+        assert isinstance(model.rhs_embedding.lookup_embedding, torch.nn.Embedding)
         assert model.rhs_embedding.lookup_embedding.sparse is True
-        (_, rhs_y_index, lhs_y_batch, _, rhs_emb, lhs_emb_proj,
-         _) = model.sampled_postprocess_step(lhs_emb, rhs_gnn_emb,
-                                             rhs_idgnn_index, lhs_idgnn_batch,
-                                             rhs_y_index, lhs_y_batch, None)
+        (_, rhs_y_index, lhs_y_batch, _, rhs_emb, lhs_emb_proj, _) = (
+            model.sampled_postprocess_step(
+                lhs_emb,
+                rhs_gnn_emb,
+                rhs_idgnn_index,
+                lhs_idgnn_batch,
+                rhs_y_index,
+                lhs_y_batch,
+                None,
+            )
+        )
 
         assert rhs_y_index is not None
         assert lhs_y_batch is not None
@@ -76,8 +83,9 @@ def test_sampled_and_full_equality():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=True),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=True
+        ),
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
         num_rhs_nodes=15,
@@ -98,22 +106,33 @@ def test_sampled_and_full_equality():
     rhs_gnn_emb = torch.randn(len(rhs_idgnn_index), 16)
 
     full_logits, lhs_emb_projected = model.postprocess_step(
-        lhs_emb, rhs_gnn_emb, rhs_idgnn_index, lhs_idgnn_batch,
-        model.rhs_embedding())
+        lhs_emb, rhs_gnn_emb, rhs_idgnn_index, lhs_idgnn_batch, model.rhs_embedding()
+    )
     for edge_weights in [None, torch.rand(len(lhs_y_batch))]:
-        full_loss = model.compute_loss(lhs_emb_projected, model.rhs_embedding(),
-                                       full_logits, rhs_y_index, lhs_y_batch,
-                                       edge_weights)
+        full_loss = model.compute_loss(
+            lhs_emb_projected,
+            model.rhs_embedding(),
+            full_logits,
+            rhs_y_index,
+            lhs_y_batch,
+            edge_weights,
+        )
 
-        out = model.sampled_postprocess_step(lhs_emb, rhs_gnn_emb,
-                                             rhs_idgnn_index, lhs_idgnn_batch,
-                                             rhs_y_index, lhs_y_batch, None)
+        out = model.sampled_postprocess_step(
+            lhs_emb,
+            rhs_gnn_emb,
+            rhs_idgnn_index,
+            lhs_idgnn_batch,
+            rhs_y_index,
+            lhs_y_batch,
+            None,
+        )
         logits, rhs_y_index, lhs_y_batch, _, rhs_emb, lhs_emb_proj, _ = out
         assert rhs_y_index is not None
         assert lhs_y_batch is not None
-        sampled_loss = model.compute_loss(lhs_emb_proj, rhs_emb, logits,
-                                          rhs_y_index, lhs_y_batch,
-                                          edge_weights)
+        sampled_loss = model.compute_loss(
+            lhs_emb_proj, rhs_emb, logits, rhs_y_index, lhs_y_batch, edge_weights
+        )
         assert torch.allclose(full_loss, sampled_loss)
 
 
@@ -127,8 +146,9 @@ def test_temporal_valid_rhs_node_idx(rhs_sample_size: int):
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=True),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=True
+        ),
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
         num_rhs_nodes=15,
@@ -147,14 +167,26 @@ def test_temporal_valid_rhs_node_idx(rhs_sample_size: int):
     model.rhs_embedding.filter(valid_rhs_node_idx)
 
     # All rhs_idgnn_index are valid
-    out = model.postprocess_step(lhs_emb, rhs_gnn_emb,
-                                 rhs_idgnn_index, lhs_idgnn_batch,
-                                 model.rhs_embedding(), valid_rhs_node_idx)
+    out = model.postprocess_step(
+        lhs_emb,
+        rhs_gnn_emb,
+        rhs_idgnn_index,
+        lhs_idgnn_batch,
+        model.rhs_embedding(),
+        valid_rhs_node_idx,
+    )
     assert out[0].shape == (3, len(valid_rhs_node_idx))
 
-    out = model.sampled_postprocess_step(lhs_emb, rhs_gnn_emb, rhs_idgnn_index,
-                                         lhs_idgnn_batch, rhs_y_index,
-                                         lhs_y_batch, None, valid_rhs_node_idx)
+    out = model.sampled_postprocess_step(
+        lhs_emb,
+        rhs_gnn_emb,
+        rhs_idgnn_index,
+        lhs_idgnn_batch,
+        rhs_y_index,
+        lhs_y_batch,
+        None,
+        valid_rhs_node_idx,
+    )
     assert out[0].shape == (3, min(rhs_sample_size, len(valid_rhs_node_idx)))
     assert out[4].shape == (min(rhs_sample_size, len(valid_rhs_node_idx)), 8)
 
@@ -170,8 +202,9 @@ def test_cosine_rhs():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=True),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=True
+        ),
         train_table_name='train_table_name',
         entity_table_names=('LHS', 'RHS'),
         num_rhs_nodes=15,
@@ -200,8 +233,9 @@ def test_predict_step_returns_requested_lhs_embedding():
             exclude_cols_dict={},
         ),
         model=HeteroGNN(channels=16, num_mp_layers=0),
-        head=LinkPredHead(in_channels=16, embedding_dim=8,
-                          use_rhs_projector=False, use_mlp_head=True),
+        head=LinkPredHead(
+            in_channels=16, embedding_dim=8, use_rhs_projector=False, use_mlp_head=True
+        ),
         train_table_name='TRAIN_TABLE',
         entity_table_names=('LHS', 'RHS'),
         num_rhs_nodes=15,

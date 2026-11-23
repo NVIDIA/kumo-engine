@@ -20,8 +20,7 @@ def test_catalog_binds_exact_names_and_joins_visible_tables(style, marker):
         ('Mixed.Table', 'Timestamp', 'TIMESTAMP_TZ', None),
     ]
 
-    found = columns(cursor, database='Mixed"Db', schema="Schema's",
-                    table='Mixed.Table')
+    found = columns(cursor, database='Mixed"Db', schema="Schema's", table='Mixed.Table')
 
     query, params = cursor.execute.call_args.args
     assert '"Mixed""Db"."INFORMATION_SCHEMA"."COLUMNS" c' in query
@@ -44,8 +43,9 @@ def test_catalog_binds_exact_names_and_joins_visible_tables(style, marker):
 def test_schema_catalog_queries_all_columns_in_catalog_order():
     cursor = Mock()
     cursor.connection._paramstyle = 'pyformat'
-    cursor.fetchall.return_value = [(f'TABLE_{i // 2:02}', f'COLUMN_{i % 2:04}',
-                                     'NUMBER', 0) for i in range(3)]
+    cursor.fetchall.return_value = [
+        (f'TABLE_{i // 2:02}', f'COLUMN_{i % 2:04}', 'NUMBER', 0) for i in range(3)
+    ]
 
     found = columns(cursor, database='DB', schema='PUBLIC')
 

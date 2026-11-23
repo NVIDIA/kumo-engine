@@ -10,6 +10,7 @@ Project endpoints (authenticated users):
   PATCH  /v0/projects/{project_id}
   POST   /v0/projects/{project_id}/archive
 """
+
 from typing import List
 
 from fastapi import APIRouter, Depends
@@ -25,49 +26,51 @@ class ProjectsRouter:
     def __init__(self, auth: Authentication, driver: ProjectsDriver) -> None:
         self._driver = driver
         self.router = APIRouter(
-            prefix="/v0/projects",
-            tags=["Projects"],
+            prefix='/v0/projects',
+            tags=['Projects'],
             dependencies=[Depends(auth.authenticate_request_header)],
         )
 
         self.router.add_api_route(
-            "/",
+            '/',
             self.list_visible_projects,
             response_model=List[ProjectDBEntry],
-            methods=["GET"],
+            methods=['GET'],
         )
         self.router.add_api_route(
-            "/by-slug/{slug}",
+            '/by-slug/{slug}',
             self.get_project_by_slug,
             response_model=ProjectDBEntry,
-            methods=["GET"],
+            methods=['GET'],
         )
         self.router.add_api_route(
-            "/{project_id}",
+            '/{project_id}',
             self.get_project,
             response_model=ProjectDBEntry,
-            methods=["GET"],
+            methods=['GET'],
         )
         self.router.add_api_route(
-            "/{project_id}",
+            '/{project_id}',
             self.update_project,
             response_model=ProjectDBEntry,
-            methods=["PATCH"],
+            methods=['PATCH'],
         )
         self.router.add_api_route(
-            "/{project_id}/archive",
+            '/{project_id}/archive',
             self.archive_project,
             response_model=ProjectDBEntry,
-            methods=["POST"],
+            methods=['POST'],
         )
         self.router.add_api_route(
-            "/utils/validate_name",
+            '/utils/validate_name',
             self.validate_project_name,
             response_model=ValidateNameResponse,
-            methods=["POST"],
+            methods=['POST'],
         )
 
-    async def list_visible_projects(self, ) -> List[ProjectDBEntry]:
+    async def list_visible_projects(
+        self,
+    ) -> List[ProjectDBEntry]:
         return await self._driver._list_visible_projects()
 
     async def get_project(

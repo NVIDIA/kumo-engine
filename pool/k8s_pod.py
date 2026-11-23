@@ -28,6 +28,7 @@ All three go through :func:`pool_worker_env_vars`; the per-mode
 helpers above just pre-fill the right ``task_queue`` / ``storage_mode`` /
 concurrency caps.
 """
+
 import os
 from typing import Dict, List
 
@@ -61,13 +62,14 @@ _FORWARDED_CONNECTOR_IO_ENV_KEYS = (
 # id_suffixes (otherwise their AutoRPC task queue names diverge and
 # report_status never lands). Prod/staging hit a different id_suffix
 # branch that does not depend on USER.
-_DEV_ONLY_FORWARDED_DEPLOY_ENV_KEYS = ('USER', )
+_DEV_ONLY_FORWARDED_DEPLOY_ENV_KEYS = ('USER',)
 
 
 def forwarded_deploy_env_vars() -> Dict[str, str]:
     """Deploy config keys forwarded from controller to worker pods."""
     keys: List[str] = list(
-        (*_FORWARDED_DEPLOY_ENV_KEYS, *_FORWARDED_CONNECTOR_IO_ENV_KEYS))
+        (*_FORWARDED_DEPLOY_ENV_KEYS, *_FORWARDED_CONNECTOR_IO_ENV_KEYS)
+    )
     if deploy_env().deploy_mode.is_dev:
         keys.extend(_DEV_ONLY_FORWARDED_DEPLOY_ENV_KEYS)
     env = {key: os.environ[key] for key in keys if key in os.environ}

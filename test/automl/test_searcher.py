@@ -49,8 +49,10 @@ def test_searcher_default(SearcherCls, kwargs):
 
     searcher = SearcherCls(space, **kwargs)
     if not isinstance(searcher, RandomSearcher):
-        assert (searcher.study.sampler.__class__.__name__ ==
-                SearcherCls.__name__.replace('Searcher', 'Sampler'))
+        assert (
+            searcher.study.sampler.__class__.__name__
+            == SearcherCls.__name__.replace('Searcher', 'Sampler')
+        )
 
     instance = searcher.suggest()
     assert isinstance(instance, ModelPlan)
@@ -67,13 +69,11 @@ def test_searcher_default(SearcherCls, kwargs):
                 if isinstance(value[0], PlanMixin):
                     for subkey, subvalue, submetadata in value[0].items():
                         candidates = [
-                            getattr(v, subkey) for v in values
-                            if hasattr(v, subkey)
+                            getattr(v, subkey) for v in values if hasattr(v, subkey)
                         ]
                         candidates = [x for li in candidates for x in li]
 
-                        if (submetadata.tunable
-                                and subvalue != MissingType.VALUE):
+                        if submetadata.tunable and subvalue != MissingType.VALUE:
                             assert isinstance(subvalue, list)
                             assert len(subvalue) == 1
                             assert subvalue[0] in candidates
@@ -97,8 +97,8 @@ def test_unique_trials(SearcherCls):
         cfg = searcher.suggest()
         searcher.update(cfg, [random.random()])
     unique_cfgs = set(
-        json.dumps(to_json_dict(cfg), sort_keys=True)
-        for cfg, _ in searcher.state)
+        json.dumps(to_json_dict(cfg), sort_keys=True) for cfg, _ in searcher.state
+    )
     assert len(unique_cfgs) == 20
 
 
@@ -115,13 +115,12 @@ def test_analyze_single_trial_skips_parameter_importance(tmp_path):
 
     searcher.analyze(str(tmp_path))
 
-    assert (tmp_path / "optimization_history.png").is_file()
-    assert not (tmp_path / "param_importances.png").exists()
+    assert (tmp_path / 'optimization_history.png').is_file()
+    assert not (tmp_path / 'param_importances.png').exists()
 
 
 @pytest.mark.parametrize('scheme', ['local', 'memory', 'abfss'])
-def test_analyze_with_unhashable_categorical_value(tmp_path, monkeypatch,
-                                                   scheme):
+def test_analyze_with_unhashable_categorical_value(tmp_path, monkeypatch, scheme):
     # `NumNeighborsConfig` instances are unhashable, so Optuna's plotting
     # code (which uses trial params as dict keys) must be given a
     # hashable stand-in rather than the raw config objects.
@@ -145,9 +144,8 @@ def test_analyze_with_unhashable_categorical_value(tmp_path, monkeypatch,
         searcher.update(instance, [random.random()])
 
     choices = space.neighbor_sampling.num_neighbors
-    choice_labels = tuple(f"{index}: {choice}"
-                          for index, choice in enumerate(choices))
-    distribution = searcher.study.trials[0].distributions["num_neighbors"]
+    choice_labels = tuple(f'{index}: {choice}' for index, choice in enumerate(choices))
+    distribution = searcher.study.trials[0].distributions['num_neighbors']
     assert distribution.choices == choice_labels
 
     monkeypatch.chdir(tmp_path)
@@ -160,10 +158,12 @@ def test_analyze_with_unhashable_categorical_value(tmp_path, monkeypatch,
                 raise ValueError('Protocol not known: abfss')
             return original(protocol)
 
-        monkeypatch.setattr(fsspec, 'get_filesystem_class',
-                            get_filesystem_class)
-        monkeypatch.setattr(filesystem, '_fsspec_fallback',
-                            lambda uri: uri.replace('abfss://', 'memory://', 1))
+        monkeypatch.setattr(fsspec, 'get_filesystem_class', get_filesystem_class)
+        monkeypatch.setattr(
+            filesystem,
+            '_fsspec_fallback',
+            lambda uri: uri.replace('abfss://', 'memory://', 1),
+        )
 
     searcher.analyze(path)
 
@@ -183,12 +183,13 @@ def test_sample_value_with_later_unhashable_choice():
     searcher = TPESearcher(space, n_startup_trials=2)
     searcher.current_trial = Mock()
     choices = [1, [2, 3]]
-    choice_labels = ["0: 1", "1: [2, 3]"]
+    choice_labels = ['0: 1', '1: [2, 3]']
     searcher.current_trial.suggest_categorical.return_value = choice_labels[1]
 
-    assert searcher.sample_value("mixed", choices) == [2, 3]
+    assert searcher.sample_value('mixed', choices) == [2, 3]
     searcher.current_trial.suggest_categorical.assert_called_once_with(
-        "mixed", choice_labels)
+        'mixed', choice_labels
+    )
 
 
 def test_sample_value_uses_unique_labels_for_duplicate_choices():
@@ -201,12 +202,13 @@ def test_sample_value_uses_unique_labels_for_duplicate_choices():
     searcher = TPESearcher(space, n_startup_trials=2)
     searcher.current_trial = Mock()
     choices = [[1], [1]]
-    choice_labels = ["0: [1]", "1: [1]"]
+    choice_labels = ['0: [1]', '1: [1]']
     searcher.current_trial.suggest_categorical.return_value = choice_labels[1]
 
-    assert searcher.sample_value("duplicate", choices) is choices[1]
+    assert searcher.sample_value('duplicate', choices) is choices[1]
     searcher.current_trial.suggest_categorical.assert_called_once_with(
-        "duplicate", choice_labels)
+        'duplicate', choice_labels
+    )
 
 
 def test_analyze_with_unhashable_nested_categorical_value(tmp_path):
@@ -245,8 +247,8 @@ def test_analyze_with_unhashable_nested_categorical_value(tmp_path):
 
     searcher.analyze(str(tmp_path))
 
-    assert (tmp_path / "optimization_history.png").is_file()
-    assert (tmp_path / "slice" / "model0_positional_encodings.png").is_file()
+    assert (tmp_path / 'optimization_history.png').is_file()
+    assert (tmp_path / 'slice' / 'model0_positional_encodings.png').is_file()
 
 
 @pytest.fixture()
@@ -289,8 +291,9 @@ def nested_model_plan() -> ModelPlan:
         (RandomSearcher, dict()),
     ],
 )
-def test_searcher_nested_space_all_values(SearcherCls, kwargs,
-                                          nested_model_plan: ModelPlan) -> None:
+def test_searcher_nested_space_all_values(
+    SearcherCls, kwargs, nested_model_plan: ModelPlan
+) -> None:
     searcher = SearcherCls(nested_model_plan, **kwargs)
 
     instance = searcher.suggest()
@@ -308,8 +311,7 @@ def test_searcher_nested_space_all_values(SearcherCls, kwargs,
                 # test nested space
                 if isinstance(value[0], PlanMixin):
                     for _, subvalue, submetadata in value[0].items():
-                        if (submetadata.tunable
-                                and subvalue != MissingType.VALUE):
+                        if submetadata.tunable and subvalue != MissingType.VALUE:
                             assert isinstance(subvalue, list)
                             assert len(subvalue) == 1
             else:
@@ -324,15 +326,14 @@ def test_searcher_nested_space_all_values(SearcherCls, kwargs,
         (RandomSearcher, dict()),
     ],
 )
-def test_searcher_nested_space_model_architecture(nested_model_plan: ModelPlan,
-                                                  SearcherCls, kwargs):
+def test_searcher_nested_space_model_architecture(
+    nested_model_plan: ModelPlan, SearcherCls, kwargs
+):
     gnn_options = {
-        k: v
-        for k, v, _ in nested_model_plan.model_architecture.model[0].items()
+        k: v for k, v, _ in nested_model_plan.model_architecture.model[0].items()
     }
     gt_options = {
-        k: v
-        for k, v, _ in nested_model_plan.model_architecture.model[1].items()
+        k: v for k, v, _ in nested_model_plan.model_architecture.model[1].items()
     }
 
     searcher = SearcherCls(nested_model_plan, **kwargs)
@@ -341,8 +342,11 @@ def test_searcher_nested_space_model_architecture(nested_model_plan: ModelPlan,
         instance = searcher.suggest()
         assert isinstance(instance, ModelPlan)
 
-        candidates = gnn_options if instance.model_architecture.model[
-            0].name == 'GNN' else gt_options
+        candidates = (
+            gnn_options
+            if instance.model_architecture.model[0].name == 'GNN'
+            else gt_options
+        )
         for key, value, metadata in instance.model_architecture.items():
             original_values = getattr(nested_model_plan.model_architecture, key)
 
@@ -353,8 +357,7 @@ def test_searcher_nested_space_model_architecture(nested_model_plan: ModelPlan,
                 # test nested space
                 if isinstance(value[0], PlanMixin):
                     for subkey, subvalue, submetadata in value[0].items():
-                        if (submetadata.tunable
-                                and subvalue != MissingType.VALUE):
+                        if submetadata.tunable and subvalue != MissingType.VALUE:
                             assert isinstance(subvalue, list)
                             assert len(subvalue) == 1
                             assert subvalue[0] in candidates[subkey]

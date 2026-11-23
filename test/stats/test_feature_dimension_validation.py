@@ -23,8 +23,7 @@ class _FeatureDimensionTable:
 def _sequence_table():
     cols = [
         BaseColumnConfig('id', dtype=Dtype.int, stype=Stype.ID),
-        BaseColumnConfig('seed_embedding', dtype=Dtype.floatlist,
-                         stype=Stype.sequence),
+        BaseColumnConfig('seed_embedding', dtype=Dtype.floatlist, stype=Stype.sequence),
     ]
     return _FeatureDimensionTable(cols), cols
 
@@ -34,26 +33,33 @@ def test_validate_feature_dimensions_accepts_approx_sequence_length_stats():
     test_version = 'approx-sequence-lengths'
     col_stats = {
         col: {
-            ColStatType.NUM_UNIQUE:
-            Stats(value=100, approx=False, data_version=test_version),
-            ColStatType.COUNT:
-            Stats(value=100, approx=False, data_version=test_version),
+            ColStatType.NUM_UNIQUE: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
+            ColStatType.COUNT: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
         }
         for col in cols
     }
     col_stats[cols[1]][ColStatType.SEQUENCE_MIN_LENGTH] = Stats(
-        value=3, approx=True, data_version=test_version)
+        value=3, approx=True, data_version=test_version
+    )
     col_stats[cols[1]][ColStatType.SEQUENCE_MAX_LENGTH] = Stats(
-        value=3, approx=True, data_version=test_version)
+        value=3, approx=True, data_version=test_version
+    )
 
     response = ValidationResponse()
-    _validate_feature_dimensions(table, col_stats, response, 'test_table',
-                                 max_dimensions=4097)
+    _validate_feature_dimensions(
+        table, col_stats, response, 'test_table', max_dimensions=4097
+    )
 
-    assert all(error.title != 'Missing embedding statistics'
-               for error in response.errors)
-    assert all(error.title != 'Inconsistent embedding dimensions'
-               for error in response.errors)
+    assert all(
+        error.title != 'Missing embedding statistics' for error in response.errors
+    )
+    assert all(
+        error.title != 'Inconsistent embedding dimensions' for error in response.errors
+    )
 
 
 def test_validate_feature_dimensions_reports_missing_sequence_length_stats():
@@ -61,16 +67,20 @@ def test_validate_feature_dimensions_reports_missing_sequence_length_stats():
     test_version = 'missing-sequence-lengths'
     col_stats = {
         cols[0]: {
-            ColStatType.NUM_UNIQUE:
-            Stats(value=100, approx=False, data_version=test_version),
-            ColStatType.COUNT:
-            Stats(value=100, approx=False, data_version=test_version),
+            ColStatType.NUM_UNIQUE: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
+            ColStatType.COUNT: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
         }
     }
 
     response = ValidationResponse()
-    _validate_feature_dimensions(table, col_stats, response, 'test_table',
-                                 max_dimensions=4097)
+    _validate_feature_dimensions(
+        table, col_stats, response, 'test_table', max_dimensions=4097
+    )
 
-    assert any(error.title == 'Missing embedding statistics'
-               for error in response.errors)
+    assert any(
+        error.title == 'Missing embedding statistics' for error in response.errors
+    )

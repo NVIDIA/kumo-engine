@@ -76,6 +76,7 @@ class GraphTableStatsResult:
     is only populated for ``TableRefreshStage.INGEST_TABLE``; it is 0 for
     col-stats validation stages where size information is irrelevant.
     """
+
     validation: ValidationResponse
     total_source_size_bytes: int = 0
     source_size_bytes_by_table: Dict[str, int] = field(default_factory=dict)
@@ -100,6 +101,7 @@ class DataBackendActivities:
         activities class — a top-level import would form a cycle.
         """
         from rest.backends.data_backend.data_backend import DataBackend
+
         return await DataBackend.start_bp_stats_activity(
             ctx,
             job_input,
@@ -117,8 +119,10 @@ class DataBackendActivities:
     ) -> bool:
         """Activity wrapper for standalone table refresh col-stats."""
         from rest.backends.data_backend.data_backend import DataBackend
+
         return await DataBackend.compute_standalone_table_col_stats(
-            connector_spec, table, data_version)
+            connector_spec, table, data_version
+        )
 
     @staticmethod
     @activity.defn
@@ -136,7 +140,7 @@ class DataBackendActivities:
             wf_id: Workflow ID to wait on
             run_id: Exact workflow execution to wait on, when known
         """
-        with kumo_timing("data_backend.wait_on_workflow", wf_id=wf_id):
+        with kumo_timing('data_backend.wait_on_workflow', wf_id=wf_id):
             return await ctx.temporal_client().result(wf_id, run_id=run_id)
 
     # Sync (threadpool, not event loop): the prologue takes the process-global
@@ -158,14 +162,15 @@ class DataBackendActivities:
             kumo_table = table_args_to_kumo_table(table_def, connector)
             native_temporal_cols = set()
             if any(
-                    col.stype == Stype.timestamp
-                    and col.timestamp_format is None
-                    for col in table_def.cols):
+                col.stype == Stype.timestamp and col.timestamp_format is None
+                for col in table_def.cols
+            ):
                 source_metadata = None
                 try:
                     if table_def.is_sql:
                         source_metadata = connector.get_query_metadata(
-                            table_def.source_table.sql)
+                            table_def.source_table.sql
+                        )
                     else:
                         source_metadata_list = connector.get_table_metadata(
                             [table_def.get_source_table_name()],
@@ -174,15 +179,20 @@ class DataBackendActivities:
                         )
                         if source_metadata_list:
                             source_metadata = source_metadata_list[0]
-                    source_cols = (source_metadata.all_cols()
-                                   if source_metadata is not None else [])
+                    source_cols = (
+                        source_metadata.all_cols()
+                        if source_metadata is not None
+                        else []
+                    )
                     if not source_cols:
                         log.warning(
                             'Source schema metadata was empty; falling back '
-                            'to timestamp value inference.')
+                            'to timestamp value inference.'
+                        )
                     else:
                         native_temporal_cols = {
-                            col.name for col in source_cols
+                            col.name
+                            for col in source_cols
                             if col.dtype in {Dtype.date, Dtype.time}
                         }
                 except Exception as e:
@@ -191,14 +201,15 @@ class DataBackendActivities:
                     log.warning(
                         'Source schema metadata lookup failed '
                         '(error_type=%s); falling back to timestamp value '
-                        'inference.', type(e).__name__)
+                        'inference.',
+                        type(e).__name__,
+                    )
             if native_temporal_cols:
-                cols_to_new_dtypes = (
-                    kumo_table._infer_dtypes_from_stypes_blocking(
-                        native_temporal_cols))
+                cols_to_new_dtypes = kumo_table._infer_dtypes_from_stypes_blocking(
+                    native_temporal_cols
+                )
             else:
-                cols_to_new_dtypes = (
-                    kumo_table._infer_dtypes_from_stypes_blocking())
+                cols_to_new_dtypes = kumo_table._infer_dtypes_from_stypes_blocking()
             for col in kumo_table.cols:
                 if col.name in cols_to_new_dtypes:
                     col.dtype = cols_to_new_dtypes[col.name]
@@ -213,6 +224,7 @@ class DataBackendActivities:
             # ``timestamp_format`` field overloads on type (enum = unit,
             # str = format).
             from rest.config.table_v2 import Column
+
             new_cols = []
             for col in table_def.cols:
                 inferred = kumo_table_cols.get(col.name)
@@ -228,10 +240,13 @@ class DataBackendActivities:
                 if ts_format_value is not None:
                     new_cols.append(
                         Column(
-                            name=col.name, stype=col.stype, dtype=col.dtype,
+                            name=col.name,
+                            stype=col.stype,
+                            dtype=col.dtype,
                             timestamp_format=ts_format_value,
-                            multicategorical_delimiter=(
-                                col.multicategorical_delimiter)))
+                            multicategorical_delimiter=(col.multicategorical_delimiter),
+                        )
+                    )
                 else:
                     new_cols.append(col)
             updated = TableDefinition(
@@ -262,16 +277,18 @@ class DataBackendActivities:
     ) -> GraphTableStatsResult:
         validator = GraphRefreshValidator(ctx._config)
         if stage == TableRefreshStage.INGEST_TABLE:
-            validation = validator.post_table_ingest(ctx, versioned_table_dict,
-                                                     connector_specs)
+            validation = validator.post_table_ingest(
+                ctx, versioned_table_dict, connector_specs
+            )
             # Sum SOURCE_SIZE for pool admission from validated, cached stats.
             stats = data_backend_cache().get_many_min_exact_stats(
                 [(k, v.fingerprint()) for k, v in versioned_table_dict.items()],
-                skip_col_stats=True)
+                skip_col_stats=True,
+            )
             source_sizes, non_positive = {}, []
-            for table_id, table, stat in zip(versioned_table_dict.keys(),
-                                             versioned_table_dict.values(),
-                                             stats):
+            for table_id, table, stat in zip(
+                versioned_table_dict.keys(), versioned_table_dict.values(), stats
+            ):
                 if stat and TableStatType.SOURCE_SIZE in stat.table_stats:
                     source_size = stat.table_stats[TableStatType.SOURCE_SIZE]
                     size = int(source_size.value)
@@ -293,17 +310,23 @@ class DataBackendActivities:
                 return GraphTableStatsResult(validation=validation)
             total = sum(source_sizes.values())
             return GraphTableStatsResult(
-                validation=validation, total_source_size_bytes=total,
-                source_size_bytes_by_table=source_sizes)
+                validation=validation,
+                total_source_size_bytes=total,
+                source_size_bytes_by_table=source_sizes,
+            )
         else:
-            assert (stage == TableRefreshStage.COMPUTE_MIN_COL_STATS
-                    or stage == TableRefreshStage.COMPLETED)
+            assert (
+                stage == TableRefreshStage.COMPUTE_MIN_COL_STATS
+                or stage == TableRefreshStage.COMPLETED
+            )
             validation_aliases = {
-                table_id: names[0]
-                for table_id, names in aliases.items()
+                table_id: names[0] for table_id, names in aliases.items()
             }
-            return GraphTableStatsResult(validation=validator.post_col_stats(
-                versioned_table_dict, aliases=validation_aliases))
+            return GraphTableStatsResult(
+                validation=validator.post_col_stats(
+                    versioned_table_dict, aliases=validation_aliases
+                )
+            )
 
     @staticmethod
     @connector_activity_registry.connector_authorized_activity
@@ -333,22 +356,23 @@ class DataBackendActivities:
                 source_table_name = table_args.get_source_table_name()
                 decision = None
                 if is_file_source_table(table_args):
-                    decision = (data_backend_cache().
-                                direct_diskgraph_source_decision.get(
-                                    table_args.fingerprint(),
-                                    str(data_version),
-                                    cls=DirectDiskgraphSourceDecision,
-                                ))
+                    decision = (
+                        data_backend_cache().direct_diskgraph_source_decision.get(
+                            table_args.fingerprint(),
+                            str(data_version),
+                            cls=DirectDiskgraphSourceDecision,
+                        )
+                    )
                 if decision is not None:
                     direct_diskgraph_source = decision.source is not None
-                    check_local = require_materialization_stage = (
-                        not direct_diskgraph_source)
+                    check_local = (
+                        require_materialization_stage
+                    ) = not direct_diskgraph_source
                 else:
                     connector = get_connector_from_spec(connector_spec)
-                    direct_diskgraph_source = (
-                        isinstance(connector, FileConnector)
-                        and connector.uses_direct_diskgraph_source_for(
-                            source_table_name))
+                    direct_diskgraph_source = isinstance(
+                        connector, FileConnector
+                    ) and connector.uses_direct_diskgraph_source_for(source_table_name)
                     check_local = not direct_diskgraph_source
                     require_materialization_stage = not direct_diskgraph_source
             validator = IngestionValidator(deploy_config)
@@ -393,11 +417,13 @@ class DataBackendActivities:
     @staticmethod
     @activity.defn
     def validate_graph_edge_stats(
-            input: GraphDataComputeInput,
-            graph_version_info: GraphDataVersionInfo,
-            deploy_config: DeployEnvConfig) -> ValidationResponse:
+        input: GraphDataComputeInput,
+        graph_version_info: GraphDataVersionInfo,
+        deploy_config: DeployEnvConfig,
+    ) -> ValidationResponse:
         return GraphRefreshValidator(deploy_config).post_edge_stats(
-            input, graph_version_info)
+            input, graph_version_info
+        )
 
     @staticmethod
     @activity.defn
@@ -408,7 +434,8 @@ class DataBackendActivities:
         table_fingerprint: TableFingerprint,
     ) -> str:
         persist_dir = data_backend_cache().create_table_cache_dir(
-            connector_id, source_table_name, data_version, table_fingerprint)
+            connector_id, source_table_name, data_version, table_fingerprint
+        )
         return persist_dir._table_dir
 
     @staticmethod
@@ -449,26 +476,31 @@ class DataBackendActivities:
             return
 
         await data_backend_cache().table_version_cache.save.coroutine(
-            connector_id, source_table_name, data_version)
+            connector_id, source_table_name, data_version
+        )
 
         # Save the table data version for a given job_id (training job, batch
         # prediction job, graph stats job). This helps to make sure that we are
         # consistently referring to the same version of a table during the
         # entire span of the given job.
         if job_id:
-            await data_backend_cache(
-            ).table_version_cache.save_for_job.coroutine(  # noqa: E501
-                job_id, connector_id, source_table_name, data_version)
+            await data_backend_cache().table_version_cache.save_for_job.coroutine(  # noqa: E501
+                job_id, connector_id, source_table_name, data_version
+            )
 
     @staticmethod
     @activity.defn
     async def save_source_table_ingest_result(
-            source_table_id: SourceTableID,
-            table_data_version: TableDataVersion,
-            task_result: TableDataTaskResult):
+        source_table_id: SourceTableID,
+        table_data_version: TableDataVersion,
+        task_result: TableDataTaskResult,
+    ):
         await data_backend_cache().table_refresh_result.save.coroutine(
-            source_table_id.connector_name, source_table_id.source_table_name,
-            table_data_version, task_result)
+            source_table_id.connector_name,
+            source_table_id.source_table_name,
+            table_data_version,
+            task_result,
+        )
 
     @staticmethod
     @activity.defn
@@ -479,8 +511,8 @@ class DataBackendActivities:
     ):
         # DIAGNOSTIC INSTRUMENTATION (PR #28405 hang investigation).
         log.info(
-            "ACTIVITY_SAVE_TABLE_REFRESH_RESULT_BEGIN table=%s stage=%s "
-            "data_version=%s cache_key=%s",
+            'ACTIVITY_SAVE_TABLE_REFRESH_RESULT_BEGIN table=%s stage=%s '
+            'data_version=%s cache_key=%s',
             table.get_source_table_name(),
             task_result.stage,
             data_version,
@@ -496,10 +528,10 @@ class DataBackendActivities:
         # specific to each kumo table.  Therefore we construct a unique hash
         # key to represent a unique definition of kumo table
         await data_backend_cache().table_refresh_result.save.coroutine(
-            table.get_connector_id(), table.cache_key(), data_version,
-            task_result)
+            table.get_connector_id(), table.cache_key(), data_version, task_result
+        )
         log.info(
-            "ACTIVITY_SAVE_TABLE_REFRESH_RESULT_END table=%s stage=%s",
+            'ACTIVITY_SAVE_TABLE_REFRESH_RESULT_END table=%s stage=%s',
             table.get_source_table_name(),
             task_result.stage,
         )
@@ -513,39 +545,52 @@ class DataBackendActivities:
     ):
         assert task_result.stage in [
             TableRefreshStage.COMPUTE_FULL_COL_STATS,
-            TableRefreshStage.COMPUTE_MIN_COL_STATS
+            TableRefreshStage.COMPUTE_MIN_COL_STATS,
         ]
         # create_table_cache_dir is a cheap makedirs(exist_ok=True); the
         # write is offloaded off the activity thread pool via save_json.coroutine.
         table_dir = data_backend_cache().create_table_cache_dir(
-            table.get_connector_id(), table.cache_key(), data_version,
-            table.fingerprint())
+            table.get_connector_id(),
+            table.cache_key(),
+            data_version,
+            table.fingerprint(),
+        )
         file_path = table_dir.colstat_task_result(task_result.stage)
         log.debug('Save %s task result to %s', task_result.stage, file_path)
         await save_json.coroutine(task_result, file_path)
 
     @staticmethod
     @activity.defn
-    async def save_graph_data_version(graph_input: GraphDataComputeInput,
-                                      version_info: GraphDataVersionInfo,
-                                      job_id: Optional[str] = None):
+    async def save_graph_data_version(
+        graph_input: GraphDataComputeInput,
+        version_info: GraphDataVersionInfo,
+        job_id: Optional[str] = None,
+    ):
         cache = data_backend_cache()
         # Persist graph version -> {table: table_ver} mapping
         await save_json.coroutine(
             version_info,
             cache.graph_cache.version_info_path(
-                graph_input.graph_key, version_info.graph_data_version))
+                graph_input.graph_key, version_info.graph_data_version
+            ),
+        )
 
         # Persist job_id -> {table: table_ver} mapping
         if job_id:
             table_versions = version_info.table_data_versions
-            for table_id, table in (list(graph_input.tables.items()) +
-                                    list(graph_input.base_tables.items())):
+            for table_id, table in list(graph_input.tables.items()) + list(
+                graph_input.base_tables.items()
+            ):
                 alias = graph_input.table_aliases[table_id]
                 table_version = table_versions[alias]
-                (await cache.table_version_cache.save_for_job.coroutine(
-                    job_id, table.get_connector_id(),
-                    table.get_source_table_name(), table_version))
+                (
+                    await cache.table_version_cache.save_for_job.coroutine(
+                        job_id,
+                        table.get_connector_id(),
+                        table.get_source_table_name(),
+                        table_version,
+                    )
+                )
 
     @staticmethod
     @activity.defn
@@ -567,13 +612,13 @@ class DataBackendActivities:
                 stats should be copied.
         """
         await fsutil.copy.coroutine(input_path, output_path)
-        log.info(f"Successfully copied bp stats to {output_path}")
+        log.info(f'Successfully copied bp stats to {output_path}')
 
     @staticmethod
     @connector_activity_registry.connector_authorized_activity
     async def refresh_graph_data_version(
-            graph_input: GraphDataComputeInput,
-            job_id: Optional[str] = None) -> GraphDataVersionInfo:
+        graph_input: GraphDataComputeInput, job_id: Optional[str] = None
+    ) -> GraphDataVersionInfo:
         return await DataBackendActivities._refresh_graph_data_version(
             graph_input,
             graph_input.connectors,
@@ -616,8 +661,9 @@ class DataBackendActivities:
         # TODO(jinu): What if two tables have same alias but different
         # connector_id?
         table_version_coros = {}
-        for table_id, table in (list(graph_input.tables.items()) +
-                                list(graph_input.base_tables.items())):
+        for table_id, table in list(graph_input.tables.items()) + list(
+            graph_input.base_tables.items()
+        ):
             alias = graph_input.table_aliases[table_id]
             pinned = graph_input.pinned_data_versions.get(table_id)
             if pinned is not None:
@@ -630,39 +676,50 @@ class DataBackendActivities:
                 version_coro = get_table_data_version(
                     connector_spec=connector_specs[table.get_connector_id()],
                     source_table_name=table.get_source_table_name(),
-                    refresh_table_version=True, table_def=table)
+                    refresh_table_version=True,
+                    table_def=table,
+                )
             table_version_coros[alias] = version_coro
 
         table_version_values: List[TableDataVersion] = await asyncio.gather(
-            *table_version_coros.values())
-        table_versions = dict(
-            zip(table_version_coros.keys(), table_version_values))
+            *table_version_coros.values()
+        )
+        table_versions = dict(zip(table_version_coros.keys(), table_version_values))
 
         md5_hasher = md5()
         for table_name, table_version in sorted(table_versions.items()):
             md5_hasher.update(f'{table_name}={table_version}'.encode())
         if graph_input.timestamp_precision != 'seconds':
-            md5_hasher.update(('|timestamp_precision='
-                               f'{graph_input.timestamp_precision}').encode())
+            md5_hasher.update(
+                (f'|timestamp_precision={graph_input.timestamp_precision}').encode()
+            )
         graph_data_version = md5_hasher.hexdigest()
 
         # Save graph and table version info.
-        await data_backend_cache().graph_cache.save_latest_graph_version.\
-            coroutine(graph_input.graph_key, graph_data_version)
+        await data_backend_cache().graph_cache.save_latest_graph_version.coroutine(
+            graph_input.graph_key, graph_data_version
+        )
 
         version_info = GraphDataVersionInfo(
-            GraphVersion(graph_data_version), table_versions,
-            timestamp_precision=graph_input.timestamp_precision)
+            GraphVersion(graph_data_version),
+            table_versions,
+            timestamp_precision=graph_input.timestamp_precision,
+        )
         await DataBackendActivities.save_graph_data_version(
-            graph_input, version_info, job_id)
+            graph_input, version_info, job_id
+        )
         return version_info
 
 
-def _raise_for_unusable_source_sizes(non_positive: List[str],
-                                     validation: ValidationResponse) -> None:
+def _raise_for_unusable_source_sizes(
+    non_positive: List[str], validation: ValidationResponse
+) -> None:
     if non_positive and validation.ok:
         raise ValidationException(
-            title="Table size could not be determined", message=(
-                f"Kumo recorded a source size of zero for "
-                f"{', '.join(non_positive)}, so it cannot estimate the local "
-                f"disk this graph needs. Re-ingest the affected tables."))
+            title='Table size could not be determined',
+            message=(
+                f'Kumo recorded a source size of zero for '
+                f'{", ".join(non_positive)}, so it cannot estimate the local '
+                f'disk this graph needs. Re-ingest the affected tables.'
+            ),
+        )

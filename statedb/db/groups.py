@@ -50,7 +50,8 @@ from statedb.rest.identity import IdentityGroupEntry
 from statedb.rest.project import ProjectDBEntry, ProjectStatus
 
 _DEFAULT_ALL_AUTHENTICATED_USERS_RULE_ID = GroupMembershipRuleID(
-    'group_membership_rule_00000000000000000000000000000000')
+    'group_membership_rule_00000000000000000000000000000000'
+)
 _DEFAULT_BOOTSTRAP_LOCK_KEY = int.from_bytes(b'kumo-def', byteorder='big')
 
 
@@ -59,13 +60,12 @@ class GroupService:
         self._state_db = state_db
         self._groups = JsonRepository('groups', KumoGroupDBEntry)
         self._members = JsonRepository('group_members', GroupMemberEntry)
-        self._external_mappings = JsonRepository('external_group_mappings',
-                                                 ExternalGroupMappingEntry)
-        self._rules = JsonRepository('group_membership_rules',
-                                     GroupMembershipRuleEntry)
+        self._external_mappings = JsonRepository(
+            'external_group_mappings', ExternalGroupMappingEntry
+        )
+        self._rules = JsonRepository('group_membership_rules', GroupMembershipRuleEntry)
         self._projects = JsonRepository('projects', ProjectDBEntry)
-        self._identity_bindings = JsonRepository('identity_groups',
-                                                 IdentityGroupEntry)
+        self._identity_bindings = JsonRepository('identity_groups', IdentityGroupEntry)
 
     async def _get_active_group_in_tx(
         self,
@@ -91,12 +91,15 @@ class GroupService:
         principal = self._require_principal(principal)
         async with self._state_db.read_tx() as tx:
             row = await self._groups.find_one_by_fields(
-                tx, {
+                tx,
+                {
                     'slug': slug,
                     'status': GroupStatus.ACTIVE,
-                })
-        if row is None or (not principal.is_admin and row.payload.id
-                           not in principal.kumo_group_ids):
+                },
+            )
+        if row is None or (
+            not principal.is_admin and row.payload.id not in principal.kumo_group_ids
+        ):
             raise GroupNotFoundError('Group not found')
         return row.payload
 
@@ -118,17 +121,18 @@ class GroupService:
     ) -> ExternalIdentityProviderID:
         if isinstance(value, ExternalIdentityProviderID):
             return value
-        provider_id = cls._clean_required(
-            value, 'identity_provider_id').casefold()
+        provider_id = cls._clean_required(value, 'identity_provider_id').casefold()
         try:
             return ExternalIdentityProviderID.normalize(provider_id)
         except ValueError as error:
             from statedb.utils.errors import GroupInputError
-            supported = ', '.join(provider.value
-                                  for provider in ExternalIdentityProviderID)
+
+            supported = ', '.join(
+                provider.value for provider in ExternalIdentityProviderID
+            )
             raise GroupInputError(
-                'identity_provider_id must be one of: '
-                f'{supported}') from error
+                f'identity_provider_id must be one of: {supported}'
+            ) from error
 
     @classmethod
     def _clean_external_group_id(cls, value: str) -> str:
@@ -136,12 +140,10 @@ class GroupService:
 
         external_group_id = cls._clean_required(value, 'external_group_id')
         if '\0' in external_group_id:
-            raise GroupInputError(
-                'external_group_id cannot contain NUL characters')
+            raise GroupInputError('external_group_id cannot contain NUL characters')
         return external_group_id
 
-    async def ensure_default_resources(
-            self) -> tuple[KumoGroupDBEntry, ProjectDBEntry]:
+    async def ensure_default_resources(self) -> tuple[KumoGroupDBEntry, ProjectDBEntry]:
         from rest.utils.driver_common import get_current_timestamps
 
         default_name = normalize_display_name('Default')
@@ -159,28 +161,35 @@ class GroupService:
             group_row = await self._groups.get(tx, str(default_group_id))
             project_row = await self._projects.get(tx, str(default_project_id))
             named_group = await self._groups.find_one_by_fields(
-                tx, {'normalized_display_name': default_name})
+                tx, {'normalized_display_name': default_name}
+            )
             named_project = await self._projects.find_one_by_fields(
-                tx, {'normalized_display_name': default_name})
+                tx, {'normalized_display_name': default_name}
+            )
 
-            if ((named_group is not None
-                 and named_group.id != str(default_group_id))
-                    or (named_project is not None
-                        and named_project.id != str(default_project_id))):
+            if (
+                named_group is not None and named_group.id != str(default_group_id)
+            ) or (
+                named_project is not None
+                and named_project.id != str(default_project_id)
+            ):
                 raise RuntimeError(
                     "A non-canonical resource is named 'Default'; reset the "
-                    'development StateDB before startup')
+                    'development StateDB before startup'
+                )
 
             if (group_row is None) != (project_row is None):
                 raise RuntimeError(
                     'Canonical Default group and project must either both be '
-                    'absent or both already satisfy the bootstrap invariants')
+                    'absent or both already satisfy the bootstrap invariants'
+                )
 
             if group_row is None:
                 group = KumoGroupDBEntry(
                     id=default_group_id,
-                    slug=validate_resource_slug(DEFAULT_GROUP_SLUG,
-                                                allow_reserved=True),
+                    slug=validate_resource_slug(
+                        DEFAULT_GROUP_SLUG, allow_reserved=True
+                    ),
                     display_name='Default',
                     normalized_display_name=default_name,
                     description='Default group for all authenticated users',
@@ -198,8 +207,9 @@ class GroupService:
                 project = ProjectDBEntry(
                     id=default_project_id,
                     group_id=group.id,
-                    slug=validate_resource_slug(DEFAULT_PROJECT_SLUG,
-                                                allow_reserved=True),
+                    slug=validate_resource_slug(
+                        DEFAULT_PROJECT_SLUG, allow_reserved=True
+                    ),
                     display_name='Default',
                     normalized_display_name=default_name,
                     created_by='system',
@@ -213,29 +223,38 @@ class GroupService:
             else:
                 group = group_row.payload
                 project = project_row.payload
-                if (group.slug != DEFAULT_GROUP_SLUG
-                        or group.display_name != 'Default'
-                        or group.normalized_display_name != default_name
-                        or group.status != GroupStatus.ACTIVE):
+                if (
+                    group.slug != DEFAULT_GROUP_SLUG
+                    or group.display_name != 'Default'
+                    or group.normalized_display_name != default_name
+                    or group.status != GroupStatus.ACTIVE
+                ):
                     raise RuntimeError(
-                        'Canonical Default group violates bootstrap invariants')
-                if (project.slug != DEFAULT_PROJECT_SLUG
-                        or project.display_name != 'Default'
-                        or project.normalized_display_name != default_name
-                        or project.status != ProjectStatus.ACTIVE
-                        or project.group_id != default_group_id
-                        or project.is_private):
+                        'Canonical Default group violates bootstrap invariants'
+                    )
+                if (
+                    project.slug != DEFAULT_PROJECT_SLUG
+                    or project.display_name != 'Default'
+                    or project.normalized_display_name != default_name
+                    or project.status != ProjectStatus.ACTIVE
+                    or project.group_id != default_group_id
+                    or project.is_private
+                ):
                     raise RuntimeError(
                         'Canonical Default project violates bootstrap invariants'
                     )
                 rule_row = await self._rules.find_one_by_fields(
-                    tx, {
+                    tx,
+                    {
                         'group_id': str(group.id),
                         'type': GroupMembershipRuleType.ALL_AUTHENTICATED_USERS,
-                    })
+                    },
+                )
                 if rule_row is None:
-                    raise RuntimeError('Canonical Default group is missing its '
-                                       'all-authenticated-users rule')
+                    raise RuntimeError(
+                        'Canonical Default group is missing its '
+                        'all-authenticated-users rule'
+                    )
         return group, project
 
     async def list_kumo_groups(
@@ -245,8 +264,10 @@ class GroupService:
         self._require_admin(principal)
         async with self._state_db.read_tx() as tx:
             return [
-                row.payload for row in await self._groups.list_by_fields(
-                    tx, {'status': GroupStatus.ACTIVE})
+                row.payload
+                for row in await self._groups.list_by_fields(
+                    tx, {'status': GroupStatus.ACTIVE}
+                )
             ]
 
     async def _get_active_group(self, group_id: str) -> KumoGroupDBEntry:
@@ -267,8 +288,7 @@ class GroupService:
 
         principal = self._require_principal(principal)
         group = await self._get_active_group(group_id)
-        if (not principal.is_admin
-                and group.id not in principal.kumo_group_ids):
+        if not principal.is_admin and group.id not in principal.kumo_group_ids:
             raise GroupNotFoundError('Group not found')
         return group
 
@@ -281,14 +301,14 @@ class GroupService:
 
         async with self._state_db.read_tx() as tx:
             row = await self._groups.find_one_by_fields(
-                tx, {
+                tx,
+                {
                     'status': GroupStatus.ACTIVE,
-                    'normalized_display_name':
-                    normalize_display_name(display_name),
-                })
+                    'normalized_display_name': normalize_display_name(display_name),
+                },
+            )
         if row is None:
-            raise GroupNotFoundError(
-                f"Group with name '{display_name}' was not found.")
+            raise GroupNotFoundError(f"Group with name '{display_name}' was not found.")
         self._require_group_membership(row.payload.id, user_authorization)
         return row.payload
 
@@ -315,25 +335,32 @@ class GroupService:
                     if not normalized_name:
                         raise ValueError('display_name cannot be empty')
                     if len(display_name) > 64:
-                        raise ValueError(
-                            'display_name exceeds 64 character limit')
-                    slug = (validate_resource_slug(str(args.slug))
-                            if args.slug is not None else
-                            derive_resource_slug(display_name))
+                        raise ValueError('display_name exceeds 64 character limit')
+                    slug = (
+                        validate_resource_slug(str(args.slug))
+                        if args.slug is not None
+                        else derive_resource_slug(display_name)
+                    )
                     if slug in seen_slugs:
                         raise ResourceSlugConflictError(
-                            f"Group slug '{slug}' is already in use.")
-                    if normalized_name in seen_names or await self._groups.exists_by_fields(
-                            tx, {'normalized_display_name': normalized_name}):
-                        raise GroupAlreadyExists(
-                            'Group name is not available.')
+                            f"Group slug '{slug}' is already in use."
+                        )
+                    if (
+                        normalized_name in seen_names
+                        or await self._groups.exists_by_fields(
+                            tx, {'normalized_display_name': normalized_name}
+                        )
+                    ):
+                        raise GroupAlreadyExists('Group name is not available.')
                     # Avoid an SDK selector becoming ambiguous where practical.
-                    if (await self._groups.exists_by_fields(
-                            tx, {'normalized_display_name': slug})
-                            or await self._groups.exists_by_fields(
-                                tx, {'slug': normalized_name})):
+                    if await self._groups.exists_by_fields(
+                        tx, {'normalized_display_name': slug}
+                    ) or await self._groups.exists_by_fields(
+                        tx, {'slug': normalized_name}
+                    ):
                         raise GroupAlreadyExists(
-                            'Group name conflicts with an existing slug.')
+                            'Group name conflicts with an existing slug.'
+                        )
                     seen_names.add(normalized_name)
                     seen_slugs.add(slug)
                     entry = KumoGroupDBEntry(
@@ -352,8 +379,7 @@ class GroupService:
             # creation. Inspect only after rollback to choose a safe 409.
             async with self._state_db.read_tx() as tx:
                 for entry in entries:
-                    if await self._groups.exists_by_fields(
-                            tx, {'slug': entry.slug}):
+                    if await self._groups.exists_by_fields(tx, {'slug': entry.slug}):
                         raise ResourceSlugConflictError(
                             f"Group slug '{entry.slug}' is already in use."
                         ) from error
@@ -372,8 +398,11 @@ class GroupService:
         from statedb.config.timestamp import update_timestamps
         from statedb.utils.errors import GroupAlreadyExists, GroupNotFoundError
 
-        if (str(group_id) == DEFAULT_GROUP_ID and display_name is not None
-                and display_name.strip() != 'Default'):
+        if (
+            str(group_id) == DEFAULT_GROUP_ID
+            and display_name is not None
+            and display_name.strip() != 'Default'
+        ):
             raise ValueError('The canonical Default group cannot be renamed')
 
         try:
@@ -388,18 +417,21 @@ class GroupService:
                     if not normalized_name:
                         raise ValueError('display_name cannot be empty')
                     if len(display_name) > 64:
-                        raise ValueError(
-                            'display_name exceeds 64 character limit')
+                        raise ValueError('display_name exceeds 64 character limit')
                     if await self._groups.exists_by_fields(
-                            tx, {
-                                'normalized_display_name': normalized_name,
-                            }, exclude_id=str(group_id)):
+                        tx,
+                        {
+                            'normalized_display_name': normalized_name,
+                        },
+                        exclude_id=str(group_id),
+                    ):
                         raise GroupAlreadyExists('Group name is not available.')
                     if await self._groups.exists_by_fields(
-                            tx, {'slug': normalized_name},
-                            exclude_id=str(group_id)):
+                        tx, {'slug': normalized_name}, exclude_id=str(group_id)
+                    ):
                         raise GroupAlreadyExists(
-                            'Group name conflicts with an existing slug.')
+                            'Group name conflicts with an existing slug.'
+                        )
                     entry.display_name = display_name
                     entry.normalized_display_name = normalized_name
                 if description is not None:
@@ -427,19 +459,18 @@ class GroupService:
             row = await self._groups.get(tx, str(group_id))
             if row is None or row.payload.status != GroupStatus.ACTIVE:
                 raise GroupNotFoundError(f"Group '{group_id}' not found")
-            projects = await self._projects.list_by_field(
-                tx, 'group_id', str(group_id))
+            projects = await self._projects.list_by_field(tx, 'group_id', str(group_id))
             if projects:
-                raise ValueError(
-                    'A group that owns a project cannot be deleted')
+                raise ValueError('A group that owns a project cannot be deleted')
             for repository in (
-                    self._members,
-                    self._external_mappings,
-                    self._rules,
-                    self._identity_bindings,
+                self._members,
+                self._external_mappings,
+                self._rules,
+                self._identity_bindings,
             ):
                 relations = await repository.list_by_field(
-                    tx, 'group_id', str(group_id))
+                    tx, 'group_id', str(group_id)
+                )
                 for relation in relations:
                     await repository.delete(tx, relation.id)
             row.payload.status = GroupStatus.DELETED
@@ -487,7 +518,8 @@ class GroupService:
             if existing is not None:
                 return existing.payload
             raise GroupRelationConflictError(
-                'Group membership changed concurrently') from error
+                'Group membership changed concurrently'
+            ) from error
 
     async def remove_member(
         self,
@@ -522,8 +554,10 @@ class GroupService:
         await self._get_active_group(str(group_id))
         async with self._state_db.read_tx() as tx:
             entries = [
-                row.payload for row in await self._members.list_by_field(
-                    tx, 'group_id', str(group_id))
+                row.payload
+                for row in await self._members.list_by_field(
+                    tx, 'group_id', str(group_id)
+                )
                 if row.payload.source == 'manual'
             ]
         return sorted(
@@ -548,8 +582,7 @@ class GroupService:
         self._require_admin(principal)
         normalized: dict[tuple[PrincipalType, str], None] = {}
         for member in members:
-            principal_id = self._clean_required(member.principal_id,
-                                                'principal_id')
+            principal_id = self._clean_required(member.principal_id, 'principal_id')
             principal_type = PrincipalType(member.principal_type)
             normalized[(principal_type, principal_id)] = None
 
@@ -558,25 +591,28 @@ class GroupService:
                 await lock_group_relations(tx, [group_id])
                 await self._get_active_group_in_tx(tx, group_id)
                 group_rows = await self._members.list_by_field(
-                    tx, 'group_id', str(group_id))
+                    tx, 'group_id', str(group_id)
+                )
                 manual_by_key = {
-                    (row.payload.principal_type, row.payload.principal_id):
-                    row.payload
-                    for row in group_rows if row.payload.source == 'manual'
+                    (row.payload.principal_type, row.payload.principal_id): row.payload
+                    for row in group_rows
+                    if row.payload.source == 'manual'
                 }
                 non_manual_keys = {
                     (row.payload.principal_type, row.payload.principal_id)
-                    for row in group_rows if row.payload.source != 'manual'
+                    for row in group_rows
+                    if row.payload.source != 'manual'
                 }
                 requested_keys = set(normalized)
                 if requested_keys & non_manual_keys:
                     raise GroupRelationConflictError(
-                        'Principal membership is managed by another source')
+                        'Principal membership is managed by another source'
+                    )
 
                 final_entries: list[GroupMemberEntry] = []
                 for principal_type, principal_id in sorted(
-                        requested_keys,
-                        key=lambda key: (key[0].value, key[1])):
+                    requested_keys, key=lambda key: (key[0].value, key[1])
+                ):
                     key = (principal_type, principal_id)
                     existing = manual_by_key.get(key)
                     if existing is not None:
@@ -596,10 +632,10 @@ class GroupService:
                 for key, entry in manual_by_key.items():
                     if key not in requested_keys:
                         await self._members.delete(tx, str(entry.id))
-        except (sqlite3.IntegrityError,
-                asyncpg.UniqueViolationError) as error:
+        except (sqlite3.IntegrityError, asyncpg.UniqueViolationError) as error:
             raise GroupRelationConflictError(
-                'Direct group membership changed concurrently') from error
+                'Direct group membership changed concurrently'
+            ) from error
 
         return final_entries
 
@@ -617,8 +653,9 @@ class GroupService:
         self._require_admin(principal)
         identity_provider_id = self._clean_provider_id(identity_provider_id)
         external_group_id = self._clean_external_group_id(external_group_id)
-        external_group_id_hash = hash_idp_group_id(identity_provider_id,
-                                                   external_group_id)
+        external_group_id_hash = hash_idp_group_id(
+            identity_provider_id, external_group_id
+        )
         entry = ExternalGroupMappingEntry(
             id=ExternalGroupMappingID.generate(),
             group_id=group_id,
@@ -635,23 +672,23 @@ class GroupService:
             async with self._state_db.write_tx() as tx:
                 await lock_group_relations(tx, [group_id])
                 await self._get_active_group_in_tx(tx, group_id)
-                existing = await self._external_mappings.find_one_by_fields(
-                    tx, fields)
+                existing = await self._external_mappings.find_one_by_fields(tx, fields)
                 if existing is not None:
                     if existing.payload.group_id == group_id:
                         return existing.payload
                     raise GroupRelationConflictError(
-                        'External group is already mapped to another group')
+                        'External group is already mapped to another group'
+                    )
                 await self._external_mappings.upsert(tx, str(entry.id), entry)
             return entry
         except (sqlite3.IntegrityError, asyncpg.UniqueViolationError) as error:
             async with self._state_db.read_tx() as tx:
-                existing = await self._external_mappings.find_one_by_fields(
-                    tx, fields)
+                existing = await self._external_mappings.find_one_by_fields(tx, fields)
             if existing is not None and existing.payload.group_id == group_id:
                 return existing.payload
             raise GroupRelationConflictError(
-                'External group is already mapped to another group') from error
+                'External group is already mapped to another group'
+            ) from error
 
     async def delete_external_mapping(
         self,
@@ -679,7 +716,8 @@ class GroupService:
             entries = [
                 row.payload
                 for row in await self._external_mappings.list_by_field(
-                    tx, 'group_id', str(group_id))
+                    tx, 'group_id', str(group_id)
+                )
             ]
         return sorted(
             entries,
@@ -703,20 +741,19 @@ class GroupService:
         self._require_admin(principal)
         normalized: dict[tuple[ExternalIdentityProviderID, str], str] = {}
         for mapping in mappings:
-            provider_id = self._clean_provider_id(
-                mapping.identity_provider_id)
-            external_group_id = self._clean_external_group_id(
-                mapping.external_group_id)
-            normalized[(provider_id,
-                        external_group_id)] = hash_idp_group_id(
-                            provider_id, external_group_id)
+            provider_id = self._clean_provider_id(mapping.identity_provider_id)
+            external_group_id = self._clean_external_group_id(mapping.external_group_id)
+            normalized[(provider_id, external_group_id)] = hash_idp_group_id(
+                provider_id, external_group_id
+            )
 
         try:
             async with self._state_db.write_tx() as tx:
                 await lock_group_relations(tx, [group_id])
                 await self._get_active_group_in_tx(tx, group_id)
                 current_rows = await self._external_mappings.list_by_field(
-                    tx, 'group_id', str(group_id))
+                    tx, 'group_id', str(group_id)
+                )
                 current_by_key = {
                     (
                         row.payload.identity_provider_id,
@@ -726,26 +763,24 @@ class GroupService:
                 }
 
                 requested: list[tuple[str, str, str]] = []
-                for (provider_id,
-                     external_group_id), external_hash in normalized.items():
+                for (
+                    provider_id,
+                    external_group_id,
+                ), external_hash in normalized.items():
                     fields = {
                         'identity_provider_id': provider_id,
                         'external_group_id_hash': external_hash,
                     }
-                    owner = await self._external_mappings.find_one_by_fields(
-                        tx, fields)
-                    if (owner is not None
-                            and owner.payload.group_id != group_id):
+                    owner = await self._external_mappings.find_one_by_fields(tx, fields)
+                    if owner is not None and owner.payload.group_id != group_id:
                         raise GroupRelationConflictError(
                             'External group is already mapped to another group'
                         )
-                    requested.append(
-                        (provider_id, external_group_id, external_hash))
+                    requested.append((provider_id, external_group_id, external_hash))
 
                 final_entries: list[ExternalGroupMappingEntry] = []
                 retained_keys: set[tuple[str, str]] = set()
-                for provider_id, external_group_id, external_hash in sorted(
-                        requested):
+                for provider_id, external_group_id, external_hash in sorted(requested):
                     key = (provider_id, external_hash)
                     retained_keys.add(key)
                     existing = current_by_key.get(key)
@@ -756,25 +791,23 @@ class GroupService:
                         id=ExternalGroupMappingID.generate(),
                         group_id=group_id,
                         identity_provider_id=provider_id,
-                        encrypted_external_group_id=encrypt_idp_id(
-                            external_group_id),
+                        encrypted_external_group_id=encrypt_idp_id(external_group_id),
                         external_group_id_hash=external_hash,
                         timestamps=get_current_timestamps(),
                     )
-                    await self._external_mappings.upsert(
-                        tx, str(entry.id), entry)
+                    await self._external_mappings.upsert(tx, str(entry.id), entry)
                     final_entries.append(entry)
 
                 for key, entry in current_by_key.items():
                     if key not in retained_keys:
                         await self._external_mappings.delete(tx, str(entry.id))
-        except (sqlite3.IntegrityError,
-                asyncpg.UniqueViolationError) as error:
+        except (sqlite3.IntegrityError, asyncpg.UniqueViolationError) as error:
             # A concurrent replacement on another group may win the unique
             # provider/hash key after our ownership preflight. The transaction
             # has rolled back at this point, so no partial replacement leaks.
             raise GroupRelationConflictError(
-                'External group is already mapped to another group') from error
+                'External group is already mapped to another group'
+            ) from error
 
         return final_entries
 
@@ -790,17 +823,19 @@ class GroupService:
         self._require_admin(principal)
         if str(group_id) == DEFAULT_GROUP_ID and not enabled:
             raise ValueError(
-                'The canonical Default group must include all authenticated '
-                'users')
+                'The canonical Default group must include all authenticated users'
+            )
         try:
             async with self._state_db.write_tx() as tx:
                 await lock_group_relations(tx, [group_id])
                 await self._get_active_group_in_tx(tx, group_id)
                 row = await self._rules.find_one_by_fields(
-                    tx, {
+                    tx,
+                    {
                         'group_id': str(group_id),
                         'type': GroupMembershipRuleType.ALL_AUTHENTICATED_USERS,
-                    })
+                    },
+                )
                 if enabled and row is None:
                     entry = GroupMembershipRuleEntry(
                         id=GroupMembershipRuleID.generate(),
@@ -827,10 +862,12 @@ class GroupService:
         await self._get_active_group(str(group_id))
         async with self._state_db.read_tx() as tx:
             return await self._rules.exists_by_fields(
-                tx, {
+                tx,
+                {
                     'group_id': str(group_id),
                     'type': GroupMembershipRuleType.ALL_AUTHENTICATED_USERS,
-                })
+                },
+            )
 
     async def resolve_native_memberships(
         self,
@@ -841,20 +878,23 @@ class GroupService:
     ) -> list[str]:
         async with self._state_db.read_tx() as tx:
             members = await self._members.list_by_fields(
-                tx, {
+                tx,
+                {
                     'principal_id': principal_id,
                     'principal_type': principal_type,
-                })
+                },
+            )
             group_ids = {str(row.payload.group_id) for row in members}
             if authenticated and principal_type == PrincipalType.USER:
                 rules = await self._rules.list_by_field(
-                    tx, 'type', GroupMembershipRuleType.ALL_AUTHENTICATED_USERS)
+                    tx, 'type', GroupMembershipRuleType.ALL_AUTHENTICATED_USERS
+                )
                 group_ids.update(str(row.payload.group_id) for row in rules)
             groups = await self._groups.list_by_ids(
-                tx, group_ids, fields={'status': GroupStatus.ACTIVE})
+                tx, group_ids, fields={'status': GroupStatus.ACTIVE}
+            )
         active_ids = {row.id for row in groups}
-        return sorted(group_id for group_id in group_ids
-                      if group_id in active_ids)
+        return sorted(group_id for group_id in group_ids if group_id in active_ids)
 
     async def list_user_groups(
         self,
@@ -863,18 +903,22 @@ class GroupService:
         user_auth = self._require_principal(user_authorization)
         async with self._state_db.read_tx() as tx:
             if user_auth.is_admin:
-                rows = await self._groups.list_by_field(tx, 'status',
-                                                        GroupStatus.ACTIVE)
+                rows = await self._groups.list_by_field(
+                    tx, 'status', GroupStatus.ACTIVE
+                )
                 return sorted(
                     (row.payload for row in rows),
                     key=lambda group: group.normalized_display_name,
                 )
             rows = await self._groups.list_by_ids(
-                tx, [str(group_id) for group_id in user_auth.kumo_group_ids],
-                fields={'status': GroupStatus.ACTIVE})
+                tx,
+                [str(group_id) for group_id in user_auth.kumo_group_ids],
+                fields={'status': GroupStatus.ACTIVE},
+            )
         by_id = {row.id: row.payload for row in rows}
         return [
-            by_id[str(group_id)] for group_id in user_auth.kumo_group_ids
+            by_id[str(group_id)]
+            for group_id in user_auth.kumo_group_ids
             if str(group_id) in by_id
         ]
 
@@ -886,14 +930,15 @@ class GroupService:
         from statedb.utils.errors import ProjectForbiddenError
 
         user_auth = self._require_principal(user_authorization)
-        if (not user_auth.is_admin and str(group_id)
-                not in {str(value)
-                        for value in user_auth.kumo_group_ids}):
+        if not user_auth.is_admin and str(group_id) not in {
+            str(value) for value in user_auth.kumo_group_ids
+        }:
             raise ProjectForbiddenError('Not a member of this group')
 
     @staticmethod
     def _require_principal(
-        user_authorization: AuthPrincipal | None, ) -> AuthPrincipal:
+        user_authorization: AuthPrincipal | None,
+    ) -> AuthPrincipal:
         from statedb.utils.errors import ProjectForbiddenError
 
         if user_authorization is None:
@@ -916,23 +961,26 @@ class GroupService:
         self,
         idp_group_ids: list[str],
         identity_provider_id: str | ExternalIdentityProviderID = (
-            ExternalIdentityProviderID.DIRECT_CONNECT),
+            ExternalIdentityProviderID.DIRECT_CONNECT
+        ),
     ) -> list[str]:
         provider_id = self._clean_provider_id(identity_provider_id)
         cleaned_group_ids = [
             self._clean_external_group_id(group_id)
-            for group_id in idp_group_ids if str(group_id).strip()
+            for group_id in idp_group_ids
+            if str(group_id).strip()
         ]
-        return await self.map_idp_group_hashes([
-            hash_idp_group_id(provider_id, cleaned)
-            for cleaned in cleaned_group_ids
-        ], identity_provider_id=provider_id)
+        return await self.map_idp_group_hashes(
+            [hash_idp_group_id(provider_id, cleaned) for cleaned in cleaned_group_ids],
+            identity_provider_id=provider_id,
+        )
 
     async def map_idp_group_hashes(
         self,
         idp_group_hashes: list[str],
         identity_provider_id: str | ExternalIdentityProviderID = (
-            ExternalIdentityProviderID.DIRECT_CONNECT),
+            ExternalIdentityProviderID.DIRECT_CONNECT
+        ),
     ) -> list[str]:
         provider_id = self._clean_provider_id(identity_provider_id)
         async with self._state_db.read_tx() as tx:
@@ -940,12 +988,16 @@ class GroupService:
             groups = {
                 row.id
                 for row in await self._groups.list_by_fields(
-                    tx, {'status': GroupStatus.ACTIVE})
+                    tx, {'status': GroupStatus.ACTIVE}
+                )
             }
         wanted = set(idp_group_hashes)
-        return sorted({
-            str(row.payload.group_id)
-            for row in rows if row.payload.external_group_id_hash in wanted
-            and row.payload.identity_provider_id == provider_id
-            and str(row.payload.group_id) in groups
-        })
+        return sorted(
+            {
+                str(row.payload.group_id)
+                for row in rows
+                if row.payload.external_group_id_hash in wanted
+                and row.payload.identity_provider_id == provider_id
+                and str(row.payload.group_id) in groups
+            }
+        )

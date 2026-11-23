@@ -16,8 +16,7 @@ async def test_compute_connector_col_stats_runs_off_event_loop():
     caller_thread = threading.get_ident()
 
     class Connector:
-        def compute_col_stats(self, table_name, stats_dict, *, approx,
-                              data_version):
+        def compute_col_stats(self, table_name, stats_dict, *, approx, data_version):
             assert threading.get_ident() != caller_thread
             assert table_name == 'orders'
             assert stats_dict == {}
@@ -25,5 +24,7 @@ async def test_compute_connector_col_stats_runs_off_event_loop():
             assert data_version == '1'
             return {}
 
-    assert await _compute_connector_col_stats.coroutine(Connector(), 'orders',
-                                                        {}, '1') == {}
+    assert (
+        await _compute_connector_col_stats.coroutine(Connector(), 'orders', {}, '1')
+        == {}
+    )

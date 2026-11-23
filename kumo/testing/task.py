@@ -14,6 +14,7 @@ class MockTask:
     """A helper class that makes it possible to write tests
     that depend on time, by mocking out training tabdatetime.now().
     """
+
     def __init__(self, task_type: TaskType):
         # TODO(dong) setup MockTask inherits from Task to reuse attributes.
         self.name = 'mock_task'

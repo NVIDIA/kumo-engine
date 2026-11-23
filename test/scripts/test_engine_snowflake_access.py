@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Verify native environment protection and explicit test-resource admission."""
+
 import copy
 import importlib
 import json
@@ -18,11 +19,18 @@ def environment_guard(monkeypatch):
     monkeypatch.syspath_prepend(str(DIRECTORY))
     guard = importlib.import_module('check_environment')
     environment = dict(
-        can_admins_bypass=False, protection_rules=[
-            dict(type='required_reviewers', prevent_self_review=True,
-                 reviewers=[dict(type='Team', reviewer=dict(id=guard.TEAM_ID))])
-        ], deployment_branch_policy=dict(protected_branches=False,
-                                         custom_branch_policies=True))
+        can_admins_bypass=False,
+        protection_rules=[
+            dict(
+                type='required_reviewers',
+                prevent_self_review=True,
+                reviewers=[dict(type='Team', reviewer=dict(id=guard.TEAM_ID))],
+            )
+        ],
+        deployment_branch_policy=dict(
+            protected_branches=False, custom_branch_policies=True
+        ),
+    )
     policies = dict(branch_policies=[dict(name='main', type='branch')])
     return guard, environment, policies
 
@@ -33,14 +41,14 @@ def test_existing_maintainer_environment_is_sufficient(environment_guard):
 
 
 @pytest.mark.parametrize(
-    'change', ['bypass', 'reviewer', 'branch', 'no-reviewer', 'self-review'])
+    'change', ['bypass', 'reviewer', 'branch', 'no-reviewer', 'self-review']
+)
 def test_unprotected_environment_is_rejected(environment_guard, change):
     guard, environment, policies = environment_guard
     if change == 'bypass':
         environment['can_admins_bypass'] = True
     elif change == 'reviewer':
-        environment['protection_rules'][0]['reviewers'][0]['reviewer'][
-            'id'] = 123
+        environment['protection_rules'][0]['reviewers'][0]['reviewer']['id'] = 123
     elif change == 'no-reviewer':
         environment['protection_rules'] = []
     elif change == 'self-review':
@@ -63,11 +71,11 @@ def test_live_resources_require_explicit_configuration(resources, monkeypatch):
         resources.require()
 
 
-@pytest.mark.parametrize('field', [
-    'database', 'warehouse', 'pool', 'stage', 'account', 'user', 'browser_user'
-])
-def test_configuration_cannot_select_nontest_resources(resources, monkeypatch,
-                                                       field):
+@pytest.mark.parametrize(
+    'field',
+    ['database', 'warehouse', 'pool', 'stage', 'account', 'user', 'browser_user'],
+)
+def test_configuration_cannot_select_nontest_resources(resources, monkeypatch, field):
     value = copy.deepcopy(resources.expected())
     value[field] = 'production'
     monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(value))
@@ -75,8 +83,7 @@ def test_configuration_cannot_select_nontest_resources(resources, monkeypatch,
         resources.require()
 
 
-def test_changed_payload_requires_environment_config_update(
-        resources, monkeypatch):
+def test_changed_payload_requires_environment_config_update(resources, monkeypatch):
     value = resources.expected()
     value['manifests']['graph-assets.json'] = '0' * 64
     monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(value))
@@ -86,16 +93,14 @@ def test_changed_payload_requires_environment_config_update(
 
 def test_github_cannot_fall_back_to_local_keys(resources, monkeypatch):
     launch = importlib.import_module('launch')
-    monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG',
-                       json.dumps(resources.expected()))
+    monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(resources.expected()))
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
     monkeypatch.delenv('SNOWFLAKE_PRIVATE_KEY', raising=False)
     with pytest.raises(ValueError, match='environment RSA secrets'):
         launch.connection_parameters(Path('/not-a-key'))
 
 
-def test_github_cannot_fall_back_to_local_browser_credentials(
-        resources, monkeypatch):
+def test_github_cannot_fall_back_to_local_browser_credentials(resources, monkeypatch):
     ui = importlib.import_module('ui')
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
     monkeypatch.delenv('SNOWFLAKE_UI_CREDENTIALS', raising=False)
@@ -103,39 +108,48 @@ def test_github_cannot_fall_back_to_local_browser_credentials(
         ui.credentials(Path('/not-a-credential-file'))
 
 
-@pytest.mark.parametrize('entries', [
-    [],
-    [('main', 'branch'), ('feature/trial', 'branch')],
-    [('main', 'branch'), ('main', 'branch')],
-    [('main', 'tag')],
-    [('*', 'branch')],
-    [('feature/*', 'branch')],
-    [('untrusted', 'branch')],
-])
+@pytest.mark.parametrize(
+    'entries',
+    [
+        [],
+        [('main', 'branch'), ('feature/trial', 'branch')],
+        [('main', 'branch'), ('main', 'branch')],
+        [('main', 'tag')],
+        [('*', 'branch')],
+        [('feature/*', 'branch')],
+        [('untrusted', 'branch')],
+    ],
+)
 def test_unapproved_deployment_rules_are_rejected(environment_guard, entries):
     guard, environment, policies = environment_guard
-    policies['branch_policies'] = [
-        dict(name=name, type=kind) for name, kind in entries
-    ]
+    policies['branch_policies'] = [dict(name=name, type=kind) for name, kind in entries]
     with pytest.raises(ValueError):
         guard.validate(environment, policies)
 
 
-@pytest.mark.parametrize('environment_name',
-                         ['snowflake-mlops-test', 'other-platform-test'])
+@pytest.mark.parametrize(
+    'environment_name', ['snowflake-mlops-test', 'other-platform-test']
+)
 @pytest.mark.parametrize(
     'ref,event,repository,allowed',
-    [('refs/heads/main', 'workflow_dispatch', 'NVIDIA/kumo-engine', True),
-     ('refs/heads/egu/mlops-platform-integration', 'workflow_dispatch',
-      'NVIDIA/kumo-engine', False),
-     ('refs/heads/untrusted', 'workflow_dispatch', 'NVIDIA/kumo-engine', False),
-     ('refs/tags/main', 'workflow_dispatch', 'NVIDIA/kumo-engine', False),
-     ('refs/heads/main', 'push', 'NVIDIA/kumo-engine', False),
-     ('refs/heads/main', 'pull_request', 'NVIDIA/kumo-engine', False),
-     ('refs/heads/main', 'workflow_dispatch', 'other/repository', False)])
+    [
+        ('refs/heads/main', 'workflow_dispatch', 'NVIDIA/kumo-engine', True),
+        (
+            'refs/heads/egu/mlops-platform-integration',
+            'workflow_dispatch',
+            'NVIDIA/kumo-engine',
+            False,
+        ),
+        ('refs/heads/untrusted', 'workflow_dispatch', 'NVIDIA/kumo-engine', False),
+        ('refs/tags/main', 'workflow_dispatch', 'NVIDIA/kumo-engine', False),
+        ('refs/heads/main', 'push', 'NVIDIA/kumo-engine', False),
+        ('refs/heads/main', 'pull_request', 'NVIDIA/kumo-engine', False),
+        ('refs/heads/main', 'workflow_dispatch', 'other/repository', False),
+    ],
+)
 def test_environment_guard_checks_main_before_api_access(
-        environment_guard, monkeypatch, environment_name, ref, event,
-        repository, allowed):
+    environment_guard, monkeypatch, environment_name, ref, event, repository, allowed
+):
     import io
 
     guard, environment, policies = environment_guard
@@ -149,33 +163,47 @@ def test_environment_guard_checks_main_before_api_access(
         calls.append(request.full_url)
         assert '/environments/' + environment_name in request.full_url
         return io.BytesIO(
-            json.dumps(policies if 'deployment-branch-policies' in
-                       request.full_url else environment).encode())
+            json.dumps(
+                policies
+                if 'deployment-branch-policies' in request.full_url
+                else environment
+            ).encode()
+        )
 
     monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
     if allowed:
         if environment_name == guard.ENVIRONMENT:
             guard.main()
         else:
-            guard.main(environment=environment_name,
-                       branch='feature/platform-trial')
+            guard.main(environment=environment_name, branch='feature/platform-trial')
         assert len(calls) == 2
     else:
         with pytest.raises(SystemExit, match='manual dispatch'):
             if environment_name == guard.ENVIRONMENT:
                 guard.main()
             else:
-                guard.main(environment=environment_name,
-                           branch='feature/platform-trial')
+                guard.main(
+                    environment=environment_name, branch='feature/platform-trial'
+                )
         assert calls == []
 
 
-@pytest.mark.parametrize('case', [
-    'match', 'foreign', 'missing', 'empty', 'extra', 'scalar', 'query-error',
-    'close-error'
-])
+@pytest.mark.parametrize(
+    'case',
+    [
+        'match',
+        'foreign',
+        'missing',
+        'empty',
+        'extra',
+        'scalar',
+        'query-error',
+        'close-error',
+    ],
+)
 def test_sql_connection_checks_account_before_any_test_writes(
-        resources, monkeypatch, case):
+    resources, monkeypatch, case
+):
     import sys
     from types import SimpleNamespace
     from unittest.mock import MagicMock
@@ -187,8 +215,8 @@ def test_sql_connection_checks_account_before_any_test_writes(
     connection = MagicMock()
     cursor = connection.cursor.return_value.__enter__.return_value
     cursor.fetchone.return_value = {
-        'match': (target['account_locator'], ),
-        'foreign': ('PRIVATE_FOREIGN_ACCOUNT', ),
+        'match': (target['account_locator'],),
+        'foreign': ('PRIVATE_FOREIGN_ACCOUNT',),
         'missing': None,
         'empty': (),
         'extra': (target['account_locator'], 'PRIVATE'),
@@ -201,8 +229,7 @@ def test_sql_connection_checks_account_before_any_test_writes(
     if case == 'close-error':
         connection.close.side_effect = RuntimeError('PRIVATE close response')
     connector = SimpleNamespace(connect=lambda **_: connection)
-    monkeypatch.setitem(sys.modules, 'snowflake',
-                        SimpleNamespace(connector=connector))
+    monkeypatch.setitem(sys.modules, 'snowflake', SimpleNamespace(connector=connector))
     monkeypatch.setitem(sys.modules, 'snowflake.connector', connector)
     if case == 'match':
         assert launch.connect(None) is connection
@@ -218,7 +245,8 @@ def test_sql_connection_checks_account_before_any_test_writes(
 
 def test_legacy_dependency_hashes_do_not_block_new_candidates(resources, monkeypatch):
     value = resources.expected()
-    value['manifests'].update({'dependencies.json': 'a' * 64,
-                               'dependency-asset.json': 'b' * 64})
+    value['manifests'].update(
+        {'dependencies.json': 'a' * 64, 'dependency-asset.json': 'b' * 64}
+    )
     monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(value))
     assert resources.require() == resources.expected()

@@ -5,9 +5,6 @@
 import dataclasses
 import os
 import os.path as osp
-from test.rest.integ.fixture_connector_args import (
-    provision_project_upload_connector,
-)
 
 import kumoapi.source_table as source_table_api
 import kumoapi.table as table_api
@@ -28,12 +25,16 @@ from rest.config.table_v2 import TableDefinition, TableResourceResponse
 from rest.testing.config import TestFunctionCleanupOptions
 from statedb.config.table import TableDataVersion
 from temporalio_commons import TemporalClient
+from test.rest.integ.fixture_connector_args import (
+    provision_project_upload_connector,
+)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope='function')
 def test_cleanup_options() -> TestFunctionCleanupOptions:
-    return TestFunctionCleanupOptions(should_reset_data_backend_cache=True,
-                                      should_delete_data_persist_dir=True)
+    return TestFunctionCleanupOptions(
+        should_reset_data_backend_cache=True, should_delete_data_persist_dir=True
+    )
 
 
 async def _trigger_and_wait_for_table_refresh(
@@ -63,8 +64,9 @@ async def _trigger_and_wait_for_table_refresh(
         TableResourceResponse,
     )
     table_def = TableDefinition(**dataclasses.asdict(table_resource.table))
-    wf_id = TableRefreshWorkflow.compose_wf_id(table_def,
-                                               TableDataVersion(data_version))
+    wf_id = TableRefreshWorkflow.compose_wf_id(
+        table_def, TableDataVersion(data_version)
+    )
     return await temporal_client.result(wf_id)
 
 
@@ -74,10 +76,11 @@ async def _trigger_and_wait_for_table_refresh(
 # table-level stats, and the graph path persists empty per-table results, so the
 # warning is not reachable via get_warnings.
 @pytest.mark.skip(
-    reason="DG gap: per-table get_warnings cannot surface the duplicate-pkey "
-    "warning; per-column NUM_UNIQUE/COUNT are seeded only by the graph-scope "
-    "DG col-stats pipeline, and the graph path persists empty per-table results. "
-    "The standalone table refresh ingest seeds only table-level stats.")
+    reason='DG gap: per-table get_warnings cannot surface the duplicate-pkey '
+    'warning; per-column NUM_UNIQUE/COUNT are seeded only by the graph-scope '
+    'DG col-stats pipeline, and the graph path persists empty per-table results. '
+    'The standalone table refresh ingest seeds only table-level stats.'
+)
 @pytest.mark.asyncio
 async def test_create_table_with_dup_primary_key_creates_info_item(
     client: TestClient,
@@ -113,17 +116,14 @@ async def test_create_table_with_dup_primary_key_creates_info_item(
         ],
         source_table=source_table_api.S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': os.path.basename(table_path)
-            },
+            source={'mode': 'relative', 'path': os.path.basename(table_path)},
             file_type=source_table_api.FileType.PARQUET,
         ),
         pkey='a',
     )
     table_create_response = post_and_expect_success(
         client,
-        "/v1/tables/",
+        '/v1/tables/',
         table_def,
         IDResponse,
         name_alias=table_name,
@@ -131,22 +131,28 @@ async def test_create_table_with_dup_primary_key_creates_info_item(
     )
 
     result = await _trigger_and_wait_for_table_refresh(
-        client, temporal_client, table_create_response.id,
-        get_data_version_string(table_path), project_id)
+        client,
+        temporal_client,
+        table_create_response.id,
+        get_data_version_string(table_path),
+        project_id,
+    )
 
     warnings_map = {w.title: w for w in result.validation.warnings}
     assert 'Duplicate primary keys' in warnings_map
     assert warnings_map['Duplicate primary keys'].message.startswith(
-        '80 (88.9%) of the rows in')
+        '80 (88.9%) of the rows in'
+    )
 
 
 # Same DG gap as the duplicate-pkey test: the "Missing or invalid primary keys"
 # warning needs per-column NA stats that the standalone per-table refresh never
 # seeds on DiskGraph (graph-scope col-stats only).
 @pytest.mark.skip(
-    reason="DG gap: per-table get_warnings cannot surface the missing-pkey "
-    "warning; per-column NA/NUM_UNIQUE stats are seeded only by the graph-scope "
-    "DG col-stats pipeline.")
+    reason='DG gap: per-table get_warnings cannot surface the missing-pkey '
+    'warning; per-column NA/NUM_UNIQUE stats are seeded only by the graph-scope '
+    'DG col-stats pipeline.'
+)
 @pytest.mark.asyncio
 async def test_user_is_informed_if_too_many_missing_pkeys(
     client: TestClient,
@@ -180,17 +186,14 @@ async def test_user_is_informed_if_too_many_missing_pkeys(
         ],
         source_table=source_table_api.S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': os.path.basename(table_path)
-            },
+            source={'mode': 'relative', 'path': os.path.basename(table_path)},
             file_type=source_table_api.FileType.PARQUET,
         ),
         pkey='b',
     )
     table_create_response = post_and_expect_success(
         client,
-        "/v1/tables/",
+        '/v1/tables/',
         table_def,
         IDResponse,
         name_alias=table_name,
@@ -198,8 +201,12 @@ async def test_user_is_informed_if_too_many_missing_pkeys(
     )
 
     result = await _trigger_and_wait_for_table_refresh(
-        client, temporal_client, table_create_response.id,
-        get_data_version_string(table_path), project_id)
+        client,
+        temporal_client,
+        table_create_response.id,
+        get_data_version_string(table_path),
+        project_id,
+    )
 
     warning_titles = [w.title for w in result.validation.warnings]
     # 90% of pkey rows are NaN, so the validator emits the
@@ -209,8 +216,10 @@ async def test_user_is_informed_if_too_many_missing_pkeys(
     assert 'Missing or invalid primary keys' in warning_titles
 
 
-@pytest.mark.skip(reason="Terminal refresh stage is now COMPLETED; assertion "
-                  "expects INGEST_TABLE — stage contract under review.")
+@pytest.mark.skip(
+    reason='Terminal refresh stage is now COMPLETED; assertion '
+    'expects INGEST_TABLE — stage contract under review.'
+)
 @pytest.mark.asyncio
 async def test_table_refresh_validation(
     client: TestClient,
@@ -229,22 +238,18 @@ async def test_table_refresh_validation(
     table_def = table_api.TableDefinition(
         cols=[
             table_api.Column(name='A', stype=Stype.ID, dtype=Dtype.int),
-            table_api.Column(name='feature', stype=Stype.categorical,
-                             dtype=Dtype.int),
+            table_api.Column(name='feature', stype=Stype.categorical, dtype=Dtype.int),
         ],
         source_table=source_table_api.S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': os.path.basename(table_path)
-            },
+            source={'mode': 'relative', 'path': os.path.basename(table_path)},
             file_type=source_table_api.FileType.CSV,
         ),
         pkey='A',
     )
     table_create_response = post_and_expect_success(
         client,
-        "/v1/tables/",
+        '/v1/tables/',
         table_def,
         IDResponse,
         name_alias=table_name,
@@ -252,22 +257,24 @@ async def test_table_refresh_validation(
     )
 
     data_version = get_data_version_string(table_path)
-    result = await _trigger_and_wait_for_table_refresh(client, temporal_client,
-                                                       table_create_response.id,
-                                                       data_version, project_id)
+    result = await _trigger_and_wait_for_table_refresh(
+        client, temporal_client, table_create_response.id, data_version, project_id
+    )
     assert result.validation.warnings == []
     assert result.validation.errors == []
     assert result.stage == TableRefreshStage.COMPLETED
     assert result.status == AsyncDataTaskStatus.DONE
 
     table_resource = get_and_expect_success(
-        client, f'/v1/tables/{table_create_response.id}', {},
-        TableResourceResponse)
+        client, f'/v1/tables/{table_create_response.id}', {}, TableResourceResponse
+    )
     rest_table_def = TableDefinition(**dataclasses.asdict(table_resource.table))
-    ingest_result = (await DataBackend.get_many_table_refresh_results(
-        [(rest_table_def, TableDataVersion(data_version))],
-        stage=TableRefreshStage.INGEST_TABLE,
-    ))[0]
+    ingest_result = (
+        await DataBackend.get_many_table_refresh_results(
+            [(rest_table_def, TableDataVersion(data_version))],
+            stage=TableRefreshStage.INGEST_TABLE,
+        )
+    )[0]
     assert ingest_result is not None
     assert ingest_result.validation.warnings == []
     assert ingest_result.validation.errors == []

@@ -44,6 +44,7 @@ class DiskgraphIngestWorkflow:
     """Deterministic ``compose_wf_id`` lets concurrent ``GraphRefreshWorkflow``
     instances share a single ingest via ``start_child_data_wf``.
     """
+
     @staticmethod
     def compose_wf_id(graph_key: str, graph_data_version: str) -> str:
         return f'dg-ingest:{graph_key}@ver={graph_data_version}'
@@ -65,7 +66,8 @@ class DiskgraphIngestWorkflow:
         timestamp_precision: str = 'seconds',
     ) -> DiskgraphIngestResult:
         snapshot_id = DataSnapshot.GRAPH.canonicalize(
-            f'{_graph_key_to_v2(graph_key)}@{graph_data_version}')
+            f'{_graph_key_to_v2(graph_key)}@{graph_data_version}'
+        )
 
         current_resource_hint = resource_hint or ResourceHint()
         previous_failed_tier = 0
@@ -93,13 +95,15 @@ class DiskgraphIngestWorkflow:
                         'DiskGraph ingest ran out of local disk on a fixed '
                         'or unreported host whose SSD tier is unknown. This '
                         'deployment cannot automatically re-place the '
-                        'snapshot on a larger host.') from failure.cause
+                        'snapshot on a larger host.'
+                    ) from failure.cause
                 if failed_tier <= previous_failed_tier:
                     raise DiskgraphCapacityError(
                         f'DiskGraph placement did not increase after local '
                         f'disk exhaustion: previous failed tier '
                         f'{previous_failed_tier} GiB, current failed tier '
-                        f'{failed_tier} GiB.') from failure.cause
+                        f'{failed_tier} GiB.'
+                    ) from failure.cause
                 previous_failed_tier = failed_tier
                 current_resource_hint = dataclasses.replace(
                     current_resource_hint,
@@ -134,57 +138,53 @@ class DiskgraphIngestWorkflow:
         # (source × ingest_space_multiplier + buffer) from its own config,
         # keeping deploy_env() access out of workflow code.
         async with snapshot_placement_session_ctx(
-                snapshot_id=snapshot_id,
-                activity=SnapshotActivity.ENSURE_SNAPSHOT,
-                source_size_bytes=source_size_bytes,
-                resource_hint=resource_hint,
+            snapshot_id=snapshot_id,
+            activity=SnapshotActivity.ENSURE_SNAPSHOT,
+            source_size_bytes=source_size_bytes,
+            resource_hint=resource_hint,
         ) as placement:
             pool_task_queue = placement.task_queue
-            min_ssd_gib = (resource_hint.min_ssd_gib
-                           if resource_hint is not None else 0)
+            min_ssd_gib = resource_hint.min_ssd_gib if resource_hint is not None else 0
             if min_ssd_gib > 0 and placement.tier_ssd_gib < min_ssd_gib:
                 raise DiskgraphCapacityError(
                     f'DiskGraph placement returned '
                     f'{placement.tier_ssd_gib} GiB for '
                     f'min_ssd_gib={min_ssd_gib}; refusing to repeat ingest '
-                    f'on the failed capacity tier.')
+                    f'on the failed capacity tier.'
+                )
             try:
                 try:
-                    result: DiskgraphIngestResult = (
-                        await workflow.execute_activity(
-                            SnapshotActivities.ensure_snapshot,
-                            args=[
-                                snapshot_id,
-                                DiskgraphIngestArgs(
-                                    graph_definition=graph_definition,
-                                    graph_display_name=graph_display_name,
-                                    data_persist_dir=data_persist_dir,
-                                    table_data_versions=table_data_versions,
-                                    connector_specs=connector_specs,
-                                    all_graph_tables=all_graph_tables,
-                                    source_size_bytes_by_table=(
-                                        source_size_bytes_by_table),
-                                    timestamp_precision=timestamp_precision,
-                                ),
-                            ],
-                            schedule_to_close_timeout=timedelta(
-                                hours=(
-                                    DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT_HOURS
-                                )),
-                            heartbeat_timeout=timedelta(minutes=5),
-                            # A same-placement retry cannot recover local
-                            # ENOSPC. Surface it so run() requests a larger
-                            # physical tier.
-                            retry_policy=RetryPolicy(
-                                maximum_attempts=3,
-                                non_retryable_error_types=[NO_SPACE_ERROR_TYPE],
+                    result: DiskgraphIngestResult = await workflow.execute_activity(
+                        SnapshotActivities.ensure_snapshot,
+                        args=[
+                            snapshot_id,
+                            DiskgraphIngestArgs(
+                                graph_definition=graph_definition,
+                                graph_display_name=graph_display_name,
+                                data_persist_dir=data_persist_dir,
+                                table_data_versions=table_data_versions,
+                                connector_specs=connector_specs,
+                                all_graph_tables=all_graph_tables,
+                                source_size_bytes_by_table=(source_size_bytes_by_table),
+                                timestamp_precision=timestamp_precision,
                             ),
-                            task_queue=pool_task_queue,
-                        ))
+                        ],
+                        schedule_to_close_timeout=timedelta(
+                            hours=(DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT_HOURS)
+                        ),
+                        heartbeat_timeout=timedelta(minutes=5),
+                        # A same-placement retry cannot recover local
+                        # ENOSPC. Surface it so run() requests a larger
+                        # physical tier.
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=3,
+                            non_retryable_error_types=[NO_SPACE_ERROR_TYPE],
+                        ),
+                        task_queue=pool_task_queue,
+                    )
                 except ActivityError as err:
                     if is_no_space_activity_error(err):
-                        raise _LocalNoSpaceAtTier(
-                            err, placement.tier_ssd_gib) from err
+                        raise _LocalNoSpaceAtTier(err, placement.tier_ssd_gib) from err
                     raise
             finally:
                 # Synchronous: cleanup is just rmtree, fast enough that

@@ -27,12 +27,22 @@ MERGE = SCRIPTS / 'merge_wheels.py'
 
 @pytest.mark.parametrize('legacy_selection', ['', 'kumo-databricks'])
 def test_wheel_builds_all_first_party_packages_from_monorepo(
-        tmp_path, legacy_selection):
+    tmp_path, legacy_selection
+):
     repo = tmp_path / 'repo'
     for name in [
-            'kumo-api', 'kumo-core', 'kumo-pql', 'kumo-engine', 'kumo-sdk',
-            'kumo-databricks', 'kumo-snowflake', 'kumo-s3', 'kumo-gcs',
-            'kumo-bigquery', 'kumo-adls', 'diskgraph'
+        'kumo-api',
+        'kumo-core',
+        'kumo-pql',
+        'kumo-engine',
+        'kumo-sdk',
+        'kumo-databricks',
+        'kumo-snowflake',
+        'kumo-s3',
+        'kumo-gcs',
+        'kumo-bigquery',
+        'kumo-adls',
+        'diskgraph',
     ]:
         package = repo / 'packages' / name
         package.mkdir(parents=True)
@@ -52,7 +62,7 @@ def test_wheel_builds_all_first_party_packages_from_monorepo(
     cargo = tmp_path / 'cargo'
     cargo.touch(mode=0o755)
     python = tmp_path / 'python'
-    python.write_text(f'''#!{sys.executable}
+    python.write_text(f"""#!{sys.executable}
 import json, os, sys
 from pathlib import Path
 from zipfile import ZipFile
@@ -67,14 +77,20 @@ if source.name == 'diskgraph':
 assert args[:3] == ['-m', 'pip', 'wheel'], args
 wheel_dir = Path(args[args.index('-w') + 1])
 (wheel_dir / (source.name.replace('-', '_') + '-1-py3-none-any.whl')).touch()
-''')
+""")
     python.chmod(0o755)
     result = subprocess.run(
         ['bash', str(SCRIPT), '--no-zig', '--version', '1'],
-        env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
-                 EXTRA_COMPONENTS=legacy_selection, BUILD_CALLS=str(calls),
-                 THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
-                 TMPDIR=str(tmp_path), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
+        env=dict(
+            os.environ,
+            KUMO_REPO=str(repo),
+            PYTHON=str(python),
+            EXTRA_COMPONENTS=legacy_selection,
+            BUILD_CALLS=str(calls),
+            THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
+            TMPDIR=str(tmp_path),
+            PATH=f'{tmp_path}:{os.environ["PATH"]}',
+        ),
         capture_output=True,
         text=True,
     )
@@ -83,8 +99,12 @@ wheel_dir = Path(args[args.index('-w') + 1])
     sources = [call[-1] for call in recorded]
     expected = ['kumo-api', 'kumo-core', 'kumo-engine', 'kumo-pql']
     expected += [
-        'kumo-adls', 'kumo-bigquery', 'kumo-databricks', 'kumo-gcs', 'kumo-s3',
-        'kumo-snowflake'
+        'kumo-adls',
+        'kumo-bigquery',
+        'kumo-databricks',
+        'kumo-gcs',
+        'kumo-s3',
+        'kumo-snowflake',
     ]
     assert [Path(source) for source in sources] == [
         repo / 'packages' / name for name in sorted(expected) + ['diskgraph']
@@ -95,14 +115,25 @@ def test_removed_component_selection_flag_is_rejected(tmp_path):
     result = subprocess.run(
         ['bash', str(SCRIPT), '--extra-components', 'kumo-databricks'],
         env=dict(os.environ, KUMO_REPO=str(tmp_path)),
-        capture_output=True, text=True)
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 2
     assert "unknown argument '--extra-components'" in result.stderr
 
 
-@pytest.mark.parametrize('target', [
-    '10.15', '11', '12.7', '13', '13.9', 'invalid', '14.invalid',
-])
+@pytest.mark.parametrize(
+    'target',
+    [
+        '10.15',
+        '11',
+        '12.7',
+        '13',
+        '13.9',
+        'invalid',
+        '14.invalid',
+    ],
+)
 def test_macos_deployment_target_rejected_before_build(tmp_path, target):
     uname = tmp_path / 'uname'
     uname.write_text('#!/bin/sh\necho Darwin\n')
@@ -110,15 +141,22 @@ def test_macos_deployment_target_rejected_before_build(tmp_path, target):
     marker = tmp_path / 'python-invoked'
     python = tmp_path / 'python'
     python.write_text(
-        f'#!{sys.executable}\nfrom pathlib import Path\n'
-        f'Path({str(marker)!r}).touch()\n')
+        f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n'
+    )
     python.chmod(0o755)
 
     result = subprocess.run(
         ['bash', str(SCRIPT)],
-        env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET=target, USE_ZIG='0',
-                 PYTHON=str(python), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
-        capture_output=True, text=True)
+        env=dict(
+            os.environ,
+            MACOSX_DEPLOYMENT_TARGET=target,
+            USE_ZIG='0',
+            PYTHON=str(python),
+            PATH=f'{tmp_path}:{os.environ["PATH"]}',
+        ),
+        capture_output=True,
+        text=True,
+    )
 
     assert result.returncode == 1
     assert 'MACOSX_DEPLOYMENT_TARGET >= 14.0' in result.stderr
@@ -132,15 +170,24 @@ def test_windows_rejects_zig(tmp_path, host_os):
     uname.chmod(0o755)
     result = subprocess.run(
         ['bash', str(SCRIPT)],
-        env=dict(os.environ, USE_ZIG='1',
-                 PATH=f'{tmp_path}:{os.environ["PATH"]}'),
-        capture_output=True, text=True)
+        env=dict(os.environ, USE_ZIG='1', PATH=f'{tmp_path}:{os.environ["PATH"]}'),
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 1
     assert 'Windows wheels require a native DiskGraph build' in result.stderr
 
 
-def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
-           python='>=3.11', files=None, headers=''):
+def _wheel(
+    directory,
+    name,
+    requires=(),
+    extras=(),
+    tag='py3-none-any',
+    python='>=3.11',
+    files=None,
+    headers='',
+):
     """Write a component wheel with just enough metadata to merge."""
     stem = name.replace('-', '_')
     path = directory / f'{stem}-1.0-{tag}.whl'
@@ -159,27 +206,32 @@ def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
     return path
 
 
-CORE_COMPONENTS = ['kumo-engine', 'kumo-api', 'kumo-pql', 'kumo-core',
-                   'diskgraph']
+CORE_COMPONENTS = ['kumo-engine', 'kumo-api', 'kumo-pql', 'kumo-core', 'diskgraph']
 ENGINE_EXTRAS = ['adls', 'snowflake', 'databricks', 's3', 'text', 'test']
 COMPONENTS = {
     'kumo-engine': {
         'requires': [
-            'pandas', 'kumo-core[gpu]>=1.0', 'pytest; extra == "test"',
+            'pandas',
+            'kumo-core[gpu]>=1.0',
+            'pytest; extra == "test"',
             'kumo-adls; extra == "adls"',
             'kumo-snowflake[sdk]>=1.0; extra == "snowflake"',
-            'kumo-databricks; extra == "databricks"', 'kumo-s3; extra == "s3"',
-            'kumo-glove-6b-50d==1.0.0; extra == "text"'
+            'kumo-databricks; extra == "databricks"',
+            'kumo-s3; extra == "s3"',
+            'kumo-glove-6b-50d==1.0.0; extra == "text"',
         ],
-        'extras':
-        ENGINE_EXTRAS,
+        'extras': ENGINE_EXTRAS,
     },
     'kumo-core': {
         'requires': [
-            'requests>=2.31', 'torch>=2.7.0,<3', 'diskgraph>=0.1.0',
-            'kumo-api>=3', 'kumo-pql>=0.1', 'torch-geometric>=2.8.1,<3',
+            'requests>=2.31',
+            'torch>=2.7.0,<3',
+            'diskgraph>=0.1.0',
+            'kumo-api>=3',
+            'kumo-pql>=0.1',
+            'torch-geometric>=2.8.1,<3',
             'faiss-gpu==1.14.3; extra == "gpu"',
-            'faiss-cpu==1.14.2; extra == "cpu"'
+            'faiss-cpu==1.14.2; extra == "cpu"',
         ],
         'extras': ['gpu', 'cpu'],
     },
@@ -196,9 +248,10 @@ COMPONENTS = {
     },
     'kumo-snowflake': {
         'requires': [
-            'kumo-core==1.0', 'snowflake-connector-python>=4.3',
+            'kumo-core==1.0',
+            'snowflake-connector-python>=4.3',
             'snowflake-snowpark-python; extra == "sdk"',
-            'unrelated; extra == "test"'
+            'unrelated; extra == "test"',
         ],
         'extras': ['sdk', 'test'],
     },
@@ -206,8 +259,7 @@ COMPONENTS = {
         'requires': ['kumo-core==1.0', 'databricks-sdk'],
     },
     'kumo-adls': {
-        'requires': ['kumo-core==1.0', 'azure-identity',
-                     'azure-storage-file-datalake'],
+        'requires': ['kumo-core==1.0', 'azure-identity', 'azure-storage-file-datalake'],
     },
     'kumo-s3': {
         'requires': ['kumo-core==1.0', 'boto3'],
@@ -229,127 +281,158 @@ def _merge(tmp_path, names, *args):
     notice.write_text('Test notice\n')
     license_file = tmp_path / 'LICENSE'
     license_file.write_text('Test license\n')
-    return subprocess.run([
-        sys.executable,
-        str(MERGE),
-        str(wheels),
-        str(components),
-        str(tmp_path / 'dist'),
-        '--version',
-        '1.0',
-        '--platform-tag',
-        'manylinux_2_34_x86_64',
-        '--notice',
-        str(notice),
-        '--license',
-        str(license_file),
-        '--license-expression',
-        'Apache-2.0 AND MIT',
-        *args,
-    ], capture_output=True, text=True)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(MERGE),
+            str(wheels),
+            str(components),
+            str(tmp_path / 'dist'),
+            '--version',
+            '1.0',
+            '--platform-tag',
+            'manylinux_2_34_x86_64',
+            '--notice',
+            str(notice),
+            '--license',
+            str(license_file),
+            '--license-expression',
+            'Apache-2.0 AND MIT',
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+    )
 
 
 def _read_wheel(tmp_path):
     with zipfile.ZipFile(next((tmp_path / 'dist').glob('*.whl'))) as archive:
         metadata = BytesParser().parsebytes(
-            archive.read('kumo_engine-1.0.dist-info/METADATA'))
+            archive.read('kumo_engine-1.0.dist-info/METADATA')
+        )
         manifest = json.loads(archive.read('kumo_bundle_manifest.json'))
         names = archive.namelist()
     return metadata, manifest, names
 
 
 def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
-    monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
-        **COMPONENTS['kumo-engine'],
-        'files': {'kumo/engine/_version.py': '__version__ = "0.1"\n'},
-    })
+    monkeypatch.setitem(
+        COMPONENTS,
+        'kumo-engine',
+        {
+            **COMPONENTS['kumo-engine'],
+            'files': {'kumo/engine/_version.py': '__version__ = "0.1"\n'},
+        },
+    )
     result = _merge(tmp_path, list(COMPONENTS))
     assert result.returncode == 0, result.stderr
     with ZipFile(next((tmp_path / 'dist').glob('*.whl'))) as archive:
-        assert archive.read('kumo/engine/_version.py') == (
-            b"__version__ = '1.0'\n")
+        assert archive.read('kumo/engine/_version.py') == (b"__version__ = '1.0'\n")
 
 
-@pytest.mark.parametrize(('platform', 'machine', 'expected'), [
-    ('linux', 'x86_64', {'faiss-gpu'}),
-    ('linux', 'aarch64', set()),
-    ('darwin', 'arm64', {'faiss-cpu'}),
-    ('darwin', 'x86_64', {'faiss-cpu'}),
-    ('win32', 'AMD64', set()),
-    ('win32', 'ARM64', set()),
-])
+@pytest.mark.parametrize(
+    ('platform', 'machine', 'expected'),
+    [
+        ('linux', 'x86_64', {'faiss-gpu'}),
+        ('linux', 'aarch64', set()),
+        ('darwin', 'arm64', {'faiss-cpu'}),
+        ('darwin', 'x86_64', {'faiss-cpu'}),
+        ('win32', 'AMD64', set()),
+        ('win32', 'ARM64', set()),
+    ],
+)
 @pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
-        tmp_path, monkeypatch, platform, machine, expected, extra):
+    tmp_path, monkeypatch, platform, machine, expected, extra
+):
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
-    monkeypatch.setitem(sys.modules, 'setuptools', types.SimpleNamespace(
-        setup=lambda **kwargs: setup_kwargs.update(kwargs)))
+    monkeypatch.setitem(
+        sys.modules,
+        'setuptools',
+        types.SimpleNamespace(setup=lambda **kwargs: setup_kwargs.update(kwargs)),
+    )
     runpy.run_path(str(REPO_ROOT / 'packages/kumo-engine/setup.py'))
     engine = COMPONENTS['kumo-engine']
     provider_requirements = [
-        requirement for requirement in engine['requires']
-        if 'extra ==' in requirement
+        requirement for requirement in engine['requires'] if 'extra ==' in requirement
     ]
-    project = tomllib.loads(read_text(str(
-        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
-    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
-        project['optional-dependencies'])
+    project = tomllib.loads(
+        read_text(str(REPO_ROOT / 'packages/kumo-engine/pyproject.toml'))
+    )['project']
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(project['optional-dependencies'])
     for name in ('cpu',):
         for value in project['optional-dependencies'][name]:
             requirement = Requirement(value)
             spec = str(requirement).split(';', 1)[0]
             marker = str(requirement.marker) if requirement.marker else None
             condition = f'({marker}) and ' if marker else ''
-            provider_requirements.append(
-                f'{spec}; {condition}extra == "{name}"')
-    monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
-        **engine,
-        'extras': [*engine['extras'], 'cpu'],
-        'requires': setup_kwargs['install_requires'] + provider_requirements,
-    })
+            provider_requirements.append(f'{spec}; {condition}extra == "{name}"')
+    monkeypatch.setitem(
+        COMPONENTS,
+        'kumo-engine',
+        {
+            **engine,
+            'extras': [*engine['extras'], 'cpu'],
+            'requires': setup_kwargs['install_requires'] + provider_requirements,
+        },
+    )
     result = _merge(tmp_path, list(COMPONENTS))
     assert result.returncode == 0, result.stderr
     metadata, manifest, _ = _read_wheel(tmp_path)
     assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
-        metadata.get_all('Provides-Extra'))
+        metadata.get_all('Provides-Extra')
+    )
     assert 'cpu' in metadata.get_all('Provides-Extra')
     faiss = [
-        Requirement(value) for value in metadata.get_all('Requires-Dist')
+        Requirement(value)
+        for value in metadata.get_all('Requires-Dist')
         if value.startswith('faiss-')
     ]
-    assert {requirement.name for requirement in faiss} == {
-        'faiss-cpu', 'faiss-gpu'
-    }
-    assert all(str(requirement.specifier) == '==1.14.3'
-               and requirement.marker is not None for requirement in faiss)
+    assert {requirement.name for requirement in faiss} == {'faiss-cpu', 'faiss-gpu'}
+    assert all(
+        str(requirement.specifier) == '==1.14.3' and requirement.marker is not None
+        for requirement in faiss
+    )
     selected = {
-        requirement.name for requirement in faiss
-        if requirement.marker.evaluate({'sys_platform': platform,
-                                        'platform_machine': machine,
-                                        'extra': extra})
+        requirement.name
+        for requirement in faiss
+        if requirement.marker.evaluate(
+            {'sys_platform': platform, 'platform_machine': machine, 'extra': extra}
+        )
     }
     assert selected == (expected or ({f'faiss-{extra}'} if extra else set()))
-    assert {str(requirement) for requirement in faiss
-            if 'extra' not in str(requirement.marker)} <= set(manifest['requires'])
+    assert {
+        str(requirement)
+        for requirement in faiss
+        if 'extra' not in str(requirement.marker)
+    } <= set(manifest['requires'])
 
 
-@pytest.mark.parametrize('providers', [
-    ['kumo-adls', 'kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
-    ['kumo-databricks'],
-])
+@pytest.mark.parametrize(
+    'providers',
+    [
+        ['kumo-adls', 'kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
+        ['kumo-databricks'],
+    ],
+)
 def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
-    result = _merge(tmp_path,
-                    [*CORE_COMPONENTS, *providers])
+    result = _merge(tmp_path, [*CORE_COMPONENTS, *providers])
     assert result.returncode == 0, result.stderr
     metadata, manifest, names = _read_wheel(tmp_path)
     requirements = set(metadata.get_all('Requires-Dist'))
 
     # Base install: engine + core closure, no provider dependency at all.
-    base = {'pandas', 'requests>=2.31', 'torch>=2.7.0,<3', 'faiss-gpu==1.14.3',
-            'pydantic>=2.7', 'antlr4-python3-runtime==4.9.3',
-            'torch-geometric>=2.8.1,<3'}
+    base = {
+        'pandas',
+        'requests>=2.31',
+        'torch>=2.7.0,<3',
+        'faiss-gpu==1.14.3',
+        'pydantic>=2.7',
+        'antlr4-python3-runtime==4.9.3',
+        'torch-geometric>=2.8.1,<3',
+    }
     assert {r for r in requirements if 'extra ==' not in r} == base
     assert set(manifest['requires']) == base
 
@@ -360,7 +443,7 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     expected_extras = {
         'kumo-adls': {
             'azure-identity; extra == "adls"',
-            'azure-storage-file-datalake; extra == "adls"'
+            'azure-storage-file-datalake; extra == "adls"',
         },
         'kumo-databricks': {'databricks-sdk; extra == "databricks"'},
         'kumo-s3': {'boto3; extra == "s3"'},
@@ -371,15 +454,16 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     }
     assert requirements - base == set().union(
         {'kumo-glove-6b-50d==1.0.0; extra == "text"'},
-        *(expected_extras[p] for p in providers))
+        *(expected_extras[p] for p in providers),
+    )
     # `test` is a development extra; `text` points at the PyPI glove package.
     provided = set(metadata.get_all('Provides-Extra'))
     assert provided == {'text', *(p.removeprefix('kumo-') for p in providers)}
     # Extras for providers that are not bundled would point at a package that
     # is not on any index; the only first-party requirement left is glove.
-    assert {r
-            for r in requirements
-            if 'kumo-' in r} == {'kumo-glove-6b-50d==1.0.0; extra == "text"'}
+    assert {r for r in requirements if 'kumo-' in r} == {
+        'kumo-glove-6b-50d==1.0.0; extra == "text"'
+    }
     assert metadata['Requires-Python'] == '>=3.11'
     assert metadata['Name'] == 'kumo-engine'
     assert metadata['Metadata-Version'] == '2.4'
@@ -390,37 +474,43 @@ def test_core_packages_and_shared_license_are_bundled(tmp_path):
     result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode == 0, result.stderr
     metadata, manifest, names = _read_wheel(tmp_path)
-    assert {'kumoapi/__init__.py', 'kumopql/__init__.py',
-            'kumo_core/__init__.py'} <= set(names)
+    assert {
+        'kumoapi/__init__.py',
+        'kumopql/__init__.py',
+        'kumo_core/__init__.py',
+    } <= set(names)
     assert {component['name'] for component in manifest['components']} == set(
-        CORE_COMPONENTS)
+        CORE_COMPONENTS
+    )
     assert set(metadata.get_all('License-File')) == {'LICENSE', 'THIRD-PARTY.txt'}
     with ZipFile(next((tmp_path / 'dist').glob('*.whl'))) as archive:
-        assert archive.read('kumo_engine-1.0.dist-info/licenses/LICENSE'
-                            ) == b'Test license\n'
+        assert (
+            archive.read('kumo_engine-1.0.dist-info/licenses/LICENSE')
+            == b'Test license\n'
+        )
         assert not any('KUMO-API-LICENSE' in name for name in archive.namelist())
     requirements = metadata.get_all('Requires-Dist')
     for name in ['kumo-api', 'kumo-pql', 'kumo-core']:
-        assert not any(requirement.startswith(name)
-                       for requirement in requirements)
+        assert not any(requirement.startswith(name) for requirement in requirements)
 
 
 def test_engine_project_metadata_passes_through(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    headers = ('Author: NVIDIA Corporation\n'
-               'Classifier: Development Status :: 5 - Production/Stable\n'
-               'Project-URL: issues, https://example.com/issues\n')
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = (
+        'Author: NVIDIA Corporation\n'
+        'Classifier: Development Status :: 5 - Production/Stable\n'
+        'Project-URL: issues, https://example.com/issues\n'
+    )
     component = cast(dict[str, object], COMPONENTS['kumo-engine'])
-    monkeypatch.setitem(COMPONENTS, 'kumo-engine',
-                        dict(component, headers=headers))
+    monkeypatch.setitem(COMPONENTS, 'kumo-engine', dict(component, headers=headers))
 
     result = _merge(tmp_path, CORE_COMPONENTS)
 
     assert result.returncode == 0, result.stderr
     metadata, _, _ = _read_wheel(tmp_path)
     assert metadata['Author'] == 'NVIDIA Corporation'
-    assert metadata['Classifier'] == (
-        'Development Status :: 5 - Production/Stable')
+    assert metadata['Classifier'] == ('Development Status :: 5 - Production/Stable')
     assert metadata['Project-URL'] == 'issues, https://example.com/issues'
 
 
@@ -429,27 +519,40 @@ def test_glove_stays_a_pypi_dependency_of_the_text_extra(tmp_path):
     assert result.returncode == 0, result.stderr
     metadata, _, names = _read_wheel(tmp_path)
     assert 'text' in metadata.get_all('Provides-Extra')
-    assert ('kumo-glove-6b-50d==1.0.0; extra == "text"'
-            in metadata.get_all('Requires-Dist'))
+    assert 'kumo-glove-6b-50d==1.0.0; extra == "text"' in metadata.get_all(
+        'Requires-Dist'
+    )
     assert 'kumo_glove_6b_50d/__init__.py' not in names
 
 
 def test_plots_extra_survives_merge(tmp_path, monkeypatch):
-    project = tomllib.loads(read_text(str(
-        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
+    project = tomllib.loads(
+        read_text(str(REPO_ROOT / 'packages/kumo-engine/pyproject.toml'))
+    )['project']
     requirements = project['optional-dependencies']['plots']
     assert requirements == ['matplotlib>=3.10.0']
     engine = COMPONENTS['kumo-engine']
-    monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
-        **engine,
-        'extras': [*engine['extras'], 'plots'],
-        'requires': [*engine['requires'],
-                     *(f'{item}; extra == "plots"' for item in requirements)],
-    })
+    monkeypatch.setitem(
+        COMPONENTS,
+        'kumo-engine',
+        {
+            **engine,
+            'extras': [*engine['extras'], 'plots'],
+            'requires': [
+                *engine['requires'],
+                *(f'{item}; extra == "plots"' for item in requirements),
+            ],
+        },
+    )
     core = COMPONENTS['kumo-core']
-    monkeypatch.setitem(COMPONENTS, 'kumo-core', {
-        **core, 'requires': [*core['requires'], *requirements],
-    })
+    monkeypatch.setitem(
+        COMPONENTS,
+        'kumo-core',
+        {
+            **core,
+            'requires': [*core['requires'], *requirements],
+        },
+    )
 
     result = _merge(tmp_path, CORE_COMPONENTS)
 
@@ -457,8 +560,7 @@ def test_plots_extra_survives_merge(tmp_path, monkeypatch):
     metadata, manifest, _ = _read_wheel(tmp_path)
     assert 'plots' in metadata.get_all('Provides-Extra')
     assert 'matplotlib>=3.10.0' in manifest['requires']
-    assert ('matplotlib>=3.10.0; extra == "plots"'
-            in metadata.get_all('Requires-Dist'))
+    assert 'matplotlib>=3.10.0; extra == "plots"' in metadata.get_all('Requires-Dist')
 
 
 @pytest.mark.parametrize('name', ['kumo-glove-6b-50d'])
@@ -470,11 +572,14 @@ def test_published_packages_are_never_bundled(tmp_path, name):
 
 
 def test_engine_version_provider_entry_point_reaches_the_wheel(tmp_path):
-    entry = ('[kumo_core.version_providers]\n'
-             'kumo-engine = kumo_engine_version:installed_version\n')
+    entry = (
+        '[kumo_core.version_providers]\n'
+        'kumo-engine = kumo_engine_version:installed_version\n'
+    )
     COMPONENTS['kumo-engine'] = dict(
         COMPONENTS['kumo-engine'],
-        files={'kumo_engine-1.0.dist-info/entry_points.txt': entry})
+        files={'kumo_engine-1.0.dist-info/entry_points.txt': entry},
+    )
     try:
         result = _merge(tmp_path, CORE_COMPONENTS)
     finally:
@@ -489,25 +594,31 @@ def test_wheel_tag_is_one_abi3_wheel_for_all_pythons(tmp_path):
     result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode == 0, result.stderr
     wheel = next((tmp_path / 'dist').glob('*.whl'))
-    assert wheel.name == (
-        'kumo_engine-1.0-cp311-abi3-manylinux_2_34_x86_64.whl')
+    assert wheel.name == ('kumo_engine-1.0-cp311-abi3-manylinux_2_34_x86_64.whl')
 
 
-@pytest.mark.parametrize(('core_python', 'pql_python', 'allowed', 'excluded'), [
-    ('>=3.12', '>=3.11', ['3.12', '3.14'], ['3.11']),
-    ('>=3.11.4,<3.14', '!=3.12.*', ['3.11.4', '3.13'],
-     ['3.11.3', '3.12.1', '3.14']),
-    ('~=3.12.1', '<3.14', ['3.12.1', '3.12.9'], ['3.12', '3.13']),
-    ('==3.13.*', '>=3.11', ['3.13', '3.13.5'], ['3.12', '3.14']),
-    ('>=3.11', None, ['3.11', '3.14'], ['3.10']),
-])
+@pytest.mark.parametrize(
+    ('core_python', 'pql_python', 'allowed', 'excluded'),
+    [
+        ('>=3.12', '>=3.11', ['3.12', '3.14'], ['3.11']),
+        (
+            '>=3.11.4,<3.14',
+            '!=3.12.*',
+            ['3.11.4', '3.13'],
+            ['3.11.3', '3.12.1', '3.14'],
+        ),
+        ('~=3.12.1', '<3.14', ['3.12.1', '3.12.9'], ['3.12', '3.13']),
+        ('==3.13.*', '>=3.11', ['3.13', '3.13.5'], ['3.12', '3.14']),
+        ('>=3.11', None, ['3.11', '3.14'], ['3.10']),
+    ],
+)
 def test_merged_python_requirement_intersects_all_components(
-        tmp_path, monkeypatch, core_python, pql_python, allowed, excluded):
+    tmp_path, monkeypatch, core_python, pql_python, allowed, excluded
+):
     from packaging.specifiers import SpecifierSet
 
     for name, python in [('kumo-core', core_python), ('kumo-pql', pql_python)]:
-        monkeypatch.setitem(COMPONENTS, name,
-                            dict(COMPONENTS[name], python=python))
+        monkeypatch.setitem(COMPONENTS, name, dict(COMPONENTS[name], python=python))
     result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode == 0, result.stderr
     metadata, manifest, _ = _read_wheel(tmp_path)
@@ -515,24 +626,33 @@ def test_merged_python_requirement_intersects_all_components(
     assert all(version in requirement for version in allowed)
     assert all(version not in requirement for version in excluded)
     assert manifest['bundle']['requires_python'] == str(requirement)
-    recorded = {component['name']: component['requires_python']
-                for component in manifest['components']}
+    recorded = {
+        component['name']: component['requires_python']
+        for component in manifest['components']
+    }
     assert recorded['kumo-core'] == core_python
     assert recorded['kumo-pql'] == pql_python
 
 
-@pytest.mark.parametrize(('component_python', 'expected'), [
-    ('>=3.10', '>=3.11'),
-    ('>=3.12', '>=3.12'),
-    ('>=3.11.4,<3.14,!=3.12.*', '!=3.12.*,<3.14,>=3.11.4'),
-])
+@pytest.mark.parametrize(
+    ('component_python', 'expected'),
+    [
+        ('>=3.10', '>=3.11'),
+        ('>=3.12', '>=3.12'),
+        ('>=3.11.4,<3.14,!=3.12.*', '!=3.12.*,<3.14,>=3.11.4'),
+    ],
+)
 def test_merged_python_requirement_removes_weaker_minimums(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        component_python: str, expected: str) -> None:
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component_python: str,
+    expected: str,
+) -> None:
     """Keep the strongest minimum and all upper bounds and exclusions."""
     component = cast(dict[str, object], COMPONENTS['kumo-core'])
-    monkeypatch.setitem(COMPONENTS, 'kumo-core',
-                        dict(component, python=component_python))
+    monkeypatch.setitem(
+        COMPONENTS, 'kumo-core', dict(component, python=component_python)
+    )
 
     result = _merge(tmp_path, CORE_COMPONENTS)
 
@@ -540,22 +660,27 @@ def test_merged_python_requirement_removes_weaker_minimums(
     metadata, manifest, _ = _read_wheel(tmp_path)
     assert metadata['Requires-Python'] == expected
     assert manifest['bundle']['requires_python'] == expected
-    recorded = {component['name']: component['requires_python']
-                for component in manifest['components']}
+    recorded = {
+        component['name']: component['requires_python']
+        for component in manifest['components']
+    }
     assert recorded['kumo-core'] == component_python
 
 
-@pytest.mark.parametrize(('core_python', 'pql_python', 'error'), [
-    ('>=3.13', '<3.13', 'no common stable CPython 3 version'),
-    ('==3.12.*', '!=3.12.*', 'no common stable CPython 3 version'),
-    ('>=3.11.1', '<3.11.1', 'no common stable CPython 3 version'),
-    ('invalid', '>=3.11', 'kumo-core has invalid Requires-Python'),
-])
+@pytest.mark.parametrize(
+    ('core_python', 'pql_python', 'error'),
+    [
+        ('>=3.13', '<3.13', 'no common stable CPython 3 version'),
+        ('==3.12.*', '!=3.12.*', 'no common stable CPython 3 version'),
+        ('>=3.11.1', '<3.11.1', 'no common stable CPython 3 version'),
+        ('invalid', '>=3.11', 'kumo-core has invalid Requires-Python'),
+    ],
+)
 def test_incompatible_python_requirements_fail_before_writing_wheel(
-        tmp_path, monkeypatch, core_python, pql_python, error):
+    tmp_path, monkeypatch, core_python, pql_python, error
+):
     for name, python in [('kumo-core', core_python), ('kumo-pql', pql_python)]:
-        monkeypatch.setitem(COMPONENTS, name,
-                            dict(COMPONENTS[name], python=python))
+        monkeypatch.setitem(COMPONENTS, name, dict(COMPONENTS[name], python=python))
     result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode != 0
     assert error in result.stderr
@@ -563,22 +688,23 @@ def test_incompatible_python_requirements_fail_before_writing_wheel(
 
 
 def test_native_abi_floor_uses_combined_python_minimum(tmp_path, monkeypatch):
-    monkeypatch.setitem(COMPONENTS, 'kumo-core',
-                        dict(COMPONENTS['kumo-core'], python='>=3.12'))
-    monkeypatch.setitem(COMPONENTS, 'diskgraph',
-                        {'tag': 'cp312-abi3-manylinux_2_34_x86_64'})
+    monkeypatch.setitem(
+        COMPONENTS, 'kumo-core', dict(COMPONENTS['kumo-core'], python='>=3.12')
+    )
+    monkeypatch.setitem(
+        COMPONENTS, 'diskgraph', {'tag': 'cp312-abi3-manylinux_2_34_x86_64'}
+    )
     result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode == 0, result.stderr
     assert next((tmp_path / 'dist').glob('*.whl')).name == (
-        'kumo_engine-1.0-cp312-abi3-manylinux_2_34_x86_64.whl')
+        'kumo_engine-1.0-cp312-abi3-manylinux_2_34_x86_64.whl'
+    )
 
 
 def test_native_component_for_newer_python_is_refused(tmp_path):
     COMPONENTS['diskgraph-new'] = {'tag': 'cp312-cp312-linux_x86_64'}
     try:
-        result = _merge(
-            tmp_path,
-            [*CORE_COMPONENTS, 'diskgraph-new'])
+        result = _merge(tmp_path, [*CORE_COMPONENTS, 'diskgraph-new'])
     finally:
         del COMPONENTS['diskgraph-new']
     assert result.returncode != 0
@@ -588,8 +714,7 @@ def test_native_component_for_newer_python_is_refused(tmp_path):
 def test_bundled_package_without_an_extra_is_refused(tmp_path):
     COMPONENTS['kumo-orphan'] = {'requires': ['orphan-dependency']}
     try:
-        result = _merge(
-            tmp_path, [*CORE_COMPONENTS, 'kumo-orphan'])
+        result = _merge(tmp_path, [*CORE_COMPONENTS, 'kumo-orphan'])
     finally:
         del COMPONENTS['kumo-orphan']
     assert result.returncode != 0
@@ -599,35 +724,27 @@ def test_bundled_package_without_an_extra_is_refused(tmp_path):
 
 def test_wheel_verify_script_checks_base_install(tmp_path):
     smoke = tmp_path / 'verify.py'
-    smoke.write_text(SCRIPT.read_text().split(
-        "cat > \"${WORK}/verify.py\" <<'PYEOF'\n", 1)[1].split('\nPYEOF', 1)[0])
+    smoke.write_text(
+        SCRIPT.read_text()
+        .split('cat > "${WORK}/verify.py" <<\'PYEOF\'\n', 1)[1]
+        .split('\nPYEOF', 1)[0]
+    )
     modules = {
-        'diskgraph/__init__.py':
-        '',
-        'diskgraph/bin/ingest':
-        '',
-        'kumo_core/__init__.py':
-        '',
-        'kumo_core/embedding_models.py':
-        'class EmbeddingModelStore:\n'
+        'diskgraph/__init__.py': '',
+        'diskgraph/bin/ingest': '',
+        'kumo_core/__init__.py': '',
+        'kumo_core/embedding_models.py': 'class EmbeddingModelStore:\n'
         '    def get(self, name): return self\n'
         '    def vectors(self): return []\n',
-        'kumo_core/version.py':
-        'def get_kumo_version(): return "1.0"\n',
-        'kumoapi.py':
-        '',
-        'kumo/engine/__init__.py':
-        '__version__ = "1.0"\n'
+        'kumo_core/version.py': 'def get_kumo_version(): return "1.0"\n',
+        'kumoapi.py': '',
+        'kumo/engine/__init__.py': '__version__ = "1.0"\n'
         'FileConnector = SnowflakeConnector = Graph = Table = Trainer = None\n',
-        'torch.py':
-        '__version__ = "test"\n',
-        'torch_geometric.py':
-        '__version__ = "test"\n',
-        'test_bundle-1.0.dist-info/METADATA':
-        'Metadata-Version: 2.1\nName: test-bundle\nVersion: 1.0\n'
+        'torch.py': '__version__ = "test"\n',
+        'torch_geometric.py': '__version__ = "test"\n',
+        'test_bundle-1.0.dist-info/METADATA': 'Metadata-Version: 2.1\nName: test-bundle\nVersion: 1.0\n'
         'Provides-Extra: snowflake\n',
-        'test_bundle-1.0.dist-info/entry_points.txt':
-        '[kumoai_studio.sources]\nsnowflake = kumo_snowflake.backend:X\n',
+        'test_bundle-1.0.dist-info/entry_points.txt': '[kumoai_studio.sources]\nsnowflake = kumo_snowflake.backend:X\n',
     }
     for name, source in modules.items():
         path = tmp_path / name
@@ -637,8 +754,7 @@ def test_wheel_verify_script_checks_base_install(tmp_path):
 
     def run():
         return subprocess.run(
-            [sys.executable, '-S',
-             str(smoke), 'test-bundle'],
+            [sys.executable, '-S', str(smoke), 'test-bundle'],
             env=dict(os.environ, PYTHONPATH=''),
             capture_output=True,
             text=True,
@@ -664,14 +780,22 @@ def test_wheel_verify_script_checks_base_install(tmp_path):
         (['--version', '1'], '1'),
         ([], '2.5.0+unknown'),  # VERSION + commit (not a git repo here)
         (['--release'], '2.5.0'),
-    ])
-@pytest.mark.parametrize('host_os,target,arch', [
-    ('Linux', '', 'x86_64'), ('Linux', '', 'aarch64'),
-    ('Darwin', '', 'arm64'), ('Darwin', '14', 'arm64'),
-    ('Darwin', '15.0', 'arm64'), ('MINGW64_NT-10.0', '', 'x86_64'),
-])
+    ],
+)
+@pytest.mark.parametrize(
+    'host_os,target,arch',
+    [
+        ('Linux', '', 'x86_64'),
+        ('Linux', '', 'aarch64'),
+        ('Darwin', '', 'arm64'),
+        ('Darwin', '14', 'arm64'),
+        ('Darwin', '15.0', 'arm64'),
+        ('MINGW64_NT-10.0', '', 'x86_64'),
+    ],
+)
 def test_wheel_uses_torch_fallbacks_without_native_extensions(
-        tmp_path, args, version, host_os, target, arch):
+    tmp_path, args, version, host_os, target, arch
+):
     """Run the real assembly script with local stand-ins for component builds."""
     deployment_target = target or '14.0'
     major, minor, *_ = deployment_target.split('.') + ['0']
@@ -699,10 +823,11 @@ def test_wheel_uses_torch_fallbacks_without_native_extensions(
         'import sys\n'
         f'assert "diskgraph-extension{notice_suffix}" in sys.argv\n'
         f'assert "diskgraph-ingest{notice_suffix}" in sys.argv\n'
-        "print('Apache-2.0 AND MIT')\n")
+        "print('Apache-2.0 AND MIT')\n",
+    )
     calls = tmp_path / 'calls.jsonl'
     python = tmp_path / 'python'
-    python.write_text(f'''#!{sys.executable}
+    python.write_text(f"""#!{sys.executable}
 import json, os, sys
 from pathlib import Path
 from zipfile import ZipFile
@@ -743,36 +868,51 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
             metadata += 'Requires-Dist: kumo-api\\n'
         archive.writestr(name + '-1.dist-info/METADATA', metadata)
         archive.writestr(name + '/__init__.py', '')
-''')
+""")
     python.chmod(0o755)
     uname = tmp_path / 'uname'
-    uname.write_text(f'#!/bin/sh\ncase "$1" in\n'
-                     f'-s) echo {host_os} ;;\n-m) echo {arch} ;;\nesac\n')
+    uname.write_text(
+        f'#!/bin/sh\ncase "$1" in\n-s) echo {host_os} ;;\n-m) echo {arch} ;;\nesac\n'
+    )
     uname.chmod(0o755)
     for command in ['cargo', 'curl', 'cygpath']:
         executable = tmp_path / command
-        executable.write_text('#!/bin/bash\nprintf "%s\\n" "$2"\n'
-                              if command == 'cygpath' else
-                              '#!/bin/bash\nexit 97\n')
+        executable.write_text(
+            '#!/bin/bash\nprintf "%s\\n" "$2"\n'
+            if command == 'cygpath'
+            else '#!/bin/bash\nexit 97\n'
+        )
         executable.chmod(0o755)
     output = tmp_path / 'dist'
     result = subprocess.run(
-        ['bash',
-         str(SCRIPT), *(['--no-zig'] if host_os == 'Linux' else []),
-         *args, '--output-dir',
-         str(output)],
-        env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
-                 BUILD_CALLS=str(calls), TMPDIR=str(tmp_path),
-                 TEST_HOST_OS=host_os, USE_ZIG='', PLATFORM_TAG='',
-                 MACOSX_DEPLOYMENT_TARGET=target,
-                 THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
-                 PATH=f'{tmp_path}:{os.environ["PATH"]}'),
+        [
+            'bash',
+            str(SCRIPT),
+            *(['--no-zig'] if host_os == 'Linux' else []),
+            *args,
+            '--output-dir',
+            str(output),
+        ],
+        env=dict(
+            os.environ,
+            KUMO_REPO=str(repo),
+            PYTHON=str(python),
+            BUILD_CALLS=str(calls),
+            TMPDIR=str(tmp_path),
+            TEST_HOST_OS=host_os,
+            USE_ZIG='',
+            PLATFORM_TAG='',
+            MACOSX_DEPLOYMENT_TARGET=target,
+            THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
+            PATH=f'{tmp_path}:{os.environ["PATH"]}',
+        ),
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
     downloads = [
-        json.loads(line) for line in calls.read_text().splitlines()
+        json.loads(line)
+        for line in calls.read_text().splitlines()
         if json.loads(line)[2] == 'download'
     ]
     assert not downloads
@@ -780,20 +920,20 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     if host_os.startswith('MINGW'):
         assert 'glibc floor' not in result.stderr
     with ZipFile(next(output.glob('*.whl'))) as archive:
-        assert not any(name.startswith('torch_geometric/')
-                       for name in archive.namelist())
+        assert not any(
+            name.startswith('torch_geometric/') for name in archive.namelist()
+        )
         assert 'pyg_lib/__init__.py' not in archive.namelist()
         assert 'torch_scatter/__init__.py' not in archive.namelist()
-        metadata_name = next(name for name in archive.namelist()
-                             if name.endswith('.dist-info/METADATA'))
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith('.dist-info/METADATA')
+        )
         metadata = archive.read(metadata_name).decode()
         assert 'Requires-Dist: torch>=2.7,<3' in metadata
         assert 'Requires-Dist: torch-geometric>=2.8.1,<3' in metadata
         assert 'License-Expression: Apache-2.0 AND MIT' in metadata
-        assert (f'kumo_engine-{version}.dist-info/licenses/LICENSE'
-                in archive.namelist())
-        assert not any('KUMO-API-LICENSE' in name
-                       for name in archive.namelist())
+        assert f'kumo_engine-{version}.dist-info/licenses/LICENSE' in archive.namelist()
+        assert not any('KUMO-API-LICENSE' in name for name in archive.namelist())
         for component in ['kumo_api', 'kumo_pql', 'kumo_core']:
             assert component + '/__init__.py' in archive.namelist()
         for component in ['kumo-api', 'kumo-pql', 'kumo-core']:
@@ -802,4 +942,5 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         assert 'Requires-Dist: pyg-lib' not in metadata
         assert 'Requires-Dist: torch-scatter' not in metadata
     assert next(output.glob('*.whl')).name == (
-        f'kumo_engine-{version}-{native_tag}.whl')
+        f'kumo_engine-{version}-{native_tag}.whl'
+    )

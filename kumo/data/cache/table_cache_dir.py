@@ -28,8 +28,9 @@ CACHE_TTL = EnvVar(
 TableSourceKey: TypeAlias = str
 
 
-def table_source_key(source_name: str, connector_name: str,
-                     data_version: str) -> TableSourceKey:
+def table_source_key(
+    source_name: str, connector_name: str, data_version: str
+) -> TableSourceKey:
     payload = '\0'.join([source_name, connector_name, data_version])
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -46,22 +47,24 @@ class TableCacheDir:
         TableCacheDir(table_dir).colstat_task_result
 
     """
-    def __init__(self, table_dir: str,
-                 table_fingerprint: Optional[TableFingerprint] = None) -> None:
+
+    def __init__(
+        self, table_dir: str, table_fingerprint: Optional[TableFingerprint] = None
+    ) -> None:
         self._table_dir = table_dir
         self._table_fingerprint = table_fingerprint
 
     @property
     def col_stats(self) -> str:
-        return osp.join(self._table_dir, "col_stats")
+        return osp.join(self._table_dir, 'col_stats')
 
     @property
     def min_col_stats(self) -> str:
-        return osp.join(self._table_dir, "min_col_stats")
+        return osp.join(self._table_dir, 'min_col_stats')
 
     @property
     def table_stats(self) -> str:
-        return osp.join(self._table_dir, "table_stats")
+        return osp.join(self._table_dir, 'table_stats')
 
     def colstat_task_result(self, stage: TableRefreshStage) -> str:
         if stage == TableRefreshStage.COMPUTE_MIN_COL_STATS:

@@ -52,6 +52,7 @@ class MLJobOutputStore:
       run on the worker's event loop. It exists so workers without a long-lived
       in-process StateDB can still publish job state without an AutoRPC client.
     """
+
     def __init__(
         self,
         jobs_dir: Optional[str] = None,
@@ -94,15 +95,14 @@ class MLJobOutputStore:
             return self._jobs_dir_override
         return get_job_base_dir()
 
-    def _configure_ml_job_service(self,
-                                  ml_job_service: MLJobService) -> None:
+    def _configure_ml_job_service(self, ml_job_service: MLJobService) -> None:
         self._ml_job_service = ml_job_service
 
     def _test_explain_path(self, id: TrainingJobID) -> str:
         test_explain_dir = os.path.join(self._jobs_dir, 'test_explains')
         fsutil.makedirs(
-            fsutil.abspath(fsutil.expanduser(test_explain_dir)),
-            exist_ok=True)
+            fsutil.abspath(fsutil.expanduser(test_explain_dir)), exist_ok=True
+        )
         return os.path.join(test_explain_dir, id)
 
     @asynccontextmanager
@@ -119,8 +119,9 @@ class MLJobOutputStore:
             return
         if not self._self_contained:
             raise RuntimeError(
-                "MLJobOutputStore requires MLJobService to be configured "
-                "before updating ML job metadata.")
+                'MLJobOutputStore requires MLJobService to be configured '
+                'before updating ML job metadata.'
+            )
         # Serialize the async first-open: two concurrent first writers would
         # otherwise both see ``None`` across the ``await`` and each open a
         # StateDB, leaking one pool. Double-check inside the lock.
@@ -130,6 +131,7 @@ class MLJobOutputStore:
                 from rest.settings import get_db_storage_root
                 from service_framework.deploy_env_config import deploy_env
                 from statedb.db import open_state_db_from_deploy_config
+
                 self._owned_state_db = await open_state_db_from_deploy_config(
                     deploy_env(),
                     state_root=get_db_storage_root(),
@@ -150,68 +152,68 @@ class MLJobOutputStore:
                 self._owned_state_db = None
                 self._ml_job_service = None
 
-    async def save_train_table_graph_version(self, id: GenerateTrainTableJobID,
-                                             graph_data_version: str):
+    async def save_train_table_graph_version(
+        self, id: GenerateTrainTableJobID, graph_data_version: str
+    ):
         async with self._ml_job_service_scope() as service:
-            await service.save_train_table_graph_version(
-                id, graph_data_version)
+            await service.save_train_table_graph_version(id, graph_data_version)
 
-    async def save_training_job_graph_version(self, id: TrainingJobID,
-                                              graph_data_version: str) -> None:
+    async def save_training_job_graph_version(
+        self, id: TrainingJobID, graph_data_version: str
+    ) -> None:
         async with self._ml_job_service_scope() as service:
-            await service.save_training_job_graph_version(
-                id, graph_data_version)
+            await service.save_training_job_graph_version(id, graph_data_version)
 
-    async def save_pred_job_graph_version(self, id: BatchPredictionJobID,
-                                          graph_data_version: str) -> None:
+    async def save_pred_job_graph_version(
+        self, id: BatchPredictionJobID, graph_data_version: str
+    ) -> None:
         async with self._ml_job_service_scope() as service:
             await service.save_pred_job_graph_version(id, graph_data_version)
 
-    async def save_training_job_output(self, id: TrainingJobID,
-                                       output: TrainingJobOutput) -> None:
+    async def save_training_job_output(
+        self, id: TrainingJobID, output: TrainingJobOutput
+    ) -> None:
         if output.results:
             # Load "test_explain" if the file path is local
-            if (output.results._test_explain_file_path and fsutil.is_local(
-                    output.results._test_explain_file_path)):
+            if output.results._test_explain_file_path and fsutil.is_local(
+                output.results._test_explain_file_path
+            ):
                 await output.results.load_test_explain.coroutine()
 
             if output.results.test_explain:
                 # We need to store test_explain in a separate remote location
                 # given its large size.
                 await output.results.save_test_explain_to_remote.coroutine(
-                    self._test_explain_path(id))
+                    self._test_explain_path(id)
+                )
 
         async with self._ml_job_service_scope() as service:
             await service.save_training_job_output(id, output)
 
     async def save_batch_prediction_job_output(
-            self, id: BatchPredictionJobID,
-            output: BatchPredictionJobOutput) -> None:
-        log.info(f"Saving batch prediction job output for job {id}"
-                 f"output: {output}")
+        self, id: BatchPredictionJobID, output: BatchPredictionJobOutput
+    ) -> None:
+        log.info(f'Saving batch prediction job output for job {id}output: {output}')
         async with self._ml_job_service_scope() as service:
             await service.save_batch_prediction_job_output(id, output)
 
     async def save_generate_train_table_job_output(
-            self, id: GenerateTrainTableJobID,
-            output: GenerateTrainTableJobOutput):
-        log.info(f"Saving generate-train-table job output for job {id}"
-                 f"output: {output}")
+        self, id: GenerateTrainTableJobID, output: GenerateTrainTableJobOutput
+    ):
+        log.info(f'Saving generate-train-table job output for job {id}output: {output}')
         async with self._ml_job_service_scope() as service:
             await service.save_generate_train_table_job_output(id, output)
 
-    async def save_pred_table_graph_version(self,
-                                            id: GeneratePredictionTableJobID,
-                                            graph_data_version: str):
+    async def save_pred_table_graph_version(
+        self, id: GeneratePredictionTableJobID, graph_data_version: str
+    ):
         async with self._ml_job_service_scope() as service:
-            await service.save_pred_table_graph_version(
-                id, graph_data_version)
+            await service.save_pred_table_graph_version(id, graph_data_version)
 
     async def save_generate_pred_table_job_output(
-            self, id: GeneratePredictionTableJobID,
-            output: GeneratePredTableJobOutput):
-        log.info(f"Saving generate-train-table job output for job {id}"
-                 f"output: {output}")
+        self, id: GeneratePredictionTableJobID, output: GeneratePredTableJobOutput
+    ):
+        log.info(f'Saving generate-train-table job output for job {id}output: {output}')
         async with self._ml_job_service_scope() as service:
             await service.save_generate_pred_table_job_output(id, output)
 
@@ -226,8 +228,7 @@ class MLJobOutputStore:
 # explicit value only to pin the base dir (e.g. in tests).
 
 
-def _materialization_info_path(id: JobID,
-                               jobs_dir: Optional[str] = None) -> str:
+def _materialization_info_path(id: JobID, jobs_dir: Optional[str] = None) -> str:
     base = jobs_dir if jobs_dir is not None else get_job_base_dir()
     return HomeDirManager(get_job_dir(base, id)).materialization_task_info_file
 
@@ -253,9 +254,13 @@ def get_materialization_info(
     materialization stage is not yet complete.
     """
     dest_path = _materialization_info_path(id, jobs_dir)
-    return json.load_json(dest_path, MaterializationTaskInfo,
-                          compressed=True, default=None,
-                          raise_on_missing=False)
+    return json.load_json(
+        dest_path,
+        MaterializationTaskInfo,
+        compressed=True,
+        default=None,
+        raise_on_missing=False,
+    )
 
 
 def get_many_materialization_info(

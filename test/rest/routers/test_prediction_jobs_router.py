@@ -28,8 +28,7 @@ def auto_cleanup_per_func():
 
 def _router(deleted: bool) -> Tuple[PredictionRouterV1, SimpleNamespace]:
     router = object.__new__(PredictionRouterV1)
-    driver = SimpleNamespace(delete_batch_prediction=AsyncMock(
-        return_value=deleted))
+    driver = SimpleNamespace(delete_batch_prediction=AsyncMock(return_value=deleted))
     router._driver = cast(PQueryApiDriver, driver)
     return router, driver
 

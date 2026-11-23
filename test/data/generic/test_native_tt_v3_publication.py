@@ -24,53 +24,69 @@ def _write_source_bundle(root, tt_id='job', entities=(0, 1), part_rows=None):
     train_table.mkdir()
     row_count = len(entities)
     part_rows = part_rows or (row_count,)
-    table = pa.table({
-        'ENTITY1': pa.array(entities, type=pa.int64()),
-        'TIMESTAMP': pa.array([0] * row_count, type=pa.int64()),
-        'TARGET1': pa.array([1] * row_count, type=pa.int64()),
-    })
+    table = pa.table(
+        {
+            'ENTITY1': pa.array(entities, type=pa.int64()),
+            'TIMESTAMP': pa.array([0] * row_count, type=pa.int64()),
+            'TARGET1': pa.array([1] * row_count, type=pa.int64()),
+        }
+    )
     parts = []
     offset = 0
     for index, rows in enumerate(part_rows):
         part = train_table / f'part-{index:05}.parquet'
         pq.write_table(table.slice(offset, rows), part)
-        parts.append({
-            'path': f'tt.parquet/{part.name}',
-            'row_count': rows,
-            'size_bytes': part.stat().st_size,
-        })
+        parts.append(
+            {
+                'path': f'tt.parquet/{part.name}',
+                'row_count': rows,
+                'size_bytes': part.stat().st_size,
+            }
+        )
         offset += rows
     stats = staging / 'stats.json'
-    stats.write_text(json.dumps({
-        'version': 2,
-        'kind': 'tt_stats',
-        'num_total_rows': row_count,
-        'num_train_rows': row_count,
-        'num_entities': row_count,
-        'num_targets': 1,
-        'num_links': None,
-    }))
+    stats.write_text(
+        json.dumps(
+            {
+                'version': 2,
+                'kind': 'tt_stats',
+                'num_total_rows': row_count,
+                'num_train_rows': row_count,
+                'num_entities': row_count,
+                'num_targets': 1,
+                'num_links': None,
+            }
+        )
+    )
     manifest = staging / 'manifest.json'
-    manifest.write_text(json.dumps({
-        'version': 3,
-        'row_count': row_count,
-        'train_table': {
-            'path': 'tt.parquet',
-            'format': 'tt_parquet_dataset_v1',
-            'row_count': row_count,
-            'size_bytes': sum(part['size_bytes'] for part in parts),
-            'parts': parts,
-        },
-        'stats': {'path': 'stats.json', 'format': 'tt_stats_json'},
-        'checksums': {
-            'stats_sha256': hashlib.sha256(stats.read_bytes()).hexdigest(),
-        },
-    }))
-    (staging / 'tt_ingest_spec.json').write_text(json.dumps({
-        'schema_version': 'diskgraph.tt_ingest_spec.v3',
-        'tt_id': tt_id,
-        'split_stages': None,
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                'version': 3,
+                'row_count': row_count,
+                'train_table': {
+                    'path': 'tt.parquet',
+                    'format': 'tt_parquet_dataset_v1',
+                    'row_count': row_count,
+                    'size_bytes': sum(part['size_bytes'] for part in parts),
+                    'parts': parts,
+                },
+                'stats': {'path': 'stats.json', 'format': 'tt_stats_json'},
+                'checksums': {
+                    'stats_sha256': hashlib.sha256(stats.read_bytes()).hexdigest(),
+                },
+            }
+        )
+    )
+    (staging / 'tt_ingest_spec.json').write_text(
+        json.dumps(
+            {
+                'schema_version': 'diskgraph.tt_ingest_spec.v3',
+                'tt_id': tt_id,
+                'split_stages': None,
+            }
+        )
+    )
     return staging, train_table, manifest
 
 
@@ -86,6 +102,7 @@ def _configure_fake_generation(monkeypatch, train_table, manifest):
 
         def get_validate_train_table_response(self):
             from kumo.validation import ValidationResponse
+
             return ValidationResponse()
 
     generator = FakeGenerator()
@@ -102,6 +119,7 @@ def _configure_fake_generation(monkeypatch, train_table, manifest):
 
     monkeypatch.setattr(generate, 'TrainingTableGeneratorV2', FakeGenerator)
     import kumo.pquery as pquery
+
     monkeypatch.setattr(pquery, 'PredictiveQueryV2', FakePredictiveQuery)
     return SimpleNamespace(graph=SimpleNamespace(tables=[]))
 
@@ -123,8 +141,7 @@ def test_generation_returns_selected_physical_train_table(tmp_path, monkeypatch)
     physical = _generate(config, tmp_path / 'output')
 
     selected = osp.dirname(physical)
-    assert selected.startswith(
-        str(tmp_path / 'output.ttng_staging' / '_bundles'))
+    assert selected.startswith(str(tmp_path / 'output.ttng_staging' / '_bundles'))
     assert osp.basename(physical) == 'tt.parquet'
     assert not (tmp_path / 'output.ttng_staging' / '_current.json').exists()
     diskgraph_train_table.assert_ttng_bundle_complete(selected)
@@ -132,7 +149,8 @@ def test_generation_returns_selected_physical_train_table(tmp_path, monkeypatch)
 
 def test_generation_copies_complete_multipart_dataset(tmp_path, monkeypatch):
     _staging, train_table, manifest = _write_source_bundle(
-        tmp_path, entities=(0, 1, 2, 3, 4), part_rows=(2, 3))
+        tmp_path, entities=(0, 1, 2, 3, 4), part_rows=(2, 3)
+    )
     config = _configure_fake_generation(monkeypatch, train_table, manifest)
     original_copy = fsutil.copy_tree_threaded
     copies = []
@@ -147,11 +165,9 @@ def test_generation_copies_complete_multipart_dataset(tmp_path, monkeypatch):
 
     assert len(copies) == 1
     assert copies[0][0] == str(train_table.parent)
-    assert sorted(os.listdir(physical)) == [
-        'part-00000.parquet', 'part-00001.parquet']
+    assert sorted(os.listdir(physical)) == ['part-00000.parquet', 'part-00001.parquet']
     assert pq.read_table(physical).num_rows == 5
-    diskgraph_train_table.assert_ttng_bundle_complete(
-        osp.dirname(physical))
+    diskgraph_train_table.assert_ttng_bundle_complete(osp.dirname(physical))
 
 
 def test_source_bundle_is_validated_before_copy(tmp_path, monkeypatch):
@@ -164,8 +180,7 @@ def test_source_bundle_is_validated_before_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(
         fsutil,
         'copy_tree_threaded',
-        lambda *_args, **_kwargs: pytest.fail(
-            'copy ran before source validation'),
+        lambda *_args, **_kwargs: pytest.fail('copy ran before source validation'),
     )
 
     with pytest.raises(RuntimeError, match='footer/schema is invalid'):
@@ -181,8 +196,9 @@ def test_interrupted_copy_is_never_selected(tmp_path, monkeypatch):
     def interrupted_copy(_source, destination, **_kwargs):
         os.makedirs(destination, exist_ok=True)
         os.makedirs(osp.join(destination, 'tt.parquet'))
-        with open(osp.join(destination, 'tt.parquet',
-                           'part-00000.parquet'), 'wb') as handle:
+        with open(
+            osp.join(destination, 'tt.parquet', 'part-00000.parquet'), 'wb'
+        ) as handle:
             handle.write(b'partial')
         raise RuntimeError('interrupted immutable copy')
 

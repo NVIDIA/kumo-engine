@@ -12,8 +12,7 @@ from kumo.engine.graph import GraphSnapshot
 def parsed_query(trainer: Any, snapshot: GraphSnapshot) -> Any:
     from kumo.engine.pquery import PredictiveQuery
 
-    return PredictiveQuery._from_snapshot(snapshot,
-                                          trainer._training_query)._parsed
+    return PredictiveQuery._from_snapshot(snapshot, trainer._training_query)._parsed
 
 
 def snapshot_location(uri: str) -> Tuple[Connector, str]:

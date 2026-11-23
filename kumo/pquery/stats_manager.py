@@ -37,16 +37,19 @@ from kumo.utils.cast import normalize_timestamp_to_utc_local
 
 logger = logging.getLogger(__name__)
 
-_OPTIONAL_NATIVE_TRAIN_STATS = frozenset({
-    AVG_TARGETS_PER_TIMEFRAME,
-    NUM_LINKS,
-    STATS_PER_TIMEFRAME,
-})
+_OPTIONAL_NATIVE_TRAIN_STATS = frozenset(
+    {
+        AVG_TARGETS_PER_TIMEFRAME,
+        NUM_LINKS,
+        STATS_PER_TIMEFRAME,
+    }
+)
 
 
 class StatsManager:
     r"""A class that handles any actions related to training table stats
     computation, storage, or caching."""
+
     def __init__(
         self,
         task_type: TaskType,
@@ -89,7 +92,8 @@ class StatsManager:
                 corresponding Stats objects loaded from the cache.
         """
         stats = get_active_cache().pquery_table_stats_cache.get_stats(
-            job_id, stats_list)
+            job_id, stats_list
+        )
         return stats
 
     def _expected_train_stats_keys_for_mode(self) -> list[str]:
@@ -105,7 +109,8 @@ class StatsManager:
                 return list(ALL_STATIC_LINK_STATS)
         raise NotImplementedError(
             f'Unsupported task/query combination for stats keys: '
-            f'task_type={self.task_type}, query_type={self.query.query_type}')
+            f'task_type={self.task_type}, query_type={self.query.query_type}'
+        )
 
     def seed_train_stats_cache_from_native_artifact(
         self,
@@ -176,10 +181,12 @@ class StatsManager:
         }
         self.write_to_cache(job_id, date_stats)
 
-    def update_train_table_stats(self, job_id: str,
-                                 train_table_stats: TemporalTrainTableStats,
-                                 boundaries: List[Tuple[pd.Timestamp,
-                                                        pd.Timestamp]]):
+    def update_train_table_stats(
+        self,
+        job_id: str,
+        train_table_stats: TemporalTrainTableStats,
+        boundaries: List[Tuple[pd.Timestamp, pd.Timestamp]],
+    ):
         r"""Update timeframe stats in the stats cache.
         Args:
             job_id (str): Unique operation id associated with the
@@ -206,13 +213,17 @@ class StatsManager:
         for timeframe_stat in timeframe_stats:
             # Normalize all timestamps to UTC for consistent comparison
             min_date = normalize_timestamp_to_utc_local(
-                pd.Timestamp(timeframe_stat.min_date))
+                pd.Timestamp(timeframe_stat.min_date)
+            )
             max_date = normalize_timestamp_to_utc_local(
-                pd.Timestamp(timeframe_stat.max_date))
+                pd.Timestamp(timeframe_stat.max_date)
+            )
             boundary_start = normalize_timestamp_to_utc_local(
-                boundaries[boundary_index_curr][0])
+                boundaries[boundary_index_curr][0]
+            )
             boundary_end = normalize_timestamp_to_utc_local(
-                boundaries[boundary_index_curr][1])
+                boundaries[boundary_index_curr][1]
+            )
 
             # Move split boundary once is enough because for the split method
             # this logic is applied to, `ApproxDateOffsetSplit`, train/val/test
@@ -223,9 +234,11 @@ class StatsManager:
                 boundary_index_curr -= 1
                 # Update boundary references after index change and normalize to UTC
                 boundary_start = normalize_timestamp_to_utc_local(
-                    boundaries[boundary_index_curr][0])
+                    boundaries[boundary_index_curr][0]
+                )
                 boundary_end = normalize_timestamp_to_utc_local(
-                    boundaries[boundary_index_curr][1])
+                    boundaries[boundary_index_curr][1]
+                )
             # The assertion should be `True` at all times sicne each split set
             # contains at least one train table timeframe.
             assert min_date >= boundary_start
@@ -233,22 +246,22 @@ class StatsManager:
                 timeframe_stats_updated.append(timeframe_stat)
 
         num_timeframes_post_filter_updated = len(timeframe_stats_updated)
-        num_filtered_timeframes = (
-            train_table_stats.num_timeframes_post_filter -
-            len(timeframe_stats_updated))
-        num_timeframes_updated = (train_table_stats.num_timeframes -
-                                  num_filtered_timeframes)
+        num_filtered_timeframes = train_table_stats.num_timeframes_post_filter - len(
+            timeframe_stats_updated
+        )
+        num_timeframes_updated = (
+            train_table_stats.num_timeframes - num_filtered_timeframes
+        )
 
         # TODO: Adjust the other train table stats, e.g. num_entities,
         # num_train_rows, etc. once we decide to show them in the UI.
         # Update train table stats stored in the cache
         train_table_stats_updated = {
-            STATS_PER_TIMEFRAME:
-            Stats(timeframe_stats_updated, approx=False),
-            NUM_TIMEFRAMES:
-            Stats(num_timeframes_updated, approx=False),
-            NUM_TIMEFRAMES_POST_FILTER:
-            Stats(num_timeframes_post_filter_updated, approx=False),
+            STATS_PER_TIMEFRAME: Stats(timeframe_stats_updated, approx=False),
+            NUM_TIMEFRAMES: Stats(num_timeframes_updated, approx=False),
+            NUM_TIMEFRAMES_POST_FILTER: Stats(
+                num_timeframes_post_filter_updated, approx=False
+            ),
         }
         self.write_to_cache(job_id, train_table_stats_updated)
 
@@ -256,7 +269,8 @@ class StatsManager:
         # current session
         train_table_stats.stats_per_timeframe = timeframe_stats_updated
         train_table_stats.num_timeframes_post_filter = (
-            num_timeframes_post_filter_updated)
+            num_timeframes_post_filter_updated
+        )
         train_table_stats.num_timeframes = num_timeframes_updated
 
     def update_pred_time(
@@ -281,7 +295,8 @@ class StatsManager:
         self.write_to_cache(job_id, entity_stats)
 
     def get_batch_pred_table_stats_config(
-            self, job_id: str) -> Optional[Dict[str, StatsConfig]]:
+        self, job_id: str
+    ) -> Optional[Dict[str, StatsConfig]]:
         r"""Retrieve the batch prediction table statistics configuration from
         cache. This method loads prediction table statistics from the cache
         and converts them into a configuration format. It is typically used to

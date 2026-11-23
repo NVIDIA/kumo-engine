@@ -16,32 +16,37 @@ from kumo_core.sources.errors import (
     TransientSourceError,
 )
 
-LAPSED_CREDENTIAL_SQLSTATE = "28"
+LAPSED_CREDENTIAL_SQLSTATE = '28'
 LAPSED_CREDENTIAL_ERRNO = 390114
-ACCESS_DENIED_SQLSTATE = "42501"
+ACCESS_DENIED_SQLSTATE = '42501'
 INTERNAL_STAGE_UNLOAD_DENIED_ERRNO = 3191
-INTERNAL_STAGE_UNLOAD_DENIED_SQLSTATE = "42000"
+INTERNAL_STAGE_UNLOAD_DENIED_SQLSTATE = '42000'
 INTERNAL_STAGE_UNLOAD_DENIED_MESSAGE = (
-    "Snowflake account policy PREVENT_UNLOAD_TO_INTERNAL_STAGES blocks "
-    "the required internal-stage unload")
+    'Snowflake account policy PREVENT_UNLOAD_TO_INTERNAL_STAGES blocks '
+    'the required internal-stage unload'
+)
 
 
 def summary(error: BaseException) -> str:
-    errno = getattr(error, "errno", None)
-    sqlstate = str(getattr(error, "sqlstate", "") or "")
-    safe = diagnostics.safe_summary(error, errno=errno, sqlstate=sqlstate,
-                                    query=getattr(error, "sfqid", None))
-    if (errno == INTERNAL_STAGE_UNLOAD_DENIED_ERRNO
-            and sqlstate == INTERNAL_STAGE_UNLOAD_DENIED_SQLSTATE):
-        return f"{safe}: {INTERNAL_STAGE_UNLOAD_DENIED_MESSAGE}"
+    errno = getattr(error, 'errno', None)
+    sqlstate = str(getattr(error, 'sqlstate', '') or '')
+    safe = diagnostics.safe_summary(
+        error, errno=errno, sqlstate=sqlstate, query=getattr(error, 'sfqid', None)
+    )
+    if (
+        errno == INTERNAL_STAGE_UNLOAD_DENIED_ERRNO
+        and sqlstate == INTERNAL_STAGE_UNLOAD_DENIED_SQLSTATE
+    ):
+        return f'{safe}: {INTERNAL_STAGE_UNLOAD_DENIED_MESSAGE}'
     return safe
 
 
 def is_lapsed_credential(error: BaseException) -> bool:
     """Whether reconnecting can recover a Snowflake authentication error."""
-    return (str(getattr(error, "sqlstate", "")
-                or "").startswith(LAPSED_CREDENTIAL_SQLSTATE)
-            or getattr(error, "errno", None) == LAPSED_CREDENTIAL_ERRNO)
+    return (
+        str(getattr(error, 'sqlstate', '') or '').startswith(LAPSED_CREDENTIAL_SQLSTATE)
+        or getattr(error, 'errno', None) == LAPSED_CREDENTIAL_ERRNO
+    )
 
 
 def rules() -> Sequence[Rule]:
@@ -62,10 +67,18 @@ def rules() -> Sequence[Rule]:
         ServiceUnavailableError,
     )
 
-    retryable = (OperationalError, InterfaceError, ServiceUnavailableError,
-                 InternalServerError, BadGatewayError, GatewayTimeoutError,
-                 RequestTimeoutError, OtherHTTPRetryableError,
-                 RequestExceedMaxRetryError, OSError)
+    retryable = (
+        OperationalError,
+        InterfaceError,
+        ServiceUnavailableError,
+        InternalServerError,
+        BadGatewayError,
+        GatewayTimeoutError,
+        RequestTimeoutError,
+        OtherHTTPRetryableError,
+        RequestExceedMaxRetryError,
+        OSError,
+    )
     return (
         (RefreshTokenError, ReconnectRequiredError),
         (retryable, TransientSourceError),
@@ -74,14 +87,13 @@ def rules() -> Sequence[Rule]:
     )
 
 
-translated = diagnostics.source_translator("snowflake", rules=rules,
-                                           summarize=summary)
+translated = diagnostics.source_translator('snowflake', rules=rules, summarize=summary)
 
 
 def _by_sqlstate(error: BaseException) -> type[SourceError]:
     """Snowflake collapses a missing object and an ungranted one into one
     object-resolution code, so only ``42501`` names a grant truly missing."""
-    sqlstate = str(getattr(error, "sqlstate", "") or "")
+    sqlstate = str(getattr(error, 'sqlstate', '') or '')
     if is_lapsed_credential(error):
         return ReconnectRequiredError
     if sqlstate == ACCESS_DENIED_SQLSTATE:

@@ -4,7 +4,9 @@
 
 # isort: off
 from kumo.pquery.pquery_validators.generation_validator import (
-    GenerationValidator, )
+    GenerationValidator,
+)
+
 # isort: on
 from kumo.pquery.stats_manager import StatsManager
 
@@ -16,6 +18,7 @@ class PredTableValidator(GenerationValidator):
         stats_manager (StatsManager): `StatsManager` that has been used to
             cache stats.
     """
+
     def __init__(
         self,
         stats_manager: StatsManager,

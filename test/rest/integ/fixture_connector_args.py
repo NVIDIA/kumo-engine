@@ -27,8 +27,7 @@ from statedb.config.common import ConnectorID, ProjectID
 from statedb.config.timestamp import get_current_timestamps
 
 _INTEG_DIR = Path(__file__).resolve().parent
-_CONNECTOR_ARGS_PATH = (_INTEG_DIR /
-                        'connector_args/test_e2e_connector_args.json')
+_CONNECTOR_ARGS_PATH = _INTEG_DIR / 'connector_args/test_e2e_connector_args.json'
 
 
 def load_fixture_connectors(
@@ -58,8 +57,7 @@ def load_fixture_connectors(
         return str(root)
 
     roots_by_original_id = {
-        str(raw['config']['name']):
-        fixture_source_root(raw['config']['root_dir'])
+        str(raw['config']['name']): fixture_source_root(raw['config']['root_dir'])
         for raw in raw_args
     }
     referenced_ids = {
@@ -89,15 +87,15 @@ def load_fixture_connectors(
             if root is None:
                 if source_name == 'LOAN':
                     root = roots_by_source_name['LOAN']
-                elif source_name.startswith(
-                        'COUPON_') or source_name == 'USER_LIST':
+                elif source_name.startswith('COUPON_') or source_name == 'USER_LIST':
                     root = roots_by_source_name['COUPON_']
                 else:
                     root = roots_by_source_name['default']
             previous = root_by_connector.setdefault(connector_id, root)
             if previous != root:
                 raise ValueError(
-                    f'Connector {connector_id} maps to multiple local roots')
+                    f'Connector {connector_id} maps to multiple local roots'
+                )
 
     if referenced_ids != set(root_by_connector):
         raise ValueError('Not every fixture connector has a local test root')
@@ -114,7 +112,8 @@ def load_fixture_connectors(
                 root_dir=root,
             ),
             timestamps=get_current_timestamps(),
-        ) for connector_id, root in root_by_connector.items()
+        )
+        for connector_id, root in root_by_connector.items()
     ]
 
 
@@ -136,26 +135,26 @@ def _project_upload_fixture(
         if not isinstance(source_table, S3SourceTable):
             raise ValueError(
                 'Local fixture provisioning supports only S3 source tables; '
-                'use the provider-specific external connector fixture')
+                'use the provider-specific external connector fixture'
+            )
         if not isinstance(source_table.source, S3RelativeSource):
             raise ValueError(
                 'Local fixture provisioning supports only connector-relative '
-                'S3 paths; use a supported external S3 connector for URIs')
+                'S3 paths; use a supported external S3 connector for URIs'
+            )
         old_connector_id = ConnectorID(str(source_table.connector_id))
         if old_connector_id not in roots_by_connector:
             raise ValueError(
-                f'Local fixture connector {old_connector_id} has no source '
-                'directory')
+                f'Local fixture connector {old_connector_id} has no source directory'
+            )
         namespace = posixpath.join('fixture-data', str(old_connector_id))
-        relative_path = posixpath.join(
-            namespace, source_table.source.path.strip('/'))
+        relative_path = posixpath.join(namespace, source_table.source.path.strip('/'))
         return dataclasses.replace(
             table,
             source_table=dataclasses.replace(
                 source_table,
                 connector_id=str(connector_id),
-                source=dataclasses.replace(source_table.source,
-                                           path=relative_path),
+                source=dataclasses.replace(source_table.source, path=relative_path),
             ),
         )
 
@@ -167,10 +166,11 @@ def _project_upload_fixture(
                 dataclasses.replace(
                     graph,
                     tables={
-                        name: remap_table(table)
-                        for name, table in graph.tables.items()
+                        name: remap_table(table) for name, table in graph.tables.items()
                     },
-                )))
+                )
+            )
+        )
         old_to_new_fpid[graph.fpid] = remapped.fpid
         remapped_graphs.append(remapped)
 
@@ -178,9 +178,9 @@ def _project_upload_fixture(
     remapped_queries = [
         dataclasses.replace(
             query,
-            graph_fpid=old_to_new_fpid.get(query.graph_fpid,
-                                           query.graph_fpid),
-        ) for query in fixture.queries
+            graph_fpid=old_to_new_fpid.get(query.graph_fpid, query.graph_fpid),
+        )
+        for query in fixture.queries
     ]
     return dataclasses.replace(
         fixture,
@@ -197,8 +197,11 @@ def state_services_for_test_client(client: Any):
     if state_services is not None:
         return state_services
     app_builder = getattr(client, 'app_builder', None)
-    state_services = (getattr(app_builder, '_state_services', None)
-                      if app_builder is not None else None)
+    state_services = (
+        getattr(app_builder, '_state_services', None)
+        if app_builder is not None
+        else None
+    )
     if state_services is None:
         raise RuntimeError('Test app StateServices is not initialized')
     return state_services
@@ -230,14 +233,15 @@ async def _canonical_project_upload_connector(
     """Resolve the one authorized project-upload connector for a test flow."""
     state_services = state_services_for_test_client(client)
     response = client.get(
-        f'{api_prefix}/projects/{project_id}/connectors/uploads/connector')
+        f'{api_prefix}/projects/{project_id}/connectors/uploads/connector'
+    )
     if response.status_code != HTTPStatus.OK:
         raise RuntimeError(
             'Failed to provision the project upload connector: '
-            f'HTTP {response.status_code}')
+            f'HTTP {response.status_code}'
+        )
     connector_id = ConnectorID(response.json()['connector_id'])
-    return await state_services.connectors.get_internal(project_id,
-                                                        connector_id)
+    return await state_services.connectors.get_internal(project_id, connector_id)
 
 
 async def provision_fixture_connectors(
@@ -257,10 +261,10 @@ async def provision_fixture_connectors(
     """
 
     typed_project_id = await ensure_test_project(client, project_id)
-    source_connectors = load_fixture_connectors(
-        fixture, typed_project_id, fixture_root)
+    source_connectors = load_fixture_connectors(fixture, typed_project_id, fixture_root)
     connector = await _canonical_project_upload_connector(
-        client, typed_project_id, api_prefix=api_prefix)
+        client, typed_project_id, api_prefix=api_prefix
+    )
 
     roots_by_connector = {
         source.id: source.config.root_dir for source in source_connectors
@@ -268,11 +272,10 @@ async def provision_fixture_connectors(
     for old_connector_id, source_root in roots_by_connector.items():
         if not Path(source_root).is_dir():
             raise ValueError(
-                f'Local fixture source directory does not exist: '
-                f'{source_root}')
+                f'Local fixture source directory does not exist: {source_root}'
+            )
         namespace = posixpath.join('fixture-data', str(old_connector_id))
-        destination = posixpath.join(connector.config.root_dir.rstrip('/'),
-                                     namespace)
+        destination = posixpath.join(connector.config.root_dir.rstrip('/'), namespace)
         await fsutil.copy.coroutine(
             source_root,
             destination,
@@ -280,8 +283,7 @@ async def provision_fixture_connectors(
             raise_on_exists=False,
         )
 
-    remapped = _project_upload_fixture(fixture, connector.id,
-                                       roots_by_connector)
+    remapped = _project_upload_fixture(fixture, connector.id, roots_by_connector)
     fixture.tables[:] = remapped.tables
     fixture.graphs[:] = remapped.graphs
     fixture.queries[:] = remapped.queries
@@ -315,14 +317,17 @@ async def _physical_fixture_source(
 
     source = source_table.source
     assert isinstance(source, S3RelativeSource)
-    physical_path, resolved_file_type = (
-        await file_connector.get_path_and_type.coroutine(source.path))
+    (
+        physical_path,
+        resolved_file_type,
+    ) = await file_connector.get_path_and_type.coroutine(source.path)
     if physical_path.endswith('/'):
         return physical_path, ''
 
     resolved_suffix = f'.{resolved_file_type.casefold()}'
-    physical_suffix = ('' if source.path.casefold().endswith(resolved_suffix)
-                       else resolved_suffix)
+    physical_suffix = (
+        '' if source.path.casefold().endswith(resolved_suffix) else resolved_suffix
+    )
     return physical_path, physical_suffix
 
 
@@ -330,8 +335,11 @@ def _set_local_fixture_data_version(path: str, timestamp: int) -> None:
     """Set a local copied source's effective version without changing bytes."""
 
     path_obj = Path(path)
-    targets = ([child for child in path_obj.rglob('*') if child.is_file()]
-               if path_obj.is_dir() else [path_obj])
+    targets = (
+        [child for child in path_obj.rglob('*') if child.is_file()]
+        if path_obj.is_dir()
+        else [path_obj]
+    )
     for target in targets:
         target_stat = target.stat()
         os.utime(target, (target_stat.st_atime, timestamp))
@@ -351,25 +359,23 @@ async def _copy_fixture_source(
     )
     source_modified, destination_modified = await asyncio.gather(
         asyncio.to_thread(fsutil.get_last_modified_time, physical_source),
-        asyncio.to_thread(fsutil.get_last_modified_time,
-                          physical_destination),
+        asyncio.to_thread(fsutil.get_last_modified_time, physical_destination),
     )
     source_version = int(source_modified)
     destination_version = int(destination_modified)
     if source_version == destination_version:
         if not fsutil.is_local(physical_destination):
-            raise RuntimeError(
-                'Fixture copy did not create a distinct data version')
+            raise RuntimeError('Fixture copy did not create a distinct data version')
         await asyncio.to_thread(
             _set_local_fixture_data_version,
             physical_destination,
             source_version + 1,
         )
-        destination_version = int(await asyncio.to_thread(
-            fsutil.get_last_modified_time, physical_destination))
+        destination_version = int(
+            await asyncio.to_thread(fsutil.get_last_modified_time, physical_destination)
+        )
     if source_version == destination_version:
-        raise RuntimeError(
-            'Fixture copy did not create a distinct data version')
+        raise RuntimeError('Fixture copy did not create a distinct data version')
 
 
 async def duplicate_fixture_sources(
@@ -390,28 +396,33 @@ async def duplicate_fixture_sources(
     # local helper object, so give it a valid disposable name while preserving
     # the configured root.
     file_connector = dataclasses.replace(
-        connector.config, name='fixture_source_resolver').as_connector()
+        connector.config, name='fixture_source_resolver'
+    ).as_connector()
     for graph in fixture.graphs:
         for table in graph.tables.values():
             source_table = table.source_table
             if not isinstance(source_table, S3SourceTable):
                 raise ValueError(
-                    'Local fixture provisioning supports only S3 source '
-                    'tables')
+                    'Local fixture provisioning supports only S3 source tables'
+                )
             source = source_table.source
             if not isinstance(source, S3RelativeSource):
                 raise ValueError(
                     'Local fixture provisioning supports only '
-                    'connector-relative S3 paths')
+                    'connector-relative S3 paths'
+                )
 
             old_path = source.path
             duplicate_path = duplicate_paths.setdefault(
-                old_path, _duplicate_logical_source_path(old_path))
+                old_path, _duplicate_logical_source_path(old_path)
+            )
             physical_source, physical_suffix = await _physical_fixture_source(
-                file_connector, source_table)
+                file_connector, source_table
+            )
             physical_destination = (
                 posixpath.join(connector.config.root_dir, duplicate_path)
-                + physical_suffix)
+                + physical_suffix
+            )
             object_pair = (physical_source, physical_destination)
             if object_pair in copied_objects:
                 continue
@@ -437,7 +448,8 @@ async def provision_project_upload_connector(
 
     typed_project_id = await ensure_test_project(client, project_id)
     connector = await _canonical_project_upload_connector(
-        client, typed_project_id, api_prefix=api_prefix)
+        client, typed_project_id, api_prefix=api_prefix
+    )
 
     if await fsutil.exists_async(source_root):
         await fsutil.copy.coroutine(

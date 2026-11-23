@@ -15,21 +15,28 @@ from kumo.engine.connector.identity import S3Identity
 from kumo.engine.connector.s3 import S3Connector
 
 
-@pytest.mark.parametrize('endpoint, configured_region, root_region', [
-    (None, None, None),
-    (None, 'eu-west-1', None),
-    (None, None, 'eu-west-1'),
-    ('https://s3.private', 'eu-west-1', None),
-])
+@pytest.mark.parametrize(
+    'endpoint, configured_region, root_region',
+    [
+        (None, None, None),
+        (None, 'eu-west-1', None),
+        (None, None, 'eu-west-1'),
+        ('https://s3.private', 'eu-west-1', None),
+    ],
+)
 def test_identity_connection_reaches_discovery_acquisition_and_sink(
-        monkeypatch, tmp_path, endpoint, configured_region, root_region,
-        local_s3_object_identity):
+    monkeypatch,
+    tmp_path,
+    endpoint,
+    configured_region,
+    root_region,
+    local_s3_object_identity,
+):
     storage = tmp_path / 'storage'
     (storage / 'bucket').mkdir(parents=True)
     pq.write_table(pa.table({'id': [1, 2]}), storage / 'bucket/events.parquet')
     built = []
-    region = configured_region or root_region or ('eu-west-3'
-                                                  if not endpoint else None)
+    region = configured_region or root_region or ('eu-west-3' if not endpoint else None)
 
     class Filesystem(SubTreeFileSystem):
         def __init__(self, **kwargs):
@@ -49,22 +56,26 @@ def test_identity_connection_reaches_discovery_acquisition_and_sink(
     resolver = Mock(return_value='eu-west-3')
     monkeypatch.setattr('kumo_s3.bucket_region', resolver)
     connector = S3Connector(
-        root_dir='s3://bucket', region=root_region,
-        identity=S3Identity(connection=S3ConnectionConfig(
-            endpoint_url=endpoint, region=configured_region,
-            addressing_style='path')))
-    assert connector.source_backend.list_tables(connector).table_names == [
-        'events'
-    ]
+        root_dir='s3://bucket',
+        region=root_region,
+        identity=S3Identity(
+            connection=S3ConnectionConfig(
+                endpoint_url=endpoint, region=configured_region, addressing_style='path'
+            )
+        ),
+    )
+    assert connector.source_backend.list_tables(connector).table_names == ['events']
     acquired = tmp_path / 'acquired'
     connector.source_backend.prepare_ingest(connector, 'events', str(acquired))
     assert pq.read_table(acquired).to_pydict() == {'id': [1, 2]}
     assert local_s3_object_identity.count('bucket/events.parquet') >= 2
-    connector.sink_backend.write_table(connector, 'scores',
-                                       pd.DataFrame({'score': [1.0]}))
+    connector.sink_backend.write_table(
+        connector, 'scores', pd.DataFrame({'score': [1.0]})
+    )
     assert pq.read_table(storage / 'bucket/scores.parquet').num_rows == 1
-    assert bool(resolver.call_count) == (not endpoint and not configured_region
-                                         and not root_region)
+    assert bool(resolver.call_count) == (
+        not endpoint and not configured_region and not root_region
+    )
     assert built
     for options in built:
         assert options['anonymous'] is True

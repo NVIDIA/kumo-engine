@@ -54,7 +54,7 @@ def _sha256_path(path: str) -> str:
     hasher = hashlib.sha256()
     prefix = path.rstrip('/') + '/'
     for file_path in files:
-        rel = file_path[len(prefix):] if file_path.startswith(prefix) else file_path
+        rel = file_path[len(prefix) :] if file_path.startswith(prefix) else file_path
         hasher.update(rel.encode())
         hasher.update(b'\0')
         hasher.update(_sha256(file_path).encode())
@@ -75,11 +75,13 @@ def _stats_artifact(row_count: int) -> dict:
 
 
 def _write_train_table(path, row_count: int) -> int:
-    table = pa.table({
-        'ENTITY1': pa.array(range(row_count), type=pa.int64()),
-        'TIMESTAMP': pa.array(range(row_count), type=pa.int64()),
-        'TARGET1': pa.array(range(row_count), type=pa.int64()),
-    })
+    table = pa.table(
+        {
+            'ENTITY1': pa.array(range(row_count), type=pa.int64()),
+            'TIMESTAMP': pa.array(range(row_count), type=pa.int64()),
+            'TARGET1': pa.array(range(row_count), type=pa.int64()),
+        }
+    )
     pq.write_table(table, path, row_group_size=max(1, row_count // 2))
     return path.stat().st_size
 
@@ -98,11 +100,13 @@ def _manifest_payload(train_table, stats, row_count: int, **extra) -> dict:
             'format': 'tt_parquet_dataset_v1',
             'row_count': row_count,
             'size_bytes': part.stat().st_size,
-            'parts': [{
-                'path': f'{train_table.name}/{part.name}',
-                'row_count': row_count,
-                'size_bytes': part.stat().st_size,
-            }],
+            'parts': [
+                {
+                    'path': f'{train_table.name}/{part.name}',
+                    'row_count': row_count,
+                    'size_bytes': part.stat().st_size,
+                }
+            ],
         },
         'stats': {'path': stats.name, 'format': 'tt_stats_json'},
         'checksums': {'stats_sha256': _sha256(str(stats))},
@@ -119,11 +123,13 @@ def _write_train_table_dataset(path, part_rows: tuple[int, ...]) -> list[dict]:
     for index, row_count in enumerate(part_rows):
         part = path / f'part-{index:05}.parquet'
         _write_train_table(part, row_count)
-        parts.append({
-            'path': f'{path.name}/{part.name}',
-            'row_count': row_count,
-            'size_bytes': part.stat().st_size,
-        })
+        parts.append(
+            {
+                'path': f'{path.name}/{part.name}',
+                'row_count': row_count,
+                'size_bytes': part.stat().st_size,
+            }
+        )
     return parts
 
 
@@ -174,8 +180,7 @@ def _build_train_table_edges_bundle(tmp_path):
         },
         'checksums': {
             'fkey_cols_sha256': _sha256_path(str(fkey_cols_dir)),
-            'ACCOUNT__rev_ENTITY__train_table_sha256': _sha256_path(
-                str(edge_dir)),
+            'ACCOUNT__rev_ENTITY__train_table_sha256': _sha256_path(str(edge_dir)),
         },
     }
     return bundle
@@ -210,7 +215,8 @@ def test_validate_artifact_bundle_success(tmp_path):
     train_table_edges = _build_train_table_edges_bundle(tmp_path)
 
     payload = _manifest_payload(
-        train_table, stats, 4, train_table_edges=train_table_edges)
+        train_table, stats, 4, train_table_edges=train_table_edges
+    )
     manifest.write_text(json.dumps(payload))
 
     out = validate_artifact_bundle(str(manifest))
@@ -233,21 +239,24 @@ def test_validate_artifact_bundle_accepts_ordered_v3_dataset(tmp_path):
     assert [part['row_count'] for part in out['train_table']['parts']] == [2, 3]
 
 
-@pytest.mark.parametrize('section_format, header, message', [
-    ('tt_fact_pseudo_time_v1', (1, 1, 3), None),
-    ('tt_fact_pseudo_time_v2', (1, 1, 3), 'format unsupported'),
-    ('tt_fact_pseudo_time_v1', (2, 1, 3), 'version mismatch'),
-    ('tt_fact_pseudo_time_v1', (1, 1, 4), 'size mismatch'),
-])
+@pytest.mark.parametrize(
+    'section_format, header, message',
+    [
+        ('tt_fact_pseudo_time_v1', (1, 1, 3), None),
+        ('tt_fact_pseudo_time_v2', (1, 1, 3), 'format unsupported'),
+        ('tt_fact_pseudo_time_v1', (2, 1, 3), 'version mismatch'),
+        ('tt_fact_pseudo_time_v1', (1, 1, 4), 'size mismatch'),
+    ],
+)
 def test_validate_artifact_bundle_checks_fact_pseudo_time(
-        tmp_path, section_format, header, message):
+    tmp_path, section_format, header, message
+):
     stats = tmp_path / 'stats.json'
     stats.write_text(json.dumps(_stats_artifact(5)))
-    payload = _manifest_payload_v3(tmp_path / 'tt.parquet', stats, (5, ))
+    payload = _manifest_payload_v3(tmp_path / 'tt.parquet', stats, (5,))
     payload['version'] = 4
     sidecar = tmp_path / 'fact_pseudo_time.bin'
-    sidecar.write_bytes(b'DGPTIME\0' + struct.pack('<IIQ', *header) +
-                        bytes([0, 1, 3]))
+    sidecar.write_bytes(b'DGPTIME\0' + struct.pack('<IIQ', *header) + bytes([0, 1, 3]))
     payload['fact_pseudo_time'] = {
         'path': sidecar.name,
         'format': section_format,
@@ -264,10 +273,13 @@ def test_validate_artifact_bundle_checks_fact_pseudo_time(
             validate_artifact_bundle(str(manifest))
 
 
-@pytest.mark.parametrize('mutation, message', [
-    ('extra', 'inventory mismatch'),
-    ('path', 'path is not canonical'),
-])
+@pytest.mark.parametrize(
+    'mutation, message',
+    [
+        ('extra', 'inventory mismatch'),
+        ('path', 'path is not canonical'),
+    ],
+)
 def test_validate_artifact_bundle_rejects_invalid_v3_inventory(
     tmp_path,
     mutation,
@@ -281,8 +293,7 @@ def test_validate_artifact_bundle_rejects_invalid_v3_inventory(
     if mutation == 'extra':
         _write_train_table(train_table / 'part-00002.parquet', 1)
     else:
-        payload['train_table']['parts'][1]['path'] = \
-            'tt.parquet/part-00002.parquet'
+        payload['train_table']['parts'][1]['path'] = 'tt.parquet/part-00002.parquet'
     manifest.write_text(json.dumps(payload))
 
     with pytest.raises(RuntimeError, match=message):
@@ -299,7 +310,8 @@ def test_validate_artifact_bundle_rejects_v3_schema_mismatch(tmp_path):
     pq.write_table(pa.table({'OTHER': pa.array([1])}), second_part)
     payload['train_table']['parts'][1]['size_bytes'] = second_part.stat().st_size
     payload['train_table']['size_bytes'] = sum(
-        part['size_bytes'] for part in payload['train_table']['parts'])
+        part['size_bytes'] for part in payload['train_table']['parts']
+    )
     manifest.write_text(json.dumps(payload))
 
     with pytest.raises(RuntimeError, match='schema differs from part 0'):
@@ -410,8 +422,7 @@ def test_adls_train_table_metadata_validation_uses_range_filesystem(
     train_table = tmp_path / 'tt.parquet'
     _write_train_table(train_table, 10)
     real_size = train_table.stat().st_size
-    uri = ('abfss://container@account.dfs.core.windows.net/'
-           'tt.parquet')
+    uri = 'abfss://container@account.dfs.core.windows.net/tt.parquet'
     filesystem = pafs.SubTreeFileSystem(
         str(tmp_path),
         pafs.LocalFileSystem(),
@@ -420,19 +431,25 @@ def test_adls_train_table_metadata_validation_uses_range_filesystem(
     monkeypatch.setattr(
         fsutil,
         'object_identity',
-        lambda path: (fsutil.ObjectIdentity(
-            size=real_size,
-            etag='test-etag',
-            version=None,
-        ) if path == uri else None),
+        lambda path: (
+            fsutil.ObjectIdentity(
+                size=real_size,
+                etag='test-etag',
+                version=None,
+            )
+            if path == uri
+            else None
+        ),
     )
-    monkeypatch.setattr(fsutil, 'pyarrow_filesystem',
-                        lambda path: filesystem if path == uri else None)
+    monkeypatch.setattr(
+        fsutil, 'pyarrow_filesystem', lambda path: filesystem if path == uri else None
+    )
     monkeypatch.setattr(
         fsutil,
         'get_binary_handle',
         lambda *_args, **_kwargs: pytest.fail(
-            'ADLS parquet validation must not use a sequential stream'),
+            'ADLS parquet validation must not use a sequential stream'
+        ),
     )
 
     _validate_train_table_parquet(
@@ -447,15 +464,13 @@ def test_adls_train_table_metadata_validation_preserves_provider_failure(
 ):
     from azure.core.exceptions import ServiceRequestError
 
-    uri = ('abfss://container@account.dfs.core.windows.net/'
-           'tt.parquet')
+    uri = 'abfss://container@account.dfs.core.windows.net/tt.parquet'
     provider_error = ServiceRequestError('temporary Azure failure')
 
     def raise_provider_error(_path):
         raise provider_error
 
-    monkeypatch.setattr(fsutil, 'object_identity',
-                        raise_provider_error)
+    monkeypatch.setattr(fsutil, 'object_identity', raise_provider_error)
     monkeypatch.setattr(
         fsutil,
         'filesize',
@@ -535,8 +550,8 @@ def test_validate_artifact_bundle_rejects_stats_row_mismatch(tmp_path):
     manifest.write_text(json.dumps(_manifest_payload(train_table, stats, 3)))
 
     with pytest.raises(
-            RuntimeError,
-            match='stats num_total_rows mismatch with manifest row_count'):
+        RuntimeError, match='stats num_total_rows mismatch with manifest row_count'
+    ):
         validate_artifact_bundle(str(manifest))
 
 
@@ -616,7 +631,8 @@ def test_validate_artifact_bundle_sidecar_checksum_mismatch(tmp_path):
     train_table_edges = _build_train_table_edges_bundle(tmp_path)
 
     payload = _manifest_payload(
-        train_table, stats, 3, train_table_edges=train_table_edges)
+        train_table, stats, 3, train_table_edges=train_table_edges
+    )
     payload['checksums']['stats_sha256'] = 'deadbeef'
     manifest.write_text(json.dumps(payload))
 
@@ -624,11 +640,14 @@ def test_validate_artifact_bundle_sidecar_checksum_mismatch(tmp_path):
         validate_artifact_bundle(str(manifest))
 
 
-@pytest.mark.parametrize('version, has_sidecar', [
-    (3, True),
-    (4, False),
-    (5, True),
-])
+@pytest.mark.parametrize(
+    'version, has_sidecar',
+    [
+        (3, True),
+        (4, False),
+        (5, True),
+    ],
+)
 def test_manifest_rejects_version_visibility_mismatch(
     tmp_path,
     version,
@@ -690,7 +709,8 @@ def test_validate_artifact_bundle_with_train_table_edges(tmp_path):
     train_table_edges = _build_train_table_edges_bundle(tmp_path)
 
     payload = _manifest_payload(
-        train_table, stats, 3, train_table_edges=train_table_edges)
+        train_table, stats, 3, train_table_edges=train_table_edges
+    )
     manifest.write_text(json.dumps(payload))
 
     out = validate_artifact_bundle(str(manifest))
@@ -715,7 +735,8 @@ def test_validate_artifact_bundle_allows_disabled_empty_train_table_edges(tmp_pa
     }
 
     payload = _manifest_payload(
-        train_table, stats, 3, train_table_edges=train_table_edges)
+        train_table, stats, 3, train_table_edges=train_table_edges
+    )
     manifest.write_text(json.dumps(payload))
 
     out = validate_artifact_bundle(str(manifest))
@@ -740,7 +761,8 @@ def test_validate_artifact_bundle_rejects_enabled_empty_train_table_edges(tmp_pa
     }
 
     payload = _manifest_payload(
-        train_table, stats, 3, train_table_edges=train_table_edges)
+        train_table, stats, 3, train_table_edges=train_table_edges
+    )
     manifest.write_text(json.dumps(payload))
 
     with pytest.raises(RuntimeError, match='missing reverse_edges map'):
@@ -759,7 +781,8 @@ class TestResolveManifestPathsToAbsolute:
         manifest = {'train_table': {'path': 'tt.parquet'}}
         resolve_manifest_artifact_paths(manifest, self.MANIFEST_DIR)
         assert manifest['train_table']['path'] == (
-            '/tmp/dataplane/job-123/training_table/tt.parquet')
+            '/tmp/dataplane/job-123/training_table/tt.parquet'
+        )
 
     def test_absolute_local_path_rejected(self):
         manifest = {'train_table': {'path': '/legacy/absolute/path.parquet'}}
@@ -767,19 +790,20 @@ class TestResolveManifestPathsToAbsolute:
             resolve_manifest_artifact_paths(manifest, self.MANIFEST_DIR)
 
     def test_external_uri_path_rejected(self):
-        manifest = {
-            'train_table': {'path': 's3://bucket/already-remote.parquet'}
-        }
+        manifest = {'train_table': {'path': 's3://bucket/already-remote.parquet'}}
         with pytest.raises(RuntimeError, match='bundle-relative'):
             resolve_manifest_artifact_paths(manifest, self.MANIFEST_DIR)
 
-    @pytest.mark.parametrize('path', [
-        '../escape.parquet',
-        'nested/../escape.parquet',
-        './unnormalized.parquet',
-        'nested//unnormalized.parquet',
-        r'nested\windows-escape.parquet',
-    ])
+    @pytest.mark.parametrize(
+        'path',
+        [
+            '../escape.parquet',
+            'nested/../escape.parquet',
+            './unnormalized.parquet',
+            'nested//unnormalized.parquet',
+            r'nested\windows-escape.parquet',
+        ],
+    )
     def test_unsafe_relative_path_rejected(self, path):
         manifest = {'train_table': {'path': path}}
         with pytest.raises(RuntimeError, match='bundle-relative'):
@@ -804,13 +828,16 @@ class TestResolveManifestPathsToAbsolute:
         resolve_manifest_artifact_paths(manifest, self.MANIFEST_DIR)
         edges = manifest['train_table_edges']
         assert edges['fkey_cols']['path'] == (
-            f'{self.MANIFEST_DIR}/train_table_fkey_cols.parquet')
+            f'{self.MANIFEST_DIR}/train_table_fkey_cols.parquet'
+        )
         assert edges['mask']['path'] == (
-            f'{self.MANIFEST_DIR}/train_table_mask.parquet')
+            f'{self.MANIFEST_DIR}/train_table_mask.parquet'
+        )
         # Non-path fields untouched.
         assert edges['mask']['present'] is True
         assert edges['reverse_edges']['k']['path'] == (
-            f'{self.MANIFEST_DIR}/k/edge.parquet')
+            f'{self.MANIFEST_DIR}/k/edge.parquet'
+        )
         assert edges['reverse_edges']['k']['format'] == 'edge_parquet'
 
     def test_unknown_and_invalid_sections_are_not_rewritten(self):

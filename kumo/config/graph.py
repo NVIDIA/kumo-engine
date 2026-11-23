@@ -40,6 +40,7 @@ def base_config_as_column_config(config: BaseColumnConfig) -> 'ColumnConfig':
 @kumo_dataclass(unsafe_hash=True)
 class PrimaryKeyConfig(BaseColumnConfig):
     r"""Primary key column configuration."""
+
     drop_duplicates: bool = False
 
     @field_validator('stype')
@@ -53,6 +54,7 @@ class PrimaryKeyConfig(BaseColumnConfig):
 @kumo_dataclass
 class ForeignKeyConfig(BaseColumnConfig):
     r"""Foreign key column configuration. Includes a :obj:`dst_table` name."""
+
     dst_table: Optional[str] = None
     dst_key: Optional[str] = None
     dst_data_source: Optional[str] = None
@@ -73,6 +75,7 @@ class ForeignKeyConfig(BaseColumnConfig):
 class ColumnConfig(BaseColumnConfig):
     r"""Full column configuration: includes all additional information not
     included in :class:`BaseColumnConfig`."""
+
     encoder: EncoderType | None = None
     stats: Dict[ColStatType, StatsConfig] = field(default_factory=dict)
     # Deprecated argument. Do not use:
@@ -125,6 +128,7 @@ class BoolColumnConfig(BaseColumnConfig):
 class TableMetadataConfig:
     r"""Metadata for a TableConfig, consisting of the table name and the
     :class:`BaseColumnConfig` of each column. ONLY USED IN TRANSIT."""
+
     # Table name not fully-qualified.
     table_name: str
     # Original name of the table in the customer's data source
@@ -165,8 +169,7 @@ class TableMetadataConfig:
             cols.append(BaseColumnConfig.cast(self.pkey))
         return cols
 
-    def as_table_config(self, table_name: str,
-                        data_source: str) -> 'TableConfig':
+    def as_table_config(self, table_name: str, data_source: str) -> 'TableConfig':
         return TableConfig(
             table_name=table_name,
             # `TableMetadataConfig.table_name` generally refers to the name
@@ -185,7 +188,8 @@ class TableMetadataConfig:
         cols = dict([(c.name, c.dtype) for c in self.all_cols()])
         multicategorical_delimiters = {
             c.name: c.multicategorical_delimiter
-            for c in self.all_cols() if c.multicategorical_delimiter is not None
+            for c in self.all_cols()
+            if c.multicategorical_delimiter is not None
         }
         assert all([dtype is not None for dtype in list(cols.values())])
         return IngestedTableFingerprint(
@@ -237,15 +241,13 @@ class TableConfig:
     @property
     def just_data_source(self) -> str:
         if self.data_source is None:
-            raise RuntimeError(
-                f"Data source is required on table {self.table_name}")
+            raise RuntimeError(f'Data source is required on table {self.table_name}')
         return self.data_source
 
     @property
     def just_source_name(self) -> str:
         if self.source_name is None:
-            raise RuntimeError(
-                f"Data source is required on table {self.table_name}")
+            raise RuntimeError(f'Data source is required on table {self.table_name}')
         return self.source_name
 
     def all_cols(self) -> List[ColumnConfig]:
@@ -260,7 +262,8 @@ class TableConfig:
         cols = dict([(c.name, c.dtype) for c in self.all_cols()])
         multicategorical_delimiters = {
             c.name: c.multicategorical_delimiter
-            for c in self.all_cols() if c.multicategorical_delimiter is not None
+            for c in self.all_cols()
+            if c.multicategorical_delimiter is not None
         }
         assert all([dtype is not None for dtype in list(cols.values())])
         return IngestedTableFingerprint(

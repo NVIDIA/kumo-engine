@@ -13,12 +13,13 @@ from kumo_core.sources.identity import (
     epoch_second,
     hour_version,
 )
+
 from kumo_databricks.errors import is_not_found
 
-DESCRIBE = "DESCRIBE EXTENDED {source}"
-DESCRIBE_QUERY = "DESCRIBE QUERY SELECT * FROM {source}"
-SECTION_MARKER = "#"
-HISTORY = "DESCRIBE HISTORY {source} LIMIT 1"
+DESCRIBE = 'DESCRIBE EXTENDED {source}'
+DESCRIBE_QUERY = 'DESCRIBE QUERY SELECT * FROM {source}'
+SECTION_MARKER = '#'
+HISTORY = 'DESCRIBE HISTORY {source} LIMIT 1'
 
 
 def column_types(cursor: Cursor, source: str) -> Mapping[str, str]:
@@ -44,8 +45,9 @@ def query_column_types(cursor: Cursor, source: str) -> Mapping[str, str]:
 
 def query_columns(cursor: Cursor, source: str) -> list[tuple[str, str]]:
     cursor.execute(DESCRIBE_QUERY.format(source=source))
-    return [(str(row[0]), str(row[1])) for row in cursor.fetchall()
-            if str(row[0]).strip()]
+    return [
+        (str(row[0]), str(row[1])) for row in cursor.fetchall() if str(row[0]).strip()
+    ]
 
 
 def data_version(cursor: Cursor, source: str) -> str:
@@ -57,8 +59,9 @@ def data_version(cursor: Cursor, source: str) -> str:
         return table_version(cursor, source)
     except Exception as error:
         if is_not_found(error):
-            raise SourceNotFoundError(f"databricks has no {source} to stamp",
-                                      table=source) from None
+            raise SourceNotFoundError(
+                f'databricks has no {source} to stamp', table=source
+            ) from None
     return hour_version()
 
 
@@ -69,5 +72,5 @@ def table_version(cursor: Cursor, source: str) -> str:
     rows = cursor.fetchall()
     if rows:
         commit = epoch_second(pd.Timestamp(rows[0][1]))
-        return SourceVersion(f"{rows[0][0]}_{commit}", "exact")
+        return SourceVersion(f'{rows[0][0]}_{commit}', 'exact')
     return hour_version()

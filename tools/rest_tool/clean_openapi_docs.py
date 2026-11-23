@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Clean openapi.json and write the result to openapi_cleaned.json."""
+
 import json
 
 SOURCE_FILE = 'openapi.json'

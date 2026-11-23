@@ -31,10 +31,9 @@ def test_table_metadata_preserves_stringlist_dtype(monkeypatch):
             table_name='customers',
             source_name='customers',
             data_source='file',
-            cols=[
-                BaseColumnConfig('preferred_channels', dtype=Dtype.stringlist)
-            ],
-        ))
+            cols=[BaseColumnConfig('preferred_channels', dtype=Dtype.stringlist)],
+        )
+    )
 
     config = table.config()
     preferred_channels = config.cols[0]
@@ -76,8 +75,9 @@ def test_list_feature_encoders_do_not_depend_on_array_targets(monkeypatch):
     monkeypatch.setattr(ast_node, 'ALLOW_ARRAY_TARGETS', False)
 
     assert EncoderGenerator.supports_encoder(
-        Column('preferred_channels', dtype=Dtype.stringlist,
-               stype=Stype.multicategorical),
+        Column(
+            'preferred_channels', dtype=Dtype.stringlist, stype=Stype.multicategorical
+        ),
         MultiCategorical(),
     )
     assert EncoderGenerator.supports_encoder(
@@ -94,40 +94,39 @@ def test_real_converter_preserves_exact_object_store_source_manifest():
     from diskgraph import DiskgraphConfigConverter
 
     config = {
-        'name':
-        'events_graph',
-        'tables': [{
-            'table_name': 'events',
-            'data_source': 's3',
-            'source_name': 'events',
-            'data_version': 'v1',
-            'pkey': {
-                'name': 'id',
-                'dtype': 'int64',
-                'stype': 'ID',
-            },
-            'cols': [],
-        }],
+        'name': 'events_graph',
+        'tables': [
+            {
+                'table_name': 'events',
+                'data_source': 's3',
+                'source_name': 'events',
+                'data_version': 'v1',
+                'pkey': {
+                    'name': 'id',
+                    'dtype': 'int64',
+                    'stype': 'ID',
+                },
+                'cols': [],
+            }
+        ],
     }
     source = {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': 'gs://bucket/events/part.parquet',
-            'size': 123,
-            'e_tag': 'etag-value',
-            'version': '789',
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': 'gs://bucket/events/part.parquet',
+                'size': 123,
+                'e_tag': 'etag-value',
+                'version': '789',
+            }
+        ],
+        'auth_profile': 'ambient',
     }
 
     converted = DiskgraphConfigConverter(
         config,
         '/path/that/does/not/exist',
-        {
-            'events': 'v1'
-        },
+        {'events': 'v1'},
         source_specs={
             'events': {
                 'source': source,
@@ -137,29 +136,33 @@ def test_real_converter_preserves_exact_object_store_source_manifest():
     ).convert()
 
     assert converted['tables'][0]['source'] == {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': 'gs://bucket/events/part.parquet',
-            'size': 123,
-            'e_tag': 'etag-value',
-            'version': '789',
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': 'gs://bucket/events/part.parquet',
+                'size': 123,
+                'e_tag': 'etag-value',
+                'version': '789',
+            }
+        ],
+        'auth_profile': 'ambient',
     }
     assert converted['tables'][0]['source_size'] == 123
 
 
 def test_prepare_diskgraph_converter_config_preserves_list_dtype():
     graph_config = {
-        'tables': [{
-            'cols': [{
-                'name': 'preferred_channels',
-                'dtype': 'stringlist',
-                'stype': 'multicategorical',
-            }],
-        }],
+        'tables': [
+            {
+                'cols': [
+                    {
+                        'name': 'preferred_channels',
+                        'dtype': 'stringlist',
+                        'stype': 'multicategorical',
+                    }
+                ],
+            }
+        ],
     }
 
     prepared = prepare_diskgraph_converter_config(graph_config)
@@ -170,34 +173,40 @@ def test_prepare_diskgraph_converter_config_preserves_list_dtype():
 
 def test_prepare_diskgraph_converter_config_preserves_durable_delimiter():
     graph_config = {
-        'tables': [{
-            'cols': [{
-                'name': 'tags',
-                'dtype': 'string',
-                'stype': 'multicategorical',
-                'multicategorical_delimiter': '|',
-            }],
-        }],
+        'tables': [
+            {
+                'cols': [
+                    {
+                        'name': 'tags',
+                        'dtype': 'string',
+                        'stype': 'multicategorical',
+                        'multicategorical_delimiter': '|',
+                    }
+                ],
+            }
+        ],
     }
 
     prepared = prepare_diskgraph_converter_config(graph_config)
 
     assert prepared['tables'][0]['cols'][0]['multicategorical_delimiter'] == '|'
-    assert graph_config['tables'][0]['cols'][0][
-        'multicategorical_delimiter'] == '|'
+    assert graph_config['tables'][0]['cols'][0]['multicategorical_delimiter'] == '|'
 
 
 def test_diskgraph_boundary_rejects_scalar_multicategorical_dtype():
     config = {
-        'tables': [{
-            'name':
-            'TRANSACTIONS',
-            'columns': [{
-                'name': 'Time',
-                'semantic_type': 'multicategorical',
-                'ingested_dtype': 'string',
-            }],
-        }],
+        'tables': [
+            {
+                'name': 'TRANSACTIONS',
+                'columns': [
+                    {
+                        'name': 'Time',
+                        'semantic_type': 'multicategorical',
+                        'ingested_dtype': 'string',
+                    }
+                ],
+            }
+        ],
     }
 
     with pytest.raises(ValueError, match='list-shaped ingested dtype'):
@@ -209,17 +218,22 @@ def test_diskgraph_boundary_rejects_scalar_multicategorical_dtype():
     ['string_array', 'int64_array'],
 )
 def test_diskgraph_boundary_accepts_multicategorical_list_dtype(ingested_dtype):
-    validate_diskgraph_ingest_config({
-        'tables': [{
-            'name':
-            'items',
-            'columns': [{
-                'name': 'tags',
-                'semantic_type': 'multicategorical',
-                'ingested_dtype': ingested_dtype,
-            }],
-        }],
-    })
+    validate_diskgraph_ingest_config(
+        {
+            'tables': [
+                {
+                    'name': 'items',
+                    'columns': [
+                        {
+                            'name': 'tags',
+                            'semantic_type': 'multicategorical',
+                            'ingested_dtype': ingested_dtype,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -227,17 +241,21 @@ def test_diskgraph_boundary_accepts_multicategorical_list_dtype(ingested_dtype):
     ['float16_array', 'float32_array', 'float64_array'],
 )
 def test_diskgraph_boundary_rejects_unsupported_multicategorical_list_dtype(
-        ingested_dtype):
+    ingested_dtype,
+):
     config = {
-        'tables': [{
-            'name':
-            'items',
-            'columns': [{
-                'name': 'embedding',
-                'semantic_type': 'multicategorical',
-                'ingested_dtype': ingested_dtype,
-            }],
-        }],
+        'tables': [
+            {
+                'name': 'items',
+                'columns': [
+                    {
+                        'name': 'embedding',
+                        'semantic_type': 'multicategorical',
+                        'ingested_dtype': ingested_dtype,
+                    }
+                ],
+            }
+        ],
     }
 
     with pytest.raises(ValueError, match='list-shaped ingested dtype'):
@@ -245,19 +263,23 @@ def test_diskgraph_boundary_rejects_unsupported_multicategorical_list_dtype(
 
 
 def test_run_diskgraph_ingest_rejects_scalar_multicategorical_before_runner(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     from kumo.diskgraph import ingest as ingest_module
 
     invalid_config = {
-        'tables': [{
-            'name':
-            'TRANSACTIONS',
-            'columns': [{
-                'name': 'Time',
-                'semantic_type': 'multicategorical',
-                'ingested_dtype': 'string',
-            }],
-        }],
+        'tables': [
+            {
+                'name': 'TRANSACTIONS',
+                'columns': [
+                    {
+                        'name': 'Time',
+                        'semantic_type': 'multicategorical',
+                        'ingested_dtype': 'string',
+                    }
+                ],
+            }
+        ],
     }
 
     monkeypatch.setattr(ingest_module, 'to_json_dict', lambda _: {})
@@ -266,10 +288,16 @@ def test_run_diskgraph_ingest_rejects_scalar_multicategorical_before_runner(
         'normalize_diskgraph_source_fields',
         lambda *args, **kwargs: {},
     )
-    monkeypatch.setattr(ingest_module, 'convert_diskgraph_config',
-                        lambda *args, **kwargs: invalid_config)
-    run = getattr(ingest_module.run_diskgraph_ingest, '__wrapped__',
-                  ingest_module.run_diskgraph_ingest)
+    monkeypatch.setattr(
+        ingest_module,
+        'convert_diskgraph_config',
+        lambda *args, **kwargs: invalid_config,
+    )
+    run = getattr(
+        ingest_module.run_diskgraph_ingest,
+        '__wrapped__',
+        ingest_module.run_diskgraph_ingest,
+    )
 
     with pytest.raises(ValueError) as excinfo:
         run(
@@ -288,7 +316,8 @@ def test_run_diskgraph_ingest_rejects_scalar_multicategorical_before_runner(
 
 
 def test_run_diskgraph_ingest_hands_the_engine_no_databricks_config(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """Nothing reaches DiskGraph that would make it open a warehouse
     connection of its own: no ``--databricks-config-file`` and no
     ``DISKGRAPH_EPHEMERAL_DATABRICKS_CONFIG``."""
@@ -301,11 +330,11 @@ def test_run_diskgraph_ingest_hands_the_engine_no_databricks_config(
     def fake_run_ingest(_config, output_path, **kwargs):
         captured.update(kwargs)
         for filename in (
-                'col_stats.json',
-                'ingest_stats.json',
-                'index_metadata.json',
-                '_MANIFEST.json',
-                '_SUCCESS',
+            'col_stats.json',
+            'ingest_stats.json',
+            'index_metadata.json',
+            '_MANIFEST.json',
+            '_SUCCESS',
         ):
             (output_path / filename).touch()
         (output_path / 'kumo_col_stats').mkdir()
@@ -337,25 +366,37 @@ def test_run_diskgraph_ingest_hands_the_engine_no_databricks_config(
     assert captured['heartbeat'] is heartbeat
 
 
-@pytest.mark.parametrize('stats,expected', [
-    ({'stats': {'node_tables': 2, 'edge_relations': 1,
-                'total_nodes': 7, 'total_edges': 8}},
-     '2 node tables, 1 edge relations, 7 nodes, 8 edges'),
-    ({'stats': None}, '0 node tables, 0 edge relations, 0 nodes, 0 edges'),
-])
+@pytest.mark.parametrize(
+    'stats,expected',
+    [
+        (
+            {
+                'stats': {
+                    'node_tables': 2,
+                    'edge_relations': 1,
+                    'total_nodes': 7,
+                    'total_edges': 8,
+                }
+            },
+            '2 node tables, 1 edge relations, 7 nodes, 8 edges',
+        ),
+        ({'stats': None}, '0 node tables, 0 edge relations, 0 nodes, 0 edges'),
+    ],
+)
 def test_run_diskgraph_ingest_logs_real_counts_from_nested_stats(
-        stats, expected, monkeypatch, tmp_path, caplog):
+    stats, expected, monkeypatch, tmp_path, caplog
+):
     from kumo_core.diskgraph.runner import IngestRunResult
 
     from kumo.diskgraph import ingest as ingest_module
 
     def fake_run_ingest(_config, output_path, **_kwargs):
         for filename in (
-                'col_stats.json',
-                'ingest_stats.json',
-                'index_metadata.json',
-                '_MANIFEST.json',
-                '_SUCCESS',
+            'col_stats.json',
+            'ingest_stats.json',
+            'index_metadata.json',
+            '_MANIFEST.json',
+            '_SUCCESS',
         ):
             (output_path / filename).touch()
         (output_path / 'kumo_col_stats').mkdir()
@@ -377,8 +418,9 @@ def test_run_diskgraph_ingest_logs_real_counts_from_nested_stats(
 
 
 def test_run_diskgraph_ingest_preserves_no_space_error(monkeypatch, tmp_path):
-    from kumo_core.diskgraph.runner import \
-        DiskgraphNoSpaceError as CoreDiskgraphNoSpaceError
+    from kumo_core.diskgraph.runner import (
+        DiskgraphNoSpaceError as CoreDiskgraphNoSpaceError,
+    )
 
     from kumo.diskgraph import ingest as ingest_module
     from kumo.diskgraph.errors import DiskgraphNoSpaceError
@@ -405,14 +447,16 @@ def test_run_diskgraph_ingest_preserves_no_space_error(monkeypatch, tmp_path):
 
 
 def test_run_diskgraph_ingest_logs_diagnostic_and_private_tail_separately(
-        monkeypatch, tmp_path, caplog):
+    monkeypatch, tmp_path, caplog
+):
     from kumo_core.diskgraph.runner import (
         Diagnostic,
         DiagnosticCause,
         DiagnosticFields,
     )
-    from kumo_core.diskgraph.runner import \
-        NonRetryableDiskgraphError as CoreNonRetryableDiskgraphError
+    from kumo_core.diskgraph.runner import (
+        NonRetryableDiskgraphError as CoreNonRetryableDiskgraphError,
+    )
 
     from kumo.diskgraph import ingest as ingest_module
     from kumo.diskgraph.errors import NonRetryableDiskgraphError
@@ -421,7 +465,7 @@ def test_run_diskgraph_ingest_logs_diagnostic_and_private_tail_separately(
     diagnostic_summary = 'partition offset exceeded an internal bound'
     canary = 'warehouse-row-value-must-require-debug'
     diagnostic = Diagnostic(
-        diagnostic_id=f"dg-{'a' * 24}",
+        diagnostic_id=f'dg-{"a" * 24}',
         visibility='ordinary',
         operation='ingest',
         category='internal',
@@ -435,12 +479,14 @@ def test_run_diskgraph_ingest_logs_diagnostic_and_private_tail_separately(
             exit_code=None,
             signal=None,
         ),
-        chain=(DiagnosticCause(
-            kind='error',
-            summary=diagnostic_summary,
-        ), ),
+        chain=(
+            DiagnosticCause(
+                kind='error',
+                summary=diagnostic_summary,
+            ),
+        ),
         frames=(),
-        fingerprint=f"dg-v1-{'b' * 64}",
+        fingerprint=f'dg-v1-{"b" * 64}',
         chain_truncated=False,
         frames_truncated=False,
         summary_truncated=False,
@@ -469,11 +515,13 @@ def test_run_diskgraph_ingest_logs_diagnostic_and_private_tail_separately(
     error_messages = '\n'.join(
         record.getMessage()
         for record in caplog.records
-        if record.levelno >= logging.ERROR)
+        if record.levelno >= logging.ERROR
+    )
     debug_messages = '\n'.join(
         record.getMessage()
         for record in caplog.records
-        if record.levelno == logging.DEBUG)
+        if record.levelno == logging.DEBUG
+    )
     assert public_message in error_messages
     assert diagnostic_summary in error_messages
     assert 'diagnostic_id=dg-' in error_messages
@@ -481,12 +529,16 @@ def test_run_diskgraph_ingest_logs_diagnostic_and_private_tail_separately(
     assert canary in debug_messages
 
 
-@pytest.mark.parametrize('missing_publication_file', [
-    '_MANIFEST.json',
-    '_SUCCESS',
-])
+@pytest.mark.parametrize(
+    'missing_publication_file',
+    [
+        '_MANIFEST.json',
+        '_SUCCESS',
+    ],
+)
 def test_run_diskgraph_ingest_requires_local_publication_files(
-        missing_publication_file, monkeypatch, tmp_path):
+    missing_publication_file, monkeypatch, tmp_path
+):
     from kumo_core.diskgraph.runner import IngestRunResult
 
     from kumo.diskgraph import ingest as ingest_module
@@ -494,11 +546,11 @@ def test_run_diskgraph_ingest_requires_local_publication_files(
     def fake_run_ingest(_config, output_path, **_kwargs):
         output_path = tmp_path / 'output'
         for filename in (
-                'col_stats.json',
-                'ingest_stats.json',
-                'index_metadata.json',
-                '_MANIFEST.json',
-                '_SUCCESS',
+            'col_stats.json',
+            'ingest_stats.json',
+            'index_metadata.json',
+            '_MANIFEST.json',
+            '_SUCCESS',
         ):
             if filename != missing_publication_file:
                 (output_path / filename).touch()
@@ -524,20 +576,24 @@ def test_run_diskgraph_ingest_requires_local_publication_files(
 
 def test_prepare_diskgraph_converter_config_preserves_timestamp_format():
     graph_config = {
-        'tables': [{
-            'pkey': {
-                'name': 'id',
-                'dtype': 'string',
-            },
-            'cols': [{
-                'name': 'event_ts',
-                'dtype': 'string',
-                'stype': 'timestamp',
-                'metadata': {
-                    TS_FORMAT_METADATA: '%Y/%m/%d',
+        'tables': [
+            {
+                'pkey': {
+                    'name': 'id',
+                    'dtype': 'string',
                 },
-            }],
-        }],
+                'cols': [
+                    {
+                        'name': 'event_ts',
+                        'dtype': 'string',
+                        'stype': 'timestamp',
+                        'metadata': {
+                            TS_FORMAT_METADATA: '%Y/%m/%d',
+                        },
+                    }
+                ],
+            }
+        ],
     }
 
     prepared = prepare_diskgraph_converter_config(graph_config)
@@ -552,21 +608,25 @@ def test_prepare_diskgraph_converter_config_skips_unit_echo_ts_format():
     # chrono format, so a unit-echo TS_FORMAT must not be injected as
     # timestamp_format; the unit already rides timestamp_unit.
     graph_config = {
-        'tables': [{
-            'pkey': {
-                'name': 'id',
-                'dtype': 'string',
-            },
-            'cols': [{
-                'name': 'epoch_ts',
-                'dtype': 'int',
-                'stype': 'timestamp',
-                'timestamp_unit': 's',
-                'metadata': {
-                    TS_FORMAT_METADATA: 's',
+        'tables': [
+            {
+                'pkey': {
+                    'name': 'id',
+                    'dtype': 'string',
                 },
-            }],
-        }],
+                'cols': [
+                    {
+                        'name': 'epoch_ts',
+                        'dtype': 'int',
+                        'stype': 'timestamp',
+                        'timestamp_unit': 's',
+                        'metadata': {
+                            TS_FORMAT_METADATA: 's',
+                        },
+                    }
+                ],
+            }
+        ],
     }
 
     prepared = prepare_diskgraph_converter_config(graph_config)
@@ -594,49 +654,45 @@ def test_real_ingest_encoded_date_requires_ts_format(tmp_path):
     index = tmp_path / 'index'
     index.mkdir()
     pq.write_table(
-        pa.table({
-            'id': pa.array([1, 2], type=pa.int64()),
-            'ed': pa.array([20240131, 20230115], type=pa.int64()),
-            'ed_noformat': pa.array([20240131, 20230115], type=pa.int64()),
-        }), str(data))
+        pa.table(
+            {
+                'id': pa.array([1, 2], type=pa.int64()),
+                'ed': pa.array([20240131, 20230115], type=pa.int64()),
+                'ed_noformat': pa.array([20240131, 20230115], type=pa.int64()),
+            }
+        ),
+        str(data),
+    )
 
     config = {
-        'dataset_name':
-        'ts',
-        'num_shards':
-        1,
-        'tables': [{
-            'name':
-            'events',
-            'primary_key':
-            'id',
-            'data_version':
-            'v1',
-            'source': {
-                'type': 'parquet',
-                'paths': [str(data)]
-            },
-            'columns': [
-                {
-                    'name': 'id',
-                    'ingested_dtype': 'int64'
-                },
-                {
-                    'name': 'ed',
-                    'ingested_dtype': 'timestamp',
-                    'semantic_type': 'timestamp',
-                    'timestamp_format': '%Y%m%d'
-                },
-                {
-                    'name': 'ed_noformat',
-                    'ingested_dtype': 'timestamp',
-                    'semantic_type': 'timestamp'
-                },
-            ],
-        }],
+        'dataset_name': 'ts',
+        'num_shards': 1,
+        'tables': [
+            {
+                'name': 'events',
+                'primary_key': 'id',
+                'data_version': 'v1',
+                'source': {'type': 'parquet', 'paths': [str(data)]},
+                'columns': [
+                    {'name': 'id', 'ingested_dtype': 'int64'},
+                    {
+                        'name': 'ed',
+                        'ingested_dtype': 'timestamp',
+                        'semantic_type': 'timestamp',
+                        'timestamp_format': '%Y%m%d',
+                    },
+                    {
+                        'name': 'ed_noformat',
+                        'ingested_dtype': 'timestamp',
+                        'semantic_type': 'timestamp',
+                    },
+                ],
+            }
+        ],
     }
-    rust_ingest(json.dumps(config), str(index), col_stats=True,
-                cat_count_strategy='hybrid')
+    rust_ingest(
+        json.dumps(config), str(index), col_stats=True, cat_count_strategy='hybrid'
+    )
     stats = json.loads((index / 'col_stats.json').read_text())['events']
 
     # With the format, the encoded ints resolve to real 2023-2024 dates.

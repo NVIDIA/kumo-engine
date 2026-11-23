@@ -19,10 +19,12 @@ from rest.config.connector import (
     SnowflakeConnectorResourceConfig,
 )
 from rest.config.data_backend import ConnectorSpec
-from statedb.rest.connector_db import \
-    ExternalConnectorDBEntry as SerializedExternalConnectorDBEntry
-from statedb.rest.connector_db import \
-    InternalConnectorDBEntry as SerializedInternalConnectorDBEntry
+from statedb.rest.connector_db import (
+    ExternalConnectorDBEntry as SerializedExternalConnectorDBEntry,
+)
+from statedb.rest.connector_db import (
+    InternalConnectorDBEntry as SerializedInternalConnectorDBEntry,
+)
 
 
 def _api_timestamps(timestamps) -> api.ResourceTimestamps:
@@ -33,7 +35,8 @@ def _api_timestamps(timestamps) -> api.ResourceTimestamps:
 
 
 def _api_external_config(
-    config: ExternalConnectorResourceConfigDB, ) -> api.ConnectorResourceConfig:
+    config: ExternalConnectorResourceConfigDB,
+) -> api.ConnectorResourceConfig:
     if isinstance(config, SnowflakeConnectorResourceConfig):
         return api.SnowflakeConnectorResourceConfig(
             warehouse=config.warehouse,

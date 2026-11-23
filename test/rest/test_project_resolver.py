@@ -9,7 +9,7 @@ import pytest
 from rest.deps.project_resolver import ProjectResolver
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True, scope='session')
 def setup_rest_test_session():
     """This pure unit module does not need the shared Temporal harness."""
     yield
@@ -22,8 +22,8 @@ def auto_cleanup_per_func():
 
 @dataclass(frozen=True)
 class _Principal:
-    user_id: str = "user"
-    kumo_group_ids: tuple[str, ...] = ("group", )
+    user_id: str = 'user'
+    kumo_group_ids: tuple[str, ...] = ('group',)
 
 
 class _ProjectService:
@@ -40,27 +40,27 @@ class _ProjectService:
 
 
 def _state_services(projects):
-    return type("_StateServices", (), {"projects": projects})()
+    return type('_StateServices', (), {'projects': projects})()
 
 
 @pytest.mark.asyncio
 async def test_resolves_current_visible_projects_from_state_services():
-    service = _ProjectService([["project-a"]])
+    service = _ProjectService([['project-a']])
     principal = _Principal()
     resolver = ProjectResolver(_state_services(service))
 
-    assert await resolver.resolve_projects(principal) == ["project-a"]
+    assert await resolver.resolve_projects(principal) == ['project-a']
     assert service.calls == [principal]
 
 
 @pytest.mark.asyncio
 async def test_project_state_is_not_cached_between_requests():
-    service = _ProjectService([["project-a"], ["project-b"]])
+    service = _ProjectService([['project-a'], ['project-b']])
     principal = _Principal()
     resolver = ProjectResolver(_state_services(service))
 
-    assert await resolver.resolve_projects(principal) == ["project-a"]
-    assert await resolver.resolve_projects(principal) == ["project-b"]
+    assert await resolver.resolve_projects(principal) == ['project-a']
+    assert await resolver.resolve_projects(principal) == ['project-b']
     assert len(service.calls) == 2
 
 
@@ -75,10 +75,11 @@ async def test_configure_state_services_enables_late_binding():
 
 @pytest.mark.asyncio
 async def test_missing_service_and_service_failure_are_explicit():
-    with pytest.raises(RuntimeError, match="not configured"):
+    with pytest.raises(RuntimeError, match='not configured'):
         await ProjectResolver().resolve_projects(_Principal())
 
     resolver = ProjectResolver(
-        _state_services(_ProjectService([RuntimeError("StateDB unavailable")])))
-    with pytest.raises(RuntimeError, match="StateDB unavailable"):
+        _state_services(_ProjectService([RuntimeError('StateDB unavailable')]))
+    )
+    with pytest.raises(RuntimeError, match='StateDB unavailable'):
         await resolver.resolve_projects(_Principal())

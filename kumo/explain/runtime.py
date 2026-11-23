@@ -32,12 +32,16 @@ class MonolithExplainRuntime:
     mapping_file_name = MAPPING_FILE_NAME
 
     def get_prediction_inputs(
-        self, datamodule: DiskgraphLightningDataModule, limit: int,
+        self,
+        datamodule: DiskgraphLightningDataModule,
+        limit: int,
     ) -> tuple[Tensor, Tensor]:
         return datamodule.prediction_inputs(limit)
 
     def prediction_rows(
-        self, datamodule: DiskgraphLightningDataModule, rows: Tensor,
+        self,
+        datamodule: DiskgraphLightningDataModule,
+        rows: Tensor,
     ) -> AbstractContextManager[None]:
         return datamodule.selected_prediction_rows(rows)
 

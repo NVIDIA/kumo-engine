@@ -12,6 +12,7 @@ Covers:
   * frozen + hashable invariants extended to the new field
   * ``for_test`` / ``from_index_path`` classmethods unchanged
 """
+
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
@@ -28,14 +29,12 @@ def test_handle_default_job_id_is_none() -> None:
 
 
 def test_handle_with_job_id_is_set() -> None:
-    h = DiskgraphHandle(
-        graph_key='gk', graph_data_version='v0', job_id='job-123')
+    h = DiskgraphHandle(graph_key='gk', graph_data_version='v0', job_id='job-123')
     assert h.job_id == 'job-123'
 
 
 def test_handle_with_job_id_round_trips_through_json() -> None:
-    h = DiskgraphHandle(
-        graph_key='gk', graph_data_version='v0', job_id='job-123')
+    h = DiskgraphHandle(graph_key='gk', graph_data_version='v0', job_id='job-123')
     payload = to_json_dict(h)
     restored = from_json_dict(payload, DiskgraphHandle)
     assert restored == h
@@ -51,19 +50,15 @@ def test_handle_without_job_id_round_trips_through_json() -> None:
 
 
 def test_handle_is_frozen() -> None:
-    h = DiskgraphHandle(
-        graph_key='gk', graph_data_version='v0', job_id='job-123')
+    h = DiskgraphHandle(graph_key='gk', graph_data_version='v0', job_id='job-123')
     with pytest.raises(FrozenInstanceError):
         h.job_id = 'different'  # type: ignore[misc]
 
 
 def test_handle_with_job_id_is_hashable() -> None:
-    h1 = DiskgraphHandle(
-        graph_key='gk', graph_data_version='v0', job_id='job-123')
-    h2 = DiskgraphHandle(
-        graph_key='gk', graph_data_version='v0', job_id='job-123')
-    h3 = DiskgraphHandle(
-        graph_key='gk', graph_data_version='v0', job_id='job-456')
+    h1 = DiskgraphHandle(graph_key='gk', graph_data_version='v0', job_id='job-123')
+    h2 = DiskgraphHandle(graph_key='gk', graph_data_version='v0', job_id='job-123')
+    h3 = DiskgraphHandle(graph_key='gk', graph_data_version='v0', job_id='job-456')
     h4 = DiskgraphHandle(graph_key='gk', graph_data_version='v0')
     # equal across construction
     assert h1 == h2

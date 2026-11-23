@@ -20,12 +20,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_VERSION = -1.0
 
-P = ParamSpec("P")
-R = TypeVar("R")
+P = ParamSpec('P')
+R = TypeVar('R')
 
 
 def fsExceptionHandler(func: Callable[P, R]) -> Callable[P, R]:
     r"""Decorator to handle exceptions from filesystem operations."""
+
     @wraps(func)
     def _fsutil_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
@@ -35,8 +36,13 @@ def fsExceptionHandler(func: Callable[P, R]) -> Callable[P, R]:
             # traceback which will result in a circular dependency and a
             # memory leak!
             # https://cosmicpercolator.com/2016/01/13/exception-leaks-in-python-2-and-3/
-            logger.error("%s triggers %s error with args: %s, kwargs: %s",
-                         func.__name__, type(e), args, kwargs)
+            logger.error(
+                '%s triggers %s error with args: %s, kwargs: %s',
+                func.__name__,
+                type(e),
+                args,
+                kwargs,
+            )
             raise e
 
     return _fsutil_wrapper
@@ -48,7 +54,8 @@ class FsutilContext:
     def __init__(self):
         self.thread_pool = ContextPropagatingThreadPoolExecutor(
             thread_name_prefix='FSUtil-Threadpool',
-            max_workers=FsutilContext.THREAD_POOL_SIZE)
+            max_workers=FsutilContext.THREAD_POOL_SIZE,
+        )
 
 
 fsutil_ctx = FsutilContext()
@@ -102,13 +109,14 @@ def support_fs(path: str) -> bool:
     * pyarrow.parquet.ParquetWriter
     """
     from io_utils.fsutil.generic import is_s3
+
     return is_local(path) or is_s3(path)
 
 
 def _temp_prefix() -> Optional[str]:
     # EC2 Pushdown case
-    if osp.isdir("/mnt/data/"):
-        temp_root = "/mnt/data/tmp/"
+    if osp.isdir('/mnt/data/'):
+        temp_root = '/mnt/data/tmp/'
         os.makedirs(temp_root, exist_ok=True)
         return temp_root
 

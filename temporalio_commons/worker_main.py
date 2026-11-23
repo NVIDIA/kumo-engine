@@ -30,6 +30,7 @@ env variables to run the worker(s), e.g.:
 If neither "SETTINGS_YAML" or "WORKERS" is specified, by default all workers
 will be running with default or pre-defined options.
 """
+
 import asyncio
 import copy
 import dataclasses
@@ -91,10 +92,8 @@ def _ml_backend_env_variables() -> List[EnvVar]:
     return [
         # Refer MLJobSettings dataclass for documentation on default
         # values for max entities and rows per partition.
-        EnvVar(ML_PRED_MAX_NUM_ENTITIES_PER_PARTITION, int,
-               default_value=10 * 10**6),
-        EnvVar(ML_PRED_MAX_NUM_ROWS_PER_PARTITION, int,
-               default_value=300 * 10**6),
+        EnvVar(ML_PRED_MAX_NUM_ENTITIES_PER_PARTITION, int, default_value=10 * 10**6),
+        EnvVar(ML_PRED_MAX_NUM_ROWS_PER_PARTITION, int, default_value=300 * 10**6),
         EnvVar(ML_FAST_TRAINING_ENABLED, bool, default_value=False),
         EnvVar(PRED_COL_STATS, bool, default_value=True),
         EnvVar(SLACK_URL, str, default_value=''),
@@ -103,8 +102,7 @@ def _ml_backend_env_variables() -> List[EnvVar]:
 
 # Code-defined defaults.
 GLOBAL_WORKER_OPTIONS: Dict[str, WorkerOptions] = {
-    DATA_BACKEND_WORKER_NAME:
-    WorkerOptions(
+    DATA_BACKEND_WORKER_NAME: WorkerOptions(
         task_queue=DATA_BACKEND_TASK_QUEUE,
         # Single thread-pool executor: the compute process-pool worker was
         # retired once every data-backend activity was de-globalized and moved
@@ -115,13 +113,13 @@ GLOBAL_WORKER_OPTIONS: Dict[str, WorkerOptions] = {
             EnvVar(DISABLE_REMOTE_INGESTION, bool, default_value=True),
         ],
     ),
-    ML_WORKFLOW_WORKER:
-    WorkerOptions(
+    ML_WORKFLOW_WORKER: WorkerOptions(
         task_queue=ML_WORKFLOW_TASK_QUEUE,
-        max_worker_threads=EnvVar('ML_WORKFLOW_MAX_WORKER_THREADS', int,
-                                  default_value=10).parse_value(),
-        env_variables=_ml_backend_env_variables()),
-
+        max_worker_threads=EnvVar(
+            'ML_WORKFLOW_MAX_WORKER_THREADS', int, default_value=10
+        ).parse_value(),
+        env_variables=_ml_backend_env_variables(),
+    ),
     # Add an entry here to predefine custom options for any new worker.
     #
     # 'worker-name': WorkerOptions(...),
@@ -135,11 +133,18 @@ _WORKERS = EnvVar(
     default_value=','.join(GLOBAL_WORKER_REGISTRY.all_workers()),
 )
 _WORKER_ENABLE_TRACING = EnvVar(
-    'WORKER_ENABLE_TRACING', bool, required=False, default_value=False,
-    description='Process-level on/off switch for tracing.')
-_WORKER_LOGGING_MODE = EnvVar('WORKER_LOGGING_MODE', type=logging.LoggingMode,
-                              required=False,
-                              default_value=logging.LoggingMode.DEBUG)
+    'WORKER_ENABLE_TRACING',
+    bool,
+    required=False,
+    default_value=False,
+    description='Process-level on/off switch for tracing.',
+)
+_WORKER_LOGGING_MODE = EnvVar(
+    'WORKER_LOGGING_MODE',
+    type=logging.LoggingMode,
+    required=False,
+    default_value=logging.LoggingMode.DEBUG,
+)
 _WORKER_APP_METRICS_PORT = EnvVar(
     'WORKER_APP_METRICS_PORT',
     int,
@@ -162,16 +167,17 @@ def _start_app_metrics_server() -> None:
         return
 
     from prometheus_client import start_http_server
+
     start_http_server(port, addr=_WORKER_APP_METRICS_HOST.parse_value())
     log.info('Started worker application metrics server on port %s', port)
 
 
 # Get worker options for the given worker name. If worker name doesn't
 # exist, a reasonable default options will be returned.
-def _get_worker_options(worker_name: str,
-                        deploy_config: DeployEnvConfig) -> WorkerOptions:
-    options = copy.deepcopy(
-        GLOBAL_WORKER_OPTIONS.get(worker_name, WorkerOptions()))
+def _get_worker_options(
+    worker_name: str, deploy_config: DeployEnvConfig
+) -> WorkerOptions:
+    options = copy.deepcopy(GLOBAL_WORKER_OPTIONS.get(worker_name, WorkerOptions()))
     # Set default task queue if not provided.
     if not options.task_queue:
         options.task_queue = worker_name + '-task-queue'
@@ -198,14 +204,18 @@ async def build_workers(
         if not worker_registry.has_worker(worker_name):
             raise ValueError(
                 f'Worker {worker_name} is not registered, '
-                f'registered workers are: {worker_registry.all_workers()}')
-        worker_deploy_config = dataclasses.replace(deploy_config,
-                                                   client_id=worker_name)
+                f'registered workers are: {worker_registry.all_workers()}'
+            )
+        worker_deploy_config = dataclasses.replace(deploy_config, client_id=worker_name)
         options = _get_worker_options(worker_name, worker_deploy_config)
-        worker_env = WorkerEnv(worker_name, options, worker_deploy_config,
-                               env_var_test_override=env_var_test_override,
-                               activities_override=activities_override,
-                               workflows_override=workflows_override)
+        worker_env = WorkerEnv(
+            worker_name,
+            options,
+            worker_deploy_config,
+            env_var_test_override=env_var_test_override,
+            activities_override=activities_override,
+            workflows_override=workflows_override,
+        )
         worker_envs.append(worker_env)
         workers.extend(await worker_registry.build_worker(worker_env))
 
@@ -214,15 +224,17 @@ async def build_workers(
 
 async def main():
     # Disable torch cuda check which produce lots of log.
-    os.environ['CUDA_VISIBLE_DEVICES'] = ""
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     deploy_config = deploy_env()
     deploy_mode = deploy_config.deploy_mode
     # Initialize logging based on deploy mode.
     if deploy_mode == DeployStage.PROD:
-        logging_mode = (logging.LoggingMode.PRODUCTION
-                        if not _WORKER_LOGGING_MODE.is_set() else
-                        _WORKER_LOGGING_MODE.parse_value())
+        logging_mode = (
+            logging.LoggingMode.PRODUCTION
+            if not _WORKER_LOGGING_MODE.is_set()
+            else _WORKER_LOGGING_MODE.parse_value()
+        )
         logging_dir = osp.join(get_local_home_dir(), 'logging')
         fsutil.makedirs(logging_dir, exist_ok=True)
         logging.initialize_logging(
@@ -256,7 +268,7 @@ async def main():
     for worker_env in worker_envs:
         log.info('Running worker env:\n%s\n', pformat(worker_env.as_dict()))
 
-    log.info(f"Parent process PID: {os.getpid()}")
+    log.info(f'Parent process PID: {os.getpid()}')
 
     # Now that worker init is done (Temporal SDK pre-fetches build_id via
     # synchronous file I/O, which trips the guards on cold caches), install the
@@ -269,6 +281,6 @@ async def main():
         worker_env.shutdown()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     init_temporal_runtime(_WORKERS.parse_value().replace(',', '_'))
     asyncio.run(main())

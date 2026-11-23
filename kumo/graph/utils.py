@@ -13,15 +13,13 @@ from kumo_core.encoders.config import TargetEncoderConfig
 from kumo_core.types import ColStatType
 from kumo_core.types.conversions import to_pandas_type
 from kumoapi.encoder import Datetime, Encoder
-from kumoapi.graph import ColumnKey
+from kumoapi.graph import ColumnKey, group_column_relationships, resolve_foreign_keys
 from kumoapi.graph import GraphDefinition as ApiGraphDefinition
-from kumoapi.graph import group_column_relationships, resolve_foreign_keys
 from kumoapi.source_table import UnavailableSourceTable
 from kumoapi.table import Column as ApiColumn
 from kumoapi.table import TableDefinition as ApiTableDefinition
-from kumoapi.typing import Dtype
+from kumoapi.typing import Dtype, Stype
 from kumoapi.typing import Dtype as ApiDtype
-from kumoapi.typing import Stype
 from kumoapi.typing import Stype as ApiStype
 from pandas import DataFrame, Series
 
@@ -81,9 +79,9 @@ def _coerce_category_value(value: Any, dtype: Optional[Dtype]) -> Any:
         if dtype.is_bool():
             if isinstance(value, str):
                 normalized = value.strip().lower()
-                if normalized in {"true", "1"}:
+                if normalized in {'true', '1'}:
                     return True
-                if normalized in {"false", "0"}:
+                if normalized in {'false', '0'}:
                     return False
                 return value
             if isinstance(value, bool):
@@ -101,8 +99,7 @@ def _coerce_category_value(value: Any, dtype: Optional[Dtype]) -> Any:
     return value
 
 
-def _normalize_category_counts_for_dtype(value: Any,
-                                         dtype: Optional[Dtype]) -> Any:
+def _normalize_category_counts_for_dtype(value: Any, dtype: Optional[Dtype]) -> Any:
     if not isinstance(value, list):
         return value
 
@@ -117,11 +114,11 @@ def _normalize_category_counts_for_dtype(value: Any,
             *item[1:],
         ]
         normalized.append(
-            tuple(normalized_item) if isinstance(item, tuple
-                                                 ) else normalized_item)
+            tuple(normalized_item) if isinstance(item, tuple) else normalized_item
+        )
     if not all(
-            isinstance(item, (list, tuple)) and len(item) >= 2
-            for item in normalized):
+        isinstance(item, (list, tuple)) and len(item) >= 2 for item in normalized
+    ):
         return normalized
 
     def sort_key(item: Any) -> tuple[Any, str, str]:
@@ -145,24 +142,25 @@ def _normalize_encoder_category_stats_for_dtype(
     for stat in _CATEGORY_COUNT_STATS:
         if stat in encoder._stats:
             encoder._stats[stat] = _normalize_category_counts_for_dtype(
-                encoder._stats[stat], dtype)
+                encoder._stats[stat], dtype
+            )
         elif stat.value in encoder._stats:
             encoder._stats[stat.value] = _normalize_category_counts_for_dtype(
-                encoder._stats[stat.value], dtype)
+                encoder._stats[stat.value], dtype
+            )
 
 
-def get_full_stats(
-        cols: List[BaseColumn]) -> Dict[BaseColumn, List[ColStatType]]:
+def get_full_stats(cols: List[BaseColumn]) -> Dict[BaseColumn, List[ColStatType]]:
     return {col: col.full_stats for col in cols}
 
 
 def get_full_encoder_stats(
-        cols: List[BaseColumn]) -> Dict[BaseColumn, List[ColStatType]]:
+    cols: List[BaseColumn],
+) -> Dict[BaseColumn, List[ColStatType]]:
     return {col: col.full_encoder_stats for col in cols}
 
 
-def get_minimal_stats(
-        cols: List[BaseColumn]) -> Dict[BaseColumn, List[ColStatType]]:
+def get_minimal_stats(cols: List[BaseColumn]) -> Dict[BaseColumn, List[ColStatType]]:
     return {col: col.minimal_stats for col in cols}
 
 
@@ -183,6 +181,7 @@ def fetch_and_set_encoder_stats(
             must be fetched.
     """
     from kumo.graph import Table
+
     assert isinstance(table, Table)
 
     # Normalize preloaded stats before deciding which stats are missing.
@@ -192,13 +191,14 @@ def fetch_and_set_encoder_stats(
 
     # Step 1: Compute all required statistics and store them on the columns:
     stats_to_fetch = {
-        col.base_config():
-        list(col.encoder.required_stats - set(col.encoder._stats.keys()))
-        for col in cols if col.encoder is not None
+        col.base_config(): list(
+            col.encoder.required_stats - set(col.encoder._stats.keys())
+        )
+        for col in cols
+        if col.encoder is not None
     }
     stats_to_fetch = {
-        col_cfg: stats
-        for col_cfg, stats in stats_to_fetch.items() if len(stats) > 0
+        col_cfg: stats for col_cfg, stats in stats_to_fetch.items() if len(stats) > 0
     }
 
     if len(stats_to_fetch) == 0:
@@ -206,8 +206,9 @@ def fetch_and_set_encoder_stats(
 
     # Step 2: Fetch statistics:
     logger.warning(
-        f"Fetching statistics {stats_to_fetch} for encoder initialization on "
-        f"table {table.name}")
+        f'Fetching statistics {stats_to_fetch} for encoder initialization on '
+        f'table {table.name}'
+    )
 
     # Col stats are pre-populated in the cache by DiskGraph ingest;
     # read directly (no compute-on-miss fallback exists).
@@ -237,7 +238,8 @@ def fetch_and_set_encoder_stats(
 
 
 def materialize_encoders(
-    table: Any, ) -> Tuple[Dict[str, Encoder], Optional[TargetEncoderConfig]]:
+    table: Any,
+) -> Tuple[Dict[str, Encoder], Optional[TargetEncoderConfig]]:
     r"""Materializes the encoders of the columns in the provided input table.
     Note that materialization of encoders depends on statistics that are
     assumed to have been computed by this point. If statistics are not present,
@@ -248,6 +250,7 @@ def materialize_encoders(
         * Second element is a target encoder, if present. None otherwise.
     """
     from kumo.task.training_table import TrainingTable
+
     logger.info(f"Computing all encoder statistics for table '{table.name}'")
 
     has_target = False
@@ -296,23 +299,23 @@ def read_parquet(
             large file. An error will be raised if we are attempting to
             read a file exceed max_row_limit.
     """
-    logger.info(
-        f"read_parquet: {file_path} cols: {cols} row limit: {max_row_limit}")
+    logger.info(f'read_parquet: {file_path} cols: {cols} row limit: {max_row_limit}')
     from pyarrow import parquet
 
     from io_utils.pyarrow import arrow_cloud_filesystem
+
     if max_row_limit is not None:
         if parquet_num_rows(file_path) > max_row_limit:
-            raise RuntimeError(f"{file_path} exceeds the row limit of "
-                               f"{max_row_limit}.")
+            raise RuntimeError(f'{file_path} exceeds the row limit of {max_row_limit}.')
     if fsutil.is_s3(file_path) or fsutil.is_gcs(file_path):
         # Route cloud reads through the credentialed, fork-safe choke point;
         # local paths keep the native read. Normalize s3a first so the strip
         # and filesystem both see s3:// (no-op for plain s3://).
         file_path = fsutil.s3a_as_s3(file_path)
-        bare = file_path.removeprefix("s3://").removeprefix("gs://")
-        table = parquet.read_table(bare, columns=cols,
-                                   filesystem=arrow_cloud_filesystem(file_path))
+        bare = file_path.removeprefix('s3://').removeprefix('gs://')
+        table = parquet.read_table(
+            bare, columns=cols, filesystem=arrow_cloud_filesystem(file_path)
+        )
     else:
         table = parquet.read_table(file_path, columns=cols)
     return table.to_pandas(types_mapper=to_pandas_type)
@@ -323,8 +326,8 @@ def read_parquet(
 
 
 def get_index_map(
-    index_map: Union[DataFrame, str, Tuple[str, Dict[str,
-                                                     str]]], ) -> DataFrame:
+    index_map: Union[DataFrame, str, Tuple[str, Dict[str, str]]],
+) -> DataFrame:
     r"""Returns the index map for a table. The index map could be
     * a string pointer to a DataFrame path for lazy loading,
     * a tuple of string path to a Parquet dataset and a mapping of columns
@@ -332,11 +335,11 @@ def get_index_map(
     for lazy loading,
     * a DataFrame itself."""
     if isinstance(index_map, str):
-        with Timer(logging_prefix=f"get_index_map from {index_map}"):
+        with Timer(logging_prefix=f'get_index_map from {index_map}'):
             return read_parquet(index_map)
     elif isinstance(index_map, Tuple):
         path, cols = index_map
-        with Timer(logging_prefix=f"get_index_map from {path}"):
+        with Timer(logging_prefix=f'get_index_map from {path}'):
             tmp_df = read_parquet(path, list(cols.values()))
             if 'pkey' in cols:
                 tmp_df.set_index(cols['pkey'], inplace=True)
@@ -351,12 +354,12 @@ def get_fkey_data(fkey_data: Union[Series, str, Tuple[str, str]]) -> DataFrame:
     name to read from the Parquet files for lazy loading,
     * a DataFrame itself."""
     if isinstance(fkey_data, str):
-        with Timer(logging_prefix=f"get_fkey_data from {fkey_data}"):
+        with Timer(logging_prefix=f'get_fkey_data from {fkey_data}'):
             tmp_df = read_parquet(fkey_data)
         return tmp_df['key']
     elif isinstance(fkey_data, Tuple):
         path, col = fkey_data
-        with Timer(logging_prefix=f"get_fkey_data from {path}"):
+        with Timer(logging_prefix=f'get_fkey_data from {path}'):
             tmp_df = read_parquet(path, [col])
         return tmp_df[col]
     return fkey_data
@@ -380,11 +383,12 @@ def persist_pandas_connector(
     files and returns a ParquetConnector pointing to those files. The parquet
     files will be created at
     'root_dir/{connector.name}_converted/{table_name}.parquet'"""
-    new_data_source = f"{connector.name}_converted"
+    new_data_source = f'{connector.name}_converted'
     parquet_dir = osp.join(root_dir, new_data_source)
     new_connector = ParquetConnector(name=new_data_source, root_dir=parquet_dir)
-    logger.info(f"Converting PandasConnector({connector}) to "
-                f"ParquetConnector({new_connector})")
+    logger.info(
+        f'Converting PandasConnector({connector}) to ParquetConnector({new_connector})'
+    )
 
     fsutil.makedirs(parquet_dir, exist_ok=True)
     for table_name in connector.df_dict.keys():
@@ -398,17 +402,18 @@ def persist_pandas_connector(
 
 @trace()
 def make_graph_mock_object(graph_def: ApiGraphDefinition) -> Any:
-    r'''Creates a kumo.Graph object but does not store it to a database nor
+    r"""Creates a kumo.Graph object but does not store it to a database nor
     does it perform any operations that are data-dependant, e.g. encoder
-    inferral.'''
+    inferral."""
     from kumo.graph.graph import Graph
 
     fkey_dict = {table_name: [] for table_name in graph_def.tables}
     for edge in resolve_foreign_keys(graph_def.tables, graph_def.col_groups):
         source = graph_def.tables[edge.src_table]
         destination = graph_def.tables[edge.dst_table]
-        source_column = next(column for column in source.cols
-                             if column.name == edge.fkey)
+        source_column = next(
+            column for column in source.cols if column.name == edge.fkey
+        )
         assert destination.pkey is not None
         fkey_dict[edge.src_table].append(
             ForeignKey(
@@ -416,7 +421,8 @@ def make_graph_mock_object(graph_def: ApiGraphDefinition) -> Any:
                 dst_table=edge.dst_table,
                 dst_key=destination.pkey,
                 dtype=Dtype(source_column.dtype.value),
-            ))
+            )
+        )
     graph = Graph(data_source_dict={'dummy_connector': None})
     for table_name, table_def in graph_def.tables.items():
         pkey = None
@@ -441,9 +447,12 @@ def make_graph_mock_object(graph_def: ApiGraphDefinition) -> Any:
                 continue
             cols.append(
                 Column(
-                    name=col.name, dtype=Dtype(col.dtype.value),
-                    stype=Stype(col.stype.value), multicategorical_delimiter=(
-                        col.multicategorical_delimiter)))
+                    name=col.name,
+                    dtype=Dtype(col.dtype.value),
+                    stype=Stype(col.stype.value),
+                    multicategorical_delimiter=(col.multicategorical_delimiter),
+                )
+            )
         graph.add(
             name=table_name,
             data_source='dummy_connector',
@@ -475,7 +484,8 @@ def map_to_api_table_definition(table: Any) -> ApiTableDefinition:
                 stype=ApiStype(col.stype.value),
                 timestamp_format=None,
                 multicategorical_delimiter=(col.multicategorical_delimiter),
-            ))
+            )
+        )
     return ApiTableDefinition(
         cols=columns,
         source_table=source_table,
@@ -486,10 +496,7 @@ def map_to_api_table_definition(table: Any) -> ApiTableDefinition:
 
 
 def map_to_api_graph_definition(graph: Any) -> ApiGraphDefinition:
-    tables = {
-        table.table_name: map_to_api_table_definition(table)
-        for table in graph
-    }
+    tables = {table.table_name: map_to_api_table_definition(table) for table in graph}
     relationships = []
     for table in graph:
         for fkey in table.fkeys:
@@ -499,10 +506,12 @@ def map_to_api_graph_definition(graph: Any) -> ApiGraphDefinition:
             if dst_pkey is None:
                 dst_pkey = graph[dst_table].pkey_name
             assert dst_pkey is not None
-            relationships.append((
-                ColumnKey(table.table_name, fkey.name),
-                ColumnKey(dst_table, dst_pkey),
-            ))
+            relationships.append(
+                (
+                    ColumnKey(table.table_name, fkey.name),
+                    ColumnKey(dst_table, dst_pkey),
+                )
+            )
     return ApiGraphDefinition(
         tables=tables,
         col_groups=group_column_relationships(relationships),

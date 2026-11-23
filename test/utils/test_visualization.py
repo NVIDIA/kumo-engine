@@ -20,11 +20,10 @@ from kumo.utils.visualization import (
 
 
 def test_visualization_plot():
-    data = pd.DataFrame(data={
-        'x': [1., 2, 3, 4, 5, 6, 7, 8],
-        'y': [1., 2, 3, 4, 5, 6, 7, 8]})
-    filepath = osp.join(
-        '.', 'visualize_scalar_distribution.pdf')
+    data = pd.DataFrame(
+        data={'x': [1.0, 2, 3, 4, 5, 6, 7, 8], 'y': [1.0, 2, 3, 4, 5, 6, 7, 8]}
+    )
+    filepath = osp.join('.', 'visualize_scalar_distribution.pdf')
     assert not osp.exists(filepath)
     visualize_scalar_distribution(data, filepath)
     assert osp.exists(filepath)
@@ -59,8 +58,9 @@ def test_visualization_plot():
 
     filepath = osp.join('.', 'binary_pr_curve_plot.pdf')
     assert not osp.exists(filepath)
-    binary_pr_curve_plot(y_true, y_score, filepath,
-                         positive_rate=(y_true == 1).sum() / len(y_true))
+    binary_pr_curve_plot(
+        y_true, y_score, filepath, positive_rate=(y_true == 1).sum() / len(y_true)
+    )
     assert osp.exists(filepath)
     os.remove(filepath)
 

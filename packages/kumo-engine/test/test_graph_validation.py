@@ -83,21 +83,25 @@ def pdf_pages(monkeypatch):
     def record(document, figure, *args, **kwargs):
         assert figure.get_facecolor() == (1, 1, 1, 1)
         facecolor = kwargs.get('facecolor', rcParams['savefig.facecolor'])
-        assert to_rgba(figure.get_facecolor() if facecolor == 'auto'
-                       else facecolor) == (1, 1, 1, 1)
+        assert to_rgba(
+            figure.get_facecolor() if facecolor == 'auto' else facecolor
+        ) == (1, 1, 1, 1)
         assert not kwargs.get('transparent', rcParams['savefig.transparent'])
         if not pages:
             figure.set_dpi(72)  # PDF coordinates and font sizes are in points.
-            renderer = RendererPdf(None, 72, figure.get_figheight(),
-                                   figure.get_figwidth())
+            renderer = RendererPdf(
+                None, 72, figure.get_figheight(), figure.get_figwidth()
+            )
             texts = figure.axes[0].texts
             for role in texts:
                 if re.fullmatch(r'(PK|FK|TS|TE)(/(PK|FK|TS|TE))*', role.get_text()):
                     bounds = role.get_window_extent(renderer)
-                    assert all(not bounds.overlaps(other.get_window_extent(renderer))
-                               for other in texts if other is not role)
-        pages.append('\n'.join(text.get_text() for text in
-                               figure.findobj(match=Text)))
+                    assert all(
+                        not bounds.overlaps(other.get_window_extent(renderer))
+                        for other in texts
+                        if other is not role
+                    )
+        pages.append('\n'.join(text.get_text() for text in figure.findobj(match=Text)))
         return savefig(document, figure, *args, **kwargs)
 
     monkeypatch.setattr(PdfPages, 'savefig', record)
@@ -108,8 +112,7 @@ def pdf_pages(monkeypatch):
     'edge, missing',
     [
         (Edge('missing', 'user_id', 'users'), "missing source table 'missing'"),
-        (Edge('events', 'user_id',
-              'missing'), "missing destination table 'missing'"),
+        (Edge('events', 'user_id', 'missing'), "missing destination table 'missing'"),
     ],
 )
 def test_graph_validation_rejects_missing_edge_endpoints(tables, edge, missing):
@@ -122,8 +125,10 @@ def test_graph_validation_rejects_missing_edge_endpoints(tables, edge, missing):
     assert "available tables: ['events', 'users']" in str(error.value)
 
     with patch.object(
-            Graph, '_snapshot_no_lock',
-            side_effect=AssertionError('snapshot materialization started')):
+        Graph,
+        '_snapshot_no_lock',
+        side_effect=AssertionError('snapshot materialization started'),
+    ):
         with pytest.raises(PortableGraphError, match=missing):
             graph.snapshot()
 
@@ -134,8 +139,7 @@ def test_graph_validation_keeps_valid_edges(tables):
     graph.validate()
 
     portable_tables = {
-        table['table_name']: table
-        for table in graph._graph_config['tables']
+        table['table_name']: table for table in graph._graph_config['tables']
     }
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
 
@@ -145,15 +149,19 @@ def test_graph_validation_rejects_destination_without_primary_key(tables):
     users = replace(users, definition=replace(users.definition, pkey=None))
     graph = Graph([users, events], [Edge('events', 'user_id', 'users')])
 
-    with pytest.raises(PortableGraphError,
-                       match=r"destination table users.*primary key"):
+    with pytest.raises(
+        PortableGraphError, match=r'destination table users.*primary key'
+    ):
         graph.validate()
 
     with patch.object(
-            Graph, '_snapshot_no_lock',
-            side_effect=AssertionError('snapshot materialization started')):
-        with pytest.raises(PortableGraphError,
-                           match=r"destination table users.*primary key"):
+        Graph,
+        '_snapshot_no_lock',
+        side_effect=AssertionError('snapshot materialization started'),
+    ):
+        with pytest.raises(
+            PortableGraphError, match=r'destination table users.*primary key'
+        ):
             graph.snapshot()
 
 
@@ -163,8 +171,8 @@ def test_graph_validation_warns_when_self_relation_is_omitted(tables):
     graph = Graph(tables, [Edge('events', 'user_id', 'events')])
 
     with pytest.warns(
-            UserWarning,
-            match=r"Self-relation events\.user_id -> events\.event_id .* omitted"
+        UserWarning,
+        match=r'Self-relation events\.user_id -> events\.event_id .* omitted',
     ) as warnings:
         graph.validate()
         with mock.patch.object(Graph, '_snapshot_no_lock'):
@@ -172,24 +180,33 @@ def test_graph_validation_warns_when_self_relation_is_omitted(tables):
 
     assert sum('Self-relation' in str(w.message) for w in warnings) == 1
 
-    events = next(table for table in graph._graph_config['tables']
-                  if table['table_name'] == 'events')
+    events = next(
+        table
+        for table in graph._graph_config['tables']
+        if table['table_name'] == 'events'
+    )
     assert events['fkeys'] == []
 
 
 @pytest.mark.parametrize('original_stype', [Stype.numerical, Stype.categorical])
-def test_declared_relation_assigns_id_without_mutating_source(
-        tables, original_stype):
+def test_declared_relation_assigns_id_without_mutating_source(tables, original_stype):
     source = tables[1].with_column('user_id', stype=original_stype)
     graph = Graph([tables[0], source], [Edge('events', 'user_id', 'users')])
     graph.validate()
-    projected = next(table for table in graph._graph_config['tables']
-                     if table['table_name'] == 'events')
+    projected = next(
+        table
+        for table in graph._graph_config['tables']
+        if table['table_name'] == 'events'
+    )
     assert projected['fkeys'][0]['stype'] == 'ID'
-    assert next(col for col in projected['cols']
-                if col['name'] == 'user_id')['stype'] == 'ID'
-    assert next(col for col in source.definition.cols
-                if col.name == 'user_id').stype == original_stype
+    assert (
+        next(col for col in projected['cols'] if col['name'] == 'user_id')['stype']
+        == 'ID'
+    )
+    assert (
+        next(col for col in source.definition.cols if col.name == 'user_id').stype
+        == original_stype
+    )
 
 
 @pytest.mark.parametrize('original_stype', [Stype.numerical, Stype.categorical])
@@ -200,43 +217,58 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
         graph.validate()
     projected = graph._graph_config['tables'][0]
     assert projected['fkeys'] == []
-    assert next(col for col in projected['cols']
-                if col['name'] == 'user_id')['stype'] == original_stype
-    assert next(col for col in source.definition.cols
-                if col.name == 'user_id').stype == original_stype
+    assert (
+        next(col for col in projected['cols'] if col['name'] == 'user_id')['stype']
+        == original_stype
+    )
+    assert (
+        next(col for col in source.definition.cols if col.name == 'user_id').stype
+        == original_stype
+    )
 
 
-@pytest.mark.parametrize('alias, key, collision', [
-    ('<script>alert("账户")</script> & customers', 'customer<&"账户', False),
-    ('PURCHASES_AND_TRANSACTIONS', 'O' * 22, False),
-    ('Ж' * 27, 'Ш' * 22, False),
-    ('sales  data', 'order  id', False),
-    ('sales\tdata', 'order\tid', False),
-    ('sales\rdata', 'order\rid', False),
-    ('sales\ndata', 'order\nid', False),
-    ('sales\tdata', 'order\tid', True),
-])
+@pytest.mark.parametrize(
+    'alias, key, collision',
+    [
+        ('<script>alert("账户")</script> & customers', 'customer<&"账户', False),
+        ('PURCHASES_AND_TRANSACTIONS', 'O' * 22, False),
+        ('Ж' * 27, 'Ш' * 22, False),
+        ('sales  data', 'order  id', False),
+        ('sales\tdata', 'order\tid', False),
+        ('sales\rdata', 'order\rid', False),
+        ('sales\ndata', 'order\nid', False),
+        ('sales\tdata', 'order\tid', True),
+    ],
+)
 @pytest.mark.parametrize('suffix', ['svg', 'pdf'])
 def test_visualize_exports_escaped_svg_without_source_access(
-        tmp_path, alias, key, collision, suffix, pdf_pages):
+    tmp_path, alias, key, collision, suffix, pdf_pages
+):
     users, events = _s3_tables()
     events = replace(
-        events, definition=replace(
-            events.definition, cols=[
-                events.definition.cols[0],
-                Column(key, Stype.ID, Dtype.int64)
-            ]))
+        events,
+        definition=replace(
+            events.definition,
+            cols=[events.definition.cols[0], Column(key, Stype.ID, Dtype.int64)],
+        ),
+    )
     tables = {'purchases': events, alias: users}
     if collision:
         tables[alias.replace('\t', ' ').replace('\r', ' ')] = users
     graph = Graph(tables, [Edge('purchases', key, alias)])
     destination = tmp_path / f'relationships.{suffix}'
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      side_effect=AssertionError('source accessed')), \
-            patch.object(Table, 'infer_metadata',
-                         side_effect=AssertionError('inference started')), \
-            patch.object(Graph, 'snapshot',
-                         side_effect=AssertionError('snapshot started')):
+    with (
+        patch.object(
+            S3Connector,
+            'source_backend',
+            new_callable=PropertyMock,
+            side_effect=AssertionError('source accessed'),
+        ),
+        patch.object(
+            Table, 'infer_metadata', side_effect=AssertionError('inference started')
+        ),
+        patch.object(Graph, 'snapshot', side_effect=AssertionError('snapshot started')),
+    ):
         svg = graph.visualize(destination, show_samples=False)
     assert isinstance(svg, str)
     assert svg._repr_svg_() == svg
@@ -246,14 +278,25 @@ def test_visualize_exports_escaped_svg_without_source_access(
         assert len(re.findall(rb'/Type /Page\b', data)) == len(pdf_pages) >= 2
         assert '\t' not in pdf_pages[0]
         index = '\n'.join(pdf_pages[1:])
-        pdf_alias = alias.replace('账户', r'\u8d26\u6237').replace(
-            '\r', r'\r').expandtabs(4).replace('\n', '')
-        pdf_key = key.replace('账户', r'\u8d26\u6237').replace(
-            '\r', r'\r').expandtabs(4).replace('\n', '')
+        pdf_alias = (
+            alias.replace('账户', r'\u8d26\u6237')
+            .replace('\r', r'\r')
+            .expandtabs(4)
+            .replace('\n', '')
+        )
+        pdf_key = (
+            key.replace('账户', r'\u8d26\u6237')
+            .replace('\r', r'\r')
+            .expandtabs(4)
+            .replace('\n', '')
+        )
         assert pdf_alias in index.replace('\n', '')
         assert pdf_key in index.replace('\n', '')
-        connection = f'purchases.{key} → {alias}.id'.replace(
-            '账户', r'\u8d26\u6237').replace('\r', r'\r').expandtabs(4)
+        connection = (
+            f'purchases.{key} → {alias}.id'.replace('账户', r'\u8d26\u6237')
+            .replace('\r', r'\r')
+            .expandtabs(4)
+        )
         assert connection.replace('\n', '') in index.replace('\n', '')
         assert 's3://schema-only-fixture' not in index
     else:
@@ -262,48 +305,51 @@ def test_visualize_exports_escaped_svg_without_source_access(
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
     html = ElementTree.fromstring(svg._repr_html_())
     embedded = html.find('.//{http://www.w3.org/2000/svg}svg')
-    assert re.sub(rb'kumo-[0-9a-f]{32}', b'kumo-ID',
-                  ElementTree.tostring(embedded)) == re.sub(
-                      rb'kumo-[0-9a-f]{32}', b'kumo-ID',
-                      ElementTree.tostring(root))
+    assert re.sub(
+        rb'kumo-[0-9a-f]{32}', b'kumo-ID', ElementTree.tostring(embedded)
+    ) == re.sub(rb'kumo-[0-9a-f]{32}', b'kumo-ID', ElementTree.tostring(root))
     assert html.find('.//div[@role="region"]').get('tabindex') is None
-    assert html.find('./div[@class="kumo-graph-live"]').get('style') == (
-        'display:none')
-    assert 'hidden' in html.find(
-        './/div[@class="kumo-widget-toolbar kumo-graph-toolbar"]').attrib
+    assert html.find('./div[@class="kumo-graph-live"]').get('style') == ('display:none')
+    assert (
+        'hidden'
+        in html.find('.//div[@class="kumo-widget-toolbar kumo-graph-toolbar"]').attrib
+    )
     assert 'hidden' in html.find('.//div[@role="region"]').attrib
     assert html.find('./div[@class="kumo-graph-static"]/p').text == (
-        'Rerun this cell to activate animation.')
-    text = ''.join(element.text or ''
-                   for element in root.iter('{http://www.w3.org/2000/svg}text')
-                   if element.get('{http://www.w3.org/XML/1998/namespace}space')
-                   == 'preserve')
+        'Rerun this cell to activate animation.'
+    )
+    text = ''.join(
+        element.text or ''
+        for element in root.iter('{http://www.w3.org/2000/svg}text')
+        if element.get('{http://www.w3.org/XML/1998/namespace}space') == 'preserve'
+    )
     assert alias.replace('\r', '\n') in text
     assert key.replace('\r', '\n') in text
     if alias.isupper():
         visible = [
-            element.text
-            for element in root.iter('{http://www.w3.org/2000/svg}text')
+            element.text for element in root.iter('{http://www.w3.org/2000/svg}text')
         ]
         assert alias not in visible and key not in visible
     assert not root.findall('.//{http://www.w3.org/2000/svg}script')
-    assert all(not name.lower().startswith('on') for element in root.iter()
-               for name in element.attrib)
+    assert all(
+        not name.lower().startswith('on')
+        for element in root.iter()
+        for name in element.attrib
+    )
     tips = root.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-tip]')
     assert len(tips) == 5 + 2 * collision  # Each extra table has a PK row.
     assert all(tip.get('tabindex') == '0' for tip in tips)
     details = [tip.get('data-kumo-tip') for tip in tips]
     assert any(f'References: {alias}.id' in tip for tip in details)
-    assert any('Type: int64\nSemantic type: ID\nRole: FK' in tip
-               for tip in details)
+    assert any('Type: int64\nSemantic type: ID\nRole: FK' in tip for tip in details)
     assert any(f'Connected tables:\n{alias}' in tip for tip in details)
     edge = root.find('.//{http://www.w3.org/2000/svg}path[@class="kumo-edge"]')
     assert edge.get('data-dst-table') == alias
     assert edge.get('data-src-column') == key
-    ids = {table['name']: f'table_{i}'
-           for i, table in enumerate(svg._index)}
-    relationship = next(line for line in svg._markdown().splitlines()
-                        if ' -->|' in line)
+    ids = {table['name']: f'table_{i}' for i, table in enumerate(svg._index)}
+    relationship = next(
+        line for line in svg._markdown().splitlines() if ' -->|' in line
+    )
     assert relationship.startswith(f'    {ids["purchases"]} -->|')
     assert relationship.endswith(f'| {ids[alias]}')
     assert 's3://schema-only-fixture' not in svg
@@ -313,75 +359,115 @@ def test_visualize_exports_escaped_svg_without_source_access(
 @pytest.mark.parametrize('show_cols', [False, True])
 def test_visualize_bounds_column_detail(count, limit, show_cols):
     users, _ = _s3_tables()
-    extras = [Column(f'feature_{i:02}', Stype.numerical, Dtype.int64)
-              for i in range(17)]
-    table = replace(users, definition=replace(
-        users.definition, time_col='event_time', end_time_col='zz_end_time',
-        cols=[*users.definition.cols, *extras,
-              Column('event_time', Stype.timestamp, Dtype.date),
-              Column('zz_end_time', Stype.timestamp, Dtype.date)]))
+    extras = [
+        Column(f'feature_{i:02}', Stype.numerical, Dtype.int64) for i in range(17)
+    ]
+    table = replace(
+        users,
+        definition=replace(
+            users.definition,
+            time_col='event_time',
+            end_time_col='zz_end_time',
+            cols=[
+                *users.definition.cols,
+                *extras,
+                Column('event_time', Stype.timestamp, Dtype.date),
+                Column('zz_end_time', Stype.timestamp, Dtype.date),
+            ],
+        ),
+    )
     graph = Graph({f'table_{i:02}': table for i in range(count)})
     root = ElementTree.fromstring(graph.visualize(show_cols=show_cols))
     visible = limit - 3 if show_cols else 0
     expected = {'id', 'event_time', 'zz_end_time'} | {
-        col.name for col in extras[:visible]}
+        col.name for col in extras[:visible]
+    }
     for card in root.findall('./{http://www.w3.org/2000/svg}g[@data-kumo-card]'):
         rows = card.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-column]')
-        assert {row.get('data-kumo-column') for row in rows
-                if row.get('data-kumo-column')} == expected
+        assert {
+            row.get('data-kumo-column') for row in rows if row.get('data-kumo-column')
+        } == expected
         time = next(row for row in rows if row.get('data-kumo-column') == 'event_time')
         assert 'Role: TS' in time.get('data-kumo-tip')
         end = next(row for row in rows if row.get('data-kumo-column') == 'zz_end_time')
         assert 'Role: TE' in end.get('data-kumo-tip')
-        assert re.search(rf'\+\s*{len(extras) - visible} (other )?columns',
-                         ''.join(card.itertext()))
+        assert re.search(
+            rf'\+\s*{len(extras) - visible} (other )?columns', ''.join(card.itertext())
+        )
 
 
-@pytest.mark.parametrize('time_column, end_time_column, show_cols, time_roles', [
-    (None, None, False, {}), (None, None, True, {}),
-    ('occurred_at', None, False, {'occurred_at': 'TS'}),
-    ('event_id', None, False, {'event_id': 'PK/FK/TS'}),
-    ('foreign_00', None, True, {'foreign_00': 'FK/TS'}),
-    (None, 'ended_at', False, {'ended_at': 'TE'}),
-    ('occurred_at', 'ended_at', True, {'occurred_at': 'TS', 'ended_at': 'TE'}),
-    ('event_id', 'event_id', False, {'event_id': 'PK/FK/TS/TE'}),
-    ('occurred_at', 'event_id', False, {'occurred_at': 'TS', 'event_id': 'PK/FK/TE'}),
-    ('occurred_at', 'foreign_00', True, {'occurred_at': 'TS', 'foreign_00': 'FK/TE'}),
-    ('n' * 21, 'n' * 21, False, {'n' * 21: 'PK/FK/TS/TE'}),
-    ('occurred_at', 'n' * 23, True, {'occurred_at': 'TS', 'n' * 23: 'PK/FK/TE'}),
-    ('账户' * 12, '账户' * 12, True, {'账户' * 12: 'PK/FK/TS/TE'}),
-    ('occurred_at', '账户' * 12, False, {'occurred_at': 'TS', '账户' * 12: 'PK/FK/TE'}),
-])
+@pytest.mark.parametrize(
+    'time_column, end_time_column, show_cols, time_roles',
+    [
+        (None, None, False, {}),
+        (None, None, True, {}),
+        ('occurred_at', None, False, {'occurred_at': 'TS'}),
+        ('event_id', None, False, {'event_id': 'PK/FK/TS'}),
+        ('foreign_00', None, True, {'foreign_00': 'FK/TS'}),
+        (None, 'ended_at', False, {'ended_at': 'TE'}),
+        ('occurred_at', 'ended_at', True, {'occurred_at': 'TS', 'ended_at': 'TE'}),
+        ('event_id', 'event_id', False, {'event_id': 'PK/FK/TS/TE'}),
+        (
+            'occurred_at',
+            'event_id',
+            False,
+            {'occurred_at': 'TS', 'event_id': 'PK/FK/TE'},
+        ),
+        (
+            'occurred_at',
+            'foreign_00',
+            True,
+            {'occurred_at': 'TS', 'foreign_00': 'FK/TE'},
+        ),
+        ('n' * 21, 'n' * 21, False, {'n' * 21: 'PK/FK/TS/TE'}),
+        ('occurred_at', 'n' * 23, True, {'occurred_at': 'TS', 'n' * 23: 'PK/FK/TE'}),
+        ('账户' * 12, '账户' * 12, True, {'账户' * 12: 'PK/FK/TS/TE'}),
+        (
+            'occurred_at',
+            '账户' * 12,
+            False,
+            {'occurred_at': 'TS', '账户' * 12: 'PK/FK/TE'},
+        ),
+    ],
+)
 def test_visualize_retains_keys_beyond_column_limit(
-        time_column, end_time_column, show_cols, time_roles, tmp_path, pdf_pages):
+    time_column, end_time_column, show_cols, time_roles, tmp_path, pdf_pages
+):
     users, events = _s3_tables()
-    pkey = next((name for name, role in time_roles.items() if 'PK' in role),
-                'event_id')
+    pkey = next((name for name, role in time_roles.items() if 'PK' in role), 'event_id')
     keys = [Column(f'foreign_{i:02}', Stype.ID, Dtype.int64) for i in range(12)]
     events = replace(
-        events, definition=replace(events.definition,
-                                   pkey=pkey,
-                                   time_col=time_column,
-                                   end_time_col=end_time_column,
-                                   cols=[Column(pkey, Stype.ID, Dtype.int64), *keys,
-                                         Column('occurred_at', Stype.timestamp,
-                                                Dtype.date),
-                                         Column('ended_at', Stype.timestamp,
-                                                Dtype.date)]))
+        events,
+        definition=replace(
+            events.definition,
+            pkey=pkey,
+            time_col=time_column,
+            end_time_col=end_time_column,
+            cols=[
+                Column(pkey, Stype.ID, Dtype.int64),
+                *keys,
+                Column('occurred_at', Stype.timestamp, Dtype.date),
+                Column('ended_at', Stype.timestamp, Dtype.date),
+            ],
+        ),
+    )
     edges = [Edge('events', column.name, 'users') for column in keys]
     if pkey in (time_column, end_time_column):
         edges.append(Edge('events', pkey, 'users'))
     graph = Graph([users, events], edges)
     root = ElementTree.fromstring(
-        graph.visualize(tmp_path / 'roles.pdf', show_cols=show_cols))
+        graph.visualize(tmp_path / 'roles.pdf', show_cols=show_cols)
+    )
     card = root.find('./{http://www.w3.org/2000/svg}g[@data-kumo-card="events"]')
     rows = card.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-column]')
     expected = {pkey} | {column.name for column in keys} | time_roles.keys()
-    assert {row.get('data-kumo-column') for row in rows
-            if row.get('data-kumo-column')} == expected
+    assert {
+        row.get('data-kumo-column') for row in rows if row.get('data-kumo-column')
+    } == expected
     for column, role in time_roles.items():
-        row = root.find('.//{http://www.w3.org/2000/svg}g'
-                        f'[@data-kumo-column="{column}"]')
+        row = root.find(
+            f'.//{{http://www.w3.org/2000/svg}}g[@data-kumo-column="{column}"]'
+        )
         assert f'Role: {role}' in row.get('data-kumo-tip')
 
 
@@ -389,20 +475,29 @@ def test_visualize_retains_keys_beyond_column_limit(
 def test_visualize_layout_is_deterministic_with_cycles_and_isolates(layout):
     _, table = _s3_tables()
     tables = {
-        name: replace(table, definition=replace(
-            table.definition, pkey=key,
-            cols=[*table.definition.cols, Column(key, Stype.ID, Dtype.int64)]))
+        name: replace(
+            table,
+            definition=replace(
+                table.definition,
+                pkey=key,
+                cols=[*table.definition.cols, Column(key, Stype.ID, Dtype.int64)],
+            ),
+        )
         for name, key in [('a', 'b.c'), ('a.b', 'c')]
     } | {'c': table, 'isolated': table}
     edges = [
-        Edge('c', 'user_id', 'a.b'), Edge('c', 'event_id', 'a'),
-        Edge('a.b', 'user_id', 'c'), Edge('a', 'event_id', 'c'),
+        Edge('c', 'user_id', 'a.b'),
+        Edge('c', 'event_id', 'a'),
+        Edge('a.b', 'user_id', 'c'),
+        Edge('a', 'event_id', 'c'),
     ]
     svg = Graph(tables, edges).visualize(layout=layout)
-    other = Graph(dict(reversed(list(tables.items()))),
-                  list(reversed(edges))).visualize(layout=layout)
-    assert re.sub(r'kumo-[0-9a-f]{32}', 'kumo-ID',
-                  svg) == re.sub(r'kumo-[0-9a-f]{32}', 'kumo-ID', other)
+    other = Graph(
+        dict(reversed(list(tables.items()))), list(reversed(edges))
+    ).visualize(layout=layout)
+    assert re.sub(r'kumo-[0-9a-f]{32}', 'kumo-ID', svg) == re.sub(
+        r'kumo-[0-9a-f]{32}', 'kumo-ID', other
+    )
     ids = lambda value: set(re.findall(r' id="([^"]+)"', value))
     assert ids(svg).isdisjoint(ids(other))
     root = ElementTree.fromstring(svg)
@@ -410,37 +505,48 @@ def test_visualize_layout_is_deterministic_with_cycles_and_isolates(layout):
     assert all(name in text for name in tables)
     assert all(float(value) > 0 for value in root.attrib['viewBox'].split()[2:])
     titles = {
-        element.text
-        for element in root.iter('{http://www.w3.org/2000/svg}title')
+        element.text for element in root.iter('{http://www.w3.org/2000/svg}title')
     }
-    assert all(f'{edge.src_table}.{edge.fkey} → {edge.dst_table}.'
-               f'{tables[edge.dst_table].definition.pkey}' in titles
-               for edge in edges)
+    assert all(
+        f'{edge.src_table}.{edge.fkey} → {edge.dst_table}.'
+        f'{tables[edge.dst_table].definition.pkey}' in titles
+        for edge in edges
+    )
     paths = root.findall('.//{http://www.w3.org/2000/svg}path[@fill="none"]')
     assert len(paths) == len(edges)
     assert {
         tuple(
             path.get(f'data-{part}')
-            for part in ('src-table', 'src-column', 'dst-table', 'dst-column'))
+            for part in ('src-table', 'src-column', 'dst-table', 'dst-column')
+        )
         for path in paths
-    } == {(edge.src_table, edge.fkey, edge.dst_table,
-           tables[edge.dst_table].definition.pkey)
-          for edge in edges}
+    } == {
+        (
+            edge.src_table,
+            edge.fkey,
+            edge.dst_table,
+            tables[edge.dst_table].definition.pkey,
+        )
+        for edge in edges
+    }
     assert len({path.attrib['d'] for path in paths}) == len(edges)
 
 
-@pytest.mark.parametrize('case, message', [
-    ('unresolved', 'definition|infer_metadata'),
-    ('endpoint', 'missing'),
-    ('no_primary_key', 'primary key'),
-    ('missing_primary_key', 'missing|primary key'),
-    ('missing_foreign_key', 'missing|foreign key'),
-    ('missing_time_column', 'Time column users.gone is missing'),
-    ('missing_end_time_column', 'End-time column users.gone is missing'),
-    ('self_relation', '[Ss]elf'),
-    ('duplicate_columns', 'duplicate column'),
-    ('xml_control', 'valid XML'),
-])
+@pytest.mark.parametrize(
+    'case, message',
+    [
+        ('unresolved', 'definition|infer_metadata'),
+        ('endpoint', 'missing'),
+        ('no_primary_key', 'primary key'),
+        ('missing_primary_key', 'missing|primary key'),
+        ('missing_foreign_key', 'missing|foreign key'),
+        ('missing_time_column', 'Time column users.gone is missing'),
+        ('missing_end_time_column', 'End-time column users.gone is missing'),
+        ('self_relation', '[Ss]elf'),
+        ('duplicate_columns', 'duplicate column'),
+        ('xml_control', 'valid XML'),
+    ],
+)
 def test_visualize_rejects_invalid_metadata(case, message):
     users, events = _s3_tables()
     edge = Edge('events', 'user_id', 'users')
@@ -448,9 +554,11 @@ def test_visualize_rejects_invalid_metadata(case, message):
         users = replace(users, definition=None)
     elif case in ('no_primary_key', 'missing_primary_key'):
         users = replace(
-            users, definition=replace(
-                users.definition,
-                pkey=None if case == 'no_primary_key' else 'gone'))
+            users,
+            definition=replace(
+                users.definition, pkey=None if case == 'no_primary_key' else 'gone'
+            ),
+        )
     elif case == 'endpoint':
         edge = Edge('missing', 'user_id', 'users')
     elif case == 'missing_foreign_key':
@@ -458,13 +566,15 @@ def test_visualize_rejects_invalid_metadata(case, message):
     elif case == 'missing_time_column':
         users = replace(users, definition=replace(users.definition, time_col='gone'))
     elif case == 'missing_end_time_column':
-        users = replace(users, definition=replace(users.definition, end_time_col='gone'))
+        users = replace(
+            users, definition=replace(users.definition, end_time_col='gone')
+        )
     elif case == 'self_relation':
         edge = Edge('events', 'user_id', 'events')
     elif case == 'duplicate_columns':
         users = replace(
-            users, definition=replace(users.definition,
-                                      cols=users.definition.cols * 2))
+            users, definition=replace(users.definition, cols=users.definition.cols * 2)
+        )
     elif case == 'xml_control':
         users = replace(users, table_name='users\x00')
         edge = Edge('events', 'user_id', users.table_name)
@@ -479,22 +589,31 @@ def test_visualize_empty_graph(layout):
     assert 'No tables' in ''.join(root.itertext())
     assert all(float(value) > 0 for value in root.get('viewBox').split()[2:])
     payload = ElementTree.fromstring(svg._repr_html_()).find(
-        './script[@type="application/json"]')
+        './script[@type="application/json"]'
+    )
     assert json.loads(payload.text)['initial'] == (
-        'standard' if layout == 'auto' else layout)
+        'standard' if layout == 'auto' else layout
+    )
 
 
 def test_widget_shell_composes_non_graph_content_and_escapes_data():
     from kumo.engine._widget import button, render_widget
 
     label = '</script><script>alert("chart")</script> & values'
-    body = ('<div class="kumo-widget-toolbar">' +
-            button('chart-toggle', label, text='<Toggle>') + '</div>'
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 30">'
-            '<rect width="75" height="20"/></svg>')
+    body = (
+        '<div class="kumo-widget-toolbar">'
+        + button('chart-toggle', label, text='<Toggle>')
+        + '</div>'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 30">'
+        '<rect width="75" height="20"/></svg>'
+    )
     html, repeated = [
-        render_widget(body, data={'labels': [label], 'values': [0.75]},
-                      attributes={'aria-label': label}) for _ in range(2)
+        render_widget(
+            body,
+            data={'labels': [label], 'values': [0.75]},
+            attributes={'aria-label': label},
+        )
+        for _ in range(2)
     ]
     root = ElementTree.fromstring(html)
     assert 'nodarkmode' in root.get('class').split()
@@ -520,12 +639,17 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
     from kumo.engine import _widget
     from kumo.engine._widget import render_anywidget
 
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      side_effect=AssertionError('source accessed')):
+    with patch.object(
+        S3Connector,
+        'source_backend',
+        new_callable=PropertyMock,
+        side_effect=AssertionError('source accessed'),
+    ):
         svg = Graph(_s3_tables(), [Edge('events', 'user_id', 'users')]).visualize()
         with patch.dict('sys.modules', {'anywidget': None, 'ipywidgets': None}):
-            with patch.object(type(svg), '_pdf', side_effect=AssertionError(
-                    'display rendered a PDF')):
+            with patch.object(
+                type(svg), '_pdf', side_effect=AssertionError('display rendered a PDF')
+            ):
                 html = svg._repr_html_()
             assert svg._repr_svg_() == str(svg)
             assert svg._pdf('standard').startswith(b'%PDF-')
@@ -533,27 +657,33 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
             with pytest.raises(ImportError, match=r'anywidget>=0.9,<1'):
                 svg.as_widget()
         anywidget = pytest.importorskip('anywidget')
-        with patch.object(type(svg), '_pdf', side_effect=AssertionError(
-                'display rendered a PDF')):
+        with patch.object(
+            type(svg), '_pdf', side_effect=AssertionError('display rendered a PDF')
+        ):
             widget = svg.as_widget()
     try:
         assert isinstance(widget, anywidget.AnyWidget)
         bundle = widget._repr_mimebundle_()
         if isinstance(bundle, tuple):
             bundle = bundle[0]
-        assert bundle['application/vnd.jupyter.widget-view+json'][
-            'model_id'] == widget.model_id
+        assert (
+            bundle['application/vnd.jupyter.widget-view+json']['model_id']
+            == widget.model_id
+        )
         assert 'text/html' not in bundle
         payload = ElementTree.fromstring(html).find(
-            './script[@type="application/json"]')
+            './script[@type="application/json"]'
+        )
         assert json.loads(json.dumps(widget.data)) == json.loads(payload.text)
         root = ElementTree.fromstring('<div>' + widget.body + '</div>')
         assert root.find('.//{http://www.w3.org/2000/svg}svg') is not None
         assert root.find('./div[@class="kumo-graph-static"]/p').text == (
-            'Rerun this cell to activate animation.')
+            'Rerun this cell to activate animation.'
+        )
         assert not root.findall('.//script')
-        chart = render_anywidget('<p>Chart</p>', style='.chart{padding:24px}',
-                                 class_name='chart')
+        chart = render_anywidget(
+            '<p>Chart</p>', style='.chart{padding:24px}', class_name='chart'
+        )
         repeated = svg.as_widget()
         try:
             assert repeated is widget
@@ -567,8 +697,7 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
         widget.close()
 
     shell = InteractiveShell.instance()
-    extension = (
-        'snowflake_notebook_utils.ipython_execution_context_monitor_extension')
+    extension = 'snowflake_notebook_utils.ipython_execution_context_monitor_extension'
     graph = Graph(_s3_tables(), [Edge('events', 'user_id', 'users')])
     for environment, extensions in [
         ({}, set()),  # Ordinary Jupyter, even with widget packages installed.
@@ -578,10 +707,14 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
         ({'DATABRICKS_RUNTIME_VERSION': '17.3'}, set()),
         ({'SNOWFLAKE_ACCOUNT': 'external'}, set()),
     ]:
-        with patch.dict('os.environ', environment, clear=True), patch.object(
-                shell.extension_manager, 'loaded', extensions), patch.dict(
-                    'sys.modules', {'snowflake_notebook_utils': Mock(),
-                                    'snowflake.connector': Mock()}):
+        with (
+            patch.dict('os.environ', environment, clear=True),
+            patch.object(shell.extension_manager, 'loaded', extensions),
+            patch.dict(
+                'sys.modules',
+                {'snowflake_notebook_utils': Mock(), 'snowflake.connector': Mock()},
+            ),
+        ):
             data, _ = shell.display_formatter.format(svg)
             with patch.object(shell.display_pub, 'publish') as publish:
                 display(svg)
@@ -589,8 +722,10 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
             assert 'application/vnd.jupyter.widget-view+json' not in data
             assert '<script' in publish.call_args.kwargs['data']['text/html']
 
-    with patch.dict('os.environ', {'SNOWFLAKE_WORKSPACE_ID': 'test'}), \
-            patch.object(shell.extension_manager, 'loaded', {extension}):
+    with (
+        patch.dict('os.environ', {'SNOWFLAKE_WORKSPACE_ID': 'test'}),
+        patch.object(shell.extension_manager, 'loaded', {extension}),
+    ):
         with patch('IPython.get_ipython', return_value=None):
             assert not _widget.is_snowflake_workspace()
         with patch.dict('sys.modules', {'anywidget': None, 'ipywidgets': None}):
@@ -602,19 +737,27 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
             data = publish.call_args.kwargs['data']
             assert '<script' not in data['text/html']
             assert 'anywidget&gt;=0.9,&lt;1' in data['text/html']
-            image = ElementTree.fromstring('<div>' + data['text/html'] +
-                                           '</div>').find('img')
+            image = ElementTree.fromstring('<div>' + data['text/html'] + '</div>').find(
+                'img'
+            )
             assert b64decode(image.get('src').split(',', 1)[1]).decode() == result
         for version in ('0.8.9', '1.0.0rc1', '1.0.0', 'invalid'):
-            with patch.object(anywidget, '__version__', version), patch.object(
-                    shell.display_pub, 'publish') as publish:
+            with (
+                patch.object(anywidget, '__version__', version),
+                patch.object(shell.display_pub, 'publish') as publish,
+            ):
                 display(graph.visualize())
-            assert 'anywidget&gt;=0.9,&lt;1' in publish.call_args.kwargs[
-                'data']['text/html']
+            assert (
+                'anywidget&gt;=0.9,&lt;1'
+                in publish.call_args.kwargs['data']['text/html']
+            )
         result = graph.visualize()
-        with patch('kumo.engine._visualization.render_anywidget',
-                   wraps=render_anywidget) as create, patch.object(
-                       shell.display_pub, 'publish') as publish:
+        with (
+            patch(
+                'kumo.engine._visualization.render_anywidget', wraps=render_anywidget
+            ) as create,
+            patch.object(shell.display_pub, 'publish') as publish,
+        ):
             assert shell.display_formatter.format(result) == ({}, {})
             display(result)
             with patch.dict(shell.user_ns, {'_kumo_svg': result}):
@@ -623,8 +766,10 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
             for call in publish.call_args_list:
                 data = call.kwargs['data']
                 assert 'text/html' not in data and 'image/svg+xml' not in data
-                assert data['application/vnd.jupyter.widget-view+json'][
-                    'model_id'] == result._widget.model_id
+                assert (
+                    data['application/vnd.jupyter.widget-view+json']['model_id']
+                    == result._widget.model_id
+                )
         previous = result._widget
         previous.close()
         replacement = result.as_widget()
@@ -632,11 +777,14 @@ def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
         replacement.close()
 
 
-@pytest.mark.parametrize('layout',
-                         [None, [], 'original', 'circular'])
+@pytest.mark.parametrize('layout', [None, [], 'original', 'circular'])
 def test_visualize_rejects_invalid_layout_before_source_access(layout):
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      side_effect=AssertionError('source accessed')):
+    with patch.object(
+        S3Connector,
+        'source_backend',
+        new_callable=PropertyMock,
+        side_effect=AssertionError('source accessed'),
+    ):
         with pytest.raises(ValueError, match='layout must be'):
             Graph(_s3_tables()).visualize(layout=layout, show_samples=True)
 
@@ -647,15 +795,17 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
     svg_ns = '{http://www.w3.org/2000/svg}'
     for layout in ('standard', 'compact'):
         destination = tmp_path / f'{layout}.svg'
-        with patch.object(S3Connector, 'source_backend',
-                          new_callable=PropertyMock,
-                          side_effect=AssertionError('source accessed')):
+        with patch.object(
+            S3Connector,
+            'source_backend',
+            new_callable=PropertyMock,
+            side_effect=AssertionError('source accessed'),
+        ):
             svg = graph.visualize(destination, layout=layout, show_cols=True)
         assert destination.read_text(encoding='utf-8') == svg
         root = ElementTree.fromstring(svg)
         html = ElementTree.fromstring(svg._repr_html_())
-        payload = json.loads(html.find(
-            './script[@type="application/json"]').text)
+        payload = json.loads(html.find('./script[@type="application/json"]').text)
         image = html.find('./div[@class="kumo-graph-static"]/img')
         assert b64decode(image.get('src').split(',', 1)[1]).decode() == svg
         assert payload['initial'] == layout
@@ -664,38 +814,72 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
         assert pdf.startswith(b'%PDF-') and pdf.rstrip().endswith(b'%%EOF')
         assert len(re.findall(rb'/Type /Page\b', pdf)) >= 2
         assert list(map(float, root.get('viewBox').split())) == [
-            0, 0, selected['width'], selected['height']]
+            0,
+            0,
+            selected['width'],
+            selected['height'],
+        ]
         assert not root.findall(f'.//{svg_ns}script')
         cards = root.findall(f'{svg_ns}g[@data-kumo-card]')
         paths = root.findall(f'.//{svg_ns}path[@class="kumo-edge"]')
-        schemas.append((
-            [card.get('data-kumo-card') for card in cards],
-            [''.join(card.itertext()) for card in cards],
-            [tuple(path.get(f'data-{part}') for part in
-                   ('src-table', 'src-column', 'dst-table', 'dst-column'))
-             for path in paths],
-        ))
+        schemas.append(
+            (
+                [card.get('data-kumo-card') for card in cards],
+                [''.join(card.itertext()) for card in cards],
+                [
+                    tuple(
+                        path.get(f'data-{part}')
+                        for part in (
+                            'src-table',
+                            'src-column',
+                            'dst-table',
+                            'dst-column',
+                        )
+                    )
+                    for path in paths
+                ],
+            )
+        )
     assert schemas[0] == schemas[1]
 
 
 def test_visualize_pdf_indexes_hidden_columns(tmp_path, pdf_pages):
     users, events = _s3_tables()
-    users = replace(users, definition=replace(
-        users.definition, time_col='hidden_date', end_time_col='hidden_end_date', cols=[
-            *users.definition.cols,
-            Column('hidden_date', Stype.timestamp, Dtype.date),
-            Column('hidden_end_date', Stype.timestamp, Dtype.date),
-            *(Column(f'hidden_{i}_é_Ω_账户', Stype.numerical, Dtype.float64)
-              for i in range(100)),
-        ]))
+    users = replace(
+        users,
+        definition=replace(
+            users.definition,
+            time_col='hidden_date',
+            end_time_col='hidden_end_date',
+            cols=[
+                *users.definition.cols,
+                Column('hidden_date', Stype.timestamp, Dtype.date),
+                Column('hidden_end_date', Stype.timestamp, Dtype.date),
+                *(
+                    Column(f'hidden_{i}_é_Ω_账户', Stype.numerical, Dtype.float64)
+                    for i in range(100)
+                ),
+            ],
+        ),
+    )
     graph = Graph([users, events], [Edge('events', 'user_id', 'users')])
     destination = tmp_path / 'graph.PDF'
-    with style.context('dark_background'), rc_context({
-            'savefig.transparent': True, 'savefig.facecolor': 'red',
-            'savefig.edgecolor': 'blue',
-    }), patch.object(S3Connector, 'source_backend',
-                     new_callable=PropertyMock,
-                     side_effect=AssertionError('source accessed')):
+    with (
+        style.context('dark_background'),
+        rc_context(
+            {
+                'savefig.transparent': True,
+                'savefig.facecolor': 'red',
+                'savefig.edgecolor': 'blue',
+            }
+        ),
+        patch.object(
+            S3Connector,
+            'source_backend',
+            new_callable=PropertyMock,
+            side_effect=AssertionError('source accessed'),
+        ),
+    ):
         ambient = dict(rcParams)
         svg = graph.visualize(destination, show_cols=False)
         assert dict(rcParams) == ambient
@@ -715,15 +899,26 @@ def test_visualize_markdown_exports_complete_safe_schema(tmp_path, suffix):
     users, events = _s3_tables()
     alias = 'end"]\n```<script>alert(1)</script>|账户 www.example.com a@b.com'
     key = 'user_id|[link](https://example.com)'
-    events = replace(events, definition=replace(events.definition, cols=[
-        events.definition.cols[0], Column(key, Stype.ID, Dtype.int64),
-        Column('hidden_**value**', Stype.numerical, Dtype.float64)]))
-    graph = Graph({alias: users, 'events': events},
-                  [Edge('events', key, alias)])
+    events = replace(
+        events,
+        definition=replace(
+            events.definition,
+            cols=[
+                events.definition.cols[0],
+                Column(key, Stype.ID, Dtype.int64),
+                Column('hidden_**value**', Stype.numerical, Dtype.float64),
+            ],
+        ),
+    )
+    graph = Graph({alias: users, 'events': events}, [Edge('events', key, alias)])
     destination = tmp_path / f'graph.{suffix}'
     destination.write_text('stale contents')
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      side_effect=AssertionError('source accessed')):
+    with patch.object(
+        S3Connector,
+        'source_backend',
+        new_callable=PropertyMock,
+        side_effect=AssertionError('source accessed'),
+    ):
         svg = graph.visualize(destination, show_cols=False)
     markdown = destination.read_text(encoding='utf-8')
     assert markdown.startswith('# Table relationships\n')
@@ -740,21 +935,26 @@ def test_visualize_markdown_exports_complete_safe_schema(tmp_path, suffix):
     assert '账户' in markdown and 'FK' in markdown and 'PK' in markdown
     assert 'stale contents' not in markdown
     assert svg._markdown() == markdown
-    assert Graph([]).visualize(tmp_path / 'empty.md')._markdown().endswith(
-        'No tables.\n')
+    assert (
+        Graph([]).visualize(tmp_path / 'empty.md')._markdown().endswith('No tables.\n')
+    )
 
 
 @pytest.mark.parametrize('show_samples', [0, 1, 6, 'true', None])
 def test_visualize_rejects_invalid_show_samples(show_samples):
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      side_effect=AssertionError('source accessed')):
+    with patch.object(
+        S3Connector,
+        'source_backend',
+        new_callable=PropertyMock,
+        side_effect=AssertionError('source accessed'),
+    ):
         with pytest.raises(ValueError, match='show_samples'):
             Graph(_s3_tables()).visualize(show_samples=show_samples)
 
 
 @pytest.mark.parametrize(
-    'outcome', ['values', 'empty', 'unavailable', 'error', 'sql', 'collision',
-                'nulls'])
+    'outcome', ['values', 'empty', 'unavailable', 'error', 'sql', 'collision', 'nulls']
+)
 def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
     import pandas as pd
 
@@ -762,74 +962,114 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
     sql = 'SELECT id FROM users' if outcome == 'sql' else None
     if sql:
         tables[0] = replace(
-            tables[0], definition=replace(
-                tables[0].definition, source_table=CustomSQLSourceTable(
-                    connector_id=tables[0].connector.id, table='users',
-                    sql=sql)))
+            tables[0],
+            definition=replace(
+                tables[0].definition,
+                source_table=CustomSQLSourceTable(
+                    connector_id=tables[0].connector.id, table='users', sql=sql
+                ),
+            ),
+        )
     secret = '<script>alert("private sample")</script>'
     definition = tables[0].definition
     assert definition is not None
-    tables[0] = replace(tables[0], definition=replace(
-        definition, cols=[
-            *definition.cols,
-            Column('created_at', Stype.timestamp, Dtype.date)]))
-    frame = pd.DataFrame({
-        'id': [secret, None, ['alpha', 'beta'], 'later non-null',
-               'fourth', 'fifth', 'sixth', 'outside cap'],
-        'event_id': ['x' * 1000, None, 'third', 'later non-null',
-                     'fourth', 'fifth', 'sixth', 'outside cap'],
-        'user_id': list(range(1, 9)),
-        'created_at': pd.date_range('2026-10-01 09:00:00.123', periods=8,
-                                    tz='UTC'),
-    })
+    tables[0] = replace(
+        tables[0],
+        definition=replace(
+            definition,
+            cols=[*definition.cols, Column('created_at', Stype.timestamp, Dtype.date)],
+        ),
+    )
+    frame = pd.DataFrame(
+        {
+            'id': [
+                secret,
+                None,
+                ['alpha', 'beta'],
+                'later non-null',
+                'fourth',
+                'fifth',
+                'sixth',
+                'outside cap',
+            ],
+            'event_id': [
+                'x' * 1000,
+                None,
+                'third',
+                'later non-null',
+                'fourth',
+                'fifth',
+                'sixth',
+                'outside cap',
+            ],
+            'user_id': list(range(1, 9)),
+            'created_at': pd.date_range('2026-10-01 09:00:00.123', periods=8, tz='UTC'),
+        }
+    )
     if outcome == 'nulls':
-        frame = pd.DataFrame({
-            'id': [None, pd.NA, pd.NaT],
-            'event_id': [float('nan')] * 3,
-            'user_id': [None, 7, None],
-        })
+        frame = pd.DataFrame(
+            {
+                'id': [None, pd.NA, pd.NaT],
+                'event_id': [float('nan')] * 3,
+                'user_id': [None, 7, None],
+            }
+        )
     if outcome == 'empty':
         frame = frame.iloc[:0]
     backend = Mock()
     backend.get_sample.return_value.sample_rows = (
-        None if outcome == 'unavailable' else frame.to_json(orient='table'))
+        None if outcome == 'unavailable' else frame.to_json(orient='table')
+    )
     if outcome == 'error':
         backend.get_sample.side_effect = RuntimeError('credential secret')
     if outcome == 'collision':
         tables = [
             replace(
-                table, table_name=name,
-                definition=replace(table.definition,
-                                   cols=[Column(key, Stype.ID,
-                                                Dtype.int64)], pkey=key))
+                table,
+                table_name=name,
+                definition=replace(
+                    table.definition,
+                    cols=[Column(key, Stype.ID, Dtype.int64)],
+                    pkey=key,
+                ),
+            )
             for table, name, key in zip(tables, ['a', 'a.b'], ['b.c', 'c'])
         ]
         backend.get_sample.side_effect = lambda connector, name, *args, **kw: Mock(
-            sample_rows=pd.DataFrame({
-                'b.c' if name == 'a' else 'c': [name]
-            }).to_json(orient='table'))
+            sample_rows=pd.DataFrame({'b.c' if name == 'a' else 'c': [name]}).to_json(
+                orient='table'
+            )
+        )
     destination = tmp_path / 'graph.svg'
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      return_value=backend), patch.object(
-                          Graph, 'snapshot', side_effect=AssertionError):
-        svg = Graph(tables).visualize(destination, show_samples=True,
-                                      show_cols=True)
+    with (
+        patch.object(
+            S3Connector,
+            'source_backend',
+            new_callable=PropertyMock,
+            return_value=backend,
+        ),
+        patch.object(Graph, 'snapshot', side_effect=AssertionError),
+    ):
+        svg = Graph(tables).visualize(destination, show_samples=True, show_cols=True)
         html = svg._repr_html_()
         if outcome == 'values':
             repeat = svg._repr_html_()
-            assert re.sub(r'kumo-[0-9a-f]{32}', 'kumo-ID',
-                          html) == re.sub(r'kumo-[0-9a-f]{32}', 'kumo-ID', repeat)
+            assert re.sub(r'kumo-[0-9a-f]{32}', 'kumo-ID', html) == re.sub(
+                r'kumo-[0-9a-f]{32}', 'kumo-ID', repeat
+            )
             assert set(re.findall(r' id="([^"]+)"', html)).isdisjoint(
-                re.findall(r' id="([^"]+)"', repeat))
+                re.findall(r' id="([^"]+)"', repeat)
+            )
     assert backend.get_sample.call_count == 2
-    for call, table in zip(backend.get_sample.call_args_list,
-                           sorted(tables, key=lambda table: table.table_name)):
+    for call, table in zip(
+        backend.get_sample.call_args_list,
+        sorted(tables, key=lambda table: table.table_name),
+    ):
         assert call.args == (table.connector, table.table_name, 30)
         assert call.kwargs['sql'] == (sql if table.table_name == 'users' else None)
         assert call.kwargs['timeout'] > 0
     assert 'Sample values' not in svg
-    image = ElementTree.fromstring(html).find(
-        './div[@class="kumo-graph-static"]/img')
+    image = ElementTree.fromstring(html).find('./div[@class="kumo-graph-static"]/img')
     assert b64decode(image.get('src').split(',', 1)[1]).decode() == svg
     markdown = svg._markdown()
     assert 'private sample' not in markdown and 'credential secret' not in markdown
@@ -837,7 +1077,8 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
     assert 'credential secret' not in html
     assert '<script>alert' not in html
     tips = ElementTree.fromstring(html).findall(
-        './/{http://www.w3.org/2000/svg}g[@data-kumo-tip]')
+        './/{http://www.w3.org/2000/svg}g[@data-kumo-tip]'
+    )
     details = '\n'.join(tip.get('data-kumo-tip') for tip in tips)
     if outcome in ('values', 'sql'):
         assert '2026-10-01 09:00:00.123000+00:00' in details
@@ -848,16 +1089,22 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
         assert 'outside cap' not in details
         for tip in tips:
             if 'Sample values:\n' in tip.get('data-kumo-tip'):
-                assert len(tip.get('data-kumo-tip').split(
-                    'Sample values:\n')[1].splitlines()) == 6
+                assert (
+                    len(
+                        tip.get('data-kumo-tip')
+                        .split('Sample values:\n')[1]
+                        .splitlines()
+                    )
+                    == 6
+                )
         assert 'x' * 121 not in details
     elif outcome == 'collision':
         rows = [tip for tip in tips if tip.get('data-kumo-row')]
-        assert [(tip.get('data-kumo-table'), tip.get('data-kumo-column'))
-                for tip in rows] == [('a', 'b.c'), ('a.b', 'c')]
         assert [
-            tip.get('data-kumo-tip').split('Sample values:\n')[1]
-            for tip in rows
+            (tip.get('data-kumo-table'), tip.get('data-kumo-column')) for tip in rows
+        ] == [('a', 'b.c'), ('a.b', 'c')]
+        assert [
+            tip.get('data-kumo-tip').split('Sample values:\n')[1] for tip in rows
         ] == ["'a'", "'a.b'"]
     elif outcome == 'nulls':
         assert 'No non-null values in preview' in details
@@ -875,17 +1122,34 @@ def test_visualize_samples_bound_preview_and_select_columns_independently():
 
     table = _s3_tables()[0]
     backend = Mock()
-    backend.get_sample.return_value.sample_rows = pd.DataFrame({
-        'id': [None] * 29 + ['last allowed', 'outside preview'],
-        'other': ['first', None, 'second', 'third', 'fourth', 'fifth',
-                  'sixth', 'outside cap'] + [None] * 23,
-    }).to_json(orient='table')
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      return_value=backend):
+    backend.get_sample.return_value.sample_rows = pd.DataFrame(
+        {
+            'id': [None] * 29 + ['last allowed', 'outside preview'],
+            'other': [
+                'first',
+                None,
+                'second',
+                'third',
+                'fourth',
+                'fifth',
+                'sixth',
+                'outside cap',
+            ]
+            + [None] * 23,
+        }
+    ).to_json(orient='table')
+    with patch.object(
+        S3Connector, 'source_backend', new_callable=PropertyMock, return_value=backend
+    ):
         preview = _preview(table, ['id', 'other'])
     assert preview['id'] == "\nSample values:\n'last allowed'"
     assert preview['other'].splitlines()[2:] == [
-        "'first'", "'second'", "'third'", "'fourth'", "'fifth'", "'sixth'"
+        "'first'",
+        "'second'",
+        "'third'",
+        "'fourth'",
+        "'fifth'",
+        "'sixth'",
     ]
 
 
@@ -893,13 +1157,16 @@ def test_visualize_samples_bound_preview_and_select_columns_independently():
 def test_visualize_table_cap_precedes_source_access(count):
     table = _s3_tables()[0]
     graph = Graph({f'table_{i:02}': table for i in range(count)})
-    with patch.object(S3Connector, 'source_backend',
-                      new_callable=PropertyMock) as backend:
+    with patch.object(
+        S3Connector, 'source_backend', new_callable=PropertyMock
+    ) as backend:
         if count == 31:
             with pytest.raises(ValueError, match='at most 30 tables'):
                 graph.visualize(show_samples=True)
         else:
             root = ElementTree.fromstring(graph.visualize())
-            assert len(root.findall(
-                './{http://www.w3.org/2000/svg}g[@data-kumo-card]')) == 30
+            assert (
+                len(root.findall('./{http://www.w3.org/2000/svg}g[@data-kumo-card]'))
+                == 30
+            )
         backend.assert_not_called()

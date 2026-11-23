@@ -31,15 +31,15 @@ from kumo_bigquery.source import BigQuerySourceReader
 #: Where each lazily exported name is defined. The plugin's modules, and only
 #: those: everything eager above is reachable on the platform's install.
 _LAZY_EXPORTS = {
-    "BigQuerySinkBackend": "sink",
-    "BigQuerySourceBackend": "backend",
-    "close": "session",
-    "probe": "session",
+    'BigQuerySinkBackend': 'sink',
+    'BigQuerySourceBackend': 'backend',
+    'close': 'session',
+    'probe': 'session',
 }
 
 __all__ = [
-    "BigQuerySourceReader",
-    "Capability",
+    'BigQuerySourceReader',
+    'Capability',
     *sorted(_LAZY_EXPORTS),
 ]
 

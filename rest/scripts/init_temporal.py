@@ -18,14 +18,15 @@ from temporalio_commons import TemporalClient
 
 async def init_temporal(deploy_mode: DeployStage):
     os.environ['DEPLOY_STAGE'] = deploy_mode.value
-    deploy_env_config = DeployEnvConfig.parse_from_env(app_name='devserver',
-                                                       deploy_mode=deploy_mode)
+    deploy_env_config = DeployEnvConfig.parse_from_env(
+        app_name='devserver', deploy_mode=deploy_mode
+    )
     await TemporalClient(deploy_env_config).init()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("deploy_mode")
+    parser.add_argument('deploy_mode')
     args = parser.parse_args()
 
     deploy_mode = DeployStage(args.deploy_mode)

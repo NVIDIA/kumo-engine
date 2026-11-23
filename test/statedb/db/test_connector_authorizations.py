@@ -34,7 +34,7 @@ from statedb.rest.connector_authorization import (
 class _Principal:
     user_id: UserID = UserID('user-1')
     user_name: str = 'User One'
-    kumo_group_ids: tuple[str, ...] = ('group-1', )
+    kumo_group_ids: tuple[str, ...] = ('group-1',)
     external_membership_unavailable: bool = False
     is_admin: bool = False
     is_disabled: bool = False
@@ -50,8 +50,7 @@ _READ_ACTION = ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS
 
 @pytest.fixture
 def db(tmp_path):
-    state_db = asyncio.run(
-        StateDB.open_sqlite(str(tmp_path / 'state.db'), pool_size=1))
+    state_db = asyncio.run(StateDB.open_sqlite(str(tmp_path / 'state.db'), pool_size=1))
     try:
         yield state_db
     finally:
@@ -151,10 +150,7 @@ async def _delegating_parent(
 
 
 def test_durable_capability_does_not_snapshot_membership_or_admin() -> None:
-    durable_fields = {
-        field.name
-        for field in fields(ConnectorAuthorizationDBEntry)
-    }
+    durable_fields = {field.name for field in fields(ConnectorAuthorizationDBEntry)}
     assert 'principal_group_ids' not in durable_fields
     assert 'principal_was_admin' not in durable_fields
 
@@ -212,31 +208,30 @@ async def _add_use(
 
 
 async def _stored_authorization_ids(
-    service: ConnectorAuthorizationService, ) -> set[str]:
+    service: ConnectorAuthorizationService,
+) -> set[str]:
     async with service._state_db.read_tx() as tx:
         return {row.id for row in await service._authorizations.list_all(tx)}
 
 
-async def _stored_use_count(service: ConnectorAuthorizationService, ) -> int:
+async def _stored_use_count(
+    service: ConnectorAuthorizationService,
+) -> int:
     async with service._state_db.read_tx() as tx:
         return len(await service._uses.list_all(tx))
 
 
-def test_retention_policy_defaults_and_environment_overrides(
-        monkeypatch) -> None:
+def test_retention_policy_defaults_and_environment_overrides(monkeypatch) -> None:
     defaults = ConnectorAuthorizationRetentionPolicy()
     assert defaults.expired_retention == timedelta(days=7)
     assert defaults.revoked_retention == timedelta(days=7)
 
-    monkeypatch.setenv('CONNECTOR_AUTHORIZATION_EXPIRED_RETENTION_SECONDS',
-                       '11')
-    monkeypatch.setenv('CONNECTOR_AUTHORIZATION_REVOKED_RETENTION_SECONDS',
-                       '12')
+    monkeypatch.setenv('CONNECTOR_AUTHORIZATION_EXPIRED_RETENTION_SECONDS', '11')
+    monkeypatch.setenv('CONNECTOR_AUTHORIZATION_REVOKED_RETENTION_SECONDS', '12')
     monkeypatch.setenv('CONNECTOR_AUTHORIZATION_GC_BATCH_SIZE', '13')
     monkeypatch.setenv('CONNECTOR_AUTHORIZATION_USE_GC_BATCH_SIZE', '14')
     monkeypatch.setenv('CONNECTOR_AUTHORIZATION_GC_MIN_INTERVAL_SECONDS', '15')
-    monkeypatch.setenv(
-        'CONNECTOR_AUTHORIZATION_GC_MAINTENANCE_INTERVAL_SECONDS', '16')
+    monkeypatch.setenv('CONNECTOR_AUTHORIZATION_GC_MAINTENANCE_INTERVAL_SECONDS', '16')
     monkeypatch.setenv('CONNECTOR_AUTHORIZATION_GC_BATCHES_PER_TICK', '17')
 
     configured = ConnectorAuthorizationRetentionPolicy.from_env()
@@ -254,27 +249,13 @@ def test_retention_policy_defaults_and_environment_overrides(
 @pytest.mark.parametrize(
     'override',
     [
-        {
-            'expired_retention': timedelta(seconds=-1)
-        },
-        {
-            'revoked_retention': timedelta(seconds=-1)
-        },
-        {
-            'authorization_batch_size': 0
-        },
-        {
-            'use_batch_size': 0
-        },
-        {
-            'opportunistic_min_interval': timedelta(seconds=-1)
-        },
-        {
-            'maintenance_interval': timedelta(0)
-        },
-        {
-            'maintenance_batches_per_tick': 0
-        },
+        {'expired_retention': timedelta(seconds=-1)},
+        {'revoked_retention': timedelta(seconds=-1)},
+        {'authorization_batch_size': 0},
+        {'use_batch_size': 0},
+        {'opportunistic_min_interval': timedelta(seconds=-1)},
+        {'maintenance_interval': timedelta(0)},
+        {'maintenance_batches_per_tick': 0},
     ],
     ids=[
         'expired-retention',
@@ -287,14 +268,16 @@ def test_retention_policy_defaults_and_environment_overrides(
     ],
 )
 def test_retention_policy_rejects_unbounded_or_invalid_configuration(
-    override, ) -> None:
+    override,
+) -> None:
     with pytest.raises(ValueError):
         ConnectorAuthorizationRetentionPolicy(**override)
 
 
 @pytest.mark.asyncio
 async def test_capability_binds_run_and_activity_retry_is_idempotent(
-        db: StateDB) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(db)
     entry, token = await _issue(service)
     assert token not in repr(entry)
@@ -319,21 +302,11 @@ async def test_capability_binds_run_and_activity_retry_is_idempotent(
 @pytest.mark.parametrize(
     'override',
     [
-        {
-            'workflow_id': 'workflow-2'
-        },
-        {
-            'workflow_run_id': 'run-2'
-        },
-        {
-            'resource_id': 'connector-2'
-        },
-        {
-            'project_id': 'project-2'
-        },
-        {
-            'action': ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER
-        },
+        {'workflow_id': 'workflow-2'},
+        {'workflow_run_id': 'run-2'},
+        {'resource_id': 'connector-2'},
+        {'project_id': 'project-2'},
+        {'action': ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER},
     ],
     ids=['workflow', 'run', 'resource', 'project', 'action'],
 )
@@ -351,8 +324,7 @@ async def test_capability_rejects_cross_scope_replay(
 
 
 @pytest.mark.asyncio
-async def test_capability_rejects_guess_expiry_and_revocation(
-        db: StateDB) -> None:
+async def test_capability_rejects_guess_expiry_and_revocation(db: StateDB) -> None:
     service = ConnectorAuthorizationService(db)
     _, token = await _issue(service)
     with pytest.raises(ConnectorAuthorizationError):
@@ -375,7 +347,7 @@ async def test_request_principal_flags_can_never_mint_internal_service(
         service,
         principal=principal,
         auth_backend=f'native_{mode}',
-        allowed_actions=(_READ_ACTION, ),
+        allowed_actions=(_READ_ACTION,),
     )
     assert entry.principal_id == 'internal_service:scheduled_workflow'
     assert entry.auth_backend == f'native_{mode}'
@@ -399,8 +371,7 @@ async def test_expired_capability_is_rejected(db: StateDB, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_child_delegation_is_exact_and_cannot_expand_scope(
-        db: StateDB) -> None:
+async def test_child_delegation_is_exact_and_cannot_expand_scope(db: StateDB) -> None:
     service = ConnectorAuthorizationService(db)
     _, parent_token = await _issue(service)
     await _bind(service, parent_token, 'parent-workflow')
@@ -415,7 +386,7 @@ async def test_child_delegation_is_exact_and_cannot_expand_scope(
     child, child_token = await service.delegate_to_child(
         parent,
         child_workflow_id='child-workflow',
-        child_actions=(ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS, ),
+        child_actions=(ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS,),
     )
     assert child.parent_authorization_id == parent.id
     assert child.workflow_id == 'child-workflow'
@@ -431,8 +402,7 @@ async def test_child_delegation_is_exact_and_cannot_expand_scope(
         await service.delegate_to_child(
             parent,
             child_workflow_id='overbroad-child',
-            child_actions=(
-                ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER, ),
+            child_actions=(ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER,),
         )
     forged_parent = replace(
         parent,
@@ -442,18 +412,16 @@ async def test_child_delegation_is_exact_and_cannot_expand_scope(
         ),
         project_id='forged-project',
     )
-    with pytest.raises(ConnectorAuthorizationError,
-                       match='stored parent scope'):
+    with pytest.raises(ConnectorAuthorizationError, match='stored parent scope'):
         await service.delegate_to_child(
             forged_parent,
             child_workflow_id='forged-action-child',
-            child_actions=(
-                ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER, ),
+            child_actions=(ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER,),
         )
     stored_scope_child, _ = await service.delegate_to_child(
         forged_parent,
         child_workflow_id='forged-project-child',
-        child_actions=(ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS, ),
+        child_actions=(ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS,),
     )
     assert stored_scope_child.project_id == parent.project_id
     assert stored_scope_child.resource_id == parent.resource_id
@@ -463,7 +431,8 @@ async def test_child_delegation_is_exact_and_cannot_expand_scope(
 
 @pytest.mark.asyncio
 async def test_graph_parent_delegates_exact_diskgraph_snapshot_authority(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     """Reproduce GraphRefresh -> dg-ingest -> ensure_snapshot authority."""
     service = ConnectorAuthorizationService(db)
     parent, _ = await _delegating_parent(
@@ -481,8 +450,7 @@ async def test_graph_parent_delegates_exact_diskgraph_snapshot_authority(
         child_actions=child_actions,
     )
     assert child_actions == {ConnectorCapabilityAction.ENSURE_SNAPSHOT}
-    assert set(
-        child.allowed_actions) == {ConnectorCapabilityAction.ENSURE_SNAPSHOT}
+    assert set(child.allowed_actions) == {ConnectorCapabilityAction.ENSURE_SNAPSHOT}
     await _authorize(
         service,
         child_token,
@@ -493,8 +461,7 @@ async def test_graph_parent_delegates_exact_diskgraph_snapshot_authority(
         resource_id='warehouse-connector',
     )
 
-    with pytest.raises(ConnectorAuthorizationError,
-                       match='action is not allowed'):
+    with pytest.raises(ConnectorAuthorizationError, match='action is not allowed'):
         await _authorize(
             service,
             child_token,
@@ -507,7 +474,8 @@ async def test_graph_parent_delegates_exact_diskgraph_snapshot_authority(
 
 @pytest.mark.asyncio
 async def test_training_postprocess_uses_only_child_workflow_authority(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(db)
     parent, parent_token = await _delegating_parent(
         service,
@@ -542,16 +510,18 @@ async def test_training_postprocess_uses_only_child_workflow_authority(
         action=ConnectorCapabilityAction.POSTPROCESS_TRAINING_JOB_OUTPUT,
         resource_id='warehouse-connector',
     )
-    with pytest.raises(ConnectorAuthorizationError,
-                       match='workflow provenance mismatch'):
+    with pytest.raises(
+        ConnectorAuthorizationError, match='workflow provenance mismatch'
+    ):
         await _authorize(
             service,
             parent_token,
             workflow_id='training-job-child',
             **common,
         )
-    with pytest.raises(ConnectorAuthorizationError,
-                       match='workflow provenance mismatch'):
+    with pytest.raises(
+        ConnectorAuthorizationError, match='workflow provenance mismatch'
+    ):
         await _authorize(
             service,
             child_token,
@@ -562,7 +532,8 @@ async def test_training_postprocess_uses_only_child_workflow_authority(
 
 @pytest.mark.asyncio
 async def test_batch_prediction_delegates_exact_artifact_output_authority(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(db)
     parent, _ = await _delegating_parent(
         service,
@@ -572,8 +543,7 @@ async def test_batch_prediction_delegates_exact_artifact_output_authority(
         activity_id='delegate-batch-prediction-job',
     )
     batch_actions = _actions_for_child_workflow('BatchPredictionJobWorkflow')
-    assert batch_actions == set(
-        CONNECTOR_DATABRICKS_BATCH_PREDICTION_OUTPUT_ACTIONS)
+    assert batch_actions == set(CONNECTOR_DATABRICKS_BATCH_PREDICTION_OUTPUT_ACTIONS)
     batch_child, batch_token = await service.delegate_to_child(
         parent,
         child_workflow_id='batch-prediction-job-child',
@@ -597,9 +567,11 @@ async def test_batch_prediction_delegates_exact_artifact_output_authority(
     assert set(artifact_child.allowed_actions) == artifact_actions
     assert ConnectorCapabilityAction.DELEGATE_CHILD not in artifact_actions
     assert ConnectorCapabilityAction.START_BATCH_PREDICTION_STATS not in (
-        artifact_actions)
+        artifact_actions
+    )
     assert ConnectorCapabilityAction.CLEANUP_DATABRICKS_VOLUME_OUTPUTS not in (
-        artifact_actions)
+        artifact_actions
+    )
     await _authorize(
         service,
         artifact_token,
@@ -609,8 +581,7 @@ async def test_batch_prediction_delegates_exact_artifact_output_authority(
         action=ConnectorCapabilityAction.WRITE_ARTIFACTS_TO_CUSTOMER,
         resource_id='output-connector',
     )
-    with pytest.raises(ConnectorAuthorizationError,
-                       match='action is not allowed'):
+    with pytest.raises(ConnectorAuthorizationError, match='action is not allowed'):
         await _authorize(
             service,
             artifact_token,
@@ -622,21 +593,26 @@ async def test_batch_prediction_delegates_exact_artifact_output_authority(
 
 
 @pytest.mark.asyncio
-async def test_cancel_revoke_is_scoped_to_deployment_and_namespace(
-        db: StateDB) -> None:
+async def test_cancel_revoke_is_scoped_to_deployment_and_namespace(db: StateDB) -> None:
     service = ConnectorAuthorizationService(db)
     _, token = await _issue(service)
     await _bind(service, token)
-    assert await service.revoke_workflow(
-        workflow_id='workflow-1',
-        deployment_id='other:instance:client',
-        temporal_namespace=_NAMESPACE,
-    ) == 0
-    assert await service.revoke_workflow(
-        workflow_id='workflow-1',
-        deployment_id=_DEPLOYMENT_ID,
-        temporal_namespace=_NAMESPACE,
-    ) == 1
+    assert (
+        await service.revoke_workflow(
+            workflow_id='workflow-1',
+            deployment_id='other:instance:client',
+            temporal_namespace=_NAMESPACE,
+        )
+        == 0
+    )
+    assert (
+        await service.revoke_workflow(
+            workflow_id='workflow-1',
+            deployment_id=_DEPLOYMENT_ID,
+            temporal_namespace=_NAMESPACE,
+        )
+        == 1
+    )
     with pytest.raises(ConnectorAuthorizationError):
         await _authorize(service, token)
     assert await service.revoke(token)
@@ -649,19 +625,19 @@ async def test_cleanup_retains_live_and_recent_rows_and_cascades_old_uses(
     db: StateDB,
     caplog,
 ) -> None:
-    service = ConnectorAuthorizationService(
-        db, retention_policy=_retention_policy())
+    service = ConnectorAuthorizationService(db, retention_policy=_retention_policy())
     issued = [await _issue(service) for _ in range(5)]
     entries = [item[0] for item in issued]
     tokens = [item[1] for item in issued]
     current = now_utc()
     active, recent_expired, old_expired, recent_revoked, old_revoked = entries
-    await _set_inactive_time(service, active,
-                             expires_at=current + timedelta(days=1))
-    await _set_inactive_time(service, recent_expired,
-                             expires_at=current - timedelta(days=1))
-    await _set_inactive_time(service, old_expired,
-                             expires_at=current - timedelta(days=8))
+    await _set_inactive_time(service, active, expires_at=current + timedelta(days=1))
+    await _set_inactive_time(
+        service, recent_expired, expires_at=current - timedelta(days=1)
+    )
+    await _set_inactive_time(
+        service, old_expired, expires_at=current - timedelta(days=8)
+    )
     await _set_inactive_time(
         service,
         recent_revoked,
@@ -680,7 +656,8 @@ async def test_cleanup_retains_live_and_recent_rows_and_cascades_old_uses(
     result = await service.purge_stale(now=current)
 
     assert result == ConnectorAuthorizationCleanupResult(
-        authorizations_deleted=2, uses_deleted=2)
+        authorizations_deleted=2, uses_deleted=2
+    )
     assert await _stored_authorization_ids(service) == {
         str(active.id),
         str(recent_expired.id),
@@ -698,7 +675,8 @@ async def test_cleanup_retains_live_and_recent_rows_and_cascades_old_uses(
 
 @pytest.mark.asyncio
 async def test_cleanup_batches_are_bounded_and_repeated_calls_drain_backlog(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(
         db,
         retention_policy=_retention_policy(
@@ -711,8 +689,9 @@ async def test_cleanup_batches_are_bounded_and_repeated_calls_drain_backlog(
     entries = [(await _issue(service))[0] for _ in range(3)]
     current = now_utc()
     for index, entry in enumerate(entries):
-        await _set_inactive_time(service, entry,
-                                 expires_at=current - timedelta(seconds=1))
+        await _set_inactive_time(
+            service, entry, expires_at=current - timedelta(seconds=1)
+        )
         await _add_use(service, entry, f'{index}-first')
         await _add_use(service, entry, f'{index}-second')
 
@@ -733,7 +712,8 @@ async def test_cleanup_batches_are_bounded_and_repeated_calls_drain_backlog(
 
 @pytest.mark.asyncio
 async def test_maintenance_tick_caps_work_then_next_tick_drains(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(
         db,
         retention_policy=_retention_policy(
@@ -745,8 +725,9 @@ async def test_maintenance_tick_caps_work_then_next_tick_drains(
     entries = [(await _issue(service))[0] for _ in range(5)]
     current = now_utc()
     for entry in entries:
-        await _set_inactive_time(service, entry,
-                                 expires_at=current - timedelta(seconds=1))
+        await _set_inactive_time(
+            service, entry, expires_at=current - timedelta(seconds=1)
+        )
 
     first = await service.run_maintenance_tick(now=current)
     assert first.authorizations_deleted == 4
@@ -759,7 +740,8 @@ async def test_maintenance_tick_caps_work_then_next_tick_drains(
 
 @pytest.mark.asyncio
 async def test_periodic_maintenance_purges_idle_backlog_and_stops_cleanly(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(
         db,
         retention_policy=_retention_policy(
@@ -788,7 +770,8 @@ async def test_periodic_maintenance_purges_idle_backlog_and_stops_cleanly(
 
 @pytest.mark.asyncio
 async def test_write_volume_forces_cleanup_at_or_above_ingest_capacity(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(
         db,
         retention_policy=_retention_policy(
@@ -800,8 +783,9 @@ async def test_write_volume_forces_cleanup_at_or_above_ingest_capacity(
     stale = [(await _issue(service))[0] for _ in range(9)]
     current = now_utc()
     for entry in stale:
-        await _set_inactive_time(service, entry,
-                                 expires_at=current - timedelta(seconds=1))
+        await _set_inactive_time(
+            service, entry, expires_at=current - timedelta(seconds=1)
+        )
 
     new_entries = [(await _issue(service))[0] for _ in range(9)]
 
@@ -812,7 +796,8 @@ async def test_write_volume_forces_cleanup_at_or_above_ingest_capacity(
 
 @pytest.mark.asyncio
 async def test_cleanup_is_safe_with_concurrent_issue_validate_delegate_and_retry(
-    db: StateDB, ) -> None:
+    db: StateDB,
+) -> None:
     service = ConnectorAuthorizationService(
         db,
         retention_policy=_retention_policy(
@@ -824,8 +809,7 @@ async def test_cleanup_is_safe_with_concurrent_issue_validate_delegate_and_retry
     stale, _ = await _issue(service)
     parent, parent_token = await _issue(service)
     current = now_utc()
-    await _set_inactive_time(service, stale,
-                             expires_at=current - timedelta(seconds=1))
+    await _set_inactive_time(service, stale, expires_at=current - timedelta(seconds=1))
     await _bind(
         service,
         parent_token,
@@ -845,7 +829,7 @@ async def test_cleanup_is_safe_with_concurrent_issue_validate_delegate_and_retry
         service.delegate_to_child(
             parent,
             child_workflow_id='child-workflow',
-            child_actions=(_READ_ACTION, ),
+            child_actions=(_READ_ACTION,),
         ),
         _issue(service),
     )

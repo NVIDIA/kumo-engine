@@ -22,8 +22,7 @@ def get_validated_query(
     parser = PQLParser()
     validator = PredictiveQueryValidator(**validator_kwargs(graph))
     parsed_query = parser.to_parsed_predictive_query(query)
-    validated_query, response = validator.validate_predictive_query(
-        parsed_query)
+    validated_query, response = validator.validate_predictive_query(parsed_query)
     assert response.ok, response
     assert validated_query is not None
     return validated_query
@@ -33,9 +32,9 @@ def get_validated_query(
 def disable_pre_validation():
     original_func = TrainingTableGeneratorV2.validate_pre_train_table_generate
     TrainingTableGeneratorV2.validate_pre_train_table_generate = MagicMock(
-        side_effect=lambda **kwargs: ValidationResponse())
+        side_effect=lambda **kwargs: ValidationResponse()
+    )
     try:
         yield
     finally:
-        TrainingTableGeneratorV2.validate_pre_train_table_generate = \
-            original_func
+        TrainingTableGeneratorV2.validate_pre_train_table_generate = original_func

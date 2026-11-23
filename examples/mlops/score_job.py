@@ -7,8 +7,9 @@ import os
 import sys
 from typing import Optional, Sequence
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(
-    globals().get('__file__') or sys.argv[0])))
+sys.path.insert(
+    0, os.path.dirname(os.path.abspath(globals().get('__file__') or sys.argv[0]))
+)
 
 import jobs  # noqa: E402
 
@@ -22,11 +23,14 @@ def main(argv: Optional[Sequence[str]] = None) -> kumo.PredictionResult:
     cfg = jobs.mlops(args, connector)
     with kumo.mlops(cfg):
         trainer = jobs.load_model(args, cfg)
-        snapshot = (kumo.GraphSnapshot.load_from_connector(
-            cfg, id=args.snapshot, graph=graph)
-                    if args.snapshot else graph.snapshot())
+        snapshot = (
+            kumo.GraphSnapshot.load_from_connector(cfg, id=args.snapshot, graph=graph)
+            if args.snapshot
+            else graph.snapshot()
+        )
         result = trainer.predict(
-            snapshot, output_config=jobs.prediction_output(args, connector))
+            snapshot, output_config=jobs.prediction_output(args, connector)
+        )
     print(f'predictions: {result.num_rows} rows')
     return result
 

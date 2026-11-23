@@ -40,47 +40,68 @@ def fit_spec(context: FitContext) -> RunSpec:
         name=fit_name(model, started),
         model_label=model,
         started=started,
-        params={key: value for key, value in _flatten(context.model_plan)
-                if value is not None and value != _UNSET},
-        parents={'snapshot_id': context.snapshot_id,
-                 'task_type': context.task_type,
-                 'entity': entity(context.query),
-                 'tune_metric': tune and metric_name(tune)},
+        params={
+            key: value
+            for key, value in _flatten(context.model_plan)
+            if value is not None and value != _UNSET
+        },
+        parents={
+            'snapshot_id': context.snapshot_id,
+            'task_type': context.task_type,
+            'entity': entity(context.query),
+            'tune_metric': tune and metric_name(tune),
+        },
         description=f'`{context.query}`',
     )
 
 
-def fitted_spec(spec: RunSpec, result: Any,
-                summaries: Sequence[Summary] = ()) -> RunSpec:
+def fitted_spec(
+    spec: RunSpec, result: Any, summaries: Sequence[Summary] = ()
+) -> RunSpec:
     r"""The fit run's spec once the fit returned."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
         artifacts[PROVENANCE_FILE] = provenance.read_text(encoding='utf-8')
     return replace(
-        spec, metrics=holdout_metrics(result),
-        parents={**spec.parents, 'bundle_id': result.id,
-                 **_registered(result.registered_model)},
-        artifacts=artifacts, summaries=summaries)
+        spec,
+        metrics=holdout_metrics(result),
+        parents={
+            **spec.parents,
+            'bundle_id': result.id,
+            **_registered(result.registered_model),
+        },
+        artifacts=artifacts,
+        summaries=summaries,
+    )
 
 
 def holdout_metrics(result: Any) -> Dict[str, float]:
     r"""The trainer's test metrics under their logged names."""
-    return logged_names({
-        name: value for name, value in result.metrics.items()
-        if not name.startswith(('train_', 'val_'))
-    }, refit_full=getattr(getattr(result, 'manifest', None), 'fit_mode',
-                          None) == 'refit_full')
+    return logged_names(
+        {
+            name: value
+            for name, value in result.metrics.items()
+            if not name.startswith(('train_', 'val_'))
+        },
+        refit_full=getattr(getattr(result, 'manifest', None), 'fit_mode', None)
+        == 'refit_full',
+    )
 
 
 def registry_metrics(result: Any) -> Dict[str, float]:
     r"""Holdout metrics and model scalars, as registries record them."""
-    return {metric_key(name): value for name, value in {
-        **holdout_metrics(result),
-        **{summary.name: summary.value
-           for summary in getattr(result, '_summaries', ())
-           if isinstance(summary, Scalar) and summary.role == 'model'}
-    }.items()}
+    return {
+        metric_key(name): value
+        for name, value in {
+            **holdout_metrics(result),
+            **{
+                summary.name: summary.value
+                for summary in getattr(result, '_summaries', ())
+                if isinstance(summary, Scalar) and summary.role == 'model'
+            },
+        }.items()
+    }
 
 
 def _registered(model: Any) -> Mapping[str, Any]:

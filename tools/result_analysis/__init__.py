@@ -8,6 +8,10 @@ from .bp_analysis import Analysis
 from .notebook_output import plot_cosine_similarities
 
 __all__ = [
-    'cosine_comparison', 'l2_comparison', 'jaccard_similarity',
-    'edit_distance', 'Analysis', 'plot_cosine_similarities'
+    'cosine_comparison',
+    'l2_comparison',
+    'jaccard_similarity',
+    'edit_distance',
+    'Analysis',
+    'plot_cosine_similarities',
 ]

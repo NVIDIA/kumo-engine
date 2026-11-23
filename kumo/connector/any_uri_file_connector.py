@@ -24,12 +24,12 @@ class _AnyURIFileMixin:
         path = self._normalizer(table_name)
         if self._provider_name == 'S3':
             from io_utils.fsutil.s3_filesystem import select_s3_region
+
             select_s3_region(path)
         return path
 
     @with_filesystem_credentials
-    def _get_path(self, table_name: str,
-                  data_version: str | None = None) -> str:
+    def _get_path(self, table_name: str, data_version: str | None = None) -> str:
         del data_version
         return self._table_path(table_name)
 
@@ -40,7 +40,8 @@ class _AnyURIFileMixin:
 
     def list_tables(self, schema_name: Optional[str] = None) -> List[str]:
         raise ConnectorError(
-            f'Any-URI {self._provider_name} connectors require an exact URI')
+            f'Any-URI {self._provider_name} connectors require an exact URI'
+        )
 
 
 class _AnyURICSVConnector(_AnyURIFileMixin, CSVConnector):
@@ -53,8 +54,10 @@ class _AnyURIParquetConnector(_AnyURIFileMixin, ParquetConnector):
 
 class AnyURIFileConnector(_AnyURIFileMixin, CompositeFileConnector):
     """Rootless connector resolving one canonical URI per operation."""
-    def __init__(self, name: str, *, normalizer: Callable[[str], str],
-                 provider_name: str):
+
+    def __init__(
+        self, name: str, *, normalizer: Callable[[str], str], provider_name: str
+    ):
         FileConnector.__init__(self, name=name, root_dir='', suffix=None)
         # This class intentionally bypasses CompositeFileConnector.__init__
         # because it has no discoverable root, but still uses the composite
@@ -74,8 +77,7 @@ class AnyURIFileConnector(_AnyURIFileMixin, CompositeFileConnector):
         return None
 
     @with_filesystem_credentials
-    def _get_path(self, table_name: str,
-                  data_version: str | None = None) -> str:
+    def _get_path(self, table_name: str, data_version: str | None = None) -> str:
         del data_version
         path, _ = self._resolve_table(table_name)
         return path
@@ -91,12 +93,13 @@ class AnyURIFileConnector(_AnyURIFileMixin, CompositeFileConnector):
                 return data_path, file_type
             raise ConnectorError(
                 f'The exact {self._provider_name} URI must identify a '
-                '.csv or .parquet source')
+                '.csv or .parquet source'
+            )
         raise FileNotFoundError(
-            f'The exact {self._provider_name} source URI does not exist')
+            f'The exact {self._provider_name} source URI does not exist'
+        )
 
-    def _validate_missing_path_region(self, table_name: str,
-                                      data_path: str) -> None:
+    def _validate_missing_path_region(self, table_name: str, data_path: str) -> None:
         # Exact-URI providers route credentials/client construction from each
         # URI rather than a configured connector root.
         return None

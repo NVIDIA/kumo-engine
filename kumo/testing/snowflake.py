@@ -16,6 +16,7 @@ from io_utils.secrets import get_secrets
 from kumo.connector import snowflake_connector
 from kumo.connector.connector import Connector
 from kumo.connector.snowflake_connector import SnowflakeConnector
+
 # Production AND tests share the module-level Snowpark session cache in
 # :mod:`kumo.connector.snowflake_session`.
 from kumo.connector.snowflake_session import (
@@ -47,28 +48,30 @@ def setup_snowflake_credentials() -> None:
     def has_credentials() -> bool:
         return bool(
             os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER)
-            and os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY))
+            and os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY)
+        )
 
     # A user and key supplied by the environment (CI's service user) take
     # precedence over the shared test key in AWS.
     if not has_credentials():
         try:
-            secrets = get_secrets("xva19026.snowflakecomputing.com")
-            os.environ[snowflake_connector._ENV_SNOWFLAKE_USER] = "kumo"
-            os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY] = (
-                secrets["kumo_user_secretkey"])
+            secrets = get_secrets('xva19026.snowflakecomputing.com')
+            os.environ[snowflake_connector._ENV_SNOWFLAKE_USER] = 'kumo'
+            os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY] = secrets[
+                'kumo_user_secretkey'
+            ]
         except Exception:
             # Use built-in credentials if this env doesn't have access to read
             # the secrets from AWS
             pass
 
     if not has_credentials():
-        pytest.skip("No Snowflake credentials found")
+        pytest.skip('No Snowflake credentials found')
 
 
 @contextlib.contextmanager
 def disable_snowflake_env_credentials() -> Generator[None, None, None]:
-    """ Disables the ability to fetch snowflake credentials from the env.
+    """Disables the ability to fetch snowflake credentials from the env.
 
     This is necessary for writing unit tests that test the case where
     environment credentials are not available.
@@ -78,9 +81,9 @@ def disable_snowflake_env_credentials() -> Generator[None, None, None]:
     old_password = snowflake_connector._ENV_SNOWFLAKE_PASSWORD
     old_private_key = snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY
     try:
-        snowflake_connector._ENV_SNOWFLAKE_USER = "_UNSET_ENV_VAR"
-        snowflake_connector._ENV_SNOWFLAKE_PASSWORD = "_UNSET_ENV_VAR"
-        snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY = "_UNSET_ENV_VAR"
+        snowflake_connector._ENV_SNOWFLAKE_USER = '_UNSET_ENV_VAR'
+        snowflake_connector._ENV_SNOWFLAKE_PASSWORD = '_UNSET_ENV_VAR'
+        snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY = '_UNSET_ENV_VAR'
         Connector.disable_interactive_input()
         yield
     finally:
@@ -110,12 +113,13 @@ def setup_full_snowflake_session(
     returns the cached Snowpark session used by both production code and
     tests.
     """
-    has_env_credentials = (
-        os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER)
-        and (os.getenv(snowflake_connector._ENV_SNOWFLAKE_PASSWORD)
-             or os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY)))
+    has_env_credentials = os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER) and (
+        os.getenv(snowflake_connector._ENV_SNOWFLAKE_PASSWORD)
+        or os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY)
+    )
     if snow_connector is None or (
-            not snow_connector._credentials and not has_env_credentials):
+        not snow_connector._credentials and not has_env_credentials
+    ):
         setup_snowflake_credentials()
     fsutil.rm(osp.join(get_home_dir(), 'train_table'))
     # Drop any prior cached sessions so a fresh fixture run rebuilds the
@@ -126,10 +130,13 @@ def setup_full_snowflake_session(
         warehouse = 'WH_XS'
         database = 'KUMO'
         schema = 'FINANCIAL_PYTEST'
-        snow_connector = SnowflakeConnector('snowflake', account=account,
-                                            warehouse=warehouse,
-                                            database=database,
-                                            schema_name=schema)
+        snow_connector = SnowflakeConnector(
+            'snowflake',
+            account=account,
+            warehouse=warehouse,
+            database=database,
+            schema_name=schema,
+        )
     # TODO: Accept monkeypatch fixture to avoid polluting os.environ for
     # other tests in the same process. Point the deploy environment's storage
     # root at the test dir so kumo.data.get_persist_dir() (which now derives

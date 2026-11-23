@@ -46,10 +46,14 @@ def is_cancelled_exception(exception: BaseException) -> bool:
     Returns:
         True if a cancelled exception, false if not.
     """
-    return (isinstance(exception, asyncio.CancelledError)
-            or isinstance(exception, CancelledError)
-            or ((isinstance(exception, (ActivityError, ChildWorkflowError))
-                 and isinstance(exception.cause, CancelledError))))
+    return (
+        isinstance(exception, asyncio.CancelledError)
+        or isinstance(exception, CancelledError)
+        or (
+            isinstance(exception, (ActivityError, ChildWorkflowError))
+            and isinstance(exception.cause, CancelledError)
+        )
+    )
 
 
 def wf_failure_to_temporal_trace(err: WorkflowFailureError) -> str:
@@ -79,18 +83,23 @@ def _find_root_cause(err: TemporalError, msgs: List[str]):
                     'commonly because it ran out of memory while processing '
                     'large data; a plain retry on the same data is likely '
                     'to fail the same way, so reduce the data volume or '
-                    'contact Kumo support.')
+                    'contact Kumo support.'
+                )
             else:
                 msgs.append(f'Task {cause.type.name} deadline has exceeded.')
             break
 
         if isinstance(cause, ChildWorkflowError):
-            msgs.append('caused by failure in child workflow '
-                        f'{cause.workflow_type}, message: {cause.message}')
+            msgs.append(
+                'caused by failure in child workflow '
+                f'{cause.workflow_type}, message: {cause.message}'
+            )
             cause = cause.cause
         elif isinstance(cause, ActivityError):
-            msgs.append(f'caused by failure in activity '
-                        f'{cause.activity_type}, message: {cause.message}')
+            msgs.append(
+                f'caused by failure in activity '
+                f'{cause.activity_type}, message: {cause.message}'
+            )
             cause = cause.cause
         elif isinstance(cause, ApplicationError):
             app_error_type = cause.type or 'application error'
@@ -99,7 +108,8 @@ def _find_root_cause(err: TemporalError, msgs: List[str]):
         elif isinstance(cause, TemporalRPCError):
             msgs.append(
                 f'caused by RPC error status['
-                f'{cause.status.name}={cause.status.value}]: {cause.message}')
+                f'{cause.status.name}={cause.status.value}]: {cause.message}'
+            )
             cause = cause.cause
         elif isinstance(cause, TemporalError):
             msgs.append(f'caused by {type(cause)}: {cause}')
@@ -108,7 +118,8 @@ def _find_root_cause(err: TemporalError, msgs: List[str]):
             msgs.append(
                 f'caused by RPC error={cause.error_type} to Kumo internal '
                 f'service {cause.rpc_service}.{cause.rpc_method}, '
-                f'message: {cause.message}')
+                f'message: {cause.message}'
+            )
             cause = cause.__cause__
         else:  # other non-Temporal exception
             msgs.append(f'caused by {type(cause)}: {cause}')
@@ -135,8 +146,7 @@ DEFAULT_NON_RETRYABLE_EX = (
 # Common error types to included by default in all Temporal
 # RetryPolicy.non_retryable_error_types
 # This will be used in interceptor and applied to all retry policy everywhere.
-default_non_retryable_error_types = tuple(e.__name__
-                                          for e in DEFAULT_NON_RETRYABLE_EX)
+default_non_retryable_error_types = tuple(e.__name__ for e in DEFAULT_NON_RETRYABLE_EX)
 
 _TRANSIENT_CLUSTER_PATTERNS = (
     'StatusCode.UNAVAILABLE',
@@ -213,29 +223,25 @@ def is_error_non_retryable(ex: BaseException):
 
 
 _TIMEOUT_MESSAGES = {
-    TimeoutType.SCHEDULE_TO_CLOSE:
-    'Your job timed out before it could finish. This usually happens '
+    TimeoutType.SCHEDULE_TO_CLOSE: 'Your job timed out before it could finish. This usually happens '
     'when the data is too large to process within the allowed time. '
     'Try reducing the data volume or contact Kumo support for help.',
-    TimeoutType.START_TO_CLOSE:
-    'Your job timed out while it was running. This usually happens '
+    TimeoutType.START_TO_CLOSE: 'Your job timed out while it was running. This usually happens '
     'when the data is too large to process within the allowed time. '
     'Try reducing the data volume or contact Kumo support for help.',
-    TimeoutType.HEARTBEAT:
-    'Your job stopped reporting progress and was aborted. This usually '
+    TimeoutType.HEARTBEAT: 'Your job stopped reporting progress and was aborted. This usually '
     'means the worker process running it crashed or was terminated, most '
     'commonly because it ran out of memory while processing large data. '
     'A plain retry on the same data is likely to fail the same way; '
     'reduce the data volume or contact Kumo support.',
-    TimeoutType.SCHEDULE_TO_START:
-    'Your job timed out waiting for an available worker. The system '
+    TimeoutType.SCHEDULE_TO_START: 'Your job timed out waiting for an available worker. The system '
     'may be under heavy load. Please retry later.',
 }
 
 
 def _timeout_to_public_exception(
-        error: TimeoutError,
-        activity_name: Optional[str] = None) -> PublicException:
+    error: TimeoutError, activity_name: Optional[str] = None
+) -> PublicException:
     """Convert a Temporal TimeoutError to a user-friendly PublicException.
 
     If the TimeoutError has a __cause__ (e.g. enriched by
@@ -263,8 +269,8 @@ def _timeout_to_public_exception(
             return PublicException(message=message + suffix)
 
     return PublicException(
-        message='Your job timed out. Please retry or contact Kumo support.'
-        f'{suffix}')
+        message=f'Your job timed out. Please retry or contact Kumo support.{suffix}'
+    )
 
 
 def extract_public_exception(error: BaseException):
@@ -318,7 +324,8 @@ def extract_public_exception(error: BaseException):
             # carries activity_type; a ChildWorkflowError does not).
             if isinstance(cause, TimeoutError):
                 return _timeout_to_public_exception(
-                    cause, activity_name=getattr(error, 'activity_type', None))
+                    cause, activity_name=getattr(error, 'activity_type', None)
+                )
             return extract_public_exception(cause)
 
     # Generic error with cause attribute (fallback)

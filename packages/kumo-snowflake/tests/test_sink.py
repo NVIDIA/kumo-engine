@@ -24,14 +24,14 @@ class _Session:
 def test_a_forced_session_refresh_discards_the_cached_connection(monkeypatch):
     opened = []
     cache = session._SessionCache()
-    principal = SimpleNamespace(name="oauth")
+    principal = SimpleNamespace(name='oauth')
 
     def connect(*_):
         value = _Session()
         opened.append(value)
         return value
 
-    monkeypatch.setattr(session, "_connect", connect)
+    monkeypatch.setattr(session, '_connect', connect)
 
     first = cache.get(principal, None)
     second = cache.get(principal, None, fresh=True)
@@ -44,14 +44,14 @@ def test_a_forced_session_refresh_discards_the_cached_connection(monkeypatch):
 def test_an_owned_session_leaves_the_cached_connection_open(monkeypatch):
     opened = []
     cache = session._SessionCache()
-    principal = SimpleNamespace(name="oauth")
+    principal = SimpleNamespace(name='oauth')
 
     def connect(*_):
         value = _Session()
         opened.append(value)
         return value
 
-    monkeypatch.setattr(session, "_connect", connect)
+    monkeypatch.setattr(session, '_connect', connect)
     cached = cache.get(principal, None)
 
     with session._owned_session(principal, None) as retry:
@@ -64,11 +64,10 @@ def test_an_owned_session_leaves_the_cached_connection_open(monkeypatch):
 
 class _ExpiredTokenError(Exception):
     errno = 390114
-    sqlstate = "08001"
+    sqlstate = '08001'
 
 
-def test_an_overwrite_retries_once_with_a_fresh_session_after_token_expiry(
-        monkeypatch):
+def test_an_overwrite_retries_once_with_a_fresh_session_after_token_expiry(monkeypatch):
     backend = SnowflakeSinkBackend()
     cached_sessions = []
     retry_sessions = []
@@ -95,23 +94,34 @@ def test_an_overwrite_retries_once_with_a_fresh_session_after_token_expiry(
             def upload(*_args, **_kwargs) -> None:
                 raise _ExpiredTokenError()
 
-            write_artifacts_to_table(SimpleNamespace(context=object()),
-                                     "PREDICTIONS", "/tmp/predictions.parquet",
-                                     replace=True, upload_local=upload)
+            write_artifacts_to_table(
+                SimpleNamespace(context=object()),
+                'PREDICTIONS',
+                '/tmp/predictions.parquet',
+                replace=True,
+                upload_local=upload,
+            )
 
-    monkeypatch.setattr(backend, "_session", open_session)
-    monkeypatch.setattr(backend, "_principal", lambda _connector: object())
-    monkeypatch.setattr(sink, "_owned_session", open_retry_session)
-    monkeypatch.setattr(backend, "_qualified", lambda *_: '"PREDICTIONS"')
-    monkeypatch.setattr(sink, "_require_snowpark", lambda _session: None)
+    monkeypatch.setattr(backend, '_session', open_session)
+    monkeypatch.setattr(backend, '_principal', lambda _connector: object())
+    monkeypatch.setattr(sink, '_owned_session', open_retry_session)
+    monkeypatch.setattr(backend, '_qualified', lambda *_: '"PREDICTIONS"')
+    monkeypatch.setattr(sink, '_require_snowpark', lambda _session: None)
     monkeypatch.setattr(
-        "kumo_core.artifact_staging.selected_local_parquet_files",
-        lambda _files: ["/tmp/predictions.parquet"])
-    monkeypatch.setattr("kumo_snowflake.write.export_table_files", export)
+        'kumo_core.artifact_staging.selected_local_parquet_files',
+        lambda _files: ['/tmp/predictions.parquet'],
+    )
+    monkeypatch.setattr('kumo_snowflake.write.export_table_files', export)
 
-    assert backend.write_files(
-        SimpleNamespace(), "PREDICTIONS", ["ignored"],
-        write_mode=WriteMode.OVERWRITE) == '"PREDICTIONS"'
+    assert (
+        backend.write_files(
+            SimpleNamespace(),
+            'PREDICTIONS',
+            ['ignored'],
+            write_mode=WriteMode.OVERWRITE,
+        )
+        == '"PREDICTIONS"'
+    )
     assert cached_sessions == [1]
     assert len(retry_sessions) == 1
     assert retry_sessions[0].close_calls == 1
@@ -125,54 +135,56 @@ def test_an_append_does_not_retry_after_token_expiry(monkeypatch):
     def open_session(_connector):
         yield _Session()
 
-    monkeypatch.setattr(backend, "_session", open_session)
-    monkeypatch.setattr(sink, "_require_snowpark", lambda _session: None)
+    monkeypatch.setattr(backend, '_session', open_session)
+    monkeypatch.setattr(sink, '_require_snowpark', lambda _session: None)
     monkeypatch.setattr(
-        "kumo_core.artifact_staging.selected_local_parquet_files",
-        lambda _files: ["/tmp/predictions.parquet"])
+        'kumo_core.artifact_staging.selected_local_parquet_files',
+        lambda _files: ['/tmp/predictions.parquet'],
+    )
     monkeypatch.setattr(
-        "kumo_snowflake.write.export_table_files", lambda *_args, **_kwargs:
-        (_ for _ in ()).throw(_ExpiredTokenError()))
+        'kumo_snowflake.write.export_table_files',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(_ExpiredTokenError()),
+    )
 
     try:
-        backend.write_files(SimpleNamespace(), "PREDICTIONS", ["ignored"],
-                            write_mode=WriteMode.APPEND)
+        backend.write_files(
+            SimpleNamespace(), 'PREDICTIONS', ['ignored'], write_mode=WriteMode.APPEND
+        )
     except _ExpiredTokenError:
         pass
     else:
-        raise AssertionError("append must not be retried after token expiry")
+        raise AssertionError('append must not be retried after token expiry')
 
 
-def test_an_append_loads_files_stamped_with_extra_columns(monkeypatch,
-                                                          tmp_path):
+def test_an_append_loads_files_stamped_with_extra_columns(monkeypatch, tmp_path):
     import pandas as pd
     import pyarrow.parquet as pq
 
     backend = SnowflakeSinkBackend()
-    artifact = tmp_path / "part-0.parquet"
-    pd.DataFrame({"ENTITY": ["a"]}).to_parquet(artifact)
+    artifact = tmp_path / 'part-0.parquet'
+    pd.DataFrame({'ENTITY': ['a']}).to_parquet(artifact)
 
     @contextmanager
     def open_session(_connector):
         yield _Session()
 
-    monkeypatch.setattr(backend, "_session", open_session)
-    monkeypatch.setattr(sink, "_require_snowpark", lambda _session: None)
+    monkeypatch.setattr(backend, '_session', open_session)
+    monkeypatch.setattr(sink, '_require_snowpark', lambda _session: None)
     loads = []
 
-    def load(target, table_name, path, replace, *, artifact_files,
-             upload_local):
-        prepare = upload_local.keywords["prepare_file"]
+    def load(target, table_name, path, replace, *, artifact_files, upload_local):
+        prepare = upload_local.keywords['prepare_file']
         with prepare(path) as staged:
-            loads.append((table_name, replace,
-                          pq.read_table(staged).to_pydict()))
+            loads.append((table_name, replace, pq.read_table(staged).to_pydict()))
 
-    monkeypatch.setattr("kumo_snowflake.write.write_artifacts_to_table", load)
-    monkeypatch.setattr(backend, "_qualified", lambda _c, name: name)
-    backend.write_files(SimpleNamespace(), "PREDICTIONS", [str(artifact)],
-                        WriteMode.APPEND, extra_columns={"PREDICTION_ID": "p1"})
+    monkeypatch.setattr('kumo_snowflake.write.write_artifacts_to_table', load)
+    monkeypatch.setattr(backend, '_qualified', lambda _c, name: name)
+    backend.write_files(
+        SimpleNamespace(),
+        'PREDICTIONS',
+        [str(artifact)],
+        WriteMode.APPEND,
+        extra_columns={'PREDICTION_ID': 'p1'},
+    )
 
-    assert loads == [("PREDICTIONS", False, {
-        "ENTITY": ["a"],
-        "PREDICTION_ID": ["p1"]
-    })]
+    assert loads == [('PREDICTIONS', False, {'ENTITY': ['a'], 'PREDICTION_ID': ['p1']})]

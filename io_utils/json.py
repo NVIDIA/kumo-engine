@@ -68,6 +68,7 @@ def json_safe_primitive(val: Any) -> JsonSafePrimative:
     # is unavailable, fall through to the legacy path.
     try:
         import numpy as np
+
         if isinstance(val, np.generic):
             # `.item()` returns the canonical Python scalar (int/float/bool/
             # str/bytes/complex/None). Re-enter the helper so the precision
@@ -82,13 +83,14 @@ def json_safe_primitive(val: Any) -> JsonSafePrimative:
         return str(val)
     if isinstance(val, float):
         return json_safe_float(val)
-    if (isinstance(val, datetime) or isinstance(val, time)
-            or isinstance(val, date)):
+    if isinstance(val, datetime) or isinstance(val, time) or isinstance(val, date):
         return val
     # Note: feel free to add more data types, as long as they are supported by
     # the Pydantic serializer
-    raise RuntimeError(f"Could not cast value `{val}` with type "
-                       f"`{type(val)}` into a json-safe primative")
+    raise RuntimeError(
+        f'Could not cast value `{val}` with type '
+        f'`{type(val)}` into a json-safe primative'
+    )
 
 
 def json_safe_float(val: Any) -> Optional[float]:
@@ -106,8 +108,9 @@ def json_safe_float_array(arr: Sequence[Any]) -> List[Optional[float]]:
 custom_encoders = {EncryptedStr: lambda v: v.as_encrypted()}
 
 
-def custom_pydantic_encoder(type_encoders: Dict[type, Any], obj: Any,
-                            insecure: bool = False) -> Any:
+def custom_pydantic_encoder(
+    type_encoders: Dict[type, Any], obj: Any, insecure: bool = False
+) -> Any:
     """v2 port of the removed ``pydantic.json.custom_pydantic_encoder``.
 
     Walks ``type(obj).__mro__`` looking for a matching encoder in
@@ -148,7 +151,8 @@ def trusted_custom_pydantic_encoder(obj, insecure: bool):
         if not isinstance(obj, EncryptedStr):
             raise ValueError(
                 'Secure serialization of SecretStr is not allowed, it must be '
-                'converted to EncryptedStr.')
+                'converted to EncryptedStr.'
+            )
 
     return custom_pydantic_encoder(custom_encoders, obj, insecure=insecure)
 
@@ -176,22 +180,24 @@ def to_json_dict(pydantic_obj: Any, insecure=False) -> Dict[str, Any]:
 
 def from_json(data: str, cls: Type[T]) -> T:
     """Decodes a JSON string into a pydantic object.
-        If cls is None, returns a dict.
+    If cls is None, returns a dict.
     """
     try:
         dicts = json.loads(data)
     except JSONDecodeError as e:
         # If decode fails, try again with characters from eof trimmed
         try:
-            dicts = json.loads(data[:e.pos])
+            dicts = json.loads(data[: e.pos])
         except JSONDecodeError:
             # If recovery fails, raise the original exception
-            logger.exception(f"failed to decode {data=}", stack_info=False)
+            logger.exception(f'failed to decode {data=}', stack_info=False)
             raise e
-        rogue_chars = data[e.pos:]
-        logger.warning(f"recovered from json decode error "
-                       f"by trimming {len(data) - e.pos} characters: "
-                       f"{rogue_chars=}")
+        rogue_chars = data[e.pos :]
+        logger.warning(
+            f'recovered from json decode error '
+            f'by trimming {len(data) - e.pos} characters: '
+            f'{rogue_chars=}'
+        )
     return from_json_dict(dicts, cls)
 
 
@@ -208,7 +214,7 @@ def _adapter(cls: Type[T]) -> TypeAdapter:
 
 def from_json_dict(data: Dict[str, Any], cls: Type[T]) -> T:
     """Decodes a python dict into a pydantic object.
-        If cls is None, returns a dict.
+    If cls is None, returns a dict.
     """
     data = restore_escaped_json_fields(data)
     return _adapter(cls).validate_python(data)
@@ -239,8 +245,8 @@ def restore_escaped_json_fields(conf: Any) -> Any:
             conf[new_key] = conf.pop(key)
     for key in conf.keys():
         if isinstance(conf[key], str):
-            if conf[key][:len(BYTECODE_PREFIX)] == BYTECODE_PREFIX:
-                conf[key] = base64.b64decode(conf[key][len(BYTECODE_PREFIX):])
+            if conf[key][: len(BYTECODE_PREFIX)] == BYTECODE_PREFIX:
+                conf[key] = base64.b64decode(conf[key][len(BYTECODE_PREFIX) :])
             elif EDGE_JOIN_KEY in conf[key]:
                 conf[key] = tuple(conf[key].split(EDGE_JOIN_KEY))
         if isinstance(conf[key], Dict) or isinstance(conf[key], List):
@@ -252,19 +258,16 @@ def restore_escaped_json_fields(conf: Any) -> Any:
     return conf
 
 
-@blocking_func(JSON_IO_THREAD_POOL,
-               tracing_options=TraceOptions(trace_params=['path']))
+@blocking_func(JSON_IO_THREAD_POOL, tracing_options=TraceOptions(trace_params=['path']))
 def read_json(path: str, compressed=False) -> Any:
     try:
         return fsutil.read_text(path, compression=compressed)
     except Exception as e:
-        raise RuntimeError(f"Failed to read data from file: {path}.") from e
+        raise RuntimeError(f'Failed to read data from file: {path}.') from e
 
 
-@blocking_func(JSON_IO_THREAD_POOL,
-               tracing_options=TraceOptions(trace_params=['path']))
-def save_json(pydantic_obj: Any, path: str, compressed=False,
-              insecure=False) -> None:
+@blocking_func(JSON_IO_THREAD_POOL, tracing_options=TraceOptions(trace_params=['path']))
+def save_json(pydantic_obj: Any, path: str, compressed=False, insecure=False) -> None:
     try:
         new_contents = to_json(pydantic_obj, insecure)
         base_dir = os.path.dirname(path)
@@ -273,14 +276,14 @@ def save_json(pydantic_obj: Any, path: str, compressed=False,
         fsutil.write_text(path, new_contents, compression=compressed)
     except Exception as e:
         raise RuntimeError(
-            f"Failed to save class with schema: {type(pydantic_obj)}"
-            f" to {path}.") from e
+            f'Failed to save class with schema: {type(pydantic_obj)} to {path}.'
+        ) from e
 
 
-@blocking_func(JSON_IO_THREAD_POOL,
-               tracing_options=TraceOptions(trace_params=['path']))
-def save_json_atomic(pydantic_obj: Any, path: str, compressed=False,
-                     insecure=False) -> None:
+@blocking_func(JSON_IO_THREAD_POOL, tracing_options=TraceOptions(trace_params=['path']))
+def save_json_atomic(
+    pydantic_obj: Any, path: str, compressed=False, insecure=False
+) -> None:
     """Publish a complete JSON document without exposing partial contents.
 
     Local files use a unique, mode-``0600`` sibling followed by
@@ -301,8 +304,7 @@ def save_json_atomic(pydantic_obj: Any, path: str, compressed=False,
         if scheme == 'local':
             parsed = ParseURI(path)
             assert isinstance(parsed, LocalURI)
-            _atomic_local_write_text(parsed.path, new_contents,
-                                     compressed=compressed)
+            _atomic_local_write_text(parsed.path, new_contents, compressed=compressed)
             return
 
         if scheme in {'s3', 'gs'}:
@@ -312,20 +314,20 @@ def save_json_atomic(pydantic_obj: Any, path: str, compressed=False,
             return
 
         if scheme in {'abfs', 'abfss'}:
-            fsutil.atomic_write_text(path, new_contents,
-                                     compression=compressed)
+            fsutil.atomic_write_text(path, new_contents, compression=compressed)
             return
 
         # The Databricks Files API does not document atomic overwrite
         # visibility. Fail closed until it has a proven server-side primitive.
         raise ValueError(
-            f"Atomic JSON publication is unsupported for scheme {scheme!r}")
+            f'Atomic JSON publication is unsupported for scheme {scheme!r}'
+        )
     except Exception:
         # This crosses activity boundaries for persisted inputs. Do not attach
         # a cause containing serialized data, credentials, or temporary paths.
         raise RuntimeError(
-            f"Failed to atomically save class with schema: "
-            f"{type(pydantic_obj)}.") from None
+            f'Failed to atomically save class with schema: {type(pydantic_obj)}.'
+        ) from None
 
 
 def _atomic_local_write_text(path: str, data: str, *, compressed: bool) -> None:
@@ -340,8 +342,7 @@ def _atomic_local_write_text(path: str, data: str, *, compressed: bool) -> None:
     if os.path.islink(path):
         raise RuntimeError('Atomic JSON target must not be a symbolic link.')
     parent = os.path.dirname(path) or '.'
-    fd, temp_path = tempfile.mkstemp(prefix='.kumo-json-', suffix='.tmp',
-                                     dir=parent)
+    fd, temp_path = tempfile.mkstemp(prefix='.kumo-json-', suffix='.tmp', dir=parent)
     try:
         payload = data.encode('utf-8')
         if compressed:
@@ -364,8 +365,9 @@ def _atomic_local_write_text(path: str, data: str, *, compressed: bool) -> None:
 
 
 @trace(TraceOptions(trace_params=True))
-def load_json(path: str, cls: Type[T], compressed=False, default=None,
-              raise_on_missing=True) -> T:
+def load_json(
+    path: str, cls: Type[T], compressed=False, default=None, raise_on_missing=True
+) -> T:
     if not raise_on_missing and not fsutil.exists(path):
         return default  # type: ignore
 
@@ -380,8 +382,7 @@ def load_json(path: str, cls: Type[T], compressed=False, default=None,
                 raise
             return None
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to read json file {path}, ex: {e}.") from e
+            raise RuntimeError(f'Failed to read json file {path}, ex: {e}.') from e
 
     # if raise_on_missing and FileNotFound, will raise through here
     data: str | None = _read_file()
@@ -392,13 +393,17 @@ def load_json(path: str, cls: Type[T], compressed=False, default=None,
     def _handle_parse_ex(e: Exception):
         nonlocal data
         assert isinstance(e, JSONDecodeError)
-        logger.info("re-reading json file before re-parse")
+        logger.info('re-reading json file before re-parse')
         data = _read_file()
 
     # if parse fails, re-read and re-parse
-    @retry(tries=3, callbacks={
-        _match_parse_ex: _handle_parse_ex,
-    }, logger=logger)
+    @retry(
+        tries=3,
+        callbacks={
+            _match_parse_ex: _handle_parse_ex,
+        },
+        logger=logger,
+    )
     def _parse_json():
         if data is None:
             # FileNotFound during re-read and raise_on_missing=False
@@ -408,7 +413,8 @@ def load_json(path: str, cls: Type[T], compressed=False, default=None,
         except Exception as e:
             raise ValueError(
                 f'Failed to parse data ({len(data)} bytes) read from {path} to '
-                f'schema {cls}, ex: {e}') from e
+                f'schema {cls}, ex: {e}'
+            ) from e
 
     obj = _parse_json()
     if obj is None:
@@ -417,10 +423,10 @@ def load_json(path: str, cls: Type[T], compressed=False, default=None,
     return obj
 
 
-@blocking_func(JSON_IO_THREAD_POOL,
-               tracing_options=TraceOptions(trace_params=True))
-def load_many_json(paths: List[str], cls: Type[T],
-                   compressed=False) -> List[Optional[T]]:
+@blocking_func(JSON_IO_THREAD_POOL, tracing_options=TraceOptions(trace_params=True))
+def load_many_json(
+    paths: List[str], cls: Type[T], compressed=False
+) -> List[Optional[T]]:
     files = fsutil.get_many_if_present(paths)
 
     # Decompress and parse the result as json
@@ -434,11 +440,12 @@ def load_many_json(paths: List[str], cls: Type[T],
         return [fast_from_json(file, cls) if file else None for file in files]
 
 
-async def load_json_async(path: str, cls: Type[T], compressed=False,
-                          default=None, raise_on_missing=False) -> T:
-    return (await SyncToAsync(load_json, thread_sensitive=False,
-                              executor=JSON_IO_THREAD_POOL)
-            (path, cls, compressed, default, raise_on_missing))  # type: ignore
+async def load_json_async(
+    path: str, cls: Type[T], compressed=False, default=None, raise_on_missing=False
+) -> T:
+    return await SyncToAsync(
+        load_json, thread_sensitive=False, executor=JSON_IO_THREAD_POOL
+    )(path, cls, compressed, default, raise_on_missing)  # type: ignore
 
 
 class ToJsonMixin:
@@ -449,8 +456,12 @@ class ToJsonMixin:
 def escape_dataclass(conf: Any) -> Any:
     r"""Escape JSON control characters and bytecode in fields of a dataclass
     object"""
-    assert is_dataclass(conf) or isinstance(conf, Dict) or isinstance(
-        conf, List) or isinstance(conf, str)
+    assert (
+        is_dataclass(conf)
+        or isinstance(conf, Dict)
+        or isinstance(conf, List)
+        or isinstance(conf, str)
+    )
     if is_dataclass(conf):
         conf = dataclass_to_dict(conf)
     was_list = False
@@ -466,6 +477,7 @@ def escape_dataclass(conf: Any) -> Any:
     # try-except allows using this utility without torch installed
     try:
         from torch_geometric.typing import EdgeTypeStr
+
         for key in list(conf.keys()):
             if isinstance(key, EdgeTypeStr):
                 new_key = EDGE_JOIN_KEY.join(key.edge_type)
@@ -477,12 +489,14 @@ def escape_dataclass(conf: Any) -> Any:
         pass
 
     for key in conf.keys():
-        if isinstance(conf[key], Dict) or isinstance(
-                conf[key], List) or is_dataclass(conf[key]):
+        if (
+            isinstance(conf[key], Dict)
+            or isinstance(conf[key], List)
+            or is_dataclass(conf[key])
+        ):
             conf[key] = escape_dataclass(conf[key])
         if isinstance(conf[key], bytes):
-            conf[key] = BYTECODE_PREFIX + base64.b64encode(
-                conf[key]).decode('ascii')
+            conf[key] = BYTECODE_PREFIX + base64.b64encode(conf[key]).decode('ascii')
 
     if was_list:
         return list(conf.values())

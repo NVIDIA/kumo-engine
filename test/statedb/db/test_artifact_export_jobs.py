@@ -48,7 +48,8 @@ async def test_request_identity_is_atomic_immutable_and_idempotent(
 ) -> None:
     service, _ = artifact_jobs
     first_result, duplicate_result = await asyncio.gather(
-        _create(service), _create(service))
+        _create(service), _create(service)
+    )
     first, first_inserted = first_result
     duplicate, duplicate_inserted = duplicate_result
     assert first == duplicate
@@ -75,24 +76,22 @@ async def test_request_identity_is_atomic_immutable_and_idempotent(
         service.seal_dispatch(cancel_job_id, project_id=PROJECT_A),
         service.request_cancel(cancel_job_id, project_id=PROJECT_A),
     )
-    cancelled = await service.request_cancel(
-        cancel_job_id, project_id=PROJECT_A)
+    cancelled = await service.request_cancel(cancel_job_id, project_id=PROJECT_A)
     assert cancelled.dispatch_sealed
     assert cancelled.cancel_requested
-    assert (await service.seal_dispatch(
-        cancel_job_id, project_id=PROJECT_A)).cancel_requested
+    assert (
+        await service.seal_dispatch(cancel_job_id, project_id=PROJECT_A)
+    ).cancel_requested
 
 
 @pytest.mark.asyncio
-async def test_get_is_project_authorized_and_project_isolated(
-        artifact_jobs) -> None:
+async def test_get_is_project_authorized_and_project_isolated(artifact_jobs) -> None:
     service, connectors = artifact_jobs
     principal = SimpleNamespace(user_id=USER_ID)
     await _create(service)
     loaded = await service.get_for_project(JOB_ID, PROJECT_A, principal)
     assert loaded.project_id == PROJECT_A
-    connectors.require_project_access.assert_awaited_with(
-        principal, PROJECT_A)
+    connectors.require_project_access.assert_awaited_with(principal, PROJECT_A)
 
     with pytest.raises(ArtifactExportJobNotFoundError):
         await service.get_for_project(JOB_ID, PROJECT_B, principal)

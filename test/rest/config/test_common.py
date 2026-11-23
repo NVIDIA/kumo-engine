@@ -22,17 +22,17 @@ def test_validate_id():
     ID('abA2_')
 
     # Invalid IDs should fail
-    with pytest.raises(ValueError, match=r"contain alphanumeric"):
+    with pytest.raises(ValueError, match=r'contain alphanumeric'):
         ID('a??')
 
-    with pytest.raises(ValueError, match=r"begin with a letter"):
+    with pytest.raises(ValueError, match=r'begin with a letter'):
         ID('2eee')
 
-    with pytest.raises(ValueError, match=r"fewer than 256 characters"):
+    with pytest.raises(ValueError, match=r'fewer than 256 characters'):
         ID('a' * 300)
 
-    with pytest.raises(ValueError, match=r"fill out this value"):
-        ID("")
+    with pytest.raises(ValueError, match=r'fill out this value'):
+        ID('')
 
 
 def test_validate_table_id():
@@ -40,14 +40,14 @@ def test_validate_table_id():
     TableIDv2.compose(None, TableName('asdfuh2o3u'), None)
 
     # Invalid IDs should fail
-    with pytest.raises(ValueError, match=r"contain alphanumeric"):
+    with pytest.raises(ValueError, match=r'contain alphanumeric'):
         TableIDv2('NA.a??b-NA')
 
-    with pytest.raises(ValueError, match=r"fewer than 256 characters"):
+    with pytest.raises(ValueError, match=r'fewer than 256 characters'):
         TableIDv2('NA.' + 'a' * 300 + '-NA')
 
-    with pytest.raises(ValueError, match=r"fill out this value"):
-        TableIDv2("")
+    with pytest.raises(ValueError, match=r'fill out this value'):
+        TableIDv2('')
 
 
 @pytest.mark.parametrize('parse', [GraphIDv2, GraphIDv2.parse])
@@ -62,16 +62,15 @@ def test_malformed_graph_id_has_clean_error(parse, graph_id):
 def test_malformed_snapshot_id_has_clean_error(snapshot, suffix):
     snapshot_id = f'{snapshot.prefix}{suffix}'
     with pytest.raises(
-            ValueError,
-            match=f'{snapshot.name} snapshot ID is invalid: {snapshot_id}'):
+        ValueError, match=f'{snapshot.name} snapshot ID is invalid: {snapshot_id}'
+    ):
         snapshot.parse_id(snapshot_id)
 
 
 @pytest.mark.parametrize('snapshot', list(DataSnapshot))
 def test_snapshot_id_round_trip(snapshot):
     fpid = FPID('a' * 32)
-    assert snapshot.parse_id(snapshot.format_id(fpid,
-                                                'version')) == (fpid, 'version')
+    assert snapshot.parse_id(snapshot.format_id(fpid, 'version')) == (fpid, 'version')
 
 
 def test_validate_training_job_id():
@@ -79,14 +78,14 @@ def test_validate_training_job_id():
     JobID('abA2-wasdfijep98aw-jesp9f43')
 
     # Invalid IDs should fail
-    with pytest.raises(ValueError, match=r"contain alphanumeric"):
+    with pytest.raises(ValueError, match=r'contain alphanumeric'):
         JobID('a_23q')
 
-    with pytest.raises(ValueError, match=r"fewer than 64 characters"):
+    with pytest.raises(ValueError, match=r'fewer than 64 characters'):
         JobID('b.' + 'a' * 300)
 
-    with pytest.raises(ValueError, match=r"fill out this value"):
-        JobID("")
+    with pytest.raises(ValueError, match=r'fill out this value'):
+        JobID('')
 
 
 def test_api_compatibility():
@@ -102,11 +101,11 @@ def test_api_compatibility():
             if not supported:
                 continue
             kwargs = {}
-            if (stype == Stype.multicategorical
-                    and dtype == Dtype.string):
-                kwargs["multicategorical_delimiter"] = ","
-            a = SourceColumn(name="test", stype=stype, dtype=dtype,
-                             is_primary=False, **kwargs)
+            if stype == Stype.multicategorical and dtype == Dtype.string:
+                kwargs['multicategorical_delimiter'] = ','
+            a = SourceColumn(
+                name='test', stype=stype, dtype=dtype, is_primary=False, **kwargs
+            )
             assert a is not None
             compatible_stypes.append(stype)
         if dtype != Dtype.unsupported:

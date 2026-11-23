@@ -14,8 +14,9 @@ from typing import Any
 CHART = Path(__file__).resolve().parents[1]
 EXTRAS = [
     dict(key='nvidia.com/gpu', operator='Exists', effect='NoSchedule'),
-    dict(key='maintenance', operator='Exists', effect='NoExecute',
-         tolerationSeconds=60),
+    dict(
+        key='maintenance', operator='Exists', effect='NoExecute', tolerationSeconds=60
+    ),
 ]
 
 
@@ -23,15 +24,17 @@ def render(values, template='templates/configmap-kumo-config.yaml'):
     command = [os.environ.get('HELM', 'helm'), 'template', 'kumo', str(CHART)]
     command += ['-f', str(CHART / 'test/manifests/values-aws-minimal.yaml')]
     command += ['-f', '-', '--show-only', template]
-    return subprocess.run(command, input=json.dumps(values), text=True,
-                          capture_output=True, check=False)
+    return subprocess.run(
+        command, input=json.dumps(values), text=True, capture_output=True, check=False
+    )
 
 
 def rendered_json(result, key='DEPLOY_ENV_CONFIG_JSON'):
     if result.returncode:
         raise AssertionError(result.stderr)
-    line, = [
-        line for line in result.stdout.splitlines()
+    (line,) = [
+        line
+        for line in result.stdout.splitlines()
         if line.strip().startswith(key + ':')
     ]
     return json.loads(json.loads(line.split(':', 1)[1].strip()))
@@ -51,28 +54,36 @@ class PoolTolerationsContractTest(unittest.TestCase):
             with self.subTest(raw=raw):
                 config = rendered_json(render(values(EXTRAS, raw)))
                 self.assertEqual(
-                    config['data_compute']['k8s_pool'].get(
-                        'pool_extra_tolerations'), EXTRAS)
+                    config['data_compute']['k8s_pool'].get('pool_extra_tolerations'),
+                    EXTRAS,
+                )
                 probe = rendered_json(
-                    render(values(EXTRAS, raw),
-                           'templates/tests/probe-inputs.yaml'), 'inputs.json')
+                    render(values(EXTRAS, raw), 'templates/tests/probe-inputs.yaml'),
+                    'inputs.json',
+                )
                 self.assertEqual(probe.get('poolExtraTolerations'), EXTRAS)
 
     def test_omitted_null_and_empty_all_mean_no_extras(self):
-        for override in ({}, values(None), values([]), values(None, raw=True),
-                         values([], raw=True)):
+        for override in (
+            {},
+            values(None),
+            values([]),
+            values(None, raw=True),
+            values([], raw=True),
+        ):
             with self.subTest(values=override):
                 config = rendered_json(render(override))
-                self.assertFalse(config['data_compute']['k8s_pool'].get(
-                    'pool_extra_tolerations'))
+                self.assertFalse(
+                    config['data_compute']['k8s_pool'].get('pool_extra_tolerations')
+                )
 
     def test_raw_override_uses_the_same_effective_config(self):
         override = values(EXTRAS)
-        override['kumoConfig']['extra'] = values(
-            [], raw=True)['kumoConfig']['extra']
+        override['kumoConfig']['extra'] = values([], raw=True)['kumoConfig']['extra']
         config = rendered_json(render(override))
         self.assertEqual(
-            config['data_compute']['k8s_pool']['pool_extra_tolerations'], [])
+            config['data_compute']['k8s_pool']['pool_extra_tolerations'], []
+        )
 
     def test_invalid_entries_fail_during_render_including_raw_overrides(self):
         invalid = [
@@ -108,17 +119,25 @@ class PoolTolerationsContractTest(unittest.TestCase):
             with self.subTest(extras=extras):
                 config = rendered_json(render(values(extras)))
                 self.assertEqual(
-                    config['data_compute']['k8s_pool'].get(
-                        'pool_extra_tolerations'), extras)
+                    config['data_compute']['k8s_pool'].get('pool_extra_tolerations'),
+                    extras,
+                )
 
     def test_raw_seconds_must_fit_int64_after_helm_number_encoding(self):
         for seconds in (2**63 - 1, 2**63, -(2**63), 2**80, -(2**80)):
             with self.subTest(seconds=seconds):
                 result = render(
-                    values([
-                        dict(key='maintenance', effect='NoExecute',
-                             tolerationSeconds=seconds)
-                    ], raw=True))
+                    values(
+                        [
+                            dict(
+                                key='maintenance',
+                                effect='NoExecute',
+                                tolerationSeconds=seconds,
+                            )
+                        ],
+                        raw=True,
+                    )
+                )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('toleration', result.stderr.lower())
 

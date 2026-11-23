@@ -85,7 +85,8 @@ class _ConnectorReferenceWorkflow:
 
 @activity.defn
 async def _resolve_activity_local_connector(
-    reference: ConnectorExecutionRef, ) -> str:
+    reference: ConnectorExecutionRef,
+) -> str:
     from rest.backends.data_backend.connector_broker import (
         connector_credential_broker,
     )
@@ -101,13 +102,15 @@ class _RepeatedConnectorAccessWorkflow:
     async def run(self, reference: ConnectorExecutionRef) -> list[str]:
         results = []
         for _ in range(2):
-            results.append(await workflow.execute_activity(
-                _resolve_activity_local_connector,
-                reference,
-                schedule_to_close_timeout=timedelta(seconds=10),
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            ))
+            results.append(
+                await workflow.execute_activity(
+                    _resolve_activity_local_connector,
+                    reference,
+                    schedule_to_close_timeout=timedelta(seconds=10),
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+            )
         return results
 
 
@@ -160,8 +163,7 @@ def test_project_connector_reference_is_temporal_serializable() -> None:
     assert b'must-never-enter-history' not in payloads[0].data
 
 
-def test_resolved_internal_connector_config_cannot_enter_temporal_payload(
-) -> None:
+def test_resolved_internal_connector_config_cannot_enter_temporal_payload() -> None:
     value = ConnectorSpec(
         connector_id=_CONNECTOR_ID,
         connector_config={'target': 'must-remain-in-process'},
@@ -180,8 +182,9 @@ def test_workflow_graph_strips_resolved_connector_configuration() -> None:
     graph = GraphConfig(
         name='graph',
         data_source_dict={
-            str(_CONNECTOR_ID):
-            ConnectorConfig(name='resolved-target-must-not-enter-history')
+            str(_CONNECTOR_ID): ConnectorConfig(
+                name='resolved-target-must-not-enter-history'
+            )
         },
         tables=[
             TableConfig(
@@ -196,45 +199,47 @@ def test_workflow_graph_strips_resolved_connector_configuration() -> None:
         graph,
         {_CONNECTOR_ID: reference},
     )
-    payload = KumoPayloadConverter().to_payloads([
-        _ConnectorExecutionRefEnvelope(connectors={'warehouse': reference}),
-        safe_graph,
-    ])
+    payload = KumoPayloadConverter().to_payloads(
+        [
+            _ConnectorExecutionRefEnvelope(connectors={'warehouse': reference}),
+            safe_graph,
+        ]
+    )
     payload_bytes = b''.join(value.data for value in payload)
 
     assert safe_graph.data_source_dict == {}
     assert b'resolved-target-must-not-enter-history' not in payload_bytes
 
 
-def test_one_shot_management_config_allows_only_public_target_metadata(
-) -> None:
+def test_one_shot_management_config_allows_only_public_target_metadata() -> None:
     # Unlike long-running jobs, a one-shot management workflow may return the
     # same public target metadata exposed on a connector resource. It must
     # still fail closed on any identity, principal, or authentication field.
-    assert_public_connector_target_config({
-        'host': 'workspace.example.com',
-        'catalog': 'analytics',
-        'schema_name': 'events',
-        'bucket': 'customer-data',
-        'prefix': 'production/',
-    })
+    assert_public_connector_target_config(
+        {
+            'host': 'workspace.example.com',
+            'catalog': 'analytics',
+            'schema_name': 'events',
+            'bucket': 'customer-data',
+            'prefix': 'production/',
+        }
+    )
 
     for forbidden in (
-            'identity_id',
-            'principal_id',
-            'group_ids',
-            'credentials',
-            'aws_access_key_id',
-            'client_secret',
-            'private_key',
-            'access_token',
-            'session_token',
+        'identity_id',
+        'principal_id',
+        'group_ids',
+        'credentials',
+        'aws_access_key_id',
+        'client_secret',
+        'private_key',
+        'access_token',
+        'session_token',
     ):
         with pytest.raises(TypeError, match='non-public field'):
             assert_public_connector_target_config(
-                {'nested': {
-                    forbidden: 'must-not-enter-history'
-                }})
+                {'nested': {forbidden: 'must-not-enter-history'}}
+            )
 
 
 def test_nested_connector_reference_round_trips() -> None:
@@ -243,8 +248,7 @@ def test_nested_connector_reference_round_trips() -> None:
         connector_id=_CONNECTOR_ID,
         project_id=ProjectID('project_' + 'a' * 32),
     )
-    envelope = _ConnectorExecutionRefEnvelope(
-        connectors={'warehouse': reference})
+    envelope = _ConnectorExecutionRefEnvelope(connectors={'warehouse': reference})
 
     decoded = converter.from_payloads(
         converter.to_payloads([envelope]),
@@ -262,8 +266,7 @@ def test_nested_connector_reference_round_trips() -> None:
             username=SecretStr('service-account'),
             password=SecretStr('password'),
         ),
-        api.DatabricksOAuthCredentials(
-            client_secret=SecretStr('client-secret')),
+        api.DatabricksOAuthCredentials(client_secret=SecretStr('client-secret')),
         AWSFederatedCredentials(
             access_key_id=SecretStr('access-key'),
             secret_access_key=SecretStr('secret-key'),
@@ -274,7 +277,8 @@ def test_nested_connector_reference_round_trips() -> None:
             credential={'access_token': 'gcs-access-token'},
         ),
         AzureFederatedCredentials(
-            credential={'access_token': 'azure-access-token'}, ),
+            credential={'access_token': 'azure-access-token'},
+        ),
     ],
 )
 def test_bare_credentials_cannot_enter_temporal_payload(credentials) -> None:
@@ -292,18 +296,15 @@ def test_workflow_modules_cannot_resolve_connector_credentials() -> None:
         'ResolvedConnectorSpec',
     )
     violations = []
-    for path in (repository_root / 'rest' /
-                 'backends').glob('**/workflows/*.py'):
+    for path in (repository_root / 'rest' / 'backends').glob('**/workflows/*.py'):
         source = path.read_text()
         for marker in forbidden:
             if marker in source:
-                violations.append(
-                    f'{path.relative_to(repository_root)}: {marker}')
+                violations.append(f'{path.relative_to(repository_root)}: {marker}')
     assert violations == []
 
 
-def test_runtime_modules_do_not_transport_or_recheck_submitter_membership(
-) -> None:
+def test_runtime_modules_do_not_transport_or_recheck_submitter_membership() -> None:
     repository_root = Path(__file__).resolve().parents[2]
     forbidden = (
         'AuthPrincipal',
@@ -316,14 +317,14 @@ def test_runtime_modules_do_not_transport_or_recheck_submitter_membership(
     violations = []
     for backend in ('data_backend', 'ml_backend'):
         for runtime_kind in ('workflows', 'activities'):
-            directory = (repository_root / 'rest' / 'backends' / backend /
-                         runtime_kind)
+            directory = repository_root / 'rest' / 'backends' / backend / runtime_kind
             for path in directory.glob('*.py'):
                 source = path.read_text()
                 for marker in forbidden:
                     if marker in source:
                         violations.append(
-                            f'{path.relative_to(repository_root)}: {marker}')
+                            f'{path.relative_to(repository_root)}: {marker}'
+                        )
     assert violations == []
 
 
@@ -340,14 +341,14 @@ def test_backend_jobs_do_not_read_legacy_credential_payload_fields() -> None:
             source = path.read_text(encoding='utf-8')
             for marker in forbidden:
                 if marker in source:
-                    violations.append(
-                        f'{path.relative_to(repository_root)}: {marker}')
+                    violations.append(f'{path.relative_to(repository_root)}: {marker}')
     assert violations == []
 
 
 @pytest.mark.asyncio
 async def test_temporal_history_contains_only_project_connector_ids(
-    temporal_config: DeployEnvConfig, ) -> None:
+    temporal_config: DeployEnvConfig,
+) -> None:
     """Integration proof: no principal, binding, or secret enters history."""
     raw_task_queue = f'identity-boundary-{uuid4().hex}'
     client = await TemporalClient(temporal_config).get()
@@ -368,8 +369,7 @@ async def test_temporal_history_contains_only_project_connector_ids(
         task_queue=temporal_config.task_queue(raw_task_queue),
         workflows=[_ConnectorReferenceWorkflow],
         activities=[_use_connector_reference],
-        interceptors=[KumoActivityInterceptor(),
-                      KumoWorkflowInterceptor()],
+        interceptors=[KumoActivityInterceptor(), KumoWorkflowInterceptor()],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     async with worker:
@@ -382,7 +382,8 @@ async def test_temporal_history_contains_only_project_connector_ids(
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
         assert await handle.result() == (
-            f'{reference.project_id}:{reference.connector_id}')
+            f'{reference.project_id}:{reference.connector_id}'
+        )
 
     events = [event async for event in handle.fetch_history_events()]
     history_bytes = b''.join(event.SerializeToString() for event in events)
@@ -390,14 +391,19 @@ async def test_temporal_history_contains_only_project_connector_ids(
         assert marker not in history_bytes
 
     started = next(
-        event for event in events
-        if event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED)
+        event
+        for event in events
+        if event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
+    )
     assert 'api-user-auth' not in (
-        started.workflow_execution_started_event_attributes.header.fields)
+        started.workflow_execution_started_event_attributes.header.fields
+    )
 
     scheduled = next(
-        event for event in events
-        if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED)
+        event
+        for event in events
+        if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+    )
     inputs = await client.data_converter.decode(
         scheduled.activity_task_scheduled_event_attributes.input.payloads,
         [ConnectorExecutionRef],
@@ -407,7 +413,8 @@ async def test_temporal_history_contains_only_project_connector_ids(
 
 @pytest.mark.asyncio
 async def test_ingestion_provider_failure_is_sanitized_in_history_and_result(
-    temporal_config: DeployEnvConfig, ) -> None:
+    temporal_config: DeployEnvConfig,
+) -> None:
     raw_task_queue = f'ingestion-error-boundary-{uuid4().hex}'
     client = await TemporalClient(temporal_config).get()
     worker = Worker(
@@ -415,8 +422,7 @@ async def test_ingestion_provider_failure_is_sanitized_in_history_and_result(
         task_queue=temporal_config.task_queue(raw_task_queue),
         workflows=[_SanitizedIngestionFailureWorkflow],
         activities=[_sanitized_ingestion_failure],
-        interceptors=[KumoActivityInterceptor(),
-                      KumoWorkflowInterceptor()],
+        interceptors=[KumoActivityInterceptor(), KumoWorkflowInterceptor()],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     async with worker:
@@ -473,7 +479,8 @@ async def test_each_activity_access_reresolves_rotated_credentials_without_histo
                 username=SecretStr('service-account'),
                 password=SecretStr(secret),
             ),
-        ) for generation, secret in zip(('one', 'two'), secrets)
+        )
+        for generation, secret in zip(('one', 'two'), secrets)
     ]
 
     class _MutableConnectorService:
@@ -501,8 +508,7 @@ async def test_each_activity_access_reresolves_rotated_credentials_without_histo
         task_queue=temporal_config.task_queue(raw_task_queue),
         workflows=[_RepeatedConnectorAccessWorkflow],
         activities=[_resolve_activity_local_connector],
-        interceptors=[KumoActivityInterceptor(),
-                      KumoWorkflowInterceptor()],
+        interceptors=[KumoActivityInterceptor(), KumoWorkflowInterceptor()],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     try:
@@ -581,8 +587,7 @@ async def test_binding_removal_is_observed_before_the_next_activity_access(
         task_queue=temporal_config.task_queue(raw_task_queue),
         workflows=[_RepeatedConnectorAccessWorkflow],
         activities=[_resolve_activity_local_connector],
-        interceptors=[KumoActivityInterceptor(),
-                      KumoWorkflowInterceptor()],
+        interceptors=[KumoActivityInterceptor(), KumoWorkflowInterceptor()],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     try:

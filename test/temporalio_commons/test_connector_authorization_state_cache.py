@@ -14,8 +14,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rest.backends.data_backend import \
-    connector_authorization_client as auth_client
+from rest.backends.data_backend import connector_authorization_client as auth_client
 from rest.config.data_backend import ConnectorExecutionRef
 from service_framework._raw_deploy_config import (
     PostgresMetadataStorageConfig,
@@ -48,7 +47,7 @@ def auto_cleanup_per_func():
 class _Principal:
     user_id: UserID = UserID('user-1')
     user_name: str = 'User One'
-    kumo_group_ids: tuple[str, ...] = ('group-1', )
+    kumo_group_ids: tuple[str, ...] = ('group-1',)
     external_membership_unavailable: bool = False
     is_admin: bool = False
 
@@ -67,8 +66,7 @@ def test_sqlite_authorization_state_is_not_shared_across_separate_event_loops(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(auth_client, 'get_db_storage_root',
-                        lambda: str(tmp_path))
+    monkeypatch.setattr(auth_client, 'get_db_storage_root', lambda: str(tmp_path))
     config = _sqlite_config()
 
     original_open = auth_client.open_state_db_from_deploy_config
@@ -79,8 +77,7 @@ def test_sqlite_authorization_state_is_not_shared_across_separate_event_loops(
         open_count += 1
         return await original_open(*args, **kwargs)
 
-    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config',
-                        counted_open)
+    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config', counted_open)
 
     async def open_and_close():
         result = await auth_client._open_authorization_state(config)
@@ -100,8 +97,7 @@ async def test_n_way_bind_singleflights_sqlite_state_within_one_loop(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(auth_client, 'get_db_storage_root',
-                        lambda: str(tmp_path))
+    monkeypatch.setattr(auth_client, 'get_db_storage_root', lambda: str(tmp_path))
     config = _sqlite_config()
     sqlite_path = auth_client.default_sqlite_path(str(tmp_path))
     token_count = 8
@@ -117,8 +113,7 @@ async def test_n_way_bind_singleflights_sqlite_state_within_one_loop(
                 resource_id=str(ConnectorID(f'connector_{index:032x}')),
                 project_id=str(_PROJECT_ID),
                 request_digest='',
-                allowed_actions=(
-                    ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS, ),
+                allowed_actions=(ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS,),
                 deployment_id='instance:rest',
                 temporal_namespace='namespace',
             )
@@ -135,8 +130,7 @@ async def test_n_way_bind_singleflights_sqlite_state_within_one_loop(
         await asyncio.sleep(0.02)
         return await original_open(*args, **kwargs)
 
-    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config',
-                        counted_open)
+    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config', counted_open)
 
     async def bind(index: int):
         input = SimpleNamespace(
@@ -151,11 +145,9 @@ async def test_n_way_bind_singleflights_sqlite_state_within_one_loop(
             execution_timeout=None,
             run_timeout=None,
         )
-        return await auth_client.bind_connector_authorizations_for_start(
-            input, config)
+        return await auth_client.bind_connector_authorizations_for_start(input, config)
 
-    bound_states = await asyncio.gather(*(bind(index)
-                                          for index in range(token_count)))
+    bound_states = await asyncio.gather(*(bind(index) for index in range(token_count)))
 
     assert open_count == 1
     assert len({id(result[0]) for result in bound_states}) == 1
@@ -163,7 +155,8 @@ async def test_n_way_bind_singleflights_sqlite_state_within_one_loop(
 
     for state, services, newly_bound in bound_states:
         await auth_client.revoke_bound_connector_authorizations(
-            state, services, newly_bound)
+            state, services, newly_bound
+        )
     await auth_client.close_cached_authorization_state_for_current_loop()
 
 
@@ -171,8 +164,7 @@ def test_concurrent_separate_loops_use_independent_sqlite_state(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(auth_client, 'get_db_storage_root',
-                        lambda: str(tmp_path))
+    monkeypatch.setattr(auth_client, 'get_db_storage_root', lambda: str(tmp_path))
     config = _sqlite_config()
     sqlite_path = auth_client.default_sqlite_path(str(tmp_path))
     token_count = 8
@@ -186,13 +178,13 @@ def test_concurrent_separate_loops_use_independent_sqlite_state(
                 _, token = await service.issue(
                     principal=_Principal(),
                     auth_backend='native_disabled',
-                    resource_kind=(
-                        ConnectorAuthorizationResourceKind.CONNECTOR),
+                    resource_kind=(ConnectorAuthorizationResourceKind.CONNECTOR),
                     resource_id=str(ConnectorID(f'connector_{index:032x}')),
                     project_id=str(_PROJECT_ID),
                     request_digest='',
                     allowed_actions=(
-                        ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS, ),
+                        ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS,
+                    ),
                     deployment_id='instance:rest',
                     temporal_namespace='namespace',
                 )
@@ -213,8 +205,7 @@ def test_concurrent_separate_loops_use_independent_sqlite_state(
         await asyncio.sleep(0.02)
         return await original_open(*args, **kwargs)
 
-    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config',
-                        counted_open)
+    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config', counted_open)
     barrier = threading.Barrier(token_count)
     bound_states = []
     errors: list[BaseException] = []
@@ -234,10 +225,10 @@ def test_concurrent_separate_loops_use_independent_sqlite_state(
                 run_timeout=None,
             )
             result = await auth_client.bind_connector_authorizations_for_start(
-                input, config)
+                input, config
+            )
             await auth_client.revoke_bound_connector_authorizations(*result)
-            await auth_client \
-                .close_cached_authorization_state_for_current_loop()
+            await auth_client.close_cached_authorization_state_for_current_loop()
             return result
 
         barrier.wait()
@@ -247,8 +238,7 @@ def test_concurrent_separate_loops_use_independent_sqlite_state(
             errors.append(error)
 
     threads = [
-        threading.Thread(target=bind, args=(index, ))
-        for index in range(token_count)
+        threading.Thread(target=bind, args=(index,)) for index in range(token_count)
     ]
     for thread in threads:
         thread.start()
@@ -265,7 +255,8 @@ def test_concurrent_separate_loops_use_independent_sqlite_state(
 
 @pytest.mark.asyncio
 async def test_authorization_state_cache_is_discarded_after_fork(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     loop = asyncio.get_running_loop()
     cached = auth_client._CachedAuthorizationState(
         state_db=SimpleNamespace(),
@@ -311,12 +302,14 @@ def test_authorization_state_fork_replaces_a_locked_parent_guard() -> None:
         try:
             with auth_client._AUTHORIZATION_STATE_LOCK:
                 auth_client._discard_inherited_authorization_state_locked()
-            send.send((
-                'ok',
-                auth_client._AUTHORIZATION_STATE_PID,
-                bool(auth_client._AUTHORIZATION_STATE_CACHE),
-                bool(auth_client._AUTHORIZATION_STATE_OPENING),
-            ))
+            send.send(
+                (
+                    'ok',
+                    auth_client._AUTHORIZATION_STATE_PID,
+                    bool(auth_client._AUTHORIZATION_STATE_CACHE),
+                    bool(auth_client._AUTHORIZATION_STATE_OPENING),
+                )
+            )
         except BaseException as error:
             send.send(('error', type(error).__name__, False, False))
         finally:
@@ -346,15 +339,15 @@ def test_authorization_state_fork_replaces_a_locked_parent_guard() -> None:
 
 @pytest.mark.asyncio
 async def test_postgres_authorization_state_is_not_process_cached(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     config = SimpleNamespace(
-        metadata_storage=PostgresMetadataStorageConfig(
-            dsn='postgresql://state-db'), )
+        metadata_storage=PostgresMetadataStorageConfig(dsn='postgresql://state-db'),
+    )
     first = SimpleNamespace(close=AsyncMock())
     second = SimpleNamespace(close=AsyncMock())
     open_state = AsyncMock(side_effect=[first, second])
-    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config',
-                        open_state)
+    monkeypatch.setattr(auth_client, 'open_state_db_from_deploy_config', open_state)
 
     first_state = await auth_client._open_authorization_state(config)
     second_state = await auth_client._open_authorization_state(config)

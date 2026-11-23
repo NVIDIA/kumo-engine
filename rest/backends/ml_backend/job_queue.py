@@ -127,8 +127,9 @@ def get_job_gpu_slots(job_entry: Any) -> int:
     if isinstance(job_entry, TrainingJobDBEntry):
         return 1
     if isinstance(job_entry, BatchPredictionJobDBEntry):
-        return (1 if not job_entry.config else
-                job_entry.config.num_parallel_workers_limit)
+        return (
+            1 if not job_entry.config else job_entry.config.num_parallel_workers_limit
+        )
     return 0
 
 
@@ -157,12 +158,13 @@ class StateDbJobQueue:
       Safe to call repeatedly for the same job.
     * :meth:`drain` -- re-run admission (e.g. after a manual capacity change).
     """
+
     def __init__(
         self,
         state_db: StateDB,
         settings: MLJobQueueSettings,
         *,
-        queue_name: str = "ml_jobs",
+        queue_name: str = 'ml_jobs',
     ) -> None:
         self._state_db = state_db
         self._settings = settings
@@ -178,14 +180,16 @@ class StateDbJobQueue:
         # so admission can flip a job's status to RUNNING inside the same
         # transaction it read open jobs in (the public MLJobService write
         # methods each open their own tx).
-        self._training_jobs = JsonRepository("training_jobs",
-                                             TrainingJobDBEntry)
-        self._batch_prediction_jobs = JsonRepository("batch_prediction_jobs",
-                                                     BatchPredictionJobDBEntry)
+        self._training_jobs = JsonRepository('training_jobs', TrainingJobDBEntry)
+        self._batch_prediction_jobs = JsonRepository(
+            'batch_prediction_jobs', BatchPredictionJobDBEntry
+        )
         self._generate_train_table_jobs = JsonRepository(
-            "generate_train_table_jobs", GenerateTrainTableJobDBEntry)
+            'generate_train_table_jobs', GenerateTrainTableJobDBEntry
+        )
         self._generate_pred_table_jobs = JsonRepository(
-            "generate_pred_table_jobs", GeneratePredTableJobDBEntry)
+            'generate_pred_table_jobs', GeneratePredTableJobDBEntry
+        )
 
     # ------------------------------------------------------------------ #
     # Locking primitive
@@ -197,9 +201,8 @@ class StateDbJobQueue:
         IMMEDIATE), so nothing extra is needed.  Postgres needs an explicit
         transaction-scoped advisory lock.
         """
-        if tx.backend == "postgres":
-            await tx.execute("SELECT pg_advisory_xact_lock($1)",
-                             _PG_ADVISORY_LOCK_KEY)
+        if tx.backend == 'postgres':
+            await tx.execute('SELECT pg_advisory_xact_lock($1)', _PG_ADVISORY_LOCK_KEY)
 
     # ------------------------------------------------------------------ #
     # Reading open jobs (single-tx)
@@ -222,19 +225,18 @@ class StateDbJobQueue:
         return open_jobs
 
     def _job_view(self, entry: Any) -> Optional[_OpenJob]:
-        execution = getattr(entry, "execution", None)
+        execution = getattr(entry, 'execution', None)
         if execution is None:
             return None
         status = execution.status
         if status not in (JobStatus.QUEUED, JobStatus.RUNNING):
             return None
-        if getattr(execution, "workflow_end_state", None):
+        if getattr(execution, 'workflow_end_state', None):
             return None
         return _OpenJob(
             id=entry.id,
             status=status,
-            created_at=getattr(getattr(entry, "timestamps", None), "created_at",
-                               None),
+            created_at=getattr(getattr(entry, 'timestamps', None), 'created_at', None),
             gpu_slots=get_job_gpu_slots(entry),
         )
 
@@ -254,7 +256,7 @@ class StateDbJobQueue:
         # objects directly, so a mix of timezone-aware and naive timestamps
         # (possible across DB round-trips/backends) never raises
         # "can't compare offset-naive and offset-aware datetimes".
-        def _key(job: "_OpenJob") -> tuple[int, float]:
+        def _key(job: '_OpenJob') -> tuple[int, float]:
             if job.created_at is None:
                 return (0, 0.0)
             try:
@@ -281,21 +283,23 @@ class StateDbJobQueue:
     ) -> None:
         if gpu_slots_required > self._settings.max_concurrent_gpu_worker_slots:
             raise JobConcurrencyLimitError(
-                f"Unable to launch job that requires {gpu_slots_required} GPU "
-                "workers, max GPU worker slots is "
-                f"{self._settings.max_concurrent_gpu_worker_slots}")
-        job_slots_full = (job_slots_occupied
-                          >= self._settings.max_concurrent_jobs_total)
+                f'Unable to launch job that requires {gpu_slots_required} GPU '
+                'workers, max GPU worker slots is '
+                f'{self._settings.max_concurrent_gpu_worker_slots}'
+            )
+        job_slots_full = job_slots_occupied >= self._settings.max_concurrent_jobs_total
         gpu_slots_full = gpu_slots_required > 0 and (
             gpu_slots_occupied + gpu_slots_required
-            > self._settings.max_concurrent_gpu_worker_slots)
+            > self._settings.max_concurrent_gpu_worker_slots
+        )
         if job_slots_full or gpu_slots_full:
             raise JobConcurrencyLimitError(
-                "Unable to start new job since maximum worker limit of "
-                f"{self._settings.max_concurrent_jobs_total} has been reached. "
-                f"Currently {job_slots_occupied} job slots and "
-                f"{gpu_slots_occupied} GPU slots are in use; the new job "
-                f"requires {gpu_slots_required} GPU workers.")
+                'Unable to start new job since maximum worker limit of '
+                f'{self._settings.max_concurrent_jobs_total} has been reached. '
+                f'Currently {job_slots_occupied} job slots and '
+                f'{gpu_slots_occupied} GPU slots are in use; the new job '
+                f'requires {gpu_slots_required} GPU workers.'
+            )
 
     # ------------------------------------------------------------------ #
     # Admission (single locked tx)
@@ -317,8 +321,12 @@ class StateDbJobQueue:
             job_slots += 1
             gpu_slots += job.gpu_slots
             admitted.append(job.id)
-            log.info("Admitted job %s (job_slots=%d, gpu_slots=%d)", job.id,
-                     job_slots, gpu_slots)
+            log.info(
+                'Admitted job %s (job_slots=%d, gpu_slots=%d)',
+                job.id,
+                job_slots,
+                gpu_slots,
+            )
         return admitted
 
     async def _set_running(self, tx: StateTx, job_id: JobID) -> None:
@@ -330,9 +338,10 @@ class StateDbJobQueue:
         entry.execution.start_time = now
         entry.execution.last_updated_at = now
         entry.execution.log = JobEventLogEntry(
-            stage_name="Starting", last_updated_at=now,
-            detail=("Job has finished waiting in queue and is now starting "
-                    "to run."))
+            stage_name='Starting',
+            last_updated_at=now,
+            detail=('Job has finished waiting in queue and is now starting to run.'),
+        )
         await self._save_job_in_tx(tx, entry)
 
     async def _get_job_in_tx(self, tx: StateTx, job_id: JobID) -> Any | None:
@@ -342,17 +351,20 @@ class StateDbJobQueue:
             return row.payload if row else None
         if job_type == JobType.GENERATE_TRAIN_TABLE_JOB:
             row = await self._generate_train_table_jobs.get(
-                tx, str(GenerateTrainTableJobID(job_id)))
+                tx, str(GenerateTrainTableJobID(job_id))
+            )
             return row.payload if row else None
         if job_type == JobType.GENERATE_PREDICTION_TABLE_JOB:
             row = await self._generate_pred_table_jobs.get(
-                tx, str(GeneratePredictionTableJobID(job_id)))
+                tx, str(GeneratePredictionTableJobID(job_id))
+            )
             return row.payload if row else None
         if job_type == JobType.BATCH_PREDICTION_JOB:
             row = await self._batch_prediction_jobs.get(
-                tx, str(BatchPredictionJobID(job_id)))
+                tx, str(BatchPredictionJobID(job_id))
+            )
             return row.payload if row else None
-        raise AssertionError(f"Unsupported job type {job_type}")
+        raise AssertionError(f'Unsupported job type {job_type}')
 
     async def _save_job_in_tx(self, tx: StateTx, entry: Any) -> None:
         if isinstance(entry, BatchPredictionJobDBEntry):
@@ -369,7 +381,7 @@ class StateDbJobQueue:
             return self._generate_train_table_jobs
         if isinstance(entry, GeneratePredTableJobDBEntry):
             return self._generate_pred_table_jobs
-        raise AssertionError(f"Unsupported job entry type {type(entry)}")
+        raise AssertionError(f'Unsupported job entry type {type(entry)}')
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -397,7 +409,8 @@ class StateDbJobQueue:
                 return status
             if status != JobStatus.QUEUED:
                 raise AssertionError(
-                    f"Job {job_id} must be QUEUED to submit; got {status}")
+                    f'Job {job_id} must be QUEUED to submit; got {status}'
+                )
 
             jobs = await self._list_open_top_level_jobs(tx)
             gpu_required = get_job_gpu_slots(entry)
@@ -410,16 +423,17 @@ class StateDbJobQueue:
                 queued = [j for j in self._queued_fifo(jobs) if j.id != job_id]
                 if len(queued) >= self._settings.max_job_queue_length:
                     raise JobConcurrencyLimitError(
-                        "Unable to start new job since the maximum job queue "
-                        f"length of {self._settings.max_job_queue_length} has "
-                        f"been reached ({len(queued)} jobs queued).")
+                        'Unable to start new job since the maximum job queue '
+                        f'length of {self._settings.max_job_queue_length} has '
+                        f'been reached ({len(queued)} jobs queued).'
+                    )
                 # Even when the GPU demand can never fit, surface that early.
-                if (gpu_required
-                        > self._settings.max_concurrent_gpu_worker_slots):
+                if gpu_required > self._settings.max_concurrent_gpu_worker_slots:
                     raise JobConcurrencyLimitError(
-                        f"Unable to launch job that requires {gpu_required} "
-                        "GPU workers, max GPU worker slots is "
-                        f"{self._settings.max_concurrent_gpu_worker_slots}")
+                        f'Unable to launch job that requires {gpu_required} '
+                        'GPU workers, max GPU worker slots is '
+                        f'{self._settings.max_concurrent_gpu_worker_slots}'
+                    )
             else:
                 # No queue: the job must be admissible right now or rejected.
                 running = self._running(jobs)
@@ -466,15 +480,16 @@ class StateDbJobQueue:
             queued_jobs=[j.id for j in queued],
             max_concurrent_jobs_total=self._settings.max_concurrent_jobs_total,
             max_concurrent_gpu_worker_slots=(
-                self._settings.max_concurrent_gpu_worker_slots),
+                self._settings.max_concurrent_gpu_worker_slots
+            ),
             max_job_queue_length=self._settings.max_job_queue_length,
             use_job_queue=self._settings.use_job_queue,
         )
 
 
 __all__ = [
-    "StateDbJobQueue",
-    "JobQueueStatus",
-    "JobConcurrencyLimitError",
-    "get_job_gpu_slots",
+    'StateDbJobQueue',
+    'JobQueueStatus',
+    'JobConcurrencyLimitError',
+    'get_job_gpu_slots',
 ]

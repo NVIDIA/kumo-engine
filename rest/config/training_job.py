@@ -41,15 +41,16 @@ from statedb.config.job_tag import JobTagKey, JobTagValue
 
 log = logging.getLogger(__name__)
 
-KUMO_CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH = (
-    'KUMO_CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH')
+KUMO_CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH = 'KUMO_CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH'
 CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH = EnvVar(
     KUMO_CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH,
     type=bool,
     required=False,
     default_value=False,
-    description=('Allow custom training tables to differ in row count from the '
-                 'original generated training table during validation.'),
+    description=(
+        'Allow custom training tables to differ in row count from the '
+        'original generated training table during validation.'
+    ),
 )
 
 
@@ -74,6 +75,7 @@ class CustomTrainingTable:
         timestamp_unit: Unit of integer TIMESTAMP values in the supplied table.
         validated: Whether the custom training table has been validated.
     """
+
     connector_spec: ConnectorExecutionRef
     source_table: SourceTableType
     weight_col_name: Optional[str] = None
@@ -84,8 +86,8 @@ class CustomTrainingTable:
 
 @kumo_dataclass
 class TrainingSpec:
-    """Defines the business logic/problem formulation for a training job.
-    """
+    """Defines the business logic/problem formulation for a training job."""
+
     predictive_query: PredictiveQueryV2Config
     advanced_options: ModelPlan
 
@@ -167,8 +169,8 @@ class TestPeriod:
 
 @kumo_dataclass
 class SplitSizes:
-    """Number of training/eval examples in each of the splits
-    """
+    """Number of training/eval examples in each of the splits"""
+
     train: int
     val: int
     test: Optional[int] = None
@@ -226,8 +228,8 @@ class TrainingJobResults:
         if remaining_metrics:
             raise RuntimeError(
                 f"All metrics must be prefixed by 'train', 'test', or 'val'. "
-                f"Got {remaining_metrics}. "
-                "This usually indicates a trainer bug or a custom metric without a stage prefix."
+                f'Got {remaining_metrics}. '
+                'This usually indicates a trainer bug or a custom metric without a stage prefix.'
             )
         return self
 
@@ -236,8 +238,9 @@ class TrainingJobResults:
     def load_test_explain(self) -> TestExplanation:
         if not self.test_explain:
             assert self._test_explain_file_path
-            self.test_explain = load_json(self._test_explain_file_path,
-                                          TestExplanation, compressed=True)
+            self.test_explain = load_json(
+                self._test_explain_file_path, TestExplanation, compressed=True
+            )
         return self.test_explain
 
     @blocking_method()
@@ -259,10 +262,12 @@ class TrainingJobOutput(JobExecution):
 
     @classmethod
     def failed(
-        cls, err_msg: Optional[str] = None, stacktrace: Optional[str] = None,
+        cls,
+        err_msg: Optional[str] = None,
+        stacktrace: Optional[str] = None,
         exception: Optional[BaseException] = None,
         validation: Optional[ValidationResponse] = None,
-        workflow_end_state: Optional['WorkflowExecutionStatus'] = None
+        workflow_end_state: Optional['WorkflowExecutionStatus'] = None,
     ) -> 'TrainingJobOutput':
         """Create failed job output with proper failure_info.
 
@@ -279,18 +284,22 @@ class TrainingJobOutput(JobExecution):
         Returns:
             TrainingJobOutput with status=FAILED and failure_info populated
         """
-        failure_info = extract_failure_info(err_msg=err_msg,
-                                            stacktrace=stacktrace,
-                                            exception=exception,
-                                            validation=validation)
+        failure_info = extract_failure_info(
+            err_msg=err_msg,
+            stacktrace=stacktrace,
+            exception=exception,
+            validation=validation,
+        )
 
         if not failure_info.message:
-            failure_info.message = "Training job failed"
+            failure_info.message = 'Training job failed'
 
-        return cls(status=JobStatus.FAILED,
-                   log=JobEventLogEntry.failed(message=failure_info.message),
-                   failure_info=failure_info,
-                   workflow_end_state=workflow_end_state)
+        return cls(
+            status=JobStatus.FAILED,
+            log=JobEventLogEntry.failed(message=failure_info.message),
+            failure_info=failure_info,
+            workflow_end_state=workflow_end_state,
+        )
 
     def terminal_invariant_violations(self) -> List[str]:
         """Return human-readable messages for any status->required-field
@@ -309,27 +318,31 @@ class TrainingJobOutput(JobExecution):
 
         violations: List[str] = []
 
-        if status == JobStatus.RUNNING and (log_entry and log_entry.stage_name
-                                            == 'Training'):
+        if status == JobStatus.RUNNING and (
+            log_entry and log_entry.stage_name == 'Training'
+        ):
             if not progress:
                 violations.append(
-                    f"Missing progress field for running training job "
-                    f"(status={JobStatus.RUNNING}). Ensure the training job "
-                    f"reporter is writing progress.")
+                    f'Missing progress field for running training job '
+                    f'(status={JobStatus.RUNNING}). Ensure the training job '
+                    f'reporter is writing progress.'
+                )
 
         if status == JobStatus.DONE:
             if not results:
                 violations.append(
-                    f"Missing results field for completed training job "
-                    f"(status={JobStatus.DONE}). Ensure the postprocessing "
-                    f"step completed successfully.")
+                    f'Missing results field for completed training job '
+                    f'(status={JobStatus.DONE}). Ensure the postprocessing '
+                    f'step completed successfully.'
+                )
 
         if status == JobStatus.FAILED:
             if not failure_info:
                 violations.append(
-                    f"Missing failure_info field for failed training job "
-                    f"(status={JobStatus.FAILED}). Ensure errors are captured "
-                    f"and propagated from the training workflow.")
+                    f'Missing failure_info field for failed training job '
+                    f'(status={JobStatus.FAILED}). Ensure errors are captured '
+                    f'and propagated from the training workflow.'
+                )
 
         return violations
 
@@ -353,7 +366,7 @@ class TrainingJobOutput(JobExecution):
         # ``terminal_invariant_violations`` and raises so a broken terminal job
         # cannot be saved. The read/response path stays warn-only.
         for violation in self.terminal_invariant_violations():
-            log.warning("%s", violation)
+            log.warning('%s', violation)
         return self
 
     def strip_out_expensive_fields(self):
@@ -365,8 +378,7 @@ class TrainingJobOutput(JobExecution):
             self.results.test_eval = None
 
     def remove_employee_only_fields(self) -> None:
-        """Delete fields that should not be shown to customers.
-        """
+        """Delete fields that should not be shown to customers."""
         if self.failure_info is not None:
             self.failure_info.remove_employee_only_fields()
 

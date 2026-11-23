@@ -50,8 +50,8 @@ def test_object_output_requires_matching_reference_and_provider_type():
     wrong_reference = _reference(ConnectorID.generate())
 
     with patch(
-            'rest.backends.data_backend.activities.'
-            'prediction_output_validation.get_connector_from_spec',
+        'rest.backends.data_backend.activities.'
+        'prediction_output_validation.get_connector_from_spec',
     ) as get_connector:
         result = validate_object_prediction_output(
             wrong_reference,
@@ -67,9 +67,9 @@ def test_object_output_requires_matching_reference_and_provider_type():
         filesystem_credential_scope=Mock(return_value=nullcontext()),
     )
     with patch(
-            'rest.backends.data_backend.activities.'
-            'prediction_output_validation.get_connector_from_spec',
-            return_value=connector,
+        'rest.backends.data_backend.activities.'
+        'prediction_output_validation.get_connector_from_spec',
+        return_value=connector,
     ):
         result = validate_object_prediction_output(
             _reference(connector_id),
@@ -93,9 +93,9 @@ def test_object_output_rejects_path_outside_connector_target():
     )
 
     with patch(
-            'rest.backends.data_backend.activities.'
-            'prediction_output_validation.get_connector_from_spec',
-            return_value=connector,
+        'rest.backends.data_backend.activities.'
+        'prediction_output_validation.get_connector_from_spec',
+        return_value=connector,
     ):
         result = validate_object_prediction_output(
             _reference(connector_id),
@@ -123,14 +123,17 @@ def test_object_output_uses_explicit_connector_credential_scope():
         filesystem_credential_scope=Mock(return_value=scope),
     )
 
-    with patch(
+    with (
+        patch(
             'rest.backends.data_backend.activities.'
             'prediction_output_validation.get_connector_from_spec',
             return_value=connector,
-    ), patch(
+        ),
+        patch(
             'rest.backends.data_backend.activities.'
             'prediction_output_validation._validate_file_path',
             return_value=None,
+        ),
     ):
         result = validate_object_prediction_output(
             _reference(connector_id),
@@ -140,7 +143,8 @@ def test_object_output_uses_explicit_connector_credential_scope():
 
     assert result is None
     connector.filesystem_credential_scope.assert_called_once_with(
-        's3://bucket/root/predictions/')
+        's3://bucket/root/predictions/'
+    )
     scope.__enter__.assert_called_once()
     scope.__exit__.assert_called_once()
 
@@ -161,15 +165,15 @@ def test_bigquery_output_validation_probes_write_and_cleans_up():
     context = Mock()
     connector._context = context
     from google.api_core.exceptions import NotFound
+
     context.get_table.side_effect = NotFound('missing')
 
     with patch(
-            'rest.backends.data_backend.activities.'
-            'prediction_output_validation.get_connector_from_spec',
-            return_value=connector,
+        'rest.backends.data_backend.activities.'
+        'prediction_output_validation.get_connector_from_spec',
+        return_value=connector,
     ):
-        result = validate_warehouse_prediction_output(_reference(connector_id),
-                                                      output)
+        result = validate_warehouse_prediction_output(_reference(connector_id), output)
 
     assert result is None
     context.create_table.assert_called_once()
@@ -198,8 +202,8 @@ def test_warehouse_output_rejects_staging_table_with_append_before_provider_io(
     )
 
     with patch(
-            'rest.backends.data_backend.activities.'
-            'prediction_output_validation.get_connector_from_spec',
+        'rest.backends.data_backend.activities.'
+        'prediction_output_validation.get_connector_from_spec',
     ) as get_connector:
         result = validate_warehouse_prediction_output(
             _reference(connector_id),
@@ -207,8 +211,7 @@ def test_warehouse_output_rejects_staging_table_with_append_before_provider_io(
         )
 
     assert result is not None
-    assert result.message == (
-        'A staging table may be used only with OVERWRITE mode.')
+    assert result.message == ('A staging table may be used only with OVERWRITE mode.')
     get_connector.assert_not_called()
 
 
@@ -230,12 +233,11 @@ def test_bigquery_output_denial_is_sanitized(caplog):
     connector.context.create_table.side_effect = Forbidden(secret)
 
     with patch(
-            'rest.backends.data_backend.activities.'
-            'prediction_output_validation.get_connector_from_spec',
-            return_value=connector,
+        'rest.backends.data_backend.activities.'
+        'prediction_output_validation.get_connector_from_spec',
+        return_value=connector,
     ):
-        result = validate_warehouse_prediction_output(_reference(connector_id),
-                                                      output)
+        result = validate_warehouse_prediction_output(_reference(connector_id), output)
 
     assert result is not None
     assert 'cannot write' in result.message
@@ -281,18 +283,16 @@ def test_databricks_output_validation_enforces_schema_and_write_mode(
     )
 
     with (
-            patch(
-                'rest.backends.data_backend.activities.'
-                'prediction_output_validation.get_connector_from_spec',
-                return_value=connector,
-            ),
-            patch.object(connector, 'open'),
-            patch.object(connector, 'check_schema_exists'),
-            patch.object(connector, 'check_table_write_permissions') as
-            check_write,
+        patch(
+            'rest.backends.data_backend.activities.'
+            'prediction_output_validation.get_connector_from_spec',
+            return_value=connector,
+        ),
+        patch.object(connector, 'open'),
+        patch.object(connector, 'check_schema_exists'),
+        patch.object(connector, 'check_table_write_permissions') as check_write,
     ):
-        result = validate_warehouse_prediction_output(_reference(connector_id),
-                                                      output)
+        result = validate_warehouse_prediction_output(_reference(connector_id), output)
 
     if expected_mode is None:
         assert result is not None
@@ -324,20 +324,23 @@ def test_snowflake_provider_error_is_not_returned_or_logged(caplog):
     connector._context = Mock()
     secret = 'provider-payload-with-session-token'
 
-    with patch(
+    with (
+        patch(
             'rest.backends.data_backend.activities.'
             'prediction_output_validation.get_connector_from_spec',
             return_value=connector,
-    ), patch.object(
+        ),
+        patch.object(
             connector,
             'check_schema_exists',
-    ), patch.object(
+        ),
+        patch.object(
             connector,
             'check_table_write_permissions',
             side_effect=ConnectorError(secret),
+        ),
     ):
-        result = validate_warehouse_prediction_output(_reference(connector_id),
-                                                      output)
+        result = validate_warehouse_prediction_output(_reference(connector_id), output)
 
     assert result is not None
     assert 'configured Snowflake schema' in result.message

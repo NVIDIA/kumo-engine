@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for rest/utils/driver_common.py."""
+
 import asyncio
 import hashlib
 import os
@@ -43,7 +44,7 @@ from rest.utils.driver_common import (
 from rest.utils.table import ColStatsSet
 from statedb.config.common import ConnectorID, ProjectID
 
-_CONNECTOR_ID = "connector_" + "1" * 32
+_CONNECTOR_ID = 'connector_' + '1' * 32
 
 
 class _LifecycleConnector:
@@ -72,8 +73,7 @@ class _LifecycleConnector:
     ['snowflake', 'databricks', 'bigquery', 's3', 'gcs', 'adls'],
     ids=['warehouse-sf', 'warehouse-db', 'warehouse-bq', 's3', 'gcs', 'adls'],
 )
-async def test_async_connector_lifecycle_closes_connector_family(
-        connector_family):
+async def test_async_connector_lifecycle_closes_connector_family(connector_family):
     connector = _LifecycleConnector()
 
     async with async_connector_lifecycle(connector, open_connector=True):
@@ -161,9 +161,11 @@ async def test_async_connector_lifecycle_closes_after_cancellation():
 
 @pytest.mark.asyncio
 async def test_async_connector_lifecycle_preserves_cancellation_when_close_fails(
-        caplog):
+    caplog,
+):
     connector = _LifecycleConnector(
-        close_error=RuntimeError('cleanup-cancellation-provider-secret'))
+        close_error=RuntimeError('cleanup-cancellation-provider-secret')
+    )
     body_started = asyncio.Event()
     never_finish = asyncio.Event()
 
@@ -185,11 +187,9 @@ async def test_async_connector_lifecycle_preserves_cancellation_when_close_fails
 
 
 @pytest.mark.asyncio
-async def test_async_connector_lifecycle_preserves_primary_cleanup_failure(
-        caplog):
+async def test_async_connector_lifecycle_preserves_primary_cleanup_failure(caplog):
     primary_error = ValueError('primary-provider-secret')
-    connector = _LifecycleConnector(
-        close_error=RuntimeError('cleanup-provider-secret'))
+    connector = _LifecycleConnector(close_error=RuntimeError('cleanup-provider-secret'))
 
     with pytest.raises(ValueError) as caught:
         async with async_connector_lifecycle(connector):
@@ -233,10 +233,13 @@ def test_authorized_graph_for_activity_closes_all_connectors(monkeypatch):
     )
     expected_graph = object()
     from rest.utils import driver_common
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: next(connectors))
-    graph_from_config = patch.object(driver_common.Graph, 'from_config',
-                                     return_value=expected_graph)
+
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: next(connectors)
+    )
+    graph_from_config = patch.object(
+        driver_common.Graph, 'from_config', return_value=expected_graph
+    )
 
     with graph_from_config as build_graph:
         with authorized_graph_for_activity(config, references) as graph:
@@ -264,29 +267,33 @@ def test_hydrate_graph_config_closes_temporary_connector(monkeypatch):
     connector.config = lambda: {'public_target': 'warehouse'}
     from rest.backends.data_backend import connector_broker
     from rest.utils import driver_common
-    monkeypatch.setattr(connector_broker.connector_credential_broker, 'resolve',
-                        lambda _reference: resolved)
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _resolved: connector)
+
+    monkeypatch.setattr(
+        connector_broker.connector_credential_broker,
+        'resolve',
+        lambda _reference: resolved,
+    )
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _resolved: connector
+    )
     graph_config = SimpleNamespace(data_source_dict={})
 
     hydrated, credentials = hydrate_graph_config_for_activity(
-        graph_config, {connector_id: reference})
+        graph_config, {connector_id: reference}
+    )
 
     assert hydrated.data_source_dict == {
-        str(connector_id): {
-            'public_target': 'warehouse'
-        }
+        str(connector_id): {'public_target': 'warehouse'}
     }
     assert credentials == {}
     assert connector.close_calls == 1
 
 
 def test_authorized_graph_for_activity_preserves_body_failure_and_closes_all(
-        monkeypatch, caplog):
+    monkeypatch, caplog
+):
     primary = RuntimeError('provider-primary-secret')
-    first = _LifecycleConnector(
-        close_error=RuntimeError('provider-cleanup-secret'))
+    first = _LifecycleConnector(close_error=RuntimeError('provider-cleanup-secret'))
     second = _LifecycleConnector()
     connectors = iter([first, second])
     connector_ids = [
@@ -303,10 +310,11 @@ def test_authorized_graph_for_activity_preserves_body_failure_and_closes_all(
         tables=[SimpleNamespace(data_source=value) for value in connector_ids],
     )
     from rest.utils import driver_common
-    monkeypatch.setattr(driver_common, 'get_connector_from_spec',
-                        lambda _reference: next(connectors))
-    monkeypatch.setattr(driver_common.Graph, 'from_config',
-                        lambda _config: object())
+
+    monkeypatch.setattr(
+        driver_common, 'get_connector_from_spec', lambda _reference: next(connectors)
+    )
+    monkeypatch.setattr(driver_common.Graph, 'from_config', lambda _config: object())
 
     with pytest.raises(RuntimeError) as caught:
         with authorized_graph_for_activity(config, references):
@@ -322,10 +330,10 @@ def test_authorized_graph_for_activity_preserves_body_failure_and_closes_all(
 def test_fail_closed_graph_from_config_performs_no_provider_io(monkeypatch):
     connector = MagicMock()
     connector.open.side_effect = AssertionError('request-side provider I/O')
-    connector.get_data_version.side_effect = AssertionError(
-        'request-side provider I/O')
+    connector.get_data_version.side_effect = AssertionError('request-side provider I/O')
     graph = SimpleNamespace(data_source_dict={'warehouse': connector})
     from rest.utils import driver_common
+
     from_config = MagicMock(return_value=graph)
     monkeypatch.setattr(driver_common.Graph, 'from_config', from_config)
     config = object()
@@ -340,20 +348,17 @@ def test_fail_closed_graph_from_config_performs_no_provider_io(monkeypatch):
 
 class TestExtractSourceTableType:
     """Tests for extract_source_table_type function."""
+
     def test_extract_s3_source_table(self):
         """Test extracting S3 source table type."""
         source_table = S3SourceTable(
             connector_id=_CONNECTOR_ID,
-            source={
-                'mode': 'relative',
-                'path': "test_table"
-            },
+            source={'mode': 'relative', 'path': 'test_table'},
             file_type=FileType.PARQUET,
         )
-        result_table, table_name, connector_id = extract_source_table_type(
-            source_table)
+        result_table, table_name, connector_id = extract_source_table_type(source_table)
 
-        assert table_name == "test_table"
+        assert table_name == 'test_table'
         assert connector_id is not None
         assert str(connector_id) == _CONNECTOR_ID
 
@@ -361,13 +366,12 @@ class TestExtractSourceTableType:
         """Test extracting GCS source table type."""
         source_table = GCSSourceTable(
             connector_id=_CONNECTOR_ID,
-            source_table_name="gcs_test_table",
+            source_table_name='gcs_test_table',
             file_type=FileType.PARQUET,
         )
-        result_table, table_name, connector_id = extract_source_table_type(
-            source_table)
+        result_table, table_name, connector_id = extract_source_table_type(source_table)
 
-        assert table_name == "gcs_test_table"
+        assert table_name == 'gcs_test_table'
         assert connector_id is not None
         assert str(connector_id) == _CONNECTOR_ID
 
@@ -375,15 +379,14 @@ class TestExtractSourceTableType:
         """Test extracting Snowflake source table type."""
         source_table = SnowflakeSourceTable(
             snowflake_connector_id=_CONNECTOR_ID,
-            database="test_db",
-            schema_name="test_schema",
-            table="test_table",
+            database='test_db',
+            schema_name='test_schema',
+            table='test_table',
             data_source_type=DataSourceType.SNOWFLAKE,
         )
-        result_table, table_name, connector_id = extract_source_table_type(
-            source_table)
+        result_table, table_name, connector_id = extract_source_table_type(source_table)
 
-        assert table_name == "test_table"
+        assert table_name == 'test_table'
         assert connector_id is not None
         assert str(connector_id) == _CONNECTOR_ID
 
@@ -391,15 +394,14 @@ class TestExtractSourceTableType:
         """Test extracting BigQuery source table type."""
         source_table = BigQuerySourceTable(
             bigquery_connector_id=_CONNECTOR_ID,
-            project_id="test_project",
-            dataset_id="test_dataset",
-            table_name="test_table",
+            project_id='test_project',
+            dataset_id='test_dataset',
+            table_name='test_table',
             data_source_type=DataSourceType.BIGQUERY,
         )
-        result_table, table_name, connector_id = extract_source_table_type(
-            source_table)
+        result_table, table_name, connector_id = extract_source_table_type(source_table)
 
-        assert table_name == "test_table"
+        assert table_name == 'test_table'
         assert connector_id is not None
         assert str(connector_id) == _CONNECTOR_ID
 
@@ -407,49 +409,63 @@ class TestExtractSourceTableType:
         """Test extracting Databricks source table type."""
         source_table = DatabricksSourceTable(
             databricks_connector_id=_CONNECTOR_ID,
-            table="test_table",
+            table='test_table',
             data_source_type=DataSourceType.DATABRICKS,
         )
-        result_table, table_name, connector_id = extract_source_table_type(
-            source_table)
+        result_table, table_name, connector_id = extract_source_table_type(source_table)
 
-        assert table_name == "test_table"
+        assert table_name == 'test_table'
         assert connector_id is not None
         assert str(connector_id) == _CONNECTOR_ID
 
     def test_extract_invalid_source_table_raises_error(self):
         """Test that invalid source table type raises ValueError."""
+
         class InvalidSourceTable:
             pass
 
-        with pytest.raises(ValueError, match="Invalid source table type"):
+        with pytest.raises(ValueError, match='Invalid source table type'):
             extract_source_table_type(InvalidSourceTable())
 
     @pytest.mark.parametrize(
-        "source_table",
+        'source_table',
         [
-            S3SourceTable(connector_id=_CONNECTOR_ID, source={
-                'mode': 'relative',
-                'path': "t"
-            }, file_type=FileType.PARQUET),
-            GCSSourceTable(connector_id=_CONNECTOR_ID, source_table_name="t",
-                           file_type=FileType.PARQUET),
-            SnowflakeSourceTable(snowflake_connector_id=_CONNECTOR_ID,
-                                 database="d", schema_name="s", table="t",
-                                 data_source_type=DataSourceType.SNOWFLAKE),
-            BigQuerySourceTable(bigquery_connector_id=_CONNECTOR_ID,
-                                project_id="p", dataset_id="d", table_name="t",
-                                data_source_type=DataSourceType.BIGQUERY),
-            DatabricksSourceTable(databricks_connector_id=_CONNECTOR_ID,
-                                  table="t",
-                                  data_source_type=DataSourceType.DATABRICKS),
+            S3SourceTable(
+                connector_id=_CONNECTOR_ID,
+                source={'mode': 'relative', 'path': 't'},
+                file_type=FileType.PARQUET,
+            ),
+            GCSSourceTable(
+                connector_id=_CONNECTOR_ID,
+                source_table_name='t',
+                file_type=FileType.PARQUET,
+            ),
+            SnowflakeSourceTable(
+                snowflake_connector_id=_CONNECTOR_ID,
+                database='d',
+                schema_name='s',
+                table='t',
+                data_source_type=DataSourceType.SNOWFLAKE,
+            ),
+            BigQuerySourceTable(
+                bigquery_connector_id=_CONNECTOR_ID,
+                project_id='p',
+                dataset_id='d',
+                table_name='t',
+                data_source_type=DataSourceType.BIGQUERY,
+            ),
+            DatabricksSourceTable(
+                databricks_connector_id=_CONNECTOR_ID,
+                table='t',
+                data_source_type=DataSourceType.DATABRICKS,
+            ),
         ],
         ids=[
-            "s3-explicit",
-            "gcs-explicit",
-            "warehouse-sf",
-            "bigquery",
-            "databricks",
+            's3-explicit',
+            'gcs-explicit',
+            'warehouse-sf',
+            'bigquery',
+            'databricks',
         ],
     )
     def test_extract_source_table_connector_id_never_none(self, source_table):
@@ -471,8 +487,7 @@ def _bp_home_dir():
         raw_dir = osp.join(home, 'output', PREDICTIONS_SOURCE_TABLE_NAME)
         os.makedirs(raw_dir)
         # transformed predictions
-        tr_dir = osp.join(home, 'output',
-                          TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME)
+        tr_dir = osp.join(home, 'output', TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME)
         os.makedirs(tr_dir)
         yield home
 
@@ -485,9 +500,9 @@ class TestGenerateBpStatsWorkflowArgs:
     keys to what the v1 form would have produced — protecting cache hit
     continuity across the migration.
     """
+
     @pytest.mark.asyncio
-    async def test_returns_table_definition_for_raw_predictions(
-            self, _bp_home_dir):
+    async def test_returns_table_definition_for_raw_predictions(self, _bp_home_dir):
         # `_bp_home_dir` already creates the prediction output directory,
         # so `ParquetConnector._get_data_version` works against real disk
         # (returns the dir mtime). No connector method needs to be mocked.
@@ -495,24 +510,27 @@ class TestGenerateBpStatsWorkflowArgs:
             hdm = MockHDM.return_value
             hdm.prediction_output_dir = osp.join(_bp_home_dir, 'output')
             hdm.internal_predictions_file = osp.join(
-                hdm.prediction_output_dir, PREDICTIONS_SOURCE_TABLE_NAME)
-            connector_spec, table_def, data_version, col_stats_set = (
-                await generate_bp_stats_workflow_args(
-                    job_id='job-abc',
-                    job_home_dir=_bp_home_dir,
-                    task_type=TaskType.BINARY_CLASSIFICATION,
-                    is_temporal=False,
-                    entity_col_name='article_id',
-                ))
+                hdm.prediction_output_dir, PREDICTIONS_SOURCE_TABLE_NAME
+            )
+            (
+                connector_spec,
+                table_def,
+                data_version,
+                col_stats_set,
+            ) = await generate_bp_stats_workflow_args(
+                job_id='job-abc',
+                job_home_dir=_bp_home_dir,
+                task_type=TaskType.BINARY_CLASSIFICATION,
+                is_temporal=False,
+                entity_col_name='article_id',
+            )
 
         assert isinstance(table_def, TableDefinition)
         # source_table is a v2 S3SourceTable wrapping the parquet output dir
         assert isinstance(table_def.source_table, V2S3SourceTable)
         assert isinstance(table_def.source_table.source, S3RelativeSource)
-        assert table_def.source_table.source.path == \
-            PREDICTIONS_SOURCE_TABLE_NAME
-        assert table_def.source_table.connector_id == \
-            connector_spec.connector_id
+        assert table_def.source_table.source.path == PREDICTIONS_SOURCE_TABLE_NAME
+        assert table_def.source_table.connector_id == connector_spec.connector_id
         # cols/pkey come from get_bp_columns_by_task_type
         assert len(table_def.cols) > 0
         assert table_def.pkey == 'ENTITY'
@@ -524,18 +542,22 @@ class TestGenerateBpStatsWorkflowArgs:
     @pytest.mark.asyncio
     async def test_closes_internal_prediction_connector(self, _bp_home_dir):
         connector = _LifecycleConnector()
-        connector._get_data_version = SimpleNamespace(coroutine=AsyncMock(
-            return_value='v0'))
+        connector._get_data_version = SimpleNamespace(
+            coroutine=AsyncMock(return_value='v0')
+        )
 
-        with patch('rest.utils.driver_common.HomeDirManager') as MockHDM, \
-                patch(
-                    'rest.utils.driver_common.get_connector_from_spec_async',
-                    new=AsyncMock(return_value=connector),
-                ):
+        with (
+            patch('rest.utils.driver_common.HomeDirManager') as MockHDM,
+            patch(
+                'rest.utils.driver_common.get_connector_from_spec_async',
+                new=AsyncMock(return_value=connector),
+            ),
+        ):
             hdm = MockHDM.return_value
             hdm.prediction_output_dir = osp.join(_bp_home_dir, 'output')
             hdm.internal_predictions_file = osp.join(
-                hdm.prediction_output_dir, PREDICTIONS_SOURCE_TABLE_NAME)
+                hdm.prediction_output_dir, PREDICTIONS_SOURCE_TABLE_NAME
+            )
             await generate_bp_stats_workflow_args(
                 job_id='job-abc',
                 job_home_dir=_bp_home_dir,
@@ -545,20 +567,26 @@ class TestGenerateBpStatsWorkflowArgs:
             )
 
         connector._get_data_version.coroutine.assert_awaited_once_with(
-            PREDICTIONS_SOURCE_TABLE_NAME)
+            PREDICTIONS_SOURCE_TABLE_NAME
+        )
         assert connector.close_calls == 1
 
     @pytest.mark.asyncio
     async def test_direct_output_version_skips_missing_internal_parquet(
-            self, _bp_home_dir):
-        with patch('rest.utils.driver_common.HomeDirManager') as MockHDM, \
-                patch(
-                    'rest.utils.driver_common.get_connector_from_spec_async',
-                    side_effect=AssertionError(
-                        'direct output must not inspect internal parquet'),
-                ):
+        self, _bp_home_dir
+    ):
+        with (
+            patch('rest.utils.driver_common.HomeDirManager') as MockHDM,
+            patch(
+                'rest.utils.driver_common.get_connector_from_spec_async',
+                side_effect=AssertionError(
+                    'direct output must not inspect internal parquet'
+                ),
+            ),
+        ):
             MockHDM.return_value.prediction_output_dir = osp.join(
-                _bp_home_dir, 'missing-output')
+                _bp_home_dir, 'missing-output'
+            )
             _, _, data_version, _ = await generate_bp_stats_workflow_args(
                 job_id='job-direct',
                 job_home_dir=_bp_home_dir,
@@ -595,13 +623,13 @@ class TestGenerateBpStatsWorkflowArgs:
         )
 
         request = stats_set.get_stats_types(table_def)
-        stats = next(stats for column, stats in request.items()
-                     if column.name == column_name)
+        stats = next(
+            stats for column, stats in request.items() if column.name == column_name
+        )
         assert stats.count(ColStatType.SUMMARY_STATS_BY_CLASS) == expected_count
 
     @pytest.mark.asyncio
-    async def test_stable_identity_keys_and_hardened_cache_key(
-            self, _bp_home_dir):
+    async def test_stable_identity_keys_and_hardened_cache_key(self, _bp_home_dir):
         """Identity keys stay stable while cache paths hash the source name.
 
         The legacy ``CreateTableArgs`` / ``table_wf_key`` / ``table_cache_key``
@@ -617,16 +645,21 @@ class TestGenerateBpStatsWorkflowArgs:
         from rest.config import batch_prediction_job
         from rest.utils.driver_common import prediction_connector_from_job_id
 
-        with patch('rest.utils.driver_common.HomeDirManager') as MockHDM, \
-                patch.object(
-                    __import__('kumo.connector',
-                               fromlist=['ParquetConnector']).ParquetConnector,
-                    '_get_data_version',
-                    new=AsyncMock(return_value='v0')):
+        with (
+            patch('rest.utils.driver_common.HomeDirManager') as MockHDM,
+            patch.object(
+                __import__(
+                    'kumo.connector', fromlist=['ParquetConnector']
+                ).ParquetConnector,
+                '_get_data_version',
+                new=AsyncMock(return_value='v0'),
+            ),
+        ):
             hdm = MockHDM.return_value
             hdm.prediction_output_dir = osp.join(_bp_home_dir, 'output')
             hdm.internal_predictions_file = osp.join(
-                hdm.prediction_output_dir, PREDICTIONS_SOURCE_TABLE_NAME)
+                hdm.prediction_output_dir, PREDICTIONS_SOURCE_TABLE_NAME
+            )
             _, table_def, _, _ = await generate_bp_stats_workflow_args(
                 job_id='job-abc',
                 job_home_dir=_bp_home_dir,
@@ -637,7 +670,8 @@ class TestGenerateBpStatsWorkflowArgs:
 
         bp_connector_id = prediction_connector_from_job_id('job-abc')
         v1_cols = batch_prediction_job.get_bp_columns_by_task_type(
-            TaskType.BINARY_CLASSIFICATION, False, 'ENTITY')
+            TaskType.BINARY_CLASSIFICATION, False, 'ENTITY'
+        )
         # v1 ``table_args_to_dedupe_hash`` formula (helper removed; inlined
         # here so the byte-stability cross-check still works).
         _hasher = md5()
@@ -660,15 +694,13 @@ class TestGenerateBpStatsWorkflowArgs:
         v1_fingerprint = IngestedTableFingerprint(
             connector_name=bp_connector_id,
             source_name=PREDICTIONS_SOURCE_TABLE_NAME,
-            cols={c.name: c.dtype
-                  for c in v1_cols},
+            cols={c.name: c.dtype for c in v1_cols},
             pkey='ENTITY',
             time_col=None,
             end_time_col=None,
         )
         v1_wf_key = '.'.join([v1_fingerprint.fpid(), v1_dedupe_hash[:8]])
-        source_hash = hashlib.sha256(
-            PREDICTIONS_SOURCE_TABLE_NAME.encode()).hexdigest()
+        source_hash = hashlib.sha256(PREDICTIONS_SOURCE_TABLE_NAME.encode()).hexdigest()
         expected_cache_key = f'table_{source_hash}_{v1_dedupe_hash}'
         # Workflow-identity contracts remain byte-stable; cache paths use the
         # final hardened shape from ``TableDefinition.cache_key``.
@@ -677,8 +709,7 @@ class TestGenerateBpStatsWorkflowArgs:
         assert table_def.cache_key() == expected_cache_key
 
     @pytest.mark.asyncio
-    async def test_transformed_predictions_preserve_entity_name(
-            self, _bp_home_dir):
+    async def test_transformed_predictions_preserve_entity_name(self, _bp_home_dir):
         from kumo_core.types.schema import BaseColumnConfig
         from kumoapi.typing import Dtype, Stype
 
@@ -697,11 +728,13 @@ class TestGenerateBpStatsWorkflowArgs:
                 ),
             ],
         )
-        with patch('rest.utils.driver_common.HomeDirManager') as MockHDM, \
-                patch(
-                    'rest.utils.driver_common.load_json_async',
-                    new=AsyncMock(return_value=metadata),
-                ):
+        with (
+            patch('rest.utils.driver_common.HomeDirManager') as MockHDM,
+            patch(
+                'rest.utils.driver_common.load_json_async',
+                new=AsyncMock(return_value=metadata),
+            ),
+        ):
             hdm = MockHDM.return_value
             hdm.prediction_output_dir = osp.join(_bp_home_dir, 'output')
             hdm.internal_transformed_predictions_metadata_file = 'metadata'
@@ -718,8 +751,7 @@ class TestGenerateBpStatsWorkflowArgs:
         assert table_def.cols[0].name == 'article_id'
 
     @pytest.mark.asyncio
-    async def test_pkey_none_when_entity_missing_from_transformed(
-            self, _bp_home_dir):
+    async def test_pkey_none_when_entity_missing_from_transformed(self, _bp_home_dir):
         """When `use_transformed_output=True` and the entity column isn't
         present in the transformed-predictions metadata, pkey is None."""
         from kumo_core.types.schema import BaseColumnConfig
@@ -732,18 +764,22 @@ class TestGenerateBpStatsWorkflowArgs:
         # will load via load_json_async. Views were removed in v2, so
         # ``ViewMetadataConfig`` no longer exists; the production code now
         # loads this file as a ``TableMetadataConfig``.
-        tr_dir = osp.join(_bp_home_dir, 'output',
-                          TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME)
-        meta_path = osp.join(
-            tr_dir, '__internal_transformed_predictions_metadata.json')
+        tr_dir = osp.join(
+            _bp_home_dir, 'output', TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME
+        )
+        meta_path = osp.join(tr_dir, '__internal_transformed_predictions_metadata.json')
         # Metadata cols intentionally exclude 'ENTITY' so pkey -> None.
         meta = TableMetadataConfig(
             table_name=TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME,
             source_name=TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME,
             data_source='bp',
             cols=[
-                BaseColumnConfig(name='SCORE', stype=Stype.numerical,
-                                 dtype=Dtype.float64, metadata={}),
+                BaseColumnConfig(
+                    name='SCORE',
+                    stype=Stype.numerical,
+                    dtype=Dtype.float64,
+                    metadata={},
+                ),
             ],
         )
         with open(meta_path, 'w') as f:
@@ -768,5 +804,7 @@ class TestGenerateBpStatsWorkflowArgs:
         assert isinstance(table_def, TableDefinition)
         assert table_def.pkey is None
         assert isinstance(table_def.source_table.source, S3RelativeSource)
-        assert table_def.source_table.source.path == \
-            TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME
+        assert (
+            table_def.source_table.source.path
+            == TRANSFORMED_PREDICTIONS_SOURCE_TABLE_NAME
+        )

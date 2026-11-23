@@ -72,13 +72,14 @@ log = logging.getLogger(__name__)
 # ()`` simply matches nothing. Data/config failures are deterministic, while a
 # system failure can change when Temporal retries the activity.
 _DISKGRAPH_NON_RETRYABLE_ERRORS = tuple(
-    error_type for error_type in (DiskgraphDataError, DiskgraphConfigError)
-    if error_type is not None)
+    error_type
+    for error_type in (DiskgraphDataError, DiskgraphConfigError)
+    if error_type is not None
+)
 _DISKGRAPH_RETRYABLE_ERRORS = tuple(
-    error_type for error_type in (DiskgraphSystemError, )
-    if error_type is not None)
-_DISKGRAPH_NATIVE_ERRORS = (_DISKGRAPH_NON_RETRYABLE_ERRORS
-                            + _DISKGRAPH_RETRYABLE_ERRORS)
+    error_type for error_type in (DiskgraphSystemError,) if error_type is not None
+)
+_DISKGRAPH_NATIVE_ERRORS = _DISKGRAPH_NON_RETRYABLE_ERRORS + _DISKGRAPH_RETRYABLE_ERRORS
 
 
 def _configure_forecasting_sequence_columns(
@@ -88,7 +89,8 @@ def _configure_forecasting_sequence_columns(
 ) -> None:
     if task.task_type == TaskType.FORECASTING:
         task._set_forecast_col_encoder(  # pylint: disable=protected-access
-            year_over_year, include_future_labels=include_future_labels)
+            year_over_year, include_future_labels=include_future_labels
+        )
 
 
 _TTNG_NODE_PREDICTION_TASK_TYPES = {
@@ -105,18 +107,22 @@ _TTNG_LINK_PREDICTION_TASK_TYPES = {
 _TTNG_FORECASTING_TASK_TYPES = {
     TaskType.FORECASTING,
 }
-_TTNG_TASK_DATASET_TASK_TYPES = (_TTNG_NODE_PREDICTION_TASK_TYPES
-                                 | _TTNG_LINK_PREDICTION_TASK_TYPES
-                                 | _TTNG_FORECASTING_TASK_TYPES)
+_TTNG_TASK_DATASET_TASK_TYPES = (
+    _TTNG_NODE_PREDICTION_TASK_TYPES
+    | _TTNG_LINK_PREDICTION_TASK_TYPES
+    | _TTNG_FORECASTING_TASK_TYPES
+)
 
 
 def _ttng_task_family(task_type: TaskType) -> str:
     from kumo.diskgraph._diskgraph_legacy import task_family
+
     return task_family(task_type)
 
 
 def _ttng_task_is_temporal(task: Any) -> bool:
     from kumo.diskgraph._diskgraph_legacy import task_is_temporal
+
     return task_is_temporal(task)
 
 
@@ -125,6 +131,7 @@ def _build_ttng_feature_schema(
     fitted_encoders: Any,
 ) -> dict[str, Any]:
     from kumo.diskgraph._diskgraph_legacy import build_feature_schema
+
     return build_feature_schema(task, fitted_encoders)
 
 
@@ -138,8 +145,9 @@ def _ttng_train_table_col_stats_sidecar_path(
     consumers read only the complete extension that ingest published.
     """
     tt_id = _ttng_train_table_tt_id(train_table_path)
-    return osp.join(diskgraph_index_path, 'train_tables', tt_id,
-                    'train_table_col_stats.json')
+    return osp.join(
+        diskgraph_index_path, 'train_tables', tt_id, 'train_table_col_stats.json'
+    )
 
 
 def _ttng_validate_train_table_col_stats_sidecar(
@@ -150,12 +158,13 @@ def _ttng_validate_train_table_col_stats_sidecar(
     from kumo.diskgraph import diskgraph_native_tt_artifacts as tt_artifacts
 
     try:
-        payload = tt_artifacts.parse_train_table_col_stats_artifact(
-            sidecar_path)
+        payload = tt_artifacts.parse_train_table_col_stats_artifact(sidecar_path)
     except Exception as e:
         raise TrainingDataMaterializationError(
-            message=('TT-NG train-table column statistics are malformed at '
-                     f'{sidecar_path!r}.'),
+            message=(
+                'TT-NG train-table column statistics are malformed at '
+                f'{sidecar_path!r}.'
+            ),
             error=e,
             non_retryable=True,
         ) from e
@@ -181,11 +190,12 @@ def _ttng_validate_train_table_col_stats_sidecar(
     missing: list[str] = []
     logical_name = physical_to_logical.get(target_col.name, target_col.name)
     for stat_type in (
-            ColStatType.CATEGORY_COUNTS,
-            ColStatType.MULTI_CATEGORY_COUNTS,
+        ColStatType.CATEGORY_COUNTS,
+        ColStatType.MULTI_CATEGORY_COUNTS,
     ):
-        if (not stat_type.supports(target_col.dtype)
-                or not stat_type.supports_stype(target_col.stype)):
+        if not stat_type.supports(target_col.dtype) or not stat_type.supports_stype(
+            target_col.stype
+        ):
             continue
         if stat_type not in available.get(logical_name, set()):
             missing.append(f'{target_col.name}: {stat_type.value}')
@@ -196,7 +206,8 @@ def _ttng_validate_train_table_col_stats_sidecar(
                 'TT-NG train-table column statistics are incomplete at '
                 f'{sidecar_path!r}; missing {missing}. The generated train '
                 'table must be regenerated with a corrected DiskGraph build; '
-                'retrying this training job cannot repair the artifact.'),
+                'retrying this training job cannot repair the artifact.'
+            ),
             non_retryable=True,
         )
 
@@ -209,7 +220,8 @@ def _ttng_prepare_train_table_col_stats(
 ) -> str | None:
     """Validate stats before re-ingest, then return the published sidecar."""
     published_sidecar = _ttng_train_table_col_stats_sidecar_path(
-        train_table_path, diskgraph_index_path)
+        train_table_path, diskgraph_index_path
+    )
 
     # Link-prediction targets are graph node IDs and have no train-table target
     # encoder. New native LP bundles therefore omit this otherwise
@@ -217,13 +229,12 @@ def _ttng_prepare_train_table_col_stats(
     # but still fail closed when malformed.
     if bool(getattr(task.task_type, 'is_link_pred', False)):
         if fsutil.exists(published_sidecar):
-            _ttng_validate_train_table_col_stats_sidecar(
-                task, published_sidecar)
-        _ttng_ensure_train_table_extension(train_table_path,
-                                           diskgraph_index_path, ttng_tt_id)
+            _ttng_validate_train_table_col_stats_sidecar(task, published_sidecar)
+        _ttng_ensure_train_table_extension(
+            train_table_path, diskgraph_index_path, ttng_tt_id
+        )
         if fsutil.exists(published_sidecar):
-            _ttng_validate_train_table_col_stats_sidecar(
-                task, published_sidecar)
+            _ttng_validate_train_table_col_stats_sidecar(task, published_sidecar)
             return published_sidecar
         return None
 
@@ -234,38 +245,45 @@ def _ttng_prepare_train_table_col_stats(
             resolve_durable_ttng_bundle,
             ttng_bundle_dir_for_train_table,
         )
+
         try:
             durable_staging = resolve_durable_ttng_bundle(
-                ttng_bundle_dir_for_train_table(train_table_path))
+                ttng_bundle_dir_for_train_table(train_table_path)
+            )
         except Exception as e:
             raise TrainingDataMaterializationError(
-                message=('TT-NG could not resolve the durable train-table '
-                         'artifact bundle before materialization.'),
+                message=(
+                    'TT-NG could not resolve the durable train-table '
+                    'artifact bundle before materialization.'
+                ),
                 error=e,
                 non_retryable=True,
             ) from e
-        preflight_sidecar = osp.join(durable_staging,
-                                     'train_table_col_stats.json')
+        preflight_sidecar = osp.join(durable_staging, 'train_table_col_stats.json')
 
     if not fsutil.exists(preflight_sidecar):
         raise TrainingDataMaterializationError(
             message=(
                 'TT-NG train-table artifact is missing '
                 'train_table_col_stats.json at both the published and '
-                f'durable locations (last checked {preflight_sidecar!r}).'),
+                f'durable locations (last checked {preflight_sidecar!r}).'
+            ),
             non_retryable=True,
         )
 
     # This read is intentionally before the potentially expensive re-ingest.
     _ttng_validate_train_table_col_stats_sidecar(task, preflight_sidecar)
-    _ttng_ensure_train_table_extension(train_table_path, diskgraph_index_path,
-                                       ttng_tt_id)
+    _ttng_ensure_train_table_extension(
+        train_table_path, diskgraph_index_path, ttng_tt_id
+    )
 
     if not fsutil.exists(published_sidecar):
         raise TrainingDataMaterializationError(
-            message=('TT-NG published extension is missing '
-                     f'train_table_col_stats.json at {published_sidecar!r}; '
-                     're-ingest the persisted staging bundle.'),
+            message=(
+                'TT-NG published extension is missing '
+                f'train_table_col_stats.json at {published_sidecar!r}; '
+                're-ingest the persisted staging bundle.'
+            ),
             non_retryable=True,
         )
     if published_sidecar != preflight_sidecar:
@@ -302,8 +320,7 @@ def _ttng_ensure_train_table_extension(
     # (S3) path directly. Train tt_id is both source and target.
     staging_dir = ttng_bundle_dir_for_train_table(train_table_path)
     try:
-        with kumo_timing(
-                "training_materialize.ttng_reingest_train_table_extension"):
+        with kumo_timing('training_materialize.ttng_reingest_train_table_extension'):
             ensure_stage_ingested(
                 index_path=diskgraph_index_path,
                 target_tt_id=ttng_tt_id,
@@ -322,9 +339,11 @@ def _ttng_ensure_train_table_extension(
         # public exceptions. Convert Kumo-owned native failures here so the
         # actionable DiskGraph detail reaches the job status and API.
         raise DiskgraphError(
-            message=('TT-NG: DiskGraph failed while re-ingesting the '
-                     f'train_tables extension for tt_id={ttng_tt_id!r} from '
-                     f'the staging bundle at {staging_dir!r}.'),
+            message=(
+                'TT-NG: DiskGraph failed while re-ingesting the '
+                f'train_tables extension for tt_id={ttng_tt_id!r} from '
+                f'the staging bundle at {staging_dir!r}.'
+            ),
             error=e,
             non_retryable=isinstance(e, _DISKGRAPH_NON_RETRYABLE_ERRORS),
         ) from e
@@ -351,8 +370,8 @@ def _ensure_diskgraph_col_stats_in_cache(graph, job_input) -> None:
     """
     index_path = get_diskgraph_index_path_for_job(job_input)
     from kumo.diskgraph import ingest_stats_cache
-    ingest_stats_cache.seed_missing_col_stats_from_index(
-        index_path, graph.tables)
+
+    ingest_stats_cache.seed_missing_col_stats_from_index(index_path, graph.tables)
 
 
 def _infer_graph_encoders_from_cached_stats_or_fail(graph) -> None:
@@ -365,23 +384,25 @@ def _infer_graph_encoders_from_cached_stats_or_fail(graph) -> None:
         if not cols:
             continue
 
-        loaded = cache.load_col_stats_cache(table.fingerprint(),
-                                            table.data_version)
+        loaded = cache.load_col_stats_cache(table.fingerprint(), table.data_version)
         if not loaded:
             raise RuntimeError(
                 'diskgraph strict path requires precomputed col stats for '
-                f"table '{table.name}' (version={table.data_version})")
+                f"table '{table.name}' (version={table.data_version})"
+            )
 
         approx_request = {}
         exact_request = {}
         for col in cols:
             col_cfg = col.base_config()
             approx_types = [
-                stat for stat in EncoderGenerator.REQUIRED_APPROX_STATS
+                stat
+                for stat in EncoderGenerator.REQUIRED_APPROX_STATS
                 if stat.supports(col.dtype) and stat.supports_stype(col.stype)
             ]
             exact_types = [
-                stat for stat in EncoderGenerator.REQUIRED_EXACT_STATS
+                stat
+                for stat in EncoderGenerator.REQUIRED_EXACT_STATS
                 if stat.supports(col.dtype) and stat.supports_stype(col.stype)
             ]
             if approx_types:
@@ -413,8 +434,7 @@ def _infer_graph_encoders_from_cached_stats_or_fail(graph) -> None:
             col_exact = exact_stats.get(col_cfg, {})
             approx_required = len(approx_request.get(col_cfg, [])) > 0
             exact_required = len(exact_request.get(col_cfg, [])) > 0
-            if (approx_required
-                    or exact_required) and not (col_approx or col_exact):
+            if (approx_required or exact_required) and not (col_approx or col_exact):
                 log.warning(
                     '[DG] Missing encoder stats for %s.%s: '
                     'approx_required=%s (types=%s), exact_required=%s (types=%s), '
@@ -423,15 +443,9 @@ def _infer_graph_encoders_from_cached_stats_or_fail(graph) -> None:
                     table.name,
                     col.name,
                     approx_required,
-                    [
-                        s.__class__.__name__
-                        for s in approx_request.get(col_cfg, [])
-                    ],
+                    [s.__class__.__name__ for s in approx_request.get(col_cfg, [])],
                     exact_required,
-                    [
-                        s.__class__.__name__
-                        for s in exact_request.get(col_cfg, [])
-                    ],
+                    [s.__class__.__name__ for s in exact_request.get(col_cfg, [])],
                     list(col_approx.keys()),
                     list(col_exact.keys()),
                     col_cfg,
@@ -440,13 +454,13 @@ def _infer_graph_encoders_from_cached_stats_or_fail(graph) -> None:
                 )
                 raise RuntimeError(
                     'diskgraph strict path requires precomputed encoder stats '
-                    f"for column '{table.name}.{col.name}'")
+                    f"for column '{table.name}.{col.name}'"
+                )
             merged = {k: v.config() for k, v in col_approx.items()}
             merged.update({k: v.config() for k, v in col_exact.items()})
             per_col_stats[col.name] = merged
 
-        encoder_stats[table.name] = ExactStats(table_stats={},
-                                               col_stats=per_col_stats)
+        encoder_stats[table.name] = ExactStats(table_stats={}, col_stats=per_col_stats)
 
     graph.infer_encoders(encoder_stats=encoder_stats)
 
@@ -484,8 +498,7 @@ def _coerce_split_config_for_diskgraph(split_obj: Any) -> Any:
 
 def _custom_tt_split_col_name(job_input: Any) -> Optional[str]:
     """The split column the job's custom training table names, if any."""
-    custom = getattr(getattr(job_input, 'spec', None), 'custom_train_table',
-                     None)
+    custom = getattr(getattr(job_input, 'spec', None), 'custom_train_table', None)
     return getattr(custom, 'split_col_name', None)
 
 
@@ -505,6 +518,7 @@ def _custom_tt_split_override(
         return split_obj, _split_family_from_split_config(split_obj)
 
     from kumo.task.split import ManualSplit
+
     split = ManualSplit(
         col=split_column,
         train_value=0,
@@ -521,12 +535,14 @@ def _ttng_train_table_tt_id(train_table_path: str) -> str:
         read_tt_id_from_staging_bundle,
         ttng_bundle_dir_for_train_table,
     )
+
     staging_dir = ttng_bundle_dir_for_train_table(train_table_path)
     try:
         return read_tt_id_from_staging_bundle(staging_dir)
     except TTNGBundleError as e:
-        raise TrainingDataMaterializationError(message=str(e), error=e,
-                                               non_retryable=True) from e
+        raise TrainingDataMaterializationError(
+            message=str(e), error=e, non_retryable=True
+        ) from e
 
 
 def _ttng_train_table_parse_target(
@@ -535,8 +551,7 @@ def _ttng_train_table_parse_target(
     is_custom_train_table: bool = False,
 ) -> tuple[str, Optional[str]]:
     """Return the physical dataset and its stable logical table name."""
-    return train_table_path, ('tt' if is_custom_train_table else
-                              TRAIN_TABLE_NAME)
+    return train_table_path, ('tt' if is_custom_train_table else TRAIN_TABLE_NAME)
 
 
 def _bare_table_name(table_name: str) -> str:
@@ -553,8 +568,10 @@ def _get_graph_table_by_bare_name(graph: Any, bare_table_name: str) -> Any:
         if bare_table_name in candidates:
             return table
     raise TrainingDataMaterializationError(
-        message=('TT-NG custom train table ingestion could not find graph '
-                 f'table {bare_table_name!r}'),
+        message=(
+            'TT-NG custom train table ingestion could not find graph '
+            f'table {bare_table_name!r}'
+        ),
         non_retryable=True,
     )
 
@@ -564,8 +581,10 @@ def _ttng_custom_tt_entity_metadata(task: Any) -> tuple[str, str]:
     tt_fkeys = list(getattr(train_table, 'fkeys', None) or [])
     if not tt_fkeys:
         raise TrainingDataMaterializationError(
-            message=('TT-NG custom train table ingestion requires '
-                     'train_table.fkeys[0] to identify the seed entity table'),
+            message=(
+                'TT-NG custom train table ingestion requires '
+                'train_table.fkeys[0] to identify the seed entity table'
+            ),
             non_retryable=True,
         )
 
@@ -575,21 +594,24 @@ def _ttng_custom_tt_entity_metadata(task: Any) -> tuple[str, str]:
     entity_pk_column = getattr(entity_table, 'pkey_name', None)
     if not entity_pk_column:
         raise TrainingDataMaterializationError(
-            message=('TT-NG custom train table ingestion requires entity table '
-                     f'{entity_table_name!r} to have a primary key'),
+            message=(
+                'TT-NG custom train table ingestion requires entity table '
+                f'{entity_table_name!r} to have a primary key'
+            ),
             non_retryable=True,
         )
     return entity_table_name, entity_pk_column
 
 
 def _ttng_custom_tt_target_stype(pquery: PredictiveQuery) -> str:
-    target_stype = getattr(pquery.validated_predictive_query, 'target_stype',
-                           None)
+    target_stype = getattr(pquery.validated_predictive_query, 'target_stype', None)
     value = getattr(target_stype, 'value', None)
     if not isinstance(value, str) or not value:
         raise TrainingDataMaterializationError(
-            message=('TT-NG custom train table ingestion requires '
-                     'validated_predictive_query.target_stype'),
+            message=(
+                'TT-NG custom train table ingestion requires '
+                'validated_predictive_query.target_stype'
+            ),
             non_retryable=True,
         )
     return value
@@ -606,8 +628,8 @@ def _build_ttng_custom_train_table_artifacts(
     ttng_tt_id: str,
     time_col_name: str,
     weight_col_name: Optional[str],
-    ingest_on_error: str = "skip_row_on_error",
-    timestamp_unit: str = "nanoseconds",
+    ingest_on_error: str = 'skip_row_on_error',
+    timestamp_unit: str = 'nanoseconds',
 ) -> str:
     from diskgraph import (
         DiskgraphDataError,
@@ -627,14 +649,17 @@ def _build_ttng_custom_train_table_artifacts(
 
     entity_table_name, entity_pk_column = _ttng_custom_tt_entity_metadata(task)
     target_stype_value = _ttng_custom_tt_target_stype(pquery)
-    task_type_value = (getattr(task.task_type, 'value', None)
-                       or getattr(task.task_type, 'name', None)
-                       or str(task.task_type))
+    task_type_value = (
+        getattr(task.task_type, 'value', None)
+        or getattr(task.task_type, 'name', None)
+        or str(task.task_type)
+    )
 
     target_entity_table = None
     lp_rhs_is_temporal = False
     if bool(getattr(task.task_type, 'is_link_pred', False)):
         from kumo.pquery.utils import get_rhs_lp_table
+
         target_entity_table = get_rhs_lp_table(
             pquery.validated_predictive_query,
             pquery.graph,
@@ -642,14 +667,17 @@ def _build_ttng_custom_train_table_artifacts(
         )
         try:
             rhs_table = pquery.graph[target_entity_table]
-            lp_rhs_is_temporal = bool(rhs_table.has_time_col()
-                                      or rhs_table.has_end_time_col())
+            lp_rhs_is_temporal = bool(
+                rhs_table.has_time_col() or rhs_table.has_end_time_col()
+            )
         except Exception:
             lp_rhs_is_temporal = False
 
-    fact_pseudo_time = (static_link_fact(pquery.validated_predictive_query,
-                                         target_entity_table)
-                        if uses_pseudo_time(task_type_value) else None)
+    fact_pseudo_time = (
+        static_link_fact(pquery.validated_predictive_query, target_entity_table)
+        if uses_pseudo_time(task_type_value)
+        else None
+    )
 
     split_spec = _build_split_spec(
         _coerce_split_config_for_diskgraph(split_config),
@@ -658,7 +686,8 @@ def _build_ttng_custom_train_table_artifacts(
     )
     if split_spec is None:
         raise RuntimeError(
-            'TT-NG custom train table ingestion requires a valid split_config')
+            'TT-NG custom train table ingestion requires a valid split_config'
+        )
 
     col_stats_config: dict[str, Any] = {
         'target_stype': target_stype_value,
@@ -674,8 +703,9 @@ def _build_ttng_custom_train_table_artifacts(
     # parquet AND writes its ``.artifacts`` sibling locally (mirrors the PQL
     # path, where ``execute_tt_gen`` stages under the local index). We then
     # persist the local bundle to the durable (possibly remote) location.
-    local_input = local_ttng_builder_input(train_table_path,
-                                           'custom_train_table.parquet')
+    local_input = local_ttng_builder_input(
+        train_table_path, 'custom_train_table.parquet'
+    )
 
     with local_input as local_output_path:
         try:
@@ -694,13 +724,16 @@ def _build_ttng_custom_train_table_artifacts(
                 target_entity_table=target_entity_table,
                 task_type=task_type_value,
                 lp_rhs_is_temporal=lp_rhs_is_temporal,
-                target_window_end=(link_target_window_end(
-                    pquery.validated_predictive_query) if target_entity_table
-                                   is not None else None),
+                target_window_end=(
+                    link_target_window_end(pquery.validated_predictive_query)
+                    if target_entity_table is not None
+                    else None
+                ),
                 fact_pseudo_time=fact_pseudo_time,
                 ingest_on_error=ingest_on_error,
                 allow_negative_weight=(
-                    task_type_value.lower() == "temporal_link_prediction"),
+                    task_type_value.lower() == 'temporal_link_prediction'
+                ),
             )
         except DiskgraphDataError as error:
             raise TrainingDataMaterializationError(
@@ -710,7 +743,8 @@ def _build_ttng_custom_train_table_artifacts(
         staging_dir = result.get('staging_dir')
         if not isinstance(staging_dir, str) or not staging_dir:
             raise RuntimeError(
-                'TT-NG custom train table gen did not return staging_dir')
+                'TT-NG custom train table gen did not return staging_dir'
+            )
 
         # Persist the durable staging bundle (tt.parquet + tt_ingest_spec.json
         # + per-stage seed parquets) so execute_tt_ingest can rebuild the
@@ -771,8 +805,8 @@ def build_ttng_custom_train_table_bundle(
     # Honour the split column the training-table specification names, so the
     # bundle we build carries the ManualSplit; no-op when the spec names none.
     split_obj, split_family = _custom_tt_split_override(
-        getattr(train_table, 'split', None),
-        _custom_tt_split_col_name(job_input))
+        getattr(train_table, 'split', None), _custom_tt_split_col_name(job_input)
+    )
     diskgraph_index_path = get_diskgraph_index_path_for_job(job_input)
     ttng_tt_id = str(job_input.id)
     time_col_name = getattr(train_table, 'time_col_name', None) or 'TIMESTAMP'
@@ -780,7 +814,7 @@ def build_ttng_custom_train_table_bundle(
     custom_spec = getattr(job_input.spec, 'custom_train_table', None)
     timestamp_unit = getattr(custom_spec, 'timestamp_unit', 'nanoseconds')
 
-    with kumo_timing("training_materialize.ttng_custom_tt_source"):
+    with kumo_timing('training_materialize.ttng_custom_tt_source'):
         published_train_table_path = _build_ttng_custom_train_table_artifacts(
             train_table_path=train_table_path,
             split_config=split_obj,
@@ -797,8 +831,12 @@ def build_ttng_custom_train_table_bundle(
     # Mirror DiskGraph's native split stats for split-bearing custom tables.
     # Old/no-split bundles without the sidecar remain a no-op.
     from kumo.task.split import Split
-    split_fpid = (Split.get_fpid_from_config(job_input.spec.split)
-                  if job_input.spec.split is not None else None)
+
+    split_fpid = (
+        Split.get_fpid_from_config(job_input.spec.split)
+        if job_input.spec.split is not None
+        else None
+    )
     _mirror_ttng_split_stats_to_job_dir(
         train_table_path=published_train_table_path,
         job_dir=home_dir,
@@ -841,8 +879,7 @@ def _mirror_ttng_split_stats_to_job_dir(
         )
         return
 
-    parsed = diskgraph_native_tt_artifacts.parse_split_stats_artifact(
-        split_stats_path)
+    parsed = diskgraph_native_tt_artifacts.parse_split_stats_artifact(split_stats_path)
     split_stats = _split_train_table_stats_from_payload(parsed)
     _assert_native_split_stats_contract(task_type, split_stats)
     out_path = HomeDirManager(job_dir).split_train_table_stats(split_fpid)
@@ -898,17 +935,20 @@ def materialize_training_table(
         assert_ttng_bundle_complete,
         ttng_bundle_dir_for_train_table,
     )
+
     staging_dir = ttng_bundle_dir_for_train_table(train_table_path)
     try:
         assert_ttng_bundle_complete(staging_dir)
     except TTNGBundleError as e:
         raise TrainingDataMaterializationError(
-            message=(f'{e} The gen job (PQL) or the custom-gen step must '
-                     'persist the complete bundle before materialize runs.'),
+            message=(
+                f'{e} The gen job (PQL) or the custom-gen step must '
+                'persist the complete bundle before materialize runs.'
+            ),
             error=e,
             non_retryable=True,
         ) from e
-    return ("", validation_response)
+    return ('', validation_response)
 
 
 def _get_trainer_dir_from_job_id(
@@ -942,7 +982,9 @@ def _get_trainer_dir_from_job_id(
 
     log.info(f'Using {context} trainer directory: {trainer_dir}')
     if not fsutil.exists(trainer_dir):
-        error_msg = f"{context.capitalize()} trainer directory not found at '{trainer_dir}'"
+        error_msg = (
+            f"{context.capitalize()} trainer directory not found at '{trainer_dir}'"
+        )
         if current_job_id:
             error_msg += f' for job {current_job_id}'
         error_msg += '. Please verify the training job completed successfully.'
@@ -978,8 +1020,7 @@ def generate_training_config(
     thread can't collide.
     """
     # Extract whether we should disable explainability
-    disable_explain = (
-        job_input.spec.advanced_options.training_job.disable_explain)
+    disable_explain = job_input.spec.advanced_options.training_job.disable_explain
     # Get model plan
     model_plan = job_input.spec.advanced_options
     task_metrics = model_plan.training_job.metrics
@@ -1012,9 +1053,8 @@ def generate_training_config(
         job_input.spec.predictive_query,
         job_input.graph_data_compute_input.connectors,
     )
-    with kumo_timing("training_config.pquery_from_config"):
-        pquery: PredictiveQuery = PredictiveQueryV2.from_config(
-            predictive_query_config)
+    with kumo_timing('training_config.pquery_from_config'):
+        pquery: PredictiveQuery = PredictiveQueryV2.from_config(predictive_query_config)
     graph = pquery.graph
     # Set table data versions to the one decided at the beginning
     # of the batch prediction workflow
@@ -1027,26 +1067,31 @@ def generate_training_config(
     assert job_input.graph_data_compute_input
     graph_key_ver = VersionedGraphKey(
         job_input.graph_data_compute_input.graph_key,
-        job_input.graph_version_info.graph_data_version)
-    with kumo_timing("training_config.estimate_input_stats"):
-        data_stats = estimate_input_data_stats(graph, graph_key_ver,
-                                               deploy_env())
-    log.info(f"Computed estimated InputDataStats: {data_stats} for job: "
-             f"{job_id}")
+        job_input.graph_version_info.graph_data_version,
+    )
+    with kumo_timing('training_config.estimate_input_stats'):
+        data_stats = estimate_input_data_stats(graph, graph_key_ver, deploy_env())
+    log.info(f'Computed estimated InputDataStats: {data_stats} for job: {job_id}')
     save_json(data_stats, home_dir_mgr.estimated_input_data_stats_path)
 
     # Generate JobConfig and save it. This will be used later by the
     # materialize_training_task activity to load materialization paths. On DG,
     # graph tables and edges are served from the on-disk index, so no edge
     # persist paths are produced here.
-    with kumo_timing("training_config.save_trainer_job_config"):
-        config_path = save_trainer_job_config(home_dir, pquery.name, graph,
-                                              model_plan, job_id,
-                                              diskgraph_index_path,
-                                              disable_explain,
-                                              warm_start_trainer_dir)
-    log.info(f"Saved materialized task for job: {job_id}. JobConfig "
-             f"saved at {config_path}")
+    with kumo_timing('training_config.save_trainer_job_config'):
+        config_path = save_trainer_job_config(
+            home_dir,
+            pquery.name,
+            graph,
+            model_plan,
+            job_id,
+            diskgraph_index_path,
+            disable_explain,
+            warm_start_trainer_dir,
+        )
+    log.info(
+        f'Saved materialized task for job: {job_id}. JobConfig saved at {config_path}'
+    )
     return config_path
 
 
@@ -1072,17 +1117,21 @@ def _maybe_materialize_ttng_task_dataset(
     try:
         from kumo.diskgraph import DiskgraphHandle, get_service
         from kumo.task.task import collect_encoders
+
         is_link_pred = bool(getattr(task.task_type, 'is_link_pred', False))
         if task.task_type not in _TTNG_TASK_DATASET_TASK_TYPES:
-            raise RuntimeError('TT-NG task dataset does not support this '
-                               'task type; '
-                               f'got task_type={task.task_type!r}')
+            raise RuntimeError(
+                'TT-NG task dataset does not support this '
+                'task type; '
+                f'got task_type={task.task_type!r}'
+            )
 
         fitted_encoders = collect_encoders(task)
 
         rhs_node_type: Optional[str] = None
         if is_link_pred:
             from kumo.pquery.utils import get_rhs_lp_table
+
             rhs_node_type = get_rhs_lp_table(
                 pquery.validated_predictive_query,
                 pquery.graph,
@@ -1092,12 +1141,15 @@ def _maybe_materialize_ttng_task_dataset(
         _ttng_tt_id = _ttng_train_table_tt_id(train_table_path)
         # Snapshot restore may omit the per-job train_tables extension; re-ingest
         # from durable staging so the manifest below exists.
-        _ttng_ensure_train_table_extension(train_table_path,
-                                           diskgraph_index_path, _ttng_tt_id)
-        wheel_tt_manifest_path = osp.join(diskgraph_index_path, 'train_tables',
-                                          _ttng_tt_id, 'manifest.json')
+        _ttng_ensure_train_table_extension(
+            train_table_path, diskgraph_index_path, _ttng_tt_id
+        )
+        wheel_tt_manifest_path = osp.join(
+            diskgraph_index_path, 'train_tables', _ttng_tt_id, 'manifest.json'
+        )
 
         from kumo.diskgraph._diskgraph_legacy import build_task_dataset_spec
+
         spec = build_task_dataset_spec(
             task=task,
             fitted_encoders=fitted_encoders,
@@ -1119,9 +1171,9 @@ def _maybe_materialize_ttng_task_dataset(
         # (correctly NA-keyed) published manifest.
         handle = DiskgraphHandle(
             graph_key=str(
-                _graph_key_to_v2(job_input.graph_data_compute_input.graph_key)),
-            graph_data_version=(
-                job_input.graph_version_info.graph_data_version),
+                _graph_key_to_v2(job_input.graph_data_compute_input.graph_key)
+            ),
+            graph_data_version=(job_input.graph_version_info.graph_data_version),
             job_id=str(job_input.id),
         )
         result = get_service().materialize_task_dataset(handle, spec)
@@ -1143,8 +1195,9 @@ def _maybe_materialize_ttng_task_dataset(
         )
     except Exception as e:
         raise TrainingDataMaterializationError(
-            message=('TT-NG task-dataset materialization failed '
-                     f'(job_id={job_input.id})'),
+            message=(
+                f'TT-NG task-dataset materialization failed (job_id={job_input.id})'
+            ),
             error=e,
             non_retryable=is_error_non_retryable(e),
         ) from e
@@ -1175,7 +1228,7 @@ def materialize_training_task(
     )
     validation_response = ValidationResponse()
 
-    log.info("Starting materialize_task activity for job: %s", job_input.id)
+    log.info('Starting materialize_task activity for job: %s', job_input.id)
 
     job_id = job_input.id
     home_dir = get_job_dir(get_job_base_dir(), job_id)
@@ -1189,7 +1242,7 @@ def materialize_training_task(
     # global engine state (engine_backend defaults to DISKGRAPH; engine_mode
     # reads escaped by the explicit index path).
     # Create predictive query
-    with kumo_timing("training_task.create_pquery"):
+    with kumo_timing('training_task.create_pquery'):
         pquery, credentials = _create_pquery_with_credentials(
             job_input.spec,
             job_input.graph_data_compute_input.connectors,
@@ -1199,25 +1252,26 @@ def materialize_training_task(
     # of the training workflow
     pquery.graph.set_table_data_versions(job_input.id)
     # Open the connectors
-    log.debug("Opening Connectors '%s' for training job: %s",
-              pquery.graph.data_sources, job_input.id)
-    with kumo_timing("training_task.open_connectors"):
+    log.debug(
+        "Opening Connectors '%s' for training job: %s",
+        pquery.graph.data_sources,
+        job_input.id,
+    )
+    with kumo_timing('training_task.open_connectors'):
         open_connectors(pquery.graph, credentials)
 
-    with kumo_timing("training_task.ensure_col_stats_cache"):
+    with kumo_timing('training_task.ensure_col_stats_cache'):
         _ensure_diskgraph_col_stats_in_cache(pquery.graph, job_input)
-    with kumo_timing("training_task.infer_graph_encoders"):
+    with kumo_timing('training_task.infer_graph_encoders'):
         _infer_graph_encoders_from_cached_stats_or_fail(pquery.graph)
 
     # Create task and AutoTrainer config.
     try:
-        with kumo_timing("training_task.parse_pquery"):
-            parse_table_path, parse_table_name = (
-                _ttng_train_table_parse_target(
-                    train_table_path,
-                    is_custom_train_table=(job_input.spec.custom_train_table
-                                           is not None),
-                ))
+        with kumo_timing('training_task.parse_pquery'):
+            parse_table_path, parse_table_name = _ttng_train_table_parse_target(
+                train_table_path,
+                is_custom_train_table=(job_input.spec.custom_train_table is not None),
+            )
             task, space = AutoTrainer.parse_pquery(
                 pquery,
                 model_plan=job_input.spec.advanced_options,
@@ -1237,16 +1291,16 @@ def materialize_training_task(
         )
     except Exception as e:
         raise TrainingDataMaterializationError(
-            message="Failed to prepare training data",
+            message='Failed to prepare training data',
             error=e,
             non_retryable=is_error_non_retryable(e),
         ) from e
 
-    validation_response.merge(pquery.get_validate_train_table_response()
-                              or ValidationResponse())
+    validation_response.merge(
+        pquery.get_validate_train_table_response() or ValidationResponse()
+    )
     if task.graph.name is None:
-        msg = ("Invalid graph configuration: Graph name cannot be None in "
-               "training task")
+        msg = 'Invalid graph configuration: Graph name cannot be None in training task'
         raise InvalidGraphError(message=msg)
 
     # Remove cached data version for previously generated train table
@@ -1254,8 +1308,9 @@ def materialize_training_task(
 
     diskgraph_index_path = get_diskgraph_index_path_for_job(job_input)
     assert diskgraph_index_path, (
-        "diskgraph_index_path must be set when diskgraph edge "
-        "materialization is enabled.")
+        'diskgraph_index_path must be set when diskgraph edge '
+        'materialization is enabled.'
+    )
 
     # The wheel owns artifact production, so skip the legacy load_data
     # -> materialize -> edges chain. An empty TableData shell lets
@@ -1269,21 +1324,25 @@ def materialize_training_task(
     # handoff remains private to execute_tt_ingest; consumers seed only from
     # the complete published extension returned here.
     ttng_tt_id = _ttng_train_table_tt_id(train_table_path)
-    sidecar_path = _ttng_prepare_train_table_col_stats(task, train_table_path,
-                                                       diskgraph_index_path,
-                                                       ttng_tt_id)
+    sidecar_path = _ttng_prepare_train_table_col_stats(
+        task, train_table_path, diskgraph_index_path, ttng_tt_id
+    )
 
     # Seed col stats so the encoder build finds CATEGORY_COUNTS. This reads
     # only the published, self-describing sidecar -- never the transient gen
     # manifest.
-    seeded = (task.seed_train_table_col_stats_from_sidecar(sidecar_path)
-              if sidecar_path is not None else False)
-    log.info('[TT-NG] Train-table col stats seeded: %s (sidecar=%s)', seeded,
-             sidecar_path)
+    seeded = (
+        task.seed_train_table_col_stats_from_sidecar(sidecar_path)
+        if sidecar_path is not None
+        else False
+    )
+    log.info(
+        '[TT-NG] Train-table col stats seeded: %s (sidecar=%s)', seeded, sidecar_path
+    )
     task.infer_encoders()
     task.validate(raise_on_error=True, ignore_encoders=False)
 
-    with kumo_timing("training_task.materialize_ttng_task_dataset"):
+    with kumo_timing('training_task.materialize_ttng_task_dataset'):
         _maybe_materialize_ttng_task_dataset(
             task=task,
             pquery=pquery,
@@ -1298,11 +1357,13 @@ def materialize_training_task(
     # Diskgraph: stats from index metadata (no Spark artifacts)
     from kumo.diskgraph import DiskgraphHandle
     from kumo.diskgraph.input_stats import assemble_input_data_stats
+
     graph_input = job_input.graph_data_compute_input
     graph_version = job_input.graph_version_info
-    graph_key_ver = VersionedGraphKey(graph_input.graph_key,
-                                      graph_version.graph_data_version)
-    with kumo_timing("training_task.assemble_input_stats"):
+    graph_key_ver = VersionedGraphKey(
+        graph_input.graph_key, graph_version.graph_data_version
+    )
+    with kumo_timing('training_task.assemble_input_stats'):
         data_stats = assemble_input_data_stats(
             DiskgraphHandle(
                 graph_key=graph_input.graph_key,
@@ -1313,8 +1374,7 @@ def materialize_training_task(
             index_path=diskgraph_index_path,
         )
 
-    log.info(f"Computed InputDataStats: {data_stats} for job: "
-             f"{job_id}")
+    log.info(f'Computed InputDataStats: {data_stats} for job: {job_id}')
     save_json(data_stats, home_dir_mgr.input_data_stats_path)
 
     # Save the InputDataStats in StateDB:
@@ -1322,16 +1382,16 @@ def materialize_training_task(
         save_input_data_stats_to_state_db(job_id, data_stats)
 
     # Run post materialization validation
-    with kumo_timing("training_task.post_materialization_validation"):
+    with kumo_timing('training_task.post_materialization_validation'):
         validation_response.merge(validator.post_materialization(data_stats))
     if not validation_response.ok:
-        return ("", "", validation_response)
+        return ('', '', validation_response)
 
-    log.debug("Saving task to home_dir: %s", home_dir)
+    log.debug('Saving task to home_dir: %s', home_dir)
     # Save the task to the job's home dir. home_dir is threaded explicitly
     # (Task.save -> graph.save(destination=)) so no process-global temp_home_dir
     # is needed and concurrent jobs on the shared thread executor don't collide.
-    with kumo_timing("training_task.save_task"):
+    with kumo_timing('training_task.save_task'):
         task.save(destination=home_dir)
 
     # Save stats about the materialization to S3.
@@ -1343,22 +1403,20 @@ def materialize_training_task(
         predictive_query_id=job_input.spec.predictive_query_id,
         temporal_workflow_id=activity.info().workflow_run_id,
     )
-    with kumo_timing("training_task.save_materialization_info"):
+    with kumo_timing('training_task.save_materialization_info'):
         save_materialization_info(materialization_info)
 
-    return (job_config_path, get_data_operation_description(),
-            validation_response)
+    return (job_config_path, get_data_operation_description(), validation_response)
 
 
 def _create_pquery_with_credentials(
     spec: TrainingSpec,
     connector_refs,
 ):
-    predictive_query_config, credentials = (
-        hydrate_predictive_query_for_activity(
-            spec.predictive_query,
-            connector_refs,
-        ))
+    predictive_query_config, credentials = hydrate_predictive_query_for_activity(
+        spec.predictive_query,
+        connector_refs,
+    )
     return (
         _create_pquery_from_hydrated_config(spec, predictive_query_config),
         credentials,
@@ -1370,17 +1428,15 @@ def _create_pquery_from_hydrated_config(
     predictive_query_config,
 ) -> PredictiveQuery:
     if isinstance(spec.advanced_options, ModelPlan):
-        train_table_opts = spec.advanced_options.\
-            training_table_generation
+        train_table_opts = spec.advanced_options.training_table_generation
         if not _is_inferred(train_table_opts.split):
             # TODO (matthias) drop the above condition when split
             # can no longer be "INFERRED"
             split_conf = get_split(train_table_opts.split)
             assert split_conf is not None, (
-                'Split is not InferredType in Model Plan '
-                'but get_split returned None')
-            if split_conf is not None and hasattr(split_conf,
-                                                  'flexible_boundaries'):
+                'Split is not InferredType in Model Plan but get_split returned None'
+            )
+            if split_conf is not None and hasattr(split_conf, 'flexible_boundaries'):
                 if split_conf.timeframe_step is not None:
                     split_conf.flexible_boundaries = True
                 else:

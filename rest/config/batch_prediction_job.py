@@ -71,8 +71,9 @@ from statedb.config.common import (
 )
 from statedb.config.job_tag import JobTagKey, JobTagValue
 from statedb.config.timestamp import ResourceTimestamps
-from statedb.rest.batch_prediction_job import \
-    BatchPredictionJobConfig as SerializedBatchPredictionJobConfig
+from statedb.rest.batch_prediction_job import (
+    BatchPredictionJobConfig as SerializedBatchPredictionJobConfig,
+)
 
 log = logging.getLogger(__name__)
 
@@ -100,8 +101,7 @@ def _coerce_rest_output(output: Any) -> PredictionOutputConfig:
     if isinstance(output, _REST_OUTPUT_CLASSES):
         return output
     values = _output_values(output)
-    output_type = _REST_OUTPUT_TYPES[PredictionStorageType(
-        values['storage_type'])]
+    output_type = _REST_OUTPUT_TYPES[PredictionStorageType(values['storage_type'])]
     return output_type(**values)
 
 
@@ -137,33 +137,38 @@ class BatchPredictionJobConfig(SerializedBatchPredictionJobConfig):
 
 
 def requested_prediction_artifact_types(
-    config: BatchPredictionJobConfig, ) -> set[PredictionArtifactType]:
+    config: BatchPredictionJobConfig,
+) -> set[PredictionArtifactType]:
     """Return the producer artifacts explicitly requested by a BP job."""
     artifact_types = {
-        PredictionArtifactType(output.artifact_type)
-        for output in config.outputs
+        PredictionArtifactType(output.artifact_type) for output in config.outputs
     }
     if not artifact_types:
         raise ValueError(
-            'Batch prediction requires at least one requested output artifact.')
+            'Batch prediction requires at least one requested output artifact.'
+        )
     return artifact_types
 
 
 def has_only_databricks_outputs(config: BatchPredictionJobConfig) -> bool:
     """Whether every requested artifact is written directly to Databricks."""
     return bool(config.outputs) and all(
-        isinstance(output, DatabricksPredictionOutput)
-        for output in config.outputs)
+        isinstance(output, DatabricksPredictionOutput) for output in config.outputs
+    )
 
 
 def direct_databricks_prediction_output_index(
-        config: BatchPredictionJobConfig) -> Optional[int]:
+    config: BatchPredictionJobConfig,
+) -> Optional[int]:
     """Return one raw-prediction stage usable for pre-COPY statistics."""
     if not has_only_databricks_outputs(config):
         return None
     return next(
-        (index for index, output in enumerate(config.outputs)
-         if output.artifact_type == PredictionArtifactType.PREDICTIONS),
+        (
+            index
+            for index, output in enumerate(config.outputs)
+            if output.artifact_type == PredictionArtifactType.PREDICTIONS
+        ),
         None,
     )
 
@@ -175,8 +180,8 @@ class BatchPredictionJobProgress(JobProgress):
 
 @kumo_dataclass
 class OutputArtifactStats:
-    """Information about each output artifact from the batch prediction job.
-    """
+    """Information about each output artifact from the batch prediction job."""
+
     artifact_type: Union[PredictionArtifactType, TrainingTableArtifactType]
     num_rows: int
     num_cols: int
@@ -204,8 +209,7 @@ class DatabricksVolumeShard:
 @kumo_dataclass
 class PredictionShardResult:
     state: JobState
-    databricks_uploads: List[DatabricksVolumeShard] = field(
-        default_factory=list)
+    databricks_uploads: List[DatabricksVolumeShard] = field(default_factory=list)
     artifact_manifest: PredictionManifestRef | None = None
     # What kumo-pred saved in pred_status.json when the shard failed.
     failure_info: JobFailureInfo | None = None
@@ -213,8 +217,8 @@ class PredictionShardResult:
 
 @kumo_dataclass
 class BatchPredictionJobResults:
-    """Information to display when the job is done.
-    """
+    """Information to display when the job is done."""
+
     # This is currently shown as "Prediction Target" in the UI, which is the
     # predictive_query.target field.
     key_cols: List[str]
@@ -268,8 +272,7 @@ class BatchPredictionJobInput:
         )
 
     @property
-    def generate_pred_table_job_id(
-            self) -> Optional[GeneratePredictionTableJobID]:
+    def generate_pred_table_job_id(self) -> Optional[GeneratePredictionTableJobID]:
         return self.config.generate_pred_table_job_id
 
     @property
@@ -314,8 +317,7 @@ class BatchPredictionJobInput:
         if graph_id in values and graph_id not in config:
             config[graph_id] = values.pop(graph_id)
         if graph_id not in config:
-            raise ValueError(
-                'graph_id is missing in BatchPredictionJobInput.config')
+            raise ValueError('graph_id is missing in BatchPredictionJobInput.config')
 
         values['config'] = config
         return values
@@ -332,19 +334,17 @@ class BatchPredictionJobInput:
         This is intentionally callable at activity boundaries after loading a
         persisted input, in addition to normal model construction validation.
         """
-        for connector_id, reference in self.graph_data_compute_input.connectors.items(
-        ):
+        for connector_id, reference in self.graph_data_compute_input.connectors.items():
             if not isinstance(reference, ConnectorExecutionRef):
-                raise TypeError(
-                    'Graph connectors must be ConnectorExecutionRef values')
+                raise TypeError('Graph connectors must be ConnectorExecutionRef values')
             if ConnectorID(connector_id) != reference.connector_id:
                 raise ValueError(
                     'Graph connector key does not match its execution reference'
                 )
             if reference.project_id != self.project_id:
                 raise ValueError(
-                    'Graph connector execution reference belongs to a '
-                    'different project')
+                    'Graph connector execution reference belongs to a different project'
+                )
 
         config: BatchPredictionJobConfig = self.config
         configured_output_ids: set[ConnectorID] = set()
@@ -363,16 +363,19 @@ class BatchPredictionJobInput:
                 if connector_id not in self.output_connectors:
                     raise ValueError(
                         f"Prediction output with ID '{connector_id}' is "
-                        "missing its authorized connector reference")
+                        'missing its authorized connector reference'
+                    )
 
         if set(self.output_connectors) != configured_output_ids:
             raise ValueError(
                 'Authorized output connector references must exactly match '
-                'the configured prediction outputs')
+                'the configured prediction outputs'
+            )
         for connector_id, reference in self.output_connectors.items():
             if not isinstance(reference, ConnectorExecutionRef):
                 raise TypeError(
-                    'Output connectors must be ConnectorExecutionRef values')
+                    'Output connectors must be ConnectorExecutionRef values'
+                )
             if ConnectorID(connector_id) != reference.connector_id:
                 raise ValueError(
                     'Output connector key does not match its execution reference'
@@ -380,27 +383,33 @@ class BatchPredictionJobInput:
             if reference.project_id != self.project_id:
                 raise ValueError(
                     'Output connector execution reference belongs to a '
-                    'different project')
+                    'different project'
+                )
 
         source = config.custom_pred_table_source
         reference = self.custom_pred_table_connector
         if (source is None) != (reference is None):
             raise ValueError(
                 'Custom prediction source and connector reference must be '
-                'provided together')
+                'provided together'
+            )
         if reference is not None:
             if not isinstance(reference, ConnectorExecutionRef):
-                raise TypeError('Custom prediction connector must be a '
-                                'ConnectorExecutionRef value')
+                raise TypeError(
+                    'Custom prediction connector must be a ConnectorExecutionRef value'
+                )
             if reference.project_id != self.project_id:
                 raise ValueError(
                     'Custom prediction connector execution reference belongs '
-                    'to a different project')
-            if (source is not None
-                    and source.connector_id != str(reference.connector_id)):
+                    'to a different project'
+                )
+            if source is not None and source.connector_id != str(
+                reference.connector_id
+            ):
                 raise ValueError(
                     'Custom prediction source connector does not match its '
-                    'execution reference')
+                    'execution reference'
+                )
 
 
 @kumo_dataclass
@@ -414,10 +423,12 @@ class BatchPredictionJobOutput(JobExecution):
 
     @classmethod
     def failed(
-        cls, err_msg: Optional[str] = None, stacktrace: Optional[str] = None,
+        cls,
+        err_msg: Optional[str] = None,
+        stacktrace: Optional[str] = None,
         exception: Optional[BaseException] = None,
         validation: Optional['ValidationResponse'] = None,
-        workflow_end_state: Optional['WorkflowExecutionStatus'] = None
+        workflow_end_state: Optional['WorkflowExecutionStatus'] = None,
     ) -> 'BatchPredictionJobOutput':
         """Create failed job output with proper failure_info.
 
@@ -434,13 +445,15 @@ class BatchPredictionJobOutput(JobExecution):
         Returns:
             BatchPredictionJobOutput with status=FAILED and failure_info populated
         """
-        failure_info = extract_failure_info(err_msg=err_msg,
-                                            stacktrace=stacktrace,
-                                            exception=exception,
-                                            validation=validation)
+        failure_info = extract_failure_info(
+            err_msg=err_msg,
+            stacktrace=stacktrace,
+            exception=exception,
+            validation=validation,
+        )
 
         if not failure_info.message:
-            failure_info.message = "Batch prediction job failed"
+            failure_info.message = 'Batch prediction job failed'
 
         return cls(
             status=JobStatus.FAILED,
@@ -466,25 +479,29 @@ class BatchPredictionJobOutput(JobExecution):
 
         violations: List[str] = []
 
-        if status == JobStatus.RUNNING and (log_entry and log_entry.stage_name
-                                            == 'Predicting'):
+        if status == JobStatus.RUNNING and (
+            log_entry and log_entry.stage_name == 'Predicting'
+        ):
             if not progress:
                 violations.append(
-                    f"BatchPredictionJobOutput.progress must be present "
-                    f"if status = {JobStatus.RUNNING} and "
-                    f"log.stage_name == Predicting")
+                    f'BatchPredictionJobOutput.progress must be present '
+                    f'if status = {JobStatus.RUNNING} and '
+                    f'log.stage_name == Predicting'
+                )
 
         if status == JobStatus.DONE:
             if not metrics:
                 violations.append(
-                    f"BatchPredictionJobOutput.results must be present "
-                    f"if status = {JobStatus.DONE}")
+                    f'BatchPredictionJobOutput.results must be present '
+                    f'if status = {JobStatus.DONE}'
+                )
 
         if status == JobStatus.FAILED:
             if not failure_info:
                 violations.append(
-                    f"BatchPredictionJobOutput.failure_info must be present "
-                    f"if status = {JobStatus.FAILED}")
+                    f'BatchPredictionJobOutput.failure_info must be present '
+                    f'if status = {JobStatus.FAILED}'
+                )
 
         return violations
 
@@ -508,31 +525,30 @@ class BatchPredictionJobOutput(JobExecution):
         # ``terminal_invariant_violations`` and raises so a broken terminal job
         # cannot be saved. The read/response path stays warn-only.
         for violation in self.terminal_invariant_violations():
-            log.warning("%s", violation)
+            log.warning('%s', violation)
         return self
 
     @staticmethod
-    def missing_from_ml_db(
-            id: BatchPredictionJobID) -> 'BatchPredictionJobOutput':
+    def missing_from_ml_db(id: BatchPredictionJobID) -> 'BatchPredictionJobOutput':
         return BatchPredictionJobOutput(
-            status=JobStatus.FAILED, log=JobEventLogEntry.failed(),
+            status=JobStatus.FAILED,
+            log=JobEventLogEntry.failed(),
             failure_info=JobFailureInfo(
-                message=(f"Job with ID '{id}' could not be "
-                         "found in the ML backend"),
+                message=(f"Job with ID '{id}' could not be found in the ML backend"),
                 stacktrace=''.join(traceback.format_stack()),
-            ))
+            ),
+        )
 
     def remove_employee_only_fields(self) -> None:
-        """Delete fields that should not be shown to customers.
-        """
+        """Delete fields that should not be shown to customers."""
         if self.failure_info is not None:
             self.failure_info.remove_employee_only_fields()
 
 
 @kumo_dataclass
 class BatchPredictionJobResponse:
-    """Output of the GetBatchPrediction and ListBatchPrediction REST calls.
-    """
+    """Output of the GetBatchPrediction and ListBatchPrediction REST calls."""
+
     id: BatchPredictionJobID
     config: BatchPredictionJobConfig
     timestamps: ResourceTimestamps
@@ -559,6 +575,7 @@ class PaginatedBatchPredictionJobResponse:
     Note: Replace BatchPredictionJobResponse wherever
     pagination is implemented.
     """
+
     jobs: List[BatchPredictionJobResponse]
     current_page: int
     number_of_pages: int
@@ -594,11 +611,12 @@ class BatchPredictionJobAnchorTime:
         batch_pred_table_stats_path = HomeDirManager(home_dir).pred_table_stats
 
         if not fsutil.exists(batch_pred_table_stats_path):
-            log.debug(f"Stats file not found at {batch_pred_table_stats_path}")
+            log.debug(f'Stats file not found at {batch_pred_table_stats_path}')
             return None
 
-        pred_table_stats = load_json(batch_pred_table_stats_path,
-                                     Dict[str, Dict[str, Any]])
+        pred_table_stats = load_json(
+            batch_pred_table_stats_path, Dict[str, Dict[str, Any]]
+        )
         pred_time_stat = Stats.from_config(pred_table_stats.get(PRED_TIME))
         if pred_time_stat is not None:
             assert isinstance(pred_time_stat, Stats)
@@ -606,7 +624,9 @@ class BatchPredictionJobAnchorTime:
             if is_missing_stat_value(pred_time):
                 log.warning(
                     'Prediction anchor time is invalid or unavailable in '
-                    'the stats cache for job %s', job_id)
+                    'the stats cache for job %s',
+                    job_id,
+                )
             else:
                 assert isinstance(pred_time, Timestamp)
                 log.info('Using prediction time of %s', pred_time)
@@ -614,7 +634,9 @@ class BatchPredictionJobAnchorTime:
         else:
             log.warning(
                 'Prediction anchor time is not yet available in '
-                'the stats cache for job %s', job_id)
+                'the stats cache for job %s',
+                job_id,
+            )
         return self
 
     @blocking_method()
@@ -623,9 +645,9 @@ class BatchPredictionJobAnchorTime:
         job_id: BatchPredictionJobID,
     ) -> 'BatchPredictionJobAnchorTime':
         from kumo.data.backend_cache import BackendCacheManager
+
         cache: BackendCacheManager = get_active_cache()
-        pred_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, [PRED_TIME])
+        pred_table_stats = cache.pquery_table_stats_cache.get_stats(job_id, [PRED_TIME])
         pred_time_stat = pred_table_stats.get(PRED_TIME)
 
         if pred_time_stat is not None:
@@ -634,7 +656,9 @@ class BatchPredictionJobAnchorTime:
             if is_missing_stat_value(pred_time):
                 log.warning(
                     'Prediction anchor time is invalid or unavailable in '
-                    'the stats cache for job %s', job_id)
+                    'the stats cache for job %s',
+                    job_id,
+                )
             else:
                 assert isinstance(pred_time, Timestamp)
                 log.info('Using prediction time of %s', pred_time)
@@ -642,7 +666,9 @@ class BatchPredictionJobAnchorTime:
         else:
             log.warning(
                 'Prediction anchor time is not yet available in '
-                'the stats cache for job %s', job_id)
+                'the stats cache for job %s',
+                job_id,
+            )
         return self
 
 
@@ -652,48 +678,43 @@ class PaginationArgs:
     Arguments to implement pagination in REST calls.
     Currently only used for list_batch_prediction_jobs REST call.
     """
+
     page: int = 1
     page_size: int = 50
 
 
-def get_bp_columns_by_task_type(task_type: TaskType, is_temporal: bool,
-                                entity_col_name: str) -> List[ColumnArgs]:
+def get_bp_columns_by_task_type(
+    task_type: TaskType, is_temporal: bool, entity_col_name: str
+) -> List[ColumnArgs]:
     base = [
         ColumnArgs(name=entity_col_name, stype=Stype.ID, dtype=Dtype.string),
     ]
     if task_type in [
-            TaskType.REGRESSION,
-            TaskType.FORECASTING,
+        TaskType.REGRESSION,
+        TaskType.FORECASTING,
     ]:
         return base + [
-            ColumnArgs(name='TARGET_PRED', stype=Stype.numerical,
-                       dtype=Dtype.float)
+            ColumnArgs(name='TARGET_PRED', stype=Stype.numerical, dtype=Dtype.float)
         ]
     if task_type == TaskType.BINARY_CLASSIFICATION:
         return base + [
-            ColumnArgs(name='TARGET_PRED', stype=Stype.categorical,
-                       dtype=Dtype.bool),
-            ColumnArgs(name='False_PROB', stype=Stype.numerical,
-                       dtype=Dtype.float),
-            ColumnArgs(name='True_PROB', stype=Stype.numerical,
-                       dtype=Dtype.float)
+            ColumnArgs(name='TARGET_PRED', stype=Stype.categorical, dtype=Dtype.bool),
+            ColumnArgs(name='False_PROB', stype=Stype.numerical, dtype=Dtype.float),
+            ColumnArgs(name='True_PROB', stype=Stype.numerical, dtype=Dtype.float),
         ]
     if task_type in [
-            TaskType.MULTILABEL_CLASSIFICATION,
-            TaskType.MULTICLASS_CLASSIFICATION,
+        TaskType.MULTILABEL_CLASSIFICATION,
+        TaskType.MULTICLASS_CLASSIFICATION,
     ]:
         return base + [
-            ColumnArgs(name='PREDICTED', stype=Stype.categorical,
-                       dtype=Dtype.int),
-            ColumnArgs(name='CLASS', stype=Stype.categorical,
-                       dtype=Dtype.string),
-            ColumnArgs(name='SCORE', stype=Stype.numerical, dtype=Dtype.float)
+            ColumnArgs(name='PREDICTED', stype=Stype.categorical, dtype=Dtype.int),
+            ColumnArgs(name='CLASS', stype=Stype.categorical, dtype=Dtype.string),
+            ColumnArgs(name='SCORE', stype=Stype.numerical, dtype=Dtype.float),
         ]
     if task_type.is_ranking:
         return base + [
-            ColumnArgs(name='CLASS', stype=Stype.categorical,
-                       dtype=Dtype.string),
-            ColumnArgs(name='SCORE', stype=Stype.numerical, dtype=Dtype.float)
+            ColumnArgs(name='CLASS', stype=Stype.categorical, dtype=Dtype.string),
+            ColumnArgs(name='SCORE', stype=Stype.numerical, dtype=Dtype.float),
         ]
     else:
         log.error('Invalid task type for Batch Prediction stats: %s', task_type)

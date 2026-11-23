@@ -39,39 +39,60 @@ from kumo.engine.explain._prediction_manifest import (
 
 def _record(root, *, enabled=True, state='complete', result=None):
     record = PredictionExplanationManifest(
-        schema_version=1, kind='prediction_explanations',
-        run_id='recorded-run', enabled=enabled, state=state, result=result)
+        schema_version=1,
+        kind='prediction_explanations',
+        run_id='recorded-run',
+        enabled=enabled,
+        state=state,
+        result=result,
+    )
     write_record(str(root), record)
     return record
 
 
 def _complete():
     return PredictionExplanationResult(
-        ProducerOutcome('complete'), ProducerOutcome('complete'),
-        PredictionExplanationCoverage(2, 1, 'checkpoint/step=0.ckpt'))
+        ProducerOutcome('complete'),
+        ProducerOutcome('complete'),
+        PredictionExplanationCoverage(2, 1, 'checkpoint/step=0.ckpt'),
+    )
 
 
 def _cohorts(root):
     cohort = ColumnCohorts(
-        table_name='users', hop=0, col_name='age', stype=Stype.numerical,
-        cohorts=['young', 'old'], populations=[.25, .75],
-        predictions=[.2, .8], prediction_score=.3, targets=None,
-        target_score=None)
-    output = ColumnAnalysisOutput(task_type=TaskType.REGRESSION,
-                                  cohorts=[cohort])
+        table_name='users',
+        hop=0,
+        col_name='age',
+        stype=Stype.numerical,
+        cohorts=['young', 'old'],
+        populations=[0.25, 0.75],
+        predictions=[0.2, 0.8],
+        prediction_score=0.3,
+        targets=None,
+        target_score=None,
+    )
+    output = ColumnAnalysisOutput(task_type=TaskType.REGRESSION, cohorts=[cohort])
     save_json(output, f'{root}/column_analysis/pred/column_analysis.json')
     return output
 
 
 def _samples(root):
     collector = f'{root}/subgraph_collector/pred'
-    save_json(EntityMappings(mappings={'first': ['7']},
-                             orig_mappings={'first': ['current-user']}),
-              f'{collector}/strategy_mappings.json')
-    graph = Subgraph(subgraph_store=SubgraphStore(
-        root_id=7, task_type=TaskType.REGRESSION,
-        nodes={7: SubgraphNode(7, 'users', 'current-user')},
-        edges={}, tables={'users': [7]}))
+    save_json(
+        EntityMappings(
+            mappings={'first': ['7']}, orig_mappings={'first': ['current-user']}
+        ),
+        f'{collector}/strategy_mappings.json',
+    )
+    graph = Subgraph(
+        subgraph_store=SubgraphStore(
+            root_id=7,
+            task_type=TaskType.REGRESSION,
+            nodes={7: SubgraphNode(7, 'users', 'current-user')},
+            edges={},
+            tables={'users': [7]},
+        )
+    )
     save_json(graph, f'{collector}/subgraph_json/7.json')
 
 
@@ -80,20 +101,26 @@ def test_failed_producer_blocks_partial_artifacts(tmp_path, failed):
     _cohorts(f'{tmp_path}/xai')
     _samples(f'{tmp_path}/xai')
     broken = ProducerOutcome('failed', 'producer callback failed')
-    complete = (_complete().samples if failed == 'cohorts' else
-                _complete().cohorts)
+    complete = _complete().samples if failed == 'cohorts' else _complete().cohorts
     xai = PredictionExplanations.from_run(
-        tmp_path, enabled=True, result=PredictionExplanationResult(
+        tmp_path,
+        enabled=True,
+        result=PredictionExplanationResult(
             broken if failed == 'cohorts' else complete,
-            broken if failed == 'samples' else complete))
+            broken if failed == 'samples' else complete,
+        ),
+    )
     assert xai.availability[failed].reason == 'failed'
     assert not xai.availability[failed].available
     assert 'callback failed' in xai.availability[failed].generation_failure
     if failed == 'cohorts':
-        for read in (xai.column_analysis, xai.cohort_keys,
-                     lambda: xai.classes(('users', 0, 'age')),
-                     lambda: xai.cohort(('users', 0, 'age')),
-                     lambda: xai.plot_cohort(('users', 0, 'age'))):
+        for read in (
+            xai.column_analysis,
+            xai.cohort_keys,
+            lambda: xai.classes(('users', 0, 'age')),
+            lambda: xai.cohort(('users', 0, 'age')),
+            lambda: xai.plot_cohort(('users', 0, 'age')),
+        ):
             with pytest.raises(ExplanationUnavailableError):
                 read()
         assert xai.availability['samples'].available
@@ -119,29 +146,42 @@ def test_retained_prediction_paths_and_plot(tmp_path, monkeypatch):
     figure, axes = xai.plot_cohort(('users', 0, 'age'))
     assert len(axes[0].lines) == 1  # prediction only; no observed targets
     import matplotlib.pyplot as plt
+
     plt.close(figure)
 
 
 @pytest.mark.parametrize('reopen', [False, True])
-@pytest.mark.parametrize('recorded_ids,available', [
-    (('7',), False), (('8',), True), (('7', '8'), True),
-])
-def test_sample_availability_requires_recorded_graph(tmp_path, recorded_ids,
-                                                     available, reopen):
+@pytest.mark.parametrize(
+    'recorded_ids,available',
+    [
+        (('7',), False),
+        (('8',), True),
+        (('7', '8'), True),
+    ],
+)
+def test_sample_availability_requires_recorded_graph(
+    tmp_path, recorded_ids, available, reopen
+):
     _samples(f'{tmp_path}/xai')
     collector = f'{tmp_path}/xai/subgraph_collector/pred'
     graphs = f'{collector}/subgraph_json'
     filesystem.copy(f'{graphs}/7.json', f'{graphs}/8.json')
     filesystem.rm(f'{graphs}/7.json')
-    save_json(EntityMappings(
-        mappings={'first': list(recorded_ids)},
-        orig_mappings={'first': ['current-user'] * len(recorded_ids)}),
-        f'{collector}/strategy_mappings.json')
+    save_json(
+        EntityMappings(
+            mappings={'first': list(recorded_ids)},
+            orig_mappings={'first': ['current-user'] * len(recorded_ids)},
+        ),
+        f'{collector}/strategy_mappings.json',
+    )
     result = _complete()
     _record(tmp_path, result=result)
 
-    xai = (PredictionExplanations.load(tmp_path) if reopen else
-           PredictionExplanations.from_run(tmp_path, enabled=True, result=result))
+    xai = (
+        PredictionExplanations.load(tmp_path)
+        if reopen
+        else PredictionExplanations.from_run(tmp_path, enabled=True, result=result)
+    )
     assert xai.availability['samples'].available is available
     references = xai.samples()
     assert {item.artifact_id: item.available for item in references} == {
@@ -172,19 +212,24 @@ def test_prediction_run_and_export_absence(tmp_path):
         xai.samples()
 
 
-@pytest.mark.parametrize('outcomes', [
-    PredictionExplanationResult(ProducerOutcome('unsupported'),
-                                ProducerOutcome('unsupported')),
-    PredictionExplanationResult(ProducerOutcome('failed', 'cohort failed'),
-                                ProducerOutcome('failed', 'collector failed')),
-    replace(_complete(), samples=ProducerOutcome('failed', 'collector failed')),
-])
+@pytest.mark.parametrize(
+    'outcomes',
+    [
+        PredictionExplanationResult(
+            ProducerOutcome('unsupported'), ProducerOutcome('unsupported')
+        ),
+        PredictionExplanationResult(
+            ProducerOutcome('failed', 'cohort failed'),
+            ProducerOutcome('failed', 'collector failed'),
+        ),
+        replace(_complete(), samples=ProducerOutcome('failed', 'collector failed')),
+    ],
+)
 def test_retained_producer_status_matches_live(tmp_path, outcomes):
     _cohorts(f'{tmp_path}/xai')
     _samples(f'{tmp_path}/xai')
     _record(tmp_path, result=outcomes)
-    live = PredictionExplanations.from_run(tmp_path, enabled=True,
-                                           result=outcomes)
+    live = PredictionExplanations.from_run(tmp_path, enabled=True, result=outcomes)
     reopened = PredictionExplanations.load(tmp_path)
     assert reopened.availability == live.availability
     if outcomes.cohorts.status == 'complete':
@@ -197,14 +242,18 @@ def test_retained_producer_status_matches_live(tmp_path, outcomes):
 def test_running_manifest_blocks_existing_artifacts(tmp_path):
     _cohorts(f'{tmp_path}/xai')
     _samples(f'{tmp_path}/xai')
-    _record(tmp_path, state='running', result=PredictionExplanationResult(
-        ProducerOutcome('unsupported'),
-        ProducerOutcome('failed', 'Explanation replay did not complete')))
+    _record(
+        tmp_path,
+        state='running',
+        result=PredictionExplanationResult(
+            ProducerOutcome('unsupported'),
+            ProducerOutcome('failed', 'Explanation replay did not complete'),
+        ),
+    )
     reopened = PredictionExplanations.load(tmp_path)
     assert all(not state.available for state in reopened.availability.values())
     assert reopened.availability['cohorts'].reason == 'unsupported'
-    assert 'did not complete' in reopened.availability[
-        'samples'].generation_failure
+    assert 'did not complete' in reopened.availability['samples'].generation_failure
     with pytest.raises(ExplanationUnavailableError):
         reopened.column_analysis()
     with pytest.raises(ExplanationUnavailableError):
@@ -230,18 +279,25 @@ def replay(tmp_path, monkeypatch):
     call = Mock(return_value=_complete())
     monkeypatch.setattr(lifecycle, 'explain_prediction', call)
     # Support lookup is independent of loading model weights or prediction data.
-    monkeypatch.setattr(lifecycle, 'prediction_model_support',
-                        lambda task, model: PredictionExplanationSupport(
-                            task != TaskType.TEMPORAL_LINK_PREDICTION, True))
+    monkeypatch.setattr(
+        lifecycle,
+        'prediction_model_support',
+        lambda task, model: PredictionExplanationSupport(
+            task != TaskType.TEMPORAL_LINK_PREDICTION, True
+        ),
+    )
     return call
 
 
 def _replay(root, **kwargs):
     return lifecycle.explain_run(
-        run_root=str(root), run_id='actual-prediction-id',
+        run_root=str(root),
+        run_id='actual-prediction-id',
         task_type=kwargs.pop('task_type', TaskType.REGRESSION),
         materialized=TaskDatasetMaterializeResult('manifest', 'runtime', 'bundle'),
-        model_dir='published-model', **kwargs)
+        model_dir='published-model',
+        **kwargs,
+    )
 
 
 def test_disabled_replay_is_retained(tmp_path, replay):
@@ -264,32 +320,37 @@ def test_options_and_public_coverage_live_and_reopened(tmp_path, replay):
 
 def test_link_replay_failure_really_executes_producer(tmp_path, replay):
     replay.side_effect = RuntimeError('collector callback failed')
-    xai = _replay(tmp_path, explanations=True,
-                  task_type=TaskType.TEMPORAL_LINK_PREDICTION)
+    xai = _replay(
+        tmp_path, explanations=True, task_type=TaskType.TEMPORAL_LINK_PREDICTION
+    )
     replay.assert_called_once()
     reopened = PredictionExplanations.load(tmp_path)
     for result in (xai, reopened):
         assert result.availability['cohorts'].reason == 'unsupported'
         assert result.availability['samples'].reason == 'failed'
-        assert 'collector callback failed' in result.availability[
-            'samples'].generation_failure
+        assert (
+            'collector callback failed'
+            in result.availability['samples'].generation_failure
+        )
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_initial_status_write_failure_is_explicit(tmp_path, replay, monkeypatch,
-                                                  enabled):
-    monkeypatch.setattr(lifecycle, 'write_record',
-                        Mock(side_effect=OSError('disk full')))
+def test_initial_status_write_failure_is_explicit(
+    tmp_path, replay, monkeypatch, enabled
+):
+    monkeypatch.setattr(
+        lifecycle, 'write_record', Mock(side_effect=OSError('disk full'))
+    )
     xai = _replay(tmp_path, explanations=enabled)
     replay.assert_not_called()
-    assert xai.availability['cohorts'].reason == (
-        'failed' if enabled else 'disabled')
+    assert xai.availability['cohorts'].reason == ('failed' if enabled else 'disabled')
     if enabled:
         assert 'disk full' in xai.availability['cohorts'].generation_failure
 
 
 def test_final_write_failure_preserves_completed_live_outcomes(
-        tmp_path, replay, monkeypatch):
+    tmp_path, replay, monkeypatch
+):
     _cohorts(f'{tmp_path}/xai')
     _samples(f'{tmp_path}/xai')
     calls = []
@@ -314,26 +375,44 @@ def test_final_write_failure_preserves_completed_live_outcomes(
 def test_producer_read_permissions_are_independent(tmp_path, monkeypatch):
     _cohorts(f'{tmp_path}/xai')
     _samples(f'{tmp_path}/xai')
-    xai = PredictionExplanations.from_run(tmp_path, enabled=True,
-                                          result=_complete())
+    xai = PredictionExplanations.from_run(tmp_path, enabled=True, result=_complete())
     with monkeypatch.context() as patch:
-        patch.setattr('kumo.engine.explain.results.mapped_sample_ids',
-                      Mock(side_effect=PermissionError('sample metadata denied')))
+        patch.setattr(
+            'kumo.engine.explain.results.mapped_sample_ids',
+            Mock(side_effect=PermissionError('sample metadata denied')),
+        )
         assert xai.column_analysis().cohorts
     with monkeypatch.context() as patch:
-        patch.setattr('kumo.engine.explain.results.read_cohorts',
-                      Mock(side_effect=PermissionError('cohorts denied')))
+        patch.setattr(
+            'kumo.engine.explain.results.read_cohorts',
+            Mock(side_effect=PermissionError('cohorts denied')),
+        )
         assert xai.sample('7').subgraph_store.root_id == 7
 
 
-@pytest.mark.parametrize('change', [
-    {'schema_version': 99}, {'schema_version': True}, {'schema_version': 1.0}, {'kind': 'training_explanations'}, {'run_id': ''},
-    {'enabled': 'true'},
-    {'result': {'cohorts': {'status': 'failed', 'error': None},
-                'samples': {'status': 'unsupported'}}},
-    {'result': {'cohorts': {'status': 'unsupported', 'error': 'failure'},
-                'samples': {'status': 'unsupported'}}},
-])
+@pytest.mark.parametrize(
+    'change',
+    [
+        {'schema_version': 99},
+        {'schema_version': True},
+        {'schema_version': 1.0},
+        {'kind': 'training_explanations'},
+        {'run_id': ''},
+        {'enabled': 'true'},
+        {
+            'result': {
+                'cohorts': {'status': 'failed', 'error': None},
+                'samples': {'status': 'unsupported'},
+            }
+        },
+        {
+            'result': {
+                'cohorts': {'status': 'unsupported', 'error': 'failure'},
+                'samples': {'status': 'unsupported'},
+            }
+        },
+    ],
+)
 def test_invalid_status_rejected(tmp_path, change):
     record = _record(tmp_path, result=_complete())
     value = record.model_dump(mode='json')
@@ -344,11 +423,17 @@ def test_invalid_status_rejected(tmp_path, change):
         PredictionExplanations.load(tmp_path)
 
 
-@pytest.mark.parametrize('coverage', [
-    {'cohort_rows_processed': -1}, {'sampled_graphs': True},
-    {'sampled_graphs': 1.5}, {'checkpoint_path': '../other'},
-    {'checkpoint_path': '/absolute'}, {'checkpoint_path': 'file://checkpoint'},
-])
+@pytest.mark.parametrize(
+    'coverage',
+    [
+        {'cohort_rows_processed': -1},
+        {'sampled_graphs': True},
+        {'sampled_graphs': 1.5},
+        {'checkpoint_path': '../other'},
+        {'checkpoint_path': '/absolute'},
+        {'checkpoint_path': 'file://checkpoint'},
+    ],
+)
 def test_invalid_essential_coverage_rejected(tmp_path, coverage):
     record = _record(tmp_path, result=_complete()).model_dump(mode='json')
     record['result']['coverage'].update(coverage)
@@ -396,20 +481,30 @@ def test_missing_status_discriminator_rejected(tmp_path, field):
 
 def test_unsupported_producers_survive_reopen(tmp_path, replay):
     replay.return_value = PredictionExplanationResult(
-        ProducerOutcome('unsupported'), ProducerOutcome('unsupported'))
+        ProducerOutcome('unsupported'), ProducerOutcome('unsupported')
+    )
     xai = _replay(tmp_path, explanations=True)
     assert PredictionExplanations.load(tmp_path).availability == xai.availability
     assert all(state.reason == 'unsupported' for state in xai.availability.values())
 
 
 def test_model_support_error_retains_known_link_eligibility(
-        tmp_path, replay, monkeypatch):
-    monkeypatch.setattr(lifecycle, 'prediction_model_support',
-                        Mock(side_effect=OSError('config unavailable')))
-    xai = _replay(tmp_path, explanations=True,
-                  task_type=TaskType.TEMPORAL_LINK_PREDICTION)
+    tmp_path, replay, monkeypatch
+):
+    monkeypatch.setattr(
+        lifecycle,
+        'prediction_model_support',
+        Mock(side_effect=OSError('config unavailable')),
+    )
+    xai = _replay(
+        tmp_path, explanations=True, task_type=TaskType.TEMPORAL_LINK_PREDICTION
+    )
     replay.assert_not_called()
     assert xai.availability['cohorts'].reason == 'unsupported'
     assert xai.availability['samples'].reason == 'failed'
-    assert 'config unavailable' in PredictionExplanations.load(
-        tmp_path).availability['samples'].generation_failure
+    assert (
+        'config unavailable'
+        in PredictionExplanations.load(tmp_path)
+        .availability['samples']
+        .generation_failure
+    )

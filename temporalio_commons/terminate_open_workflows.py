@@ -19,10 +19,11 @@ async def run(temporal_config=None, ignore_error: bool = False):
     temporal_config = temporal_config or deploy_env()
     if temporal_config.deploy_mode == DeployStage.PROD:
         raise RuntimeError(
-            "For stability reasons, you are not permitted to "
-            "terminate prod workflows by default. Please edit the "
-            "code and re - run the script if you truly intend to "
-            "terminate the prod workflows.")
+            'For stability reasons, you are not permitted to '
+            'terminate prod workflows by default. Please edit the '
+            'code and re - run the script if you truly intend to '
+            'terminate the prod workflows.'
+        )
 
     temporal_client = TemporalClient(temporal_config)
     client = await temporal_client.get()
@@ -34,8 +35,10 @@ async def run(temporal_config=None, ignore_error: bool = False):
         try:
             resp = await client.workflow_service.list_open_workflow_executions(
                 wsv1.ListOpenWorkflowExecutionsRequest(
-                    namespace=namespace, next_page_token=next_page_token),
-                retry=True)
+                    namespace=namespace, next_page_token=next_page_token
+                ),
+                retry=True,
+            )
         except Exception:  # pylint: disable=broad-except
             log.exception('Failed to list open workflows')
             if ignore_error:
@@ -50,8 +53,10 @@ async def run(temporal_config=None, ignore_error: bool = False):
                         wsv1.TerminateWorkflowExecutionRequest(
                             namespace=namespace,
                             workflow_execution=wf_exec.execution,
-                            reason=f'Terminated by {getpass.getuser()}'),
-                        retry=True)
+                            reason=f'Terminated by {getpass.getuser()}',
+                        ),
+                        retry=True,
+                    )
                 except Exception:  # pylint: disable=broad-except
                     wf_id = wf_exec.execution.workflow_id
                     log.exception('Failed to terminate workflow: %s', wf_id)
@@ -67,5 +72,5 @@ async def main():
     await run(ignore_error=False)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

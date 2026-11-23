@@ -27,35 +27,36 @@ def test_convert_500_to_503():
 
     cases: List[TestCase] = [
         TestCase(
-            name="400 Error",
-            exc=HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid data"),
+            name='400 Error',
+            exc=HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, 'Invalid data'),
             expect_status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            expect_msg="Invalid data",
+            expect_msg='Invalid data',
         ),
         TestCase(
-            name="500 Error",
-            exc=HTTPException(HTTPStatus.INTERNAL_SERVER_ERROR,
-                              "Internal server error"),
+            name='500 Error',
+            exc=HTTPException(
+                HTTPStatus.INTERNAL_SERVER_ERROR, 'Internal server error'
+            ),
             expect_status=HTTPStatus.SERVICE_UNAVAILABLE,
-            expect_msg="Internal server error",
+            expect_msg='Internal server error',
         ),
         TestCase(
-            name="Uncaught exception",
-            exc=RuntimeError("Runtime error"),
+            name='Uncaught exception',
+            exc=RuntimeError('Runtime error'),
             expect_status=HTTPStatus.SERVICE_UNAVAILABLE,
-            expect_msg="Runtime error",
+            expect_msg='Runtime error',
         ),
     ]
 
     for case in cases:
-        print(f"Test case: {case.name}")
+        print(f'Test case: {case.name}')
 
         try:
             with convert_500_http_error_to_503():
                 raise case.exc
-            assert False, "Test case should throw exception"
+            assert False, 'Test case should throw exception'
         except HTTPException as e:
             assert e.status_code == case.expect_status
             assert case.expect_msg in e.detail
         except Exception as e:
-            assert False, f"Exception must be HTTPException but got {e}"
+            assert False, f'Exception must be HTTPException but got {e}'

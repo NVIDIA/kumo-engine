@@ -15,7 +15,7 @@ class NonStrictJSONResponse(JSONResponse):
     point values.
     """
 
-    media_type = "application/json"
+    media_type = 'application/json'
 
     def render(self, content: Any) -> bytes:
         return orjson.dumps(content, option=orjson.OPT_NON_STR_KEYS)

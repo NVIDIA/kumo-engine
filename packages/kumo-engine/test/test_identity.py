@@ -28,7 +28,8 @@ from kumo.engine.connector.identity import S3Identity
 
 
 def test_distinct_credentials_get_distinct_slugs_and_resolve_to_themselves(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     isolated_store = PrincipalStore()
     monkeypatch.setattr('kumo.engine.connector.identity.store', isolated_store)
 
@@ -39,16 +40,14 @@ def test_distinct_credentials_get_distinct_slugs_and_resolve_to_themselves(
 
     first_principal = isolated_store.get(first.slug)
     second_principal = isolated_store.get(second.slug)
-    assert (first_principal.credentials.access_key_id.get_secret_value() ==
-            'AKIA1')
-    assert (second_principal.credentials.access_key_id.get_secret_value() ==
-            'AKIA2')
-    assert (second_principal.credentials.secret_access_key.get_secret_value()
-            == 'secret2')
+    assert first_principal.credentials.access_key_id.get_secret_value() == 'AKIA1'
+    assert second_principal.credentials.access_key_id.get_secret_value() == 'AKIA2'
+    assert (
+        second_principal.credentials.secret_access_key.get_secret_value() == 'secret2'
+    )
 
 
-def test_identical_credentials_still_get_distinct_slugs(
-        monkeypatch) -> None:
+def test_identical_credentials_still_get_distinct_slugs(monkeypatch) -> None:
     r"""Unlike the earlier credential-derived scheme, identical credentials
     no longer coalesce into one store entry -- each `Identity()` call is
     its own registration. Nothing in this package looks two `Identity`
@@ -63,8 +62,7 @@ def test_identical_credentials_still_get_distinct_slugs(
     assert set(isolated_store.names()) == {first.slug, second.slug}
 
 
-def test_credential_free_identities_still_get_distinct_slugs(
-        monkeypatch) -> None:
+def test_credential_free_identities_still_get_distinct_slugs(monkeypatch) -> None:
     isolated_store = PrincipalStore()
     monkeypatch.setattr('kumo.engine.connector.identity.store', isolated_store)
 
@@ -91,8 +89,7 @@ def test_slug_never_encodes_the_credential_value(monkeypatch) -> None:
     assert len(slugs) == 5
 
 
-def test_a_slug_collision_raises_instead_of_silently_aliasing(
-        monkeypatch) -> None:
+def test_a_slug_collision_raises_instead_of_silently_aliasing(monkeypatch) -> None:
     r"""On the (astronomically unlikely) event of two `Identity()` calls
     generating the same `uuid4()` slug, registration must fail loudly, not
     silently resolve the second `Identity` to the first's stored
@@ -105,7 +102,8 @@ def test_a_slug_collision_raises_instead_of_silently_aliasing(
     isolated_store = PrincipalStore()
     monkeypatch.setattr('kumo.engine.connector.identity.store', isolated_store)
     monkeypatch.setattr(
-        uuid, 'uuid4', lambda: uuid.UUID('12345678123456781234567812345678'))
+        uuid, 'uuid4', lambda: uuid.UUID('12345678123456781234567812345678')
+    )
 
     first = S3Identity(access_key_id='AKIA1', secret_access_key='secret1')
     with pytest.raises(ValueError, match='already exists'):

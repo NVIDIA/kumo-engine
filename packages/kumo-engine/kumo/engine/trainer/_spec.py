@@ -73,8 +73,7 @@ def write_training_spec(
     spec_path = bundle_dir / SPEC_FILE
     atomic_write_bytes(
         spec_path,
-        (json.dumps(asdict(spec), indent=2, sort_keys=True) +
-         '\n').encode('utf-8'),
+        (json.dumps(asdict(spec), indent=2, sort_keys=True) + '\n').encode('utf-8'),
     )
     add_bundle_file(bundle_dir, SPEC_ROLE, SPEC_FILE)
 
@@ -91,16 +90,18 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
     spec_path = bundle_dir / SPEC_FILE
     if not spec_path.is_file():
         raise ValueError(
-            f"No {SPEC_FILE} in {bundle_dir}: it was not written by "
-            "Trainer.fit(), so what it was trained from "
-            "is not recorded and it cannot be loaded.")
+            f'No {SPEC_FILE} in {bundle_dir}: it was not written by '
+            'Trainer.fit(), so what it was trained from '
+            'is not recorded and it cannot be loaded.'
+        )
     with open(spec_path, encoding='utf-8') as handle:
         data = json.load(handle)
     if data.get('spec_version') != SPEC_VERSION:
         raise ValueError(
-            f"{bundle_dir} carries training-spec version "
-            f"{data.get('spec_version')!r}, which this SDK reads only "
-            f"version {SPEC_VERSION}.")
+            f'{bundle_dir} carries training-spec version '
+            f'{data.get("spec_version")!r}, which this SDK reads only '
+            f'version {SPEC_VERSION}.'
+        )
     return TrainingSpec(
         spec_version=data['spec_version'],
         predictive_query=data['predictive_query'],
@@ -114,17 +115,21 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
 
 def listed_file(bundle_dir: Path, role: str) -> Optional[Path]:
     try:
-        manifest = json.loads(
-            (bundle_dir / MANIFEST_FILE).read_text(encoding='utf-8'))
+        manifest = json.loads((bundle_dir / MANIFEST_FILE).read_text(encoding='utf-8'))
         entries = manifest.get('artifacts') or []
     except (OSError, ValueError, AttributeError):
         return None
-    return next((bundle_dir / entry['relative_path']
-                 for entry in entries if entry.get('role') == role), None)
+    return next(
+        (
+            bundle_dir / entry['relative_path']
+            for entry in entries
+            if entry.get('role') == role
+        ),
+        None,
+    )
 
 
-def read_bundle_artifact_paths(
-        bundle_dir: Path) -> Tuple[Dict[str, str], str]:
+def read_bundle_artifact_paths(bundle_dir: Path) -> Tuple[Dict[str, str], str]:
     r"""Rebuild the verified ``role -> path`` mapping and the bundle id."""
     from kumo_core.artifacts import verify_model_bundle
 
@@ -132,24 +137,23 @@ def read_bundle_artifact_paths(
     manifest_path = bundle_dir / MANIFEST_FILE
     if not manifest_path.is_file():
         raise ValueError(
-            f"No {MANIFEST_FILE} in {bundle_dir}: it is not a Kumo model "
-            "bundle.")
+            f'No {MANIFEST_FILE} in {bundle_dir}: it is not a Kumo model bundle.'
+        )
     with open(manifest_path, encoding='utf-8') as handle:
         manifest = json.load(handle)
     artifacts = manifest.get('artifacts') or []
-    spec_entries = [
-        entry for entry in artifacts if entry.get('role') == SPEC_ROLE
-    ]
-    if (len(spec_entries) != 1
-            or spec_entries[0].get('relative_path') != SPEC_FILE):
+    spec_entries = [entry for entry in artifacts if entry.get('role') == SPEC_ROLE]
+    if len(spec_entries) != 1 or spec_entries[0].get('relative_path') != SPEC_FILE:
         raise ValueError(
-            f"The model bundle at {bundle_dir} does not declare exactly one "
-            f"integrity-covered {SPEC_FILE} artifact. Fit and export the "
-            "model again.")
+            f'The model bundle at {bundle_dir} does not declare exactly one '
+            f'integrity-covered {SPEC_FILE} artifact. Fit and export the '
+            'model again.'
+        )
     return {
         entry['role']: str(bundle_dir / entry['relative_path'])
         for entry in artifacts
-        if entry['role'] not in (
+        if entry['role']
+        not in (
             SPEC_ROLE,
             PROVENANCE_ROLE,
             SCORING_DEFAULTS_ROLE,

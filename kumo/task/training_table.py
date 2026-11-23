@@ -80,6 +80,7 @@ class TrainingTable(Table):
             artifacts such as split table stats. Sometimes known as home_dir
             (default: :obj:`None`)
     """
+
     def __init__(
         self,
         table_name: str,
@@ -129,14 +130,15 @@ class TrainingTable(Table):
 
         if len(self.fkeys) < 1:
             raise ValidationException(
-                "Training table must contain at least one foreign "
-                "key pointing to a graph entity table. "
-                "Add a foreign key in your predictive query or "
-                "training table definition so rows can be "
-                "linked into the graph.")
+                'Training table must contain at least one foreign '
+                'key pointing to a graph entity table. '
+                'Add a foreign key in your predictive query or '
+                'training table definition so rows can be '
+                'linked into the graph.'
+            )
 
         if split is None:
-            logger.info("No split defined - using a 80%/10%/10% random split")
+            logger.info('No split defined - using a 80%/10%/10% random split')
             split = RandomSplit([0.8, 0.1, 0.1])
         self.split = split
         self.task_name = task_name
@@ -155,19 +157,21 @@ class TrainingTable(Table):
         return values
 
     def __repr__(self) -> str:
-        fkey_names = str(self.fkey_names).replace("'", "")
-        col_names = str(self.col_names).replace("'", "")
-        return (f'{self.__class__.__name__}(\n'
-                f'  name={self.name},\n'
-                f'  data_source={self.data_source},\n'
-                f'  target_col={self.target_col_name or "???"},\n'
-                f'  fkeys={fkey_names},\n'
-                f'  cols={col_names},\n'
-                f'  time_col={self.time_col_name or "???"},\n'
-                f'  weight_col={self.weight_col or "???"},\n'
-                f'  entity_include_bit_col='
-                f'{self.entity_include_bit_col or "???"},\n'
-                f')')
+        fkey_names = str(self.fkey_names).replace("'", '')
+        col_names = str(self.col_names).replace("'", '')
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  name={self.name},\n'
+            f'  data_source={self.data_source},\n'
+            f'  target_col={self.target_col_name or "???"},\n'
+            f'  fkeys={fkey_names},\n'
+            f'  cols={col_names},\n'
+            f'  time_col={self.time_col_name or "???"},\n'
+            f'  weight_col={self.weight_col or "???"},\n'
+            f'  entity_include_bit_col='
+            f'{self.entity_include_bit_col or "???"},\n'
+            f')'
+        )
 
     @property
     def target_col(self) -> Column | None:
@@ -193,15 +197,20 @@ class TrainingTable(Table):
 
     @property
     def entity_include_bit_col_name(self) -> str | None:
-        return (None if self.entity_include_bit_col is None else
-                self.entity_include_bit_col.name)
+        return (
+            None
+            if self.entity_include_bit_col is None
+            else self.entity_include_bit_col.name
+        )
 
     def has_entity_include_bit_col(self) -> bool:
         return self.entity_include_bit_col is not None
 
     def is_entity_include_bit_col(self, name: str) -> bool:
-        return (self.entity_include_bit_col is not None
-                and self.entity_include_bit_col.name == name)
+        return (
+            self.entity_include_bit_col is not None
+            and self.entity_include_bit_col.name == name
+        )
 
     @property
     def weight_col(self) -> BaseColumn | None:
@@ -224,8 +233,11 @@ class TrainingTable(Table):
         )
 
     def __contains__(self, name: str) -> bool:
-        return (super().__contains__(name) or self.is_target_col(name)
-                or self.is_entity_include_bit_col(name))
+        return (
+            super().__contains__(name)
+            or self.is_target_col(name)
+            or self.is_entity_include_bit_col(name)
+        )
 
     def __getitem__(self, name: Any) -> Any:
         if self.is_target_col(name):
@@ -271,16 +283,18 @@ class TrainingTable(Table):
         split_table_stats = self.get_train_table_stats(after_split=True)
         if split_table_stats is None:
             logger.error(
-                f"Expect to have train table stats for {stage.value} set "
-                f"for retrieving prediction horizon.")
+                f'Expect to have train table stats for {stage.value} set '
+                f'for retrieving prediction horizon.'
+            )
             return
         stage_table_stats = split_table_stats.get_stage_table_stats(stage)
         assert stage_table_stats is not None
 
         if stage_table_stats.min_date is None:
             return None
-        return TimePeriod.cast(stage_table_stats.min_date,
-                               stage_table_stats.max_date, is_pseudo=False)
+        return TimePeriod.cast(
+            stage_table_stats.min_date, stage_table_stats.max_date, is_pseudo=False
+        )
 
     def time_period(self, stage: TrainingStage) -> TimePeriod:
         """Returns a time period of train/val/test anchor time.
@@ -299,17 +313,17 @@ class TrainingTable(Table):
         if result is None:
             raise ValidationException(
                 f"Time period for stage '{stage}' not found. Available stages are '{list(self.data.time_periods.keys())}'. "
-                "Ensure the training table has a real time column configured, "
-                "that time values span enough range for multiple splits, and that your predictive query filters "
-                "do not remove all rows from that stage.")
+                'Ensure the training table has a real time column configured, '
+                'that time values span enough range for multiple splits, and that your predictive query filters '
+                'do not remove all rows from that stage.'
+            )
         return result
 
     def persist_pandas_connector(self, destination: str | None = None):
         if isinstance(self.connector, PandasConnector):
             base = destination or get_home_dir()
             root_dir = osp.join(base, 'tasks', self.task_name)
-            self.connector = persist_pandas_connector(self.connector,
-                                                      root_dir=root_dir)
+            self.connector = persist_pandas_connector(self.connector, root_dir=root_dir)
 
     def compute_feature_column_exact_stats(self, **kwargs):
         if kwargs.get('skip_compute_stats', False):
@@ -378,7 +392,8 @@ class TrainingTable(Table):
             pkey=self.pkey.config() if self.pkey else None,
             fkeys=[fkey.config() for fkey in self.fkeys],
             cols=[
-                col.base_config() for col in (self.cols + [self.target_col])
+                col.base_config()
+                for col in (self.cols + [self.target_col])
                 if col is not None
             ],
             time_col=self.time_col.config() if self.time_col else None,
@@ -402,40 +417,43 @@ class TrainingTable(Table):
         return None
 
     def _update_and_save_stats_cache(
-            self, split_train_table_stats: SplitTrainTableStats):
+        self, split_train_table_stats: SplitTrainTableStats
+    ):
         cache: BackendCacheManager = get_active_cache()
 
         # Include split train table stats
         stats = {
-            "train_table_stats":
-            Stats(split_train_table_stats.train_table_stats, approx=False),
-            "val_table_stats":
-            Stats(split_train_table_stats.val_table_stats, approx=False),
+            'train_table_stats': Stats(
+                split_train_table_stats.train_table_stats, approx=False
+            ),
+            'val_table_stats': Stats(
+                split_train_table_stats.val_table_stats, approx=False
+            ),
         }
         if split_train_table_stats.test_table_stats is not None:
             stats['test_table_stats'] = Stats(
-                split_train_table_stats.test_table_stats, approx=False)
+                split_train_table_stats.test_table_stats, approx=False
+            )
 
         if self.job_id is not None:
             # TODO(frg100): Can we remove this and use it in the job dir?
             cache.training_table_split_stats_cache.update(self.job_id, stats)
 
     def _save_split_train_table_stats_to_job_dir(
-            self, split_train_table_stats: SplitTrainTableStats):
+        self, split_train_table_stats: SplitTrainTableStats
+    ):
         if self.job_dir is not None:
-            path = HomeDirManager(self.job_dir).split_train_table_stats(
-                self.split_fpid)
+            path = HomeDirManager(self.job_dir).split_train_table_stats(self.split_fpid)
             json.save_json(split_train_table_stats, path)
 
-    def _save_train_table_stats_to_job_dir(self,
-                                           train_table_stats: TrainTableStats):
+    def _save_train_table_stats_to_job_dir(self, train_table_stats: TrainTableStats):
         if self.job_dir is not None:
             path = HomeDirManager(self.job_dir).train_table_stats
             json.save_json(train_table_stats, path)
 
     def get_train_table_stats(
-            self,
-            after_split: bool) -> TrainTableStats | SplitTrainTableStats | None:
+        self, after_split: bool
+    ) -> TrainTableStats | SplitTrainTableStats | None:
         r"""Gets important statistics of the generated
         :class:`~kumo.task.TrainingTable`.
         Args:
@@ -450,8 +468,9 @@ class TrainingTable(Table):
 
         if after_split:
             if self._split_train_table_stats is None:
-                self._split_train_table_stats = (
-                    SplitTrainTableStats.from_cache(self.job_id))
+                self._split_train_table_stats = SplitTrainTableStats.from_cache(
+                    self.job_id
+                )
                 # Producer (`execute_split`) and consumer (e.g.
                 # materialization activities run in different
                 # sub-processes under `@process_pool_activity_defn`, so the
@@ -460,16 +479,16 @@ class TrainingTable(Table):
                 # written by `_save_split_train_table_stats_to_job_dir` is
                 # the cross-process source of truth; fall back to it when
                 # the cache misses and `job_dir` is set.
-                if (self._split_train_table_stats is None
-                        and self.job_dir is not None):
+                if self._split_train_table_stats is None and self.job_dir is not None:
                     self._split_train_table_stats = (
                         train_table_split_stats_from_job_dir(
-                            self.job_dir, self.split_fpid))
+                            self.job_dir, self.split_fpid
+                        )
+                    )
             return self._split_train_table_stats
         else:
             if self._train_table_stats is None:
-                self._train_table_stats = load_train_table_stats_from_cache(
-                    self.job_id)
+                self._train_table_stats = load_train_table_stats_from_cache(self.job_id)
             return self._train_table_stats
 
     @property
@@ -491,6 +510,7 @@ class TrainingTable(Table):
             path (str): The path to load the data from.
         """
         from kumo.graph.table_data import TableData
+
         self._data = TableData.__new__(TableData)
         self._data.load_data(
             path,
@@ -501,9 +521,9 @@ class TrainingTable(Table):
     # Validation ###########################################################
 
     def validate_training_table_stats(
-            self, stages: list[TrainingStage],
-            split_train_table_stats: SplitTrainTableStats):
-        r""" Validate training table statistics
+        self, stages: list[TrainingStage], split_train_table_stats: SplitTrainTableStats
+    ):
+        r"""Validate training table statistics
         Args:
             stages (TrainingStage): The set of stages to validate stats for;
                 `TrainingStage.TRAIN`, `TrainingStage.VAL` or
@@ -511,53 +531,58 @@ class TrainingTable(Table):
             split_train_table_stats (SplitTrainTableStats): Training
                 table stats.
         """
-        logger.info(f"Generated training table split stats:\n"
-                    f"{split_train_table_stats} for task {self.task_type}")
+        logger.info(
+            f'Generated training table split stats:\n'
+            f'{split_train_table_stats} for task {self.task_type}'
+        )
         if self.task_type in [
-                TaskType.MULTICLASS_CLASSIFICATION,
-                TaskType.BINARY_CLASSIFICATION,
-                TaskType.MULTILABEL_CLASSIFICATION,
-                TaskType.MULTILABEL_RANKING,
+            TaskType.MULTICLASS_CLASSIFICATION,
+            TaskType.BINARY_CLASSIFICATION,
+            TaskType.MULTILABEL_CLASSIFICATION,
+            TaskType.MULTILABEL_RANKING,
         ]:
             if not split_train_table_stats:
                 raise TrainingTableSplitError(
                     'Split stats unavailable',
                     f'Failed to compute training table split stats for {self.task_type} task. '
-                    "Re-generate the training table, and verify the target column is present and non-empty."
+                    'Re-generate the training table, and verify the target column is present and non-empty.',
                 )
             for stage in stages:
                 stats = split_train_table_stats.get_stage_table_stats(stage)
                 if not stats:
                     # todo: return actual validation class with warnings/errors
-                    logger.warning(
-                        f'Training split stats for stage {stage} missing.')
+                    logger.warning(f'Training split stats for stage {stage} missing.')
                     continue
                 if stats.num_targets == 1:
-                    target_counts = (stats.target_distribution.get('count', {})
-                                     if stats.target_distribution is not None
-                                     else {})
+                    target_counts = (
+                        stats.target_distribution.get('count', {})
+                        if stats.target_distribution is not None
+                        else {}
+                    )
                     if target_counts:
                         # In the majority of cases, num_targets == 1 means
                         # that there is only one unique target value.
                         target_val = list(target_counts.keys())[0]
                         raise TrainingTableSplitError(
-                            title="Detected imbalanced split",
-                            message=  # noqa: E251
-                            (f"In training table splitting, {stage} set "
-                             f"has only one target value ('{target_val}'). "
-                             f"Split: {self.split}, and {stage} table statistics: {stats}.\n"
-                             "Modify the source data, adjust the predictive query filters, "
-                             "or change the split to include multiple target values."
-                             ),
+                            title='Detected imbalanced split',
+                            # noqa: E251
+                            message=(
+                                f'In training table splitting, {stage} set '
+                                f"has only one target value ('{target_val}'). "
+                                f'Split: {self.split}, and {stage} table statistics: {stats}.\n'
+                                'Modify the source data, adjust the predictive query filters, '
+                                'or change the split to include multiple target values.'
+                            ),
                         )
                     else:
                         raise TrainingTableSplitError(
-                            title="Detected imbalanced split",
-                            message=  # noqa: E251
-                            (f"In training table splitting, {stage} set has "
-                             "only one target value; its value is unavailable "
-                             "from the bounded split statistics.\n"
-                             f"Modify the source data, split configuration ('{self.split}'), "
-                             "or predictive query to include multiple target values."
-                             ),
+                            title='Detected imbalanced split',
+                            # noqa: E251
+                            message=(
+                                f'In training table splitting, {stage} set has '
+                                'only one target value; its value is unavailable '
+                                'from the bounded split statistics.\n'
+                                f"Modify the source data, split configuration ('{self.split}'), "
+                                'or predictive query to include multiple target values.'
+                            ),
                         )

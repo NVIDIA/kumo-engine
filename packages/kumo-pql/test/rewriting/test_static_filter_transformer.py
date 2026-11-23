@@ -31,13 +31,11 @@ from kumopql.rewriting import SplitFilter, StaticFilterSplitter
 from kumopql.validator import PredictiveQueryValidator
 
 
-def get_validated_query(graph: GraphDefinition,
-                        query: str) -> ValidatedPredictiveQuery:
+def get_validated_query(graph: GraphDefinition, query: str) -> ValidatedPredictiveQuery:
     parser = PQLParser()
     validator = PredictiveQueryValidator(graph)
     parsed_query = parser.to_parsed_predictive_query(query)
-    validated_query, response = validator.validate_predictive_query(
-        parsed_query)
+    validated_query, response = validator.validate_predictive_query(parsed_query)
     assert response.ok, response
     assert validated_query is not None
     return validated_query
@@ -48,11 +46,11 @@ def test_full_static() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=Condition(
-            target=Column(fqn="entity_table.string_attribute"),
+            target=Column(fqn='entity_table.string_attribute'),
             op=RelOp.EQ,
-            value="target_string_value",
+            value='target_string_value',
         ),
     )
 
@@ -74,18 +72,18 @@ def test_multiple_static() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
             left=Condition(
-                target=Column(fqn="entity_table.numeric_attribute"),
+                target=Column(fqn='entity_table.numeric_attribute'),
                 op=RelOp.GT,
                 value=100,
             ),
             bool_op=BoolOp.AND,
             right=Condition(
-                target=Column(fqn="entity_table.string_attribute"),
+                target=Column(fqn='entity_table.string_attribute'),
                 op=RelOp.EQ,
-                value="test_value",
+                value='test_value',
             ),
             dtype_maybe=Dtype.bool,
             stype_maybe=Stype.categorical,
@@ -111,10 +109,10 @@ def test_negation() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
             left=Condition(
-                target=Column(fqn="entity_table.numeric_attribute"),
+                target=Column(fqn='entity_table.numeric_attribute'),
                 op=RelOp.GT,
                 value=100,
             ),
@@ -143,10 +141,10 @@ def test_mixed_and() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
             left=Condition(
-                target=Column(fqn="entity_table.numeric_attribute"),
+                target=Column(fqn='entity_table.numeric_attribute'),
                 op=RelOp.GT,
                 value=100,
             ),
@@ -154,7 +152,7 @@ def test_mixed_and() -> None:
             right=Condition(
                 target=Aggregation(
                     aggr=AggregationType.COUNT,
-                    target=Column(fqn="linked_fact_table.*"),
+                    target=Column(fqn='linked_fact_table.*'),
                     aggr_time_range=DateOffsetRange(
                         start=0,
                         end=7,
@@ -173,14 +171,14 @@ def test_mixed_and() -> None:
     assert not splitter.duplicates_inapplicable_nodes(result)
     assert result == SplitFilter(
         applicable_filter=Condition(
-            target=Column(fqn="entity_table.numeric_attribute"),
+            target=Column(fqn='entity_table.numeric_attribute'),
             op=RelOp.GT,
             value=100,
         ),
         non_applicable_filter=Condition(
             target=Aggregation(
                 aggr=AggregationType.COUNT,
-                target=Column(fqn="linked_fact_table.*"),
+                target=Column(fqn='linked_fact_table.*'),
                 aggr_time_range=DateOffsetRange(
                     start=0,
                     end=7,
@@ -203,18 +201,18 @@ def test_mixed_or() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
             left=Condition(
-                target=Column(fqn="entity_table.string_attribute"),
+                target=Column(fqn='entity_table.string_attribute'),
                 op=RelOp.EQ,
-                value="test_value",
+                value='test_value',
             ),
             bool_op=BoolOp.OR,
             right=Condition(
                 target=Aggregation(
                     aggr=AggregationType.COUNT,
-                    target=Column(fqn="linked_fact_table.*"),
+                    target=Column(fqn='linked_fact_table.*'),
                     aggr_time_range=DateOffsetRange(
                         start=0,
                         end=7,
@@ -247,11 +245,11 @@ def test_single_temporal() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=Condition(
             target=Aggregation(
                 aggr=AggregationType.COUNT,
-                target=Column(fqn="linked_fact_table.*"),
+                target=Column(fqn='linked_fact_table.*'),
                 aggr_time_range=DateOffsetRange(
                     start=0,
                     end=7,
@@ -281,12 +279,12 @@ def test_multiple_temporal() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
             left=Condition(
                 target=Aggregation(
                     aggr=AggregationType.COUNT,
-                    target=Column(fqn="linked_fact_table.*"),
+                    target=Column(fqn='linked_fact_table.*'),
                     aggr_time_range=DateOffsetRange(
                         start=0,
                         end=7,
@@ -300,7 +298,7 @@ def test_multiple_temporal() -> None:
             right=Condition(
                 target=Aggregation(
                     aggr=AggregationType.SUM,
-                    target=Column(fqn="linked_fact_table.value"),
+                    target=Column(fqn='linked_fact_table.value'),
                     aggr_time_range=DateOffsetRange(
                         start=7,
                         end=14,
@@ -333,23 +331,22 @@ def test_static_aggregation() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=LogicalOperation(
             left=Condition(
                 target=Aggregation(
                     aggr=AggregationType.LIST_DISTINCT,
-                    target=Column(
-                        fqn="entity_table.multicategorical_attribute"),
+                    target=Column(fqn='entity_table.multicategorical_attribute'),
                     aggr_time_range=None,  # Static aggregation
                 ),
                 op=StrOp.CONTAINS,
-                value="specific_category",
+                value='specific_category',
             ),
             bool_op=BoolOp.AND,
             right=Condition(
-                target=Column(fqn="entity_table.status"),
+                target=Column(fqn='entity_table.status'),
                 op=RelOp.EQ,
-                value="active",
+                value='active',
             ),
             dtype_maybe=Dtype.bool,
             stype_maybe=Stype.categorical,
@@ -374,14 +371,14 @@ def test_static_aggregation_static_subfilter() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=Condition(
             target=Aggregation(
                 aggr=AggregationType.LIST_DISTINCT,
                 target=Filter(
-                    target=Column(fqn="linked_fact_table.category"),
+                    target=Column(fqn='linked_fact_table.category'),
                     condition=Condition(
-                        target=Column(fqn="linked_fact_table.value"),
+                        target=Column(fqn='linked_fact_table.value'),
                         op=RelOp.GT,
                         value=1000,
                     ),
@@ -389,7 +386,7 @@ def test_static_aggregation_static_subfilter() -> None:
                 aggr_time_range=None,  # Static aggregation
             ),
             op=StrOp.CONTAINS,
-            value="high_value_category",
+            value='high_value_category',
         ),
     )
 
@@ -411,21 +408,22 @@ def test_static_aggregation_temporal_subfilter() -> None:
     splitter = StaticFilterSplitter()
 
     entity = Filter(
-        target=Column(fqn="entity_table.entity_id"),
+        target=Column(fqn='entity_table.entity_id'),
         condition=Condition(
             target=Aggregation(
                 aggr=AggregationType.LIST_DISTINCT,
                 target=Filter(
-                    target=Column(fqn="linked_fact_table.category"),
+                    target=Column(fqn='linked_fact_table.category'),
                     condition=Condition(
                         target=Aggregation(
                             aggr=AggregationType.SUM,
-                            target=Column(fqn="linked_fact_table.value"),
+                            target=Column(fqn='linked_fact_table.value'),
                             aggr_time_range=DateOffsetRange(
                                 start=0,
                                 end=7,
                                 unit=TimeUnit.DAYS,
-                            )),
+                            ),
+                        ),
                         op=RelOp.GT,
                         value=1000,
                     ),
@@ -433,7 +431,7 @@ def test_static_aggregation_temporal_subfilter() -> None:
                 aggr_time_range=None,  # Static aggregation
             ),
             op=StrOp.CONTAINS,
-            value="high_value_category",
+            value='high_value_category',
         ),
     )
 
@@ -453,15 +451,15 @@ def test_static_aggregation_temporal_subfilter() -> None:
 STATIC_JOIN_FILTER = Condition(
     target=Join(
         rhs_target=Column(
-            fqn="LOCATIONS.NAME",
+            fqn='LOCATIONS.NAME',
             dtype_maybe=Dtype.string,
             stype_maybe=Stype.categorical,
         ),
-        rhs_key="LOCATIONS.LOCATION_ID",
-        lhs_key="USERS.LOCATION_ID",
+        rhs_key='LOCATIONS.LOCATION_ID',
+        lhs_key='USERS.LOCATION_ID',
     ),
     op=RelOp.EQ,
-    value="Pallet Town",
+    value='Pallet Town',
     dtype_maybe=Dtype.bool,
     stype_maybe=Stype.categorical,
 )
@@ -471,7 +469,7 @@ TEMPORAL_COUNT_FILTER = Condition(
         rhs_target=Aggregation(
             aggr=AggregationType.COUNT,
             target=Column(
-                fqn="TRANS.*",
+                fqn='TRANS.*',
                 dtype_maybe=Dtype.int,
                 stype_maybe=Stype.categorical,
             ),
@@ -481,11 +479,11 @@ TEMPORAL_COUNT_FILTER = Condition(
             ),
             dtype_maybe=Dtype.int,
             stype_maybe=Stype.numerical,
-            group_by="TRANS.USER",
-            time_col="TRANS.TIME",
+            group_by='TRANS.USER',
+            time_col='TRANS.TIME',
         ),
-        rhs_key="TRANS.USER",
-        lhs_key="USERS.USERS_ID",
+        rhs_key='TRANS.USER',
+        lhs_key='USERS.USERS_ID',
     ),
     op=RelOp.GT,
     value=0,
@@ -495,7 +493,7 @@ TEMPORAL_COUNT_FILTER = Condition(
 
 SIMPLE_STATIC_FILTER = Condition(
     target=Column(
-        fqn="USERS.AGE",
+        fqn='USERS.AGE',
         dtype_maybe=Dtype.int,
         stype_maybe=Stype.numerical,
     ),
@@ -506,13 +504,14 @@ SIMPLE_STATIC_FILTER = Condition(
 )
 
 
-def test_query_no_filter(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+def test_query_no_filter(create_mock_graph: Callable[..., GraphDefinition]) -> None:
     graph = create_mock_graph()
-    training_query = ("PREDICT LIST_DISTINCT(TRANS.STORE "
-                      "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-                      "RANK TOP 10 "
-                      "FOR EACH USERS.USERS_ID")
+    training_query = (
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
+        "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID'
+    )
     validated_training_query = get_validated_query(graph, training_query)
 
     splitter = StaticFilterSplitter()
@@ -529,14 +528,14 @@ def test_query_no_filter(
     )
 
 
-def test_query_join_filter(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+def test_query_join_filter(create_mock_graph: Callable[..., GraphDefinition]) -> None:
     graph = create_mock_graph()
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE LOCATIONS.NAME = \"Pallet Town\"")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE LOCATIONS.NAME = "Pallet Town"'
+    )
     validated_training_query = get_validated_query(graph, training_query)
 
     splitter = StaticFilterSplitter()
@@ -561,13 +560,15 @@ def test_query_join_filter(
 
 
 def test_query_temporal_filter(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+    create_mock_graph: Callable[..., GraphDefinition],
+) -> None:
     graph = create_mock_graph()
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE COUNT(TRANS.*, -inf, 0) > 0 ")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE COUNT(TRANS.*, -inf, 0) > 0 '
+    )
     validated_training_query = get_validated_query(graph, training_query)
 
     splitter = StaticFilterSplitter()
@@ -591,15 +592,15 @@ def test_query_temporal_filter(
     assert result == expected
 
 
-def test_query_mixed_and(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+def test_query_mixed_and(create_mock_graph: Callable[..., GraphDefinition]) -> None:
     graph = create_mock_graph()
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE COUNT(TRANS.*, -inf, 0) > 0 AND "
-        "LOCATIONS.NAME = \"Pallet Town\"")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE COUNT(TRANS.*, -inf, 0) > 0 AND '
+        'LOCATIONS.NAME = "Pallet Town"'
+    )
     validated_training_query = get_validated_query(graph, training_query)
 
     splitter = StaticFilterSplitter()
@@ -622,15 +623,15 @@ def test_query_mixed_and(
     assert result == expected
 
 
-def test_query_mixed_or(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+def test_query_mixed_or(create_mock_graph: Callable[..., GraphDefinition]) -> None:
     graph = create_mock_graph()
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE COUNT(TRANS.*, -inf, 0) > 0 OR "
-        "LOCATIONS.NAME = \"Pallet Town\"")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE COUNT(TRANS.*, -inf, 0) > 0 OR '
+        'LOCATIONS.NAME = "Pallet Town"'
+    )
     validated_training_query = get_validated_query(graph, training_query)
 
     splitter = StaticFilterSplitter()
@@ -660,7 +661,8 @@ def test_query_mixed_or(
 
 
 def test_duplicated_aggregation(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+    create_mock_graph: Callable[..., GraphDefinition],
+) -> None:
     graph = create_mock_graph()
 
     # An aggregation may be duplicated in the following case if it is
@@ -675,11 +677,12 @@ def test_duplicated_aggregation(
     # )
 
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE (COUNT(TRANS.*, -inf, 0) > 0 AND "
-        "USERS.AGE > 10) OR USERS.AGE > 30")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE (COUNT(TRANS.*, -inf, 0) > 0 AND '
+        'USERS.AGE > 10) OR USERS.AGE > 30'
+    )
 
     validated_training_query = get_validated_query(graph, training_query)
 
@@ -689,11 +692,12 @@ def test_duplicated_aggregation(
     assert splitter.can_be_split_for_entity_optimization(result)
 
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE (COUNT(TRANS.*, -inf, 0) > 0 AND "
-        "USERS.AGE > 10) OR (USERS.AGE > 30 AND COUNT(TRANS.*, -inf, 0) > 1)")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE (COUNT(TRANS.*, -inf, 0) > 0 AND '
+        'USERS.AGE > 10) OR (USERS.AGE > 30 AND COUNT(TRANS.*, -inf, 0) > 1)'
+    )
 
     validated_training_query = get_validated_query(graph, training_query)
 
@@ -704,14 +708,16 @@ def test_duplicated_aggregation(
 
 
 def test_query_mixed_or_negation_rewritten(
-        create_mock_graph: Callable[..., GraphDefinition]) -> None:
+    create_mock_graph: Callable[..., GraphDefinition],
+) -> None:
     graph = create_mock_graph()
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANS.STORE "
+        'PREDICT LIST_DISTINCT(TRANS.STORE '
         "WHERE TRANS.TYPE = 'A' AND STORES.TYPE = 'A', 0, 7) "
-        "RANK TOP 10 "
-        "FOR EACH USERS.USERS_ID WHERE NOT(COUNT(TRANS.*, -inf, 0) > 0 OR "
-        "LOCATIONS.NAME = \"Pallet Town\") AND USERS.AGE > 10")
+        'RANK TOP 10 '
+        'FOR EACH USERS.USERS_ID WHERE NOT(COUNT(TRANS.*, -inf, 0) > 0 OR '
+        'LOCATIONS.NAME = "Pallet Town") AND USERS.AGE > 10'
+    )
 
     validated_training_query = get_validated_query(graph, training_query)
 
@@ -769,14 +775,21 @@ def test_exponential_blowup() -> None:
                     start=None,
                     end=0,
                 ),
-            ), op='=', value=0), bool_op=BoolOp.AND,
-        right=Condition(target=Column(fqn='entity_table.col'), op='=',
-                        value=0))
+            ),
+            op='=',
+            value=0,
+        ),
+        bool_op=BoolOp.AND,
+        right=Condition(target=Column(fqn='entity_table.col'), op='=', value=0),
+    )
     for i in range(1, n_terms):
         expected_applicable_condition = (
-            f'({expected_applicable_condition}) OR (entity_table.col = {i})')
+            f'({expected_applicable_condition}) OR (entity_table.col = {i})'
+        )
         condition = LogicalOperation(
-            left=condition, bool_op=BoolOp.OR, right=LogicalOperation(
+            left=condition,
+            bool_op=BoolOp.OR,
+            right=LogicalOperation(
                 left=Condition(
                     target=Aggregation(
                         aggr=AggregationType.COUNT,
@@ -785,9 +798,14 @@ def test_exponential_blowup() -> None:
                             start=None,
                             end=0,
                         ),
-                    ), op='=', value=i), bool_op=BoolOp.AND,
-                right=Condition(target=Column(fqn='entity_table.col'), op='=',
-                                value=i)))
+                    ),
+                    op='=',
+                    value=i,
+                ),
+                bool_op=BoolOp.AND,
+                right=Condition(target=Column(fqn='entity_table.col'), op='=', value=i),
+            ),
+        )
     split_filter = splitter._recursively_split_filter(condition, condition)
     assert str(split_filter.applicable_filter) == expected_applicable_condition
     assert split_filter.non_applicable_filter is None

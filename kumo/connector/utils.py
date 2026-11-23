@@ -57,8 +57,9 @@ _ENV_AWS_ROLE_ARN = 'AWS_ROLE_ARN'
 
 # Path to local file for OAuth token. Used to get AWS STS token for
 # temporary credentials passed to warehouse for accessing S3 buckets.
-_LOCAL_WEB_IDENTITY_TOKEN_PATH = \
+_LOCAL_WEB_IDENTITY_TOKEN_PATH = (
     '/var/run/secrets/eks.amazonaws.com/serviceaccount/token'
+)
 
 # Role ARN used in test environments (dev VM, CI) to get temporary
 # credentials via sts:AssumeRole instead of OIDC web identity.
@@ -84,8 +85,7 @@ def get_temporary_aws_credential(
     """
     if fsutil.is_ucv(path):
         return {}
-    duration_seconds = int((validity
-                            or datetime.timedelta(hours=1)).total_seconds())
+    duration_seconds = int((validity or datetime.timedelta(hours=1)).total_seconds())
     duration_seconds = max(900, min(duration_seconds, 43_200))
 
     # Production path: IRSA (OIDC token + role ARN)
@@ -96,6 +96,7 @@ def get_temporary_aws_credential(
         if token and role:
             try:
                 import boto3
+
                 sts = boto3.client(
                     'sts',
                     region_name=os.environ.get('AWS_REGION', 'us-west-2'),
@@ -110,15 +111,14 @@ def get_temporary_aws_credential(
                 return {
                     'AccessKeyId': output['AccessKeyId'],
                     'SecretAccessKey': output['SecretAccessKey'],
-                    'SessionToken': output['SessionToken']
+                    'SessionToken': output['SessionToken'],
                 }
             except Exception as e:
                 # Provider exceptions may echo the web-identity token, role,
                 # or response body.  This path is used to vend credentials to
                 # warehouses, so log only locally controlled metadata.
                 logger.warning(
-                    'AWS web-identity role assumption failed '
-                    '(error_type=%s)',
+                    'AWS web-identity role assumption failed (error_type=%s)',
                     type(e).__name__,
                 )
 
@@ -139,13 +139,14 @@ def get_temporary_aws_credential(
             import urllib.request
 
             import boto3
-            imds_base = ('http://169.254.169.254/latest/meta-data'
-                         '/iam/security-credentials/')
-            imds_role = urllib.request.urlopen(imds_base,
-                                               timeout=2).read().decode()
+
+            imds_base = (
+                'http://169.254.169.254/latest/meta-data/iam/security-credentials/'
+            )
+            imds_role = urllib.request.urlopen(imds_base, timeout=2).read().decode()
             imds_creds = json.loads(
-                urllib.request.urlopen(imds_base + imds_role,
-                                       timeout=2).read().decode())
+                urllib.request.urlopen(imds_base + imds_role, timeout=2).read().decode()
+            )
             sts = boto3.client(
                 'sts',
                 aws_access_key_id=imds_creds['AccessKeyId'],
@@ -161,7 +162,7 @@ def get_temporary_aws_credential(
             return {
                 'AccessKeyId': creds['AccessKeyId'],
                 'SecretAccessKey': creds['SecretAccessKey'],
-                'SessionToken': creds['SessionToken']
+                'SessionToken': creds['SessionToken'],
             }
         except Exception as e:
             logger.debug('IMDS path failed (error_type=%s)', type(e).__name__)
@@ -169,6 +170,7 @@ def get_temporary_aws_credential(
         # Strategy 2: env-var credentials (CI runners)
         try:
             import boto3
+
             access_key = os.environ.get('AWS_ACCESS_KEY_ID')
             secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
             if access_key and secret_key:
@@ -187,33 +189,37 @@ def get_temporary_aws_credential(
                 return {
                     'AccessKeyId': creds['AccessKeyId'],
                     'SecretAccessKey': creds['SecretAccessKey'],
-                    'SessionToken': creds['SessionToken']
+                    'SessionToken': creds['SessionToken'],
                 }
         except Exception as e:
-            logger.warning('Failed to assume test role %s (error_type=%s)',
-                           test_role,
-                           type(e).__name__)
+            logger.warning(
+                'Failed to assume test role %s (error_type=%s)',
+                test_role,
+                type(e).__name__,
+            )
 
     # Fall back to the worker's ambient AWS creds (the same ones the S3
     # client uses) so the credentialed COPY can run server-side instead of
     # routing bytes through the worker.
     try:
         import boto3
+
         creds = boto3.Session().get_credentials()
         frozen = creds.get_frozen_credentials() if creds else None
-        if (frozen and frozen.access_key and frozen.secret_key
-                and frozen.token):
+        if frozen and frozen.access_key and frozen.secret_key and frozen.token:
             return {
                 'AccessKeyId': frozen.access_key,
                 'SecretAccessKey': frozen.secret_key,
                 'SessionToken': frozen.token,
             }
     except Exception as e:
-        logger.warning("Ambient AWS credential lookup failed (error_type=%s)",
-                       type(e).__name__)
+        logger.warning(
+            'Ambient AWS credential lookup failed (error_type=%s)', type(e).__name__
+        )
 
-    logger.warning('Could not retrieve temporary credential. Proceed '
-                   'without credentials.')
+    logger.warning(
+        'Could not retrieve temporary credential. Proceed without credentials.'
+    )
 
     return {}
 
@@ -228,7 +234,7 @@ def cast_df(
     dtypes: Dict[str, Dtype] = {}
     if pkey is not None and pkey.dtype is not None:
         dtypes[pkey.name] = pkey.dtype
-    for col in (cols or []):
+    for col in cols or []:
         if col.dtype is not None:
             dtypes[col.name] = col.dtype
     return cast_df_to_dtypes(df, dtypes)
@@ -243,28 +249,31 @@ class ColumnDtypeMismatch:
     original_msg: str
 
     def format_msg(self):
-        return (f"- Column Name: {self.col_name}, Expected Data Type: "
-                f"{self.dtype}, Initial Type: {self.orig_type}, "
-                f"Error Message: {self.original_msg}")
+        return (
+            f'- Column Name: {self.col_name}, Expected Data Type: '
+            f'{self.dtype}, Initial Type: {self.orig_type}, '
+            f'Error Message: {self.original_msg}'
+        )
 
 
 class ColumnDtypeMismatchError(ValueError):
-    r"""Raised when the column data type does not match the underlying data.
-    """
+    r"""Raised when the column data type does not match the underlying data."""
+
     def __init__(self, mismatches: List[ColumnDtypeMismatch]):
         self.mismatches = mismatches
         error_parts = [m.format_msg() for m in mismatches]
         errors = '\n'.join(error_parts)
         super().__init__(
-            f"Some rows in the table could not be converted into the "
-            f"requested data types. Please make sure that all rows in "
-            f"the table contain valid data, and that the specified column "
-            f"data types match the data type of the underlying data. To "
-            f"solve this error, you can consider excluding the offending "
-            f"columns when importing the data, change the column data type "
-            f"if it is improperly set, or delete the rows containing "
-            f"invalid data from the underlying data table. The full list of "
-            f"errors is listed here:\n\n{errors}")
+            f'Some rows in the table could not be converted into the '
+            f'requested data types. Please make sure that all rows in '
+            f'the table contain valid data, and that the specified column '
+            f'data types match the data type of the underlying data. To '
+            f'solve this error, you can consider excluding the offending '
+            f'columns when importing the data, change the column data type '
+            f'if it is improperly set, or delete the rows containing '
+            f'invalid data from the underlying data table. The full list of '
+            f'errors is listed here:\n\n{errors}'
+        )
 
 
 def cast_error_frac(col: pd.Series, cast_col: pd.Series) -> float:
@@ -272,7 +281,7 @@ def cast_error_frac(col: pd.Series, cast_col: pd.Series) -> float:
     the number of NA values) resulting from applying casting to col.
     """
     if col.size != cast_col.size:
-        raise ValueError("Arguments to cast_error_frac are of different sizes")
+        raise ValueError('Arguments to cast_error_frac are of different sizes')
     if col.size == 0:
         return 0.0
     orig_na = col.isna().sum()
@@ -361,16 +370,17 @@ def name_inference_temporal_supported(
     hint = infer_temporal_hint(col)
     if hint.kind is HintKind.UNRESOLVED:
         return False
-    if (hint.kind is HintKind.FORMAT
-            and hint.strftime in _DAY_LESS_TEMPORAL_FORMATS):
+    if hint.kind is HintKind.FORMAT and hint.strftime in _DAY_LESS_TEMPORAL_FORMATS:
         # A day-less (``%Y`` / ``%Y%m``) promotion would produce unexpected
         # times, so leave the column alone; the user can declare it explicitly
         # if a temporal reading is intended.
         return False
-    epochs = (to_epoch_days(col, hint) if desired_dtype == Dtype.date else
-              to_epoch_seconds(col, hint))
-    failures = sum(1 for value, keep in zip(epochs, non_null)
-                   if keep and value is None)
+    epochs = (
+        to_epoch_days(col, hint)
+        if desired_dtype == Dtype.date
+        else to_epoch_seconds(col, hint)
+    )
+    failures = sum(1 for value, keep in zip(epochs, non_null) if keep and value is None)
     return failures / n <= error_threshold
 
 
@@ -413,9 +423,11 @@ def coerce_timestamp_stype_series_for_stats(
 
     hint = _resolve_stats_temporal_hint(ser, col_config)
     ticks = to_epoch_ticks(ser, hint, timestamp_precision)
-    return pd.to_datetime(pd.Series(ticks, index=ser.index),
-                          unit=PANDAS_UNIT_OF_INDEX_CLOCK[timestamp_precision],
-                          errors='coerce')
+    return pd.to_datetime(
+        pd.Series(ticks, index=ser.index),
+        unit=PANDAS_UNIT_OF_INDEX_CLOCK[timestamp_precision],
+        errors='coerce',
+    )
 
 
 def coerce_decimal_series_for_stats(
@@ -478,15 +490,17 @@ def cast_col_to_numeric(
     cast_col = pd.to_numeric(col, errors='coerce')
     error_frac = cast_error_frac(col, cast_col)
     if error_frac > error_threshold:
-        raise ValueError(f"Column '{col.name}' with Dtype({col.dtype}) could "
-                         f"not be cast to numeric format. Casting resulted in "
-                         f"{error_frac * 100:.1f}% errors.")
+        raise ValueError(
+            f"Column '{col.name}' with Dtype({col.dtype}) could "
+            f'not be cast to numeric format. Casting resulted in '
+            f'{error_frac * 100:.1f}% errors.'
+        )
     return cast_col
 
 
 def cast_col_to_str(col: pd.Series) -> pd.Series:
     r"""Cast the input column :obj:`col` to a pandas str type."""
-    return col.astype("string")
+    return col.astype('string')
 
 
 def _known_dtype(dtype: Any) -> Optional[Dtype]:
@@ -512,8 +526,9 @@ def cast_df_to_dtypes(
         try:
             # For binary columns, always convert to hex str.
             if dtype == Dtype.binary:
-                df[col_name] = col.apply(lambda x: x.hex()
-                                         if isinstance(x, bytes) else x)
+                df[col_name] = col.apply(
+                    lambda x: x.hex() if isinstance(x, bytes) else x
+                )
                 continue
 
             # For boolean columns, always convert to Pandas dtypes
@@ -552,7 +567,8 @@ def cast_df_to_dtypes(
                     orig_type=str(col.dtype),
                     dtype=str(dtype_to_pandas(dtype)),
                     original_msg=str(e),
-                ))
+                )
+            )
 
     if len(mismatches) > 0:
         raise ColumnDtypeMismatchError(mismatches)
@@ -568,9 +584,12 @@ def cast_df_to_dtypes(
 
 
 # TODO(Dulloor): This function is not currently used. Consider removing it.
-def cached_batch_fetch(entity_names: List[str], cache: Cache,
-                       cache_key: Callable[[str], str],
-                       fetch_fn: Callable[[List[str]], List[T]]) -> List[T]:
+def cached_batch_fetch(
+    entity_names: List[str],
+    cache: Cache,
+    cache_key: Callable[[str], str],
+    fetch_fn: Callable[[List[str]], List[T]],
+) -> List[T]:
     """
     This function performs a fetch operation using a cache. cache_key is used
     to retrieve and store data for each entity based on a name. The fetch
@@ -600,9 +619,11 @@ def cached_batch_fetch(entity_names: List[str], cache: Cache,
     all_data = [PLACEHOLDER] * len(entity_names)
 
     # Get data from cache for cached entities
-    cached_entities = [(i, entity_name)
-                       for i, entity_name in enumerate(entity_names)
-                       if cache_key(entity_name) in cache]
+    cached_entities = [
+        (i, entity_name)
+        for i, entity_name in enumerate(entity_names)
+        if cache_key(entity_name) in cache
+    ]
     # Add it to the all_data list in the correct order
     for i, entity_name in cached_entities:
         data = cache.get(cache_key(entity_name))
@@ -610,9 +631,11 @@ def cached_batch_fetch(entity_names: List[str], cache: Cache,
             all_data[i] = data
 
     # Get the data for any entities not in cache
-    not_cached_entities = [(i, entity_name)
-                           for i, entity_name in enumerate(entity_names)
-                           if cache_key(entity_name) not in cache]
+    not_cached_entities = [
+        (i, entity_name)
+        for i, entity_name in enumerate(entity_names)
+        if cache_key(entity_name) not in cache
+    ]
     not_cached_entity_names = [e_name for i, e_name in not_cached_entities]
     not_cached_data = fetch_fn(not_cached_entity_names)
 

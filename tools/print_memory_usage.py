@@ -27,14 +27,13 @@ def make_usage_bar(percentage: float, bins: int) -> str:
 
 
 def format_usage(stats) -> str:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     used_pct = stats.used / stats.total
     usage_bar = make_usage_bar(used_pct, 80)
     gb = 1 << 30
 
-    msg = (f"{now}    Mem Used: "
-           f"{stats.used/gb:0.1f}/{stats.total/gb:0.1f} GiB")
+    msg = f'{now}    Mem Used: {stats.used / gb:0.1f}/{stats.total / gb:0.1f} GiB'
     msg += ' ' * (55 - len(msg))
     msg += usage_bar
     return msg

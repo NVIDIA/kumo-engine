@@ -22,8 +22,7 @@ def test_local_write_text_if_absent_never_replaces(tmp_path):
     assert fsutil.read_text(path) == 'first'
 
 
-def test_local_write_text_if_absent_is_invisible_until_complete(
-        monkeypatch, tmp_path):
+def test_local_write_text_if_absent_is_invisible_until_complete(monkeypatch, tmp_path):
     path = tmp_path / 'claim.json'
     payload = 'complete-publisher-identity' * 4096
     entered_link = threading.Event()
@@ -39,8 +38,9 @@ def test_local_write_text_if_absent_is_invisible_until_complete(
         real_link(source, destination)
 
     monkeypatch.setattr(impl_local.os, 'link', blocking_link)
-    writer = threading.Thread(target=lambda: result.append(
-        fsutil.write_text_if_absent(str(path), payload)))
+    writer = threading.Thread(
+        target=lambda: result.append(fsutil.write_text_if_absent(str(path), payload))
+    )
     writer.start()
     assert entered_link.wait(timeout=10)
 
@@ -56,7 +56,8 @@ def test_local_write_text_if_absent_is_invisible_until_complete(
 
 
 def test_local_write_text_if_absent_link_failure_leaves_no_claim_or_temp(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     path = tmp_path / 'claim.json'
 
     def fail_link(_source, _destination):
@@ -86,12 +87,8 @@ def test_s3_write_text_if_absent_uses_put_precondition(monkeypatch):
 
     client.put_object.side_effect = ClientError(
         {
-            'Error': {
-                'Code': 'PreconditionFailed'
-            },
-            'ResponseMetadata': {
-                'HTTPStatusCode': 412
-            },
+            'Error': {'Code': 'PreconditionFailed'},
+            'ResponseMetadata': {'HTTPStatusCode': 412},
         },
         'PutObject',
     )
@@ -104,11 +101,11 @@ def test_gcs_write_text_if_absent_uses_generation_precondition(monkeypatch):
     uri = GCSURI(bucket='bucket', path='claim.json')
 
     assert impl_gcs.write_text_if_absent(uri, 'first')
-    blob.upload_from_string.assert_called_once_with(b'first',
-                                                    if_generation_match=0)
+    blob.upload_from_string.assert_called_once_with(b'first', if_generation_match=0)
 
     blob.upload_from_string.side_effect = gcs_exceptions.PreconditionFailed(
-        'already exists')
+        'already exists'
+    )
     assert not impl_gcs.write_text_if_absent(uri, 'second')
 
 
@@ -122,12 +119,10 @@ def _adls_uri() -> ADLSURI:
     )
 
 
-def test_adls_write_text_if_absent_conditionally_promotes_complete_temp(
-        monkeypatch):
+def test_adls_write_text_if_absent_conditionally_promotes_complete_temp(monkeypatch):
     client = Mock()
     client.get_file_properties.return_value = SimpleNamespace(etag='temp-etag')
-    monkeypatch.setattr(impl_adls.adls_ctx, 'get_file_client',
-                        lambda _uri: client)
+    monkeypatch.setattr(impl_adls.adls_ctx, 'get_file_client', lambda _uri: client)
     operation = SimpleNamespace(hex='operation-id')
     monkeypatch.setattr(impl_adls.uuid, 'uuid4', lambda: operation)
     uri = _adls_uri()
@@ -149,13 +144,11 @@ def test_adls_write_text_if_absent_conditionally_promotes_complete_temp(
     client.delete_file.assert_called_once_with()
 
 
-def test_adls_write_text_if_absent_preserves_existing_destination(
-        monkeypatch):
+def test_adls_write_text_if_absent_preserves_existing_destination(monkeypatch):
     client = Mock()
     client.get_file_properties.return_value = SimpleNamespace(etag='temp-etag')
     client.rename_file.side_effect = impl_adls.ResourceExistsError('exists')
-    monkeypatch.setattr(impl_adls.adls_ctx, 'get_file_client',
-                        lambda _uri: client)
+    monkeypatch.setattr(impl_adls.adls_ctx, 'get_file_client', lambda _uri: client)
     operation = SimpleNamespace(hex='operation-id')
     monkeypatch.setattr(impl_adls.uuid, 'uuid4', lambda: operation)
 
@@ -166,8 +159,7 @@ def test_adls_write_text_if_absent_preserves_existing_destination(
 def test_adls_write_text_if_absent_supports_empty_payload(monkeypatch):
     client = Mock()
     client.get_file_properties.return_value = SimpleNamespace(etag='temp-etag')
-    monkeypatch.setattr(impl_adls.adls_ctx, 'get_file_client',
-                        lambda _uri: client)
+    monkeypatch.setattr(impl_adls.adls_ctx, 'get_file_client', lambda _uri: client)
     operation = SimpleNamespace(hex='operation-id')
     monkeypatch.setattr(impl_adls.uuid, 'uuid4', lambda: operation)
 
@@ -186,8 +178,9 @@ def test_ucv_write_text_if_absent_disables_overwrite(monkeypatch):
         'client',
         property(lambda _self: client),
     )
-    uri = UCURI(catalog='catalog', uc_schema='schema', volume='volume',
-                path='claim.json')
+    uri = UCURI(
+        catalog='catalog', uc_schema='schema', volume='volume', path='claim.json'
+    )
 
     assert impl_ucv.write_text_if_absent(uri, 'first')
     args, kwargs = client.files.upload.call_args
@@ -196,6 +189,7 @@ def test_ucv_write_text_if_absent_disables_overwrite(monkeypatch):
     assert kwargs == {'overwrite': False}
 
     from databricks.sdk.errors.platform import AlreadyExists
+
     client.files.upload.side_effect = AlreadyExists('exists')
     assert not impl_ucv.write_text_if_absent(uri, 'second')
 
@@ -209,8 +203,12 @@ def test_ucv_object_identity_uses_closed_object_metadata(monkeypatch):
         'client',
         property(lambda _self: client),
     )
-    uri = UCURI(catalog='catalog', uc_schema='schema', volume='volume',
-                path='part-00000.parquet')
+    uri = UCURI(
+        catalog='catalog',
+        uc_schema='schema',
+        volume='volume',
+        path='part-00000.parquet',
+    )
 
     identity = impl_ucv.object_identity(uri)
 

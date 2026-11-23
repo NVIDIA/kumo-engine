@@ -15,6 +15,7 @@ class MockTrainTable:
     """A helper class that makes it possible to write tests
     that depend on training table.
     """
+
     def __init__(self, task_type: TaskType):
         self.name = task_type.name
 
@@ -35,8 +36,11 @@ class MockTrainTable:
         self.data = MagicMock()
         self.data.fkeys = torch.arange(8)
         self.data.train_mask = torch.BoolTensor(
-            [True, True, True, True, True, True, False, False])
+            [True, True, True, True, True, True, False, False]
+        )
         self.data.val_mask = torch.BoolTensor(
-            [False, False, False, False, False, True, False])
+            [False, False, False, False, False, True, False]
+        )
         self.data.test_mask = torch.BoolTensor(
-            [False, False, False, False, False, False, True])
+            [False, False, False, False, False, False, True]
+        )

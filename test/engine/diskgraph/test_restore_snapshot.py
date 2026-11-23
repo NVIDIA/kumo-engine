@@ -14,6 +14,7 @@ that's the producer's contract with ``verify_snapshot_integrity``, which
 re-reads and re-validates it from the local copy; it has nothing to do with
 how ``restore_snapshot`` itself plans the transfer.
 """
+
 import json
 import os
 import threading
@@ -29,8 +30,7 @@ _MANIFEST_FILENAME = '_MANIFEST.json'
 
 
 def _build_service(tmp_path):
-    return DiskgraphService(
-        DiskgraphConfig(data_root=str(tmp_path / 'local')))
+    return DiskgraphService(DiskgraphConfig(data_root=str(tmp_path / 'local')))
 
 
 def _default_files():
@@ -54,10 +54,10 @@ def _write_dataplane_mirror(dataplane_dir, output_dir, files):
 
     manifest_payload = {
         'schema_version': 1,
-        'files': [{
-            'rel_path': rel_path,
-            'size_bytes': len(content)
-        } for rel_path, content in sorted(files.items())],
+        'files': [
+            {'rel_path': rel_path, 'size_bytes': len(content)}
+            for rel_path, content in sorted(files.items())
+        ],
     }
     manifest_path = os.path.join(dataplane_dir, _MANIFEST_FILENAME)
     with open(manifest_path, 'w') as fh:
@@ -126,12 +126,10 @@ def test_restore_snapshot_success_written_last(tmp_path, monkeypatch):
     for rel_path in files:
         assert os.path.exists(os.path.join(output_dir, rel_path))
     assert os.path.exists(os.path.join(output_dir, _MANIFEST_FILENAME))
-    assert not os.path.exists(
-        os.path.join(output_dir, _RESTORE_SUCCESS_FILENAME))
+    assert not os.path.exists(os.path.join(output_dir, _RESTORE_SUCCESS_FILENAME))
 
 
-def test_restore_snapshot_removes_stale_success_before_copy(
-        tmp_path, monkeypatch):
+def test_restore_snapshot_removes_stale_success_before_copy(tmp_path, monkeypatch):
     """A ``_SUCCESS`` left behind by an earlier attempt must be gone before
     the bulk copy starts -- otherwise it marks a half-restored tree ready
     for the whole duration of the copy.
@@ -153,8 +151,7 @@ def test_restore_snapshot_removes_stale_success_before_copy(
     real_copy = fsutil.copy
 
     def _checking_copy(*args, **kwargs):
-        assert not os.path.exists(
-            os.path.join(output_dir, _RESTORE_SUCCESS_FILENAME))
+        assert not os.path.exists(os.path.join(output_dir, _RESTORE_SUCCESS_FILENAME))
         return real_copy(*args, **kwargs)
 
     monkeypatch.setattr(fsutil, 'copy', _checking_copy)
@@ -181,11 +178,10 @@ def test_restore_snapshot_heartbeats_before_first_batch(tmp_path):
         if len(calls) == 1:
             # Fires before any byte of the transfer has moved.
             assert not any(
-                os.path.exists(os.path.join(output_dir, rel))
-                for rel in files)
+                os.path.exists(os.path.join(output_dir, rel)) for rel in files
+            )
 
-    result = service.restore_snapshot(handle, dataplane_root,
-                                      heartbeat=_heartbeat)
+    result = service.restore_snapshot(handle, dataplane_root, heartbeat=_heartbeat)
 
     assert result is not None
     # A tiny/fast transfer completes well inside one 30s ticker interval,
@@ -196,7 +192,8 @@ def test_restore_snapshot_heartbeats_before_first_batch(tmp_path):
 
 
 def test_restore_snapshot_heartbeat_ticker_fires_during_slow_transfer(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     """A single ``fsutil.copy`` call has no intra-file progress signal, so
     the only way to heartbeat during one slow/retrying object is a ticker
     running concurrently with the transfer.
@@ -204,8 +201,7 @@ def test_restore_snapshot_heartbeat_ticker_fires_during_slow_transfer(
     from io_utils import fsutil
     from kumo.diskgraph import service as service_module
 
-    monkeypatch.setattr(service_module, '_RESTORE_HEARTBEAT_INTERVAL_SECS',
-                        0.02)
+    monkeypatch.setattr(service_module, '_RESTORE_HEARTBEAT_INTERVAL_SECS', 0.02)
 
     service = _build_service(tmp_path)
     handle = DiskgraphHandle.for_test()
@@ -226,23 +222,22 @@ def test_restore_snapshot_heartbeat_ticker_fires_during_slow_transfer(
     monkeypatch.setattr(fsutil, 'copy', _slow_copy)
 
     heartbeats = []
-    result = service.restore_snapshot(handle, dataplane_root,
-                                      heartbeat=lambda: heartbeats.append(1))
+    result = service.restore_snapshot(
+        handle, dataplane_root, heartbeat=lambda: heartbeats.append(1)
+    )
 
     assert result is not None
     # 1 pre-transfer heartbeat plus several ticks during the 0.3s sleep.
     assert len(heartbeats) > 2
 
 
-def test_restore_snapshot_heartbeat_ticker_stops_after_transfer(
-        tmp_path, monkeypatch):
+def test_restore_snapshot_heartbeat_ticker_stops_after_transfer(tmp_path, monkeypatch):
     """The ticker must be joined in a ``finally`` -- it can't outlive the
     transfer or fire after ``restore_snapshot`` has already returned.
     """
     from kumo.diskgraph import service as service_module
 
-    monkeypatch.setattr(service_module, '_RESTORE_HEARTBEAT_INTERVAL_SECS',
-                        0.02)
+    monkeypatch.setattr(service_module, '_RESTORE_HEARTBEAT_INTERVAL_SECS', 0.02)
 
     service = _build_service(tmp_path)
     handle = DiskgraphHandle.for_test()
@@ -253,12 +248,14 @@ def test_restore_snapshot_heartbeat_ticker_stops_after_transfer(
     _write_dataplane_mirror(dataplane_dir, output_dir, files)
 
     heartbeats = []
-    result = service.restore_snapshot(handle, dataplane_root,
-                                      heartbeat=lambda: heartbeats.append(1))
+    result = service.restore_snapshot(
+        handle, dataplane_root, heartbeat=lambda: heartbeats.append(1)
+    )
 
     assert result is not None
-    assert not any(t.name == 'diskgraph-restore-heartbeat'
-                   for t in threading.enumerate())
+    assert not any(
+        t.name == 'diskgraph-restore-heartbeat' for t in threading.enumerate()
+    )
 
     count_at_return = len(heartbeats)
     time.sleep(0.2)

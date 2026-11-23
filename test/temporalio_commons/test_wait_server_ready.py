@@ -32,8 +32,10 @@ async def test_readiness_probe_closes_each_successful_client():
         clients.append(client)
         return client
 
-    with patch.object(wait_server_ready, 'deploy_env', _local_config), \
-            patch.object(wait_server_ready, 'TemporalClient', make_client):
+    with (
+        patch.object(wait_server_ready, 'deploy_env', _local_config),
+        patch.object(wait_server_ready, 'TemporalClient', make_client),
+    ):
         for _ in range(3):
             await wait_server_ready.main(timedelta(seconds=1))
 
@@ -51,9 +53,10 @@ async def test_readiness_probe_closes_client_on_timeout():
         create_namespace=AsyncMock(),
         close=AsyncMock(),
     )
-    with patch.object(wait_server_ready, 'deploy_env', _local_config), \
-            patch.object(wait_server_ready, 'TemporalClient',
-                         return_value=client):
+    with (
+        patch.object(wait_server_ready, 'deploy_env', _local_config),
+        patch.object(wait_server_ready, 'TemporalClient', return_value=client),
+    ):
         with pytest.raises(RuntimeError, match='Temporal is not ready'):
             await wait_server_ready.main(timedelta(seconds=0))
 

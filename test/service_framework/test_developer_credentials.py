@@ -12,7 +12,8 @@ from service_framework.developer_credentials import (
 
 @pytest.mark.parametrize('deploy_stage', ['prod', 'staging', 'preprod', 'test'])
 def test_google_user_adc_never_enabled_outside_dev_stage(
-        monkeypatch: pytest.MonkeyPatch, deploy_stage: str) -> None:
+    monkeypatch: pytest.MonkeyPatch, deploy_stage: str
+) -> None:
     monkeypatch.setenv(ENV_DEV_GCP_USER_CREDENTIALS_ENABLED, 'true')
     monkeypatch.setenv('DEPLOY_STAGE', deploy_stage)
 
@@ -21,7 +22,8 @@ def test_google_user_adc_never_enabled_outside_dev_stage(
 
 @pytest.mark.parametrize('deploy_stage', ['dev', 'dev_local'])
 def test_google_user_adc_enabled_for_opted_in_devserver(
-        monkeypatch: pytest.MonkeyPatch, deploy_stage: str) -> None:
+    monkeypatch: pytest.MonkeyPatch, deploy_stage: str
+) -> None:
     monkeypatch.setenv(ENV_DEV_GCP_USER_CREDENTIALS_ENABLED, 'true')
     monkeypatch.setenv('DEPLOY_STAGE', deploy_stage)
 
@@ -29,7 +31,8 @@ def test_google_user_adc_enabled_for_opted_in_devserver(
 
 
 def test_google_user_adc_requires_explicit_boolean(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv(ENV_DEV_GCP_USER_CREDENTIALS_ENABLED, 'enabled')
     monkeypatch.setenv('DEPLOY_STAGE', 'dev_local')
 

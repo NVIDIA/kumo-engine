@@ -81,8 +81,7 @@ def _make_batch(ages: list[float]) -> HeteroData:
     n = len(ages)
     age_mapper = NumericalTensorMapper()
     tf = get_tf(
-        pa.RecordBatch.from_arrays([pa.array(ages, type=pa.float64())],
-                                   names=['AGE']),
+        pa.RecordBatch.from_arrays([pa.array(ages, type=pa.float64())], names=['AGE']),
         {'AGE': age_mapper},
     )
     hetero = HeteroData()
@@ -102,6 +101,7 @@ def _make_batch(ages: list[float]) -> HeteroData:
 class _FakeDataModule(pl.LightningDataModule):
     """Two batches per stage, so the explain-interface call counts below
     are actually exercising a multi-batch loop, not a degenerate case."""
+
     def __init__(self):
         super().__init__()
         self.eval_loader_kwargs = {'batch_size': 4}
@@ -111,8 +111,9 @@ class _FakeDataModule(pl.LightningDataModule):
         ]
 
     def _loader(self) -> DataLoader:
-        return DataLoader(self._batches, batch_size=None,
-                          collate_fn=lambda batch: batch)
+        return DataLoader(
+            self._batches, batch_size=None, collate_fn=lambda batch: batch
+        )
 
     def train_dataloader(self) -> DataLoader:
         return self._loader()
@@ -127,6 +128,7 @@ class _FakeDataModule(pl.LightningDataModule):
 class _FakeFeatureStore:
     """Stand-in for the bits of ``FeatureStore`` ``Trainer._validate_mask``
     (called from ``fit()``) reads."""
+
     train_table_name = TRAIN_TABLE
     has_train_table_time_col = False
     has_train_table_test_mask = True
@@ -140,26 +142,24 @@ class _FakeFeatureStore:
 
 def _build_trainer(root_dir: str) -> Trainer:
     df_dict = {
-        USER: pd.DataFrame({
-            'USER_ID': [0, 1, 2, 3],
-            'AGE': [20, 30, 40, 50]
-        }),
+        USER: pd.DataFrame({'USER_ID': [0, 1, 2, 3], 'AGE': [20, 30, 40, 50]}),
     }
     schema_dict = {
-        USER: TestTableSchema(stypes={'AGE': Stype.numerical},
-                              pkey_name='USER_ID'),
+        USER: TestTableSchema(stypes={'AGE': Stype.numerical}, pkey_name='USER_ID'),
     }
-    train_table_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3],
-        'TARGET': [True, False, True, False],
-    })
+    train_table_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3],
+            'TARGET': [True, False, True, False],
+        }
+    )
     _, _, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
         encoders=EncodersConfig(
-            encoders={USER: {"AGE": Numerical(_stats={ColStatType.MEAN: 35.0})}},
+            encoders={USER: {'AGE': Numerical(_stats={ColStatType.MEAN: 35.0})}},
             target=TargetEncoderConfig(
-                "TARGET",
+                'TARGET',
                 Index(_stats={ColStatType.CATEGORY_COUNTS: [[False, 2], [True, 2]]}),
             ),
         ),
@@ -167,8 +167,7 @@ def _build_trainer(root_dir: str) -> Trainer:
     )
 
     trainer = Trainer(
-        task=TaskConfig(TaskType.BINARY_CLASSIFICATION,
-                        name='TEST_EXPLAIN_INTERFACE'),
+        task=TaskConfig(TaskType.BINARY_CLASSIFICATION, name='TEST_EXPLAIN_INTERFACE'),
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=0),
         head=NodePredHead(),
@@ -209,8 +208,7 @@ def _build_trainer(root_dir: str) -> Trainer:
 def test_explain_interface(tmp_path: object) -> None:
     trainer = _build_trainer(str(tmp_path))
 
-    explainer = _DummyExplainer(TaskType.BINARY_CLASSIFICATION,
-                                root_dir=str(tmp_path))
+    explainer = _DummyExplainer(TaskType.BINARY_CLASSIFICATION, root_dir=str(tmp_path))
     trainer.pl_model.explainers.append(explainer)
     original_explainers = trainer.pl_model.explainers
 

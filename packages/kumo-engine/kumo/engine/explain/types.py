@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 CohortKey = tuple[str, int, str]
-UnavailableReason = Literal['disabled', 'failed', 'model_only', 'unknown',
-                            'unsupported']
+UnavailableReason = Literal[
+    'disabled', 'failed', 'model_only', 'unknown', 'unsupported'
+]
 
 
 @dataclass(frozen=True)

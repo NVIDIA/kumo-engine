@@ -6,6 +6,7 @@
 Tests that when an activity times out after a prior failure, the TimeoutError
 is enriched with the prior failure context via _ActivityHandleWithFailureTracking.
 """
+
 import asyncio
 import uuid
 from datetime import timedelta
@@ -30,14 +31,15 @@ async def configurable_activity(should_fail: bool) -> str:
     2. Second call with should_fail=False -> times out (enriched with prior failure)
     """
     if should_fail:
-        raise ValueError("Database connection failed: critical error")
+        raise ValueError('Database connection failed: critical error')
     await asyncio.sleep(10.0)  # Sleep longer than timeout
-    return "Success"
+    return 'Success'
 
 
 @workflow.defn
 class TimeoutAfterFailureWorkflow:
     """Workflow that triggers timeout-after-failure scenario."""
+
     @workflow.run
     async def run(self) -> str:
         # First call: fails immediately (stored in interceptor)
@@ -68,8 +70,9 @@ def _walk_error_chain(exc: BaseException):
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         yield current
-        next_cause = getattr(current, "cause", None) or getattr(
-            current, "__cause__", None)
+        next_cause = getattr(current, 'cause', None) or getattr(
+            current, '__cause__', None
+        )
         current = next_cause if isinstance(next_cause, BaseException) else None
 
 
@@ -84,8 +87,8 @@ async def test_timeout_after_prior_failure(temporal_config: DeployEnvConfig):
     Note: The enrichment is applied within the workflow but not visible in
     client-side error chain due to Temporal's serialization.
     """
-    worker_options = WorkerOptions(task_queue="test-timeout-enrichment")
-    worker_env = WorkerEnv("test-worker", worker_options, temporal_config)
+    worker_options = WorkerOptions(task_queue='test-timeout-enrichment')
+    worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
 
     worker = await worker_env.build_worker(
         activities=[configurable_activity],
@@ -96,7 +99,7 @@ async def test_timeout_after_prior_failure(temporal_config: DeployEnvConfig):
         client = await worker_env.client()
         wf_handle = await client.start_workflow(
             TimeoutAfterFailureWorkflow.run,
-            id=f"test-timeout-enrichment-{uuid.uuid4().hex[:8]}",
+            id=f'test-timeout-enrichment-{uuid.uuid4().hex[:8]}',
             task_queue=worker_env.options.task_queue,
         )
 
@@ -107,12 +110,10 @@ async def test_timeout_after_prior_failure(temporal_config: DeployEnvConfig):
         error = exc_info.value
         found_start_to_close = False
         for err in _walk_error_chain(error):
-            if isinstance(
-                    err,
-                    TimeoutError) and err.type == TimeoutType.START_TO_CLOSE:
+            if isinstance(err, TimeoutError) and err.type == TimeoutType.START_TO_CLOSE:
                 found_start_to_close = True
                 break
 
-        assert found_start_to_close, "Expected START_TO_CLOSE timeout in error chain"
+        assert found_start_to_close, 'Expected START_TO_CLOSE timeout in error chain'
 
     worker_env.shutdown()

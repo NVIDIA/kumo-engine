@@ -22,15 +22,14 @@ def _directory(path):
 def test_large_scan_uses_listing_types_without_object_stats(monkeypatch):
     root = 's3://customer-data/events'
     parts = [
-        _file(f'{root}/part-{index:05d}.parquet')
-        for index in reversed(range(10_000))
+        _file(f'{root}/part-{index:05d}.parquet') for index in reversed(range(10_000))
     ]
     listdir = Mock(return_value=parts)
     isdir = Mock(side_effect=AssertionError('must not stat listed entries'))
     monkeypatch.setattr(fsutil, 'listdir', listdir)
     monkeypatch.setattr(fsutil, 'isdir', isdir)
 
-    files = _scan_dataset_files(root, ('parquet', ))
+    files = _scan_dataset_files(root, ('parquet',))
 
     assert len(files) == 10_000
     assert files == sorted(files)
@@ -52,13 +51,17 @@ def test_scan_uses_directory_type_for_nested_and_colliding_paths(monkeypatch):
 
     monkeypatch.setattr(fsutil, 'listdir', listdir)
     monkeypatch.setattr(
-        fsutil, 'isdir',
-        Mock(side_effect=AssertionError('listing metadata is authoritative')))
+        fsutil,
+        'isdir',
+        Mock(side_effect=AssertionError('listing metadata is authoritative')),
+    )
 
-    assert _scan_dataset_files(root, ('parquet', )) == [(
-        'year=2026.parquet/part-0.parquet',
-        f'{partition}/part-0.parquet',
-    )]
+    assert _scan_dataset_files(root, ('parquet',)) == [
+        (
+            'year=2026.parquet/part-0.parquet',
+            f'{partition}/part-0.parquet',
+        )
+    ]
 
 
 def test_scan_uses_the_stat_fallback_for_adls(monkeypatch):
@@ -77,7 +80,7 @@ def test_scan_uses_the_stat_fallback_for_adls(monkeypatch):
     monkeypatch.setattr(fsutil, 'listdir', listdir)
     monkeypatch.setattr(fsutil, 'isdir', lambda path: path in children)
 
-    assert _scan_dataset_files(root, ('parquet', ), max_entries=3) == [
+    assert _scan_dataset_files(root, ('parquet',), max_entries=3) == [
         ('part-0.parquet', f'{root}/part-0.parquet'),
         ('year=2026/part-1.parquet', f'{partition}/part-1.parquet'),
     ]
@@ -91,6 +94,6 @@ def test_scan_checks_fallback_limit_before_entry_stats(monkeypatch):
     monkeypatch.setattr(fsutil, 'isdir', isdir)
 
     with pytest.raises(OverflowError, match='supported entry limit'):
-        _scan_dataset_files(root, ('parquet', ), max_entries=3)
+        _scan_dataset_files(root, ('parquet',), max_entries=3)
 
     assert isdir.call_count == 3

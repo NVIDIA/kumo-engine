@@ -37,19 +37,18 @@ def require_kumo_public_datasets_s3() -> None:
     except ClientError as error:
         code = error.response.get('Error', {}).get('Code', '')
         if code in {
-                'AccessDenied',
-                'ExpiredToken',
-                'InvalidAccessKeyId',
-                'SignatureDoesNotMatch',
+            'AccessDenied',
+            'ExpiredToken',
+            'InvalidAccessKeyId',
+            'SignatureDoesNotMatch',
         }:
-            pytest.skip(
-                f'AWS access is unavailable for public S3 datasets ({code})')
+            pytest.skip(f'AWS access is unavailable for public S3 datasets ({code})')
         raise
 
 
 @pytest.fixture()
 def writable_snowflake_table(
-        snowflake_credentials
+    snowflake_credentials,
 ) -> Generator[SnowflakeTableConnector, None, None]:
     name = f'TEST_PREDICTION_{str(uuid.uuid1()).upper().replace("-", "")}'
     connector = writable_snowflake_config('snowflake').as_connector('xva19026')
@@ -61,17 +60,15 @@ def writable_snowflake_table(
 
 @pytest.fixture()
 def snowflake_financial_connector(snowflake_credentials) -> SnowflakeConnector:
-    return financial_snowflake_config("name").as_connector('xva19026')
+    return financial_snowflake_config('name').as_connector('xva19026')
 
 
 @pytest.fixture()
-def writable_databricks_table(
-) -> Generator[DatabricksTableConnector, None, None]:
-    name = ('predictions__kumo__PREDICTION_'
-            f'{str(uuid.uuid1()).upper().replace("-", "")}')
-    connector = replace(hm_databricks_config('databricks'),
-                        schema_name='predictions').as_connector(
-                            DATABRICKS_HOST.parse_value())
+def writable_databricks_table() -> Generator[DatabricksTableConnector, None, None]:
+    name = f'predictions__kumo__PREDICTION_{str(uuid.uuid1()).upper().replace("-", "")}'
+    connector = replace(
+        hm_databricks_config('databricks'), schema_name='predictions'
+    ).as_connector(DATABRICKS_HOST.parse_value())
     try:
         yield DatabricksTableConnector(name, connector)
     finally:
@@ -85,38 +82,49 @@ def writable_databricks_table(
 
 @pytest.fixture
 def databricks_hm_connector() -> DatabricksConnector:
-    connector = DatabricksConnector('databricks',
-                                    host=DATABRICKS_HOST.parse_value(),
-                                    cluster_id='0626-191119-75431625',
-                                    warehouse_id='82d859e4a6b283a0',
-                                    catalog='hive_mapped_uc', schema_name='hm')
+    connector = DatabricksConnector(
+        'databricks',
+        host=DATABRICKS_HOST.parse_value(),
+        cluster_id='0626-191119-75431625',
+        warehouse_id='82d859e4a6b283a0',
+        catalog='hive_mapped_uc',
+        schema_name='hm',
+    )
     return connector
 
 
 @pytest.fixture
 def databricks_test_connector() -> DatabricksConnector:
-    connector = DatabricksConnector('databricks',
-                                    host=DATABRICKS_HOST.parse_value(),
-                                    cluster_id='0626-191119-75431625',
-                                    warehouse_id='82d859e4a6b283a0',
-                                    catalog='kumo_test_catalogue',
-                                    schema_name='movielens')
+    connector = DatabricksConnector(
+        'databricks',
+        host=DATABRICKS_HOST.parse_value(),
+        cluster_id='0626-191119-75431625',
+        warehouse_id='82d859e4a6b283a0',
+        catalog='kumo_test_catalogue',
+        schema_name='movielens',
+    )
     return connector
 
 
 @pytest.fixture
 def databricks_test_schema_connector() -> DatabricksConnector:
-    return DatabricksConnector('databricks', host=DATABRICKS_HOST.parse_value(),
-                               cluster_id='0626-191119-75431625',
-                               warehouse_id='82d859e4a6b283a0',
-                               catalog='hive_mapped_uc',
-                               schema_name='test_schema')
+    return DatabricksConnector(
+        'databricks',
+        host=DATABRICKS_HOST.parse_value(),
+        cluster_id='0626-191119-75431625',
+        warehouse_id='82d859e4a6b283a0',
+        catalog='hive_mapped_uc',
+        schema_name='test_schema',
+    )
 
 
 @pytest.fixture
 def databricks_otto_connector() -> DatabricksConnector:
-    return DatabricksConnector('databricks', host=DATABRICKS_HOST.parse_value(),
-                               cluster_id='0626-191119-75431625',
-                               warehouse_id='82d859e4a6b283a0',
-                               catalog='kumo_test_catalogue',
-                               schema_name='otto_3k')
+    return DatabricksConnector(
+        'databricks',
+        host=DATABRICKS_HOST.parse_value(),
+        cluster_id='0626-191119-75431625',
+        warehouse_id='82d859e4a6b283a0',
+        catalog='kumo_test_catalogue',
+        schema_name='otto_3k',
+    )

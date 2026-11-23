@@ -46,8 +46,7 @@ def _denied_projects():
 
 
 @pytest.mark.asyncio
-async def test_table_id_alias_and_list_deny_before_repository_or_cache(
-        principal):
+async def test_table_id_alias_and_list_deny_before_repository_or_cache(principal):
     tables = SimpleNamespace(
         get_table_entry=AsyncMock(),
         get_table_entry_by_alias=AsyncMock(),
@@ -55,8 +54,7 @@ async def test_table_id_alias_and_list_deny_before_repository_or_cache(
     )
     driver = TableDriver(MagicMock(), MagicMock())
     projects = _denied_projects()
-    driver._configure_state_services(
-        SimpleNamespace(projects=projects, tables=tables))
+    driver._configure_state_services(SimpleNamespace(projects=projects, tables=tables))
 
     with pytest.raises(_ProjectDenied):
         await driver.get_table(_FPID_A, str(_PROJECT_B))
@@ -69,8 +67,10 @@ async def test_table_id_alias_and_list_deny_before_repository_or_cache(
     tables.get_table_entry_by_alias.assert_not_awaited()
     tables.list_tables.assert_not_awaited()
     assert projects.get_project.await_count == 3
-    assert all(call.args == (_PROJECT_B, principal)
-               for call in projects.get_project.await_args_list)
+    assert all(
+        call.args == (_PROJECT_B, principal)
+        for call in projects.get_project.await_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -82,8 +82,7 @@ async def test_graph_id_alias_and_list_deny_before_repository(principal):
     )
     driver = GraphDriver(MagicMock(), MagicMock(), MagicMock())
     projects = _denied_projects()
-    driver._configure_state_services(
-        SimpleNamespace(projects=projects, graphs=graphs))
+    driver._configure_state_services(SimpleNamespace(projects=projects, graphs=graphs))
 
     with pytest.raises(_ProjectDenied):
         await driver.get_graph_v2(_FPID_A, _PROJECT_B)
@@ -129,8 +128,7 @@ def _pquery_driver(state_services):
 
 
 @pytest.mark.asyncio
-async def test_pquery_get_list_and_get_many_deny_before_global_indexes(
-        principal):
+async def test_pquery_get_list_and_get_many_deny_before_global_indexes(principal):
     pqueries = SimpleNamespace(
         get_definition_by_id=AsyncMock(),
         list_aliases=AsyncMock(),
@@ -139,8 +137,13 @@ async def test_pquery_get_list_and_get_many_deny_before_global_indexes(
     ml_jobs = SimpleNamespace(get_job_if_exists_generic=AsyncMock())
     projects = _denied_projects()
     driver = _pquery_driver(
-        SimpleNamespace(projects=projects, pqueries=pqueries, ml_jobs=ml_jobs,
-                        graphs=SimpleNamespace()))
+        SimpleNamespace(
+            projects=projects,
+            pqueries=pqueries,
+            ml_jobs=ml_jobs,
+            graphs=SimpleNamespace(),
+        )
+    )
     pquery_id = PredictiveQueryID.public(_FPID_A)
 
     with pytest.raises(_ProjectDenied):
@@ -161,25 +164,38 @@ async def test_pquery_get_list_and_get_many_deny_before_global_indexes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('job_project,job_fpid', [
-    (_PROJECT_B, _FPID_A),
-    (_PROJECT_A, _FPID_B),
-])
+@pytest.mark.parametrize(
+    'job_project,job_fpid',
+    [
+        (_PROJECT_B, _FPID_A),
+        (_PROJECT_A, _FPID_B),
+    ],
+)
 async def test_get_many_rejects_cross_project_or_forged_job_mapping_before_defs(
-        principal, job_project, job_fpid):
+    principal, job_project, job_fpid
+):
     job_id = BatchPredictionJobID.make_random_id()
     claimed = PredictiveQueryID.public(_FPID_A)
     projects = SimpleNamespace(get_project=AsyncMock())
     pqueries = SimpleNamespace(get_definitions=AsyncMock())
-    ml_jobs = SimpleNamespace(get_job_if_exists_generic=AsyncMock(
-        return_value=SimpleNamespace(
-            project_id=job_project,
-            config=SimpleNamespace(
-                predictive_query_id=PredictiveQueryID.public(job_fpid)),
-        )))
+    ml_jobs = SimpleNamespace(
+        get_job_if_exists_generic=AsyncMock(
+            return_value=SimpleNamespace(
+                project_id=job_project,
+                config=SimpleNamespace(
+                    predictive_query_id=PredictiveQueryID.public(job_fpid)
+                ),
+            )
+        )
+    )
     driver = _pquery_driver(
-        SimpleNamespace(projects=projects, pqueries=pqueries, ml_jobs=ml_jobs,
-                        graphs=SimpleNamespace()))
+        SimpleNamespace(
+            projects=projects,
+            pqueries=pqueries,
+            ml_jobs=ml_jobs,
+            graphs=SimpleNamespace(),
+        )
+    )
 
     with pytest.raises(PredictiveQueryDoesNotExistError):
         await driver.get_many_predictive_queries_v2(

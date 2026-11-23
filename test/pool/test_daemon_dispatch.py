@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for controller-side dispatch to pool worker queues."""
+
 from types import SimpleNamespace
 from typing import cast
 
@@ -17,5 +18,4 @@ def test_singlehost_snapshot_deleter_uses_instance_scoped_queue():
 
     queue_for_worker = _task_queue_for_config(cast(DeployEnvConfig, config))
 
-    assert queue_for_worker('singlehost') == (
-        'diskgraph-daemon-tq-devserver-train-a')
+    assert queue_for_worker('singlehost') == ('diskgraph-daemon-tq-devserver-train-a')

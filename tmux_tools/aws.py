@@ -15,8 +15,8 @@ class Info:
     def is_on_aws() -> bool:
         try:
             urllib.request.urlopen(
-                'http://169.254.169.254/latest/meta-data/instance-id',
-                timeout=0.1)
+                'http://169.254.169.254/latest/meta-data/instance-id', timeout=0.1
+            )
         # Non-AWS networks may reject or reset link-local metadata traffic
         # instead of returning a conventional URL error. Both outcomes mean
         # this host is not an EC2 instance and must not block local devserver
@@ -27,8 +27,11 @@ class Info:
 
     @staticmethod
     def get_aws_data(name: str) -> str:
-        return urllib.request.urlopen(
-            f'http://169.254.169.254/latest/meta-data/{name}').read().decode()
+        return (
+            urllib.request.urlopen(f'http://169.254.169.254/latest/meta-data/{name}')
+            .read()
+            .decode()
+        )
 
     @classmethod
     def get(cls) -> 'Info':

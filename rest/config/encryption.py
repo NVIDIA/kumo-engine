@@ -37,7 +37,8 @@ from statedb.rest.group import ExternalIdentityProviderID
 
 # Constant, default encryption key that's only meant for dev/test
 _DEFAULT_ENCRYPTION_KEY = urlsafe_b64encode(
-    hashlib.md5("kumo-default-encryption-key".encode()).hexdigest().encode())
+    hashlib.md5('kumo-default-encryption-key'.encode()).hexdigest().encode()
+)
 _IDP_LOOKUP_KDF_DOMAIN = b'kumo:idp-lookup-key:v1'
 _IDP_GROUP_LOOKUP_DOMAIN = b'kumo:idp-group-id:v2'
 _S3_ACCESS_KEY_LOOKUP_DOMAIN = b'kumo:s3-access-key-id:v1'
@@ -67,11 +68,9 @@ class CredentialsEncryptor(metaclass=Singleton):
         if is_non_prod:
             encryption_key: bytes = _DEFAULT_ENCRYPTION_KEY
         else:
-            secret_name = os.getenv('FERNET_SECRET_NAME',
-                                    _DEFAULT_FERNET_SECRET_NAME)
+            secret_name = os.getenv('FERNET_SECRET_NAME', _DEFAULT_FERNET_SECRET_NAME)
             secrets = get_secret_prefer_firstboot(secret_name)
-            encryption_key: bytes = secrets[
-                'credentials_encryption_key'].encode()
+            encryption_key: bytes = secrets['credentials_encryption_key'].encode()
         try:
             self._cipher = Fernet(encryption_key)
         except ValueError as err:
@@ -110,43 +109,62 @@ def encrypt_identity_credentials(
     if isinstance(credentials, DatabricksOAuthCredentials):
         return EncryptedDatabricksOAuthCredentials(
             client_secret=_encrypt_string(
-                cipher, credentials.client_secret.get_secret_value()))
+                cipher, credentials.client_secret.get_secret_value()
+            )
+        )
     if isinstance(credentials, SnowflakePasswordCredentials):
-        return EncryptedSnowflakePasswordCredentials(password=_encrypt_string(
-            cipher, credentials.password.get_secret_value()))
+        return EncryptedSnowflakePasswordCredentials(
+            password=_encrypt_string(cipher, credentials.password.get_secret_value())
+        )
     if isinstance(credentials, SnowflakeKeyPairCredentials):
         return EncryptedSnowflakeKeyPairCredentials(
             private_key=_encrypt_string(
-                cipher, credentials.private_key.get_secret_value()),
-            private_key_passphrase=(_encrypt_string(
-                cipher,
-                credentials.private_key_passphrase.get_secret_value(),
-            ) if credentials.private_key_passphrase else None),
+                cipher, credentials.private_key.get_secret_value()
+            ),
+            private_key_passphrase=(
+                _encrypt_string(
+                    cipher,
+                    credentials.private_key_passphrase.get_secret_value(),
+                )
+                if credentials.private_key_passphrase
+                else None
+            ),
         )
     if isinstance(credentials, GoogleServiceAccountKeyCredentials):
         return EncryptedGoogleServiceAccountKeyCredentials(
             private_key_id=_encrypt_string(
-                cipher, credentials.private_key_id.get_secret_value()),
+                cipher, credentials.private_key_id.get_secret_value()
+            ),
             private_key=_encrypt_string(
-                cipher, credentials.private_key.get_secret_value()),
+                cipher, credentials.private_key.get_secret_value()
+            ),
         )
     if isinstance(credentials, S3AssumeRoleCredentials):
         return EncryptedS3AssumeRoleCredentials(
-            external_id=(_encrypt_string(
-                cipher, credentials.external_id.get_secret_value())
-                         if credentials.external_id else None), )
+            external_id=(
+                _encrypt_string(cipher, credentials.external_id.get_secret_value())
+                if credentials.external_id
+                else None
+            ),
+        )
     if isinstance(credentials, S3AccessKeyCredentials):
         return EncryptedS3AccessKeyCredentials(
             access_key_id=_encrypt_string(
-                cipher, credentials.access_key_id.get_secret_value()),
+                cipher, credentials.access_key_id.get_secret_value()
+            ),
             secret_access_key=_encrypt_string(
-                cipher, credentials.secret_access_key.get_secret_value()),
-            session_token=(_encrypt_string(
-                cipher, credentials.session_token.get_secret_value())
-                           if credentials.session_token else None),
-            ca_certificate=(_encrypt_string(
-                cipher, credentials.ca_certificate.get_secret_value())
-                            if credentials.ca_certificate else None),
+                cipher, credentials.secret_access_key.get_secret_value()
+            ),
+            session_token=(
+                _encrypt_string(cipher, credentials.session_token.get_secret_value())
+                if credentials.session_token
+                else None
+            ),
+            ca_certificate=(
+                _encrypt_string(cipher, credentials.ca_certificate.get_secret_value())
+                if credentials.ca_certificate
+                else None
+            ),
         )
     raise RuntimeError(f'Unknown identity credential type: {type(credentials)}')
 
@@ -157,47 +175,57 @@ def decrypt_identity_credentials(
 ) -> IdentityCredentials:
     credentials = deepcopy(encrypted_credentials)
     if isinstance(credentials, EncryptedDatabricksOAuthCredentials):
-        return DatabricksOAuthCredentials(client_secret=SecretStr(
-            _decrypt_string(cipher, credentials.client_secret)))
+        return DatabricksOAuthCredentials(
+            client_secret=SecretStr(_decrypt_string(cipher, credentials.client_secret))
+        )
     if isinstance(credentials, EncryptedSnowflakePasswordCredentials):
         return SnowflakePasswordCredentials(
-            password=SecretStr(_decrypt_string(cipher, credentials.password)))
+            password=SecretStr(_decrypt_string(cipher, credentials.password))
+        )
     if isinstance(credentials, EncryptedSnowflakeKeyPairCredentials):
         return SnowflakeKeyPairCredentials(
-            private_key=SecretStr(
-                _decrypt_string(cipher, credentials.private_key)),
-            private_key_passphrase=(SecretStr(
-                _decrypt_string(cipher, credentials.private_key_passphrase))
-                                    if credentials.private_key_passphrase else
-                                    None),
+            private_key=SecretStr(_decrypt_string(cipher, credentials.private_key)),
+            private_key_passphrase=(
+                SecretStr(_decrypt_string(cipher, credentials.private_key_passphrase))
+                if credentials.private_key_passphrase
+                else None
+            ),
         )
     if isinstance(credentials, EncryptedGoogleServiceAccountKeyCredentials):
         return GoogleServiceAccountKeyCredentials(
             private_key_id=SecretStr(
-                _decrypt_string(cipher, credentials.private_key_id)),
-            private_key=SecretStr(
-                _decrypt_string(cipher, credentials.private_key)),
+                _decrypt_string(cipher, credentials.private_key_id)
+            ),
+            private_key=SecretStr(_decrypt_string(cipher, credentials.private_key)),
         )
     if isinstance(credentials, EncryptedS3AssumeRoleCredentials):
         return S3AssumeRoleCredentials(
-            external_id=(SecretStr(
-                _decrypt_string(cipher, credentials.external_id))
-                         if credentials.external_id else None), )
+            external_id=(
+                SecretStr(_decrypt_string(cipher, credentials.external_id))
+                if credentials.external_id
+                else None
+            ),
+        )
     if isinstance(credentials, EncryptedS3AccessKeyCredentials):
         return S3AccessKeyCredentials(
-            access_key_id=SecretStr(
-                _decrypt_string(cipher, credentials.access_key_id)),
+            access_key_id=SecretStr(_decrypt_string(cipher, credentials.access_key_id)),
             secret_access_key=SecretStr(
-                _decrypt_string(cipher, credentials.secret_access_key)),
-            session_token=(SecretStr(
-                _decrypt_string(cipher, credentials.session_token))
-                           if credentials.session_token else None),
-            ca_certificate=(SecretStr(
-                _decrypt_string(cipher, credentials.ca_certificate))
-                            if credentials.ca_certificate else None),
+                _decrypt_string(cipher, credentials.secret_access_key)
+            ),
+            session_token=(
+                SecretStr(_decrypt_string(cipher, credentials.session_token))
+                if credentials.session_token
+                else None
+            ),
+            ca_certificate=(
+                SecretStr(_decrypt_string(cipher, credentials.ca_certificate))
+                if credentials.ca_certificate
+                else None
+            ),
         )
-    raise RuntimeError('Unknown encrypted identity credential type: '
-                       f'{type(credentials)}')
+    raise RuntimeError(
+        f'Unknown encrypted identity credential type: {type(credentials)}'
+    )
 
 
 def _encrypt_string(cipher: Fernet, value: str) -> str:
@@ -219,10 +247,11 @@ def hash_idp_group_id(
 ) -> str:
     """Hash one canonical provider/group pair for equality lookups."""
     if not identity_provider_id or not external_group_id:
-        return ""
+        return ''
     if '\0' in identity_provider_id.value or '\0' in external_group_id:
-        raise ValueError('Identity provider and external group IDs cannot '
-                         'contain NUL characters')
+        raise ValueError(
+            'Identity provider and external group IDs cannot contain NUL characters'
+        )
     lookup_value = f'{identity_provider_id.value}\0{external_group_id}'
     return _keyed_lookup_digest(
         lookup_value,
@@ -234,7 +263,7 @@ def hash_idp_group_id(
 def encrypt_idp_id(idp_id: str) -> str:
     """Fernet-encrypt an IDP group ID for at-rest storage."""
     if not idp_id:
-        return ""
+        return ''
     cipher = CredentialsEncryptor()._cipher
     return _encrypt_string(cipher, idp_id)
 
@@ -242,7 +271,7 @@ def encrypt_idp_id(idp_id: str) -> str:
 def decrypt_idp_id(encrypted: str) -> str:
     """Decrypt a Fernet-encrypted IDP group ID for display."""
     if not encrypted:
-        return ""
+        return ''
     cipher = CredentialsEncryptor()._cipher
     return _decrypt_string(cipher, encrypted)
 
@@ -250,7 +279,7 @@ def decrypt_idp_id(encrypted: str) -> str:
 def encrypt_secret_string(value: str) -> str:
     """Fernet-encrypt a generic secret string for at-rest storage."""
     if not value:
-        return ""
+        return ''
     cipher = CredentialsEncryptor()._cipher
     return _encrypt_string(cipher, value)
 
@@ -258,6 +287,6 @@ def encrypt_secret_string(value: str) -> str:
 def decrypt_secret_string(encrypted: str) -> str:
     """Decrypt a generic Fernet-encrypted secret string."""
     if not encrypted:
-        return ""
+        return ''
     cipher = CredentialsEncryptor()._cipher
     return _decrypt_string(cipher, encrypted)

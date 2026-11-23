@@ -62,7 +62,7 @@ class GeneratePredictionTableRouter:
 
         self.router = APIRouter(
             prefix='/genpredtable_jobs',
-            tags=["API v1 (Under Development): Generate-Prediction-Table Jobs"],
+            tags=['API v1 (Under Development): Generate-Prediction-Table Jobs'],
             dependencies=[Depends(api_key_auth)],
         )
 
@@ -97,25 +97,30 @@ class GeneratePredictionTableRouter:
             '/{id}/table_data',
             self.get_table_data,
             methods=['GET'],
-            summary=('Get prediction table data URL for a successfully '
-                     'completed Generate-Prediction-Table job.'),
+            summary=(
+                'Get prediction table data URL for a successfully '
+                'completed Generate-Prediction-Table job.'
+            ),
             response_description=(
                 'The table data URL(s) for a successfully genereated '
                 'prediction table data (parquet file); could be a list of '
                 'multiple URLs if the generated table partitioned into '
-                'multiple parts.'),
+                'multiple parts.'
+            ),
         )
 
         self.router.add_api_route(
             '/{id}/get_anchor_time',
             self.get_anchor_time,
             methods=['GET'],
-            summary=("Returns the anchor time of a job to generate a "
-                     "batch prediction table, or None if not present."),
+            summary=(
+                'Returns the anchor time of a job to generate a '
+                'batch prediction table, or None if not present.'
+            ),
         )
 
         self.router.add_api_route(
-            "/{id}/cancel",
+            '/{id}/cancel',
             self.cancel,
             response_model=EmptyResponse,
             methods=['POST'],
@@ -140,18 +145,18 @@ class GeneratePredictionTableRouter:
         )
 
     async def get_errors(
-            self,
-            id: GeneratePredictionTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GeneratePredictionTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> api.ErrorDetails:
         await self.get(id, ctx)  # verifies existence and project access
         return await self._driver.get_errors_for_job(id)
 
     async def create(
-            self,
-            request: api.GeneratePredictionTableRequest,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: api.GeneratePredictionTableRequest,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> IDResponse:
         validate_custom_job_tags(request.job_tags)
         require_project_id_valid(ctx, project_id)
@@ -177,7 +182,8 @@ class GeneratePredictionTableRouter:
             if not jobs:
                 raise HTTPException(
                     HTTPStatus.NOT_FOUND,
-                    f'Generate prediction table job {id} is not found.')
+                    f'Generate prediction table job {id} is not found.',
+                )
             job = jobs[0]
             if not user_can_access_project(ctx, job.project_id):
                 raise HTTPException(
@@ -185,39 +191,41 @@ class GeneratePredictionTableRouter:
                     f'Generate prediction table job {id} is not found.',
                 )
             tags = await self._ml_job_backend.get_job_tags_if_exists(
-                JobType.GENERATE_PREDICTION_TABLE_JOB, id)
+                JobType.GENERATE_PREDICTION_TABLE_JOB, id
+            )
             job.tags = tags.tags if tags is not None else {}
             return job
 
     async def get_table_data(
-            self,
-            id: GeneratePredictionTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GeneratePredictionTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> List[str]:
         job = await self.get(id, ctx)
         if job.job_status_report.status != api.JobStatus.DONE:
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 f'Unable to get prediction table data URL for job {id} '
-                f'in status: {job.job_status_report.status}')
+                f'in status: {job.job_status_report.status}',
+            )
 
         with wrap_rpc_error():
             result = await self._ml_job_backend.get_pred_table_result(id)
 
-        return await presign_parquet_table_data.coroutine(result.pred_table_path
-                                                          )
+        return await presign_parquet_table_data.coroutine(result.pred_table_path)
 
     async def get_anchor_time(
-            self,
-            id: GeneratePredictionTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GeneratePredictionTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> Optional[datetime]:
         job = await self.get(id, ctx)
         if job.job_status_report.status != api.JobStatus.DONE:
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
-                "Cannot return the anchor time of a prediction table "
-                "before the prediction table has finished generation.")
+                'Cannot return the anchor time of a prediction table '
+                'before the prediction table has finished generation.',
+            )
 
         # NOTE this conversion is OK since the ID of a batch prediction job
         # that has prediction table generation run in standalone mode is the
@@ -225,11 +233,10 @@ class GeneratePredictionTableRouter:
         bp_id = BatchPredictionJobID(id)
 
         home_dir = await self._ml_job_backend.get_job_home_dir(bp_id)
-        anchor_time = await (
-            self._driver.get_prediction_anchor_time_from_per_job_dir(
-                bp_id,
-                home_dir,
-            ))
+        anchor_time = await self._driver.get_prediction_anchor_time_from_per_job_dir(
+            bp_id,
+            home_dir,
+        )
         if anchor_time is not None:
             return anchor_time.anchor_time
 
@@ -249,14 +256,19 @@ class GeneratePredictionTableRouter:
         ctx: RequestContext = Depends(get_ctx),
     ) -> List[api.GeneratePredictionTableJobResource]:
         requested_project, project_scope_matches = await resolve_requested_project(
-            ctx, self._driver, project_id)
-        job_tags = await list_job_tags(JobType.GENERATE_PREDICTION_TABLE_JOB,
-                                       request, self._driver, response)
+            ctx, self._driver, project_id
+        )
+        job_tags = await list_job_tags(
+            JobType.GENERATE_PREDICTION_TABLE_JOB, request, self._driver, response
+        )
         if not project_scope_matches:
             return []
         job_ids = set(GeneratePredictionTableJobID(id) for id in job_tags)
-        project_ids = ({requested_project} if requested_project is not None else
-                       visible_project_ids_or_none(ctx.user_authorization))
+        project_ids = (
+            {requested_project}
+            if requested_project is not None
+            else visible_project_ids_or_none(ctx.user_authorization)
+        )
         with wrap_rpc_error():
             jobs = await self._ml_job_backend.get_generate_pred_table_jobs(
                 job_ids,
@@ -272,9 +284,9 @@ class GeneratePredictionTableRouter:
         return jobs
 
     async def cancel(
-            self,
-            id: GeneratePredictionTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GeneratePredictionTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EmptyResponse:
         await self.get(id, ctx)  # verifies existence and project access
         log.info('Send cancellation request for job: %s', id)
@@ -283,13 +295,17 @@ class GeneratePredictionTableRouter:
         return EmptyResponse()
 
     async def update_tags(
-            self,
-            id: GeneratePredictionTableJobID,
-            request: Request,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GeneratePredictionTableJobID,
+        request: Request,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> PatchResponse:
         job = await self.get(id, ctx)  # verifies existence and project access
         with wrap_driver_errors():
-            return await update_job_tags(JobType.GENERATE_PREDICTION_TABLE_JOB,
-                                         id, job.project_id, request,
-                                         self._driver)
+            return await update_job_tags(
+                JobType.GENERATE_PREDICTION_TABLE_JOB,
+                id,
+                job.project_id,
+                request,
+                self._driver,
+            )

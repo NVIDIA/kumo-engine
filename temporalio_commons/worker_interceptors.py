@@ -78,8 +78,7 @@ _DEFAULT_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
 # This number is decided by the data expiration time. And we don't timeout
 # customer long running workflow if customer don't cancel it.
 _DEFAULT_ACTIVITY_SCHEDULE_TO_CLOSE_TIMEOUT = timedelta(days=21)
-_INTERNAL_ACTIVITY_FAILURE_MESSAGE = (
-    'The activity failed due to an internal error.')
+_INTERNAL_ACTIVITY_FAILURE_MESSAGE = 'The activity failed due to an internal error.'
 
 _WITHHELD_DETAIL = '<message withheld: may carry provider text or credentials>'
 
@@ -93,7 +92,7 @@ def _truncate(text: str, limit: int) -> str:
     """Clip ``text`` to at most ``limit`` characters, marking any clip."""
     if len(text) <= limit:
         return text
-    return text[:limit] if limit < 3 else text[:limit - 3] + '...'
+    return text[:limit] if limit < 3 else text[: limit - 3] + '...'
 
 
 def _message_is_safe_to_log(ex: BaseException) -> bool:
@@ -118,8 +117,11 @@ def _activity_failure_diagnostic(ex: BaseException) -> str:
     try:
         seen: set[int] = set()
         current: Optional[BaseException] = ex
-        while (current is not None and id(current) not in seen
-               and len(sections) < _MAX_DIAGNOSTIC_CHAIN_DEPTH):
+        while (
+            current is not None
+            and id(current) not in seen
+            and len(sections) < _MAX_DIAGNOSTIC_CHAIN_DEPTH
+        ):
             seen.add(id(current))
             walked = list(traceback.walk_tb(current.__traceback__))
             lines = [
@@ -140,8 +142,7 @@ def _activity_failure_diagnostic(ex: BaseException) -> str:
             if cause is not None:
                 current = cause
             else:
-                current = (None if current.__suppress_context__ else
-                           current.__context__)
+                current = None if current.__suppress_context__ else current.__context__
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
         raise
     except BaseException:  # pylint: disable=broad-except
@@ -149,30 +150,33 @@ def _activity_failure_diagnostic(ex: BaseException) -> str:
     return _truncate('\n\nCaused by:\n\n'.join(sections), _MAX_DIAGNOSTIC_CHARS)
 
 
-def _log_activity_failure_diagnostic(info: activity.Info,
-                                     ex: BaseException) -> None:
+def _log_activity_failure_diagnostic(info: activity.Info, ex: BaseException) -> None:
     """Contain ordinary logging failures without replacing the activity
     failure.
     """
     try:
         diagnostic = _activity_failure_diagnostic(ex)
         log.error(
-            'Activity %s(id=%s, attempt=%d) in %s failed! '
-            'Exception (type=%s)\n%s', info.activity_type, info.activity_id,
-            info.attempt, info.workflow_id,
-            type(ex).__name__, diagnostic)
+            'Activity %s(id=%s, attempt=%d) in %s failed! Exception (type=%s)\n%s',
+            info.activity_type,
+            info.activity_id,
+            info.attempt,
+            info.workflow_id,
+            type(ex).__name__,
+            diagnostic,
+        )
         if exception_chain_contains_restricted_detail(ex):
             log.debug(
-                'Restricted raw activity failure for explicit diagnostic '
-                'logging',
+                'Restricted raw activity failure for explicit diagnostic logging',
                 exc_info=(type(ex), ex, ex.__traceback__),
             )
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
         raise
     except BaseException:  # pylint: disable=broad-except
         try:
-            log.error('Activity failure diagnostic unavailable (type=%s)',
-                      type(ex).__name__)
+            log.error(
+                'Activity failure diagnostic unavailable (type=%s)', type(ex).__name__
+            )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
         except BaseException:  # pylint: disable=broad-except
@@ -183,9 +187,11 @@ def _log_activity_failure_diagnostic(info: activity.Info,
 # references, but never perform credential-bearing work. Strip parent tokens
 # instead of granting authority or allowing an unknown workflow to inherit a
 # parent-bound token it cannot legitimately consume.
-_CONNECTOR_AUTHORITY_FREE_CHILD_WORKFLOWS = frozenset({
-    'WorkerInfoWorkflow',
-})
+_CONNECTOR_AUTHORITY_FREE_CHILD_WORKFLOWS = frozenset(
+    {
+        'WorkerInfoWorkflow',
+    }
+)
 
 DEFAULT_RETRY_POLICY = RetryPolicy()
 
@@ -195,11 +201,11 @@ RETRY_DISABLED_ACTIVITY_WHITELIST = (
     # Writing artifacts are not idempotent for certain scenarios of exporting
     # to external data warehouse such as APPEND.
     'write_artifacts_to_customer',
-
     # Test-only activities:
     'hc_sync_activity',
     'hc_async_activity',
-    'test_get_session')
+    'test_get_session',
+)
 
 # Global dictionary to help monitor liveness of executor for synchronous
 # activities.
@@ -225,8 +231,9 @@ class KumoActivityOutboundInterceptor(ActivityOutboundInterceptor):
     def heartbeat(self, *details: Any) -> None:
         """Called for every :py:func:`temporalio.activity.heartbeat` call."""
         if self.track_last_heartbeat:
-            last_sync_activity_heartbeat[
-                activity.info().task_queue] = datetime.now(timezone.utc)
+            last_sync_activity_heartbeat[activity.info().task_queue] = datetime.now(
+                timezone.utc
+            )
 
         self.next.heartbeat(*details)
 
@@ -248,22 +255,28 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
 
     async def execute_activity(self, input: ExecuteActivityInput) -> Any:
         """Called to invoke the activity."""
-        is_sync_activity = bool(input.executor is not None
-                                and not inspect.iscoroutinefunction(input.fn))
+        is_sync_activity = bool(
+            input.executor is not None and not inspect.iscoroutinefunction(input.fn)
+        )
         self._outbound.track_last_heartbeat = is_sync_activity
 
         info = activity.info()
         startActivitylogLevel = WARNING if info.attempt > 1 else DEBUG
         if log.isEnabledFor(startActivitylogLevel):
-            log.log(startActivitylogLevel, 'Executing activity:\n%s',
-                    pformat(asdict(info), indent=2))
+            log.log(
+                startActivitylogLevel,
+                'Executing activity:\n%s',
+                pformat(asdict(info), indent=2),
+            )
 
-        heartbeat_required = (info.heartbeat_timeout is not None
-                              and not info.is_local)
+        heartbeat_required = info.heartbeat_timeout is not None and not info.is_local
         if heartbeat_required:
             # Automatically send heartbeat when heartbeat is required
-            log.info('Enable auto-heartbeating for %s.%s', info.activity_type,
-                     info.activity_id)
+            log.info(
+                'Enable auto-heartbeating for %s.%s',
+                info.activity_type,
+                info.activity_id,
+            )
             input.fn = auto_heartbeater(input.fn)
 
         # For process-pool (sync) activities, also heartbeat from the main
@@ -318,8 +331,11 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
                             elapsed,
                         )
                     except BaseException as e:  # pylint: disable=broad-except
-                        log.warning('Main-process heartbeat failed for %s: %s',
-                                    _hb_activity_type, e)
+                        log.warning(
+                            'Main-process heartbeat failed for %s: %s',
+                            _hb_activity_type,
+                            e,
+                        )
                         break
 
             threading.Thread(
@@ -361,8 +377,11 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
             if isinstance(ex, (asyncio.CancelledError, CancelledError)):
                 log.warning(
                     'Activity %s(id=%s, attempt=%d) in %s is cancelled.',
-                    info.activity_type, info.activity_id, info.attempt,
-                    info.workflow_id)
+                    info.activity_type,
+                    info.activity_id,
+                    info.attempt,
+                    info.workflow_id,
+                )
             else:
                 # Cloud SDK and database driver messages can carry
                 # request bodies, SQL, or credentials, so the record keeps
@@ -375,9 +394,11 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
                 # alive and HealingProcessPool would re-create a new process
                 # pool upon the next activity task.
                 raise ApplicationError(
-                    ('Activity failed as the worker process was killed '
-                     'abruptly, this could be caused by segment fault '
-                     'or insufficient resource such as OOM'),
+                    (
+                        'Activity failed as the worker process was killed '
+                        'abruptly, this could be caused by segment fault '
+                        'or insufficient resource such as OOM'
+                    ),
                     type=BrokenProcessPool.__name__,
                     non_retryable=False,
                 ) from None
@@ -386,9 +407,10 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
                 # original exception type while marking the call terminal.
                 # Rebuild that chain from fixed text so its client contract is
                 # preserved without serializing the original message/cause.
-                original_error_type = (ex.args[0] if ex.args else Exception)
-                if (not isinstance(original_error_type, type)
-                        or not issubclass(original_error_type, BaseException)):
+                original_error_type = ex.args[0] if ex.args else Exception
+                if not isinstance(original_error_type, type) or not issubclass(
+                    original_error_type, BaseException
+                ):
                     original_error_type = Exception
                 safe_cause = ApplicationError(
                     _INTERNAL_ACTIVITY_FAILURE_MESSAGE,
@@ -417,7 +439,8 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
             # this task queue.
             if is_sync_activity:
                 last_sync_activity_completion[info.task_queue] = datetime.now(
-                    timezone.utc)
+                    timezone.utc
+                )
             phase1b_finished_at = datetime.now(timezone.utc)
             _kumo_record_event(
                 'temporal.activity.done',
@@ -427,12 +450,13 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
                 attempt=info.attempt,
                 is_local=info.is_local,
                 is_sync_activity=is_sync_activity,
-                schedule_delay_seconds=(start_time -
-                                        info.scheduled_time).total_seconds(),
-                execution_seconds=(phase1b_finished_at -
-                                   start_time).total_seconds(),
+                schedule_delay_seconds=(
+                    start_time - info.scheduled_time
+                ).total_seconds(),
+                execution_seconds=(phase1b_finished_at - start_time).total_seconds(),
                 total_since_scheduled_seconds=(
-                    phase1b_finished_at - info.scheduled_time).total_seconds(),
+                    phase1b_finished_at - info.scheduled_time
+                ).total_seconds(),
                 error_type=phase1b_activity_error_type,
             )
 
@@ -443,13 +467,14 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
 
         activity_summary = _activity_summary(info, start_time)
         payload = self._converter.to_payloads([result])[0]
-        if (payload.data
-                and len(payload.data) > _MAX_SIZE_ACTIVITY_RESULT_TO_LOG):
+        if payload.data and len(payload.data) > _MAX_SIZE_ACTIVITY_RESULT_TO_LOG:
             activity_summary['result'] = f'...({len(payload.data)} bytes)'
-        elif (payload.data
-              and payload.metadata['encoding'].decode().startswith('json')
-              and not payload.metadata['class'].decode().startswith('str_')
-              and 'binary' not in payload.metadata):
+        elif (
+            payload.data
+            and payload.metadata['encoding'].decode().startswith('json')
+            and not payload.metadata['class'].decode().startswith('str_')
+            and 'binary' not in payload.metadata
+        ):
             activity_summary['result'] = json.loads(payload.data.decode())
         else:
             activity_summary['result'] = str(result)
@@ -460,13 +485,12 @@ class KumoActivityInboundInterceptor(ActivityInboundInterceptor):
 # pylint: disable=too-few-public-methods
 class KumoActivityInterceptor(Interceptor):
     def intercept_activity(
-            self,
-            next: ActivityInboundInterceptor) -> ActivityInboundInterceptor:
+        self, next: ActivityInboundInterceptor
+    ) -> ActivityInboundInterceptor:
         return KumoActivityInboundInterceptor(next)
 
 
-def _activity_summary(info: activity.Info,
-                      start_time: datetime) -> Dict[str, Any]:
+def _activity_summary(info: activity.Info, start_time: datetime) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     exec_sec = (now - start_time).total_seconds()
     total_sec = (now - info.scheduled_time).total_seconds()
@@ -477,7 +501,7 @@ def _activity_summary(info: activity.Info,
         'timing (seconds)': {
             'function execution': f'{exec_sec:.4f}',
             'total since scheduled': f'{total_sec:.4f}',
-        }
+        },
     }
 
 
@@ -500,15 +524,19 @@ class _ActivityHandleWithFailureTracking(Generic[ReturnType]):
     3. Without this wrapper: Error shows only TimeoutError
     4. With this wrapper: TimeoutError.__cause__ contains the ValueError
     """
-    def __init__(self, handle: ActivityHandle[ReturnType], activity_name: str,
-                 interceptor: 'KumoWorkflowOutboundInterceptor') -> None:
+
+    def __init__(
+        self,
+        handle: ActivityHandle[ReturnType],
+        activity_name: str,
+        interceptor: 'KumoWorkflowOutboundInterceptor',
+    ) -> None:
         self._handle = handle
         self._activity_name = activity_name
         self._interceptor = interceptor
 
     @staticmethod
-    def _find_innermost_timeout_in_chain(
-            exc: BaseException) -> Optional[TimeoutError]:
+    def _find_innermost_timeout_in_chain(exc: BaseException) -> Optional[TimeoutError]:
         """Find the innermost TimeoutError in the exception chain.
 
         Walks the chain following .cause and __cause__. Returns the last/deepest
@@ -523,7 +551,8 @@ class _ActivityHandleWithFailureTracking(Generic[ReturnType]):
             if isinstance(current, TimeoutError):
                 innermost_timeout = current
             next_cause = getattr(current, 'cause', None) or getattr(
-                current, '__cause__', None)
+                current, '__cause__', None
+            )
             if next_cause is None:
                 break
             current = next_cause
@@ -538,24 +567,24 @@ class _ActivityHandleWithFailureTracking(Generic[ReturnType]):
         try:
             result = await self._handle
             # Clear stored failure on success - activity recovered
-            self._interceptor._last_activity_failures.pop(
-                self._activity_name, None)
+            self._interceptor._last_activity_failures.pop(self._activity_name, None)
             return result
         except ActivityError as e:
             innermost_timeout = self._find_innermost_timeout_in_chain(e)
             if innermost_timeout is not None:
                 last_failure = self._interceptor._last_activity_failures.get(
-                    self._activity_name)
+                    self._activity_name
+                )
                 if last_failure:
                     # Set __cause__ on the innermost TimeoutError to chain the prior failure
                     if innermost_timeout.__cause__ is None:
                         innermost_timeout.__cause__ = last_failure
                     log.info(
                         'Enriched timeout error with prior failure for activity %s',
-                        self._activity_name)
+                        self._activity_name,
+                    )
             else:
-                self._interceptor._last_activity_failures[
-                    self._activity_name] = e
+                self._interceptor._last_activity_failures[self._activity_name] = e
             raise
         except BaseException as e:
             self._interceptor._last_activity_failures[self._activity_name] = e
@@ -580,6 +609,7 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
     killed mid-execution by start_to_close timeout.
 
     """
+
     def __init__(self, next: WorkflowOutboundInterceptor) -> None:
         super().__init__(next)
         # Track last activity failure per activity type for timeout enrichment
@@ -609,38 +639,42 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
             # use Default values.
             retry_policy = RetryPolicy()
 
-        if (retry_policy.maximum_attempts == 1
-                and input.activity not in RETRY_DISABLED_ACTIVITY_WHITELIST
-                and self.info().workflow_type
-                not in ('RunSingleActivityWorkflow', 'DummyTestWorkflow',
-                        'TestHeartbeatWorkflow')):
+        if (
+            retry_policy.maximum_attempts == 1
+            and input.activity not in RETRY_DISABLED_ACTIVITY_WHITELIST
+            and self.info().workflow_type
+            not in (
+                'RunSingleActivityWorkflow',
+                'DummyTestWorkflow',
+                'TestHeartbeatWorkflow',
+            )
+        ):
             log.error(f'Activity {input.activity} must enable retry!')
             if _DEPLOY_STAGE.parse_value() != DeployStage.PROD:
                 raise ApplicationError(
                     f'Activity {input.activity} must enable retry!',
-                    type=AssertionError.__name__, non_retryable=True)
+                    type=AssertionError.__name__,
+                    non_retryable=True,
+                )
 
         non_retryable_error_types = list(default_non_retryable_error_types)
         if retry_policy.non_retryable_error_types:
-            non_retryable_error_types.extend(
-                retry_policy.non_retryable_error_types)
-        retry_policy.non_retryable_error_types = list(
-            set(non_retryable_error_types))
+            non_retryable_error_types.extend(retry_policy.non_retryable_error_types)
+        retry_policy.non_retryable_error_types = list(set(non_retryable_error_types))
 
         # set updated retry policy
         input.retry_policy = retry_policy
 
     async def start_child_workflow(
-            self,
-            input: StartChildWorkflowInput) -> workflow.ChildWorkflowHandle:
+        self, input: StartChildWorkflowInput
+    ) -> workflow.ChildWorkflowHandle:
         # Child workflows inherit custom search attributes from parent
         parent_wf_info = self.info()
         parent_search_attrs = parent_wf_info.search_attributes
         if parent_search_attrs:
             child_search_attrs = dict(parent_search_attrs)
             if input.search_attributes:
-                assert not isinstance(input.search_attributes,
-                                      TypedSearchAttributes)
+                assert not isinstance(input.search_attributes, TypedSearchAttributes)
                 child_search_attrs.update(input.search_attributes)
             input.search_attributes = child_search_attrs
 
@@ -648,7 +682,7 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
         id_suffix = self._get_id_suffix()
         if id_suffix:
             # Append suffix to task_queue and id of the child workflow
-            if (input.task_queue and not input.task_queue.endswith(id_suffix)):
+            if input.task_queue and not input.task_queue.endswith(id_suffix):
                 input.task_queue += id_suffix
             if not input.id.endswith(id_suffix):
                 input.id += id_suffix
@@ -663,11 +697,11 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
         max_length = self._get_id_max_length()
         if max_length is not None:
             input.memo = {
-                **(input.memo or {}), ID_MAX_LENGTH_MEMO_FIELD:
-                str(max_length).encode()
+                **(input.memo or {}),
+                ID_MAX_LENGTH_MEMO_FIELD: str(max_length).encode(),
             }
             suffix = id_suffix or ''
-            base = input.id[:len(input.id) - len(suffix)]
+            base = input.id[: len(input.id) - len(suffix)]
             input.id = bounded_workflow_id(base, suffix, max_length) + suffix
 
         # Try to propagate workflow task timeout setting from parent.
@@ -677,13 +711,13 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
             connector_execution_references,
             replace_connector_authorization_tokens,
         )
+
         references = connector_execution_references(input.args)
         delegated_tokens: list[str] = []
         if references:
             if input.workflow in _CONNECTOR_AUTHORITY_FREE_CHILD_WORKFLOWS:
                 replacements = {
-                    reference.authorization_token: ''
-                    for reference in references
+                    reference.authorization_token: '' for reference in references
                 }
             else:
                 replacements = await workflow.execute_activity(
@@ -707,8 +741,9 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
                         schedule_to_close_timeout=timedelta(minutes=1),
                     )
                 except BaseException:
-                    log.exception('Failed best-effort cleanup of duplicate '
-                                  'child-start capability')
+                    log.exception(
+                        'Failed best-effort cleanup of duplicate child-start capability'
+                    )
             raise
 
     def start_activity(self, input: StartActivityInput) -> ActivityHandle:
@@ -716,21 +751,27 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
         :py:func:`temporalio.workflow.execute_activity` call.
         """
         if not input.heartbeat_timeout:
-            activity_timeout = (input.start_to_close_timeout
-                                or input.schedule_to_close_timeout)
-            if (not activity_timeout
-                    or activity_timeout > _DEFAULT_HEARTBEAT_TIMEOUT):
-                log.warning('Setting heartbeat timeout %s for %s.%s',
-                            _DEFAULT_HEARTBEAT_TIMEOUT, input.activity,
-                            input.activity_id)
+            activity_timeout = (
+                input.start_to_close_timeout or input.schedule_to_close_timeout
+            )
+            if not activity_timeout or activity_timeout > _DEFAULT_HEARTBEAT_TIMEOUT:
+                log.warning(
+                    'Setting heartbeat timeout %s for %s.%s',
+                    _DEFAULT_HEARTBEAT_TIMEOUT,
+                    input.activity,
+                    input.activity_id,
+                )
                 input.heartbeat_timeout = _DEFAULT_HEARTBEAT_TIMEOUT
 
         if not input.schedule_to_close_timeout:
             if _DEPLOY_STAGE.parse_value() != DeployStage.PROD:
-                raise ApplicationError(f'Activity {input.activity} must set '
-                                       'schedule_to_close_timeout')
+                raise ApplicationError(
+                    f'Activity {input.activity} must set schedule_to_close_timeout'
+                )
 
-            input.schedule_to_close_timeout = _DEFAULT_ACTIVITY_SCHEDULE_TO_CLOSE_TIMEOUT  # noqa: E501
+            input.schedule_to_close_timeout = (
+                _DEFAULT_ACTIVITY_SCHEDULE_TO_CLOSE_TIMEOUT  # noqa: E501
+            )
 
         # Update retry policy
         self._update_activity_retry_policy(input)
@@ -743,8 +784,7 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
 
         handle = self.next.start_activity(input)
         # Wrap handle to track failures for timeout error enrichment
-        return _ActivityHandleWithFailureTracking(
-            handle, input.activity, self)  # type: ignore[return-value]
+        return _ActivityHandleWithFailureTracking(handle, input.activity, self)  # type: ignore[return-value]
 
 
 class KumoWorkflowInboundInterceptor(WorkflowInboundInterceptor):

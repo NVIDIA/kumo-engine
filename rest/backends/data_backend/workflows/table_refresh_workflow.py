@@ -46,7 +46,8 @@ log = logging.getLogger(__name__)
 
 _INTERNAL_COL_STATS_FAILURE_MESSAGE = (
     'Kumo encountered an internal error while computing column statistics. '
-    'Please retry. If the problem continues, contact Kumo support.')
+    'Please retry. If the problem continues, contact Kumo support.'
+)
 
 
 @kumo_dataclass
@@ -79,9 +80,9 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
     full completion, instead they can simply wait on partial completion
     of a specific `TableRefreshStage`.
     """
+
     @staticmethod
-    def compose_wf_id(table: TableDefinition,
-                      data_version: TableDataVersion) -> str:
+    def compose_wf_id(table: TableDefinition, data_version: TableDataVersion) -> str:
         return f'refresh-{table.wf_key()}@ver={data_version}'
 
     @workflow.run
@@ -106,8 +107,10 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
         self._base_tables_connector = input.base_tables_connector_spec
         self._alias = input.alias
         self._graph_table_count = input.graph_table_count
-        log.info(f"TableRefreshWorkflow.run() received job_id={input.job_id}, "
-                 f"for table={input.table.get_source_table_name()}")
+        log.info(
+            f'TableRefreshWorkflow.run() received job_id={input.job_id}, '
+            f'for table={input.table.get_source_table_name()}'
+        )
 
         parent = workflow.info().parent
         if parent:  # Parent workflow automatically register for notification.
@@ -161,7 +164,8 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
                 ],
                 retry_policy=VALIDATE_STATS_RETRY_POLICY,
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                ),
             )
             ingest_result.validation.merge(ingest_validation)
 
@@ -179,7 +183,8 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
                     ],
                     retry_policy=VALIDATE_STATS_RETRY_POLICY,
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                    ),
                 )
             except ActivityError as error:
                 if is_cancelled_exception(error):
@@ -187,15 +192,18 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
                 public_error = extract_public_exception(error)
                 ingest_result.status = AsyncDataTaskStatus.FAILED
                 ingest_result.stage = TableRefreshStage.COMPUTE_MIN_COL_STATS
-                ingest_result.error = (public_error.get_user_message()
-                                       if public_error is not None else
-                                       _INTERNAL_COL_STATS_FAILURE_MESSAGE)
+                ingest_result.error = (
+                    public_error.get_user_message()
+                    if public_error is not None
+                    else _INTERNAL_COL_STATS_FAILURE_MESSAGE
+                )
                 ingest_result.updated_at = now_utc()
                 await workflow.execute_activity(
                     DataBackendActivities.save_colstat_task_result,
                     args=[self._table, self._data_version, ingest_result],
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                    ),
                 )
                 await self._save_result(ingest_result)
                 return ingest_result
@@ -210,15 +218,18 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
                     ],
                     retry_policy=VALIDATE_STATS_RETRY_POLICY,
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                    ),
                 )
                 ingest_result.validation.merge(col_stats_validation)
 
                 if ingest_result.ok:
                     await self._save_colstat_task_result(
-                        TableRefreshStage.COMPUTE_MIN_COL_STATS)
+                        TableRefreshStage.COMPUTE_MIN_COL_STATS
+                    )
                     await self._save_colstat_task_result(
-                        TableRefreshStage.COMPUTE_FULL_COL_STATS)
+                        TableRefreshStage.COMPUTE_FULL_COL_STATS
+                    )
                     ingest_result.stage = TableRefreshStage.COMPLETED
             elif ingest_result.ok:
                 # Direct/deferred connectors intentionally have no standalone
@@ -240,11 +251,11 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
                 self._base_tables_args_list,
                 self._base_tables_connector,
             ],
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+            schedule_to_close_timeout=timedelta(hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
         )
-        log.info(f"After table refresh, table has Kumo backend "
-                 f"representation {self._table}")
+        log.info(
+            f'After table refresh, table has Kumo backend representation {self._table}'
+        )
 
     # Run table ingestion as child workflow; or, if an ingestion workflow for
     # the same table & data version is already running, execute an activity to
@@ -264,38 +275,44 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
                         self._graph_table_count,
                     ],
                     execution_timeout=timedelta(
-                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
+                    ),
                     id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
                     cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
                 )
                 # Keep this lifecycle log stable for ingest observability.
-                log.info(f'Started table ingest child workflow for '
-                         f'{self._connector_spec.connector_id}.'
-                         f'{self._table.get_source_table_name()}: '
-                         f'{ingest_wf_id}')
+                log.info(
+                    f'Started table ingest child workflow for '
+                    f'{self._connector_spec.connector_id}.'
+                    f'{self._table.get_source_table_name()}: '
+                    f'{ingest_wf_id}'
+                )
                 return await child_wf_handle
             except WorkflowAlreadyStartedError as err:
-                log.info(f'Table ingest workflow {ingest_wf_id} has '
-                         f'already started running. '
-                         f'Waiting for its completion before '
-                         f'starting a new run.')
+                log.info(
+                    f'Table ingest workflow {ingest_wf_id} has '
+                    f'already started running. '
+                    f'Waiting for its completion before '
+                    f'starting a new run.'
+                )
                 await workflow.execute_activity(
                     DataBackendActivities.wait_on_workflow,
                     args=[self._ctx, ingest_wf_id, err.run_id],
                     activity_id='wait_for_ingest',
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
+                    ),
                     heartbeat_timeout=HEARTBEAT_TIMEOUT_ASYNC_ACTIVITY,
                     retry_policy=CHILD_WF_WAITING_RETRY_POLICY,
                 )
 
-    async def _save_result(self, result: TableDataTaskResult,
-                           notify_watcher: bool = True):
+    async def _save_result(
+        self, result: TableDataTaskResult, notify_watcher: bool = True
+    ):
         await workflow.execute_activity(
             DataBackendActivities.save_table_refresh_result,
             args=[self._table, self._data_version, result],
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+            schedule_to_close_timeout=timedelta(hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
         )
         if notify_watcher:
             await self.notify_watcher(result)
@@ -312,18 +329,18 @@ class TableRefreshWorkflow(TableChildWorkflowMixin):
         await workflow.execute_activity(
             DataBackendActivities.save_colstat_task_result,
             args=[self._table, self._data_version, task_result],
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+            schedule_to_close_timeout=timedelta(hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
         )
 
     @staticmethod
     def _compose_job_id(table: TableDefinition, data_version: str) -> str:
         """Create the refresh job identifier used to correlate state."""
         suffix = workflow.info().run_id[-6:]
-        return (f'{table.fingerprint().fpid()}-'
-                f'{table._dedupe_hash()}-'
-                f'{data_version}__{suffix}')
+        return (
+            f'{table.fingerprint().fpid()}-'
+            f'{table._dedupe_hash()}-'
+            f'{data_version}__{suffix}'
+        )
 
     def _compose_table_ingest_wf_id(self) -> str:
-        return compose_table_ingest_wf_id(self._table.fingerprint(),
-                                          self._data_version)
+        return compose_table_ingest_wf_id(self._table.fingerprint(), self._data_version)

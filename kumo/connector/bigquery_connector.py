@@ -78,16 +78,17 @@ from kumo.utils import to_dataclass
 from service_framework.deploy_env import EnvVar
 from statedb.utils.errors import ConnectorValidationDiagnosticCode
 
-ENV_GOOGLE_CREDENTIALS_JSON = "GOOGLE_CREDENTIALS_JSON"
-ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH = os.path.join(os.path.expanduser("~"),
-                                                   ".google_credentials.json")
-ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT"
-GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+ENV_GOOGLE_CREDENTIALS_JSON = 'GOOGLE_CREDENTIALS_JSON'
+ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH = os.path.join(
+    os.path.expanduser('~'), '.google_credentials.json'
+)
+ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = 'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT'
+GOOGLE_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 # This is the GCP project ID used by Kumo for internal operations.
-ENV_GCP_KUMO_PROJECT_ID = EnvVar("GOOGLE_CLOUD_PROJECT", type=str,
-                                 default_value="kumo-engineering")
-ENV_GCS_KUMO_BUCKET = EnvVar("GCP_STORAGE_TRANSFER_BUCKET", type=str,
-                             default_value="")
+ENV_GCP_KUMO_PROJECT_ID = EnvVar(
+    'GOOGLE_CLOUD_PROJECT', type=str, default_value='kumo-engineering'
+)
+ENV_GCS_KUMO_BUCKET = EnvVar('GCP_STORAGE_TRANSFER_BUCKET', type=str, default_value='')
 
 BIGQUERY_CONNECTOR_PERMISSIONS_CHECK_TIMEOUT = 30
 
@@ -107,13 +108,15 @@ def _bq_query_error_reason(err: Exception) -> Optional[str]:
 
 
 _BQ_SAFE_QUERY_REASON_MESSAGES = {
-    'resourcesExceeded':
-    ('BigQuery could not plan or execute this query within its resource '
-     'limits. Simplify the query, especially recursive or deeply nested '
-     'subqueries, and try again.'),
-    'responseTooLarge':
-    ('BigQuery produced a result that is too large for this operation. '
-     'Reduce or aggregate the selected output.'),
+    'resourcesExceeded': (
+        'BigQuery could not plan or execute this query within its resource '
+        'limits. Simplify the query, especially recursive or deeply nested '
+        'subqueries, and try again.'
+    ),
+    'responseTooLarge': (
+        'BigQuery produced a result that is too large for this operation. '
+        'Reduce or aggregate the selected output.'
+    ),
 }
 
 
@@ -121,11 +124,13 @@ def _bq_safe_query_diagnostic(err: Exception) -> Optional[str]:
     """Map only structured query failures whose user guidance is allowlisted."""
     reason = _bq_query_error_reason(err)
     if reason == 'invalidQuery':
-        return f"BigQuery could not run the query: {_bq_query_error_detail(err)}"
+        return f'BigQuery could not run the query: {_bq_query_error_detail(err)}'
     if isinstance(err, NotFound) or reason == 'notFound':
-        return ('BigQuery could not resolve a referenced table in the '
-                "connector's configured location. Check the table name and "
-                'dataset location.')
+        return (
+            'BigQuery could not resolve a referenced table in the '
+            "connector's configured location. Check the table name and "
+            'dataset location.'
+        )
     return _BQ_SAFE_QUERY_REASON_MESSAGES.get(reason)
 
 
@@ -182,29 +187,32 @@ class WrappedClient:
     out with a useful/actionable error message before being killed due
     to the temporal timeout.
     """
-    BQ_INGEST_TIMEOUT_SECONDS = (DATA_BACKEND_INGEST_TIMEOUT_HOURS * 3600 -
-                                 MAX_SECONDS_BEFORE_TIMEOUT)
+    BQ_INGEST_TIMEOUT_SECONDS = (
+        DATA_BACKEND_INGEST_TIMEOUT_HOURS * 3600 - MAX_SECONDS_BEFORE_TIMEOUT
+    )
     BQ_MATERIALIZE_TIMEOUT_SECONDS = (
-        DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS * 3600 -
-        MAX_SECONDS_BEFORE_TIMEOUT)
+        DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS * 3600 - MAX_SECONDS_BEFORE_TIMEOUT
+    )
     BQ_PROGRESS_POLL_INTERVAL_SECONDS = 10
 
-    BQ_BACKEND_IO_TIMEOUT_SECONDS = int(DATA_BACKEND_IO_TIMEOUT_HOURS * 3600 /
-                                        2)
+    BQ_BACKEND_IO_TIMEOUT_SECONDS = int(DATA_BACKEND_IO_TIMEOUT_HOURS * 3600 / 2)
 
     def __init__(self, client: Client):
         self._client = client
 
     def list_tables(self, dataset: str):
-        logger.info("Listing tables in the configured BigQuery dataset")
+        logger.info('Listing tables in the configured BigQuery dataset')
         return self._client.list_tables(dataset=dataset)
 
     def get_table(self, table: str):
         return self._client.get_table(table=table)
 
     def _get_query_source_size_internal(
-            self, query: str, job_config: bigquery.QueryJobConfig | None,
-            surface_query_diagnostics: bool = False) -> Optional[int]:
+        self,
+        query: str,
+        job_config: bigquery.QueryJobConfig | None,
+        surface_query_diagnostics: bool = False,
+    ) -> Optional[int]:
 
         if job_config is None:
             job_config = bigquery.QueryJobConfig()
@@ -215,14 +223,14 @@ class WrappedClient:
             return query_job.total_bytes_processed
         except Exception as e:
             logger.error(
-                "Failed to perform BigQuery dry run (error_type=%s)",
+                'Failed to perform BigQuery dry run (error_type=%s)',
                 type(e).__name__,
             )
             if surface_query_diagnostics:
-                _raise_bq_query_failure(
-                    e, "Failed to estimate the BigQuery query size")
+                _raise_bq_query_failure(e, 'Failed to estimate the BigQuery query size')
             raise ConnectorError(
-                "Failed to estimate query size for BigQuery dry run") from None
+                'Failed to estimate query size for BigQuery dry run'
+            ) from None
         finally:
             job_config.dry_run = False
 
@@ -243,24 +251,29 @@ class WrappedClient:
 
             if elapsed_time > timeout_in_seconds:
                 logger.warning(
-                    f"Timeout {timeout_in_seconds} seconds exceeded. "
-                    "Attempting to cancel the BigQuery connector query.")
+                    f'Timeout {timeout_in_seconds} seconds exceeded. '
+                    'Attempting to cancel the BigQuery connector query.'
+                )
                 executing_job.cancel()
-                logger.warning(f"Timeout {timeout_in_seconds} seconds exceeded."
-                               " Canceled the BigQuery connector query.")
+                logger.warning(
+                    f'Timeout {timeout_in_seconds} seconds exceeded.'
+                    ' Canceled the BigQuery connector query.'
+                )
                 raise TimeoutError(
-                    "We hit a timeout while running an operation on your "
-                    "BigQuery warehouse and it was automatically canceled "
-                    f"after {timeout_in_seconds} seconds. Please try "
-                    "rerunning the operation and check if your project has "
-                    "enough BigQuery resources to complete it.")
+                    'We hit a timeout while running an operation on your '
+                    'BigQuery warehouse and it was automatically canceled '
+                    f'after {timeout_in_seconds} seconds. Please try '
+                    'rerunning the operation and check if your project has '
+                    'enough BigQuery resources to complete it.'
+                )
 
-            logger.info("Still executing the BigQuery connector query")
+            logger.info('Still executing the BigQuery connector query')
             time.sleep(WrappedClient.BQ_PROGRESS_POLL_INTERVAL_SECONDS)
 
         end_time = time.perf_counter()
-        logger.info("BigQuery connector query finished after %s seconds",
-                    end_time - start_time)
+        logger.info(
+            'BigQuery connector query finished after %s seconds', end_time - start_time
+        )
         return executing_job
 
     def query(
@@ -271,16 +284,22 @@ class WrappedClient:
         surface_query_diagnostics: bool = False,
     ) -> bigquery.QueryJob:
 
-        self._get_query_source_size_internal(query, job_config,
-                                             surface_query_diagnostics)
+        self._get_query_source_size_internal(
+            query, job_config, surface_query_diagnostics
+        )
 
         with restricted_diagnostic_boundary(
-                safe_message='BigQuery query execution failed',
-                exception_types=GoogleAPIError):
-            query_job: bigquery.QueryJob = (self._client.query(
-                query=query,
-                job_config=job_config,
-            ) if job_config is not None else self._client.query(query=query))
+            safe_message='BigQuery query execution failed',
+            exception_types=GoogleAPIError,
+        ):
+            query_job: bigquery.QueryJob = (
+                self._client.query(
+                    query=query,
+                    job_config=job_config,
+                )
+                if job_config is not None
+                else self._client.query(query=query)
+            )
             self.poll_job_completion(query_job, timeout_in_seconds, query)
 
         return query_job
@@ -293,8 +312,9 @@ class WrappedClient:
     ) -> bigquery.LoadJob:
 
         with restricted_diagnostic_boundary(
-                safe_message='BigQuery load operation failed',
-                exception_types=GoogleAPIError):
+            safe_message='BigQuery load operation failed',
+            exception_types=GoogleAPIError,
+        ):
             load_job = self._client.load_table_from_uri(
                 source_uris=source_uri,
                 destination=destination,
@@ -302,9 +322,11 @@ class WrappedClient:
             )
 
             self.poll_job_completion(
-                load_job, WrappedClient.BQ_INGEST_TIMEOUT_SECONDS,
-                f"Load from uri job with source {source_uri} "
-                f"and destination {destination}.")
+                load_job,
+                WrappedClient.BQ_INGEST_TIMEOUT_SECONDS,
+                f'Load from uri job with source {source_uri} '
+                f'and destination {destination}.',
+            )
 
         return load_job
 
@@ -316,6 +338,7 @@ class BigQueryConnector(SQLConnector):
         project_id (str): The project ID.
         dataset_id (str): The dataset ID.
     """
+
     #: ``LIMIT`` does not bound a BigQuery read, so a Custom SQL sample is
     #: costed before it runs.
     gates_query_scan = True
@@ -350,10 +373,11 @@ class BigQueryConnector(SQLConnector):
         Args:
             client: bigquery.Client instance
         """
+
         def _sync_validation():
 
             try:
-                dataset_ref = f"{self.project_id}.{self.dataset_id}"
+                dataset_ref = f'{self.project_id}.{self.dataset_id}'
                 # Bypassing WrappedClient here because we don't need
                 # the logging overhead.
                 real_client = self.client._client
@@ -391,13 +415,12 @@ class BigQueryConnector(SQLConnector):
                 # A gRPC/IAM PERMISSION_DENIED is unambiguously an access
                 # failure. Provider exception strings may carry request
                 # metadata, so only the sanitized category is recorded.
-                logger.warning(
-                    'BigQuery target validation was denied by the provider')
+                logger.warning('BigQuery target validation was denied by the provider')
                 raise ConnectorError(
                     'The selected identity does not have the required '
                     'BigQuery dataset read permissions.',
-                    diagnostic_code=ConnectorValidationDiagnosticCode.
-                    TARGET_ACCESS_DENIED) from None
+                    diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED,
+                ) from None
             except Forbidden as err:
                 # A REST 403 is an access denial only when the structured
                 # reason says so. The same status also covers quota,
@@ -405,25 +428,26 @@ class BigQueryConnector(SQLConnector):
                 # keep those a plain ConnectorError with no diagnostic code so
                 # they are never surfaced as a non-retriable target-config
                 # problem.
-                logger.warning(
-                    'BigQuery target validation was denied by the provider')
+                logger.warning('BigQuery target validation was denied by the provider')
                 if _bq_query_error_reason(err) == 'accessDenied':
                     raise ConnectorError(
                         'The selected identity does not have the required '
                         'BigQuery dataset read permissions.',
-                        diagnostic_code=ConnectorValidationDiagnosticCode.
-                        TARGET_ACCESS_DENIED) from None
+                        diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED,
+                    ) from None
                 raise ConnectorError(
-                    'BigQuery connector access validation failed.') from None
+                    'BigQuery connector access validation failed.'
+                ) from None
             except NotFound:
                 raise ConnectorError(
                     'The configured BigQuery dataset was not found or is not '
                     'accessible to the selected identity.',
-                    diagnostic_code=ConnectorValidationDiagnosticCode.
-                    TARGET_NOT_FOUND) from None
+                    diagnostic_code=ConnectorValidationDiagnosticCode.TARGET_NOT_FOUND,
+                ) from None
             except Exception:
                 raise ConnectorError(
-                    'BigQuery connector access validation failed.') from None
+                    'BigQuery connector access validation failed.'
+                ) from None
 
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(_sync_validation)
@@ -433,8 +457,7 @@ class BigQueryConnector(SQLConnector):
         except FuturesTimeoutError:
             timed_out = True
             future.cancel()
-            raise ConnectorError(
-                'BigQuery connection validation timed out') from None
+            raise ConnectorError('BigQuery connection validation timed out') from None
         finally:
             # A context-managed executor blocks in shutdown(wait=True), which
             # would turn this timeout into an unbounded wait.  A running
@@ -452,17 +475,20 @@ class BigQueryConnector(SQLConnector):
         else:
             if self._require_explicit_credentials:
                 raise ConnectorError(
-                    'Identity-backed BigQuery connectors require explicit '
-                    'credentials.')
+                    'Identity-backed BigQuery connectors require explicit credentials.'
+                )
             try:
                 context = self._use_credentials(
-                    'bigquery', Client.from_service_account_json,
-                    Client.from_service_account_info, True)
+                    'bigquery',
+                    Client.from_service_account_json,
+                    Client.from_service_account_info,
+                    True,
+                )
             except Exception:
                 raise ConnectorError(
-                    message="An error occured while trying to connect " +
-                    "to BigQuery." +
-                    " Please try by providing service account credentials instead.",
+                    message='An error occured while trying to connect '
+                    + 'to BigQuery.'
+                    + ' Please try by providing service account credentials instead.',
                 ) from None
 
         return context
@@ -487,26 +513,31 @@ class BigQueryConnector(SQLConnector):
         except Exception:
             raise ConnectorError(
                 message=(
-                    'Kumo could not list tables in the configured BigQuery '
-                    'dataset.'), ) from None
+                    'Kumo could not list tables in the configured BigQuery dataset.'
+                ),
+            ) from None
 
     @classmethod
-    def to_kumo_dtype(cls, bq_dtype: str, mode: str,
-                      precision: Optional[int] = None,
-                      scale: Optional[int] = None) -> Dtype:
+    def to_kumo_dtype(
+        cls,
+        bq_dtype: str,
+        mode: str,
+        precision: Optional[int] = None,
+        scale: Optional[int] = None,
+    ) -> Dtype:
         return dtype_for(bq_dtype, mode, precision, scale)
 
     def is_table_view(self, table_name: str) -> bool:
         bq_table = self._get_bigquery_table(table_name)
-        return str(bq_table.table_type) == "VIEW"
+        return str(bq_table.table_type) == 'VIEW'
 
     def table_exists(self, table_name: str) -> bool:
         try:
             self.client.get_table(self.full_table_name(table_name))
-            logger.info("The requested BigQuery table exists")
+            logger.info('The requested BigQuery table exists')
             return True
         except NotFound:
-            logger.info("The requested BigQuery table does not exist")
+            logger.info('The requested BigQuery table does not exist')
             return False
 
     def check_table_write_permissions(
@@ -523,29 +554,33 @@ class BigQueryConnector(SQLConnector):
             table_schema,
         )
         if mode not in {
-                InternalWriteMode.APPEND,
-                InternalWriteMode.OVERWRITE,
+            InternalWriteMode.APPEND,
+            InternalWriteMode.OVERWRITE,
         }:
             raise ConnectorError(
-                'Invalid BigQuery output write mode; expected APPEND or '
-                'OVERWRITE.')
+                'Invalid BigQuery output write mode; expected APPEND or OVERWRITE.'
+            )
         if not self.is_connected:
             self.open()
 
         try:
-            probe_write_access(self.context,
-                               f'{self.project_id}.{self.dataset_id}',
-                               table_name,
-                               replace=mode == InternalWriteMode.OVERWRITE,
-                               create=True)
+            probe_write_access(
+                self.context,
+                f'{self.project_id}.{self.dataset_id}',
+                table_name,
+                replace=mode == InternalWriteMode.OVERWRITE,
+                create=True,
+            )
         except MissingWritePermissions:
             raise ConnectorError(
                 'The selected identity cannot perform the requested write '
-                'mode on the existing BigQuery output table.') from None
+                'mode on the existing BigQuery output table.'
+            ) from None
         except ProbeCleanupError:
             raise ConnectorError(
                 'BigQuery output authorization probe cleanup failed. The '
-                'probe is configured to expire automatically.') from None
+                'probe is configured to expire automatically.'
+            ) from None
         except Exception as error:
             logger.warning(
                 'BigQuery output write authorization failed (%s)',
@@ -553,7 +588,8 @@ class BigQueryConnector(SQLConnector):
             )
             raise ConnectorError(
                 'The selected identity cannot create or modify tables in '
-                'the configured BigQuery dataset.') from None
+                'the configured BigQuery dataset.'
+            ) from None
 
     def require_output_table_within_connector_target(
         self,
@@ -562,11 +598,13 @@ class BigQueryConnector(SQLConnector):
     ) -> None:
         if table_schema is not None and table_schema != self.dataset_id:
             raise ConnectorError(
-                'Output table dataset does not match the connector dataset.')
+                'Output table dataset does not match the connector dataset.'
+            )
         if not is_output_table_id(table_name):
             raise ConnectorError(
                 'BigQuery output table must be an unqualified table ID '
-                'containing only letters, numbers, underscores, or hyphens.')
+                'containing only letters, numbers, underscores, or hyphens.'
+            )
 
     def overwrite_table(self, src_table_name: str, dst_table_name: str) -> None:
         r"""Overwrite `dst_table_name` with the content from `src_table_name`.
@@ -576,17 +614,19 @@ class BigQueryConnector(SQLConnector):
         """
         if not self.table_exists(src_table_name):
             raise ConnectorError(
-                message='The requested BigQuery source table does not exist.')
+                message='The requested BigQuery source table does not exist.'
+            )
 
-        logger.info("Overwriting one BigQuery table from another")
+        logger.info('Overwriting one BigQuery table from another')
         query = f"""
             CREATE OR REPLACE TABLE {self.sql_table_name(dst_table_name)}
             CLONE {self.sql_table_name(src_table_name)}
         """
         # NOTE(jana): delete before merging PR. Method used internally.
         with restricted_diagnostic_boundary(
-                safe_message='BigQuery table overwrite failed',
-                exception_types=GoogleAPIError):
+            safe_message='BigQuery table overwrite failed',
+            exception_types=GoogleAPIError,
+        ):
             self.context.query(query).result()
 
     def _cols_from_schema(
@@ -601,7 +641,7 @@ class BigQueryConnector(SQLConnector):
         for name, dtype in schema_columns(schema):
             col = BaseColumnConfig(name=name, dtype=dtype)
             if dtype == Dtype.unsupported:
-                logger.warning("Unsupported BigQuery dtype for %s", name)
+                logger.warning('Unsupported BigQuery dtype for %s', name)
             cols.append(col)
         return cols
 
@@ -690,18 +730,20 @@ class BigQueryConnector(SQLConnector):
             execute = partial(
                 self.client.query,
                 timeout_in_seconds=WrappedClient.BQ_BACKEND_IO_TIMEOUT_SECONDS,
-                surface_query_diagnostics=surface_query_diagnostics)
-            df = query_result(
-                execute, query,
-                job_config).to_dataframe(create_bqstorage_client=False)
+                surface_query_diagnostics=surface_query_diagnostics,
+            )
+            df = query_result(execute, query, job_config).to_dataframe(
+                create_bqstorage_client=False
+            )
         except Forbidden as e:
             logger.error(
-                "BigQuery permission error while executing query "
-                "(error_type=%s)",
-                type(e).__name__)
+                'BigQuery permission error while executing query (error_type=%s)',
+                type(e).__name__,
+            )
             raise ConnectorError(
                 'The selected identity does not have the required BigQuery '
-                'table read permission.') from None
+                'table read permission.'
+            ) from None
         except TimeoutError:
             raise
         except Exception as e:
@@ -715,11 +757,12 @@ class BigQueryConnector(SQLConnector):
                     raise ConnectorError(diagnostic) from None
                 if isinstance(e, BadRequest):
                     _raise_bq_query_failure(
-                        e, 'BigQuery failed while reading table data.')
-            logger.error("BigQuery query failed (error_type=%s)",
-                         type(e).__name__)
+                        e, 'BigQuery failed while reading table data.'
+                    )
+            logger.error('BigQuery query failed (error_type=%s)', type(e).__name__)
             raise ConnectorError(
-                message='BigQuery failed while reading table data.', ) from None
+                message='BigQuery failed while reading table data.',
+            ) from None
 
         # For certain db datatypes, we convert them to native pandas dtype.
         for col in df.columns:
@@ -730,13 +773,13 @@ class BigQueryConnector(SQLConnector):
     # Overrides of functions from SQLConnector ################################
     def sql_table_name(self, table_name):
         r"""Table name to be used in SQL queries in BigQuery."""
-        return f"`{self.project_id}.{self.dataset_id}.{table_name}`"
+        return f'`{self.project_id}.{self.dataset_id}.{table_name}`'
 
     def _get_bigquery_table(self, table_name) -> BQTable:
-        logger.info("Started BigQuery get_table API")
+        logger.info('Started BigQuery get_table API')
         try:
             table_info = self.client.get_table(self.full_table_name(table_name))
-            logger.info("Finished BigQuery get_table API")
+            logger.info('Finished BigQuery get_table API')
             return table_info
         except NotFound:
             raise SourceTableNotFoundError(table_name, self.name) from None
@@ -750,22 +793,23 @@ class BigQueryConnector(SQLConnector):
         table_name: str,
         data_version: str | None = None,
     ) -> int:
-        logger.info("Started BigQuery row-count lookup")
+        logger.info('Started BigQuery row-count lookup')
         bq_table = self._get_bigquery_table(table_name)
-        logger.info("Finished BigQuery row-count lookup")
+        logger.info('Finished BigQuery row-count lookup')
         if bq_table.num_rows is None or bq_table.num_rows == 0:
-            logger.warning("Could not retrieve BigQuery table row count")
+            logger.warning('Could not retrieve BigQuery table row count')
             # Revert back to SELECT COUNT(*) for getting num_rows.
-            logger.info("Started BigQuery fallback row-count query")
+            logger.info('Started BigQuery fallback row-count query')
             try:
                 num_rows = super()._get_table_num_rows(table_name)
-                logger.info("Finished BigQuery fallback row-count query")
+                logger.info('Finished BigQuery fallback row-count query')
                 return num_rows
             except Exception as e:
                 logger.info(
-                    "Failed BigQuery fallback API for retrieving row count "
-                    "(error_type=%s)",
-                    type(e).__name__)
+                    'Failed BigQuery fallback API for retrieving row count '
+                    '(error_type=%s)',
+                    type(e).__name__,
+                )
         assert bq_table.num_rows
         return bq_table.num_rows
 
@@ -774,26 +818,26 @@ class BigQueryConnector(SQLConnector):
         table_name: str,
         data_version: str | None = None,
     ) -> int:
-        logger.info("Started BigQuery table-size lookup")
+        logger.info('Started BigQuery table-size lookup')
         bq_table = self._get_bigquery_table(table_name)
-        logger.info("Finished BigQuery table-size lookup")
+        logger.info('Finished BigQuery table-size lookup')
         num_bytes = bq_table.num_bytes
         if num_bytes is None:
-            logger.warning("Could not retrieve BigQuery table size")
+            logger.warning('Could not retrieve BigQuery table size')
             try:
-                logger.info("Started BigQuery fallback table-size query")
+                logger.info('Started BigQuery fallback table-size query')
                 num_bytes = super()._get_table_source_size(table_name)
-                logger.info("Finished BigQuery fallback table-size query")
+                logger.info('Finished BigQuery fallback table-size query')
                 return num_bytes
             except Exception as e:
                 logger.info(
-                    "Failed BigQuery fallback table-size query "
-                    "(error_type=%s)",
-                    type(e).__name__)
+                    'Failed BigQuery fallback table-size query (error_type=%s)',
+                    type(e).__name__,
+                )
                 raise ConnectorError(
                     message='Failed to retrieve the BigQuery table size.',
                 ) from None
-        if str(bq_table.table_type) != "VIEW":
+        if str(bq_table.table_type) != 'VIEW':
             assert num_bytes
         return num_bytes
 
@@ -805,47 +849,50 @@ class BigQueryConnector(SQLConnector):
         if not self.is_connected:
             self.open()
         if not cols:
-            logger.warning("No columns specified for BigQuery table size")
+            logger.warning('No columns specified for BigQuery table size')
             return 0
         query = self.get_query(table_name=table_name, pkey=None, cols=cols)
         query_job_config = bigquery.QueryJobConfig()
 
         try:
             estimated_bytes = self.client._get_query_source_size_internal(
-                query, query_job_config)
+                query, query_job_config
+            )
             if estimated_bytes is None:
                 logger.warning(
-                    "BigQuery dry run did not return total_bytes_processed; "
-                    "defaulting to 0")
+                    'BigQuery dry run did not return total_bytes_processed; '
+                    'defaulting to 0'
+                )
                 return 0
             return estimated_bytes
         except Exception as e:
-            logger.error("Failed to perform BigQuery dry run (error_type=%s)",
-                         type(e).__name__)
+            logger.error(
+                'Failed to perform BigQuery dry run (error_type=%s)', type(e).__name__
+            )
             raise
 
     def _get_data_version(
         self,
         table_name: str,
     ) -> str:
-        logger.info("Started BigQuery data-version lookup")
+        logger.info('Started BigQuery data-version lookup')
         bq_table = self._get_bigquery_table(table_name)
 
-        logger.info("Finished BigQuery data-version lookup")
+        logger.info('Finished BigQuery data-version lookup')
 
-        if str(bq_table.table_type) == "VIEW":
+        if str(bq_table.table_type) == 'VIEW':
             # The shared window, so this platform and an in-process
             # kumo_core stamp a versionless source alike and either can
             # reuse what the other ingested.
-            logger.info("Computed BigQuery view data version")
+            logger.info('Computed BigQuery view data version')
             return hour_version()
         if bq_table.modified is None:
             try:
-                logger.warning("Could not retrieve BigQuery table data version")
+                logger.warning('Could not retrieve BigQuery table data version')
                 return super()._get_data_version(table_name)
             except Exception:
-                logger.warning("Could not retrieve BigQuery data version")
-        return str(bq_table.modified.timestamp()).split(".")[0]
+                logger.warning('Could not retrieve BigQuery data version')
+        return str(bq_table.modified.timestamp()).split('.')[0]
 
     # Helper methods ########################################
 
@@ -870,8 +917,8 @@ class BigQueryConnector(SQLConnector):
         if credential is not None:
             if self._credentials.get('provider') != 'bigquery':
                 raise ConnectorError(
-                    'BigQuery connector received credentials for another '
-                    'provider')
+                    'BigQuery connector received credentials for another provider'
+                )
             return Client(
                 project=self.project_id,
                 credentials=credential,
@@ -884,33 +931,33 @@ class BigQueryConnector(SQLConnector):
         # NOTE: These fields should match the ones in BigQueryCredentials
         # dataclass in rest/config/credentials.py.
         required_fields = {
-            "private_key_id",
-            "private_key",
-            "client_email",
-            "client_id",
-            "auth_uri",
-            "token_uri",
-            "project_id",
+            'private_key_id',
+            'private_key',
+            'client_email',
+            'client_id',
+            'auth_uri',
+            'token_uri',
+            'project_id',
         }
         credentials_without_type = {
-            k: v
-            for k, v in self._credentials.items() if k != "_type"
+            k: v for k, v in self._credentials.items() if k != '_type'
         }
         if not required_fields.issubset(credentials_without_type):
-            raise ConnectorError(
-                'BigQuery credentials are incomplete or invalid')
+            raise ConnectorError('BigQuery credentials are incomplete or invalid')
 
         # Add the standard service-account discriminator if omitted. The
         # service-account project must be supplied by the identity;
         # it must never be inferred from the connector's data project.
-        if self._credentials.get("type") is None:
-            self._credentials["type"] = SecretStr("service_account")
+        if self._credentials.get('type') is None:
+            self._credentials['type'] = SecretStr('service_account')
 
         credential_info = self._get_plain_credentials()
         google_credentials = service_account.Credentials.from_service_account_info(
-            credential_info)
+            credential_info
+        )
         google_credentials = google_credentials.with_quota_project(
-            self.billing_project_id)
+            self.billing_project_id
+        )
         return Client(
             project=self.project_id,
             credentials=google_credentials,
@@ -918,15 +965,14 @@ class BigQueryConnector(SQLConnector):
         )
 
     def full_table_name(self, table_name: str) -> str:
-        return f"{self.project_id}.{self.dataset_id}.{table_name}"
+        return f'{self.project_id}.{self.dataset_id}.{table_name}'
 
     def drop_table_if_exists(self, table_name: str):
         try:
             table_ref = self._context.dataset(self.dataset_id).table(table_name)
             self._context.delete_table(table_ref)
         except Exception as e:
-            logger.warning('BigQuery table cleanup failed (%s)',
-                           type(e).__name__)
+            logger.warning('BigQuery table cleanup failed (%s)', type(e).__name__)
 
     def _initialize_gcs_client(self) -> Any:
         r"""Initialize GCS with the activity-local BigQuery credential.
@@ -940,10 +986,10 @@ class BigQueryConnector(SQLConnector):
         from google.cloud import storage
 
         credential = self._credentials.get('credential')
-        if (self._credentials.get('provider') != 'bigquery'
-                or credential is None):
+        if self._credentials.get('provider') != 'bigquery' or credential is None:
             raise ConnectorError(
-                'Authorized BigQuery staging credentials are unavailable.')
+                'Authorized BigQuery staging credentials are unavailable.'
+            )
 
         return storage.Client(
             project=ENV_GCP_KUMO_PROJECT_ID.parse_value(),
@@ -951,8 +997,13 @@ class BigQueryConnector(SQLConnector):
         )
 
     def _write_artifacts_from_gcs(
-            self, table_name: str, gcs_path: str, replace: bool = False, *,
-            artifact_files: list[str] | None = None) -> None:
+        self,
+        table_name: str,
+        gcs_path: str,
+        replace: bool = False,
+        *,
+        artifact_files: list[str] | None = None,
+    ) -> None:
         r"""Fast path for artifacts already resident in a Kumo-owned GCS
         bucket: skip STS and load directly from ``gs://`` into BigQuery.
         """
@@ -962,22 +1013,34 @@ class BigQueryConnector(SQLConnector):
         source_uri: str | list[str]
         if artifact_files is not None:
             source_uri = list(artifact_files)
-            if (not gcs_path.startswith('gs://') or not source_uri
-                    or len(set(source_uri)) != len(source_uri)):
+            if (
+                not gcs_path.startswith('gs://')
+                or not source_uri
+                or len(set(source_uri)) != len(source_uri)
+            ):
                 raise ConnectorError(
                     'Selected BigQuery artifacts require non-empty, unique '
-                    'GCS object URIs.')
+                    'GCS object URIs.'
+                )
             for uri in source_uri:
-                bucket, _, object_name = uri.removeprefix('gs://').partition(
-                    '/')
-                if (not uri.startswith('gs://') or not bucket or not object_name
-                        or uri.endswith('/') or '*' in uri):
+                bucket, _, object_name = uri.removeprefix('gs://').partition('/')
+                if (
+                    not uri.startswith('gs://')
+                    or not bucket
+                    or not object_name
+                    or uri.endswith('/')
+                    or '*' in uri
+                ):
                     raise ConnectorError(
                         'Selected BigQuery artifacts require concrete GCS '
-                        'object URIs without wildcards.')
+                        'object URIs without wildcards.'
+                    )
         else:
-            source_uri = (gcs_path if gcs_path.endswith('.parquet') else
-                          gcs_path.rstrip('/') + '/*.parquet')
+            source_uri = (
+                gcs_path
+                if gcs_path.endswith('.parquet')
+                else gcs_path.rstrip('/') + '/*.parquet'
+            )
 
         # Preserve the existing table schema if present (mirrors the
         # STS path's behavior — important for embedding array columns).
@@ -986,20 +1049,30 @@ class BigQueryConnector(SQLConnector):
             table = self.client.get_table(self.full_table_name(table_name))
             schema = table.schema
 
-        logger.info("Loading artifacts into BigQuery (replace=%s)", replace)
+        logger.info('Loading artifacts into BigQuery (replace=%s)', replace)
         try:
-            load_uris(self.client, source_uri, self.full_table_name(table_name),
-                      replace=replace, schema=schema)
+            load_uris(
+                self.client,
+                source_uri,
+                self.full_table_name(table_name),
+                replace=replace,
+                schema=schema,
+            )
         except Exception as e:
             logger.warning('BigQuery load job failed (%s)', type(e).__name__)
             raise ConnectorError(
-                'Failed to load artifacts into the configured BigQuery '
-                'output table.') from None
+                'Failed to load artifacts into the configured BigQuery output table.'
+            ) from None
 
     @blocking_method()
     def write_artifacts_to_table(
-            self, table_name: str, artifact_path: str, replace: bool = False, *,
-            artifact_files: list[str] | None = None) -> None:
+        self,
+        table_name: str,
+        artifact_path: str,
+        replace: bool = False,
+        *,
+        artifact_files: list[str] | None = None,
+    ) -> None:
         r"""Upload parquet artifacts into a customer's BigQuery table.
 
         Artifacts already staged in ``gs://`` load directly. Worker-local
@@ -1015,28 +1088,34 @@ class BigQueryConnector(SQLConnector):
         self.require_output_table_within_connector_target(table_name)
         self.require_supported_artifact_path(artifact_path)
         if artifact_files is not None:
-            return self._write_artifacts_from_gcs(table_name, artifact_path,
-                                                  replace=replace,
-                                                  artifact_files=artifact_files)
+            return self._write_artifacts_from_gcs(
+                table_name,
+                artifact_path,
+                replace=replace,
+                artifact_files=artifact_files,
+            )
         if not is_local_artifact_path(artifact_path):
-            return self._write_artifacts_from_gcs(table_name, artifact_path,
-                                                  replace=replace)
+            return self._write_artifacts_from_gcs(
+                table_name, artifact_path, replace=replace
+            )
 
         bucket_name = ENV_GCS_KUMO_BUCKET.parse_value()
         if not bucket_name:
             raise ConnectorError(
                 'GCP_STORAGE_TRANSFER_BUCKET is not configured; local '
-                'BigQuery artifact output cannot be staged.')
+                'BigQuery artifact output cannot be staged.'
+            )
 
         try:
             staged_write(
-                self.client, self._initialize_gcs_client(),
-                StagingLocation(bucket_name,
-                                f'artifact-export/{uuid.uuid4().hex}'),
+                self.client,
+                self._initialize_gcs_client(),
+                StagingLocation(bucket_name, f'artifact-export/{uuid.uuid4().hex}'),
                 local_parquet_files(artifact_path),
-                self.full_table_name(table_name), replace=replace,
-                existing=existing_table(self.client,
-                                        self.full_table_name(table_name)))
+                self.full_table_name(table_name),
+                replace=replace,
+                existing=existing_table(self.client, self.full_table_name(table_name)),
+            )
         except ConnectorError:
             raise
         except OutputSchemaMismatchError as error:
@@ -1044,7 +1123,8 @@ class BigQueryConnector(SQLConnector):
                 'Prediction output does not fit the existing BigQuery output '
                 f'table: {"; ".join(error.problems)}. APPEND needs every '
                 'output column in the table with the same type; use '
-                'OVERWRITE or another table.')
+                'OVERWRITE or another table.'
+            )
             logger.warning(message)
             raise BigQueryOutputSchemaError(message) from None
         except Exception as error:
@@ -1054,7 +1134,8 @@ class BigQueryConnector(SQLConnector):
             )
             raise ConnectorError(
                 'Failed to load local artifacts into the configured BigQuery '
-                'output table.') from None
+                'output table.'
+            ) from None
 
     @staticmethod
     def require_supported_artifact_path(artifact_path: str) -> None:
@@ -1065,11 +1146,11 @@ class BigQueryConnector(SQLConnector):
             return
         if artifact_path.startswith('s3://'):
             raise ConnectorError(
-                'BigQuery output does not support s3:// artifact paths; '
-                'use gs://.')
+                'BigQuery output does not support s3:// artifact paths; use gs://.'
+            )
         raise ConnectorError(
-            'Unsupported artifact scheme for BigQuery output; expected '
-            'gs://.')
+            'Unsupported artifact scheme for BigQuery output; expected gs://.'
+        )
 
     @blocking_method()
     def export_table_to_blob_storage(
@@ -1087,22 +1168,23 @@ class BigQueryConnector(SQLConnector):
 
         if not dest_path.startswith('gs://'):
             raise ConnectorError(
-                'Unsupported destination scheme for BigQuery export; expected '
-                'gs://.')
+                'Unsupported destination scheme for BigQuery export; expected gs://.'
+            )
         try:
             # Custom training runs on DataBackend, without whole-table scratch.
             export(
                 self.client,
                 location=StagingLocation.parse(dest_path),
-                projection=(', '.join(map(quote_identifier, columns))
-                            if columns else '*'),
-                source=qualified_name(self.project_id, self.dataset_id,
-                                      table_name),
+                projection=(
+                    ', '.join(map(quote_identifier, columns)) if columns else '*'
+                ),
+                source=qualified_name(self.project_id, self.dataset_id, table_name),
                 job_config=home_dataset(self.project_id, self.dataset_id),
             )
         except Exception as error:
-            logger.error("BigQuery table export failed (error_type=%s)",
-                         type(error).__name__)
+            logger.error(
+                'BigQuery table export failed (error_type=%s)', type(error).__name__
+            )
             raise ConnectorError(
                 'Failed to export data from the configured BigQuery table.'
             ) from None
@@ -1119,9 +1201,11 @@ class BigQueryConnector(SQLConnector):
             # Scoped per attempt as well as per table and version: the
             # reader clears its prefix before and after the unload, so two
             # attempts sharing one would delete each other's export mid-fetch.
-            staging_uri = (f'gs://{bucket}/source-reader/'
-                           f'{source_key}/{data_version}/'
-                           f'{uuid.uuid4().hex}')
+            staging_uri = (
+                f'gs://{bucket}/source-reader/'
+                f'{source_key}/{data_version}/'
+                f'{uuid.uuid4().hex}'
+            )
             storage_client = self._initialize_gcs_client()
         # Passed explicitly rather than read back off the read client, where
         # an SDK rename would silently cost every worker its own channel.
@@ -1143,8 +1227,9 @@ class BigQueryConnector(SQLConnector):
                 reader.read_client.transport.close()
             except Exception as error:
                 logger.warning(
-                    "BigQuery read client cleanup failed (error_type=%s)",
-                    type(error).__name__)
+                    'BigQuery read client cleanup failed (error_type=%s)',
+                    type(error).__name__,
+                )
 
     @blocking_method()
     def export_table(
@@ -1156,10 +1241,15 @@ class BigQueryConnector(SQLConnector):
         graph_table_count: Optional[int] = None,
     ) -> ExportMetrics:
         from kumo.connector.source_bridge import read_source
-        with self._source_reader(table_fp.ingest_path_fpid,
-                                 data_version) as reader:
-            return read_source(reader, source_name, table_fp, data_version,
-                               graph_table_count=graph_table_count)
+
+        with self._source_reader(table_fp.ingest_path_fpid, data_version) as reader:
+            return read_source(
+                reader,
+                source_name,
+                table_fp,
+                data_version,
+                graph_table_count=graph_table_count,
+            )
 
     def download(
         self,
@@ -1170,27 +1260,30 @@ class BigQueryConnector(SQLConnector):
     ) -> None:
         from kumo.data import MaterializationStage
         from kumo.data.utils import get_materialize_path
+
         fsutil.copy(
-            get_materialize_path(table_fp, data_version,
-                                 MaterializationStage.INGEST), local_dest,
-            overwrite=True)
+            get_materialize_path(table_fp, data_version, MaterializationStage.INGEST),
+            local_dest,
+            overwrite=True,
+        )
 
     # Custom SQL query pushdown ###############################################
 
     def _validate_read_only_query(self, sql: str) -> bigquery.QueryJob:
         r"""Compile with BigQuery and require one SELECT result statement."""
         try:
-            query_job = read_only_job(self.context, sql,
-                                      project=self.project_id,
-                                      dataset=self.dataset_id)
+            query_job = read_only_job(
+                self.context, sql, project=self.project_id, dataset=self.dataset_id
+            )
         except PermanentSourceError:
             raise ConnectorError(
-                "Custom SQL must be a single read-only SELECT statement; "
-                "BigQuery scripts, procedures, DDL, and DML are unsupported."
+                'Custom SQL must be a single read-only SELECT statement; '
+                'BigQuery scripts, procedures, DDL, and DML are unsupported.'
             ) from None
         except Exception as err:
             _raise_bq_query_failure(
-                err, "BigQuery failed to compile the custom SQL query")
+                err, 'BigQuery failed to compile the custom SQL query'
+            )
         return query_job
 
     @blocking_method()
@@ -1198,8 +1291,11 @@ class BigQueryConnector(SQLConnector):
         r"""Describe a query's ordered result schema with a dry run."""
         query_job = self._validate_read_only_query(sql)
         return TableMetadataConfig(
-            table_name='', source_name='', data_source=self.name,
-            cols=self._cols_from_schema(query_job.schema))
+            table_name='',
+            source_name='',
+            data_source=self.name,
+            cols=self._cols_from_schema(query_job.schema),
+        )
 
     @blocking_method()
     def get_query_scan_estimate_bytes(self, sql: str) -> Optional[int]:
@@ -1209,11 +1305,13 @@ class BigQueryConnector(SQLConnector):
         estimate to gate preview and stype sampling.
         """
         try:
-            query_job = dry_run(self.context, sql, project=self.project_id,
-                                dataset=self.dataset_id)
+            query_job = dry_run(
+                self.context, sql, project=self.project_id, dataset=self.dataset_id
+            )
         except Exception as err:
             _raise_bq_query_failure(
-                err, "BigQuery failed to compile the custom SQL query")
+                err, 'BigQuery failed to compile the custom SQL query'
+            )
         return query_job.total_bytes_processed
 
     @blocking_method()
@@ -1224,16 +1322,22 @@ class BigQueryConnector(SQLConnector):
         the caller gated on is advisory.
         """
         query, config = sample_request(
-            sql, num_rows, project=self.project_id, dataset=self.dataset_id,
-            max_bytes_billed=SQL_SAMPLE_MAX_SCAN_BYTES)
+            sql,
+            num_rows,
+            project=self.project_id,
+            dataset=self.dataset_id,
+            max_bytes_billed=SQL_SAMPLE_MAX_SCAN_BYTES,
+        )
         try:
-            return self._get_df_result(self.context, query, job_config=config,
-                                       surface_query_diagnostics=True)
+            return self._get_df_result(
+                self.context, query, job_config=config, surface_query_diagnostics=True
+            )
         except ConnectorError:
             raise
         except Exception as err:
             _raise_bq_query_failure(
-                err, "BigQuery failed to compile the custom SQL query")
+                err, 'BigQuery failed to compile the custom SQL query'
+            )
 
     @blocking_method()
     def export_query(
@@ -1246,19 +1350,20 @@ class BigQueryConnector(SQLConnector):
 
         try:
             self._validate_read_only_query(sql)
-            with self._source_reader(table_fp.ingest_path_fpid,
-                                     data_version) as reader:
-                return read_source(reader, table_fp.ingest_path_fpid, table_fp,
-                                   data_version, sql=sql)
+            with self._source_reader(table_fp.ingest_path_fpid, data_version) as reader:
+                return read_source(
+                    reader, table_fp.ingest_path_fpid, table_fp, data_version, sql=sql
+                )
         except ConnectorError:
             raise
         except Exception as e:
             logger.error(
                 'BigQuery custom SQL query export failed (error_type=%s)',
-                type(e).__name__)
+                type(e).__name__,
+            )
             raise ConnectorError(
-                'Failed to read the configured BigQuery custom SQL query.',
-                error=e) from None
+                'Failed to read the configured BigQuery custom SQL query.', error=e
+            ) from None
 
     def check_table_read_permissions(self, table_name):
         """
@@ -1276,74 +1381,89 @@ class BigQueryConnector(SQLConnector):
             self.open()
         try:
             bq_table = self._get_bigquery_table(table_name)
-            if str(bq_table.table_type) == "TABLE":
+            if str(bq_table.table_type) == 'TABLE':
                 # A read-session probe validates BigQuery Storage Read API
                 # permissions for physical tables.
-                project_path = f"projects/{self.project_id}"
-                table_path = f"{project_path}/datasets/{self.dataset_id}/tables/{table_name}"
+                project_path = f'projects/{self.project_id}'
+                table_path = (
+                    f'{project_path}/datasets/{self.dataset_id}/tables/{table_name}'
+                )
                 storage_client = BigQueryReadClient(
-                    credentials=self.context._credentials)
+                    credentials=self.context._credentials
+                )
                 storage_client.create_read_session(
-                    parent=project_path, read_session=types.ReadSession(
-                        table=table_path, data_format=types.DataFormat.ARROW))
+                    parent=project_path,
+                    read_session=types.ReadSession(
+                        table=table_path, data_format=types.DataFormat.ARROW
+                    ),
+                )
             else:
                 # Use dry run for views
                 table_ref = self.full_table_name(table_name)
-                query = f"SELECT 1 FROM `{table_ref}` LIMIT 1"
-                job_config = bigquery.QueryJobConfig(dry_run=True,
-                                                     use_query_cache=False)
+                query = f'SELECT 1 FROM `{table_ref}` LIMIT 1'
+                job_config = bigquery.QueryJobConfig(
+                    dry_run=True, use_query_cache=False
+                )
                 self.context.query(query, job_config=job_config)
         except ConnectorError:
             raise
         except PermissionDenied as e:
             logger.error(
-                "BigQuery table permission denied (error_type=%s)",
+                'BigQuery table permission denied (error_type=%s)',
                 type(e).__name__,
             )
             raise ConnectorError(
                 'The selected identity does not have the required BigQuery '
-                'table read permission.') from None
+                'table read permission.'
+            ) from None
         except Forbidden:
             raise ConnectorError(
                 'The selected identity does not have the required BigQuery '
-                'table metadata permission.') from None
+                'table metadata permission.'
+            ) from None
         except Exception as e:
             logger.error(
-                "Error while checking BigQuery read permissions "
-                "(error_type=%s)",
-                type(e).__name__)
-            raise ConnectorError('Kumo was unable to read the configured '
-                                 'BigQuery table.') from None
+                'Error while checking BigQuery read permissions (error_type=%s)',
+                type(e).__name__,
+            )
+            raise ConnectorError(
+                'Kumo was unable to read the configured BigQuery table.'
+            ) from None
 
-    def _use_credentials(self, service: str, from_json: Callable[[str], Any],
-                         from_account_info: Callable[[Dict[str, str]], Any],
-                         store_credentials: bool = False) -> Any:
+    def _use_credentials(
+        self,
+        service: str,
+        from_json: Callable[[str], Any],
+        from_account_info: Callable[[Dict[str, str]], Any],
+        store_credentials: bool = False,
+    ) -> Any:
         r"""Uses credentials associated with a Google Cloud service.
         NOTE: The `from_json` path should only be used in tests. Production
         workflow only uses credentials in AWS service account keys."""
+
         def _store_credentials(parsed_credentials: Dict[str, str]):
             for key, value in parsed_credentials.items():
                 self._credentials[key] = SecretStr(value)
 
-        service_account_json = os.getenv(ENV_GOOGLE_CREDENTIALS_JSON,
-                                         ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH)
+        service_account_json = os.getenv(
+            ENV_GOOGLE_CREDENTIALS_JSON, ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH
+        )
         # If the service account json exists, use it to initialize the client.
         # This is used only in tests.
         if fsutil.exists(service_account_json):
-            with open(service_account_json, "r") as f:
+            with open(service_account_json, 'r') as f:
                 parsed_credentials: Dict[str, str] = json.load(f)
 
             # GitHub Workload Identity Federation produces an
             # ``external_account`` ADC file, not a service-account key. Load
             # it through google-auth and optionally impersonate one of the
             # deliberately restricted BigQuery test identities.
-            if parsed_credentials.get("type") != "service_account":
+            if parsed_credentials.get('type') != 'service_account':
                 credential, _ = load_credentials_from_file(
                     service_account_json,
                     scopes=[GOOGLE_CLOUD_PLATFORM_SCOPE],
                 )
-                target_principal = os.getenv(
-                    ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT)
+                target_principal = os.getenv(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT)
                 if target_principal:
                     credential = impersonated_credentials.Credentials(
                         source_credentials=credential,
@@ -1351,8 +1471,8 @@ class BigQueryConnector(SQLConnector):
                         target_scopes=[GOOGLE_CLOUD_PLATFORM_SCOPE],
                     )
                 if store_credentials:
-                    self._credentials["provider"] = "bigquery"
-                    self._credentials["credential"] = credential
+                    self._credentials['provider'] = 'bigquery'
+                    self._credentials['credential'] = credential
                 return Client(
                     project=self.project_id,
                     credentials=credential,
@@ -1364,27 +1484,27 @@ class BigQueryConnector(SQLConnector):
             return from_json(service_account_json)
         elif service_account_json == ENV_GOOGLE_CREDENTIALS_JSON:
             raise ConnectorError(
-                message='The configured service-account key file does not '
-                'exist.')
+                message='The configured service-account key file does not exist.'
+            )
 
         # Otherwise use service account keys.
         service_account_key = f'kumo-{service}-service-account-key'
         try:
             credentials = get_secrets(service_account_key)
-            if "json" in credentials:
+            if 'json' in credentials:
                 # Support having the json stored in json key instead.
-                credentials = json.loads(credentials["json"])
+                credentials = json.loads(credentials['json'])
             if store_credentials:
                 _store_credentials(credentials)
             service_account_info = credentials
             return from_account_info(service_account_info)
         except Exception as e:
             logger.error(
-                "Error accessing stored BigQuery credentials "
-                "(error_type=%s)",
-                type(e).__name__)
+                'Error accessing stored BigQuery credentials (error_type=%s)',
+                type(e).__name__,
+            )
             raise ConnectorError(
-                message=f"Kumo failed to retrieve stored {service} credentials.",
+                message=f'Kumo failed to retrieve stored {service} credentials.',
             ) from None
 
 
@@ -1395,6 +1515,5 @@ class BigQueryOutputSchemaError(ConnectorError):
 
 # Explicit dataclass definition ###############################################
 
-BigQueryConnectorConfig = to_dataclass(BigQueryConnector,
-                                       base_cls=ConnectorConfig)
-register(BigQueryConnector, BigQueryConnectorConfig, group="connector")
+BigQueryConnectorConfig = to_dataclass(BigQueryConnector, base_cls=ConnectorConfig)
+register(BigQueryConnector, BigQueryConnectorConfig, group='connector')

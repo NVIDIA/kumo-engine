@@ -16,10 +16,11 @@ instead of breaking Snowflake key-pair auth in production.
 The fixture keys are throwaway 2048-bit RSA keys generated for this test
 (passphrase "testpass"); they protect nothing.
 """
+
 from cryptography.hazmat.primitives.asymmetric import rsa
 from kumo_snowflake.keys import load_private_key
 
-PASSPHRASE = b"testpass"
+PASSPHRASE = b'testpass'
 
 TRADITIONAL_PEM_DES3 = """\
 -----BEGIN RSA PRIVATE KEY-----
@@ -151,10 +152,10 @@ g0+E3cxL9yOrx+b+csc=
 """
 
 LEGACY_KEYS = {
-    "traditional PEM, DES-EDE3-CBC": TRADITIONAL_PEM_DES3,
-    "PKCS#8 v1, PBE-SHA1-3DES": PKCS8_PBE_SHA1_3DES,
-    "PKCS#8 v1, PBE-MD5-DES": PKCS8_PBE_MD5_DES,
-    "PKCS#8 v1, PBE-SHA1-RC2-40": PKCS8_PBE_SHA1_RC2_40,
+    'traditional PEM, DES-EDE3-CBC': TRADITIONAL_PEM_DES3,
+    'PKCS#8 v1, PBE-SHA1-3DES': PKCS8_PBE_SHA1_3DES,
+    'PKCS#8 v1, PBE-MD5-DES': PKCS8_PBE_MD5_DES,
+    'PKCS#8 v1, PBE-SHA1-RC2-40': PKCS8_PBE_SHA1_RC2_40,
 }
 
 

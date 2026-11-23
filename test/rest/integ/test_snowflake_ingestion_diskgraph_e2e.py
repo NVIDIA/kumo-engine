@@ -71,6 +71,7 @@ Usage:
         test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py \\
         -xvs --timeout=1800 --runsnowflake
 """
+
 import dataclasses
 import io
 import logging
@@ -78,10 +79,6 @@ import os
 import time
 from decimal import Decimal
 from pathlib import Path
-from test.rest.integ.test_diskgraph_e2e import (
-    MAX_POLL_SECONDS,
-    POLL_INTERVAL_SECONDS,
-)
 
 import kumoapi.data_source as data_source_api
 import kumoapi.table as table_api
@@ -127,6 +124,10 @@ from rest.config.table_v2 import (
     TableDefinition,
 )
 from statedb.config.common import JobStatus, ProjectID
+from test.rest.integ.test_diskgraph_e2e import (
+    MAX_POLL_SECONDS,
+    POLL_INTERVAL_SECONDS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -134,11 +135,16 @@ log = logging.getLogger(__name__)
 # up the diskgraph config even when the env var isn't set by CI.
 # Mirrors test_snowflake_diskgraph_e2e.py.
 if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
+    _default_deploy_config = (
+        Path(__file__).resolve().parents[3]
+        / 'rest'
+        / 'devserver'
+        / 'configs'
+        / 'diskgraph-test.json'
+    )
     os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
-_CONNECTOR_NAME = "financial_snowflake_diskgraph"
+_CONNECTOR_NAME = 'financial_snowflake_diskgraph'
 
 # Source tables hand-provisioned in xva19026.KUMO.FINANCIAL_PYTEST.
 _DATABASE = 'KUMO'
@@ -162,8 +168,8 @@ _WIDE_INTEGER = 123_456_789_012_345_678_901_234_567_890
 # parametrization hits a kumo-side stats persistence issue
 # unrelated to the Snowflake connector path.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["s3"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['s3'], indirect=True),
 ]
 
 
@@ -171,6 +177,7 @@ pytestmark = [
 def test_cleanup_options():
     """Preserve state across the test — don't reset DB between operations."""
     from rest.testing.config import TestFunctionCleanupOptions
+
     return TestFunctionCleanupOptions(
         should_reset_rest_db=False,
         should_reset_ml_db=False,
@@ -189,18 +196,35 @@ def test_cleanup_options():
 # than discovering them at runtime.
 
 
-def _account_table_def(connector_name: str,
-                       source_name: str = _TABLE_ACCOUNT) -> TableDefinition:
+def _account_table_def(
+    connector_name: str, source_name: str = _TABLE_ACCOUNT
+) -> TableDefinition:
     return TableDefinition(
         cols=[
-            table_api.Column(name="FREQUENCY", stype=Stype.categorical,
-                             dtype=Dtype.string, timestamp_format=None),
-            table_api.Column(name="DATE", stype=Stype.timestamp,
-                             dtype=Dtype.date, timestamp_format=None),
-            table_api.Column(name="DISTRICT_ID", stype=Stype.ID,
-                             dtype=Dtype.int, timestamp_format=None),
-            table_api.Column(name="ACCOUNT_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
+            table_api.Column(
+                name='FREQUENCY',
+                stype=Stype.categorical,
+                dtype=Dtype.string,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='DATE',
+                stype=Stype.timestamp,
+                dtype=Dtype.date,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='DISTRICT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='ACCOUNT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
         ],
         source_table=SnowflakeSourceTable(
             snowflake_connector_id=connector_name,
@@ -208,30 +232,56 @@ def _account_table_def(connector_name: str,
             schema_name=_SCHEMA,
             table=source_name,
         ),
-        pkey="ACCOUNT_ID",
+        pkey='ACCOUNT_ID',
         time_col=None,
         end_time_col=None,
     )
 
 
-def _loan_table_def(connector_name: str,
-                    source_name: str = _TABLE_LOAN) -> TableDefinition:
+def _loan_table_def(
+    connector_name: str, source_name: str = _TABLE_LOAN
+) -> TableDefinition:
     return TableDefinition(
         cols=[
-            table_api.Column(name="AMOUNT", stype=Stype.numerical,
-                             dtype=Dtype.int, timestamp_format=None),
-            table_api.Column(name="DURATION", stype=Stype.categorical,
-                             dtype=Dtype.int, timestamp_format=None),
-            table_api.Column(name="PAYMENTS", stype=Stype.numerical,
-                             dtype=Dtype.float, timestamp_format=None),
-            table_api.Column(name="STATUS", stype=Stype.categorical,
-                             dtype=Dtype.string, timestamp_format=None),
-            table_api.Column(name="ACCOUNT_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="LOAN_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="DATE", stype=Stype.timestamp,
-                             dtype=Dtype.date, timestamp_format=None),
+            table_api.Column(
+                name='AMOUNT',
+                stype=Stype.numerical,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='DURATION',
+                stype=Stype.categorical,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='PAYMENTS',
+                stype=Stype.numerical,
+                dtype=Dtype.float,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='STATUS',
+                stype=Stype.categorical,
+                dtype=Dtype.string,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='ACCOUNT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='LOAN_ID', stype=Stype.ID, dtype=Dtype.int, timestamp_format=None
+            ),
+            table_api.Column(
+                name='DATE',
+                stype=Stype.timestamp,
+                dtype=Dtype.date,
+                timestamp_format=None,
+            ),
         ],
         source_table=SnowflakeSourceTable(
             snowflake_connector_id=connector_name,
@@ -239,32 +289,62 @@ def _loan_table_def(connector_name: str,
             schema_name=_SCHEMA,
             table=source_name,
         ),
-        pkey="LOAN_ID",
-        time_col="DATE",
+        pkey='LOAN_ID',
+        time_col='DATE',
         end_time_col=None,
     )
 
 
-def _trans_table_def(connector_name: str,
-                     source_name: str = _TABLE_TRANS) -> TableDefinition:
+def _trans_table_def(
+    connector_name: str, source_name: str = _TABLE_TRANS
+) -> TableDefinition:
     return TableDefinition(
         cols=[
-            table_api.Column(name="TYPE", stype=Stype.categorical,
-                             dtype=Dtype.string, timestamp_format=None),
-            table_api.Column(name="OPERATION", stype=Stype.categorical,
-                             dtype=Dtype.string, timestamp_format=None),
-            table_api.Column(name="AMOUNT", stype=Stype.numerical,
-                             dtype=Dtype.float, timestamp_format=None),
-            table_api.Column(name="BALANCE", stype=Stype.numerical,
-                             dtype=Dtype.float, timestamp_format=None),
-            table_api.Column(name="K_SYMBOL", stype=Stype.categorical,
-                             dtype=Dtype.string, timestamp_format=None),
-            table_api.Column(name="ACCOUNT_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="TRANS_ID", stype=Stype.ID, dtype=Dtype.int,
-                             timestamp_format=None),
-            table_api.Column(name="DATE", stype=Stype.timestamp,
-                             dtype=Dtype.date, timestamp_format=None),
+            table_api.Column(
+                name='TYPE',
+                stype=Stype.categorical,
+                dtype=Dtype.string,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='OPERATION',
+                stype=Stype.categorical,
+                dtype=Dtype.string,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='AMOUNT',
+                stype=Stype.numerical,
+                dtype=Dtype.float,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='BALANCE',
+                stype=Stype.numerical,
+                dtype=Dtype.float,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='K_SYMBOL',
+                stype=Stype.categorical,
+                dtype=Dtype.string,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='ACCOUNT_ID',
+                stype=Stype.ID,
+                dtype=Dtype.int,
+                timestamp_format=None,
+            ),
+            table_api.Column(
+                name='TRANS_ID', stype=Stype.ID, dtype=Dtype.int, timestamp_format=None
+            ),
+            table_api.Column(
+                name='DATE',
+                stype=Stype.timestamp,
+                dtype=Dtype.date,
+                timestamp_format=None,
+            ),
         ],
         source_table=SnowflakeSourceTable(
             snowflake_connector_id=connector_name,
@@ -272,8 +352,8 @@ def _trans_table_def(connector_name: str,
             schema_name=_SCHEMA,
             table=source_name,
         ),
-        pkey="TRANS_ID",
-        time_col="DATE",
+        pkey='TRANS_ID',
+        time_col='DATE',
         end_time_col=None,
     )
 
@@ -282,15 +362,16 @@ def _wide_integer_table_def(connector_id: str, value: int) -> TableDefinition:
     return TableDefinition(
         cols=[
             table_api.Column(name='LOAN_ID', stype=Stype.ID, dtype=Dtype.int),
-            table_api.Column(name='WIDE_INT', stype=Stype.numerical,
-                             dtype=Dtype.int),
+            table_api.Column(name='WIDE_INT', stype=Stype.numerical, dtype=Dtype.int),
         ],
         source_table=CustomSQLSourceTable(
             connector_id=connector_id,
             table='snowflake_wide_integer_bounds',
-            sql=('SELECT LOAN_ID, '
-                 f"CAST('{value}' AS NUMBER(38,0)) AS WIDE_INT "
-                 f'FROM {_DATABASE}.{_SCHEMA}.{_TABLE_LOAN} LIMIT 1'),
+            sql=(
+                'SELECT LOAN_ID, '
+                f"CAST('{value}' AS NUMBER(38,0)) AS WIDE_INT "
+                f'FROM {_DATABASE}.{_SCHEMA}.{_TABLE_LOAN} LIMIT 1'
+            ),
         ),
         pkey='LOAN_ID',
     )
@@ -305,15 +386,16 @@ def _wide_integer_table_def(connector_id: str, value: int) -> TableDefinition:
 # the query string is never executed because the tests stop at
 # graph refresh.
 
-_DUMMY_QUERY_STR = "PREDICT LOAN.AMOUNT FOR EACH LOAN.LOAN_ID"
+_DUMMY_QUERY_STR = 'PREDICT LOAN.AMOUNT FOR EACH LOAN.LOAN_ID'
 
 
 def _build_single_table_snowflake_fixture(
-    connector_name: str = _CONNECTOR_NAME, ) -> FixtureDefinition:
+    connector_name: str = _CONNECTOR_NAME,
+) -> FixtureDefinition:
     """Single-table fixture (LOAN only — smallest financial table)."""
     loan = _loan_table_def(connector_name)
 
-    graph = GraphDefinition(tables={"LOAN": loan}, col_groups=[])
+    graph = GraphDefinition(tables={'LOAN': loan}, col_groups=[])
 
     return FixtureDefinition(
         tables=[loan],
@@ -322,7 +404,7 @@ def _build_single_table_snowflake_fixture(
             FixturePQueryRecord(
                 query_str=_DUMMY_QUERY_STR,
                 graph_fpid=graph.fpid,
-                pquery_name="single_table_dummy",
+                pquery_name='single_table_dummy',
             ),
         ],
     )
@@ -344,18 +426,21 @@ def _build_snowflake_fixture(
     trans = _trans_table_def(connector_name, trans_source)
 
     from kumoapi.graph import ColumnKey, ColumnKeyGroup
+
     graph = GraphDefinition(
         tables={
-            "ACCOUNT": account,
-            "LOAN": loan,
-            "TRANS": trans,
+            'ACCOUNT': account,
+            'LOAN': loan,
+            'TRANS': trans,
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(table_name="ACCOUNT", col_name="ACCOUNT_ID"),
-                ColumnKey(table_name="LOAN", col_name="ACCOUNT_ID"),
-                ColumnKey(table_name="TRANS", col_name="ACCOUNT_ID"),
-            )),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(table_name='ACCOUNT', col_name='ACCOUNT_ID'),
+                    ColumnKey(table_name='LOAN', col_name='ACCOUNT_ID'),
+                    ColumnKey(table_name='TRANS', col_name='ACCOUNT_ID'),
+                )
+            ),
         ],
     )
 
@@ -366,18 +451,19 @@ def _build_snowflake_fixture(
             FixturePQueryRecord(
                 query_str=_DUMMY_QUERY_STR,
                 graph_fpid=graph.fpid,
-                pquery_name="multi_table_dummy",
+                pquery_name='multi_table_dummy',
             ),
         ],
     )
 
 
 def _build_empty_table_fixture(
-        connector_name: str = _CONNECTOR_NAME) -> FixtureDefinition:
+    connector_name: str = _CONNECTOR_NAME,
+) -> FixtureDefinition:
     """Single-table fixture pointing at the zero-row test table."""
     loan = _loan_table_def(connector_name, _TABLE_EMPTY)
 
-    graph = GraphDefinition(tables={"LOAN": loan}, col_groups=[])
+    graph = GraphDefinition(tables={'LOAN': loan}, col_groups=[])
 
     return FixtureDefinition(
         tables=[loan],
@@ -386,7 +472,7 @@ def _build_empty_table_fixture(
             FixturePQueryRecord(
                 query_str=_DUMMY_QUERY_STR,
                 graph_fpid=graph.fpid,
-                pquery_name="empty_table_dummy",
+                pquery_name='empty_table_dummy',
             ),
         ],
     )
@@ -399,8 +485,7 @@ def _build_empty_table_fixture(
 
 def _parse_data_version(table_snapshot_id: str) -> str:
     if '@' not in table_snapshot_id:
-        raise ValueError(
-            f'unexpected TableSnapshotID format: {table_snapshot_id!r}')
+        raise ValueError(f'unexpected TableSnapshotID format: {table_snapshot_id!r}')
     return table_snapshot_id.rsplit('@', 1)[1]
 
 
@@ -432,9 +517,9 @@ def _list_staged_files(path: str) -> dict[str, tuple[int, float]]:
     if not fsutil.exists(path):
         return {}
     return {
-        entry: (int(fsutil.filesize(entry)
-                    or 0), fsutil.get_last_modified_time(entry))
-        for entry in fsutil.listdir(path) if entry.endswith('.parquet')
+        entry: (int(fsutil.filesize(entry) or 0), fsutil.get_last_modified_time(entry))
+        for entry in fsutil.listdir(path)
+        if entry.endswith('.parquet')
     }
 
 
@@ -443,27 +528,29 @@ def _cleanup_materializations(paths: list[str]) -> None:
         try:
             fsutil.rm(path, ignore_errors=True)
         except Exception as error:  # noqa: BLE001 — diagnostics only
-            log.warning('Cleanup failed for %s (error_type=%s)', path,
-                        type(error).__name__)
+            log.warning(
+                'Cleanup failed for %s (error_type=%s)', path, type(error).__name__
+            )
 
 
-def _assert_staged_parquet(staged: dict[str, tuple[int, float]],
-                           source_name: str, path: str) -> None:
+def _assert_staged_parquet(
+    staged: dict[str, tuple[int, float]], source_name: str, path: str
+) -> None:
     assert staged, (
-        f"expected Kumo-owned parquet for {source_name!r} under {path}, "
-        "but found none")
+        f'expected Kumo-owned parquet for {source_name!r} under {path}, but found none'
+    )
     for parquet_path, (size, _last_modified) in staged.items():
-        assert size > 0, f"empty staged parquet at {parquet_path}"
+        assert size > 0, f'empty staged parquet at {parquet_path}'
 
 
-def _assert_wide_integer_parquet(path: str, expected: int,
-                                 expect_decimal: bool) -> None:
+def _assert_wide_integer_parquet(
+    path: str, expected: int, expect_decimal: bool
+) -> None:
     staged = _list_staged_files(path)
     _assert_staged_parquet(staged, 'NUMBER(38,0) Custom SQL', path)
     values = []
     for parquet_path in staged:
-        parquet_file = pq.ParquetFile(
-            io.BytesIO(fsutil.read_binary(parquet_path)))
+        parquet_file = pq.ParquetFile(io.BytesIO(fsutil.read_binary(parquet_path)))
         field = parquet_file.schema_arrow.field('WIDE_INT')
         if expect_decimal:
             assert pa.types.is_decimal128(field.type), field.type
@@ -472,8 +559,8 @@ def _assert_wide_integer_parquet(path: str, expected: int,
         else:
             assert pa.types.is_int64(field.type), field.type
         values.extend(
-            parquet_file.read(
-                columns=['WIDE_INT']).column('WIDE_INT').to_pylist())
+            parquet_file.read(columns=['WIDE_INT']).column('WIDE_INT').to_pylist()
+        )
     expected_value = Decimal(expected) if expect_decimal else expected
     assert values == [expected_value]
 
@@ -492,7 +579,8 @@ def _register_connector(client: TestClient, fixture: FixtureDefinition):
     key_pair = KeyPair(
         user=SecretStr(os.environ[snowflake_connector._ENV_SNOWFLAKE_USER]),
         private_key=SecretStr(
-            os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY]),
+            os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY]
+        ),
     )
     identity_config, credentials = snowflake_test_identity(key_pair)
     return create_identity_backed_connector(
@@ -521,10 +609,10 @@ async def _setup_and_refresh(
     temporary_connector_id = _connector_name(fixture)
     setup = _register_connector(client, fixture)
     fixture = remap_fixture_connector_ids_v2(
-        fixture, {temporary_connector_id: setup.connector_id})
+        fixture, {temporary_connector_id: setup.connector_id}
+    )
 
-    assert len(fixture.graphs) == 1, (
-        "ingestion tests use exactly one graph per fixture")
+    assert len(fixture.graphs) == 1, 'ingestion tests use exactly one graph per fixture'
     graph_def = fixture.graphs[0]
     # ``?skip_validation=true`` so the API doesn't reject graphs
     # that reference deliberately-bad sources (e.g. the mid-batch
@@ -544,8 +632,12 @@ async def _setup_and_refresh(
             refresh_source=False,
             project_id=ProjectID(setup.project_id),
         )
-    return (snapshot_id, ProjectID(setup.project_id), setup.connector_id,
-            graph_def.fpid)
+    return (
+        snapshot_id,
+        ProjectID(setup.project_id),
+        setup.connector_id,
+        graph_def.fpid,
+    )
 
 
 def _wait_for_graph_snapshot(
@@ -563,14 +655,14 @@ def _wait_for_graph_snapshot(
             GraphSnapshotResponse,
             project_id=str(project_id),
         )
-        ingest_state = resp.snapshot_resource.stages.get(
-            GraphSnapshotStage.INGEST)
+        ingest_state = resp.snapshot_resource.stages.get(GraphSnapshotStage.INGEST)
         if ingest_state and ingest_state.status.is_terminal:
             return resp
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Graph snapshot {graph_snapshot_id} did not complete INGEST "
-        f"stage within {MAX_POLL_SECONDS}s")
+        f'Graph snapshot {graph_snapshot_id} did not complete INGEST '
+        f'stage within {MAX_POLL_SECONDS}s'
+    )
 
 
 def _wait_for_table_snapshot(
@@ -592,9 +684,11 @@ def _wait_for_table_snapshot(
         if state is not None and state.status.is_terminal:
             return last_resource
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(f"Table snapshot {table_snapshot_id} did not complete "
-                       f"{terminal_stage} within {MAX_POLL_SECONDS}s; "
-                       f"last_resource={last_resource}")
+    raise TimeoutError(
+        f'Table snapshot {table_snapshot_id} did not complete '
+        f'{terminal_stage} within {MAX_POLL_SECONDS}s; '
+        f'last_resource={last_resource}'
+    )
 
 
 def _snapshot_stat_value(stats: dict, key: str):
@@ -624,8 +718,7 @@ async def test_snowflake_wide_integer_rejected_during_table_refresh(
     setup = _register_connector(client, fixture)
     materialize_paths: list[str] = []
     in_range_table = _wide_integer_table_def(setup.connector_id, _I64_MAX)
-    out_of_range_table = _wide_integer_table_def(setup.connector_id,
-                                                 _WIDE_INTEGER)
+    out_of_range_table = _wide_integer_table_def(setup.connector_id, _WIDE_INTEGER)
 
     try:
         for name_alias, table_def in (
@@ -655,17 +748,19 @@ async def test_snowflake_wide_integer_rejected_during_table_refresh(
             ProjectID(setup.project_id),
             TableSnapshotStage.FULL_COL_STATS,
         )
-        assert in_range.stages[
-            TableSnapshotStage.INGEST].status == JobStatus.DONE
-        assert (in_range.stages[TableSnapshotStage.FULL_COL_STATS].status ==
-                JobStatus.DONE)
+        assert in_range.stages[TableSnapshotStage.INGEST].status == JobStatus.DONE
+        assert (
+            in_range.stages[TableSnapshotStage.FULL_COL_STATS].status == JobStatus.DONE
+        )
         in_range_path = _table_materialize_path(in_range)
         materialize_paths.append(in_range_path)
-        _assert_wide_integer_parquet(in_range_path, _I64_MAX,
-                                     expect_decimal=True)
+        _assert_wide_integer_parquet(in_range_path, _I64_MAX, expect_decimal=True)
         assert in_range.column_stats is not None
-        wide_stats = next(column.stats for column in in_range.column_stats
-                          if column.column_name == 'WIDE_INT')
+        wide_stats = next(
+            column.stats
+            for column in in_range.column_stats
+            if column.column_name == 'WIDE_INT'
+        )
         assert _snapshot_stat_value(wide_stats, 'MIN') == _I64_MAX
         assert _snapshot_stat_value(wide_stats, 'MAX') == _I64_MAX
         assert _snapshot_stat_value(wide_stats, 'NA_FRACTION') == 0
@@ -684,21 +779,23 @@ async def test_snowflake_wide_integer_rejected_during_table_refresh(
             ProjectID(setup.project_id),
             TableSnapshotStage.MIN_COL_STATS,
         )
-        assert (out_of_range.stages[TableSnapshotStage.INGEST].status ==
-                JobStatus.DONE)
+        assert out_of_range.stages[TableSnapshotStage.INGEST].status == JobStatus.DONE
         min_stats = out_of_range.stages[TableSnapshotStage.MIN_COL_STATS]
         assert min_stats.status == JobStatus.FAILED
         assert min_stats.error is not None
         assert "column 'WIDE_INT'" in min_stats.error
         assert 'signed 64-bit integer range' in min_stats.error
         assert 'DOUBLE or STRING in Custom SQL' in min_stats.error
-        assert (out_of_range.stages[TableSnapshotStage.FULL_COL_STATS].status ==
-                JobStatus.CANCELLED)
+        assert (
+            out_of_range.stages[TableSnapshotStage.FULL_COL_STATS].status
+            == JobStatus.CANCELLED
+        )
         assert out_of_range.column_stats is None
         out_of_range_path = _table_materialize_path(out_of_range)
         materialize_paths.append(out_of_range_path)
-        _assert_wide_integer_parquet(out_of_range_path, _WIDE_INTEGER,
-                                     expect_decimal=True)
+        _assert_wide_integer_parquet(
+            out_of_range_path, _WIDE_INTEGER, expect_decimal=True
+        )
     finally:
         _cleanup_materializations(materialize_paths)
 
@@ -724,22 +821,24 @@ async def test_export_single_table_graph_to_staging(
     materialize_paths: list[str] = []
 
     try:
-        graph_snapshot_id, project_id, _connector_id, _ = (await
-                                                           _setup_and_refresh(
-                                                               client, fixture))
+        graph_snapshot_id, project_id, _connector_id, _ = await _setup_and_refresh(
+            client, fixture
+        )
         resp = _wait_for_graph_snapshot(client, graph_snapshot_id, project_id)
         ingest = resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert ingest.status == JobStatus.DONE, (
-            f"INGEST stage failed: status={ingest.status}, "
-            f"error={ingest.error}")
+            f'INGEST stage failed: status={ingest.status}, error={ingest.error}'
+        )
 
         path = _materialize_path(resp, _TABLE_LOAN)
         materialize_paths.append(path)
         staged = _list_staged_files(path)
         _assert_staged_parquet(staged, _TABLE_LOAN, path)
         log.info(
-            "Single-table staging assertion passed for %s "
-            "(%d staged files)", _TABLE_LOAN, len(staged))
+            'Single-table staging assertion passed for %s (%d staged files)',
+            _TABLE_LOAN,
+            len(staged),
+        )
     finally:
         _cleanup_materializations(materialize_paths)
 
@@ -765,14 +864,14 @@ async def test_export_multi_table_graph_to_staging(
     table_to_path: dict[str, str] = {}
 
     try:
-        graph_snapshot_id, project_id, _connector_id, _ = (await
-                                                           _setup_and_refresh(
-                                                               client, fixture))
+        graph_snapshot_id, project_id, _connector_id, _ = await _setup_and_refresh(
+            client, fixture
+        )
         resp = _wait_for_graph_snapshot(client, graph_snapshot_id, project_id)
         ingest = resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert ingest.status == JobStatus.DONE, (
-            f"INGEST stage failed: status={ingest.status}, "
-            f"error={ingest.error}")
+            f'INGEST stage failed: status={ingest.status}, error={ingest.error}'
+        )
 
         table_to_path = {
             source: _materialize_path(resp, source)
@@ -782,8 +881,9 @@ async def test_export_multi_table_graph_to_staging(
         for source, path in table_to_path.items():
             staged = _list_staged_files(path)
             _assert_staged_parquet(staged, source, path)
-        log.info("Multi-table staging assertion passed for %d tables",
-                 len(table_to_path))
+        log.info(
+            'Multi-table staging assertion passed for %d tables', len(table_to_path)
+        )
     finally:
         _cleanup_materializations(list(table_to_path.values()))
 
@@ -815,14 +915,14 @@ async def test_export_short_circuit_unchanged_version(
     table_to_path: dict[str, str] = {}
 
     try:
-        first_id, project_id, _connector_id, graph_fpid = (await
-                                                           _setup_and_refresh(
-                                                               client, fixture))
+        first_id, project_id, _connector_id, graph_fpid = await _setup_and_refresh(
+            client, fixture
+        )
         first_resp = _wait_for_graph_snapshot(client, first_id, project_id)
-        first_ingest = first_resp.snapshot_resource.stages[
-            GraphSnapshotStage.INGEST]
+        first_ingest = first_resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert first_ingest.status == JobStatus.DONE, (
-            f"First refresh failed: {first_ingest.error}")
+            f'First refresh failed: {first_ingest.error}'
+        )
 
         table_to_path = {
             source: _materialize_path(first_resp, source)
@@ -833,8 +933,9 @@ async def test_export_short_circuit_unchanged_version(
             staged = _list_staged_files(path)
             _assert_staged_parquet(staged, source, path)
             before[source] = staged
-        log.info("Captured materialization listings for %d tables after run",
-                 len(before))
+        log.info(
+            'Captured materialization listings for %d tables after run', len(before)
+        )
 
         # Trigger the same graph refresh a second time. Same
         # connector + same fixture → same fingerprint + same
@@ -848,19 +949,19 @@ async def test_export_short_circuit_unchanged_version(
                 project_id=project_id,
             )
         second_resp = _wait_for_graph_snapshot(client, second_id, project_id)
-        second_ingest = second_resp.snapshot_resource.stages[
-            GraphSnapshotStage.INGEST]
+        second_ingest = second_resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
         assert second_ingest.status == JobStatus.DONE, (
-            f"Second refresh failed: {second_ingest.error}")
+            f'Second refresh failed: {second_ingest.error}'
+        )
 
         for source, path in table_to_path.items():
             after = _list_staged_files(path)
             assert after == before[source], (
-                f"Second ingestion re-wrote Kumo-owned files for "
-                f"{source!r} — diskgraph short-circuit failed. "
-                f"before={before[source]}, after={after}")
-        log.info("Short-circuit assertion passed for %d tables.",
-                 len(table_to_path))
+                f'Second ingestion re-wrote Kumo-owned files for '
+                f'{source!r} — diskgraph short-circuit failed. '
+                f'before={before[source]}, after={after}'
+            )
+        log.info('Short-circuit assertion passed for %d tables.', len(table_to_path))
     finally:
         _cleanup_materializations(list(table_to_path.values()))
 
@@ -894,18 +995,22 @@ async def test_export_mid_batch_failure(
     setup = _register_connector(client, fixture)
 
     graph_def = fixture.graphs[0]
-    resp = client.post('/v1/graphs/?skip_validation=true',
-                       data=to_json(graph_def, insecure=True),
-                       params={'project_id': setup.project_id},
-                       headers={"Content-Type": "application/json"})
+    resp = client.post(
+        '/v1/graphs/?skip_validation=true',
+        data=to_json(graph_def, insecure=True),
+        params={'project_id': setup.project_id},
+        headers={'Content-Type': 'application/json'},
+    )
     assert resp.status_code == 422, (
-        f"expected 422 for graph with non-existent source "
-        f"{_TABLE_DOES_NOT_EXIST!r}, got {resp.status_code}: "
-        f"{resp.text}")
+        f'expected 422 for graph with non-existent source '
+        f'{_TABLE_DOES_NOT_EXIST!r}, got {resp.status_code}: '
+        f'{resp.text}'
+    )
     detail = resp.json().get('detail', '')
     assert 'does not exist' in detail, (
-        f"expected 'does not exist' in error detail, got: {detail!r}")
-    log.info("Mid-batch (bad-table) failure surfaced at API: %s", detail)
+        f"expected 'does not exist' in error detail, got: {detail!r}"
+    )
+    log.info('Mid-batch (bad-table) failure surfaced at API: %s', detail)
 
 
 @pytest.mark.snowflake
@@ -927,14 +1032,16 @@ async def test_export_bad_credentials_raises(
                     account='xva19026',
                     username='bad_user',
                     authentication=(
-                        data_source_api.SnowflakeAuthenticationKind.PASSWORD),
+                        data_source_api.SnowflakeAuthenticationKind.PASSWORD
+                    ),
                 ),
                 credentials=data_source_api.SnowflakePasswordCredentials(
-                    password=SecretStr('bad_password')),
+                    password=SecretStr('bad_password')
+                ),
             ),
             insecure=True,
         ),
-        headers={"Content-Type": "application/json"},
+        headers={'Content-Type': 'application/json'},
     )
     assert response.status_code == 422, response.text
 
@@ -967,21 +1074,23 @@ async def test_export_empty_table(
     fixture = _build_empty_table_fixture()
     fixture = randomize_fixture_ids_v2(fixture)
 
-    graph_snapshot_id, project_id, _, _ = await _setup_and_refresh(
-        client, fixture)
+    graph_snapshot_id, project_id, _, _ = await _setup_and_refresh(client, fixture)
     resp = _wait_for_graph_snapshot(client, graph_snapshot_id, project_id)
 
     ingest = resp.snapshot_resource.stages[GraphSnapshotStage.INGEST]
     log.info(
-        "Empty-table refresh ended with INGEST status=%s, "
-        "error=%s, warnings=%s", ingest.status, ingest.error, ingest.warnings)
+        'Empty-table refresh ended with INGEST status=%s, error=%s, warnings=%s',
+        ingest.status,
+        ingest.error,
+        ingest.warnings,
+    )
 
     candidates: list[str] = []
     if ingest.error:
         candidates.append(ingest.error)
     candidates.extend(ingest.warnings or [])
 
-    table_snap_id = resp.snapshot_resource.table_ids["LOAN"]
+    table_snap_id = resp.snapshot_resource.table_ids['LOAN']
     try:
         table_resp = client.get(f'/v0/snapshots/table/{table_snap_id}')
         if table_resp.status_code == 200:
@@ -993,9 +1102,10 @@ async def test_export_empty_table(
                         candidates.append(stage['error'])
                     candidates.extend(stage.get('warnings') or [])
     except Exception as e:  # noqa: BLE001 — diagnostics only
-        log.warning("Could not fetch table snapshot %s: %s", table_snap_id, e)
+        log.warning('Could not fetch table snapshot %s: %s', table_snap_id, e)
 
     assert any('0 rows' in (msg or '') for msg in candidates), (
         f"expected '0 rows' to surface in snapshot for empty table; "
-        f"candidates={candidates}, ingest_status={ingest.status}")
+        f'candidates={candidates}, ingest_status={ingest.status}'
+    )
     log.info("Empty-table '0 rows' validation surfaced in snapshot.")

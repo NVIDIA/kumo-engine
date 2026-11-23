@@ -88,8 +88,7 @@ _AUTHORIZATION_GC_MAINTENANCE_INTERVAL_SECONDS = EnvVar(
     'CONNECTOR_AUTHORIZATION_GC_MAINTENANCE_INTERVAL_SECONDS',
     int,
     required=False,
-    default_value=int(
-        _DEFAULT_AUTHORIZATION_GC_MAINTENANCE_INTERVAL.total_seconds()),
+    default_value=int(_DEFAULT_AUTHORIZATION_GC_MAINTENANCE_INTERVAL.total_seconds()),
 )
 _AUTHORIZATION_GC_BATCHES_PER_TICK = EnvVar(
     'CONNECTOR_AUTHORIZATION_GC_BATCHES_PER_TICK',
@@ -118,12 +117,9 @@ class ConnectorAuthorizationRetentionPolicy:
     revoked_retention: timedelta = _DEFAULT_INACTIVE_RETENTION
     authorization_batch_size: int = _DEFAULT_AUTHORIZATION_GC_BATCH_SIZE
     use_batch_size: int = _DEFAULT_AUTHORIZATION_USE_GC_BATCH_SIZE
-    opportunistic_min_interval: timedelta = (
-        _DEFAULT_AUTHORIZATION_GC_MIN_INTERVAL)
-    maintenance_interval: timedelta = (
-        _DEFAULT_AUTHORIZATION_GC_MAINTENANCE_INTERVAL)
-    maintenance_batches_per_tick: int = (
-        _DEFAULT_AUTHORIZATION_GC_BATCHES_PER_TICK)
+    opportunistic_min_interval: timedelta = _DEFAULT_AUTHORIZATION_GC_MIN_INTERVAL
+    maintenance_interval: timedelta = _DEFAULT_AUTHORIZATION_GC_MAINTENANCE_INTERVAL
+    maintenance_batches_per_tick: int = _DEFAULT_AUTHORIZATION_GC_BATCHES_PER_TICK
 
     def __post_init__(self) -> None:
         if self.expired_retention < timedelta(0):
@@ -137,29 +133,32 @@ class ConnectorAuthorizationRetentionPolicy:
         if self.opportunistic_min_interval < timedelta(0):
             raise ValueError('Authorization cleanup interval cannot be negative')
         if self.maintenance_interval <= timedelta(0):
-            raise ValueError(
-                'Authorization maintenance interval must be positive')
+            raise ValueError('Authorization maintenance interval must be positive')
         if self.maintenance_batches_per_tick < 1:
             raise ValueError(
-                'Authorization maintenance batches per tick must be positive')
+                'Authorization maintenance batches per tick must be positive'
+            )
 
     @classmethod
     def from_env(cls) -> 'ConnectorAuthorizationRetentionPolicy':
         return cls(
             expired_retention=timedelta(
-                seconds=_EXPIRED_RETENTION_SECONDS.parse_value()),
+                seconds=_EXPIRED_RETENTION_SECONDS.parse_value()
+            ),
             revoked_retention=timedelta(
-                seconds=_REVOKED_RETENTION_SECONDS.parse_value()),
+                seconds=_REVOKED_RETENTION_SECONDS.parse_value()
+            ),
             authorization_batch_size=_AUTHORIZATION_GC_BATCH_SIZE.parse_value(),
             use_batch_size=_AUTHORIZATION_USE_GC_BATCH_SIZE.parse_value(),
             opportunistic_min_interval=timedelta(
-                seconds=_AUTHORIZATION_GC_MIN_INTERVAL_SECONDS.parse_value()),
+                seconds=_AUTHORIZATION_GC_MIN_INTERVAL_SECONDS.parse_value()
+            ),
             maintenance_interval=timedelta(
-                seconds=(
-                    _AUTHORIZATION_GC_MAINTENANCE_INTERVAL_SECONDS.parse_value()
-                )),
+                seconds=(_AUTHORIZATION_GC_MAINTENANCE_INTERVAL_SECONDS.parse_value())
+            ),
             maintenance_batches_per_tick=(
-                _AUTHORIZATION_GC_BATCHES_PER_TICK.parse_value()),
+                _AUTHORIZATION_GC_BATCHES_PER_TICK.parse_value()
+            ),
         )
 
 
@@ -177,6 +176,7 @@ def _token_hash(token: str) -> str:
 
 def canonical_request_digest(value: Any) -> str:
     """Hash a stable, credential-free authorization request shape."""
+
     def normalize(item: Any) -> Any:
         if dataclasses.is_dataclass(item):
             return {
@@ -188,24 +188,23 @@ def canonical_request_digest(value: Any) -> str:
         if isinstance(item, dict):
             return {
                 str(key): normalize(val)
-                for key, val in sorted(item.items(),
-                                       key=lambda pair: str(pair[0]))
+                for key, val in sorted(item.items(), key=lambda pair: str(pair[0]))
             }
         if isinstance(item, (list, tuple)):
             return [normalize(element) for element in item]
         if item is None or isinstance(item, (str, int, float, bool)):
             return item
-        raise TypeError(
-            f'Unsupported authorization digest value {type(item).__name__}')
+        raise TypeError(f'Unsupported authorization digest value {type(item).__name__}')
 
-    encoded = json.dumps(normalize(value), sort_keys=True,
-                         separators=(',', ':'),
-                         ensure_ascii=True).encode('utf-8')
+    encoded = json.dumps(
+        normalize(value), sort_keys=True, separators=(',', ':'), ensure_ascii=True
+    ).encode('utf-8')
     return hashlib.sha256(encoded).hexdigest()
 
 
 class ConnectorAuthorizationService:
     """Issue and consume opaque, workflow-scoped connector capabilities."""
+
     def __init__(
         self,
         state_db: StateDB,
@@ -213,12 +212,15 @@ class ConnectorAuthorizationService:
         retention_policy: ConnectorAuthorizationRetentionPolicy | None = None,
     ) -> None:
         self._state_db = state_db
-        self._authorizations = JsonRepository('connector_authorizations',
-                                              ConnectorAuthorizationDBEntry)
-        self._uses = JsonRepository('connector_authorization_uses',
-                                    ConnectorAuthorizationUseDBEntry)
+        self._authorizations = JsonRepository(
+            'connector_authorizations', ConnectorAuthorizationDBEntry
+        )
+        self._uses = JsonRepository(
+            'connector_authorization_uses', ConnectorAuthorizationUseDBEntry
+        )
         self._retention_policy = (
-            retention_policy or ConnectorAuthorizationRetentionPolicy.from_env())
+            retention_policy or ConnectorAuthorizationRetentionPolicy.from_env()
+        )
         self._cleanup_rate_lock = threading.Lock()
         self._next_cleanup_monotonic = 0.0
         self._authorization_writes_since_cleanup = 0
@@ -243,8 +245,7 @@ class ConnectorAuthorizationService:
             result = await self.purge_stale()
         except Exception as error:
             log.warning(
-                'Connector authorization startup cleanup failed '
-                '(error_type=%s)',
+                'Connector authorization startup cleanup failed (error_type=%s)',
                 type(error).__name__,
             )
         else:
@@ -276,8 +277,9 @@ class ConnectorAuthorizationService:
         for _ in range(self._retention_policy.maintenance_batches_per_tick):
             result = await self.purge_stale(now=now)
             total = ConnectorAuthorizationCleanupResult(
-                authorizations_deleted=(total.authorizations_deleted
-                                        + result.authorizations_deleted),
+                authorizations_deleted=(
+                    total.authorizations_deleted + result.authorizations_deleted
+                ),
                 uses_deleted=total.uses_deleted + result.uses_deleted,
             )
             if not result.authorizations_deleted and not result.uses_deleted:
@@ -296,8 +298,7 @@ class ConnectorAuthorizationService:
                     # A transient database failure must not permanently stop
                     # retention enforcement. Never log capability contents.
                     log.warning(
-                        'Connector authorization maintenance failed '
-                        '(error_type=%s)',
+                        'Connector authorization maintenance failed (error_type=%s)',
                         type(error).__name__,
                     )
                 else:
@@ -332,9 +333,9 @@ class ConnectorAuthorizationService:
                 self._authorization_writes_since_cleanup
                 >= self._retention_policy.authorization_batch_size
                 or self._use_writes_since_cleanup
-                >= self._retention_policy.use_batch_size)
-            if (not volume_due
-                    and monotonic_now < self._next_cleanup_monotonic):
+                >= self._retention_policy.use_batch_size
+            )
+            if not volume_due and monotonic_now < self._next_cleanup_monotonic:
                 return
             self._next_cleanup_monotonic = (
                 monotonic_now
@@ -376,8 +377,7 @@ class ConnectorAuthorizationService:
             authorization_ids=candidate_ids,
             limit=policy.use_batch_size,
         )
-        uses_deleted = await _delete_ids(
-            tx, 'connector_authorization_uses', use_ids)
+        uses_deleted = await _delete_ids(tx, 'connector_authorization_uses', use_ids)
         authorizations_deleted = await _delete_stale_authorizations_without_uses(
             tx,
             authorization_ids=candidate_ids,
@@ -465,8 +465,7 @@ class ConnectorAuthorizationService:
         parent_authorization_id: ConnectorAuthorizationID | None = None,
         expires_at: datetime | None = None,
     ) -> tuple[ConnectorAuthorizationDBEntry, str]:
-        actions = tuple(
-            sorted(set(allowed_actions), key=lambda item: item.value))
+        actions = tuple(sorted(set(allowed_actions), key=lambda item: item.value))
         if not actions:
             raise ValueError('Connector authorization requires an action')
         await self._maybe_purge_stale_in_tx(tx, authorization_writes=1)
@@ -507,13 +506,17 @@ class ConnectorAuthorizationService:
         async with self._state_db.write_tx() as tx:
             entry = await self._get_by_token_in_tx(tx, token)
             self._require_live(entry)
-            if (entry.deployment_id != deployment_id
-                    or entry.temporal_namespace != temporal_namespace):
+            if (
+                entry.deployment_id != deployment_id
+                or entry.temporal_namespace != temporal_namespace
+            ):
                 raise ConnectorAuthorizationError(
-                    'Connector authorization deployment mismatch')
+                    'Connector authorization deployment mismatch'
+                )
             if entry.workflow_id and entry.workflow_id != workflow_id:
                 raise ConnectorAuthorizationError(
-                    'Connector authorization workflow mismatch')
+                    'Connector authorization workflow mismatch'
+                )
             if entry.workflow_id:
                 return entry, False
             entry.workflow_id = workflow_id
@@ -547,12 +550,15 @@ class ConnectorAuthorizationService:
         revoked = 0
         async with self._state_db.write_tx() as tx:
             rows = await self._authorizations.list_by_field(
-                tx, 'workflow_id', workflow_id)
+                tx, 'workflow_id', workflow_id
+            )
             for row in rows:
                 entry = row.payload
-                if (entry.deployment_id != deployment_id
-                        or entry.temporal_namespace != temporal_namespace
-                        or entry.revoked_at is not None):
+                if (
+                    entry.deployment_id != deployment_id
+                    or entry.temporal_namespace != temporal_namespace
+                    or entry.revoked_at is not None
+                ):
                     continue
                 entry.revoked_at = now_utc()
                 entry.timestamps = update_timestamps(entry.timestamps)
@@ -577,40 +583,50 @@ class ConnectorAuthorizationService:
     ) -> ConnectorAuthorizationDBEntry:
         if not workflow_id or not workflow_run_id or not activity_id:
             raise ConnectorAuthorizationError(
-                'Connector authorization requires Temporal provenance')
+                'Connector authorization requires Temporal provenance'
+            )
         async with self._state_db.write_tx() as tx:
             entry = await self._get_by_token_in_tx(tx, token)
             self._require_live(entry)
-            if (entry.deployment_id != deployment_id
-                    or entry.temporal_namespace != temporal_namespace
-                    or entry.workflow_id != workflow_id):
+            if (
+                entry.deployment_id != deployment_id
+                or entry.temporal_namespace != temporal_namespace
+                or entry.workflow_id != workflow_id
+            ):
                 raise ConnectorAuthorizationError(
-                    'Connector authorization workflow provenance mismatch')
-            if (entry.resource_kind != resource_kind
-                    or entry.resource_id != resource_id
-                    or entry.project_id != project_id
-                    or entry.request_digest != request_digest):
+                    'Connector authorization workflow provenance mismatch'
+                )
+            if (
+                entry.resource_kind != resource_kind
+                or entry.resource_id != resource_id
+                or entry.project_id != project_id
+                or entry.request_digest != request_digest
+            ):
                 raise ConnectorAuthorizationError(
-                    'Connector authorization resource scope mismatch')
+                    'Connector authorization resource scope mismatch'
+                )
             if action not in entry.allowed_actions:
                 raise ConnectorAuthorizationError(
-                    'Connector authorization action is not allowed')
-            if (entry.workflow_run_id
-                    and entry.workflow_run_id != workflow_run_id):
+                    'Connector authorization action is not allowed'
+                )
+            if entry.workflow_run_id and entry.workflow_run_id != workflow_run_id:
                 raise ConnectorAuthorizationError(
-                    'Connector authorization run mismatch')
+                    'Connector authorization run mismatch'
+                )
             if not entry.workflow_run_id:
                 entry.workflow_run_id = workflow_run_id
                 entry.timestamps = update_timestamps(entry.timestamps)
                 await self._authorizations.upsert(tx, str(entry.id), entry)
 
             existing = await self._uses.find_one_by_fields(
-                tx, {
+                tx,
+                {
                     'authorization_id': str(entry.id),
                     'workflow_run_id': workflow_run_id,
                     'activity_id': activity_id,
                     'action': action,
-                })
+                },
+            )
             if existing is None:
                 use = ConnectorAuthorizationUseDBEntry(
                     id=ConnectorAuthorizationUseID.generate(),
@@ -623,10 +639,13 @@ class ConnectorAuthorizationService:
                 )
                 await self._uses.upsert(tx, str(use.id), use)
                 await self._maybe_purge_stale_in_tx(tx, use_writes=1)
-            elif (existing.payload.workflow_id != workflow_id
-                  or existing.payload.authorization_id != entry.id):
+            elif (
+                existing.payload.workflow_id != workflow_id
+                or existing.payload.authorization_id != entry.id
+            ):
                 raise ConnectorAuthorizationError(
-                    'Connector authorization retry identity mismatch')
+                    'Connector authorization retry identity mismatch'
+                )
             return entry
 
     async def delegate_to_child(
@@ -640,30 +659,35 @@ class ConnectorAuthorizationService:
         requested = set(child_actions)
         if not child_workflow_id or not requested:
             raise ConnectorAuthorizationError(
-                'Child workflow authorization scope is required')
+                'Child workflow authorization scope is required'
+            )
         if ConnectorCapabilityAction.DELEGATE_CHILD not in parent.allowed_actions:
-            raise ConnectorAuthorizationError(
-                'Parent authorization cannot delegate')
+            raise ConnectorAuthorizationError('Parent authorization cannot delegate')
         if not requested.issubset(set(parent.allowed_actions)):
             raise ConnectorAuthorizationError(
-                'Child authorization exceeds its parent action scope')
+                'Child authorization exceeds its parent action scope'
+            )
         async with self._state_db.write_tx() as tx:
             row = await self._authorizations.get(tx, str(parent.id))
             if row is None:
-                raise ConnectorAuthorizationError(
-                    'Parent authorization is invalid')
+                raise ConnectorAuthorizationError('Parent authorization is invalid')
             current = row.payload
             self._require_live(current)
-            if (current.token_hash != parent.token_hash
-                    or current.workflow_id != parent.workflow_id
-                    or current.workflow_run_id != parent.workflow_run_id):
+            if (
+                current.token_hash != parent.token_hash
+                or current.workflow_id != parent.workflow_id
+                or current.workflow_run_id != parent.workflow_run_id
+            ):
                 raise ConnectorAuthorizationError(
-                    'Parent authorization changed during delegation')
-            if (ConnectorCapabilityAction.DELEGATE_CHILD
-                    not in current.allowed_actions
-                    or not requested.issubset(set(current.allowed_actions))):
+                    'Parent authorization changed during delegation'
+                )
+            if (
+                ConnectorCapabilityAction.DELEGATE_CHILD not in current.allowed_actions
+                or not requested.issubset(set(current.allowed_actions))
+            ):
                 raise ConnectorAuthorizationError(
-                    'Child authorization exceeds its stored parent scope')
+                    'Child authorization exceeds its stored parent scope'
+                )
             child, token = await self._issue_in_tx(
                 tx,
                 principal_id=current.principal_id,
@@ -690,22 +714,19 @@ class ConnectorAuthorizationService:
         token: str,
     ) -> ConnectorAuthorizationDBEntry:
         if not token:
-            raise ConnectorAuthorizationError(
-                'Connector authorization is required')
+            raise ConnectorAuthorizationError('Connector authorization is required')
         expected = _token_hash(token)
-        row = await self._authorizations.find_one_by_field(
-            tx, 'token_hash', expected)
-        if row is None or not hmac.compare_digest(row.payload.token_hash,
-                                                  expected):
-            raise ConnectorAuthorizationError(
-                'Connector authorization is invalid')
+        row = await self._authorizations.find_one_by_field(tx, 'token_hash', expected)
+        if row is None or not hmac.compare_digest(row.payload.token_hash, expected):
+            raise ConnectorAuthorizationError('Connector authorization is invalid')
         return row.payload
 
     @staticmethod
     def _require_live(entry: ConnectorAuthorizationDBEntry) -> None:
         if entry.revoked_at is not None or entry.expires_at <= now_utc():
             raise ConnectorAuthorizationError(
-                'Connector authorization is no longer active')
+                'Connector authorization is no longer active'
+            )
 
 
 def _stale_authorization_predicate(
@@ -721,7 +742,8 @@ def _stale_authorization_predicate(
     return (
         f'({expires_at} <= {_placeholder(tx, len(args) - 1)} '
         f'OR ({revoked_at} IS NOT NULL '
-        f'AND {revoked_at} <= {_placeholder(tx, len(args))}))')
+        f'AND {revoked_at} <= {_placeholder(tx, len(args))}))'
+    )
 
 
 async def _try_acquire_cleanup_lock(tx: StateTx) -> bool:

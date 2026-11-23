@@ -22,21 +22,25 @@ _PROJECT_ID = 'project_' + '1' * 32
 
 
 def _auth() -> SimpleNamespace:
-    return SimpleNamespace(authenticate_request_header=lambda: None, )
+    return SimpleNamespace(
+        authenticate_request_header=lambda: None,
+    )
 
 
 def _ctx() -> SimpleNamespace:
-    return SimpleNamespace(user_authorization=SimpleNamespace(
-        is_admin=False,
-        project_ids=(_PROJECT_ID, ),
-        external_membership_unavailable=False,
-    ))
+    return SimpleNamespace(
+        user_authorization=SimpleNamespace(
+            is_admin=False,
+            project_ids=(_PROJECT_ID,),
+            external_membership_unavailable=False,
+        )
+    )
 
 
 def _tags() -> JobTags:
     return JobTags(
         timestamps=get_current_timestamps(),
-        tags={JobTagKey("phase"): JobTagValue("one")},
+        tags={JobTagKey('phase'): JobTagValue('one')},
     )
 
 
@@ -47,7 +51,9 @@ async def test_generate_train_table_router_reads_tags_from_ml_backend():
     tags = _tags()
     driver = SimpleNamespace(
         get_job_tags=AsyncMock(
-            side_effect=AssertionError("legacy driver tags path called")), )
+            side_effect=AssertionError('legacy driver tags path called')
+        ),
+    )
     ml_job_backend = SimpleNamespace(
         get_generate_train_table_jobs=AsyncMock(return_value=[resource]),
         get_job_tags=AsyncMock(return_value=tags),
@@ -63,9 +69,11 @@ async def test_generate_train_table_router_reads_tags_from_ml_backend():
     assert actual is resource
     assert actual.tags == tags.tags
     ml_job_backend.get_generate_train_table_jobs.assert_awaited_once_with(
-        {job_id}, project_ids={ProjectID(_PROJECT_ID)})
+        {job_id}, project_ids={ProjectID(_PROJECT_ID)}
+    )
     ml_job_backend.get_job_tags.assert_awaited_once_with(
-        JobType.GENERATE_TRAIN_TABLE_JOB, job_id)
+        JobType.GENERATE_TRAIN_TABLE_JOB, job_id
+    )
     driver.get_job_tags.assert_not_called()
 
 
@@ -76,7 +84,9 @@ async def test_generate_prediction_table_router_reads_tags_from_ml_backend():
     tags = _tags()
     driver = SimpleNamespace(
         get_job_tags=AsyncMock(
-            side_effect=AssertionError("legacy driver tags path called")), )
+            side_effect=AssertionError('legacy driver tags path called')
+        ),
+    )
     ml_job_backend = SimpleNamespace(
         get_generate_pred_table_jobs=AsyncMock(return_value=[resource]),
         get_job_tags=AsyncMock(return_value=tags),
@@ -92,7 +102,9 @@ async def test_generate_prediction_table_router_reads_tags_from_ml_backend():
     assert actual is resource
     assert actual.tags == tags.tags
     ml_job_backend.get_generate_pred_table_jobs.assert_awaited_once_with(
-        {job_id}, project_ids={ProjectID(_PROJECT_ID)})
+        {job_id}, project_ids={ProjectID(_PROJECT_ID)}
+    )
     ml_job_backend.get_job_tags.assert_awaited_once_with(
-        JobType.GENERATE_PREDICTION_TABLE_JOB, job_id)
+        JobType.GENERATE_PREDICTION_TABLE_JOB, job_id
+    )
     driver.get_job_tags.assert_not_called()

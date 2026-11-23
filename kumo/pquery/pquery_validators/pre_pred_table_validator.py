@@ -18,11 +18,12 @@ from kumo.validation.validation import (
 logger = logging.getLogger(__name__)
 
 
-class PrePredTableValidator():
+class PrePredTableValidator:
     """Runs validations that need to be run before the batch
     prediction table generation is started.
 
     """
+
     def validate_anchor_time(
         self,
         anchor_date: pd.Timestamp,
@@ -82,25 +83,32 @@ class PrePredTableValidator():
             if (anchor_date - min_date) / timeframe_step < lag_timesteps:
                 response.errors.append(
                     ValidationError(
-                        title="Older lag data is missing",
-                        message=f"Prediction anchor time {anchor_date} is too "
-                        f"close to the start ({min_date}) of data in "
-                        f"{target_table_name}, so earlier lag features will "
-                        "be missing."))
+                        title='Older lag data is missing',
+                        message=f'Prediction anchor time {anchor_date} is too '
+                        f'close to the start ({min_date}) of data in '
+                        f'{target_table_name}, so earlier lag features will '
+                        'be missing.',
+                    )
+                )
 
         if max_date is not None:
-            if anchor_date > max_date and (anchor_date -
-                                           max_date) / timeframe_step >= 1:
+            if (
+                anchor_date > max_date
+                and (anchor_date - max_date) / timeframe_step >= 1
+            ):
                 response.errors.append(
                     ValidationError(
-                        title="Latest lag data is not present",
-                        message=f"Prediction anchor time {anchor_date} is past "
-                        f"the data end ({max_date}) in {target_table_name}, "
-                        "so latest lag features will be empty."))
+                        title='Latest lag data is not present',
+                        message=f'Prediction anchor time {anchor_date} is past '
+                        f'the data end ({max_date}) in {target_table_name}, '
+                        'so latest lag features will be empty.',
+                    )
+                )
         return response
 
-    def validate_num_rhs_rows(self, target_table_name: str, graph: Graph,
-                              is_child_job: bool):
+    def validate_num_rhs_rows(
+        self, target_table_name: str, graph: Graph, is_child_job: bool
+    ):
 
         validation = ValidationResponse()
 
@@ -108,27 +116,30 @@ class PrePredTableValidator():
         if isinstance(target_table, Table):
             rhs_num_nodes = target_table.num_rows()
             if rhs_num_nodes > MAX_RHS_ROWS:
-                title = "Target table has too many unique rows"
+                title = 'Target table has too many unique rows'
                 message = (
                     f"Target table '{target_table_name}' has "
-                    f"{rhs_num_nodes:,} unique rows, which exceeds "
-                    f"the {MAX_RHS_ROWS:,} row limit for link prediction "
-                    "batch predictions. (This limit only applies "
-                    "to predictions, not embeddings.)\n")
+                    f'{rhs_num_nodes:,} unique rows, which exceeds '
+                    f'the {MAX_RHS_ROWS:,} row limit for link prediction '
+                    'batch predictions. (This limit only applies '
+                    'to predictions, not embeddings.)\n'
+                )
                 if is_child_job:
                     message += f"To resolve the issue, please reduce the target table ('{target_table_name}') size."
                     validation.errors.append(
                         ValidationError(
                             title=title,
                             message=message,
-                        ))
+                        )
+                    )
                 else:
-                    message += "To avoid a failure in the batch prediction job "
-                    "when generating predictions, consider reducing the target table size."
+                    message += 'To avoid a failure in the batch prediction job '
+                    'when generating predictions, consider reducing the target table size.'
                     validation.warnings.append(
                         ValidationWarning(
                             title=title,
                             message=message,
-                        ))
+                        )
+                    )
 
         return validation

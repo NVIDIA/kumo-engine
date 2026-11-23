@@ -15,7 +15,8 @@ from io_utils import databricks, fsutil
     [(RuntimeError, RuntimeError), (ValueError, ValueError)],
 )
 def test_databricks_parquet_head_sanitizes_provider_failure(
-        monkeypatch, caplog, failure_type, expected_type):
+    monkeypatch, caplog, failure_type, expected_type
+):
     canary = 'databricks-provider-body token=parquet-secret-canary'
     monkeypatch.setattr(fsutil, 'isdir', lambda _path: False)
     monkeypatch.setattr(
@@ -44,7 +45,8 @@ def test_sql_connection_limits_put_local_file_access(allowed_path):
             warehouse_id='warehouse-id',
             catalog='catalog',
             credentials={'pat': SecretStr('token')},
-        ))
+        )
+    )
     with patch('databricks.sql.connect', return_value=object()) as connect:
         client.create_sql_connection(
             schema='schema',

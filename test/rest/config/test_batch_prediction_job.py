@@ -44,8 +44,7 @@ from statedb.config.common import (
     ProjectID,
     TrainingJobID,
 )
-from statedb.config.jobs import \
-    S3PredictionOutput as SerializedS3PredictionOutput
+from statedb.config.jobs import S3PredictionOutput as SerializedS3PredictionOutput
 from statedb.config.timestamp import ResourceTimestamps, now_utc
 
 _CONNECTOR_ID = f'connector_{"1" * 32}'
@@ -73,8 +72,7 @@ _PROJECT_ID = ProjectID(f'project_{"1" * 32}')
         ),
     ],
 )
-def test_batch_prediction_config_round_trips_custom_prediction_source(
-        source) -> None:
+def test_batch_prediction_config_round_trips_custom_prediction_source(source) -> None:
     config = BatchPredictionJobConfig(
         predictive_query_id=PredictiveQueryID('pquery'),
         training_job_id=TrainingJobID('training-job'),
@@ -91,20 +89,20 @@ def test_batch_prediction_config_round_trips_custom_prediction_source(
 def test_get_stats_from_per_job_dir_v1():
     # Test loading anchor time from job directory
     with TemporaryDirectory() as temp_dir:
-        job_id = "test_job"
+        job_id = 'test_job'
         pred_time = datetime(2025, 2, 11, 12, 0)
 
         # Create outputs dir and stats file with prediction time
-        outputs_dir = os.path.join(temp_dir, "outputs")
+        outputs_dir = os.path.join(temp_dir, 'outputs')
         os.makedirs(outputs_dir)
-        stats_path = os.path.join(outputs_dir, "pquery_table_stats.json")
+        stats_path = os.path.join(outputs_dir, 'pquery_table_stats.json')
         stats = {
             PRED_TIME: {
-                "value": "kumo_timestamp_2025-02-11 12:00:00",
-                "approx": False,
-                "data_version": None,
-                "num_entries": None,
-                "timestamp": None,
+                'value': 'kumo_timestamp_2025-02-11 12:00:00',
+                'approx': False,
+                'data_version': None,
+                'num_entries': None,
+                'timestamp': None,
             }
         }
         save_json(stats, stats_path)
@@ -120,7 +118,7 @@ def test_get_stats_from_per_job_dir_v1():
 def test_get_stats_from_per_job_dir_missing_file():
     # Test behavior when stats file doesn't exist
     with TemporaryDirectory() as temp_dir:
-        job_id = "test_job"
+        job_id = 'test_job'
 
         anchor_time = BatchPredictionJobAnchorTime()
         result = anchor_time.get_stats_from_per_job_dir(job_id, temp_dir)
@@ -131,13 +129,13 @@ def test_get_stats_from_per_job_dir_missing_file():
 def test_get_stats_from_per_job_dir_missing_pred_time():
     # Test behavior when stats file exists but has no prediction time
     with TemporaryDirectory() as temp_dir:
-        job_id = "test_job"
+        job_id = 'test_job'
 
         # Create stats file without prediction time
-        outputs_dir = os.path.join(temp_dir, "outputs")
+        outputs_dir = os.path.join(temp_dir, 'outputs')
         os.makedirs(outputs_dir)
-        stats_path = os.path.join(outputs_dir, "pquery_table_stats.json")
-        stats = {"other_stat": {"value": 123}}
+        stats_path = os.path.join(outputs_dir, 'pquery_table_stats.json')
+        stats = {'other_stat': {'value': 123}}
         save_json(stats, stats_path)
 
         anchor_time = BatchPredictionJobAnchorTime()
@@ -152,24 +150,24 @@ def test_batch_prediction_response_accepts_rest_config_outputs():
         artifact_type=PredictionArtifactType.PREDICTIONS,
         storage_type=PredictionStorageType.S3,
         connector_id=_CONNECTOR_ID,
-        file_path="predictions.csv",
+        file_path='predictions.csv',
     )
     serialized_output = SerializedS3PredictionOutput(
         artifact_type=PredictionArtifactType.EMBEDDINGS,
         storage_type=PredictionStorageType.S3,
         connector_id=_CONNECTOR_ID,
-        file_path="embeddings.csv",
+        file_path='embeddings.csv',
     )
     config = BatchPredictionJobConfig(
-        predictive_query_id=PredictiveQueryID("pquery"),
-        training_job_id=TrainingJobID("training-job"),
+        predictive_query_id=PredictiveQueryID('pquery'),
+        training_job_id=TrainingJobID('training-job'),
         task_type=TaskType.REGRESSION,
         outputs=[rest_output, serialized_output],
-        graph_id="graph",
+        graph_id='graph',
     )
 
     response = BatchPredictionJobResponse(
-        id=BatchPredictionJobID("batch-prediction-job"),
+        id=BatchPredictionJobID('batch-prediction-job'),
         project_id=_PROJECT_ID,
         config=config,
         timestamps=ResourceTimestamps(
@@ -177,20 +175,20 @@ def test_batch_prediction_response_accepts_rest_config_outputs():
             updated_at=now_utc(),
         ),
         predictive_query_link=PredictiveQueryLink(
-            id=PredictiveQueryID("pquery"),
-            name=PredictiveQueryID("pquery"),
+            id=PredictiveQueryID('pquery'),
+            name=PredictiveQueryID('pquery'),
         ),
         execution=BatchPredictionJobOutput(
             status=JobStatus.RUNNING,
             log=JobEventLogEntry.not_started(),
         ),
-        graph_link=GraphLink(id="graph", name="graph"),
+        graph_link=GraphLink(id='graph', name='graph'),
     )
 
     assert response.config is config
     assert all(
-        isinstance(output, S3PredictionOutput)
-        for output in response.config.outputs)
+        isinstance(output, S3PredictionOutput) for output in response.config.outputs
+    )
 
 
 def test_batch_prediction_config_round_trips_local_outputs():
@@ -199,10 +197,8 @@ def test_batch_prediction_config_round_trips_local_outputs():
         training_job_id=TrainingJobID('training-job'),
         task_type=TaskType.REGRESSION,
         outputs=[
-            LocalPredictionOutput(
-                artifact_type=PredictionArtifactType.PREDICTIONS),
-            LocalPredictionOutput(
-                artifact_type=PredictionArtifactType.EMBEDDINGS),
+            LocalPredictionOutput(artifact_type=PredictionArtifactType.PREDICTIONS),
+            LocalPredictionOutput(artifact_type=PredictionArtifactType.EMBEDDINGS),
         ],
         graph_id='graph',
     )
@@ -215,8 +211,8 @@ def test_batch_prediction_config_round_trips_local_outputs():
         PredictionArtifactType.EMBEDDINGS,
     ]
     assert all(
-        isinstance(output, LocalPredictionOutput)
-        for output in validated.outputs)
+        isinstance(output, LocalPredictionOutput) for output in validated.outputs
+    )
 
 
 def test_multilabel_batch_prediction_config_defaults_threshold() -> None:
@@ -242,7 +238,8 @@ def test_multilabel_batch_prediction_config_preserves_zero_threshold() -> None:
 
 @pytest.mark.parametrize('threshold', [-0.01, 1.01])
 def test_multilabel_batch_prediction_config_rejects_invalid_threshold(
-    threshold: float, ) -> None:
+    threshold: float,
+) -> None:
     with pytest.raises(ValueError, match='between 0 and 1'):
         BatchPredictionJobConfig(
             predictive_query_id=PredictiveQueryID('pquery'),
@@ -257,31 +254,31 @@ def test_batch_prediction_response_model_field_accepts_rest_config_outputs():
         artifact_type=PredictionArtifactType.PREDICTIONS,
         storage_type=PredictionStorageType.S3,
         connector_id=_CONNECTOR_ID,
-        file_path="predictions.csv",
+        file_path='predictions.csv',
     )
     response = BatchPredictionJobResponse(
-        id=BatchPredictionJobID("batch-prediction-job"),
+        id=BatchPredictionJobID('batch-prediction-job'),
         project_id=_PROJECT_ID,
         config=BatchPredictionJobConfig(
-            predictive_query_id=PredictiveQueryID("pquery"),
-            training_job_id=TrainingJobID("training-job"),
+            predictive_query_id=PredictiveQueryID('pquery'),
+            training_job_id=TrainingJobID('training-job'),
             task_type=TaskType.REGRESSION,
             outputs=[output],
-            graph_id="graph",
+            graph_id='graph',
         ),
         timestamps=ResourceTimestamps(
             created_at=now_utc(),
             updated_at=now_utc(),
         ),
         predictive_query_link=PredictiveQueryLink(
-            id=PredictiveQueryID("pquery"),
-            name=PredictiveQueryID("pquery"),
+            id=PredictiveQueryID('pquery'),
+            name=PredictiveQueryID('pquery'),
         ),
         execution=BatchPredictionJobOutput(
             status=JobStatus.RUNNING,
             log=JobEventLogEntry.not_started(),
         ),
-        graph_link=GraphLink(id="graph", name="graph"),
+        graph_link=GraphLink(id='graph', name='graph'),
     )
 
     ta = TypeAdapter(BatchPredictionJobResponse)

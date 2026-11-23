@@ -68,8 +68,9 @@ from ..ml_job_output_store import save_materialization_info
 log = logging.getLogger(__name__)
 
 PRED_TABLE = 'pred_table'
-ENV_MAX_PARTITIONS_PER_WORKER = EnvVar('MAX_PARTITIONS_PER_WORKER', type=int,
-                                       required=False, default_value=100)
+ENV_MAX_PARTITIONS_PER_WORKER = EnvVar(
+    'MAX_PARTITIONS_PER_WORKER', type=int, required=False, default_value=100
+)
 
 
 def _configure_prediction_output_fields(
@@ -81,14 +82,13 @@ def _configure_prediction_output_fields(
         artifact_type = output.artifact_type.value
         requested_by_artifact.setdefault(
             artifact_type,
-            sorted({
-                getattr(field, 'value', field)
-                for field in output.extra_fields
-            }))
+            sorted({getattr(field, 'value', field) for field in output.extra_fields}),
+        )
     prediction_config.output_extra_fields = requested_by_artifact
 
-    time_options = resolve_prediction_time_options(job_input.config.task_type,
-                                                   requested_by_artifact)
+    time_options = resolve_prediction_time_options(
+        job_input.config.task_type, requested_by_artifact
+    )
     prediction_config.ignore_time_col = time_options.ignore_time_col
     if time_options.pred_time_col_name is not None:
         prediction_config.pred_time_col_name = time_options.pred_time_col_name
@@ -97,13 +97,15 @@ def _configure_prediction_output_fields(
 
 
 def return_embeddings(job_input: BatchPredictionJobInput) -> bool:
-    return (PredictionArtifactType.EMBEDDINGS
-            in requested_prediction_artifact_types(job_input.config))
+    return PredictionArtifactType.EMBEDDINGS in requested_prediction_artifact_types(
+        job_input.config
+    )
 
 
 def return_predictions(job_input: BatchPredictionJobInput) -> bool:
-    return (PredictionArtifactType.PREDICTIONS
-            in requested_prediction_artifact_types(job_input.config))
+    return PredictionArtifactType.PREDICTIONS in requested_prediction_artifact_types(
+        job_input.config
+    )
 
 
 def _pred_num_partitions_from_rows(
@@ -122,27 +124,28 @@ def _pred_num_partitions_from_rows(
     """
     job_id = job_input.id
     job_config = job_input.config
-    log.info(f"job_id: {job_id}, num_rows in prediction table: "
-             f"{num_rows}")
+    log.info(f'job_id: {job_id}, num_rows in prediction table: {num_rows}')
 
     # First compute no.of partitions based on limits:
     max_rows_per_partition = settings.pred_max_num_rows_per_partition
-    max_entities_per_partition = \
-        settings.pred_max_num_entities_per_partition
-    log.info("Environment settings - "
-             f"max_rows_per_partition: {max_rows_per_partition}, "
-             f"max_entities_per_partition: "
-             f"{max_entities_per_partition}, "
-             f"num_parallel_workers: "
-             f"{job_config.num_parallel_workers_limit}, "
-             f"{task.task_type=}")
+    max_entities_per_partition = settings.pred_max_num_entities_per_partition
+    log.info(
+        'Environment settings - '
+        f'max_rows_per_partition: {max_rows_per_partition}, '
+        f'max_entities_per_partition: '
+        f'{max_entities_per_partition}, '
+        f'num_parallel_workers: '
+        f'{job_config.num_parallel_workers_limit}, '
+        f'{task.task_type=}'
+    )
     # Compute maximum partition size:
     max_partition_size = max_rows_per_partition
     if pred_config.return_embeddings:
         max_partition_size = max_entities_per_partition
     if pred_config.top_k is not None and pred_config.top_k > 0:
         max_partition_size = get_max_partition_size_with_top_k(
-            max_partition_size, max_rows_per_partition, pred_config.top_k, task)
+            max_partition_size, max_rows_per_partition, pred_config.top_k, task
+        )
 
     # If the task type is MULTICLASS_CLASSIFICATION or
     # MULTILABEL_CLASSIFICATION, prediction table conversion from wide to
@@ -150,14 +153,16 @@ def _pred_num_partitions_from_rows(
     # we use the current partition sizes and the ID column in the
     # prediction table is a string. To avoid this, we need to split the
     # table into smaller partitions.
-    if (task.task_type in {
-            TaskType.MULTICLASS_CLASSIFICATION,
-            TaskType.MULTILABEL_CLASSIFICATION
-    }):
+    if task.task_type in {
+        TaskType.MULTICLASS_CLASSIFICATION,
+        TaskType.MULTILABEL_CLASSIFICATION,
+    }:
         if id_is_string:
-            log.info(f"Reducing max_partition_size by a factor of 32 for "
-                     f"job: {job_id} due to string ID column in prediction "
-                     f"table.")
+            log.info(
+                f'Reducing max_partition_size by a factor of 32 for '
+                f'job: {job_id} due to string ID column in prediction '
+                f'table.'
+            )
             max_partition_size = max_partition_size // 32
     elif task.task_type == TaskType.FORECASTING:
         lag_timesteps = 0
@@ -168,28 +173,34 @@ def _pred_num_partitions_from_rows(
             assert job_input.predictive_query.forecast_length is not None
             yoy_timesteps = job_input.predictive_query.forecast_length
         if lag_timesteps + yoy_timesteps > 0:
-            max_partition_size = max_partition_size // (lag_timesteps +
-                                                        yoy_timesteps)
-            log.info(f"Reducing max_partition_size by a factor of "
-                     f"{lag_timesteps + yoy_timesteps} for job: {job_id} as it "
-                     f"has lag features for forecasting.")
+            max_partition_size = max_partition_size // (lag_timesteps + yoy_timesteps)
+            log.info(
+                f'Reducing max_partition_size by a factor of '
+                f'{lag_timesteps + yoy_timesteps} for job: {job_id} as it '
+                f'has lag features for forecasting.'
+            )
 
-    log.info(f"Final max partition size: {max_partition_size}")
+    log.info(f'Final max partition size: {max_partition_size}')
 
     num_partitions = int(num_rows / max_partition_size) + 1
 
     # Now check for num_parallel_workers i.e. split the table into
     # multiples of num_parallel_workers:
     num_partitions = job_config.num_parallel_workers_limit * math.ceil(
-        num_partitions / job_config.num_parallel_workers_limit)
+        num_partitions / job_config.num_parallel_workers_limit
+    )
 
     # Limit the number of partitions based on max partitions per worker
-    max_partitions = (job_config.num_parallel_workers_limit *
-                      ENV_MAX_PARTITIONS_PER_WORKER.parse_value())
+    max_partitions = (
+        job_config.num_parallel_workers_limit
+        * ENV_MAX_PARTITIONS_PER_WORKER.parse_value()
+    )
     num_partitions = min(num_partitions, max_partitions)
 
-    log.info(f"Prediction table for job: {job_id} will be partitioned "
-             f"into {num_partitions} partitions")
+    log.info(
+        f'Prediction table for job: {job_id} will be partitioned '
+        f'into {num_partitions} partitions'
+    )
     return num_partitions
 
 
@@ -221,9 +232,8 @@ def generate_prediction_config(
         job_input.predictive_query,
         job_input.graph_data_compute_input.connectors,
     )
-    with kumo_timing("prediction_config.pquery_from_config"):
-        pquery: PredictiveQuery = PredictiveQueryV2.from_config(
-            predictive_query_config)
+    with kumo_timing('prediction_config.pquery_from_config'):
+        pquery: PredictiveQuery = PredictiveQueryV2.from_config(predictive_query_config)
     graph = pquery.graph
     # Set table data versions to the one decided at the beginning
     # of the batch prediction workflow
@@ -235,12 +245,11 @@ def generate_prediction_config(
     assert job_input.graph_version_info
     graph_key_ver = VersionedGraphKey(
         job_input.graph_data_compute_input.graph_key,
-        job_input.graph_version_info.graph_data_version)
-    with kumo_timing("prediction_config.estimate_input_stats"):
-        data_stats = estimate_input_data_stats(graph, graph_key_ver,
-                                               deploy_env())
-    log.info(f"Computed estimated InputDataStats: {data_stats} for job: "
-             f"{job_id}")
+        job_input.graph_version_info.graph_data_version,
+    )
+    with kumo_timing('prediction_config.estimate_input_stats'):
+        data_stats = estimate_input_data_stats(graph, graph_key_ver, deploy_env())
+    log.info(f'Computed estimated InputDataStats: {data_stats} for job: {job_id}')
     save_json(data_stats, home_dir_mgr.estimated_input_data_stats_path)
 
     # Get the best trainer dir; on DG, graph-table/node/edge data is served
@@ -257,11 +266,11 @@ def generate_prediction_config(
 
     output_format = 'wide'  # Deprecated - remove once models are past 1.37.
     if job_input.config.task_type in [
-            TaskType.MULTICLASS_CLASSIFICATION,
-            TaskType.MULTILABEL_CLASSIFICATION,
-            TaskType.MULTILABEL_RANKING,
-            TaskType.TEMPORAL_LINK_PREDICTION,
-            TaskType.STATIC_LINK_PREDICTION,
+        TaskType.MULTICLASS_CLASSIFICATION,
+        TaskType.MULTILABEL_CLASSIFICATION,
+        TaskType.MULTILABEL_RANKING,
+        TaskType.TEMPORAL_LINK_PREDICTION,
+        TaskType.STATIC_LINK_PREDICTION,
     ]:
         output_format = 'long'
 
@@ -288,14 +297,13 @@ def generate_prediction_config(
     _configure_prediction_output_fields(pred_config, job_input)
     fsutil.makedirs(home_dir_mgr.jobs_dir, exist_ok=True)
     pred_config_path = home_dir_mgr.job_config_path(job_id)
-    with kumo_timing("prediction_config.save_prediction_config"):
+    with kumo_timing('prediction_config.save_prediction_config'):
         save_json(pred_config, pred_config_path)
-    log.info(f"Saved PredictionConfig for job: {job_id} at {pred_config_path}")
+    log.info(f'Saved PredictionConfig for job: {job_id} at {pred_config_path}')
     return pred_config_path
 
 
-def _load_ttng_prediction_bundle_identity(
-        pred_table_path: str) -> tuple[str, str]:
+def _load_ttng_prediction_bundle_identity(pred_table_path: str) -> tuple[str, str]:
     """Return the durable bundle path and its canonical source TT id."""
     from kumo.data.generic.diskgraph_staging import (
         ttng_persisted_pred_staging_dir,
@@ -312,8 +320,10 @@ def _load_ttng_prediction_bundle_identity(
         source_tt_id = read_tt_id_from_staging_bundle(durable_staging_dir)
     except TTNGBundleError as e:
         raise PredictionDataMaterializationError(
-            message=(f'{e} The gen→ingest handoff did not persist a complete '
-                     'bundle beside the pred table.'),
+            message=(
+                f'{e} The gen→ingest handoff did not persist a complete '
+                'bundle beside the pred table.'
+            ),
             error=e,
             non_retryable=True,
         ) from e
@@ -353,8 +363,11 @@ def _materialize_ttng_prediction_task_dataset(
     fitted_encoders = collect_encoders(task)
     graph = task.graph
     graph_node_types = tuple(t.table_name for t in graph.tables)
-    graph_edge_types = tuple((t.table_name, fkey.name, fkey.dst_table_name)
-                             for t in graph.tables for fkey in t.fkeys)
+    graph_edge_types = tuple(
+        (t.table_name, fkey.name, fkey.dst_table_name)
+        for t in graph.tables
+        for fkey in t.fkeys
+    )
     feature_schema = _build_ttng_feature_schema(task, fitted_encoders)
     if task.task_type == TaskType.FORECASTING:
         pred_table_name = task.train_table.table_name
@@ -372,8 +385,7 @@ def _materialize_ttng_prediction_task_dataset(
     pred_fkeys = list(getattr(task.train_table, 'fkeys', None) or [])
     assert pred_fkeys, 'TT-NG BP: prediction table has no entity fkey'
     dst_tbl = pred_fkeys[0].dst_table or ''
-    entity_table_name = (dst_tbl.split('.', 1)[1]
-                         if '.' in dst_tbl else dst_tbl)
+    entity_table_name = dst_tbl.split('.', 1)[1] if '.' in dst_tbl else dst_tbl
 
     # Task.is_temporal carries temporal node-prediction identity; the TaskType
     # enum only separates temporal/static for link prediction.
@@ -381,6 +393,7 @@ def _materialize_ttng_prediction_task_dataset(
     rhs_node_type: Optional[str] = None
     if is_link_pred:
         from kumo.pquery.utils import get_rhs_lp_table
+
         rhs_node_type = get_rhs_lp_table(
             pquery.validated_predictive_query,
             pquery.graph,
@@ -398,6 +411,7 @@ def _materialize_ttng_prediction_task_dataset(
         assert_ttng_bundle_complete,
         restore_durable_ttng_bundle,
     )
+
     predict_staging_dir = ttng_staging_dir(diskgraph_index_path, source_tt_id)
 
     # Bridge the gen→ingest handoff across delete_snapshot / across pods (mirrors
@@ -411,7 +425,8 @@ def _materialize_ttng_prediction_task_dataset(
     # source bundle INTO this isolated target extension. Keeping source != target
     # is the intentional per-BP-job fan-out isolation -- do NOT collapse them.
     prediction_config.diskgraph_pred_target_tt_id = predict_staging_tt_id(
-        str(job_input.id))
+        str(job_input.id)
+    )
     had_complete_local_bundle = True
     try:
         assert_ttng_bundle_complete(predict_staging_dir)
@@ -419,8 +434,11 @@ def _materialize_ttng_prediction_task_dataset(
         had_complete_local_bundle = False
     restore_durable_ttng_bundle(durable_staging_dir, predict_staging_dir)
     if not had_complete_local_bundle:
-        log.info('[TT-NG] BP restored predict staging from durable %s -> %s',
-                 durable_staging_dir, predict_staging_dir)
+        log.info(
+            '[TT-NG] BP restored predict staging from durable %s -> %s',
+            durable_staging_dir,
+            predict_staging_dir,
+        )
 
     # Predict seed time (int64-ns) for the RHS MIPS NodeRange loader and the
     # candidate filter. LP-only; a static query seeds 0. A generated table is
@@ -429,23 +447,26 @@ def _materialize_ttng_prediction_task_dataset(
     if is_link_pred:
         predict_seed_time_ns = 0
         bp_gen = pquery.get_batch_pred_table_generator()
-        if (bp_gen.query_type == QueryType.TEMPORAL
-                and job_input.config.custom_pred_table_source is not None):
-            predict_seed_time_ns = _custom_link_prediction_anchor(
-                predict_staging_dir)
+        if (
+            bp_gen.query_type == QueryType.TEMPORAL
+            and job_input.config.custom_pred_table_source is not None
+        ):
+            predict_seed_time_ns = _custom_link_prediction_anchor(predict_staging_dir)
         elif bp_gen.query_type == QueryType.TEMPORAL:
             pred_time = bp_gen.generate_pred_timestamp()
             predict_seed_time_ns = int(pred_time.value) if pred_time else 0
 
-    predict_candidate_filter = (_link_prediction_candidate_filter(
-        pquery, task.task_type, diskgraph_index_path) if is_link_pred else None)
+    predict_candidate_filter = (
+        _link_prediction_candidate_filter(pquery, task.task_type, diskgraph_index_path)
+        if is_link_pred
+        else None
+    )
 
     handle = DiskgraphHandle(
         graph_key=job_input.graph_data_compute_input.graph_key,
         graph_data_version=job_input.graph_version_info.graph_data_version,
     )
-    bundle_root = osp.join(diskgraph_index_path, 'task_datasets',
-                           str(job_input.id))
+    bundle_root = osp.join(diskgraph_index_path, 'task_datasets', str(job_input.id))
     service = get_service()
     spec = TaskDatasetMaterializeSpec(
         tt_manifest_path='',  # unused on the BP path (no wheel TT manifest)
@@ -474,15 +495,20 @@ def _materialize_ttng_prediction_task_dataset(
     return int(result.predict_row_count or 0)
 
 
-def _link_prediction_candidate_filter(pquery: Any, task_type: TaskType,
-                                      index_path: str) -> Optional[str]:
+def _link_prediction_candidate_filter(
+    pquery: Any, task_type: TaskType, index_path: str
+) -> Optional[str]:
     import diskgraph
 
     from kumo.graph.utils import map_to_api_graph_definition
-    return candidate_row_filter(pquery.validated_predictive_query,
-                                map_to_api_graph_definition(pquery.graph),
-                                task_type=task_type, index_path=index_path,
-                                runtime=diskgraph)
+
+    return candidate_row_filter(
+        pquery.validated_predictive_query,
+        map_to_api_graph_definition(pquery.graph),
+        task_type=task_type,
+        index_path=index_path,
+        runtime=diskgraph,
+    )
 
 
 def _custom_link_prediction_anchor(staging_dir: str) -> int:
@@ -490,12 +516,14 @@ def _custom_link_prediction_anchor(staging_dir: str) -> int:
     try:
         return link_prediction_anchor((), osp.join(staging_dir, 'tt.parquet'))
     except ValueError as e:
-        raise PredictionDataMaterializationError(message=str(e),
-                                                 non_retryable=True) from e
+        raise PredictionDataMaterializationError(
+            message=str(e), non_retryable=True
+        ) from e
 
 
 def _custom_pred_entity_metadata(
-    pquery: PredictiveQuery, ) -> Tuple[str, str, Dtype]:
+    pquery: PredictiveQuery,
+) -> Tuple[str, str, Dtype]:
     """Single-entity metadata for the custom pred bundle: (entity_table_name,
     entity_pk_column, entity_pk_dtype). Parity with the custom-TRAIN entity
     resolution -- the
@@ -505,30 +533,40 @@ def _custom_pred_entity_metadata(
     match the DG index convention.
     """
     from kumo.pquery.utils import table_name as _pq_table_name
+
     validated = pquery.validated_predictive_query
     entity_full = getattr(validated, 'entity_column', None)
     if not entity_full:
         raise PredictionDataMaterializationError(
-            message=('TT-NG custom prediction table requires the pquery to '
-                     'expose an entity column'),
+            message=(
+                'TT-NG custom prediction table requires the pquery to '
+                'expose an entity column'
+            ),
             non_retryable=True,
         )
     entity_table_full = _pq_table_name(entity_full)
-    entity_table_name = (entity_table_full.split('.', 1)[1]
-                         if '.' in entity_table_full else entity_table_full)
+    entity_table_name = (
+        entity_table_full.split('.', 1)[1]
+        if '.' in entity_table_full
+        else entity_table_full
+    )
     entity_table = pquery.graph.table(entity_table_full)
     entity_pk_column = getattr(entity_table, 'pkey_name', None)
     if not entity_pk_column:
         raise PredictionDataMaterializationError(
-            message=('TT-NG custom prediction table requires entity table '
-                     f'{entity_table_name!r} to have a primary key'),
+            message=(
+                'TT-NG custom prediction table requires entity table '
+                f'{entity_table_name!r} to have a primary key'
+            ),
             non_retryable=True,
         )
     entity_pk = entity_table.pkey
     if entity_pk is None or entity_pk.dtype is None:
         raise PredictionDataMaterializationError(
-            message=('TT-NG custom prediction table requires entity table '
-                     f'{entity_table_name!r} to have a typed primary key'),
+            message=(
+                'TT-NG custom prediction table requires entity table '
+                f'{entity_table_name!r} to have a typed primary key'
+            ),
             non_retryable=True,
         )
     return entity_table_name, entity_pk_column, entity_pk.dtype
@@ -538,8 +576,7 @@ def _custom_pred_target_stype(pquery: PredictiveQuery) -> Optional[str]:
     """Target stype is OPTIONAL for a prediction bundle (no target column);
     pass it through when the pquery carries it (LP / typed tasks read it), else
     ``None``."""
-    target_stype = getattr(pquery.validated_predictive_query, 'target_stype',
-                           None)
+    target_stype = getattr(pquery.validated_predictive_query, 'target_stype', None)
     value = getattr(target_stype, 'value', None)
     return value if isinstance(value, str) and value else None
 
@@ -578,19 +615,23 @@ def _validate_custom_pred_table_schema(
     # refused here rather than read as having no rows it can resolve.
     if entity_name not in cols:
         raise PredictionDataMaterializationError(
-            message=(f'TT-NG custom prediction table is missing '
-                     f'{entity_name!r}, which is the name DiskGraph reads the '
-                     f'entity key under; found {sorted(cols)!r}'),
+            message=(
+                f'TT-NG custom prediction table is missing '
+                f'{entity_name!r}, which is the name DiskGraph reads the '
+                f'entity key under; found {sorted(cols)!r}'
+            ),
             non_retryable=True,
         )
     entity_type = schema.field(entity_name).type
     if not custom_table.reads(entity_type, 'entity'):
         raise PredictionDataMaterializationError(
-            message=(f'TT-NG custom prediction table column {entity_name!r} '
-                     f'is {entity_type}. An entity key is read as one of '
-                     f"{custom_table.accepted('entity')}; DiskGraph resolves "
-                     f'anything else to no node and drops the row without '
-                     f'counting it.'),
+            message=(
+                f'TT-NG custom prediction table column {entity_name!r} '
+                f'is {entity_type}. An entity key is read as one of '
+                f'{custom_table.accepted("entity")}; DiskGraph resolves '
+                f'anything else to no node and drops the row without '
+                f'counting it.'
+            ),
             non_retryable=True,
         )
     entity_dtype = custom_table.entity_key_dtype(entity_type)
@@ -600,35 +641,43 @@ def _validate_custom_pred_table_schema(
                 'TT-NG custom prediction table entity column '
                 f'{entity_name!r} has type {entity_dtype.value}, but the '
                 f'graph primary key requires {entity_pk_dtype.value}. Cast '
-                'the entity column to the graph primary-key type.'),
+                'the entity column to the graph primary-key type.'
+            ),
             non_retryable=True,
         )
 
     if is_temporal and anchor_name not in cols:
         raise PredictionDataMaterializationError(
-            message=(f'TT-NG temporal custom prediction table has no '
-                     f'{anchor_name} column; a temporal task requires a '
-                     f'per-row anchor time; found {sorted(cols)!r}'),
+            message=(
+                f'TT-NG temporal custom prediction table has no '
+                f'{anchor_name} column; a temporal task requires a '
+                f'per-row anchor time; found {sorted(cols)!r}'
+            ),
             non_retryable=True,
         )
     if anchor_name in cols:
         anchor_type = schema.field(anchor_name).type
         if not custom_table.reads(anchor_type, 'timestamp'):
             raise PredictionDataMaterializationError(
-                message=(f'TT-NG custom prediction table column '
-                         f'{anchor_name!r} is {anchor_type}. An anchor is '
-                         f"read as one of {custom_table.accepted('timestamp')}"
-                         f'; DiskGraph reads anything else as a null anchor '
-                         f'and drops the row.'),
+                message=(
+                    f'TT-NG custom prediction table column '
+                    f'{anchor_name!r} is {anchor_type}. An anchor is '
+                    f'read as one of {custom_table.accepted("timestamp")}'
+                    f'; DiskGraph reads anything else as a null anchor '
+                    f'and drops the row.'
+                ),
                 non_retryable=True,
             )
 
-    carried_targets = sorted(name for name in cols
-                             if custom_table.column_role(name) == 'target')
+    carried_targets = sorted(
+        name for name in cols if custom_table.column_role(name) == 'target'
+    )
     if carried_targets:
         raise PredictionDataMaterializationError(
-            message=('TT-NG custom prediction table must not carry a target '
-                     f'column; found {carried_targets!r}'),
+            message=(
+                'TT-NG custom prediction table must not carry a target '
+                f'column; found {carried_targets!r}'
+            ),
             non_retryable=True,
         )
 
@@ -639,13 +688,15 @@ def _resolve_single_pred_parquet_for_schema(path: str) -> str:
     if not fsutil.isdir(path):
         return path
     parts = [
-        entry for entry in fsutil.listdir(path, suffix='parquet')
+        entry
+        for entry in fsutil.listdir(path, suffix='parquet')
         if not fsutil.isdir(entry)
     ]
     if not parts:
         raise PredictionDataMaterializationError(
-            message=('TT-NG custom prediction table dir has no parquet parts: '
-                     f'{path!r}'),
+            message=(
+                f'TT-NG custom prediction table dir has no parquet parts: {path!r}'
+            ),
             non_retryable=True,
         )
     return parts[0]
@@ -681,17 +732,20 @@ def _build_ttng_custom_pred_table_artifacts(
         persist_durable_ttng_bundle,
     )
 
-    entity_table_name, entity_pk_column, entity_pk_dtype = (
-        _custom_pred_entity_metadata(pquery))
+    entity_table_name, entity_pk_column, entity_pk_dtype = _custom_pred_entity_metadata(
+        pquery
+    )
     target_stype_value = _custom_pred_target_stype(pquery)
     task_type = pquery.get_task_type()
     task_type_value = getattr(task_type, 'value', None) or str(task_type)
-    is_temporal = (pquery.get_batch_pred_table_generator().query_type ==
-                   QueryType.TEMPORAL)
+    is_temporal = (
+        pquery.get_batch_pred_table_generator().query_type == QueryType.TEMPORAL
+    )
 
     target_entity_table = None
     if bool(getattr(task_type, 'is_link_pred', False)):
         from kumo.pquery.utils import get_rhs_lp_table
+
         target_entity_table = get_rhs_lp_table(
             pquery.validated_predictive_query,
             pquery.graph,
@@ -705,17 +759,17 @@ def _build_ttng_custom_pred_table_artifacts(
     durable = diskgraph_staging.ttng_persisted_pred_staging_dir(pred_table_path)
     # Match the custom-train path: the DG builder uses local filesystem ops,
     # while the staged customer table and durable bundle may live remotely.
-    local_input = local_ttng_builder_input(pred_table_path,
-                                           'custom_prediction_table.parquet')
+    local_input = local_ttng_builder_input(
+        pred_table_path, 'custom_prediction_table.parquet'
+    )
 
     with local_input as local_output_path:
         with fsutil.TemporaryDirectory() as normalized_scratch:
-            normalized_path = (_diskgraph_legacy_graphstore_bridge.
-                               normalize_legacy_parquet_for_rehydration(
-                                   local_output_path,
-                                   output_dir=normalized_scratch,
-                                   normalize_timestamp=is_temporal,
-                               ))
+            normalized_path = _diskgraph_legacy_graphstore_bridge.normalize_legacy_parquet_for_rehydration(
+                local_output_path,
+                output_dir=normalized_scratch,
+                normalize_timestamp=is_temporal,
+            )
             _validate_custom_pred_table_schema(
                 parquet_path=normalized_path,
                 entity_pk_dtype=entity_pk_dtype,
@@ -737,8 +791,8 @@ def _build_ttng_custom_pred_table_artifacts(
             staging_dir = result.get('staging_dir')
             if not isinstance(staging_dir, str) or not staging_dir:
                 raise RuntimeError(
-                    'TT-NG custom prediction table gen did not return '
-                    'staging_dir')
+                    'TT-NG custom prediction table gen did not return staging_dir'
+                )
             # The native custom builder places its bundle beside
             # ``normalized_path``. Persist it before ``normalized_scratch`` is
             # cleaned up; otherwise copy_tree_threaded sees an empty source and
@@ -751,8 +805,12 @@ def _build_ttng_custom_pred_table_artifacts(
                 durable,
                 expected_tt_id=ttng_tt_id,
             )
-    log.info('[TT-NG] custom pred: persisted bundle %s -> %s (tt_id=%s)',
-             staging_dir, durable, ttng_tt_id)
+    log.info(
+        '[TT-NG] custom pred: persisted bundle %s -> %s (tt_id=%s)',
+        staging_dir,
+        durable,
+        ttng_tt_id,
+    )
     return durable
 
 
@@ -770,13 +828,11 @@ def build_ttng_custom_pred_table_bundle(
     ``materialize_prediction_task`` can re-ingest it on any pod. Does NOT
     ingest (each BP shard's ensure-extension is the sole ingest).
     """
-    predictive_query_config, credentials = (
-        hydrate_predictive_query_for_activity(
-            job_input.predictive_query,
-            job_input.graph_data_compute_input.connectors,
-        ))
-    pquery: PredictiveQuery = PredictiveQueryV2.from_config(
-        predictive_query_config)
+    predictive_query_config, credentials = hydrate_predictive_query_for_activity(
+        job_input.predictive_query,
+        job_input.graph_data_compute_input.connectors,
+    )
+    pquery: PredictiveQuery = PredictiveQueryV2.from_config(predictive_query_config)
     pquery.graph.set_table_data_versions(job_input.id)
     open_connectors(pquery.graph, credentials)
 
@@ -814,6 +870,7 @@ def materialize_prediction_task(
         the path.
     """
     from rest.backends.data_backend.utils import get_data_operation_description
+
     validator = validation.MaterializeTaskValidator(
         max_total_table_size=settings.max_total_table_size,
         max_total_graph_edges=settings.max_total_graph_edges,
@@ -832,8 +889,11 @@ def materialize_prediction_task(
     train_dir_mgr = HomeDirManager(train_dir)
     if not fsutil.exists(train_dir):
         raise MissingTrainingJobError(
-            message=(f"Training job '{training_job_id}' not found. "
-                     "The job may have been deleted or not yet completed."))
+            message=(
+                f"Training job '{training_job_id}' not found. "
+                'The job may have been deleted or not yet completed.'
+            )
+        )
 
     # The "materializing" status is published on the pool worker's event loop
     # by the ``SnapshotActivities.materialize_prediction_task`` wrapper before
@@ -849,7 +909,8 @@ def materialize_prediction_task(
             message=(
                 'No DiskGraph index is bound to this prediction job; the graph '
                 'binding is missing or corrupt. Re-ingest the graph for this '
-                'version and re-run prediction.'),
+                'version and re-run prediction.'
+            ),
             non_retryable=True,
         )
     # No process globals: neither temp_home_dir nor per-job engine setup
@@ -862,14 +923,12 @@ def materialize_prediction_task(
     # the explicit index path).
     # Create pquery object after setting pquery backend, so the pquery
     # backend setting gets correctly passed.
-    predictive_query_config, credentials = (
-        hydrate_predictive_query_for_activity(
-            job_input.predictive_query,
-            job_input.graph_data_compute_input.connectors,
-        ))
-    with kumo_timing("prediction_task.pquery_from_config"):
-        pquery: PredictiveQuery = PredictiveQueryV2.from_config(
-            predictive_query_config)
+    predictive_query_config, credentials = hydrate_predictive_query_for_activity(
+        job_input.predictive_query,
+        job_input.graph_data_compute_input.connectors,
+    )
+    with kumo_timing('prediction_task.pquery_from_config'):
+        pquery: PredictiveQuery = PredictiveQueryV2.from_config(predictive_query_config)
 
     # Load the task config from the training job dir. Note that we force
     # ignore all training directory data here since we will re-materialize
@@ -880,11 +939,14 @@ def materialize_prediction_task(
     pq_dir_name = train_dir_mgr.first_task_name()
     if not pq_dir_name:
         raise MissingTrainingJobError(
-            message=(f"Training job '{training_job_id}' appears incomplete. "
-                     "The required model data was not found. Please ensure the "
-                     "training job completed successfully before running batch "
-                     "prediction."))
-    with kumo_timing("prediction_task.load_training_task"):
+            message=(
+                f"Training job '{training_job_id}' appears incomplete. "
+                'The required model data was not found. Please ensure the '
+                'training job completed successfully before running batch '
+                'prediction.'
+            )
+        )
+    with kumo_timing('prediction_task.load_training_task'):
         task = Task.load(pq_dir_name, home_dir=train_dir)
     # NOTE: Update the task name to NA because when starting kumo-pred,
     # the GPU worker will try to load the pred task config using the
@@ -902,7 +964,8 @@ def materialize_prediction_task(
             check_prediction_plan(
                 vars(task),
                 lag_timesteps=job_input.predictive_query.lag_timesteps,
-                forecast_length=job_input.predictive_query.forecast_length)
+                forecast_length=job_input.predictive_query.forecast_length,
+            )
         except IncompatiblePredictionPlan as error:
             raise IncompatiblePredictionTable(message=str(error)) from error
 
@@ -917,8 +980,7 @@ def materialize_prediction_task(
     task.target_to_entity_paths = pquery.target_to_entity_paths
 
     if pquery.get_task_type() == TaskType.STATIC_LINK_PREDICTION:
-        task.target_table_name = (
-            pquery.get_table_generator().get_target_table_name())
+        task.target_table_name = pquery.get_table_generator().get_target_table_name()
 
     for fkey in task.train_table.fkeys:
         new_dst_table = task.graph.table(fkey.dst_table_name)
@@ -927,14 +989,19 @@ def materialize_prediction_task(
 
     # Set table data versions to the one decided at the beginning
     # of the batch prediction workflow
-    log.info(f"Using batch prediction job id {job_input.id} to update table "
-             f"versions for prediction task.")
+    log.info(
+        f'Using batch prediction job id {job_input.id} to update table '
+        f'versions for prediction task.'
+    )
     task.graph.set_table_data_versions(job_input.id)
 
     # Generate prediction table ###########################################
-    log.debug("Opening Connectors '%s' for batch prediction: %s",
-              task.graph.data_sources, job_input.id)
-    with kumo_timing("prediction_task.open_connectors"):
+    log.debug(
+        "Opening Connectors '%s' for batch prediction: %s",
+        task.graph.data_sources,
+        job_input.id,
+    )
+    with kumo_timing('prediction_task.open_connectors'):
         open_connectors(task.graph, credentials)
 
     # TT-NG: prediction input stays unpartitioned (num_partitions == 1);
@@ -961,8 +1028,9 @@ def materialize_prediction_task(
     task = task._replace_train_table(PRED_TABLE, data_source=connector)
     task.fixed_split([1.0, 0.0, 0.0])
 
-    durable_staging_dir, source_tt_id = (_load_ttng_prediction_bundle_identity(
-        prediction_config.pred_table_path))
+    durable_staging_dir, source_tt_id = _load_ttng_prediction_bundle_identity(
+        prediction_config.pred_table_path
+    )
     # ``Task.validate`` touches ``train_table.data_version``. For TT-NG the
     # durable bundle, not the raw prediction parquet, is authoritative. Set its
     # identity before validation so a direct warehouse source does not trigger
@@ -971,13 +1039,12 @@ def materialize_prediction_task(
 
     try:
         task.validate(raise_on_error=True, ignore_encoders=True)
-        task._set_forecast_col_encoder(
-            job_input.predictive_query.year_over_year)
+        task._set_forecast_col_encoder(job_input.predictive_query.year_over_year)
 
         # TT-NG inference: ingest the kept predict staging dir + write the
         # manifest; the trainer serves via the wheel iterator.
-        with kumo_timing("prediction_task.materialize_ttng_prediction_dataset"):
-            predict_row_count = (_materialize_ttng_prediction_task_dataset(
+        with kumo_timing('prediction_task.materialize_ttng_prediction_dataset'):
+            predict_row_count = _materialize_ttng_prediction_task_dataset(
                 task=task,
                 pquery=pquery,
                 job_input=job_input,
@@ -986,18 +1053,22 @@ def materialize_prediction_task(
                 train_table_name=ttng_train_table_name,
                 durable_staging_dir=durable_staging_dir,
                 source_tt_id=source_tt_id,
-            ))
-        prediction_config.output_num_partitions = (
-            _pred_num_partitions_from_rows(predict_row_count, prediction_config,
-                                           job_input, settings, task,
-                                           id_is_string=False))
-        log.info("[TT-NG] prediction task-dataset materialized")
+            )
+        prediction_config.output_num_partitions = _pred_num_partitions_from_rows(
+            predict_row_count,
+            prediction_config,
+            job_input,
+            settings,
+            task,
+            id_is_string=False,
+        )
+        log.info('[TT-NG] prediction task-dataset materialized')
     except TrainingTableSplitError as e:
         response.errors.append(e.as_error())
-        return ("", "", response)
+        return ('', '', response)
     except Exception as e:
         raise PredictionDataMaterializationError(
-            message="Failed to prepare prediction data",
+            message='Failed to prepare prediction data',
             error=e,
             non_retryable=is_error_non_retryable(e),
         ) from e
@@ -1006,47 +1077,48 @@ def materialize_prediction_task(
     # asserted non-empty above), so input stats come from the DG index.
     from kumo.data.cache.graph_cache import VersionedGraphKey
     from kumo.diskgraph.input_stats import assemble_input_data_stats
+
     dg_handle = DiskgraphHandle(
         graph_key=(job_input.graph_data_compute_input.graph_key),
         graph_data_version=(job_input.graph_version_info.graph_data_version),
     )
-    with kumo_timing("prediction_task.assemble_input_stats"):
+    with kumo_timing('prediction_task.assemble_input_stats'):
         data_stats = assemble_input_data_stats(
             dg_handle,
             graph=task.graph,
-            graph_key_ver=VersionedGraphKey(dg_handle.graph_key,
-                                            dg_handle.graph_data_version),
+            graph_key_ver=VersionedGraphKey(
+                dg_handle.graph_key, dg_handle.graph_data_version
+            ),
             index_path=diskgraph_index_path,
         )
-    log.info(f"Computed InputDataStats: {data_stats} for job: "
-             f"{job_id}")
+    log.info(f'Computed InputDataStats: {data_stats} for job: {job_id}')
     with catch_and_log():
         save_input_data_stats_to_state_db(job_id, data_stats)
 
-    with kumo_timing("prediction_task.post_materialization_validation"):
+    with kumo_timing('prediction_task.post_materialization_validation'):
         response.merge(validator.post_materialization(data_stats))
     if not response.ok:
-        return ("", "", response)
+        return ('', '', response)
 
-    log.info("Saving task to prediction home_dir")
+    log.info('Saving task to prediction home_dir')
     # home_dir is threaded explicitly into Task.save (-> graph.save(destination=))
     # so the task/graph configs land in THIS prediction job's home_dir without a
     # process-global temp_home_dir; concurrent jobs on the shared thread executor
     # can't collide.
-    with kumo_timing("prediction_task.save_task"):
+    with kumo_timing('prediction_task.save_task'):
         # Save the task in the prediction home_dir.
         task.save(destination=home_dir)
-    log.info("Task saved successfully")
+    log.info('Task saved successfully')
 
     # Save the persist paths of tables and edges.
     # In diskgraph mode, graph data is not materialized through the traditional
     # path so persist paths are not available on the graph object.
     home_dir_mgr = HomeDirManager(home_dir)
     # Save the input data stats to the job directory:
-    with kumo_timing("prediction_task.save_input_stats"):
+    with kumo_timing('prediction_task.save_input_stats'):
         save_json(data_stats, home_dir_mgr.input_data_stats_path)
     # Save the updated prediction config to the job directory.
-    with kumo_timing("prediction_task.save_prediction_config"):
+    with kumo_timing('prediction_task.save_prediction_config'):
         save_json(prediction_config, pred_config_path)
 
     # Save stats about the materialization to S3.
@@ -1058,7 +1130,7 @@ def materialize_prediction_task(
         predictive_query_id=job_input.predictive_query_id,
         temporal_workflow_id=activity.info().workflow_run_id,
     )
-    with kumo_timing("prediction_task.save_materialization_info"):
+    with kumo_timing('prediction_task.save_materialization_info'):
         save_materialization_info(materialization_info)
 
     return (pred_config_path, get_data_operation_description(), response)

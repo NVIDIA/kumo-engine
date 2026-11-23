@@ -31,18 +31,18 @@ from kumo_snowflake.spcs import spcs_identity_create_args
 #: Where each lazily exported name is defined. The plugin's modules, and only
 #: those: everything eager above is reachable on the platform's install.
 _LAZY_EXPORTS = {
-    "SnowflakeSession": "session",
-    "SnowflakeSinkBackend": "sink",
-    "SnowflakeSourceBackend": "backend",
-    "SourceConnector": "session",
-    "StageArtifactLocation": "artifacts",
-    "close": "session",
-    "probe": "session",
+    'SnowflakeSession': 'session',
+    'SnowflakeSinkBackend': 'sink',
+    'SnowflakeSourceBackend': 'backend',
+    'SourceConnector': 'session',
+    'StageArtifactLocation': 'artifacts',
+    'close': 'session',
+    'probe': 'session',
 }
 
 __all__ = [
-    "SnowflakeSourceReader",
-    "spcs_identity_create_args",
+    'SnowflakeSourceReader',
+    'spcs_identity_create_args',
     *sorted(_LAZY_EXPORTS),
 ]
 

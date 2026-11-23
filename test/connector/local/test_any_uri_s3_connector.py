@@ -13,18 +13,21 @@ from kumo.connector.any_uri_s3_connector import AnyURIS3Connector
 @pytest.fixture
 def connector() -> AnyURIS3Connector:
     value = AnyURIS3Connector(name='rootless_s3')
-    value.set_credentials({
-        'provider': 's3',
-        'aws_access_key_id': 'attested-access',
-        'aws_secret_access_key': 'attested-secret',
-        'aws_session_token': 'attested-token',
-    })
+    value.set_credentials(
+        {
+            'provider': 's3',
+            'aws_access_key_id': 'attested-access',
+            'aws_secret_access_key': 'attested-secret',
+            'aws_session_token': 'attested-token',
+        }
+    )
     value.require_explicit_credentials()
     return value
 
 
 def test_any_uri_parquet_uses_actual_path_and_explicit_pyarrow_filesystem(
-        connector, monkeypatch, tmp_path) -> None:
+    connector, monkeypatch, tmp_path
+) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
     from kumo_core.sources.object_store_access import ObjectStoreAccess
@@ -43,8 +46,7 @@ def test_any_uri_parquet_uses_actual_path_and_explicit_pyarrow_filesystem(
         assert credentials_for_provider('s3') is not None
         return ObjectStoreAccess(filesystem)
 
-    monkeypatch.setattr('kumo.connector.object_store_access.source_access',
-                        access)
+    monkeypatch.setattr('kumo.connector.object_store_access.source_access', access)
     parquet = connector.connectors['parquet']
     with parquet.filesystem_credential_scope():
         result = parquet._parquet_dataset(uri)
@@ -61,7 +63,8 @@ def test_any_uri_parquet_uses_actual_path_and_explicit_pyarrow_filesystem(
     ],
 )
 def test_canonical_wire_uri_decodes_exactly_once_for_boto_and_pyarrow(
-        raw_uri, provider_key) -> None:
+    raw_uri, provider_key
+) -> None:
     canonical = normalize_s3_source_uri(raw_uri)
     parsed = ParseURI(canonical)
 

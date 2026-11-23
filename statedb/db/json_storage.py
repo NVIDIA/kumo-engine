@@ -17,7 +17,7 @@ def utcnow() -> datetime:
 
 
 def encode_timestamp(tx: StateTx, value: datetime) -> datetime | str:
-    return value if tx.backend == "postgres" else value.isoformat()
+    return value if tx.backend == 'postgres' else value.isoformat()
 
 
 def payload_dict_for_storage(

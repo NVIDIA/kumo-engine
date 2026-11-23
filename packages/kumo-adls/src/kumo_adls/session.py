@@ -16,9 +16,9 @@ from .errors import translated
 
 def credential_for(principal: Principal | None, endpoint_suffix: str):
     cloud = next(
-        (cloud
-         for cloud, values in CLOUDS.items() if values[0] == endpoint_suffix),
-        None)
+        (cloud for cloud, values in CLOUDS.items() if values[0] == endpoint_suffix),
+        None,
+    )
     if cloud is None:
         raise ValueError('Unsupported ADLS endpoint suffix')
     _, audience, authority = CLOUDS[cloud]
@@ -28,12 +28,11 @@ def credential_for(principal: Principal | None, endpoint_suffix: str):
     if not isinstance(config, ADLSIdentityConfig):
         raise ValueError('The selected identity is not an ADLS identity')
     if config.cloud != cloud:
-        raise ValueError(
-            'ADLS endpoint does not match the selected identity cloud')
+        raise ValueError('ADLS endpoint does not match the selected identity cloud')
     # Explicit identities must never fall back to another ambient principal.
-    return WorkloadIdentityCredential(tenant_id=config.tenant_id,
-                                      client_id=config.client_id,
-                                      authority=authority), audience
+    return WorkloadIdentityCredential(
+        tenant_id=config.tenant_id, client_id=config.client_id, authority=authority
+    ), audience
 
 
 _LOCK = threading.RLock()
@@ -43,8 +42,12 @@ _SESSIONS = {}
 def session_for(principal: Principal | None, account: str, suffix: str):
     # Config participates in the key so a rotated identity cannot reuse a
     # client signed as its predecessor. Tokens refresh inside Azure Identity.
-    key = (principal.name if principal else None,
-           repr(principal.config) if principal else None, account, suffix)
+    key = (
+        principal.name if principal else None,
+        repr(principal.config) if principal else None,
+        account,
+        suffix,
+    )
     with _LOCK:
         if key not in _SESSIONS:
             with translated():
@@ -62,8 +65,7 @@ def close(identity_name: str | None = None) -> None:
     """Drop a principal's clients, or every session during process shutdown."""
     with _LOCK:
         keys = [
-            key for key in _SESSIONS
-            if identity_name is None or key[0] == identity_name
+            key for key in _SESSIONS if identity_name is None or key[0] == identity_name
         ]
         sessions = [_SESSIONS.pop(key) for key in keys]
     for client, credential in sessions:
@@ -85,7 +87,6 @@ def probe(principal: Principal) -> None:
     if not isinstance(config, ADLSIdentityConfig):
         raise ValueError('The selected identity is not an ADLS identity')
     with translated():
-        credential, audience = credential_for(principal,
-                                              CLOUDS[config.cloud][0])
+        credential, audience = credential_for(principal, CLOUDS[config.cloud][0])
         with credential:
             credential.get_token(f'{audience}/.default')

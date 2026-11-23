@@ -28,7 +28,9 @@ def test_is_s3():
 def test_parse_s3():
     assert s3_filesystem.parse_s3('s3://bucket/prefix') == ('bucket', 'prefix')
     assert s3_filesystem.parse_s3('s3://bucket2/path1/path2/file') == (
-        'bucket2', 'path1/path2/file')
+        'bucket2',
+        'path1/path2/file',
+    )
 
 
 def test_listdir_recursive_streams_discovered_prefixes(monkeypatch):
@@ -50,8 +52,7 @@ def test_listdir_recursive_streams_discovered_prefixes(monkeypatch):
 
     monkeypatch.setattr(s3_filesystem, '_list_objects_v2', list_objects)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        result = executor.submit(s3_filesystem.listdir_recursive,
-                                 's3://bucket/root/')
+        result = executor.submit(s3_filesystem.listdir_recursive, 's3://bucket/root/')
         try:
             assert deep_started.wait(2.0)
         finally:
@@ -89,13 +90,14 @@ def test_presigned_urls_use_sigv4(monkeypatch):
                 'HTTPStatusCode': 200,
             },
             'UploadId': 'test-upload-id',
-        })
+        }
+    )
     uri = S3URI(bucket='test-bucket', path='uploads/data.csv')
 
     _, part_urls = impl_s3.S3PresignedHelper(uri)._create_multipart_upload(
-        uri, num_parts=1)
-    download_url = s3_filesystem.generate_presigned_url_for_download(
-        uri.as_s3())
+        uri, num_parts=1
+    )
+    download_url = s3_filesystem.generate_presigned_url_for_download(uri.as_s3())
 
     _assert_sigv4(part_urls[1], expires_in=3600)
     _assert_sigv4(download_url)
@@ -105,7 +107,8 @@ def test_presigned_upload_selects_ambient_bucket_region(monkeypatch):
     initial_client = Mock()
     initial_client.head_bucket.return_value = {'BucketRegion': 'us-west-2'}
     initial_client.create_multipart_upload.side_effect = AssertionError(
-        'presigning must use a client in the bucket region')
+        'presigning must use a client in the bucket region'
+    )
     regional_client = Mock()
     regional_client.create_multipart_upload.return_value = {
         'ResponseMetadata': {
@@ -125,9 +128,9 @@ def test_presigned_upload_selects_ambient_bucket_region(monkeypatch):
     monkeypatch.setattr(impl_s3, 'threadsafe_boto', boto)
     uri = S3URI(bucket='test-bucket', path='uploads/data.csv')
 
-    upload_id, part_urls = (
-        impl_s3.S3PresignedHelper(uri)._create_multipart_upload(
-            uri, num_parts=1))
+    upload_id, part_urls = impl_s3.S3PresignedHelper(uri)._create_multipart_upload(
+        uri, num_parts=1
+    )
 
     assert upload_id == 'test-upload-id'
     assert part_urls == {1: 'presigned-url'}
@@ -140,9 +143,7 @@ def test_complete_multipart_upload_lists_all_part_pages(monkeypatch):
     part_pages = [{'Parts': range(1000)}, {'Parts': range(24)}]
     client.get_paginator.return_value.paginate.return_value = part_pages
     client.complete_multipart_upload.return_value = {
-        'ResponseMetadata': {
-            'HTTPStatusCode': 200
-        },
+        'ResponseMetadata': {'HTTPStatusCode': 200},
     }
     monkeypatch.setattr(
         impl_s3,
@@ -153,11 +154,17 @@ def test_complete_multipart_upload_lists_all_part_pages(monkeypatch):
     parts = [Mock(part_number=i, etag=f'etag-{i}') for i in range(1, 1025)]
 
     impl_s3.S3PresignedHelper(uri)._complete_multipart_upload(
-        uri, 'test-upload-id', parts)
+        uri, 'test-upload-id', parts
+    )
 
-    assert len(
-        client.complete_multipart_upload.call_args.kwargs['MultipartUpload']
-        ['Parts']) == 1024
+    assert (
+        len(
+            client.complete_multipart_upload.call_args.kwargs['MultipartUpload'][
+                'Parts'
+            ]
+        )
+        == 1024
+    )
 
 
 def test_presigned_url_keeps_minio_config(monkeypatch):
@@ -172,8 +179,7 @@ def test_presigned_url_keeps_minio_config(monkeypatch):
         ca_bundle_path='/etc/kumo/minio-ca/ca.crt',
         send_bucket_owner_full_control=False,
     )
-    monkeypatch.setattr(s3_filesystem, 'active_s3_connection',
-                        lambda: connection)
+    monkeypatch.setattr(s3_filesystem, 'active_s3_connection', lambda: connection)
     client = s3_filesystem.ThreadLocalBotoSession().s3_client()
 
     url = client.generate_presigned_url(
@@ -236,15 +242,12 @@ def test_s3_credentials_decorator_does_not_probe_provider(monkeypatch):
 
     client.assert_not_called()
     list_objects.assert_not_called()
-    skip_marks = [
-        mark for mark in decorated.pytestmark if mark.name == 'skipif'
-    ]
+    skip_marks = [mark for mark in decorated.pytestmark if mark.name == 'skipif']
     assert len(skip_marks) == 1
     assert skip_marks[0].kwargs['reason'] == 'No AWS credentials found for S3'
     assert module_mark.mark.name == 'skipif'
-    assert module_mark.mark.args == (True, )
-    assert module_mark.mark.kwargs[
-        'reason'] == 'No AWS credentials found for S3'
+    assert module_mark.mark.args == (True,)
+    assert module_mark.mark.kwargs['reason'] == 'No AWS credentials found for S3'
 
 
 def test_object_identity_uses_etag_without_version_permission(monkeypatch):
@@ -274,10 +277,7 @@ def test_object_identity_maps_head_404_to_file_not_found(monkeypatch):
     from io_utils.fsutil import impl_s3
 
     error = ClientError(
-        {'Error': {
-            'Code': '404',
-            'Message': 'not found'
-        }},
+        {'Error': {'Code': '404', 'Message': 'not found'}},
         'HeadObject',
     )
     monkeypatch.setattr(
@@ -293,22 +293,19 @@ def test_object_identity_maps_head_404_to_file_not_found(monkeypatch):
 def test_s3_listdir_detail_paginates_and_preserves_provider_types(monkeypatch):
     client = Mock()
     paginator = client.get_paginator.return_value
-    paginator.paginate.return_value = [{
-        'Contents': [{
-            'Key': 'events/part.parquet'
-        }],
-        'CommonPrefixes': [{
-            'Prefix': 'events/year=2026/'
-        }],
-    }]
+    paginator.paginate.return_value = [
+        {
+            'Contents': [{'Key': 'events/part.parquet'}],
+            'CommonPrefixes': [{'Prefix': 'events/year=2026/'}],
+        }
+    ]
     monkeypatch.setattr(
         impl_s3,
         '_read_with_unsigned_fallback',
         lambda operation: operation(client),
     )
 
-    details = impl_s3._listdir_details(
-        S3URI(bucket='customer-data', path='events'))
+    details = impl_s3._listdir_details(S3URI(bucket='customer-data', path='events'))
 
     assert [(entry.path, entry.is_directory) for entry in details] == [
         ('s3://customer-data/events/part.parquet', False),

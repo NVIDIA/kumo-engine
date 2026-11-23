@@ -68,21 +68,20 @@ _TEMPORAL_RPC_TOTAL_TIMEOUT = timedelta(seconds=20.0)
 _TEMPORAL_CERT_SECRET_NAME_TEMPLATE = 'kumo-{namespace}-temporal'
 
 # Field name in workflow memo (metadata) dict for workflow id suffix.
-ID_SUFFIX_MEMO_FIELD = "id_suffix"
+ID_SUFFIX_MEMO_FIELD = 'id_suffix'
 # Field name in workflow memo for the workflow id length limit, when bounded.
-ID_MAX_LENGTH_MEMO_FIELD = "id_max_length"
+ID_MAX_LENGTH_MEMO_FIELD = 'id_max_length'
 
-DEFAULT_WORKFLOW_TASK_TIMEOUT_SEC = EnvVar('WORKFLOW_TASK_TIMEOUT_SEC',
-                                           type=int,
-                                           default_value=10).parse_value()
+DEFAULT_WORKFLOW_TASK_TIMEOUT_SEC = EnvVar(
+    'WORKFLOW_TASK_TIMEOUT_SEC', type=int, default_value=10
+).parse_value()
 
 
 # pylint: disable=too-few-public-methods
 @dataclasses.dataclass
 class _LoopServiceClientState:
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
-    service_clients: Dict[str, ServiceClient] = dataclasses.field(
-        default_factory=dict)
+    service_clients: Dict[str, ServiceClient] = dataclasses.field(default_factory=dict)
 
 
 class _TemporalServiceClientManager:
@@ -95,8 +94,8 @@ class _TemporalServiceClientManager:
         # reclaimed. The small threading lock protects only state creation;
         # it is never held across async work.
         self._loop_states: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop,
-            _LoopServiceClientState] = (weakref.WeakKeyDictionary())
+            asyncio.AbstractEventLoop, _LoopServiceClientState
+        ] = weakref.WeakKeyDictionary()
         self._loop_states_lock = threading.Lock()
 
     def _loop_state(
@@ -139,9 +138,11 @@ class _TemporalServiceClientManager:
                     # Do not invalidate the usable cached connection until its
                     # replacement has connected successfully.
                     state.service_clients[key] = new_service_client
-                    if (old_service_client is not None
-                            and old_service_client is not new_service_client
-                            and hasattr(old_service_client, '_bridge_client')):
+                    if (
+                        old_service_client is not None
+                        and old_service_client is not new_service_client
+                        and hasattr(old_service_client, '_bridge_client')
+                    ):
                         setattr(old_service_client, '_bridge_client', None)
                     connected = True
                 return state.service_clients[key], connected
@@ -156,13 +157,18 @@ class _TemporalServiceClientManager:
                 'Timed out acquiring Temporal service client after '
                 f'{_TEMPORAL_CLIENT_ACQUISITION_TIMEOUT_SEC:.1f}s '
                 f'(target={target_address}, loop_id={id(loop)}, '
-                f'initializer_locked={state.lock.locked()})') from error
+                f'initializer_locked={state.lock.locked()})'
+            ) from error
 
         if connected:
             log.info(
-                'Connected client %s to %s, key=%s, re_initialize=%s, '
-                'loop_id=%s', client_id, target_address, key, re_initialize,
-                id(loop))
+                'Connected client %s to %s, key=%s, re_initialize=%s, loop_id=%s',
+                client_id,
+                target_address,
+                key,
+                re_initialize,
+                id(loop),
+            )
         return service_client
 
     async def _connect(
@@ -188,11 +194,13 @@ class _TemporalServiceClientManager:
         elif cert_secret_name:
             # Retrieve TLS certificate secrets without blocking this loop.
             loop = asyncio.get_running_loop()
-            cert_secret = await loop.run_in_executor(None, get_secrets,
-                                                     cert_secret_name)
+            cert_secret = await loop.run_in_executor(
+                None, get_secrets, cert_secret_name
+            )
             tls = TLSConfig(
                 client_cert=base64.b64decode(cert_secret['ca-cert']),
-                client_private_key=base64.b64decode(cert_secret['ca-key']))
+                client_private_key=base64.b64decode(cert_secret['ca-key']),
+            )
 
         client = await asyncio.wait_for(
             Client.connect(
@@ -201,11 +209,13 @@ class _TemporalServiceClientManager:
                 tls=tls,
                 retry_config=RetryConfig(
                     max_elapsed_time_millis=int(
-                        _TEMPORAL_RPC_TOTAL_TIMEOUT.total_seconds() * 1000),
+                        _TEMPORAL_RPC_TOTAL_TIMEOUT.total_seconds() * 1000
+                    ),
                     max_retries=10,  # the default value
                 ),
             ),
-            timeout=_TEMPORAL_CLUSTER_CONNECTION_TIMEOUT_SEC)
+            timeout=_TEMPORAL_CLUSTER_CONNECTION_TIMEOUT_SEC,
+        )
         return client.service_client
 
     async def close(self) -> None:
@@ -238,11 +248,13 @@ class _TemporalServiceClientManager:
         """
         with self._loop_states_lock:
             loop_states = list(self._loop_states.items())
-            if any(loop.is_running() or state.lock.locked()
-                   for loop, state in loop_states):
+            if any(
+                loop.is_running() or state.lock.locked() for loop, state in loop_states
+            ):
                 raise RuntimeError(
                     'Cannot close all Temporal clients until every owning '
-                    'event loop is stopped and every initializer is idle')
+                    'event loop is stopped and every initializer is idle'
+                )
             self._loop_states.clear()
         for _, state in loop_states:
             for service_client in state.service_clients.values():
@@ -267,6 +279,7 @@ class TemporalClient:
     Args:
         config (TemporalConfig): configuration of the temporal client.
     """
+
     def __init__(self, config: Optional[DeployEnvConfig] = None) -> None:
         self._config = config or deploy_env()
         # Keep the public SDK wrapper loop-local for the same reason as the
@@ -274,18 +287,19 @@ class TemporalClient:
         # older tooling that inspects it after initialization; async code must
         # always select from ``_loop_clients``.
         self._loop_clients: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, Client] = weakref.WeakKeyDictionary()
+            asyncio.AbstractEventLoop, Client
+        ] = weakref.WeakKeyDictionary()
         self._loop_clients_lock = threading.Lock()
         self._client: Optional[Client] = None
         self._client_manager = _SERVICE_CLIENT_MANAGER
 
-    def _client_for_loop(self,
-                         loop: asyncio.AbstractEventLoop) -> Optional[Client]:
+    def _client_for_loop(self, loop: asyncio.AbstractEventLoop) -> Optional[Client]:
         with self._loop_clients_lock:
             return self._loop_clients.get(loop)
 
-    def _set_client_for_loop(self, loop: asyncio.AbstractEventLoop,
-                             client: Client) -> None:
+    def _set_client_for_loop(
+        self, loop: asyncio.AbstractEventLoop, client: Client
+    ) -> None:
         with self._loop_clients_lock:
             self._loop_clients[loop] = client
             self._client = client
@@ -335,19 +349,25 @@ class TemporalClient:
         """
         loop = asyncio.get_running_loop()
         if self._client_for_loop(loop) is None or re_initialize:
-            log.info('Initialize connection to temporal service at %s',
-                     self._config.temporal_server_address)
+            log.info(
+                'Initialize connection to temporal service at %s',
+                self._config.temporal_server_address,
+            )
 
             # Retrieve TLS certificate from AWS Secret Manager when connecting
             # to Temporal Cloud.
             cert_secret_name = None
             if isinstance(self._config.orchestration, TemporalCloudConfig):
                 cert_secret_name = _TEMPORAL_CERT_SECRET_NAME_TEMPLATE.format(
-                    namespace=self._config.orchestration.namespace)
+                    namespace=self._config.orchestration.namespace
+                )
 
             service_client = await self._client_manager.get_service_client(
-                self._config, cert_secret_name=cert_secret_name,
-                cert_dir=self._config.tls_cert_dir, re_initialize=re_initialize)
+                self._config,
+                cert_secret_name=cert_secret_name,
+                cert_dir=self._config.tls_cert_dir,
+                re_initialize=re_initialize,
+            )
 
             self._set_client_for_loop(loop, self._create_client(service_client))
 
@@ -364,8 +384,8 @@ class TemporalClient:
         return client
 
     async def get_workflow_handle(
-            self, workflow_id: str, *,
-            run_id: Optional[str] = None) -> WorkflowHandle:
+        self, workflow_id: str, *, run_id: Optional[str] = None
+    ) -> WorkflowHandle:
         """
         Replacement for temporalio.client.Client.get_workflow_handle().
         """
@@ -374,7 +394,7 @@ class TemporalClient:
         return client.get_workflow_handle(workflow_id, run_id=run_id)
 
     async def get_workflow_desc(
-            self, workflow_id: str, *, run_id: Optional[str] = None
+        self, workflow_id: str, *, run_id: Optional[str] = None
     ) -> Optional[WorkflowExecutionDescription]:
         wf_handle = await self.get_workflow_handle(workflow_id, run_id=run_id)
         try:
@@ -390,9 +410,11 @@ class TemporalClient:
             base_url = 'https://cloud.temporal.io'
 
         full_wf_id = self._config.workflow_id(workflow_id)
-        return (f'{base_url}/namespaces/'
-                f'{self._config.temporal_namespace}/workflows/'
-                f'{full_wf_id}')
+        return (
+            f'{base_url}/namespaces/'
+            f'{self._config.temporal_namespace}/workflows/'
+            f'{full_wf_id}'
+        )
 
     async def cancel(self, workflow_id: str, *, max_retries: int = 3) -> bool:
         """Cancel a workflow with retries on RPC error.
@@ -417,9 +439,11 @@ class TemporalClient:
                 log.info('Cancellation request sent for %s', workflow_id)
                 return True
             except RPCError as rpc_error:
-                log.error(f'(attempt #{num_retries}) '
-                          f'Failed to cancel workflow: {workflow_id}, '
-                          f'rpc error: {rpc_error}')
+                log.error(
+                    f'(attempt #{num_retries}) '
+                    f'Failed to cancel workflow: {workflow_id}, '
+                    f'rpc error: {rpc_error}'
+                )
                 if rpc_error.status == RPCStatusCode.NOT_FOUND:
                     # Valid if workflow is NOT FOUND, which could happen if the
                     # workflow is older than retention period.
@@ -443,7 +467,10 @@ class TemporalClient:
             await client.workflow_service.terminate_workflow_execution(
                 wsv1.TerminateWorkflowExecutionRequest(
                     namespace=self.config.temporal_namespace,
-                    workflow_execution=wf_exec, reason=reason))
+                    workflow_execution=wf_exec,
+                    reason=reason,
+                )
+            )
             log.warning('Force terminated wf=%s, reason=%s', wf_id, reason)
 
     @auto_heartbeater
@@ -480,8 +507,10 @@ class TemporalClient:
         except TimeoutError:
             log.debug(
                 'Workflow %s has no result after %s seconds, start polling '
-                'workflow status with exponential backoff.', workflow_id,
-                long_poll_timeout)
+                'workflow status with exponential backoff.',
+                workflow_id,
+                long_poll_timeout,
+            )
 
         # Start randomized exponential backoff.
         backoff_delay_initial = 1.0
@@ -491,8 +520,9 @@ class TemporalClient:
             sleep_seconds = backoff_delay
             if backoff_delay < backoff_delay_max:
                 # Randomize backoff within 0.5x~1.5x, but not exceeding max
-                sleep_seconds = min(backoff_delay_max,
-                                    backoff_delay * random.uniform(0.5, 1.5))
+                sleep_seconds = min(
+                    backoff_delay_max, backoff_delay * random.uniform(0.5, 1.5)
+                )
                 # Exponential backoff with 2.0 factor
                 backoff_delay = min(backoff_delay * 2.0, backoff_delay_max)
 
@@ -502,14 +532,20 @@ class TemporalClient:
             try:
                 wf_status = (await wf_handle.describe()).status
             except RPCError as rpc_err:
-                log.warning('Workflow status polling failed for %s, err: %s',
-                            workflow_id, rpc_err)
+                log.warning(
+                    'Workflow status polling failed for %s, err: %s',
+                    workflow_id,
+                    rpc_err,
+                )
                 continue  # Ignore transient rpc error.
 
             if wf_status and wf_status != WorkflowExecutionStatus.RUNNING:
                 # Workflow is no longer running!
-                log.debug('Workflow %s is no longer running, result=%s',
-                          workflow_id, wf_status)
+                log.debug(
+                    'Workflow %s is no longer running, result=%s',
+                    workflow_id,
+                    wf_status,
+                )
                 return await wf_handle.result()
 
     async def _namespace_exists(self) -> bool:
@@ -517,7 +553,8 @@ class TemporalClient:
         temporal_service = self._get_workflow_service()
         try:
             resp = await temporal_service.describe_namespace(
-                wsv1.DescribeNamespaceRequest(namespace=namespace))
+                wsv1.DescribeNamespaceRequest(namespace=namespace)
+            )
             log.debug('Found temporal namespace: %s', resp)
             assert resp.namespace_info.name == namespace
             return True
@@ -546,21 +583,22 @@ class TemporalClient:
             return
 
         namespace = self._config.temporal_namespace
-        log.warning('Register new namespace=%s with Temporal Cluster.',
-                    namespace)
+        log.warning('Register new namespace=%s with Temporal Cluster.', namespace)
         try:
             await self._get_workflow_service().register_namespace(
                 wsv1.RegisterNamespaceRequest(
                     namespace=namespace,
                     description=f'Created by {self._config.client_id}',
                     workflow_execution_retention_period=Duration(
-                        seconds=int(timedelta(days=3).total_seconds())),
-                ))
+                        seconds=int(timedelta(days=3).total_seconds())
+                    ),
+                )
+            )
         except RPCError as rpc_error:
             if rpc_error.status == RPCStatusCode.ALREADY_EXISTS:
                 log.warning(
-                    'Namespace=%s already exists, wait for it to take effect',
-                    namespace)
+                    'Namespace=%s already exists, wait for it to take effect', namespace
+                )
             else:
                 raise
         # There could be a delay, we need to verify by polling every 2sec.
@@ -569,8 +607,9 @@ class TemporalClient:
             await asyncio.sleep(_REGISTER_NAMESPACE_POLL_INTERVAL_SEC)
             if await self._namespace_exists():
                 break
-        log.info('New namespace=%s created, waiting for it to take effects...',
-                 namespace)
+        log.info(
+            'New namespace=%s created, waiting for it to take effects...', namespace
+        )
         await asyncio.sleep(_NEW_NAMESPACE_WAIT_SEC)
         assert await self._namespace_exists()
 
@@ -589,7 +628,8 @@ class TemporalClient:
             ],
             data_converter=DataConverter(
                 payload_converter_class=KumoPayloadConverter,
-                payload_codec=CompressionCodec(tmp_payloads_dir)),
+                payload_codec=CompressionCodec(tmp_payloads_dir),
+            ),
         )
 
 
@@ -614,8 +654,7 @@ def add_search_attributes_to_input(
             'instance_id': [config.instance_id],
         }
         if input.search_attributes:
-            assert not isinstance(input.search_attributes,
-                                  TypedSearchAttributes)
+            assert not isinstance(input.search_attributes, TypedSearchAttributes)
             search_attributes.update(input.search_attributes)
         input.search_attributes = search_attributes
 
@@ -627,8 +666,8 @@ class ClientOutboundInterceptor(OutboundInterceptor):
     Client interceptor to append appropriate suffixes to task queue and
     workflow id, based on the config.
     """
-    def __init__(self, config: DeployEnvConfig,
-                 next: OutboundInterceptor) -> None:
+
+    def __init__(self, config: DeployEnvConfig, next: OutboundInterceptor) -> None:
         super().__init__(next)
         self._config = config
 
@@ -637,7 +676,8 @@ class ClientOutboundInterceptor(OutboundInterceptor):
         memo: Dict[str, Any] = {ID_SUFFIX_MEMO_FIELD: id_suffix.encode()}
         if self._config.max_workflow_id_length is not None:
             memo[ID_MAX_LENGTH_MEMO_FIELD] = str(
-                self._config.max_workflow_id_length).encode()
+                self._config.max_workflow_id_length
+            ).encode()
         if input.memo:
             memo.update(input.memo)
         input.memo = memo
@@ -654,8 +694,7 @@ class ClientOutboundInterceptor(OutboundInterceptor):
 
         # Set default workflow task timeout if not specified already.
         if input.task_timeout is None:
-            input.task_timeout = timedelta(
-                seconds=DEFAULT_WORKFLOW_TASK_TIMEOUT_SEC)
+            input.task_timeout = timedelta(seconds=DEFAULT_WORKFLOW_TASK_TIMEOUT_SEC)
         # Import locally to preserve the temporalio_commons -> rest layering at
         # module import time. Binding runs in the trusted client process before
         # any capability-bearing payload is accepted by Temporal.
@@ -664,17 +703,23 @@ class ClientOutboundInterceptor(OutboundInterceptor):
             close_connector_authorization_state,
             revoke_bound_connector_authorizations,
         )
-        state_db, _services, _newly_bound = (
-            await bind_connector_authorizations_for_start(input, self._config))
+
+        (
+            state_db,
+            _services,
+            _newly_bound,
+        ) = await bind_connector_authorizations_for_start(input, self._config)
         try:
             return await self.next.start_workflow(input)
         except WorkflowAlreadyStartedError:
             try:
                 await revoke_bound_connector_authorizations(
-                    state_db, _services, _newly_bound)
+                    state_db, _services, _newly_bound
+                )
             except BaseException:
                 log.exception(
-                    'Failed best-effort cleanup of duplicate-start capability')
+                    'Failed best-effort cleanup of duplicate-start capability'
+                )
             state_db = None
             raise
         finally:
@@ -696,8 +741,7 @@ class ClientOutboundInterceptor(OutboundInterceptor):
         )
 
         # yapf: enable
-        await revoke_connector_authorizations_for_workflow(
-            self._config, input.id)
+        await revoke_connector_authorizations_for_workflow(self._config, input.id)
 
     async def describe_workflow(self, input):
         input.id = self._config.workflow_id(input.id)
@@ -733,22 +777,21 @@ class ClientOutboundInterceptor(OutboundInterceptor):
         )
 
         # yapf: enable
-        await revoke_connector_authorizations_for_workflow(
-            self._config, input.id)
+        await revoke_connector_authorizations_for_workflow(self._config, input.id)
 
 
 class ClientInterceptor(Interceptor):  # pylint: disable=too-few-public-methods
     def __init__(self, config: DeployEnvConfig) -> None:
         self._config = config
 
-    def intercept_client(self,
-                         next: OutboundInterceptor) -> OutboundInterceptor:
+    def intercept_client(self, next: OutboundInterceptor) -> OutboundInterceptor:
         """See base."""
         return ClientOutboundInterceptor(self._config, next)
 
 
 class DeployConfigMemoOutboundInterceptor(OutboundInterceptor):
     """Attaches deploy_env() snapshot as workflow memo for observability."""
+
     async def start_workflow(self, input: StartWorkflowInput):
         memo = dict(input.memo or {})
         memo['deploy_env_config'] = dataclasses.asdict(deploy_env())
@@ -757,6 +800,5 @@ class DeployConfigMemoOutboundInterceptor(OutboundInterceptor):
 
 
 class DeployConfigMemoInterceptor(Interceptor):  # pylint: disable=too-few-public-methods
-    def intercept_client(self,
-                         next: OutboundInterceptor) -> OutboundInterceptor:
+    def intercept_client(self, next: OutboundInterceptor) -> OutboundInterceptor:
         return DeployConfigMemoOutboundInterceptor(next)

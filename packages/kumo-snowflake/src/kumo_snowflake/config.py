@@ -6,8 +6,7 @@ r"""Snowflake developer-configuration helpers."""
 from typing import Dict, Optional
 
 
-def connection_toml_entry(
-        connection_name: Optional[str] = None) -> Dict[str, str]:
+def connection_toml_entry(connection_name: Optional[str] = None) -> Dict[str, str]:
     r"""Returns one ``connections.toml`` entry, or says what the file holds.
 
     The Snowflake connector's own config manager resolves the file's location,
@@ -24,6 +23,6 @@ def connection_toml_entry(
     if entry is None:
         known = ', '.join(repr(key) for key in sorted(connections)) or 'none'
         raise ValueError(
-            f"connections.toml has no connection {wanted!r}. It defines: "
-            f"{known}.")
+            f'connections.toml has no connection {wanted!r}. It defines: {known}.'
+        )
     return dict(entry)

@@ -23,8 +23,7 @@ _WORKER_METRICS_HOST = EnvVar(
     str,
     required=False,
     default_value='[::]',
-    description=(
-        'Host to allow metrics scraping from Promethus. Default is "[::]"'),
+    description=('Host to allow metrics scraping from Promethus. Default is "[::]"'),
 ).parse_value()
 
 
@@ -59,9 +58,12 @@ def init_temporal_runtime(
         host = f'[{raw_host}]'
 
     Runtime.set_default(
-        Runtime(telemetry=TelemetryConfig(
-            metrics=PrometheusConfig(bind_address=f"{host}:{port}"),
-            global_tags=global_tags,
-            # Not useful, service name is always "temporal-core-sdk"
-            attach_service_name=False,
-        )))
+        Runtime(
+            telemetry=TelemetryConfig(
+                metrics=PrometheusConfig(bind_address=f'{host}:{port}'),
+                global_tags=global_tags,
+                # Not useful, service name is always "temporal-core-sdk"
+                attach_service_name=False,
+            )
+        )
+    )

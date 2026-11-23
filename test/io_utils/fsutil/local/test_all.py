@@ -2,9 +2,9 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from test.io_utils.fsutil.contract import FilesystemContract
-
 import pytest
+
+from test.io_utils.fsutil.contract import FilesystemContract
 
 
 @pytest.fixture

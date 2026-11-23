@@ -32,58 +32,63 @@ _QUERY_RETRY_JITTER_SECONDS = 0.0
 
 
 class QueryRetryScope(Enum):
-    IDEMPOTENT = "idempotent"
-    ALL = "all"
+    IDEMPOTENT = 'idempotent'
+    ALL = 'all'
 
 
 _QUERY_RETRY_SCOPE: QueryRetryScope = QueryRetryScope.IDEMPOTENT
 
-_IDEMPOTENT_SQL_PREFIXES = frozenset({
-    "SELECT",
-    "SHOW",
-    "DESCRIBE",
-    "DESC",
-    "LIST",
-    "EXPLAIN",
-})
-_RETRYABLE_SQLSTATE_PREFIXES = ("08", "40")
-_RETRYABLE_ERRNOS = frozenset({
-    250001,  # failed to connect to DB
-    250002,  # failed to get response
-    250003,  # failed to get response (retryable transport issue)
-    250006,  # failed to connect after retry
-    390111,  # session no longer exists
-})
+_IDEMPOTENT_SQL_PREFIXES = frozenset(
+    {
+        'SELECT',
+        'SHOW',
+        'DESCRIBE',
+        'DESC',
+        'LIST',
+        'EXPLAIN',
+    }
+)
+_RETRYABLE_SQLSTATE_PREFIXES = ('08', '40')
+_RETRYABLE_ERRNOS = frozenset(
+    {
+        250001,  # failed to connect to DB
+        250002,  # failed to get response
+        250003,  # failed to get response (retryable transport issue)
+        250006,  # failed to connect after retry
+        390111,  # session no longer exists
+    }
+)
 _RETRYABLE_MESSAGE_PATTERNS = (
-    "session no longer exists",
-    "session has been closed",
-    "session was closed",
-    "connection reset",
-    "connection aborted",
-    "connection refused",
-    "broken pipe",
-    "temporarily unavailable",
-    "transient",
-    "timed out",
-    "timeout",
+    'session no longer exists',
+    'session has been closed',
+    'session was closed',
+    'connection reset',
+    'connection aborted',
+    'connection refused',
+    'broken pipe',
+    'temporarily unavailable',
+    'transient',
+    'timed out',
+    'timeout',
 )
 _NON_RETRYABLE_MESSAGE_PATTERNS = (
-    "syntax error",
-    "compilation error",
-    "insufficient privileges",
-    "not authorized",
-    "does not exist",
-    "invalid identifier",
+    'syntax error',
+    'compilation error',
+    'insufficient privileges',
+    'not authorized',
+    'does not exist',
+    'invalid identifier',
 )
 _MULTI_STATEMENT_ERROR_PATTERNS = (
-    "actual statement count",
-    "execution of multiple statements failed on statement",
+    'actual statement count',
+    'execution of multiple statements failed on statement',
 )
-_SQL_PREFIX_RE = re.compile(r"^\s*([A-Za-z]+)")
-_SQLSTATE_RE = re.compile(r"^[0-9A-Z]{5}$")
+_SQL_PREFIX_RE = re.compile(r'^\s*([A-Za-z]+)')
+_SQLSTATE_RE = re.compile(r'^[0-9A-Z]{5}$')
 _QUERY_ID_RE = re.compile(
-    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
-    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+    r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-'
+    r'[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+)
 
 # These wrappers intentionally use `wrapt.ObjectProxy` instead of direct
 # subclassing of Snowflake/Snowpark runtime classes. Those objects are
@@ -95,7 +100,7 @@ _QUERY_ID_RE = re.compile(
 def _sql_prefix(command: str) -> str:
     match = _SQL_PREFIX_RE.match(command)
     if match is None:
-        return ""
+        return ''
     return match.group(1).upper()
 
 
@@ -107,12 +112,11 @@ def _is_retry_scope_allowed(command: str) -> bool:
 
 def _is_multi_statement_error(error: BaseException) -> bool:
     message = str(error).lower()
-    return any(pattern in message
-               for pattern in _MULTI_STATEMENT_ERROR_PATTERNS)
+    return any(pattern in message for pattern in _MULTI_STATEMENT_ERROR_PATTERNS)
 
 
 def _extract_sqlstate(error: BaseException) -> str | None:
-    sqlstate = getattr(error, "sqlstate", None)
+    sqlstate = getattr(error, 'sqlstate', None)
     if isinstance(sqlstate, str) and _SQLSTATE_RE.fullmatch(sqlstate):
         return sqlstate
     return None
@@ -121,11 +125,11 @@ def _extract_sqlstate(error: BaseException) -> str | None:
 def safe_query_id_for_logging(value: object) -> str:
     if isinstance(value, str) and _QUERY_ID_RE.fullmatch(value):
         return value
-    return "unknown"
+    return 'unknown'
 
 
 def _extract_errno(error: BaseException) -> int | None:
-    errno = getattr(error, "errno", None)
+    errno = getattr(error, 'errno', None)
     if isinstance(errno, int):
         return errno
     try:
@@ -136,9 +140,9 @@ def _extract_errno(error: BaseException) -> int | None:
 
 def _safe_error_fields(error: BaseException) -> tuple[str, str, str]:
     """Return allowlisted Snowflake failure fields for structured logging."""
-    sqlstate = _extract_sqlstate(error) or "unknown"
+    sqlstate = _extract_sqlstate(error) or 'unknown'
     errno = _extract_errno(error)
-    return type(error).__name__, sqlstate, str(errno or "unknown")
+    return type(error).__name__, sqlstate, str(errno or 'unknown')
 
 
 def _is_retryable_error(error: BaseException) -> bool:
@@ -154,8 +158,16 @@ def _is_retryable_error(error: BaseException) -> bool:
     if sqlstate and sqlstate.startswith(_RETRYABLE_SQLSTATE_PREFIXES):
         return True
 
-    if isinstance(error, (SnowparkSessionException, TimeoutError,
-                          ConnectionError, BrokenPipeError, BlockingIOError)):
+    if isinstance(
+        error,
+        (
+            SnowparkSessionException,
+            TimeoutError,
+            ConnectionError,
+            BrokenPipeError,
+            BlockingIOError,
+        ),
+    ):
         return True
 
     return any(pattern in message for pattern in _RETRYABLE_MESSAGE_PATTERNS)
@@ -180,23 +192,23 @@ def retry_policy(handler: Callable[[Exception], None]):
 
 class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
     """Proxy around `SnowflakeCursor` that adds query/fetch logging."""
-    def __enter__(self) -> "_LoggedSnowflakeCursor":
+
+    def __enter__(self) -> '_LoggedSnowflakeCursor':
         entered = self.__wrapped__.__enter__()
         return ensure_logged_connector_cursor(entered)
 
     def execute(self, command: str, *args, **kwargs):
         start = perf_counter()
         logger.debug(
-            "snowflake operation=%s status=start",
-            "cursor.execute",
+            'snowflake operation=%s status=start',
+            'cursor.execute',
         )
         try:
             result = self._execute_with_retry(command, args, kwargs)
             duration_ms = int((perf_counter() - start) * 1000)
             logger.info(
-                ("snowflake operation=%s status=success"
-                 " duration_ms=%d query_id=%s"),
-                "cursor.execute",
+                ('snowflake operation=%s status=success duration_ms=%d query_id=%s'),
+                'cursor.execute',
                 duration_ms,
                 safe_query_id_for_logging(self.__wrapped__.sfqid),
             )
@@ -208,9 +220,11 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
         except Exception as error:
             error_type, sqlstate, errno = _safe_error_fields(error)
             logger.error(
-                ("snowflake operation=%s status=error duration_ms=%d "
-                 "error_type=%s sqlstate=%s errno=%s query_id=%s"),
-                "cursor.execute",
+                (
+                    'snowflake operation=%s status=error duration_ms=%d '
+                    'error_type=%s sqlstate=%s errno=%s query_id=%s'
+                ),
+                'cursor.execute',
                 int((perf_counter() - start) * 1000),
                 error_type,
                 sqlstate,
@@ -226,12 +240,10 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
     ) -> None:
         """Log operator stats report for long-running queries."""
         safe_query_id = safe_query_id_for_logging(query_id)
-        if (safe_query_id == "unknown"
-                or duration_ms < _LONG_RUNNING_QUERY_THRESHOLD_MS):
+        if safe_query_id == 'unknown' or duration_ms < _LONG_RUNNING_QUERY_THRESHOLD_MS:
             return
 
-        stats_sql = ("SELECT * FROM TABLE(GET_QUERY_OPERATOR_STATS("
-                     f"'{safe_query_id}'))")
+        stats_sql = f"SELECT * FROM TABLE(GET_QUERY_OPERATOR_STATS('{safe_query_id}'))"
         stats_query_id = None
         try:
             # Use a separate cursor so we do not mutate the original cursor's
@@ -241,9 +253,11 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
                 rows = stats_cursor.fetchall()
                 stats_query_id = stats_cursor.sfqid
             logger.info(
-                ("snowflake operation=%s status=success query_id=%s "
-                 "duration_ms=%d operator_count=%d"),
-                "query_operator_stats",
+                (
+                    'snowflake operation=%s status=success query_id=%s '
+                    'duration_ms=%d operator_count=%d'
+                ),
+                'query_operator_stats',
                 safe_query_id,
                 duration_ms,
                 len(rows),
@@ -251,9 +265,11 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
         except Exception as error:
             error_type, sqlstate, errno = _safe_error_fields(error)
             logger.error(
-                ("snowflake operation=%s status=error query_id=%s "
-                 "error_type=%s sqlstate=%s errno=%s"),
-                "query_operator_stats",
+                (
+                    'snowflake operation=%s status=error query_id=%s '
+                    'error_type=%s sqlstate=%s errno=%s'
+                ),
+                'query_operator_stats',
                 safe_query_id_for_logging(stats_query_id),
                 error_type,
                 sqlstate,
@@ -262,7 +278,7 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
             return
 
     def _refresh_cursor_for_retry(self) -> None:
-        connection = getattr(self.__wrapped__, "connection", None)
+        connection = getattr(self.__wrapped__, 'connection', None)
         if connection is None:
             return
         try:
@@ -270,22 +286,22 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
         except Exception:
             pass
         try:
-            self.__wrapped__ = connection.cursor(
-                cursor_class=type(self.__wrapped__))
+            self.__wrapped__ = connection.cursor(cursor_class=type(self.__wrapped__))
         except Exception:
             self.__wrapped__ = connection.cursor()
 
-    def _execute_with_retry(self, command: str, args: tuple[Any, ...],
-                            kwargs: dict[str, Any]):
+    def _execute_with_retry(
+        self, command: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ):
         if not _is_retry_scope_allowed(command):
             return self.__wrapped__.execute(command, *args, **kwargs)
 
         def _handle_retry(error: Exception) -> None:
             if _is_multi_statement_error(error):
                 logger.info(
-                    "snowflake operation=%s status=skip_retry reason=%s",
-                    "cursor.execute",
-                    "multi_statement",
+                    'snowflake operation=%s status=skip_retry reason=%s',
+                    'cursor.execute',
+                    'multi_statement',
                 )
                 raise error
             self._refresh_cursor_for_retry()
@@ -297,20 +313,21 @@ class _LoggedSnowflakeCursor(wrapt.ObjectProxy):
         return _run_execute()
 
     def fetchone(self):
-        with _log_connector_call("cursor.fetchone"):
+        with _log_connector_call('cursor.fetchone'):
             return self.__wrapped__.fetchone()
 
     def fetchmany(self, size: int | None = None):
-        with _log_connector_call("cursor.fetchmany"):
+        with _log_connector_call('cursor.fetchmany'):
             return self.__wrapped__.fetchmany(size=size)
 
     def fetchall(self):
-        with _log_connector_call("cursor.fetchall"):
+        with _log_connector_call('cursor.fetchall'):
             return self.__wrapped__.fetchall()
 
 
 class _LoggedSnowflakeConnection(wrapt.ObjectProxy):
     """Proxy around `SnowflakeConnection` that returns logged cursors."""
+
     def cursor(
         self,
         cursor_class: type[SnowflakeCursor] = SnowflakeCursor,
@@ -319,24 +336,26 @@ class _LoggedSnowflakeConnection(wrapt.ObjectProxy):
         return ensure_logged_connector_cursor(cursor)
 
     def commit(self) -> None:
-        with _log_connector_call("connection.commit"):
+        with _log_connector_call('connection.commit'):
             self.__wrapped__.commit()
 
     def rollback(self) -> None:
-        with _log_connector_call("connection.rollback"):
+        with _log_connector_call('connection.rollback'):
             self.__wrapped__.rollback()
 
     def close(self, retry: bool = True) -> None:
-        with _log_connector_call("connection.close"):
+        with _log_connector_call('connection.close'):
             self.__wrapped__.close(retry=retry)
 
 
 class _LoggedServerConnection(wrapt.ObjectProxy):
     """Proxy for `ServerConnection` that wires logged connector internals."""
+
     def __init__(self, wrapped: ServerConnection):
         super().__init__(wrapped)
         self.__wrapped__._conn = ensure_logged_connector_connection(
-            self.__wrapped__._conn)
+            self.__wrapped__._conn
+        )
         # Newer snowflake-connector versions expose ``_cursor`` as a read-only
         # thread-local property derived lazily from ``self._conn.cursor()``.
         # Because ``_conn`` is now a logged connection (whose ``cursor()``
@@ -344,23 +363,25 @@ class _LoggedServerConnection(wrapt.ObjectProxy):
         # and the property cannot be assigned. Only seed it directly on older
         # versions where ``_cursor`` is a writable instance attribute.
         if not isinstance(
-                inspect.getattr_static(type(self.__wrapped__), '_cursor',
-                                       None), property):
+            inspect.getattr_static(type(self.__wrapped__), '_cursor', None), property
+        ):
             self.__wrapped__._cursor = ensure_logged_connector_cursor(
-                self.__wrapped__._cursor)
+                self.__wrapped__._cursor
+            )
 
 
 class _LoggedSnowparkSession(wrapt.ObjectProxy):
     """Session-level proxy that routes Snowpark execution through wrappers."""
+
     def __init__(self, wrapped: Session):
         super().__init__(wrapped)
         if isinstance(self.__wrapped__._conn, ServerConnection):
             self.__wrapped__._conn = ensure_logged_server_connection(
-                self.__wrapped__._conn)
+                self.__wrapped__._conn
+            )
 
     @property
-    def connection(
-            self) -> _LoggedSnowflakeConnection:  # type: ignore[override]
+    def connection(self) -> _LoggedSnowflakeConnection:  # type: ignore[override]
         return ensure_logged_connector_connection(self.__wrapped__.connection)
 
 
@@ -370,15 +391,17 @@ def _log_connector_call(operation: str) -> Generator[None]:
     try:
         yield
         logger.debug(
-            "snowflake operation=%s status=success duration_ms=%d",
+            'snowflake operation=%s status=success duration_ms=%d',
             operation,
             int((perf_counter() - start) * 1000),
         )
     except Exception as error:
         error_type, sqlstate, errno = _safe_error_fields(error)
         logger.error(
-            ("snowflake operation=%s status=error duration_ms=%d "
-             "error_type=%s sqlstate=%s errno=%s"),
+            (
+                'snowflake operation=%s status=error duration_ms=%d '
+                'error_type=%s sqlstate=%s errno=%s'
+            ),
             operation,
             int((perf_counter() - start) * 1000),
             error_type,
@@ -413,7 +436,8 @@ def ensure_logged_server_connection(
 
 
 def ensure_logged_snowpark_session(
-    session: Session | _LoggedSnowparkSession, ) -> Session:
+    session: Session | _LoggedSnowparkSession,
+) -> Session:
     if isinstance(session, _LoggedSnowparkSession):
         return session  # type: ignore[return-value]
     return _LoggedSnowparkSession(session)  # type: ignore[return-value]

@@ -14,6 +14,7 @@ Covers:
   * ``persist_durable_ttng_bundle`` — stable-root publication for prediction.
   * ``restore_durable_ttng_bundle`` — interrupted local copies heal on retry.
 """
+
 import hashlib
 import json
 import os
@@ -58,11 +59,13 @@ def _bundle(tmp_path, name, *, tt_id=None, content=None):
     tt_id = tt_id or name
     path = str(tmp_path / f'.{tt_id}.staging')
     os.makedirs(path, exist_ok=True)
-    table = pa.table({
-        'ENTITY1': pa.array([0, 1], type=pa.int64()),
-        'TIMESTAMP': pa.array([0, 0], type=pa.int64()),
-        'TARGET1': pa.array([1, 1], type=pa.int64()),
-    })
+    table = pa.table(
+        {
+            'ENTITY1': pa.array([0, 1], type=pa.int64()),
+            'TIMESTAMP': pa.array([0, 0], type=pa.int64()),
+            'TARGET1': pa.array([1, 1], type=pa.int64()),
+        }
+    )
     train_table = osp.join(path, 'tt.parquet')
     os.makedirs(train_table)
     part = osp.join(train_table, 'part-00000.parquet')
@@ -72,11 +75,13 @@ def _bundle(tmp_path, name, *, tt_id=None, content=None):
         'format': 'tt_parquet_dataset_v1',
         'row_count': 2,
         'size_bytes': os.stat(part).st_size,
-        'parts': [{
-            'path': 'tt.parquet/part-00000.parquet',
-            'row_count': 2,
-            'size_bytes': os.stat(part).st_size,
-        }],
+        'parts': [
+            {
+                'path': 'tt.parquet/part-00000.parquet',
+                'row_count': 2,
+                'size_bytes': os.stat(part).st_size,
+            }
+        ],
     }
     stats = {
         'version': 2,
@@ -98,19 +103,19 @@ def _bundle(tmp_path, name, *, tt_id=None, content=None):
                 'version': 3,
                 'row_count': 2,
                 'train_table': train_table_manifest,
-                'stats': {
-                    'path': 'stats.json',
-                    'format': 'tt_stats_json'
-                },
-                'checksums': {
-                    'stats_sha256': stats_sha256
-                },
-            }, f)
-    _write_spec(path, {
-        'schema_version': _INGEST_SPEC_V3,
-        'tt_id': tt_id,
-        'split_stages': None,
-    })
+                'stats': {'path': 'stats.json', 'format': 'tt_stats_json'},
+                'checksums': {'stats_sha256': stats_sha256},
+            },
+            f,
+        )
+    _write_spec(
+        path,
+        {
+            'schema_version': _INGEST_SPEC_V3,
+            'tt_id': tt_id,
+            'split_stages': None,
+        },
+    )
     return path
 
 
@@ -120,19 +125,24 @@ def _bundle(tmp_path, name, *, tt_id=None, content=None):
 @pytest.mark.parametrize('tt_id', ['job-abc', 'pred_gen-job'])
 def test_read_tt_id_from_spec(tmp_path, tt_id):
     d = str(tmp_path / 'bundle')
-    _write_spec(d, {
-        'schema_version': _INGEST_SPEC_V3,
-        'tt_id': tt_id,
-        'split_stages': None,
-    })
+    _write_spec(
+        d,
+        {
+            'schema_version': _INGEST_SPEC_V3,
+            'tt_id': tt_id,
+            'split_stages': None,
+        },
+    )
     assert read_tt_id_from_staging_bundle(d) == tt_id
 
 
-@pytest.mark.parametrize('spec, message', [(None, 'tt_ingest_spec.json'),
-                                           ({
-                                               'schema_version': _INGEST_SPEC_V3,
-                                               'split_stages': None
-                                           }, 'tt_id')])
+@pytest.mark.parametrize(
+    'spec, message',
+    [
+        (None, 'tt_ingest_spec.json'),
+        ({'schema_version': _INGEST_SPEC_V3, 'split_stages': None}, 'tt_id'),
+    ],
+)
 def test_read_tt_id_rejects_incomplete_spec(tmp_path, spec, message):
     d = str(tmp_path / 'bundle')
     if spec is not None:
@@ -182,17 +192,21 @@ def test_complete_multi_part_split_bundle_passes(tmp_path):
     def inventory(stage_parts):
         return {
             'schema_version': 'diskgraph.tt_stage_artifact_inventory.v1',
-            'parts': [{
-                'path': part,
-                'size_bytes': os.stat(osp.join(d, part)).st_size,
-                'row_count': 1,
-            } for part in stage_parts],
+            'parts': [
+                {
+                    'path': part,
+                    'size_bytes': os.stat(osp.join(d, part)).st_size,
+                    'row_count': 1,
+                }
+                for part in stage_parts
+            ],
         }
+
     _write_spec(
-        d, {
+        d,
+        {
             'schema_version': _INGEST_SPEC_V3,
-            'tt_id':
-            'job-xyz',
+            'tt_id': 'job-xyz',
             'split_stages': [
                 {
                     'key': 'train',
@@ -209,18 +223,23 @@ def test_complete_multi_part_split_bundle_passes(tmp_path):
                     'artifact_inventory': inventory(parts[2:]),
                 },
             ],
-        })
+        },
+    )
     assert_ttng_bundle_complete(d)  # no raise
 
 
-@pytest.mark.parametrize('missing, message', [
-    ('spec', 'tt_ingest_spec.json'),
-    ('parquet', 'tt.parquet'),
-])
+@pytest.mark.parametrize(
+    'missing, message',
+    [
+        ('spec', 'tt_ingest_spec.json'),
+        ('parquet', 'tt.parquet'),
+    ],
+)
 def test_incomplete_bundle_fails(tmp_path, missing, message):
     d = _bundle(tmp_path, 'incomplete')
     missing_path = osp.join(
-        d, 'tt.parquet' if missing == 'parquet' else 'tt_ingest_spec.json')
+        d, 'tt.parquet' if missing == 'parquet' else 'tt_ingest_spec.json'
+    )
     if missing == 'parquet':
         shutil.rmtree(missing_path)
     else:
@@ -238,36 +257,38 @@ def test_missing_declared_stage_part_fails(tmp_path):
     pq.write_table(pa.table({'ENTITY1': [1]}), part)
     # part-00001 declared but NOT written.
     _write_spec(
-        d, {
+        d,
+        {
             'schema_version': _INGEST_SPEC_V3,
-            'tt_id':
-            'job-xyz',
-            'split_stages': [{
-                'key':
-                'train',
-                'table_name':
-                'train_seeds',
-                'parts': [
-                    'train_seeds/part-00000.parquet',
-                    'train_seeds/part-00001.parquet',
-                ],
-                'row_count':
-                5,
-                'artifact_inventory': {
-                    'schema_version':
-                    'diskgraph.tt_stage_artifact_inventory.v1',
-                    'parts': [{
-                        'path': 'train_seeds/part-00000.parquet',
-                        'size_bytes': os.stat(part).st_size,
-                        'row_count': 1,
-                    }, {
-                        'path': 'train_seeds/part-00001.parquet',
-                        'size_bytes': 1,
-                        'row_count': 4,
-                    }],
-                },
-            }],
-        })
+            'tt_id': 'job-xyz',
+            'split_stages': [
+                {
+                    'key': 'train',
+                    'table_name': 'train_seeds',
+                    'parts': [
+                        'train_seeds/part-00000.parquet',
+                        'train_seeds/part-00001.parquet',
+                    ],
+                    'row_count': 5,
+                    'artifact_inventory': {
+                        'schema_version': 'diskgraph.tt_stage_artifact_inventory.v1',
+                        'parts': [
+                            {
+                                'path': 'train_seeds/part-00000.parquet',
+                                'size_bytes': os.stat(part).st_size,
+                                'row_count': 1,
+                            },
+                            {
+                                'path': 'train_seeds/part-00001.parquet',
+                                'size_bytes': 1,
+                                'row_count': 4,
+                            },
+                        ],
+                    },
+                }
+            ],
+        },
+    )
     with pytest.raises(TTNGBundleError, match='part-00001'):
         assert_ttng_bundle_complete(d)
 
@@ -286,22 +307,27 @@ def test_malformed_ingest_spec_shape_fails_closed(tmp_path, spec):
 
 def test_v3_bundle_rejects_readable_part_row_truncation(tmp_path):
     d = _bundle(tmp_path, 'bundle')
-    truncated = pa.table({
-        'ENTITY1': pa.array([0], type=pa.int64()),
-        'TIMESTAMP': pa.array([0], type=pa.int64()),
-        'TARGET1': pa.array([1], type=pa.int64()),
-    })
+    truncated = pa.table(
+        {
+            'ENTITY1': pa.array([0], type=pa.int64()),
+            'TIMESTAMP': pa.array([0], type=pa.int64()),
+            'TARGET1': pa.array([1], type=pa.int64()),
+        }
+    )
     pq.write_table(truncated, osp.join(d, 'tt.parquet', 'part-00000.parquet'))
 
     with pytest.raises(TTNGBundleError, match='artifact manifest'):
         assert_ttng_bundle_complete(d)
 
 
-@pytest.mark.parametrize('artifact', [
-    'tt_ingest_spec.json',
-    'tt.parquet',
-    'manifest.json',
-])
+@pytest.mark.parametrize(
+    'artifact',
+    [
+        'tt_ingest_spec.json',
+        'tt.parquet',
+        'manifest.json',
+    ],
+)
 def test_bundle_rejects_symlink_top_level_artifact(tmp_path, artifact):
     d = _bundle(tmp_path, f'bundle-{artifact.replace(".", "-")}')
     artifact_path = tmp_path / 'external' / artifact
@@ -372,34 +398,42 @@ def _v3_stage_spec(bundle, *, declared_size_delta=0, declared_rows=1):
     part_path = osp.join(bundle, part)
     os.makedirs(osp.dirname(part_path), exist_ok=True)
     pq.write_table(
-        pa.table({
-            'ENTITY1': pa.array([0], type=pa.int64()),
-            'TIMESTAMP': pa.array([0], type=pa.int64()),
-            'TARGET1': pa.array([1], type=pa.int64()),
-        }),
+        pa.table(
+            {
+                'ENTITY1': pa.array([0], type=pa.int64()),
+                'TIMESTAMP': pa.array([0], type=pa.int64()),
+                'TARGET1': pa.array([1], type=pa.int64()),
+            }
+        ),
         part_path,
     )
-    _write_spec(bundle, {
-        'schema_version': _INGEST_SPEC_V3,
-        'tt_id': osp.basename(bundle).removeprefix('.').removesuffix('.staging'),
-        'split_stages': [{
-            'key': 'train',
-            'table_name': 'train_seeds',
-            'parts': [part],
-            'row_count': 1,
-            'seed_time': None,
-            'artifact_inventory': {
-                'schema_version':
-                'diskgraph.tt_stage_artifact_inventory.v1',
-                'parts': [{
-                    'path': part,
-                    'size_bytes':
-                    os.stat(part_path).st_size + declared_size_delta,
-                    'row_count': declared_rows,
-                }],
-            },
-        }],
-    })
+    _write_spec(
+        bundle,
+        {
+            'schema_version': _INGEST_SPEC_V3,
+            'tt_id': osp.basename(bundle).removeprefix('.').removesuffix('.staging'),
+            'split_stages': [
+                {
+                    'key': 'train',
+                    'table_name': 'train_seeds',
+                    'parts': [part],
+                    'row_count': 1,
+                    'seed_time': None,
+                    'artifact_inventory': {
+                        'schema_version': 'diskgraph.tt_stage_artifact_inventory.v1',
+                        'parts': [
+                            {
+                                'path': part,
+                                'size_bytes': os.stat(part_path).st_size
+                                + declared_size_delta,
+                                'row_count': declared_rows,
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+    )
     return part_path
 
 
@@ -460,23 +494,26 @@ def test_remote_bundle_validation_lists_directories_not_parts(monkeypatch):
     parts = [f'train_seeds/part-{i:05}.parquet' for i in range(10_000)]
     spec = {
         'schema_version': _INGEST_SPEC_V3,
-        'tt_id':
-        'job-large',
-        'split_stages': [{
-            'key': 'train',
-            'table_name': 'train_seeds',
-            'parts': parts,
-            'row_count': len(parts),
-            'artifact_inventory': {
-                'schema_version':
-                'diskgraph.tt_stage_artifact_inventory.v1',
-                'parts': [{
-                    'path': part,
-                    'size_bytes': 1,
-                    'row_count': 1,
-                } for part in parts],
-            },
-        }],
+        'tt_id': 'job-large',
+        'split_stages': [
+            {
+                'key': 'train',
+                'table_name': 'train_seeds',
+                'parts': parts,
+                'row_count': len(parts),
+                'artifact_inventory': {
+                    'schema_version': 'diskgraph.tt_stage_artifact_inventory.v1',
+                    'parts': [
+                        {
+                            'path': part,
+                            'size_bytes': 1,
+                            'row_count': 1,
+                        }
+                        for part in parts
+                    ],
+                },
+            }
+        ],
     }
     listings = {
         root: [
@@ -486,8 +523,7 @@ def test_remote_bundle_validation_lists_directories_not_parts(monkeypatch):
             PathDetail(path=seed_dir, is_directory=True),
         ],
         seed_dir: [
-            PathDetail(path=f'{root}/{part}', is_directory=False)
-            for part in parts
+            PathDetail(path=f'{root}/{part}', is_directory=False) for part in parts
         ],
         train_table_dir: [
             PathDetail(
@@ -520,8 +556,7 @@ def test_remote_bundle_validation_lists_directories_not_parts(monkeypatch):
         raise AssertionError('remote validation must not probe each part')
 
     monkeypatch.setattr(ttng.fsutil, 'exists', unexpected_exists)
-    monkeypatch.setattr(ttng, '_validate_ttng_bundle_for_publish',
-                        lambda _path: {})
+    monkeypatch.setattr(ttng, '_validate_ttng_bundle_for_publish', lambda _path: {})
     monkeypatch.setattr(
         'kumo.diskgraph.diskgraph_native_tt_artifacts._inspect_parquet_artifact',
         lambda _path: (1, 1),
@@ -531,8 +566,7 @@ def test_remote_bundle_validation_lists_directories_not_parts(monkeypatch):
     assert list_calls == [root, seed_dir, train_table_dir]
 
 
-def test_remote_bundle_validation_falls_back_without_detailed_listing(
-        monkeypatch):
+def test_remote_bundle_validation_falls_back_without_detailed_listing(monkeypatch):
     root = 's3://bucket/bundle'
     train_table_dir = f'{root}/tt.parquet'
     spec = {
@@ -541,8 +575,9 @@ def test_remote_bundle_validation_falls_back_without_detailed_listing(
         'split_stages': None,
     }
     root_paths = [
-        f'{root}/tt_ingest_spec.json', train_table_dir,
-        f'{root}/manifest.json'
+        f'{root}/tt_ingest_spec.json',
+        train_table_dir,
+        f'{root}/manifest.json',
     ]
     train_table_paths = [f'{train_table_dir}/part-00000.parquet']
 
@@ -568,8 +603,7 @@ def test_remote_bundle_validation_falls_back_without_detailed_listing(
         'read_binary',
         lambda _path: json.dumps(spec).encode(),
     )
-    monkeypatch.setattr(ttng, '_validate_ttng_bundle_for_publish',
-                        lambda _path: {})
+    monkeypatch.setattr(ttng, '_validate_ttng_bundle_for_publish', lambda _path: {})
 
     assert_ttng_bundle_complete(root)
 
@@ -597,10 +631,10 @@ def test_selected_publication_is_attempt_isolated(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as executor:
         selected = list(
             executor.map(
-                lambda _index: ttng.persist_ttng_bundle(
-                    source, durable),
+                lambda _index: ttng.persist_ttng_bundle(source, durable),
                 range(2),
-            ))
+            )
+        )
 
     assert selected[0] != selected[1]
     assert not osp.exists(osp.join(durable, '_current.json'))
@@ -642,8 +676,7 @@ def test_publication_requires_attempt_scoped_source_name(tmp_path):
     os.replace(source, unscoped)
 
     with pytest.raises(TTNGBundleError, match='not attempt-scoped'):
-        ttng.persist_ttng_bundle(
-            unscoped, str(tmp_path / 'durable'))
+        ttng.persist_ttng_bundle(unscoped, str(tmp_path / 'durable'))
 
 
 def test_publication_accepts_explicit_custom_tt_id(tmp_path):
@@ -671,16 +704,14 @@ def test_publication_rejects_wrong_tt_id(tmp_path):
         )
 
 
-def test_publication_validates_destination_before_selection(
-        tmp_path, monkeypatch):
+def test_publication_validates_destination_before_selection(tmp_path, monkeypatch):
     source = _bundle(tmp_path, 'attempt')
     durable = str(tmp_path / 'durable')
     original_copy = ttng.fsutil.copy_tree_threaded
 
     def corrupt_copy(copy_source, destination):
         original_copy(copy_source, destination)
-        train_table = osp.join(
-            destination, 'tt.parquet', 'part-00000.parquet')
+        train_table = osp.join(destination, 'tt.parquet', 'part-00000.parquet')
         with open(train_table, 'r+b') as handle:
             handle.seek(-4, os.SEEK_END)
             handle.write(b'NOPE')
@@ -722,8 +753,7 @@ def test_restore_heals_interrupted_local_copy_on_retry(monkeypatch, tmp_path):
             raise RuntimeError('copy interrupted')
         return original_copy(copy_source, destination)
 
-    monkeypatch.setattr(
-        ttng.fsutil, 'copy_tree_threaded', interrupted_copy)
+    monkeypatch.setattr(ttng.fsutil, 'copy_tree_threaded', interrupted_copy)
     with pytest.raises(RuntimeError, match='copy interrupted'):
         restore_durable_ttng_bundle(durable, local)
     assert not osp.exists(local)

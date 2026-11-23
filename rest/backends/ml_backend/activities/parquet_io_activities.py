@@ -112,6 +112,7 @@ class _DisposableCSVConverter:
     One child is reused for every shard in an output and is always reaped when
     that output completes, fails, or is cancelled.
     """
+
     def __init__(self) -> None:
         self._executor: HealingProcessPoolExecutor | None = None
 
@@ -149,10 +150,12 @@ class _DisposableCSVConverter:
 
 class PredictionOutputFileMissingError(PredictionOutputProcessingError):
     """Raised when expected prediction output file is missing."""
+
     template = (
-        "Batch prediction job completed but the expected output was not found. "
-        "This may indicate an internal processing error. Please retry the job "
-        "or contact support if the issue persists.")
+        'Batch prediction job completed but the expected output was not found. '
+        'This may indicate an internal processing error. Please retry the job '
+        'or contact support if the issue persists.'
+    )
 
 
 @activity.defn
@@ -194,11 +197,13 @@ def finalize_prediction_job_output(
             source_config_sha256=source_config_sha256,
             expected_shards=expected_shards,
             expected_output_partitions=(
-                prediction_output_partition_count(prediction_config)),
+                prediction_output_partition_count(prediction_config)
+            ),
         )
     except PredictionProducerMismatchError as error:
         raise PredictionOutputProcessingError(
-            message=str(error), non_retryable=True) from error
+            message=str(error), non_retryable=True
+        ) from error
 
 
 def _collect_prediction_artifacts(
@@ -223,13 +228,15 @@ def _collect_prediction_artifacts(
             raise PredictionOutputFileMissingError(non_retryable=True)
         if parquet_util.is_empty(output_path):
             raise PredictionOutputProcessingError(
-                message=(f"Batch prediction produced an empty "
-                         f"{artifact_type.value.lower()} artifact."),
+                message=(
+                    f'Batch prediction produced an empty '
+                    f'{artifact_type.value.lower()} artifact.'
+                ),
                 non_retryable=True,
             )
         result[artifact_type] = output_path
 
-    log.info(f"Collected prediction artifacts: {result}")
+    log.info(f'Collected prediction artifacts: {result}')
     return result
 
 
@@ -237,8 +244,9 @@ def _collect_prediction_artifacts(
 @auto_heartbeater
 def write_artifacts_to_customer(
     input: ArtifactExportInput,
-    artifact_stats: Dict[Union[PredictionArtifactType,
-                               TrainingTableArtifactType], OutputArtifactStats],
+    artifact_stats: Dict[
+        Union[PredictionArtifactType, TrainingTableArtifactType], OutputArtifactStats
+    ],
 ) -> list[OutputArtifactStats]:
     resolved_connectors: dict[
         Union[PredictionArtifactType, TrainingTableArtifactType],
@@ -269,7 +277,7 @@ def write_artifacts_to_customer(
             type(err).__name__,
         )
         raise ArtifactExportError(
-            message="Failed to export artifacts to customer warehouse",
+            message='Failed to export artifacts to customer warehouse',
             non_retryable=is_error_non_retryable(err),
         ) from None
     finally:
@@ -289,19 +297,19 @@ def cleanup_databricks_volume_outputs(
 
     by_output: dict[int, list[str]] = {}
     for upload in uploads:
-        by_output.setdefault(upload.output_index,
-                             []).extend(upload.staged_files)
+        by_output.setdefault(upload.output_index, []).extend(upload.staged_files)
     errors: list[Exception] = []
     for output_index, files in by_output.items():
         output = job_input.config.outputs[output_index]
-        reference = job_input.output_connectors[ConnectorID(
-            output.connector_id)]
+        reference = job_input.output_connectors[ConnectorID(output.connector_id)]
         try:
             connector = get_connector_from_spec(
-                connector_broker.connector_credential_broker.resolve(reference))
+                connector_broker.connector_credential_broker.resolve(reference)
+            )
             if not isinstance(connector, DatabricksConnector):
                 raise TypeError(
-                    'Databricks staged output has a non-Databricks connector')
+                    'Databricks staged output has a non-Databricks connector'
+                )
             try:
                 connector.cleanup_managed_volume_files(files)
             finally:
@@ -315,8 +323,9 @@ def cleanup_databricks_volume_outputs(
 @connector_resolution_helper
 def _resolve_output_connectors(
     input: ArtifactExportInput,
-) -> dict[Union[PredictionArtifactType, TrainingTableArtifactType],
-          list[ConnectorOpenSpec]]:
+) -> dict[
+    Union[PredictionArtifactType, TrainingTableArtifactType], list[ConnectorOpenSpec]
+]:
     """Resolve workflow-safe references at the Temporal activity boundary."""
     from rest.backends.data_backend import connector_broker
 
@@ -327,10 +336,11 @@ def _resolve_output_connectors(
             reference = output_config.connector
             if not isinstance(reference, ConnectorExecutionRef):
                 raise TypeError(
-                    'Artifact workflow outputs must contain connector '
-                    'references')
+                    'Artifact workflow outputs must contain connector references'
+                )
             resolved[artifact_type].append(
-                connector_broker.connector_credential_broker.resolve(reference))
+                connector_broker.connector_credential_broker.resolve(reference)
+            )
     return resolved
 
 
@@ -344,23 +354,20 @@ def exported_training_table(train_table_path: str) -> str:
     """The generated table's rows with their split, beside its bundle."""
     bundle = osp.dirname(train_table_path.rstrip('/'))
     bundles = osp.dirname(bundle)
-    if (osp.basename(bundles) != _IMMUTABLE_BUNDLES_DIRNAME
-            or not fsutil.exists(
-                osp.join(bundle, training_table_export.INGEST_SPEC))):
+    if osp.basename(bundles) != _IMMUTABLE_BUNDLES_DIRNAME or not fsutil.exists(
+        osp.join(bundle, training_table_export.INGEST_SPEC)
+    ):
         return train_table_path
     base = osp.join(osp.dirname(bundles), '_exports', osp.basename(bundle))
     pointer = osp.join(base, f'{training_table_export.FORMAT}.json')
     if fsutil.exists(pointer):
         return json.loads(fsutil.read_text(pointer))['path']
-    output = osp.join(base,
-                      f'{training_table_export.FORMAT}-{uuid.uuid4().hex}')
+    output = osp.join(base, f'{training_table_export.FORMAT}-{uuid.uuid4().hex}')
     fsutil.makedirs(output, exist_ok=True)
     filesystem, source = _filesystem_and_path(bundle)
     with fsutil.TemporaryDirectory() as temp:
-        for part in training_table_export.iter_export_parts(
-                source, temp, filesystem):
-            fsutil.copy_file(part, osp.join(output, osp.basename(part)),
-                             overwrite=True)
+        for part in training_table_export.iter_export_parts(source, temp, filesystem):
+            fsutil.copy_file(part, osp.join(output, osp.basename(part)), overwrite=True)
             os.remove(part)
     if fsutil.write_text_if_absent(pointer, json.dumps({'path': output})):
         return output
@@ -371,23 +378,23 @@ def exported_training_table(train_table_path: str) -> str:
 @activity.defn
 @auto_heartbeater
 def get_artifact_stats(
-    artifact_paths: Dict[Union[PredictionArtifactType,
-                               TrainingTableArtifactType], str],
+    artifact_paths: Dict[Union[PredictionArtifactType, TrainingTableArtifactType], str],
     prediction_selection: PredictionSelectionRef | None = None,
     prediction_artifact_types: list[PredictionArtifactType] | None = None,
-) -> Dict[Union[PredictionArtifactType, TrainingTableArtifactType],
-          OutputArtifactStats]:
+) -> Dict[
+    Union[PredictionArtifactType, TrainingTableArtifactType], OutputArtifactStats
+]:
     resolved_paths, artifact_files, selected_artifacts = (
         _resolve_selected_prediction_artifacts(
             artifact_paths,
             prediction_selection,
             prediction_artifact_types or [],
-        ))
+        )
+    )
     result = {}
     for artifact_type, path in resolved_paths.items():
         selected_artifact = selected_artifacts.get(artifact_type)
-        if (selected_artifact is not None
-                and selected_artifact.num_rows is not None):
+        if selected_artifact is not None and selected_artifact.num_rows is not None:
             assert selected_artifact.num_cols is not None
             assert selected_artifact.size_bytes is not None
             result[artifact_type] = OutputArtifactStats(
@@ -400,13 +407,17 @@ def get_artifact_stats(
             continue
         selected_files = artifact_files.get(artifact_type)
         with restricted_diagnostic_boundary(
-                safe_message='Prediction artifact Parquet read failed',
-                exception_types=OSError):
-            parquet_metadata = (_get_selected_parquet_metadata(selected_files)
-                                if selected_files is not None else
-                                parquet_util.get_parquet_metadata(path))
+            safe_message='Prediction artifact Parquet read failed',
+            exception_types=OSError,
+        ):
+            parquet_metadata = (
+                _get_selected_parquet_metadata(selected_files)
+                if selected_files is not None
+                else parquet_util.get_parquet_metadata(path)
+            )
         size_bytes = int(
-            round(parquet_metadata.avg_row_size * parquet_metadata.num_rows))
+            round(parquet_metadata.avg_row_size * parquet_metadata.num_rows)
+        )
         result[artifact_type] = OutputArtifactStats(
             artifact_type=artifact_type,
             num_rows=parquet_metadata.num_rows,
@@ -418,20 +429,20 @@ def get_artifact_stats(
 
 
 def _resolve_selected_prediction_artifacts(
-    artifact_paths: Mapping[Union[PredictionArtifactType,
-                                  TrainingTableArtifactType], str],
+    artifact_paths: Mapping[
+        Union[PredictionArtifactType, TrainingTableArtifactType], str
+    ],
     selection_ref: PredictionSelectionRef | None,
     expected_artifact_types: List[PredictionArtifactType],
 ) -> tuple[
-        dict[Union[PredictionArtifactType, TrainingTableArtifactType], str],
-        dict[PredictionArtifactType, list[str]],
-        dict[PredictionArtifactType, SelectedPredictionArtifact],
+    dict[Union[PredictionArtifactType, TrainingTableArtifactType], str],
+    dict[PredictionArtifactType, list[str]],
+    dict[PredictionArtifactType, SelectedPredictionArtifact],
 ]:
     """Resolve a bounded selection reference and reject root extras."""
     resolved_paths = dict(artifact_paths)
     selected_files: dict[PredictionArtifactType, list[str]] = {}
-    selected_artifacts: dict[PredictionArtifactType,
-                             SelectedPredictionArtifact] = {}
+    selected_artifacts: dict[PredictionArtifactType, SelectedPredictionArtifact] = {}
     expected = set(expected_artifact_types)
     if selection_ref is None:
         if expected:
@@ -439,10 +450,7 @@ def _resolve_selected_prediction_artifacts(
         return resolved_paths, selected_files, selected_artifacts
 
     selection = load_prediction_selection(selection_ref, validate_objects=False)
-    selected = {
-        artifact.artifact_type: artifact
-        for artifact in selection.artifacts
-    }
+    selected = {artifact.artifact_type: artifact for artifact in selection.artifacts}
     if set(selected) != expected:
         raise ValueError('Prediction selection artifact set changed')
     for artifact_type, artifact in selected.items():
@@ -453,8 +461,7 @@ def _resolve_selected_prediction_artifacts(
     return resolved_paths, selected_files, selected_artifacts
 
 
-def _get_selected_parquet_metadata(
-        files: list[str]) -> parquet_util.ParquetMetadata:
+def _get_selected_parquet_metadata(files: list[str]) -> parquet_util.ParquetMetadata:
     """Read footer metadata from only the selected immutable files."""
     if not files:
         raise ValueError('Selected prediction artifact has no files')
@@ -463,15 +470,18 @@ def _get_selected_parquet_metadata(
     sample = None
     for path in files:
         with restricted_diagnostic_boundary(
-                safe_message='Prediction artifact Parquet read failed',
-                exception_types=OSError):
+            safe_message='Prediction artifact Parquet read failed',
+            exception_types=OSError,
+        ):
             with fsutil.get_binary_handle(path, 'rb') as handle:
                 parquet_file = pq.ParquetFile(handle)
                 current_schema = parquet_file.schema_arrow.remove_metadata()
                 current_num_rows = parquet_file.metadata.num_rows
-                current_sample = (next(
-                    parquet_file.iter_batches(batch_size=1000)) if
-                                  sample is None and current_num_rows else None)
+                current_sample = (
+                    next(parquet_file.iter_batches(batch_size=1000))
+                    if sample is None and current_num_rows
+                    else None
+                )
         if schema is None:
             schema = current_schema
         elif not current_schema.equals(schema, check_metadata=False):
@@ -492,22 +502,22 @@ def _get_selected_parquet_metadata(
 def _write_artifacts_to_customer(
     input: ArtifactExportInput,
     *,
-    artifact_stats: Mapping[Union[PredictionArtifactType,
-                                  TrainingTableArtifactType],
-                            OutputArtifactStats],
-    resolved_connectors: Mapping[Union[PredictionArtifactType,
-                                       TrainingTableArtifactType],
-                                 list[ConnectorOpenSpec]],
+    artifact_stats: Mapping[
+        Union[PredictionArtifactType, TrainingTableArtifactType], OutputArtifactStats
+    ],
+    resolved_connectors: Mapping[
+        Union[PredictionArtifactType, TrainingTableArtifactType],
+        list[ConnectorOpenSpec],
+    ],
 ) -> List[OutputArtifactStats]:
     r"""
     Writes producer-finalized artifacts to the requested customer outputs.
     """
-    artifact_paths, selected_artifact_files, _ = (
-        _resolve_selected_prediction_artifacts(
-            input.artifact_paths,
-            input.prediction_selection,
-            list(input.prediction_artifact_types),
-        ))
+    artifact_paths, selected_artifact_files, _ = _resolve_selected_prediction_artifacts(
+        input.artifact_paths,
+        input.prediction_selection,
+        list(input.prediction_artifact_types),
+    )
     output_artifact_stats: list[OutputArtifactStats] = []
     for artifact_type, output_configs in input.output_config.items():
         artifact_path = artifact_paths[artifact_type]
@@ -517,9 +527,11 @@ def _write_artifacts_to_customer(
         if len(connector_specs) != len(output_configs):
             raise ValueError(
                 f'Artifact {artifact_type} has {len(output_configs)} outputs '
-                f'but {len(connector_specs)} resolved connectors')
-        for output_config, connector_spec in zip(output_configs,
-                                                 connector_specs, strict=True):
+                f'but {len(connector_specs)} resolved connectors'
+            )
+        for output_config, connector_spec in zip(
+            output_configs, connector_specs, strict=True
+        ):
             connector = get_connector_from_spec(connector_spec)
             if isinstance(output_config, NamedOutputConfig):
                 write_mode = output_config.out_table.write_mode
@@ -530,18 +542,18 @@ def _write_artifacts_to_customer(
                 table_name = None
                 staging_table_name = None
 
-            log.info(f"Writing artifact {artifact_path} to output: "
-                     f"{output_config}")
+            log.info(f'Writing artifact {artifact_path} to output: {output_config}')
             try:
                 if isinstance(output_config, FileOutputConfig):
                     if not isinstance(connector, FileConnector):
                         raise ArtifactExportError(
-                            message=('Selected output connector is not an '
-                                     'object-store connector.'),
+                            message=(
+                                'Selected output connector is not an '
+                                'object-store connector.'
+                            ),
                             non_retryable=True,
                         )
-                    output_path = resolve_file_output_path(
-                        output_config, connector)
+                    output_path = resolve_file_output_path(output_config, connector)
                     with parquet_io_semaphore:
                         with ExitStack() as stack:
                             staged_artifact = artifact_path
@@ -549,12 +561,14 @@ def _write_artifacts_to_customer(
                             # BP file output uses the persisted Parquet files
                             # directly. Keep the legacy training-table export
                             # behavior outside this change.
-                            if (not isinstance(artifact_type,
-                                               PredictionArtifactType)
-                                    and not fsutil.is_local(artifact_path)):
+                            if not isinstance(
+                                artifact_type, PredictionArtifactType
+                            ) and not fsutil.is_local(artifact_path):
                                 temp_dir = stack.enter_context(
                                     tempfile.TemporaryDirectory(
-                                        prefix='kumo-artifact-export-'))
+                                        prefix='kumo-artifact-export-'
+                                    )
+                                )
                                 staged_artifact = osp.join(temp_dir, 'artifact')
                                 if selected_files is None:
                                     fsutil.copy(
@@ -564,8 +578,7 @@ def _write_artifacts_to_customer(
                                         raise_on_exists=False,
                                     )
                                 else:
-                                    fsutil.makedirs(staged_artifact,
-                                                    exist_ok=True)
+                                    fsutil.makedirs(staged_artifact, exist_ok=True)
                                     staged_files = []
                                     for selected_file in selected_files:
                                         staged_file = osp.join(
@@ -578,8 +591,7 @@ def _write_artifacts_to_customer(
                                             overwrite=True,
                                         )
                                         staged_files.append(staged_file)
-                            with connector.filesystem_credential_scope(
-                                    output_path):
+                            with connector.filesystem_credential_scope(output_path):
                                 with _DisposableCSVConverter() as csv_converter:
                                     stats = write_artifact_to_s3(
                                         staged_artifact,
@@ -590,20 +602,24 @@ def _write_artifacts_to_customer(
                                         export_id=(
                                             f'{artifact_path}:'
                                             f'{source_stats.num_rows}:'
-                                            f'{source_stats.size_bytes}'),
+                                            f'{source_stats.size_bytes}'
+                                        ),
                                     )
                 elif isinstance(connector, DatabricksConnector):
                     assert table_name is not None
-                    volume_stage = (output_config.managed_volume_stage
-                                    if isinstance(output_config,
-                                                  NamedOutputConfig) else None)
+                    volume_stage = (
+                        output_config.managed_volume_stage
+                        if isinstance(output_config, NamedOutputConfig)
+                        else None
+                    )
                     if volume_stage is None:
                         raise ArtifactExportError(
                             message=(
                                 'Databricks artifact export requires a '
                                 'producer-uploaded Unity Catalog volume '
                                 'manifest. Configure the Databricks output '
-                                'when creating the batch prediction job.'),
+                                'when creating the batch prediction job.'
+                            ),
                             non_retryable=True,
                         )
                     stats = write_artifact_to_databricks(
@@ -614,41 +630,55 @@ def _write_artifacts_to_customer(
                         known_size_bytes=source_stats.size_bytes,
                         staged_files=volume_stage.files,
                     )
-                elif (isinstance(output_config, NamedOutputConfig)
-                      and isinstance(connector, BigQueryConnector)):
+                elif isinstance(output_config, NamedOutputConfig) and isinstance(
+                    connector, BigQueryConnector
+                ):
                     assert table_name is not None
                     # Only the GCS fast path consumes explicit remote URIs.
                     # Preserve existing staging for worker-local artifacts.
                     stats = write_artifact_to_bigquery(
-                        artifact_path, connector, write_mode, table_name,
+                        artifact_path,
+                        connector,
+                        write_mode,
+                        table_name,
                         staging_table_name,
                         known_size_bytes=source_stats.size_bytes,
-                        artifact_files=(selected_files if
-                                        artifact_path.startswith('gs://') else
-                                        None))
-                elif (isinstance(output_config, NamedOutputConfig)
-                      and isinstance(connector, SnowflakeConnector)):
+                        artifact_files=(
+                            selected_files
+                            if artifact_path.startswith('gs://')
+                            else None
+                        ),
+                    )
+                elif isinstance(output_config, NamedOutputConfig) and isinstance(
+                    connector, SnowflakeConnector
+                ):
                     assert table_name is not None
                     # The selection spans one attempt root per output
                     # shard; the artifact root alone names only the first.
                     # Stage-backed paths keep the prefix load: their FROM
                     # clause is unquoted, so a selection is not a usable
                     # coordinate there.
-                    stage_backed = artifact_path.startswith(
-                        ('@', 'spcs://'))
+                    stage_backed = artifact_path.startswith(('@', 'spcs://'))
                     stats = write_artifact_to_snowflake(
-                        artifact_path, connector, write_mode, table_name,
+                        artifact_path,
+                        connector,
+                        write_mode,
+                        table_name,
                         staging_table_name,
                         known_size_bytes=source_stats.size_bytes,
-                        artifact_files=(None if stage_backed else
-                                        selected_files))
+                        artifact_files=(None if stage_backed else selected_files),
+                    )
                 else:
                     raise ArtifactExportError(
-                        message=(f"Unsupported connector type: "
-                                 f"{type(connector).__name__}. "
-                                 "Please use S3, Snowflake, BigQuery, or "
-                                 "Databricks connectors for exporting "
-                                 "artifacts."), non_retryable=True)
+                        message=(
+                            f'Unsupported connector type: '
+                            f'{type(connector).__name__}. '
+                            'Please use S3, Snowflake, BigQuery, or '
+                            'Databricks connectors for exporting '
+                            'artifacts.'
+                        ),
+                        non_retryable=True,
+                    )
             finally:
                 connector.close()
 
@@ -659,6 +689,7 @@ def _write_artifacts_to_customer(
                     num_cols=source_stats.num_cols,
                     size_bytes=source_stats.size_bytes,
                     output_path=stats.display_path,
-                ))
+                )
+            )
 
     return output_artifact_stats

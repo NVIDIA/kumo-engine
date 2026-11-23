@@ -33,35 +33,45 @@ async def test_postgres_concurrent_replacement_uses_authoritative_uniqueness(
     service = GroupService(state_db)
     admin = UserAuthorization.disabled()
     try:
-        first, second = await service.create_kumo_groups([
-            KumoGroupCreateSpec(display_name='First'),
-            KumoGroupCreateSpec(display_name='Second'),
-        ], admin)
+        first, second = await service.create_kumo_groups(
+            [
+                KumoGroupCreateSpec(display_name='First'),
+                KumoGroupCreateSpec(display_name='Second'),
+            ],
+            admin,
+        )
         results = await asyncio.gather(
             service.replace_external_mappings(
                 first.id,
-                [ExternalGroupMappingSpec(
-                    identity_provider_id='direct_connect',
-                    external_group_id='contended',
-                )],
+                [
+                    ExternalGroupMappingSpec(
+                        identity_provider_id='direct_connect',
+                        external_group_id='contended',
+                    )
+                ],
                 principal=admin,
             ),
             service.replace_external_mappings(
                 second.id,
-                [ExternalGroupMappingSpec(
-                    identity_provider_id='direct_connect',
-                    external_group_id='contended',
-                )],
+                [
+                    ExternalGroupMappingSpec(
+                        identity_provider_id='direct_connect',
+                        external_group_id='contended',
+                    )
+                ],
                 principal=admin,
             ),
             return_exceptions=True,
         )
 
         assert sum(isinstance(result, list) for result in results) == 1
-        assert sum(isinstance(result, GroupRelationConflictError)
-                   for result in results) == 1
-        persisted = (await service.list_external_mappings(first.id, admin)
-                     + await service.list_external_mappings(second.id, admin))
+        assert (
+            sum(isinstance(result, GroupRelationConflictError) for result in results)
+            == 1
+        )
+        persisted = await service.list_external_mappings(
+            first.id, admin
+        ) + await service.list_external_mappings(second.id, admin)
         assert len(persisted) == 1
     finally:
         await state_db.close()
@@ -78,8 +88,11 @@ async def test_postgres_concurrent_member_replacements_are_complete_sets(
     service = GroupService(state_db)
     admin = UserAuthorization.disabled()
     try:
-        group = (await service.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name='Member race')], admin))[0]
+        group = (
+            await service.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Member race')], admin
+            )
+        )[0]
         first = [
             GroupMemberSpec(principal_id='first-a'),
             GroupMemberSpec(principal_id='first-b'),
@@ -98,8 +111,10 @@ async def test_postgres_concurrent_member_replacements_are_complete_sets(
         )
 
         assert all(len(result) == 2 for result in results)
-        final = {(entry.principal_type, entry.principal_id)
-                 for entry in await service.list_members(group.id, admin)}
+        final = {
+            (entry.principal_type, entry.principal_id)
+            for entry in await service.list_members(group.id, admin)
+        }
         assert final in (
             {
                 (PrincipalType.USER, 'first-a'),

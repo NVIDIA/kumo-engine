@@ -8,6 +8,7 @@ Metrics collection is configured by the following environment variables:
 - KUMO_ENABLE_METRICS_COLLECTION: Whether to push the collected metrics to
     the push gateway. Default: False.
 """
+
 import os
 import threading
 import time
@@ -28,8 +29,8 @@ from io_utils import logging
 from kumo.metrics.typing import Metrics, MetricType
 from kumo.utils.singleton import Singleton
 
-DEFAULT_METRIC_LABEL = "_DEFAULT_METRIC_LABEL"
-DEFAULT_PUSH_GATEWAY_ADDRESS = "localhost:9091"
+DEFAULT_METRIC_LABEL = '_DEFAULT_METRIC_LABEL'
+DEFAULT_PUSH_GATEWAY_ADDRESS = 'localhost:9091'
 
 logger = logging.getLogger(__name__)
 MetricValues = Dict[str, List[Any]]
@@ -39,9 +40,10 @@ MetricValues = Dict[str, List[Any]]
 class MetricsClient(metaclass=Singleton):
     def __init__(self) -> None:
         self.pid = os.getpid()
-        self.job_name = "kumo"
+        self.job_name = 'kumo'
         self.push_gateway_address = os.environ.get(
-            "KUMO_PUSH_GATEWAY_ADDRESS", DEFAULT_PUSH_GATEWAY_ADDRESS)
+            'KUMO_PUSH_GATEWAY_ADDRESS', DEFAULT_PUSH_GATEWAY_ADDRESS
+        )
         # How frequently to push metrics to the push_gateway.
         # Prometheus currently scrapes the metrics from the push_gateway every
         # ~10 seconds. We don't gain any benefit from pushing metrics faster
@@ -60,48 +62,60 @@ class MetricsClient(metaclass=Singleton):
         # practices on naming metrics and labels.
         self._metrics: Dict[Metrics, MetricType] = {
             # Graph-level metrics #############################################
-
             # Table-level metrics #############################################
-            Metrics.TABLE_MATERIALIZATION_TIME:
-            Summary("table_materialization_time_seconds",
-                    "Time spent materializing a table",
-                    labelnames=["table_name"], registry=self.registry),
-            Metrics.TABLE_ENCODING_TIME:
-            Summary("table_encoding_time_seconds",
-                    "Time spent encoding data of thea table",
-                    labelnames=["table_name"], registry=self.registry),
-            Metrics.TABLE_READ_TIME:
-            Summary("table_read_time_seconds",
-                    "Time spent reading a table using connector",
-                    labelnames=["table_name"], registry=self.registry),
-
+            Metrics.TABLE_MATERIALIZATION_TIME: Summary(
+                'table_materialization_time_seconds',
+                'Time spent materializing a table',
+                labelnames=['table_name'],
+                registry=self.registry,
+            ),
+            Metrics.TABLE_ENCODING_TIME: Summary(
+                'table_encoding_time_seconds',
+                'Time spent encoding data of thea table',
+                labelnames=['table_name'],
+                registry=self.registry,
+            ),
+            Metrics.TABLE_READ_TIME: Summary(
+                'table_read_time_seconds',
+                'Time spent reading a table using connector',
+                labelnames=['table_name'],
+                registry=self.registry,
+            ),
             # Column-level metrics ############################################
-            Metrics.COLUMN_ENCODING_TIME:
-            Summary("column_encoding_time_seconds",
-                    "Time spent encoding a column", labelnames=["column_name"],
-                    registry=self.registry),
-
+            Metrics.COLUMN_ENCODING_TIME: Summary(
+                'column_encoding_time_seconds',
+                'Time spent encoding a column',
+                labelnames=['column_name'],
+                registry=self.registry,
+            ),
             # graph-engine prom names (referenced by Grafana materialization_metrics) #
-            Metrics.GRAPH_ENGINE_DF_TO_SST_TIME:
-            Summary("graph_engine_df_to_sst_time_seconds",
-                    "Time spent converting a dataframe to an SST file",
-                    labelnames=["table_name"], registry=self.registry),
-            Metrics.GRAPH_ENGINE_SST_LOAD_TIME:
-            Summary("graph_engine_sst_load_time_seconds",
-                    "Time spent loading an SST file into the graph engine",
-                    labelnames=["table_name"], registry=self.registry),
-            Metrics.FEATURE_STORE_GET_TIME:
-            Summary("feature_store_get_time_seconds",
-                    "Time spent on getting features from feature store",
-                    registry=self.subprocess_registry),
-            Metrics.FEATURE_STORE_BATCH_SIZE:
-            Gauge("feature_store_batch_size",
-                  "Number of nodes in a FeatureStore batch",
-                  registry=self.subprocess_registry),
-            Metrics.FEATURE_STORE_BATCH_ENCODING_TIME:
-            Summary("feature_store_batch_encoding_time_seconds",
-                    "Time spent on encoding a batch of features",
-                    registry=self.subprocess_registry),
+            Metrics.GRAPH_ENGINE_DF_TO_SST_TIME: Summary(
+                'graph_engine_df_to_sst_time_seconds',
+                'Time spent converting a dataframe to an SST file',
+                labelnames=['table_name'],
+                registry=self.registry,
+            ),
+            Metrics.GRAPH_ENGINE_SST_LOAD_TIME: Summary(
+                'graph_engine_sst_load_time_seconds',
+                'Time spent loading an SST file into the graph engine',
+                labelnames=['table_name'],
+                registry=self.registry,
+            ),
+            Metrics.FEATURE_STORE_GET_TIME: Summary(
+                'feature_store_get_time_seconds',
+                'Time spent on getting features from feature store',
+                registry=self.subprocess_registry,
+            ),
+            Metrics.FEATURE_STORE_BATCH_SIZE: Gauge(
+                'feature_store_batch_size',
+                'Number of nodes in a FeatureStore batch',
+                registry=self.subprocess_registry,
+            ),
+            Metrics.FEATURE_STORE_BATCH_ENCODING_TIME: Summary(
+                'feature_store_batch_encoding_time_seconds',
+                'Time spent on encoding a batch of features',
+                registry=self.subprocess_registry,
+            ),
         }
 
         self.start_push_gateway_thread(is_subprocess=False)
@@ -115,30 +129,33 @@ class MetricsClient(metaclass=Singleton):
         # support multiprocess mode with a push_gateway.
         # TODO: Update this once we have a better solution.
         try:
-            push_to_gateway(self.push_gateway_address, job=self.job_name,
-                            registry=registry,
-                            grouping_key={"pid": os.getpid()})
+            push_to_gateway(
+                self.push_gateway_address,
+                job=self.job_name,
+                registry=registry,
+                grouping_key={'pid': os.getpid()},
+            )
         except URLError:
-            logger.warning(f"Failed to push metrics to push_gateway: "
-                           f"{self.push_gateway_address}. Check if the "
-                           f"push_gateway is up and running.")
+            logger.warning(
+                f'Failed to push metrics to push_gateway: '
+                f'{self.push_gateway_address}. Check if the '
+                f'push_gateway is up and running.'
+            )
 
     def start_push_gateway_thread(self, is_subprocess: bool) -> None:
         # If metrics collection is not enabled, don't start any thread.
-        push_enabled = os.environ.get("KUMO_ENABLE_METRICS_COLLECTION", False)
+        push_enabled = os.environ.get('KUMO_ENABLE_METRICS_COLLECTION', False)
         if not push_enabled:
             return
 
         def _push_to_gateway(registry: CollectorRegistry):
-            logger.info("Starting pushgateway background thread for pid: %d",
-                        self.pid)
+            logger.info('Starting pushgateway background thread for pid: %d', self.pid)
             while True:
                 self.push_to_gateway(registry)
                 time.sleep(self.push_interval_seconds)
 
         registry = self.subprocess_registry if is_subprocess else self.registry
-        self.push_thread = threading.Thread(target=_push_to_gateway,
-                                            args=(registry, ))
+        self.push_thread = threading.Thread(target=_push_to_gateway, args=(registry,))
         self.push_thread.daemon = True
         self.push_thread.start()
 
@@ -159,8 +176,9 @@ class MetricsClient(metaclass=Singleton):
             self.pid = pid
             self.start_push_gateway_thread(is_subprocess=True)
 
-    def get_metric(self, name: Metrics,
-                   labels: Optional[Dict[str, str]] = None) -> MetricType:
+    def get_metric(
+        self, name: Metrics, labels: Optional[Dict[str, str]] = None
+    ) -> MetricType:
         r"""
         Get a metric by name and labels.
         Args:
@@ -171,14 +189,14 @@ class MetricsClient(metaclass=Singleton):
         metric = self._metrics.get(name, None)
         labels = labels or {}
         if metric is None:
-            raise KeyError("Metric %s is not defined in MetricsClient",
-                           name.value)
+            raise KeyError('Metric %s is not defined in MetricsClient', name.value)
         if len(labels):
             metric = metric.labels(**labels)
         return metric
 
-    def set_metric_value(self, name: Metrics, value: Any,
-                         labels: Optional[Dict[str, str]] = None):
+    def set_metric_value(
+        self, name: Metrics, value: Any, labels: Optional[Dict[str, str]] = None
+    ):
         metric = self.get_metric(name, labels)
         self._set_metric_value(metric, value)
 
@@ -192,7 +210,7 @@ class MetricsClient(metaclass=Singleton):
         elif isinstance(metric, Gauge):
             metric.set(value)
         else:
-            raise ValueError("Unsupported metric type %s", type(metric))
+            raise ValueError('Unsupported metric type %s', type(metric))
 
     # Metric report utils ####################################################
     def print_report(self):
@@ -210,9 +228,9 @@ class MetricsClient(metaclass=Singleton):
         """
         if len(metric._labelnames) != len(metric._labelvalues):
             return {
-                ",".join(label):
-                MetricsClient._get_summary_metric_values(metric).get(
-                    DEFAULT_METRIC_LABEL)
+                ','.join(label): MetricsClient._get_summary_metric_values(metric).get(
+                    DEFAULT_METRIC_LABEL
+                )
                 for label, metric in metric._metrics.items()
             }
         else:
@@ -232,22 +250,24 @@ class MetricsClient(metaclass=Singleton):
         if isinstance(metric, Summary):
             return MetricsClient._get_summary_metric_values(metric)
         elif isinstance(metric, Gauge):
-            return {DEFAULT_METRIC_LABEL: (metric._value.get(), )}
+            return {DEFAULT_METRIC_LABEL: (metric._value.get(),)}
         else:
-            raise NotImplementedError("Metric type: %s not supported yet.",
-                                      type(metric))
+            raise NotImplementedError(
+                'Metric type: %s not supported yet.', type(metric)
+            )
 
     @staticmethod
     def _print_metric_report(metric: MetricType) -> None:
         data = MetricsClient.get_metric_values(metric)
         data = [(label, *values) for label, values in data.items()]
         print(metric._name)
-        headers = ["Label"]
+        headers = ['Label']
         if isinstance(metric, Summary):
-            headers += ["Sum", "Count", "Mean"]
+            headers += ['Sum', 'Count', 'Mean']
         elif isinstance(metric, Gauge):
-            headers += ["Value"]
+            headers += ['Value']
         else:
-            raise NotImplementedError("Metric type: %s not supported yet.",
-                                      type(metric))
-        print(tabulate(data, headers, tablefmt="psql"))
+            raise NotImplementedError(
+                'Metric type: %s not supported yet.', type(metric)
+            )
+        print(tabulate(data, headers, tablefmt='psql'))

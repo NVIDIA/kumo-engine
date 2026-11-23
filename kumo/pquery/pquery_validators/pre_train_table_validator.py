@@ -50,14 +50,14 @@ WARN_ON_NUM_TIME_INTERVALS = 100
 # Guard against predictive queries that expand into an impractically large
 # number of training intervals. Keep changes to this operational limit under
 # review because it directly controls generated table size and runtime.
-ERROR_ON_NUM_TIME_INTERVALS = EnvVar('ERROR_ON_NUM_TIME_INTERVALS', int,
-                                     required=False,
-                                     default_value=3000).parse_value()
+ERROR_ON_NUM_TIME_INTERVALS = EnvVar(
+    'ERROR_ON_NUM_TIME_INTERVALS', int, required=False, default_value=3000
+).parse_value()
 
 TRAIN_ROWS_ERROR_LIMIT = 20_000_000_000
 
 
-class PreTrainTableValidator():
+class PreTrainTableValidator:
     """Runs any validations that need to be run before the training
     table generation is started.
 
@@ -82,6 +82,7 @@ class PreTrainTableValidator():
             (default: :obj:`None`)
 
     """
+
     def __init__(
         self,
         split: Split,
@@ -133,7 +134,9 @@ class PreTrainTableValidator():
                     'Smallest time unit used in PredictiveQuery target '
                     f'aggregation "{aggr_range.unit}" is not same as '
                     'TimeUnit in ModelPlanner split '
-                    f'parameter "{time_range_split.unit}". '))
+                    f'parameter "{time_range_split.unit}". ',
+                )
+            )
 
         if aggr_range.is_open:
             # Time range is large enough that it should not cause validation
@@ -153,8 +156,9 @@ class PreTrainTableValidator():
                 # of number of months in each time range. This can potentially
                 # lead to inaccurate results on boundaries but is a well
                 # understood risk.
-                split_boundary_size = ((time_range[1] - time_range[0]).days /
-                                       (365.25 / 12))
+                split_boundary_size = (time_range[1] - time_range[0]).days / (
+                    365.25 / 12
+                )
                 aggr_size = aggr_window_size.kwds.get('months', 0)
             else:
                 seconds_per_unit = {
@@ -165,8 +169,8 @@ class PreTrainTableValidator():
                     TimeUnit.WEEKS: 7 * 24 * 60 * 60,
                 }[aggr_range.unit]
                 split_boundary_size = (
-                    (time_range[1] - time_range[0]).total_seconds() /
-                    seconds_per_unit)
+                    time_range[1] - time_range[0]
+                ).total_seconds() / seconds_per_unit
                 aggr_size = aggr_window_size.kwds.get(aggr_range.unit.value, 0)
             if split_boundary_size < aggr_size:
                 response.errors.append(
@@ -175,7 +179,8 @@ class PreTrainTableValidator():
                         f'The range {time_range} is smaller than the total '
                         f'aggregation window specified {aggr_size} in the '
                         f'Predictive Query',
-                    ))
+                    )
+                )
         return response
 
     def validate_date_offset_split(self) -> ValidationResponse:
@@ -194,8 +199,9 @@ class PreTrainTableValidator():
         # The test split and the val split when only 2 splits are specified
         # are guaranteed to be large enough
         if date_offset_split.num_splits == 3:
-            split_val_time_range: int = (date_offset_split.offsets[1] -
-                                         date_offset_split.offsets[0])
+            split_val_time_range: int = (
+                date_offset_split.offsets[1] - date_offset_split.offsets[0]
+            )
             assert self.query.target_timeframe is not None
             timeframe_end_offset = self.query.target_timeframe.end_date_offset
             date_offset = DateOffsetRange._to_dateOffset(
@@ -203,8 +209,8 @@ class PreTrainTableValidator():
                 split_val_time_range,
             )
             if DateOffsetRange.date_offset_gt(
-                    timeframe_end_offset,
-                    date_offset,
+                timeframe_end_offset,
+                date_offset,
             ):
                 timeframe_end_int = list(timeframe_end_offset.kwds.values())[0]
                 response.errors.append(
@@ -215,7 +221,9 @@ class PreTrainTableValidator():
                         f'{date_offset_split.offset_unit.value} '
                         f'is smaller than the target timeframe: '
                         f'{timeframe_end_int} '
-                        f'{self.query.target_timeframe.unit.value}'))
+                        f'{self.query.target_timeframe.unit.value}',
+                    )
+                )
         return response
 
     def validate_temporal_splits(self) -> ValidationResponse:
@@ -230,8 +238,10 @@ class PreTrainTableValidator():
                 TimeRangeSplit input.
         """
         if self.query.query_type != QueryType.TEMPORAL:
-            raise ValueError('Incorrect invocation of '
-                             'validate_temporal_splits for non temporal query')
+            raise ValueError(
+                'Incorrect invocation of '
+                'validate_temporal_splits for non temporal query'
+            )
         response = ValidationResponse()
         # Defense in depth: ModelPlan.validate already rejects this, but this
         # is a separate entry point and an uncaught user `TimeSplit` would be
@@ -243,7 +253,9 @@ class PreTrainTableValidator():
                     'The selected split uses `TimeSplit`, which is an '
                     'internal representation and is not supported as a '
                     'user-supplied split. Use a public split family such as '
-                    '`TemporalSplit(ratio=[0.8, 0.1, 0.1])`.'))
+                    '`TemporalSplit(ratio=[0.8, 0.1, 0.1])`.',
+                )
+            )
             return response
         if isinstance(self.split, TimeRangeSplit):
             return self.validate_time_range_split()
@@ -271,7 +283,7 @@ class PreTrainTableValidator():
             validate_weight_spec_format(weight_spec)
         except (ValidationException, ValueError) as exc:
             raise TrainingTableGenerationError(
-                title="Invalid Weight Column",
+                title='Invalid Weight Column',
                 message=str(exc),
             ) from exc
         weight_table = table_name(weight_spec.column)
@@ -328,7 +340,8 @@ class PreTrainTableValidator():
             assert max_date is not None
             time_duration = max_date - min_date
             time_duration_repr = DateOffsetRange.timedelta_repr(
-                time_duration, TimeUnit.DAYS)
+                time_duration, TimeUnit.DAYS
+            )
             target_tables = [
                 table_name(aggr._get_target_column_name())
                 for aggr in self.query.get_all_target_aggregations()
@@ -336,89 +349,114 @@ class PreTrainTableValidator():
             assert len(target_tables) > 0
             target_tables = list(set(target_tables))
             if len(target_tables) == 1:
-                target_tables_repr = (
-                    f'target table {target_tables[0]} contains')
+                target_tables_repr = f'target table {target_tables[0]} contains'
             else:
-                target_tables_repr = (f'target tables {target_tables} contain')
+                target_tables_repr = f'target tables {target_tables} contain'
             suggest_msg_list.append(
-                f"The {target_tables_repr} {time_duration_repr} of data for "
-                f"label generation (start: {min_date}, end: {max_date}).")
+                f'The {target_tables_repr} {time_duration_repr} of data for '
+                f'label generation (start: {min_date}, end: {max_date}).'
+            )
 
         if self.train_start_offset is not None:
             train_start_offset_repr = DateOffsetRange.date_offset_repr(
-                self.train_start_offset)
-            suggest_msg_list.append((f"Try increasing 'train_start_offset' "
-                                     f"(got {train_start_offset_repr})."))
+                self.train_start_offset
+            )
+            suggest_msg_list.append(
+                (
+                    f"Try increasing 'train_start_offset' "
+                    f'(got {train_start_offset_repr}).'
+                )
+            )
         if self.train_end_offset is not None:
             train_end_offset_repr = DateOffsetRange.date_offset_repr(
-                self.train_end_offset)
-            suggest_msg_list.append((f"Try decreasing 'train_end_offset' "
-                                     f"(got {train_end_offset_repr})."))
+                self.train_end_offset
+            )
+            suggest_msg_list.append(
+                (f"Try decreasing 'train_end_offset' (got {train_end_offset_repr}).")
+            )
         target_timeframe = self.query.target_timeframe
         entity_timeframe = self.query.entity_timeframe
         assert target_timeframe is not None
-        if (target_timeframe.start is not None and target_timeframe.start < 0
-                or entity_timeframe is not None
-                and entity_timeframe.start is not None
-                and entity_timeframe.start < 0):
+        if (
+            target_timeframe.start is not None
+            and target_timeframe.start < 0
+            or entity_timeframe is not None
+            and entity_timeframe.start is not None
+            and entity_timeframe.start < 0
+        ):
             suggest_msg_list.append(
                 "Use '-INF' as the start time of past-looking filters if you "
-                "intend to apply the filter on all previous data.")
+                'intend to apply the filter on all previous data.'
+            )
 
         offset_range = self.query.get_combined_date_offset_range()
         target_aggregation_start = offset_range.start_date_offset
         assert target_aggregation_start is not None
         target_aggregation_end = offset_range.end_date_offset
-        target_aggregation_timeframe = (DateOffsetRange.date_offset_subtract(
-            target_aggregation_end, target_aggregation_start))
+        target_aggregation_timeframe = DateOffsetRange.date_offset_subtract(
+            target_aggregation_end, target_aggregation_start
+        )
 
         target_aggregation_start_repr = DateOffsetRange.date_offset_repr(
-            target_aggregation_start)
+            target_aggregation_start
+        )
         target_aggregation_end_repr = DateOffsetRange.date_offset_repr(
-            target_aggregation_end)
-        target_aggregation_timeframe_repr = (
-            DateOffsetRange.date_offset_repr(target_aggregation_timeframe))
+            target_aggregation_end
+        )
+        target_aggregation_timeframe_repr = DateOffsetRange.date_offset_repr(
+            target_aggregation_timeframe
+        )
 
         if self.timeframe_step:
             suggest_msg_list.append(
-                f"Decrease 'timeframe_step' (currently {self.timeframe_step}).")
+                f"Decrease 'timeframe_step' (currently {self.timeframe_step})."
+            )
         else:
             suggest_msg_list.append(
-                f"Use a shorter target aggregation window "
-                f"(currently {target_aggregation_timeframe_repr}, "
-                f"start {target_aggregation_start_repr}, "
-                f"end {target_aggregation_end_repr}).")
+                f'Use a shorter target aggregation window '
+                f'(currently {target_aggregation_timeframe_repr}, '
+                f'start {target_aggregation_start_repr}, '
+                f'end {target_aggregation_end_repr}).'
+            )
 
-        suggest_msg_list.append("Increase available target data if possible.")
+        suggest_msg_list.append('Increase available target data if possible.')
         suggest_msg = ' '.join(suggest_msg_list)
         if num_time_intervals == 0:
             response.errors.append(
                 ValidationError(
-                    "Empty training table",
-                    f"No valid timestamps remain to generate training data. "
-                    f"{suggest_msg}"))
+                    'Empty training table',
+                    f'No valid timestamps remain to generate training data. '
+                    f'{suggest_msg}',
+                )
+            )
         if num_time_intervals == 1:
-            warn_msg = ("Only one timeframe remains for training, which is "
-                        "typically too little to learn a generalizable model. "
-                        f"{suggest_msg}")
+            warn_msg = (
+                'Only one timeframe remains for training, which is '
+                'typically too little to learn a generalizable model. '
+                f'{suggest_msg}'
+            )
             logger.warning(warn_msg)
             response.warnings.append(
                 ValidationWarning(
-                    "The number of training time intervals is too small",
-                    warn_msg))
+                    'The number of training time intervals is too small', warn_msg
+                )
+            )
 
         if num_time_intervals > 0:
             if isinstance(self.split, DateOffsetSplit) or isinstance(
-                    self.split, TimeRangeSplit):
+                self.split, TimeRangeSplit
+            ):
                 if self.split.num_splits > num_time_intervals:
                     split_repr = construct_object_string_from_config(self.split)
                     response.errors.append(
                         ValidationError(
-                            title=f"The number of generated timeframes is too "
-                            f"small for the split: {split_repr}.",
-                            message=f"{split_repr} needs at least "
-                            f"{self.split.num_splits} timeframes, but only "
-                            f"{num_time_intervals} are available."))
+                            title=f'The number of generated timeframes is too '
+                            f'small for the split: {split_repr}.',
+                            message=f'{split_repr} needs at least '
+                            f'{self.split.num_splits} timeframes, but only '
+                            f'{num_time_intervals} are available.',
+                        )
+                    )
 
         if isinstance(self.split, BacktestingSplit):
             if min_date is not None and min_date > timestamps[0]:
@@ -428,7 +466,9 @@ class PreTrainTableValidator():
                         'the database.',
                         message=f'Backtesting timestamp {timestamps[0]} is '
                         f'earlier than the earliest timestamp in the data '
-                        f'range ({min_date}).'))
+                        f'range ({min_date}).',
+                    )
+                )
             if max_date is not None and max_date < timestamps[0]:
                 response.errors.append(
                     ValidationError(
@@ -436,26 +476,34 @@ class PreTrainTableValidator():
                         'the database.',
                         message=f'Backtesting timestamp {timestamps[0]} is '
                         f'later than the latest timestamp in the data '
-                        f'range ({max_date}). No labels can be computed.'))
+                        f'range ({max_date}). No labels can be computed.',
+                    )
+                )
         if num_time_intervals > ERROR_ON_NUM_TIME_INTERVALS:
             error_msg = (
-                f"Too many time intervals. Training would cover more than "
-                f"{ERROR_ON_NUM_TIME_INTERVALS} (got {num_time_intervals}), "
-                f"which is unsupported. Reduce intervals via "
-                f"`train_start_offset` and `train_end_offset`.")
+                f'Too many time intervals. Training would cover more than '
+                f'{ERROR_ON_NUM_TIME_INTERVALS} (got {num_time_intervals}), '
+                f'which is unsupported. Reduce intervals via '
+                f'`train_start_offset` and `train_end_offset`.'
+            )
             logger.error(error_msg)
             response.errors.append(
-                ValidationError(title='Large number of time intervals',
-                                message=error_msg))
+                ValidationError(
+                    title='Large number of time intervals', message=error_msg
+                )
+            )
         elif num_time_intervals > WARN_ON_NUM_TIME_INTERVALS:
             warn_msg = (
-                f"Large number of time intervals may slow training "
-                f"({num_time_intervals} > {WARN_ON_NUM_TIME_INTERVALS}). "
-                f"Trim via `train_start_offset` and `train_end_offset`.")
+                f'Large number of time intervals may slow training '
+                f'({num_time_intervals} > {WARN_ON_NUM_TIME_INTERVALS}). '
+                f'Trim via `train_start_offset` and `train_end_offset`.'
+            )
             logger.warning(warn_msg)
             response.warnings.append(
-                ValidationWarning(title='Large number of time intervals',
-                                  message=warn_msg))
+                ValidationWarning(
+                    title='Large number of time intervals', message=warn_msg
+                )
+            )
 
         return response
 
@@ -486,8 +534,12 @@ class PreTrainTableValidator():
             response.errors.append(
                 ValidationError(
                     title='TimeSplit with fractions not supported',
-                    message=('TimeSplit with fractions is not supported for '
-                             'forecasting tasks.')))
+                    message=(
+                        'TimeSplit with fractions is not supported for '
+                        'forecasting tasks.'
+                    ),
+                )
+            )
         if self.split.indices is not None:
             return response
         if self.split.offset_boundaries is not None:
@@ -510,7 +562,9 @@ class PreTrainTableValidator():
                     f'timestamps are required for forecasting '
                     f'(got {len(timestamps)}). '
                     f'Try reducing `forecast_length`, `lag_timesteps` or '
-                    f'increasing the amount of raw target table data.'))
+                    f'increasing the amount of raw target table data.',
+                )
+            )
 
         # Calculate the number of timeframes in each split
         split_names = TrainingStage.list_stages()[:num_splits]
@@ -523,15 +577,21 @@ class PreTrainTableValidator():
         # For each split, count how many timestamps fall within its boundaries
         for boundary, split_name in zip(boundaries, split_names):
             start_ts, end_ts = boundary
-            num_timeframes = len([
-                timestamp for timestamp in timestamps
-                if start_ts <= timestamp < end_ts
-            ])
+            num_timeframes = len(
+                [
+                    timestamp
+                    for timestamp in timestamps
+                    if start_ts <= timestamp < end_ts
+                ]
+            )
             num_timeframes_per_split[split_name] = num_timeframes
 
         for split_name, num_timeframes in num_timeframes_per_split.items():
-            min_num_timeframes = (forecast_length + lag_timesteps if split_name
-                                  == TrainingStage.TRAIN else forecast_length)
+            min_num_timeframes = (
+                forecast_length + lag_timesteps
+                if split_name == TrainingStage.TRAIN
+                else forecast_length
+            )
             if num_timeframes < min_num_timeframes:
                 response.errors.append(
                     ValidationError(
@@ -539,7 +599,9 @@ class PreTrainTableValidator():
                         message=f'The split {split_name} has too few '
                         f'timeframes for forecasting. '
                         f'Expected at least {min_num_timeframes} '
-                        f'timeframes (got {num_timeframes}).'))
+                        f'timeframes (got {num_timeframes}).',
+                    )
+                )
 
         return response
 
@@ -577,27 +639,32 @@ class PreTrainTableValidator():
                     title='Not enough timestamps for forecasting',
                     message=f'There are not enough timestamps to generate '
                     f'forecasting data. At least '
-                    f'{lag_timesteps + num_splits*forecast_length} '
+                    f'{lag_timesteps + num_splits * forecast_length} '
                     f'timestamps are required for forecasting '
                     f'(got {len(timestamps)}). '
                     f'Try reducing `forecast_length`, `lag_timesteps` or '
-                    f'increasing the amount of raw target table data.'))
+                    f'increasing the amount of raw target table data.',
+                )
+            )
 
-        if (isinstance(self.split, (DateOffsetSplit, TimeRangeSplit))
-                and not isinstance(self.split, ApproxDateOffsetSplit)):
-            num_timeframe_split = _get_timeframes_in_split(
-                self.split, timestamps)
-            if (num_timeframe_split[TrainingStage.TRAIN]
-                    < forecast_length + lag_timesteps):
+        if isinstance(self.split, (DateOffsetSplit, TimeRangeSplit)) and not isinstance(
+            self.split, ApproxDateOffsetSplit
+        ):
+            num_timeframe_split = _get_timeframes_in_split(self.split, timestamps)
+            if (
+                num_timeframe_split[TrainingStage.TRAIN]
+                < forecast_length + lag_timesteps
+            ):
                 response.errors.append(
                     ValidationError(
-                        title='Not enough timestamps in train split '
-                        'for forecasting',
+                        title='Not enough timestamps in train split for forecasting',
                         message=f'There are not enough timestamps to generate '
                         f'forecasting data in train split. At least '
                         f'{forecast_length + lag_timesteps} timestamps needed '
                         f'for forecasting '
-                        f'(got {num_timeframe_split[TrainingStage.TRAIN]}).'))
+                        f'(got {num_timeframe_split[TrainingStage.TRAIN]}).',
+                    )
+                )
             for split_name, num_timeframes in num_timeframe_split.items():
                 if split_name == TrainingStage.TRAIN:
                     continue
@@ -608,13 +675,17 @@ class PreTrainTableValidator():
                             message=f'The split {split_name} has too few '
                             f'timeframes for forecasting.'
                             f'Expected at least `forecast_length` '
-                            f'timeframes (got {num_timeframes}). '))
+                            f'timeframes (got {num_timeframes}). ',
+                        )
+                    )
         else:
             response.errors.append(
                 ValidationError(
                     title='Invalid split type',
                     message='Forecasting tasks are only supported with '
-                    f'DateOffsetSplit and TimeRangeSplit got {self.split}.'))
+                    f'DateOffsetSplit and TimeRangeSplit got {self.split}.',
+                )
+            )
 
         return response
 
@@ -638,69 +709,85 @@ class PreTrainTableValidator():
         """
 
         response = ValidationResponse()
-        effective_forecast_length = (forecast_length
-                                     if forecast_length is not None else 1)
-        if (self.task_type != TaskType.FORECASTING
-                and effective_forecast_length == 1):
+        effective_forecast_length = (
+            forecast_length if forecast_length is not None else 1
+        )
+        if self.task_type != TaskType.FORECASTING and effective_forecast_length == 1:
             if lag_timesteps is not None and lag_timesteps > 0:
                 response.errors.append(
                     ValidationError(
                         title='Lag timesteps not supported',
                         message='Lag timesteps are only supported for '
-                        'forecasting tasks.'))
+                        'forecasting tasks.',
+                    )
+                )
             return response
         if lag_timesteps is None or lag_timesteps < 1:
             response.errors.append(
                 ValidationError(
                     title='Invalid lag timesteps',
-                    message='Lag timesteps are required for forecasting tasks.')
+                    message='Lag timesteps are required for forecasting tasks.',
+                )
             )
             return response
 
         if self.query.query_type != QueryType.TEMPORAL:
             response.errors.append(
                 ValidationError(
-                    title='Invalid query type', message='Forecasting tasks are '
+                    title='Invalid query type',
+                    message='Forecasting tasks are '
                     'only supported for temporal queries '
-                    f'(got {self.query.query_type}).'))
+                    f'(got {self.query.query_type}).',
+                )
+            )
 
-        if not (isinstance(self.query.target_ast, Join)
-                and isinstance(self.query.target_ast.rhs_target, Aggregation)):
+        if not (
+            isinstance(self.query.target_ast, Join)
+            and isinstance(self.query.target_ast.rhs_target, Aggregation)
+        ):
             response.errors.append(
                 ValidationError(
                     title='Invalid target query',
                     message='Invalid target query for forecasting tasks. '
                     f'Target has to be aggregation.'
-                    f"(got {self.query.target_ast})."))
+                    f'(got {self.query.target_ast}).',
+                )
+            )
         assert isinstance(self.query.target_ast, Join)
         assert isinstance(self.query.target_ast.rhs_target, Aggregation)
         rhs_target = self.query.target_ast.rhs_target
         if rhs_target.aggr not in [
-                AggregationType.SUM, AggregationType.COUNT,
-                AggregationType.COUNT_DISTINCT
+            AggregationType.SUM,
+            AggregationType.COUNT,
+            AggregationType.COUNT_DISTINCT,
         ]:
             response.errors.append(
                 ValidationError(
                     title='Invalid aggregation type',
                     message='Invalid aggregation type for forecasting tasks. '
-                    'Supported aggregations are SUM, COUNT, COUNT_DISTINCT.'))
+                    'Supported aggregations are SUM, COUNT, COUNT_DISTINCT.',
+                )
+            )
         assert rhs_target.aggr_time_range is not None
         assert not rhs_target.aggr_time_range.is_open
         unit = rhs_target.aggr_time_range.unit
         if rhs_target.aggr_time_range.start_date_offset != pd.DateOffset(
-                **{unit.value: 0}):  # type: ignore
+            **{unit.value: 0}
+        ):  # type: ignore
             response.errors.append(
                 ValidationError(
                     title='Invalid start offset for forecasting',
                     message='Start offset for aggregation'
-                    f'should be 0 (got {rhs_target.aggr_time_range.start}).'))
+                    f'should be 0 (got {rhs_target.aggr_time_range.start}).',
+                )
+            )
         if self.timeframe_step is not None:
             target_date_range = self.query.get_combined_date_offset_range()
             assert target_date_range.end_date_offset is not None
             assert target_date_range.start_date_offset is not None
             target_timeframe = DateOffsetRange.date_offset_subtract(
-                target_date_range.end_date_offset,
-                target_date_range.start_date_offset)
+                target_date_range.end_date_offset, target_date_range.start_date_offset
+            )
             if self.timeframe_step != target_timeframe:
                 response.errors.append(
                     ValidationError(
@@ -709,7 +796,9 @@ class PreTrainTableValidator():
                         f'should be equal to the timeframe of '
                         f'target aggregation '
                         f'{target_date_range.end_date_offset}-'
-                        f'{target_date_range.start_date_offset}.'))
+                        f'{target_date_range.start_date_offset}.',
+                    )
+                )
         return response
 
     def validate_limits(
@@ -730,7 +819,8 @@ class PreTrainTableValidator():
         validation_response = ValidationResponse()
         entity_table = table_name(self.query.entity_column)
         n_entities = self.graph.table(entity_table).num_rows(
-            compute_table_stats_if_missing=True)
+            compute_table_stats_if_missing=True
+        )
         expected_rows = n_entities * len(timestamps)
         max_used_rows = get_max_train_rows()
         warn_msg = None
@@ -744,12 +834,14 @@ class PreTrainTableValidator():
                 f'of entities (currently {n_entities:,} in table '
                 f'{entity_table}) or reduce the number of timeframes '
                 f'(currently {len(timestamps)}) via '
-                'train_start_offset/train_end_offset.')
+                'train_start_offset/train_end_offset.'
+            )
             validation_response.warnings.append(
                 ValidationWarning(
-                    title="Training table may be very large",
+                    title='Training table may be very large',
                     message=warn_msg,
-                ))
+                )
+            )
             logger.warning(warn_msg)
         # During training table generation, the RHS table might undergo filtering.
         # However, the trainier still uses the unfiltered RHS table. This is why, here,
@@ -758,20 +850,23 @@ class PreTrainTableValidator():
             rhs_table = get_rhs_lp_table(self.query, self.graph)
             rhs_table_name = table_name_with_connector(rhs_table)
             n_targets = self.graph.table(rhs_table_name).num_rows(
-                compute_table_stats_if_missing=True)
+                compute_table_stats_if_missing=True
+            )
 
             if n_targets > MAX_RHS_ROWS:
                 error_msg = (
                     f'Link prediction target table is too large. '
                     f'{rhs_table_name} has {n_targets:,} rows, exceeding the '
                     f'{MAX_RHS_ROWS:,} row limit. Reduce RHS size before '
-                    f'training.')
+                    f'training.'
+                )
                 logger.warning(error_msg)
                 validation_response.errors.append(
                     ValidationError(
-                        title="Target table is too large to be processed",
+                        title='Target table is too large to be processed',
                         message=error_msg,
-                    ))
+                    )
+                )
 
         return validation_response
 
@@ -780,17 +875,23 @@ class PreTrainTableValidator():
         validation_response = ValidationResponse()
         try:
             validate_time_bounds(
-                self.start_time, self.end_time,
+                self.start_time,
+                self.end_time,
                 train_start_offset=self.train_start_offset,
-                train_end_offset=self.train_end_offset)
+                train_end_offset=self.train_end_offset,
+            )
         except ValueError as error:
-            validation_response.errors.append(ValidationError(
-                title='Invalid training time bounds', message=str(error)))
+            validation_response.errors.append(
+                ValidationError(
+                    title='Invalid training time bounds', message=str(error)
+                )
+            )
         return validation_response
 
 
-def _validate_uniform_timeframes(timestamps: List[pd.Timestamp],
-                                 split: Split) -> ValidationResponse:
+def _validate_uniform_timeframes(
+    timestamps: List[pd.Timestamp], split: Split
+) -> ValidationResponse:
     r"""Validates that the timestamps are uniformly spaced. This
     is a requirement for forecasting tasks, where lag features
     for a given timestamp are computed from the previous timestamps,
@@ -804,27 +905,31 @@ def _validate_uniform_timeframes(timestamps: List[pd.Timestamp],
         ValidationResponse: Warnings and errors encountered.
     """
     response = ValidationResponse()
-    time_diffs = [
-        timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))
-    ]
+    time_diffs = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
     if len(set(time_diffs)) > 1:
-        suggestion = ""
+        suggestion = ''
         if isinstance(split, TimeRangeSplit):
-            suggestion += ("Potentially due to TimeRangeSplit configuration. "
-                           "Make sure the start of each split matches the "
-                           "end of the previous split.")
+            suggestion += (
+                'Potentially due to TimeRangeSplit configuration. '
+                'Make sure the start of each split matches the '
+                'end of the previous split.'
+            )
         response.errors.append(
             ValidationError(
                 title='Non-uniform timeframes in forecasting',
-                message=('Timestamps are not uniformly spaced, so lag features '
-                         'will be missing. '
-                         f'{suggestion.strip()}')))
+                message=(
+                    'Timestamps are not uniformly spaced, so lag features '
+                    'will be missing. '
+                    f'{suggestion.strip()}'
+                ),
+            )
+        )
     return response
 
 
 def _get_timeframes_in_split(
-        split: Union[DateOffsetSplit, TimeRangeSplit],
-        timestamps: List[pd.Timestamp]) -> Dict[TrainingStage, int]:
+    split: Union[DateOffsetSplit, TimeRangeSplit], timestamps: List[pd.Timestamp]
+) -> Dict[TrainingStage, int]:
     r"""Returns the number of timestamps in each split.
     Args:
         split (Union[DateOffsetSplit, TimeRangeSplit]): The split.
@@ -836,8 +941,10 @@ def _get_timeframes_in_split(
     num_timeframes_per_split = {stage: 0 for stage in split_names}
     if len(timestamps) == 0:
         # To prevent errors below in min and max
-        logger.warning(f"No timestamps found for split {split}. "
-                       f"This is likely due to an empty training table.")
+        logger.warning(
+            f'No timestamps found for split {split}. '
+            f'This is likely due to an empty training table.'
+        )
         return num_timeframes_per_split
 
     if isinstance(split, DateOffsetSplit):
@@ -847,9 +954,12 @@ def _get_timeframes_in_split(
     # For each split identify which timestamp(anchor time)
     # falls in that split.
     for range_, split_name in zip(ranges, split_names):
-        num_timeframes = len([
-            timestamp for timestamp in timestamps
-            if range_[0] <= timestamp < range_[1]
-        ])
+        num_timeframes = len(
+            [
+                timestamp
+                for timestamp in timestamps
+                if range_[0] <= timestamp < range_[1]
+            ]
+        )
         num_timeframes_per_split[split_name] = num_timeframes
     return num_timeframes_per_split

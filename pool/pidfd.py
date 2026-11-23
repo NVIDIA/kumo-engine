@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Linux pidfd operations with fallbacks for minimal CPython builds."""
+
 import ctypes
 import errno
 import os

@@ -46,32 +46,42 @@ class FitRecord:
         started_at, train_table = self.started_at, self.train_table
         table = train_table.manifest
         counts, window = self.holdout_counts, self.holdout_window
-        holdout = None if counts is None or self.fit_mode == 'refit_full' else (
-            HoldoutStats(truncated=self.holdout_truncated,
-                         rows=holdout_rows(counts), counts=counts,
-                         window=None if window is None else list(window)))
+        holdout = (
+            None
+            if counts is None or self.fit_mode == 'refit_full'
+            else (
+                HoldoutStats(
+                    truncated=self.holdout_truncated,
+                    rows=holdout_rows(counts),
+                    counts=counts,
+                    window=None if window is None else list(window),
+                )
+            )
+        )
         write_manifest(
             bundle_dir / PROVENANCE_FILE,
             ModelManifest(
                 id=bundle_id,
                 parents=ModelParents(
-                    training_table=embedded(table) if table is not None else
-                    stub('training_table', train_table.id
-                         or train_table.tt_id),
-                    warm_start=None if self.warm_start is None else
-                    embedded_model(self.warm_start)),
+                    training_table=embedded(table)
+                    if table is not None
+                    else stub('training_table', train_table.id or train_table.tt_id),
+                    warm_start=None
+                    if self.warm_start is None
+                    else embedded_model(self.warm_start),
+                ),
                 fit=FitTiming(
                     started_at=started_at.isoformat(timespec='seconds'),
                     finished_at=finished_at.isoformat(timespec='seconds'),
-                    seconds=round(
-                        (finished_at - started_at).total_seconds(), 3),
+                    seconds=round((finished_at - started_at).total_seconds(), 3),
                 ),
                 fit_mode=self.fit_mode,
                 tracking=self.tracking,
                 dependencies=self.dependencies,
                 holdout=holdout,
                 **stamp(),
-            ))
+            ),
+        )
         add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
@@ -84,13 +94,19 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
     def cut(model: Optional[ModelManifest]) -> Optional[ModelManifest]:
         return None if model is None else stub('model', model.id)
 
-    return replace(copy, parents=replace(
-        parents, warm_start=cut(parents.warm_start),
-        derived_from=cut(parents.derived_from)))
+    return replace(
+        copy,
+        parents=replace(
+            parents,
+            warm_start=cut(parents.warm_start),
+            derived_from=cut(parents.derived_from),
+        ),
+    )
 
 
-def bundle_manifest(bundle_dir: Path,
-                    bundle_id: Optional[str]) -> Optional[ModelManifest]:
+def bundle_manifest(
+    bundle_dir: Path, bundle_id: Optional[str]
+) -> Optional[ModelManifest]:
     manifest = read_provenance(bundle_dir)
     if manifest is not None:
         return manifest
@@ -102,8 +118,9 @@ def read_provenance(bundle_dir: Path) -> Optional[ModelManifest]:
     return None if path is None else read_manifest(path, ModelManifest)
 
 
-def record_derivation(bundle_dir: Path, parent_dir: Path,
-                      parent_id: Optional[str]) -> None:
+def record_derivation(
+    bundle_dir: Path, parent_dir: Path, parent_id: Optional[str]
+) -> None:
     r"""Writes the manifest of a bundle derived from ``parent_dir``."""
     from kumo_core.artifacts import (
         PROVENANCE_FILE,
@@ -117,12 +134,13 @@ def record_derivation(bundle_dir: Path, parent_dir: Path,
         ModelManifest(
             id=bundle_id_from_manifest(bundle_dir),
             parents=ModelParents(
-                derived_from=None if parent is None else embedded_model(
-                    parent)),
+                derived_from=None if parent is None else embedded_model(parent)
+            ),
             dependencies=None if parent is None else parent.dependencies,
             holdout=None if parent is None else parent.holdout,
             **stamp(),
-        ))
+        ),
+    )
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
@@ -140,21 +158,32 @@ def holdout_counts(model: Optional[ModelManifest]) -> Optional[Counts]:
     return Counts.from_dict(holdout.counts)
 
 
-def count_edges(model: Optional[ModelManifest], task_type: TaskType
-                ) -> Optional[Dict[str, Tuple[float, ...]]]:
+def count_edges(
+    model: Optional[ModelManifest], task_type: TaskType
+) -> Optional[Dict[str, Tuple[float, ...]]]:
     r"""The bins a prediction run of model counts its scores in."""
-    if task_type in (TaskType.BINARY_CLASSIFICATION,
-                     TaskType.MULTICLASS_CLASSIFICATION):
+    if task_type in (
+        TaskType.BINARY_CLASSIFICATION,
+        TaskType.MULTICLASS_CLASSIFICATION,
+    ):
         return {'score': PROBABILITY_EDGES}
     if task_type is TaskType.MULTILABEL_CLASSIFICATION:
         return {'score': PROBABILITY_EDGES, 'top_score': PROBABILITY_EDGES}
     holdout = holdout_counts(model)
-    if task_type in (TaskType.MULTILABEL_RANKING,
-                     TaskType.STATIC_LINK_PREDICTION,
-                     TaskType.TEMPORAL_LINK_PREDICTION):
-        return {} if holdout is None or 'top_score' not in holdout.edges else {
-            'top_score': holdout.edges['top_score']}
-    if (task_type.has_numerical_target and holdout is not None
-            and 'target' in holdout.edges):
+    if task_type in (
+        TaskType.MULTILABEL_RANKING,
+        TaskType.STATIC_LINK_PREDICTION,
+        TaskType.TEMPORAL_LINK_PREDICTION,
+    ):
+        return (
+            {}
+            if holdout is None or 'top_score' not in holdout.edges
+            else {'top_score': holdout.edges['top_score']}
+        )
+    if (
+        task_type.has_numerical_target
+        and holdout is not None
+        and 'target' in holdout.edges
+    ):
         return {'target': holdout.edges['target']}
     return None

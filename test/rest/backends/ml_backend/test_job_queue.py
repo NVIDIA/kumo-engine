@@ -50,12 +50,12 @@ from statedb.config.common import (
 )
 from statedb.db import MLJobService, StateDB
 
-TEST_GRAPH_ID = GraphIDv1("graph_id_test")
-TEST_PQUERY_ID = PredictiveQueryID("pquery_id_test")
-TEST_PROJECT_ID = ProjectID("default")
+TEST_GRAPH_ID = GraphIDv1('graph_id_test')
+TEST_PQUERY_ID = PredictiveQueryID('pquery_id_test')
+TEST_PROJECT_ID = ProjectID('default')
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope='session', autouse=True)
 def setup_rest_test_session() -> None:
     """This unit suite does not require a Temporal test server."""
 
@@ -69,7 +69,7 @@ def auto_cleanup_per_func() -> None:
 async def state_db(tmp_path) -> StateDB:
     # The DB-backed queue derives all state from the default ML job tables;
     # no extra table is needed, so the default schema is used as-is.
-    return await StateDB.open_sqlite(str(tmp_path / "state.sqlite"))
+    return await StateDB.open_sqlite(str(tmp_path / 'state.sqlite'))
 
 
 @pytest_asyncio.fixture
@@ -113,11 +113,12 @@ async def _make_bp_job(
         id=job_id,
         now=now,
         config=BatchPredictionJobConfig(
-            training_job_id=TrainingJobID("trainingjob-deadbeef"),
+            training_job_id=TrainingJobID('trainingjob-deadbeef'),
             graph_id=TEST_GRAPH_ID,
             predictive_query_id=TEST_PQUERY_ID,
             generate_pred_table_job_id=(
-                GeneratePredictionTableJobID.as_child_of(job_id)),
+                GeneratePredictionTableJobID.as_child_of(job_id)
+            ),
             task_type=TaskType.BINARY_CLASSIFICATION,
             num_parallel_workers_limit=gpu_workers,
         ),
@@ -145,6 +146,7 @@ async def _terminalize(
     assert job is not None
     job.execution.status = status
     from temporalio.client import WorkflowExecutionStatus
+
     job.execution.workflow_end_state = WorkflowExecutionStatus.COMPLETED
     await ml_jobs.save_batch_prediction_job_output(job_id, job.execution)
 
@@ -162,10 +164,12 @@ async def test_fifo_admission_and_max_jobs(
 
     base = datetime(2024, 1, 1, 0, 0, 0)
     a = await _make_bp_job(ml_jobs, gpu_workers=1, created_at=base)
-    b = await _make_bp_job(ml_jobs, gpu_workers=1,
-                           created_at=base + timedelta(seconds=1))
-    c = await _make_bp_job(ml_jobs, gpu_workers=1,
-                           created_at=base + timedelta(seconds=2))
+    b = await _make_bp_job(
+        ml_jobs, gpu_workers=1, created_at=base + timedelta(seconds=1)
+    )
+    c = await _make_bp_job(
+        ml_jobs, gpu_workers=1, created_at=base + timedelta(seconds=2)
+    )
     # Deterministic FIFO order: a < b < c.
 
     assert await queue.submit_job(a) == JobStatus.RUNNING
@@ -275,8 +279,9 @@ async def test_gpu_slot_accounting(
     queue = _queue(state_db, settings)
     base = datetime(2024, 1, 1)
     big = await _make_bp_job(ml_jobs, gpu_workers=3, created_at=base)
-    small = await _make_bp_job(ml_jobs, gpu_workers=2,
-                               created_at=base + timedelta(seconds=1))
+    small = await _make_bp_job(
+        ml_jobs, gpu_workers=2, created_at=base + timedelta(seconds=1)
+    )
 
     assert await queue.submit_job(big) == JobStatus.RUNNING  # 3/4 GPU
     # small needs 2 more -> 5 > 4, stays queued.

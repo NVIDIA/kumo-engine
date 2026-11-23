@@ -18,28 +18,33 @@ from kumo.connector.parquet_connector import ParquetConnector
 
 
 def _export(connector, columns, destination):
-    fingerprint = IngestedTableFingerprint(connector_name=connector.name,
-                                           source_name='data', cols=columns,
-                                           pkey=None, time_col=None,
-                                           end_time_col=None)
-    with patch('kumo.data.utils.get_materialize_path',
-               return_value=str(destination)):
+    fingerprint = IngestedTableFingerprint(
+        connector_name=connector.name,
+        source_name='data',
+        cols=columns,
+        pkey=None,
+        time_col=None,
+        end_time_col=None,
+    )
+    with patch('kumo.data.utils.get_materialize_path', return_value=str(destination)):
         return connector.export_table('data', fingerprint, 'version')
 
 
-def test_hosted_csv_preserves_configured_escape_nulls_and_exact_integers(
-        tmp_path):
+def test_hosted_csv_preserves_configured_escape_nulls_and_exact_integers(tmp_path):
     source = tmp_path / 'source'
     source.mkdir()
     (source / 'data.csv').write_text(
-        'id;label\n9007199254740993;hello\\;world\n10;MISSING\n11;NA\n')
-    connector = CSVConnector(name='csv', root_dir=str(source), sep=';',
-                             escapechar='\\', na_values=['MISSING'])
+        'id;label\n9007199254740993;hello\\;world\n10;MISSING\n11;NA\n'
+    )
+    connector = CSVConnector(
+        name='csv',
+        root_dir=str(source),
+        sep=';',
+        escapechar='\\',
+        na_values=['MISSING'],
+    )
     output = tmp_path / 'output'
-    metrics = _export(connector, {
-        'id': Dtype.int64,
-        'label': Dtype.string
-    }, output)
+    metrics = _export(connector, {'id': Dtype.int64, 'label': Dtype.string}, output)
     result = pq.read_table(output)
     assert result.to_pydict() == {
         'id': [9007199254740993, 10, 11],
@@ -48,21 +53,20 @@ def test_hosted_csv_preserves_configured_escape_nulls_and_exact_integers(
     assert result.schema.field('id').type == pa.int64()
     assert metrics.num_rows == 3
     assert metrics.source_size != (source / 'data.csv').stat().st_size
-    assert metrics.source_size == sum(p.stat().st_size
-                                      for p in output.glob('*.parquet'))
+    assert metrics.source_size == sum(
+        p.stat().st_size for p in output.glob('*.parquet')
+    )
 
 
-def test_hosted_parquet_publishes_after_source_credentials_exit(
-        tmp_path, monkeypatch):
+def test_hosted_parquet_publishes_after_source_credentials_exit(tmp_path, monkeypatch):
     from kumo.connector import source_bridge
 
     source = tmp_path / 'source'
     source.mkdir()
     original = source / 'data.parquet'
-    pq.write_table(pa.table({
-        'id': [1, 2],
-        'unselected': ['a', 'b']
-    }), original, compression='gzip')
+    pq.write_table(
+        pa.table({'id': [1, 2], 'unselected': ['a', 'b']}), original, compression='gzip'
+    )
     connector = ParquetConnector(name='parquet', root_dir=str(source))
     active = False
 
@@ -91,30 +95,20 @@ def test_hosted_parquet_publishes_after_source_credentials_exit(
 
 
 @pytest.mark.parametrize('nested', ['country=US', 'nested'])
-def test_hosted_nested_parquet_keeps_physical_partition_columns(
-        tmp_path, nested):
+def test_hosted_nested_parquet_keeps_physical_partition_columns(tmp_path, nested):
     source = tmp_path / 'source'
     parts = source / 'data' / nested
     parts.mkdir(parents=True)
     pq.write_table(
-        pa.table({
-            'id': [1, 2],
-            'unused_struct': [{
-                'value': 1
-            }, {
-                'value': 2
-            }]
-        }), parts / 'part.parquet')
+        pa.table({'id': [1, 2], 'unused_struct': [{'value': 1}, {'value': 2}]}),
+        parts / 'part.parquet',
+    )
     connector = ParquetConnector(name='parquet', root_dir=str(source))
     output = tmp_path / 'output'
     metrics = _export(connector, {'id': Dtype.int64}, output)
     result = pq.read_table(output)
     assert result.column('id').to_pylist() == [1, 2]
-    assert result.column('unused_struct').to_pylist() == [{
-        'value': 1
-    }, {
-        'value': 2
-    }]
+    assert result.column('unused_struct').to_pylist() == [{'value': 1}, {'value': 2}]
     if nested.startswith('country='):
         assert result.column('country').to_pylist() == ['US', 'US']
     assert metrics.num_rows == 2
@@ -123,12 +117,13 @@ def test_hosted_nested_parquet_keeps_physical_partition_columns(
 
 @pytest.mark.parametrize('suffix', ['txt', 'csv.gz'])
 @pytest.mark.parametrize('directory', [False, True])
-def test_hosted_csv_retains_configured_source_suffix(tmp_path, suffix,
-                                                     directory):
+def test_hosted_csv_retains_configured_source_suffix(tmp_path, suffix, directory):
     source = tmp_path / 'source'
     source.mkdir()
     body = b'id,label\n1,alpha\n2,beta\n'
-    part = source / 'data' / f'part.{suffix}' if directory else source / f'data.{suffix}'
+    part = (
+        source / 'data' / f'part.{suffix}' if directory else source / f'data.{suffix}'
+    )
     part.parent.mkdir(exist_ok=True)
     part.write_bytes(gzip.compress(body) if suffix.endswith('.gz') else body)
     connector = CSVConnector(name='csv', root_dir=str(source), suffix=suffix)
@@ -136,12 +131,13 @@ def test_hosted_csv_retains_configured_source_suffix(tmp_path, suffix,
     _export(connector, {'id': Dtype.int64, 'label': Dtype.string}, output)
     assert pq.read_table(output).to_pydict() == {
         'id': [1, 2],
-        'label': ['alpha', 'beta']
+        'label': ['alpha', 'beta'],
     }
 
 
 def test_hosted_unknown_input_size_uses_existing_scoped_estimator(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     from types import SimpleNamespace
 
     from pyarrow.fs import LocalFileSystem
@@ -157,8 +153,13 @@ def test_hosted_unknown_input_size_uses_existing_scoped_estimator(
         def get_file_info(self, path):
             assert active
             info = filesystem.get_file_info(path)
-            return SimpleNamespace(path=info.path, type=info.type, size=None,
-                                   mtime=info.mtime, mtime_ns=info.mtime_ns)
+            return SimpleNamespace(
+                path=info.path,
+                type=info.type,
+                size=None,
+                mtime=info.mtime,
+                mtime_ns=info.mtime_ns,
+            )
 
         def open_input_stream(self, path):
             assert active
@@ -181,8 +182,7 @@ def test_hosted_unknown_input_size_uses_existing_scoped_estimator(
     connector = ParquetConnector(name='parquet', root_dir=str(source))
     monkeypatch.setattr(connector, 'filesystem_credential_scope', scope)
     monkeypatch.setattr(connector, '_get_table_source_size', estimate)
-    monkeypatch.setattr('io_utils.fsutil.pyarrow_filesystem',
-                        lambda _: UnknownSize())
+    monkeypatch.setattr('io_utils.fsutil.pyarrow_filesystem', lambda _: UnknownSize())
     read_schema = pq.read_schema
 
     def scoped_read_schema(path, *, filesystem):

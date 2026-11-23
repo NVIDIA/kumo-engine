@@ -20,43 +20,45 @@ from kumo.testing.rest import (
 
 
 def test_bigquery_rest_identity_uses_workload_exchange(monkeypatch):
-    service_account = (
-        'gha-kumo-gcp-tests@example-project.iam.gserviceaccount.com')
+    service_account = 'gha-kumo-gcp-tests@example-project.iam.gserviceaccount.com'
     monkeypatch.setenv('GCP_TEST_SERVICE_ACCOUNT', service_account)
 
     config, credentials = bigquery_test_identity()
 
     assert credentials is None
-    assert isinstance(config.authentication,
-                      data_source_api.GoogleWorkloadIdentityAuthentication)
+    assert isinstance(
+        config.authentication, data_source_api.GoogleWorkloadIdentityAuthentication
+    )
     assert config.authentication.service_account_email == service_account
 
 
 def test_invalid_bigquery_identity_remains_key_backed():
     config = invalid_bigquery_key_test_identity_config()
 
-    assert isinstance(config.authentication,
-                      data_source_api.GoogleServiceAccountKeyAuthentication)
+    assert isinstance(
+        config.authentication, data_source_api.GoogleServiceAccountKeyAuthentication
+    )
 
 
-def test_connector_loads_external_account_and_impersonates(
-        monkeypatch, tmp_path):
-    credentials_path = tmp_path / "gha-creds.json"
+def test_connector_loads_external_account_and_impersonates(monkeypatch, tmp_path):
+    credentials_path = tmp_path / 'gha-creds.json'
     fsutil.write_text(str(credentials_path), '{"type": "external_account"}')
     target = 'gha-kumo-bq-no-job@example-project.iam.gserviceaccount.com'
     source_credential = mock.Mock(name='source_credential')
     target_credential = mock.Mock(name='target_credential')
     client = mock.Mock(name='bigquery_client')
-    monkeypatch.setenv(bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON,
-                       str(credentials_path))
     monkeypatch.setenv(
-        bigquery_connector.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, target)
-    load_credentials = mock.Mock(return_value=(source_credential,
-                                               'example-project'))
+        bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON, str(credentials_path)
+    )
+    monkeypatch.setenv(
+        bigquery_connector.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, target
+    )
+    load_credentials = mock.Mock(return_value=(source_credential, 'example-project'))
     impersonate = mock.Mock(return_value=target_credential)
     create_client = mock.Mock(return_value=client)
-    monkeypatch.setattr(bigquery_connector, 'load_credentials_from_file',
-                        load_credentials)
+    monkeypatch.setattr(
+        bigquery_connector, 'load_credentials_from_file', load_credentials
+    )
     monkeypatch.setattr(
         bigquery_connector.impersonated_credentials,
         'Credentials',
@@ -109,25 +111,39 @@ def explicit_adc(monkeypatch, tmp_path):
 @pytest.mark.parametrize('kind', list(testing_bigquery.CredentialKind))
 def test_explicit_types(monkeypatch, explicit_adc, kind):
     fsutil.write_text(explicit_adc, json.dumps({'type': kind.value}))
-    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
-                       'previous')
+    monkeypatch.setenv(
+        testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, 'previous'
+    )
     with testing_bigquery.setup_bigquery_credentials():
-        assert os.environ[bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON] == explicit_adc
+        assert (
+            os.environ[bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON] == explicit_adc
+        )
         assert testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT not in os.environ
-    assert os.environ[testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT] == 'previous'
+    assert (
+        os.environ[testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT]
+        == 'previous'
+    )
 
 
-@pytest.mark.parametrize('identity, target_var, key_var', [
-    (testing_bigquery.BigQueryIdentity.NO_TABLE,
-     testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
-     testing_bigquery.ENV_BIGQUERY_NO_TABLE_CREDENTIALS),
-    (testing_bigquery.BigQueryIdentity.NO_JOB,
-     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
-     testing_bigquery.ENV_BIGQUERY_NO_JOB_CREDENTIALS),
-])
+@pytest.mark.parametrize(
+    'identity, target_var, key_var',
+    [
+        (
+            testing_bigquery.BigQueryIdentity.NO_TABLE,
+            testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
+            testing_bigquery.ENV_BIGQUERY_NO_TABLE_CREDENTIALS,
+        ),
+        (
+            testing_bigquery.BigQueryIdentity.NO_JOB,
+            testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
+            testing_bigquery.ENV_BIGQUERY_NO_JOB_CREDENTIALS,
+        ),
+    ],
+)
 @pytest.mark.parametrize('kind', list(testing_bigquery.CredentialKind))
-def test_restricted_identity(monkeypatch, tmp_path, explicit_adc, identity,
-                             target_var, key_var, kind):
+def test_restricted_identity(
+    monkeypatch, tmp_path, explicit_adc, identity, target_var, key_var, kind
+):
     fsutil.write_text(explicit_adc, json.dumps({'type': kind.value}))
     restricted = str(tmp_path / 'restricted.json')
     fsutil.write_text(restricted, '{"type": "service_account"}')
@@ -136,10 +152,16 @@ def test_restricted_identity(monkeypatch, tmp_path, explicit_adc, identity,
     with testing_bigquery.setup_bigquery_credentials(identity):
         if kind == testing_bigquery.CredentialKind.KEY:
             assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == restricted
-            assert testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT not in os.environ
+            assert (
+                testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT
+                not in os.environ
+            )
         else:
             assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == explicit_adc
-            assert os.environ[testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT] == 'restricted@example.com'
+            assert (
+                os.environ[testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT]
+                == 'restricted@example.com'
+            )
     assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == explicit_adc
     assert fsutil.read_text(restricted) == '{"type": "service_account"}'
 
@@ -152,8 +174,9 @@ def test_invalid_adc(explicit_adc, document):
             pytest.fail('Invalid credentials accepted')
 
 
-@pytest.mark.parametrize('kind', ['service_account', 'authorized_user',
-                                  'impersonated_service_account'])
+@pytest.mark.parametrize(
+    'kind', ['service_account', 'authorized_user', 'impersonated_service_account']
+)
 def test_workload_requires_federation(monkeypatch, explicit_adc, kind):
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
     fsutil.write_text(explicit_adc, json.dumps({'type': kind}))
@@ -185,11 +208,18 @@ def test_environment_restored(monkeypatch, explicit_adc, failure):
     assert fsutil.read_text(explicit_adc) == '{"type": "external_account"}'
 
 
-@pytest.mark.parametrize('identity', [testing_bigquery.BigQueryIdentity.NO_TABLE,
-                                      testing_bigquery.BigQueryIdentity.NO_JOB])
+@pytest.mark.parametrize(
+    'identity',
+    [
+        testing_bigquery.BigQueryIdentity.NO_TABLE,
+        testing_bigquery.BigQueryIdentity.NO_JOB,
+    ],
+)
 def test_restricted_requires_input(monkeypatch, explicit_adc, identity):
-    for variable in (testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
-                     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT):
+    for variable in (
+        testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
+        testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
+    ):
         monkeypatch.delenv(variable, raising=False)
     before = dict(os.environ)
     with pytest.raises(RuntimeError, match='restricted'):
@@ -203,7 +233,9 @@ def test_remote_adc_rejected(monkeypatch, path):
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
     with mock.patch.object(fsutil, 'exists', side_effect=AssertionError('Remote IO')):
         with pytest.raises(RuntimeError, match='local ADC'):
-            testing_bigquery.resolve_credentials(testing_bigquery.BigQueryIdentity.DEFAULT)
+            testing_bigquery.resolve_credentials(
+                testing_bigquery.BigQueryIdentity.DEFAULT
+            )
 
 
 @pytest.mark.parametrize('document', [None, '{"type":"authorized_user"}'])

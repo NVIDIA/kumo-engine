@@ -24,6 +24,7 @@ class ReportProgressClass:
     Args:
         job_id (str): Job id for indexing stats cache.
     """
+
     def __init__(self, job_id: str):
         self.iteration_stats: List[Any] = []
         self.job_id = job_id
@@ -34,6 +35,7 @@ class ReportProgressClass:
             ITERATION_DATA,
             NUM_EXPECTED_ITERATIONS,
         )
+
         cache: BackendCacheManager = get_active_cache()
         self.iteration_stats.append(iteration_data)
         stored_stats = {
@@ -71,12 +73,15 @@ def generate_train_table_generic(
         TrainingTableGenerationError,
     )
 
-    table_details = [(table.table_name, table.data_version)
-                     for table in predictive_query_config.graph.tables]
+    table_details = [
+        (table.table_name, table.data_version)
+        for table in predictive_query_config.graph.tables
+    ]
     logger.info(f'Table Name and versions : {table_details}')
 
     predictive_query: PredictiveQuery = PredictiveQueryV2.from_config(
-        predictive_query_config)
+        predictive_query_config
+    )
     table_generator = predictive_query.get_table_generator()
 
     # Track validation errors and warnings in train table generation due to
@@ -100,7 +105,8 @@ def generate_train_table_generic(
             graph_config=predictive_query_config.graph,
             diskgraph_index_path=diskgraph_index_path,
             list_distinct_target_is_array=(
-                predictive_query.list_distinct_target_is_array),
+                predictive_query.list_distinct_target_is_array
+            ),
             destination=destination,
         )
         # DiskGraph emits one ordered parquet dataset inside a complete native
@@ -117,13 +123,13 @@ def generate_train_table_generic(
         # is missing — so by this point the short-circuit always holds.
         source_path = table_generator._diskgraph_last_output_path
         if not source_path:
-            raise RuntimeError(
-                'diskgraph train table path missing on table generator')
+            raise RuntimeError('diskgraph train table path missing on table generator')
 
         if not fsutil.isdir(source_path):
             raise RuntimeError(
                 'diskgraph producer contract violated: expected parquet '
-                f'dataset directory at {source_path}')
+                f'dataset directory at {source_path}'
+            )
 
         try:
             manifest_src = getattr(
@@ -131,53 +137,55 @@ def generate_train_table_generic(
                 '_diskgraph_last_manifest_path',
                 None,
             )
-            if not isinstance(manifest_src,
-                              str) or not fsutil.exists(manifest_src):
+            if not isinstance(manifest_src, str) or not fsutil.exists(manifest_src):
                 raise RuntimeError(
                     'diskgraph producer manifest missing at '
-                    f'{manifest_src!r}; cannot persist TT bundle')
+                    f'{manifest_src!r}; cannot persist TT bundle'
+                )
 
             from kumo.diskgraph.diskgraph_native_tt_artifacts import (
                 artifact_file_size,
                 validate_artifact_bundle,
             )
+
             source_manifest = validate_artifact_bundle(manifest_src)
             source_train_table = source_manifest['train_table']
             manifest_train_table_path = source_train_table['path']
-            if (osp.normpath(manifest_train_table_path)
-                    != osp.normpath(source_path)):
+            if osp.normpath(manifest_train_table_path) != osp.normpath(source_path):
                 raise RuntimeError(
                     'diskgraph train-table source is not bound to its '
                     f'manifest: source={source_path!r} '
-                    f'manifest={manifest_train_table_path!r}')
+                    f'manifest={manifest_train_table_path!r}'
+                )
             source_size = sum(
-                artifact_file_size(part['path'])
-                for part in source_train_table['parts']
+                artifact_file_size(part['path']) for part in source_train_table['parts']
             )
             if source_size != int(source_train_table['size_bytes']):
                 raise RuntimeError(
                     'diskgraph train-table source size changed after '
-                    'manifest validation')
+                    'manifest validation'
+                )
 
             from kumo.data.generic.diskgraph_train_table import (
                 TT_PARQUET_FILENAME,
                 persist_ttng_bundle,
                 ttng_persisted_staging_dir,
             )
+
             staging_src = osp.dirname(manifest_src)
             staging_dst = ttng_persisted_staging_dir(output_file_path)
             logger.info(
                 'Publishing diskgraph producer bundle once to immutable storage: '
-                '%s -> %s', staging_src, staging_dst)
-            published_bundle = persist_ttng_bundle(
-                staging_src, staging_dst)
-            published_train_table_path = osp.join(
-                published_bundle, TT_PARQUET_FILENAME)
+                '%s -> %s',
+                staging_src,
+                staging_dst,
+            )
+            published_bundle = persist_ttng_bundle(staging_src, staging_dst)
+            published_train_table_path = osp.join(published_bundle, TT_PARQUET_FILENAME)
         finally:
             # Clean up local staging directory (created when
             # get_home_dir() returned a remote path).
-            staging_dir = getattr(table_generator, '_diskgraph_staging_dir',
-                                  None)
+            staging_dir = getattr(table_generator, '_diskgraph_staging_dir', None)
             if staging_dir is not None:
                 shutil.rmtree(staging_dir, ignore_errors=True)
                 table_generator._diskgraph_staging_dir = None
@@ -188,8 +196,12 @@ def generate_train_table_generic(
     finally:
         response.merge(table_generator.get_validate_train_table_response())
         if train_table_validation_response_path:
-            logger.info(f"Save generate train table validation responses to "
-                        f"{train_table_validation_response_path}.")
-            response.save(train_table_validation_response_path,
-                          TRAIN_TABLE_VALIDATION_RESPONSE_NAME)
+            logger.info(
+                f'Save generate train table validation responses to '
+                f'{train_table_validation_response_path}.'
+            )
+            response.save(
+                train_table_validation_response_path,
+                TRAIN_TABLE_VALIDATION_RESPONSE_NAME,
+            )
     return published_train_table_path

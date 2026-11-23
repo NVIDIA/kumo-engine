@@ -34,8 +34,7 @@ import kumo.settings
 
 # Tests pin the root by patching this.
 _root: Optional[Path] = None
-_scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root',
-                                                      default=None)
+_scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root', default=None)
 
 
 def get_scratch_dir() -> Path:
@@ -52,7 +51,7 @@ def scoped_scratch_dir(path: Path) -> Iterator[None]:
         _scoped_root.reset(token)
 
 
-set_spool_dir(lambda: str(get_scratch_dir() / "spool"))
+set_spool_dir(lambda: str(get_scratch_dir() / 'spool'))
 
 
 def new_run_id() -> str:
@@ -74,7 +73,7 @@ def fingerprint(*parts: bytes) -> str:
 
 
 def trainer_scratch_dir(trainer_id: str) -> Path:
-    return get_scratch_dir() / "trainers" / trainer_id
+    return get_scratch_dir() / 'trainers' / trainer_id
 
 
 def snapshot_scratch_dir(graph_key: str) -> Path:
@@ -84,12 +83,12 @@ def snapshot_scratch_dir(graph_key: str) -> Path:
     itself is keyed by `(graph_key, data_version)` via `kumo_core.diskgraph.
     snapshot.LocalSnapshotStore`, nested under this same root.
     """
-    return get_scratch_dir() / "snapshots" / graph_key
+    return get_scratch_dir() / 'snapshots' / graph_key
 
 
 def train_table_scratch_dir(run_id: str) -> Path:
-    return get_scratch_dir() / "train_tables" / run_id
+    return get_scratch_dir() / 'train_tables' / run_id
 
 
 def prediction_table_scratch_dir(run_id: str) -> Path:
-    return get_scratch_dir() / "prediction_tables" / run_id
+    return get_scratch_dir() / 'prediction_tables' / run_id

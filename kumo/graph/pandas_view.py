@@ -18,6 +18,7 @@ class PandasView:
     given a :obj:`connector`, a :obj:`table_name`, a list of :obj:`cols`, and
     (optionally) a :obj:`pkey`.
     """
+
     def __init__(
         self,
         connector: Connector,
@@ -27,8 +28,10 @@ class PandasView:
         return_series: bool = False,
     ):
         if return_series and len(cols) != 1:
-            raise ValueError(f"'{self.__class__.__name__}' can only return a "
-                             f"'pandas.Series' for single columns")
+            raise ValueError(
+                f"'{self.__class__.__name__}' can only return a "
+                f"'pandas.Series' for single columns"
+            )
 
         self.connector = connector
         self.table_name = table_name
@@ -46,13 +49,16 @@ class PandasView:
         return self.connector.get_iterator(
             self.table_name,
             pkey=self.pkey.config() if self.pkey is not None else None,
-            cols=[col.base_config() for col in self.cols])
+            cols=[col.base_config() for col in self.cols],
+        )
 
     def __getitem__(self, idx: Any) -> Union[pd.DataFrame, pd.Series]:
         if isinstance(idx, slice) and idx.stop is not None:
             if idx.step is not None and idx.step != 1:
-                raise NotImplementedError(f"Slicing with 'step' parameter not "
-                                          f"yet supported (got '{idx.step}')")
+                raise NotImplementedError(
+                    f"Slicing with 'step' parameter not "
+                    f"yet supported (got '{idx.step}')"
+                )
 
             start = 0 if idx.start is None else idx.start
             df = self.connector.read_table(
@@ -83,24 +89,26 @@ class PandasView:
             if frac > DUPLICATED_THRESHOLD and not self.pkey.drop_duplicates:
                 raise ValueError(
                     f"The primary key column for table '{self.table_name}' "
-                    f"has more than {100 * DUPLICATED_THRESHOLD:.0f}% "
-                    f"duplicated values (got {100 * frac:.1f}%). Did you "
-                    f"accidentally set a wrong primary key? If this is indeed "
-                    f"intended, set "
+                    f'has more than {100 * DUPLICATED_THRESHOLD:.0f}% '
+                    f'duplicated values (got {100 * frac:.1f}%). Did you '
+                    f'accidentally set a wrong primary key? If this is indeed '
+                    f'intended, set '
                     f"`graph['{self.table_name}'].pkey.drop_duplicates` to "
-                    f"`True` to ignore this error.")
+                    f'`True` to ignore this error.'
+                )
 
             df = df[~mask]
 
             if not self.pkey.drop_duplicates:
                 warnings.warn(
                     f"The primary key column for table '{self.table_name}' "
-                    f"does not have unique values, please check if the "
-                    f"primary key column is set correctly. We have dropped "
-                    f"the rows with duplicated keys besides their first "
-                    f"occurrences. "
+                    f'does not have unique values, please check if the '
+                    f'primary key column is set correctly. We have dropped '
+                    f'the rows with duplicated keys besides their first '
+                    f'occurrences. '
                     f"Set `graph['{self.table_name}'].pkey.drop_duplicates` "
-                    f"to `True` to remove this warning.")
+                    f'to `True` to remove this warning.'
+                )
 
         return df
 

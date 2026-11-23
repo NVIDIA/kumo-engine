@@ -27,14 +27,19 @@ def _column_config_to_v2_column(config: BaseColumnConfig) -> Column:
     if config.timestamp_unit:
         ts_format = TimestampUnit(config.timestamp_unit)
     return Column(
-        name=config.name, stype=config.stype, dtype=config.dtype,
+        name=config.name,
+        stype=config.stype,
+        dtype=config.dtype,
         timestamp_format=ts_format,
-        multicategorical_delimiter=(config.multicategorical_delimiter))
+        multicategorical_delimiter=(config.multicategorical_delimiter),
+    )
 
 
 def _table_config_to_table_definition(
-        table: TableConfig, connector_id: ConnectorID,
-        connector_config: ConnectorResourceConfigDB) -> TableDefinition:
+    table: TableConfig,
+    connector_id: ConnectorID,
+    connector_config: ConnectorResourceConfigDB,
+) -> TableDefinition:
     r"""Build a v2 ``TableDefinition`` natively from a kumo SDK
     ``TableConfig`` and its connector create shape.
 
@@ -61,9 +66,10 @@ def _table_config_to_table_definition(
     )
     if table_def is None:
         raise ValueError(
-            f"Failed to retrieve table {table.table_name} - source table "
-            f"could not be found in connector "
-            f"{connector_id}")
+            f'Failed to retrieve table {table.table_name} - source table '
+            f'could not be found in connector '
+            f'{connector_id}'
+        )
     return table_def
 
 
@@ -96,8 +102,9 @@ def export_kumo_graph_to_fixture(
         assert table.table_name is not None
         assert table.data_source is not None
         connector_id, connector_config = connectors[table.data_source]
-        table_def = _table_config_to_table_definition(table, connector_id,
-                                                      connector_config)
+        table_def = _table_config_to_table_definition(
+            table, connector_id, connector_config
+        )
         tables_by_name[TableName(table.table_name)] = table_def
         if table.pkey is not None:
             pkey_by_name[TableName(table.table_name)] = table.pkey.name
@@ -120,13 +127,15 @@ def export_kumo_graph_to_fixture(
                 # name and compare against the pkey table's name.
                 assert fkey.dst_table
                 _, dst_table_name = fkey.dst_table.rsplit('.', 1)
-                if (dst_table_name == pkey_table_name
-                        and fkey.dst_key == pkey_col_name):
-                    relationships.append((
-                        ColumnKey(table_name=other_name, col_name=fkey.name),
-                        ColumnKey(table_name=pkey_table_name,
-                                  col_name=pkey_col_name),
-                    ))
+                if dst_table_name == pkey_table_name and fkey.dst_key == pkey_col_name:
+                    relationships.append(
+                        (
+                            ColumnKey(table_name=other_name, col_name=fkey.name),
+                            ColumnKey(
+                                table_name=pkey_table_name, col_name=pkey_col_name
+                            ),
+                        )
+                    )
     col_groups = [
         ColumnKeyGroup(columns=group.columns)
         for group in graph_api.group_column_relationships(relationships)

@@ -21,8 +21,8 @@ from kumoapi.typing import ColStatType, Stype
 @pytest.fixture
 def task_fixtures(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Load the fixture module without unrelated service package initialization."""
-    path = Path(__file__).parents[2] / "kumo/testing/fixtures/task.py"
-    spec = spec_from_file_location("service_task_fixture_metadata", path)
+    path = Path(__file__).parents[2] / 'kumo/testing/fixtures/task.py'
+    spec = spec_from_file_location('service_task_fixture_metadata', path)
     assert spec is not None and spec.loader is not None
     module = module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, module)
@@ -30,30 +30,30 @@ def task_fixtures(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
-@pytest.mark.parametrize("temporal", [False, True])
+@pytest.mark.parametrize('temporal', [False, True])
 def test_task_configuration_metadata(
     task_fixtures: ModuleType,
     temporal: bool,
 ) -> None:
     """Configuration fixtures preserve encoders, graph relations, and key reads."""
-    users = pa.table({"id": [20, 10, 30], "age": [20.0, 30.0, 40.0]}).to_pandas()
-    orders = pa.table({"id": [100, 101], "user_id": [20, 30]}).to_pandas()
-    train = pa.table({"id": [20, 10, 30], "TARGET": [True, False, True]})
+    users = pa.table({'id': [20, 10, 30], 'age': [20.0, 30.0, 40.0]}).to_pandas()
+    orders = pa.table({'id': [100, 101], 'user_id': [20, 30]}).to_pandas()
+    train = pa.table({'id': [20, 10, 30], 'TARGET': [True, False, True]})
     if temporal:
-        train = train.append_column("TIME", pa.array([1, 2, 3], pa.timestamp("s")))
+        train = train.append_column('TIME', pa.array([1, 2, 3], pa.timestamp('s')))
     schemas = {
-        "users": task_fixtures.TestTableSchema(
-            stypes={"age": Stype.numerical}, pkey_name="id"
+        'users': task_fixtures.TestTableSchema(
+            stypes={'age': Stype.numerical}, pkey_name='id'
         ),
-        "orders": task_fixtures.TestTableSchema(fkeys=[("user_id", "users")]),
+        'orders': task_fixtures.TestTableSchema(fkeys=[('user_id', 'users')]),
     }
     feature_store, graph_schema, encoders = task_fixtures.create_task_data(
-        df_dict={"users": users, "orders": orders},
+        df_dict={'users': users, 'orders': orders},
         schema_dict=schemas,
         encoders=EncodersConfig(
-            encoders={"users": {"age": Numerical(_stats={ColStatType.MEAN: 30.0})}},
+            encoders={'users': {'age': Numerical(_stats={ColStatType.MEAN: 30.0})}},
             target=TargetEncoderConfig(
-                "TARGET",
+                'TARGET',
                 Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 2], [False, 1]]}),
             ),
         ),
@@ -61,21 +61,21 @@ def test_task_configuration_metadata(
     )
 
     assert isinstance(graph_schema, DiskgraphSchema)
-    assert graph_schema.get_foreign_keys("orders") == [("user_id", "users")]
-    assert graph_schema.get_foreign_keys("users") == []
-    assert ("users", "rev_user_id", "orders") in graph_schema.edge_types
-    assert feature_store.table_names == ["users", "orders"]
-    assert feature_store.train_table_name == "TRAIN_TABLE"
-    assert feature_store.entity_table_names == ["users"]
-    assert feature_store.train_fkey_names == ["id"]
+    assert graph_schema.get_foreign_keys('orders') == [('user_id', 'users')]
+    assert graph_schema.get_foreign_keys('users') == []
+    assert ('users', 'rev_user_id', 'orders') in graph_schema.edge_types
+    assert feature_store.table_names == ['users', 'orders']
+    assert feature_store.train_table_name == 'TRAIN_TABLE'
+    assert feature_store.entity_table_names == ['users']
+    assert feature_store.train_fkey_names == ['id']
     assert feature_store.has_train_table_time_col is temporal
     assert encoders.target is not None
     assert feature_store.get_target_tensor_mapper() is not None
-    assert feature_store.get_tensor_mapper("users", "age") is not None
+    assert feature_store.get_tensor_mapper('users', 'age') is not None
     with feature_store.safe_batch_mode(batch_size=2):
         np.testing.assert_array_equal(
-            feature_store["users", "pkey", torch.tensor([2, 0])], [30, 20]
+            feature_store['users', 'pkey', torch.tensor([2, 0])], [30, 20]
         )
-    np.testing.assert_array_equal(feature_store["users", "pkey", :], [20, 10, 30])
-    with pytest.raises(KeyError, match="only reads primary keys"):
-        feature_store["users", "tf", torch.tensor([0])]
+    np.testing.assert_array_equal(feature_store['users', 'pkey', :], [20, 10, 30])
+    with pytest.raises(KeyError, match='only reads primary keys'):
+        feature_store['users', 'tf', torch.tensor([0])]

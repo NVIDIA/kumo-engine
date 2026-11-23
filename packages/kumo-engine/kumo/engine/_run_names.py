@@ -15,8 +15,9 @@ if TYPE_CHECKING:
 _KIND_WORDS = {'prediction': 'predict'}
 
 
-def model_label(registered: Optional[str], query: Optional[str],
-                task_type: Optional[str]) -> str:
+def model_label(
+    registered: Optional[str], query: Optional[str], task_type: Optional[str]
+) -> str:
     r"""The registered name's last part, else <entity>-<task type>."""
     if registered:
         return registered.rsplit('.', 1)[-1]
@@ -54,13 +55,11 @@ def is_dated_fit(name: str) -> bool:
 
 
 def registered_fit_name(model_name: str, version: str) -> str:
-    return run_name('fit', versioned(model_label(model_name, None, None),
-                                     version))
+    return run_name('fit', versioned(model_label(model_name, None, None), version))
 
 
 def trial_name(trial: int, attempt: int, fit: str) -> str:
-    return f'trial-{trial}-{fit}' + (f'-attempt-{attempt}' if attempt > 1
-                                     else '')
+    return f'trial-{trial}-{fit}' + (f'-attempt-{attempt}' if attempt > 1 else '')
 
 
 def record_name(record: 'RunRecord', named: Optional[str] = None) -> str:
@@ -69,12 +68,22 @@ def record_name(record: 'RunRecord', named: Optional[str] = None) -> str:
     kind = tags.get('kumo.kind')
     model = record.model_label or 'model'
     if kind == 'fit':
-        return run_name('fit', named) if named else fit_name(
-            model, record.started or datetime.now(timezone.utc))
+        return (
+            run_name('fit', named)
+            if named
+            else fit_name(model, record.started or datetime.now(timezone.utc))
+        )
     suffix = record.name_suffix or (
-        f"-{tags['kumo.as_of']}" if tags.get('kumo.as_of') else '')
-    word = (kind if kind != 'monitoring' else
-            'eval' if tags.get('kumo.monitor') == 'evaluate' else 'drift')
-    core = named or scored_model(model, tags.get('kumo.model_version'),
-                                 tags.get('kumo.bundle_id', ''))
+        f'-{tags["kumo.as_of"]}' if tags.get('kumo.as_of') else ''
+    )
+    word = (
+        kind
+        if kind != 'monitoring'
+        else 'eval'
+        if tags.get('kumo.monitor') == 'evaluate'
+        else 'drift'
+    )
+    core = named or scored_model(
+        model, tags.get('kumo.model_version'), tags.get('kumo.bundle_id', '')
+    )
     return run_name(word, core, suffix)

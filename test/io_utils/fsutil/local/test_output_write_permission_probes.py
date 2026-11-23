@@ -16,8 +16,7 @@ def test_s3_write_probe_is_unique_and_aborted():
     client.create_multipart_upload.return_value = {'UploadId': 'upload-id'}
 
     with patch.object(threadsafe_boto, 's3_client', return_value=client):
-        assert fsutil.has_write_permission(
-            's3://bucket/authorized/output/') is True
+        assert fsutil.has_write_permission('s3://bucket/authorized/output/') is True
 
     create_args = client.create_multipart_upload.call_args.kwargs
     assert create_args['Bucket'] == 'bucket'
@@ -33,9 +32,10 @@ def test_s3_write_probe_omits_acl_for_custom_endpoint():
     client = Mock()
     client.create_multipart_upload.return_value = {'UploadId': 'upload-id'}
 
-    with patch.object(threadsafe_boto, 's3_client', return_value=client), \
-            patch('io_utils.fsutil.impl_s3.bucket_owner_write_args',
-                  return_value={}):
+    with (
+        patch.object(threadsafe_boto, 's3_client', return_value=client),
+        patch('io_utils.fsutil.impl_s3.bucket_owner_write_args', return_value={}),
+    ):
         assert fsutil.has_write_permission('s3://bucket/output/') is True
 
     assert 'ACL' not in client.create_multipart_upload.call_args.kwargs
@@ -44,15 +44,18 @@ def test_s3_write_probe_omits_acl_for_custom_endpoint():
 def test_s3_write_probe_denial_and_cleanup_errors_are_sanitized(caplog):
     secret = 'provider-payload-with-access-key'
     denied = ClientError(
-        {'Error': {
-            'Code': 'AccessDenied',
-            'Message': secret,
-        }}, 'CreateMultipartUpload')
+        {
+            'Error': {
+                'Code': 'AccessDenied',
+                'Message': secret,
+            }
+        },
+        'CreateMultipartUpload',
+    )
     client = Mock()
     client.create_multipart_upload.side_effect = denied
     with patch.object(threadsafe_boto, 's3_client', return_value=client):
-        assert fsutil.has_write_permission(
-            's3://bucket/authorized/output/') is False
+        assert fsutil.has_write_permission('s3://bucket/authorized/output/') is False
     assert secret not in caplog.text
 
     caplog.clear()
@@ -60,8 +63,7 @@ def test_s3_write_probe_denial_and_cleanup_errors_are_sanitized(caplog):
     client.create_multipart_upload.return_value = {'UploadId': 'upload-id'}
     client.abort_multipart_upload.side_effect = RuntimeError(secret)
     with patch.object(threadsafe_boto, 's3_client', return_value=client):
-        assert fsutil.has_write_permission(
-            's3://bucket/authorized/output/') is False
+        assert fsutil.has_write_permission('s3://bucket/authorized/output/') is False
     assert secret not in caplog.text
 
 
@@ -71,11 +73,10 @@ def test_gcs_write_probe_targets_prefix_and_is_deleted():
     bucket.blob.return_value = blob
 
     with patch(
-            'io_utils.fsutil.impl_gcs._get_bucket',
-            return_value=bucket,
+        'io_utils.fsutil.impl_gcs._get_bucket',
+        return_value=bucket,
     ):
-        assert fsutil.has_write_permission(
-            'gs://bucket/authorized/output/') is True
+        assert fsutil.has_write_permission('gs://bucket/authorized/output/') is True
 
     probe_path = bucket.blob.call_args.args[0]
     assert probe_path.startswith('authorized/output/.kumo_write_probe_')
@@ -91,11 +92,10 @@ def test_gcs_write_probe_cleanup_error_is_sanitized(caplog):
     bucket.blob.return_value = blob
 
     with patch(
-            'io_utils.fsutil.impl_gcs._get_bucket',
-            return_value=bucket,
+        'io_utils.fsutil.impl_gcs._get_bucket',
+        return_value=bucket,
     ):
-        assert fsutil.has_write_permission(
-            'gs://bucket/authorized/output/') is False
+        assert fsutil.has_write_permission('gs://bucket/authorized/output/') is False
     assert secret not in caplog.text
 
 
@@ -107,11 +107,14 @@ def test_adls_write_probe_preserves_cloud_endpoint_and_is_deleted():
         captured.append(uri)
         return file_client
 
-    with patch.object(adls_ctx, 'get_file_client',
-                      side_effect=_get_file_client):
-        assert fsutil.has_write_permission(
-            'abfss://filesystem@account.dfs.core.usgovcloudapi.net/'
-            'authorized/output/') is True
+    with patch.object(adls_ctx, 'get_file_client', side_effect=_get_file_client):
+        assert (
+            fsutil.has_write_permission(
+                'abfss://filesystem@account.dfs.core.usgovcloudapi.net/'
+                'authorized/output/'
+            )
+            is True
+        )
 
     assert len(captured) == 1
     probe_uri = captured[0]
@@ -127,11 +130,14 @@ def test_adls_write_probe_cleanup_error_is_sanitized(caplog):
     file_client.delete_file.side_effect = RuntimeError(secret)
 
     with patch.object(
-            adls_ctx,
-            'get_file_client',
-            return_value=file_client,
+        adls_ctx,
+        'get_file_client',
+        return_value=file_client,
     ):
-        assert fsutil.has_write_permission(
-            'abfss://filesystem@account.dfs.core.windows.net/'
-            'authorized/output/') is False
+        assert (
+            fsutil.has_write_permission(
+                'abfss://filesystem@account.dfs.core.windows.net/authorized/output/'
+            )
+            is False
+        )
     assert secret not in caplog.text

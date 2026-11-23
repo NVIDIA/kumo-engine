@@ -4,7 +4,6 @@
 
 import os
 import os.path as osp
-from test.util.cache_seeding import seed_col_stats_cache
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -20,9 +19,10 @@ from kumo.graph.graph import Graph
 from kumo.graph.table import StypeInferralStats, Table
 from kumo.stats.compute_stats_python import compute_col_stats_python
 from statedb.utils.errors import UnsupportedInDiskgraphError
+from test.util.cache_seeding import seed_col_stats_cache
 
-TEST_TABLE_PARQUET_NAME = "TMP_TEST_TABLE"
-TEST_TABLE_PARQUET_FILE = TEST_TABLE_PARQUET_NAME + ".parquet"
+TEST_TABLE_PARQUET_NAME = 'TMP_TEST_TABLE'
+TEST_TABLE_PARQUET_FILE = TEST_TABLE_PARQUET_NAME + '.parquet'
 
 
 def get_cur_dir_path(file_name=TEST_TABLE_PARQUET_FILE):
@@ -40,15 +40,17 @@ def teardown_function():
 def test_table():
     table = Table(table_name='LOAN', data_source='csv', pkey='LOAN_ID')
     assert table.table_name == 'LOAN'
-    assert str(table) == ('Table(\n'
-                          '  name=csv.LOAN,\n'
-                          '  data_source=csv,\n'
-                          '  pkey=LOAN_ID,\n'
-                          '  fkeys=[],\n'
-                          '  cols=[],\n'
-                          '  time_col=???,\n'
-                          '  end_time_col=???,\n'
-                          ')')
+    assert str(table) == (
+        'Table(\n'
+        '  name=csv.LOAN,\n'
+        '  data_source=csv,\n'
+        '  pkey=LOAN_ID,\n'
+        '  fkeys=[],\n'
+        '  cols=[],\n'
+        '  time_col=???,\n'
+        '  end_time_col=???,\n'
+        ')'
+    )
 
     assert len(table) == 1
     assert table.num_fkeys == 0
@@ -85,15 +87,17 @@ def test_table():
     with pytest.raises(ValueError):
         table.set_end_time_col('END_TIME', dtype=Dtype.int)
 
-    assert str(table) == ('Table(\n'
-                          '  name=csv.LOAN,\n'
-                          '  data_source=csv,\n'
-                          '  pkey=LOAN_ID,\n'
-                          '  fkeys=[ACCOUNT_ID],\n'
-                          '  cols=[AMOUNT, STATUS],\n'
-                          '  time_col=TIME,\n'
-                          '  end_time_col=END_TIME,\n'
-                          ')')
+    assert str(table) == (
+        'Table(\n'
+        '  name=csv.LOAN,\n'
+        '  data_source=csv,\n'
+        '  pkey=LOAN_ID,\n'
+        '  fkeys=[ACCOUNT_ID],\n'
+        '  cols=[AMOUNT, STATUS],\n'
+        '  time_col=TIME,\n'
+        '  end_time_col=END_TIME,\n'
+        ')'
+    )
 
     assert len(table) == 4
     assert table.num_fkeys == 1
@@ -142,17 +146,15 @@ def test_infer_encoders_error_message_includes_inner_exception() -> None:
     table = Table(
         table_name='USERS',
         data_source='csv',
-        cols=[
-            Column(name='COUNTRY', dtype=Dtype.string, stype=Stype.categorical)
-        ],
+        cols=[Column(name='COUNTRY', dtype=Dtype.string, stype=Stype.categorical)],
     )
     encoder_stats = MagicMock(col_stats={'COUNTRY': {}})
     missing_stat = ValueError(
         'Column Stat ColStatType.CATEGORY_COUNTS is required for encoder '
-        'inferral but was not provided.')
+        'inferral but was not provided.'
+    )
 
-    with patch.object(EncoderGenerator, 'get_encoder',
-                      side_effect=missing_stat):
+    with patch.object(EncoderGenerator, 'get_encoder', side_effect=missing_stat):
         with pytest.raises(RuntimeError) as excinfo:
             table.infer_encoders(encoder_stats=encoder_stats)
 
@@ -162,16 +164,20 @@ def test_infer_encoders_error_message_includes_inner_exception() -> None:
 
 def test_table_set_end_time_col(tmp_path):
     frames = {
-        'COUPON_DETAIL': pd.DataFrame({
-            'COUPON_ID_HASH': ['coupon_1', 'coupon_2', 'coupon_3', 'coupon_4'],
-            'DISPFROM': pd.date_range('2024-01-01', periods=4),
-            'DISPEND': pd.date_range('2024-02-01', periods=4),
-            'ITEM_COUNT': [1, 2, 1, 2],
-        }),
-        'COUPON_LIST': pd.DataFrame({
-            'COUPON_ID_HASH': ['coupon_1', 'coupon_2', 'coupon_1', 'coupon_3'],
-            'DISCOUNT': [0.1, 0.2, 0.1, 0.3],
-        }),
+        'COUPON_DETAIL': pd.DataFrame(
+            {
+                'COUPON_ID_HASH': ['coupon_1', 'coupon_2', 'coupon_3', 'coupon_4'],
+                'DISPFROM': pd.date_range('2024-01-01', periods=4),
+                'DISPEND': pd.date_range('2024-02-01', periods=4),
+                'ITEM_COUNT': [1, 2, 1, 2],
+            }
+        ),
+        'COUPON_LIST': pd.DataFrame(
+            {
+                'COUPON_ID_HASH': ['coupon_1', 'coupon_2', 'coupon_1', 'coupon_3'],
+                'DISCOUNT': [0.1, 0.2, 0.1, 0.3],
+            }
+        ),
     }
     for name, frame in frames.items():
         frame.to_csv(tmp_path / f'{name}.csv', index=False)
@@ -190,8 +196,11 @@ def test_table_set_end_time_col(tmp_path):
         seed_col_stats_cache(
             pd.read_csv(tmp_path / f'{table.source_name}.csv'),
             table_name=table.source_name,
-            connector_name=connector.name, data_version=table.data_version,
-            primary_key=table.pkey_name, time_col=table.time_col_name)
+            connector_name=connector.name,
+            data_version=table.data_version,
+            primary_key=table.pkey_name,
+            time_col=table.time_col_name,
+        )
     graph.infer_encoders()
     assert graph['COUPON_DETAIL'].end_time_col.name == 'DISPEND'
     assert 'DISPEND' not in graph['COUPON_DETAIL'].cols
@@ -282,8 +291,9 @@ def _ts_table(tmp_path, df, cols):
     r"""Build a `Table` over a temp parquet so `infer_dtypes_from_stypes` can
     read a real sample through a `ParquetConnector`."""
     df.to_parquet(osp.join(str(tmp_path), 'T.parquet'))
-    table = Table(table_name='T', data_source='', source_name='T', cols=cols,
-                  data_version=None)
+    table = Table(
+        table_name='T', data_source='', source_name='T', cols=cols, data_version=None
+    )
     table.connector = ParquetConnector(name='test', root_dir=str(tmp_path))
     return table
 
@@ -291,10 +301,13 @@ def _ts_table(tmp_path, df, cols):
 def test_infer_dtypes_epoch_int_sets_timestamp_unit(tmp_path):
     # An epoch-int `timestamp` column resolves to a UNIT hint: the detector
     # writes `timestamp_unit` and leaves `metadata['TS_FORMAT']` absent.
-    df = pd.DataFrame({
-        'EPOCH_MS':
-        pd.Series([1659304801388, 1659304901388, 1659305001388], dtype='int64')
-    })
+    df = pd.DataFrame(
+        {
+            'EPOCH_MS': pd.Series(
+                [1659304801388, 1659304901388, 1659305001388], dtype='int64'
+            )
+        }
+    )
     col = Column('EPOCH_MS', dtype=Dtype.int64, stype=Stype.timestamp)
     table = _ts_table(tmp_path, df, [col])
     table.infer_dtypes_from_stypes()
@@ -308,8 +321,7 @@ def test_infer_dtypes_encoded_date_sets_ts_format(tmp_path):
     # An encoded-date (YYYYMMDD) `timestamp` column resolves to a FORMAT hint:
     # the detector writes `metadata['TS_FORMAT']` and leaves `timestamp_unit`
     # None (a unit here would corrupt the column as epoch seconds).
-    df = pd.DataFrame(
-        {'ED': pd.Series([20230408, 20240115, 20250301], dtype='int64')})
+    df = pd.DataFrame({'ED': pd.Series([20230408, 20240115, 20250301], dtype='int64')})
     col = Column('ED', dtype=Dtype.int64, stype=Stype.timestamp)
     table = _ts_table(tmp_path, df, [col])
     table.infer_dtypes_from_stypes()
@@ -322,12 +334,12 @@ def test_infer_dtypes_encoded_date_sets_ts_format(tmp_path):
 def test_infer_dtypes_already_hinted_columns_unchanged(tmp_path):
     # The gate leaves a column that already carries a unit OR a format hint
     # untouched; the detector never re-infers a hinted column.
-    df = pd.DataFrame({
-        'U':
-        pd.Series([1, 2, 3], dtype='int64'),
-        'F':
-        pd.Series([20230408, 20240115, 20250301], dtype='int64'),
-    })
+    df = pd.DataFrame(
+        {
+            'U': pd.Series([1, 2, 3], dtype='int64'),
+            'F': pd.Series([20230408, 20240115, 20250301], dtype='int64'),
+        }
+    )
     ucol = Column('U', dtype=Dtype.int64, stype=Stype.timestamp)
     ucol.timestamp_unit = 'ns'
     fcol = Column('F', dtype=Dtype.int64, stype=Stype.timestamp)
@@ -347,7 +359,7 @@ def test_table_unsupported_dtypes():
     root_dir = osp.dirname(osp.realpath(__file__))
     root_dir = osp.join(root_dir, '..', '..', 'parquet_data', 'TEST')
     connector = ParquetConnector('parquet', root_dir=root_dir)
-    metadata = connector.get_table_metadata(["TRANS4"])[0]
+    metadata = connector.get_table_metadata(['TRANS4'])[0]
     assert metadata.cols[0].dtype == Dtype.int64
     assert metadata.cols[1].dtype == Dtype.unsupported  # null type
     assert metadata.cols[2].dtype == Dtype.int64
@@ -398,15 +410,19 @@ def test_table_add_pkey_fkey_as_feature():
 
 def test_infer_stype_without_stats():
     table = Table(
-        table_name='LOAN', data_source='csv', pkey='LOAN_ID', cols=[
+        table_name='LOAN',
+        data_source='csv',
+        pkey='LOAN_ID',
+        cols=[
             Column('STRING_ID', dtype=Dtype.string),
             Column('STRING', dtype=Dtype.string),
             Column('INT_VALUE', dtype=Dtype.int64),
             Column('VECTOR', dtype=Dtype.floatlist),
             Column('VECTOR_INT', dtype=Dtype.intlist),
             Column('TIMESTAMP', dtype=Dtype.time),
-            Column('timestamp_int', dtype=Dtype.int)
-        ])
+            Column('timestamp_int', dtype=Dtype.int),
+        ],
+    )
 
     table.infer_stypes(require_stats=False)
 
@@ -426,13 +442,15 @@ def test_infer_stype_threshold():
 
     # Generate a test DataFrame
     file_path, root_dir = get_cur_dir_path(TEST_TABLE_PARQUET_FILE)
-    int_col_no_duplicates = "int_col_with_all_unique"
-    int_col_with_duplicates = "int_col_with_duplicates"
+    int_col_no_duplicates = 'int_col_with_all_unique'
+    int_col_with_duplicates = 'int_col_with_duplicates'
 
-    df = pd.DataFrame({
-        int_col_no_duplicates: [1, 2, 3, 4, 5],
-        int_col_with_duplicates: [1, 1, 2, 2, 3],
-    })
+    df = pd.DataFrame(
+        {
+            int_col_no_duplicates: [1, 2, 3, 4, 5],
+            int_col_with_duplicates: [1, 1, 2, 2, 3],
+        }
+    )
 
     table = pa.Table.from_pandas(df)
     # Write it to Parquet file
@@ -447,14 +465,15 @@ def test_infer_stype_threshold():
 
     graph.infer_metadata()
 
-    assert graph[TEST_TABLE_PARQUET_NAME,
-                 int_col_no_duplicates].dtype == Dtype.int64
-    assert graph[TEST_TABLE_PARQUET_NAME,
-                 int_col_no_duplicates].stype == Stype.numerical
-    assert graph[TEST_TABLE_PARQUET_NAME,
-                 int_col_with_duplicates].dtype == Dtype.int64
-    assert graph[TEST_TABLE_PARQUET_NAME,
-                 int_col_with_duplicates].stype == Stype.categorical
+    assert graph[TEST_TABLE_PARQUET_NAME, int_col_no_duplicates].dtype == Dtype.int64
+    assert (
+        graph[TEST_TABLE_PARQUET_NAME, int_col_no_duplicates].stype == Stype.numerical
+    )
+    assert graph[TEST_TABLE_PARQUET_NAME, int_col_with_duplicates].dtype == Dtype.int64
+    assert (
+        graph[TEST_TABLE_PARQUET_NAME, int_col_with_duplicates].stype
+        == Stype.categorical
+    )
 
 
 def test_infer_dtypes_from_stypes_timedelta_writes_unit_not_metadata():
@@ -473,10 +492,12 @@ def test_infer_dtypes_from_stypes_timedelta_writes_unit_not_metadata():
 
     # timedelta64[ns] is the only timedelta unit pandas/pyarrow round-trip
     # through parquet without dtype-narrowing surprises.
-    df = pd.DataFrame({
-        'ID': [1, 2, 3, 4, 5],
-        'DURATION': pd.to_timedelta([1, 2, 3, 4, 5], unit='s'),
-    })
+    df = pd.DataFrame(
+        {
+            'ID': [1, 2, 3, 4, 5],
+            'DURATION': pd.to_timedelta([1, 2, 3, 4, 5], unit='s'),
+        }
+    )
 
     table = pa.Table.from_pandas(df)
     pq.write_table(table, file_path)
@@ -497,24 +518,30 @@ def test_infer_dtypes_from_stypes_timedelta_writes_unit_not_metadata():
     # timestamp_unit is set on the typed field. pandas upgrades any
     # timedelta input to ns on parquet round-trip.
     assert col.timestamp_unit == 'ns', (
-        f"expected timestamp_unit='ns', got {col.timestamp_unit!r}")
+        f"expected timestamp_unit='ns', got {col.timestamp_unit!r}"
+    )
     # ...and metadata[TS_FORMAT] is NOT used as a smuggling channel.
     assert TS_FORMAT_METADATA not in col.metadata, (
-        f"expected no metadata[TS_FORMAT] write, got "
-        f"{col.metadata.get(TS_FORMAT_METADATA)!r}")
+        f'expected no metadata[TS_FORMAT] write, got '
+        f'{col.metadata.get(TS_FORMAT_METADATA)!r}'
+    )
 
 
 def test_id_columns_are_set_correctly():
     table = Table(
-        table_name='LOAN', data_source='csv', pkey='LOAN_ID',
-        cols=[Column('STRING_ID', dtype=Dtype.string)], fkeys=[
+        table_name='LOAN',
+        data_source='csv',
+        pkey='LOAN_ID',
+        cols=[Column('STRING_ID', dtype=Dtype.string)],
+        fkeys=[
             ForeignKey(
                 'ACCOUNT_ID',
-                dst_table="ACCOUNT",
-                dst_key="ACCOUNT_ID",
+                dst_table='ACCOUNT',
+                dst_key='ACCOUNT_ID',
                 dtype=Dtype.float,
             )
-        ])
+        ],
+    )
 
     table.compute_col_stats = MagicMock()
     table.infer_stypes()
@@ -533,32 +560,43 @@ def test_table_names():
     graph.connect(connector)
 
     graph.add(name='small_t1', pkey='c0', fkeys=[('count')])
-    graph.add(name='small_t2', pkey='count', fkeys=[('c0', 'c1')],
-              source_name='small_t2')
+    graph.add(
+        name='small_t2', pkey='count', fkeys=[('c0', 'c1')], source_name='small_t2'
+    )
     graph.infer_metadata()
 
     meta_table = connector.get_table_metadata(['small_t2'])[0]
 
     # from source config tests handling/validation of source names
-    Table.from_source_config(meta_config=meta_table, name="placeholder_name",
-                             data_source=meta_table.data_source,
-                             connector=connector)
+    Table.from_source_config(
+        meta_config=meta_table,
+        name='placeholder_name',
+        data_source=meta_table.data_source,
+        connector=connector,
+    )
 
     graph = Graph(name='test_graph')
     graph.connect(ParquetConnector('parquet', root_dir))
 
     t2_char_test_name = 'small-t1'
     graph.add(name='small_t1', pkey='c0', fkeys=[('count')])
-    graph.add(name='small_t2', pkey='count', fkeys=[('c0', 'c1')],
-              source_name=t2_char_test_name)
+    graph.add(
+        name='small_t2',
+        pkey='count',
+        fkeys=[('c0', 'c1')],
+        source_name=t2_char_test_name,
+    )
     graph.infer_metadata()
 
     meta_table = connector.get_table_metadata([t2_char_test_name])[0]
 
     # from source config tests handling/validation of source names
-    Table.from_source_config(meta_config=meta_table, name="placeholder_name",
-                             data_source=meta_table.data_source,
-                             connector=connector)
+    Table.from_source_config(
+        meta_config=meta_table,
+        name='placeholder_name',
+        data_source=meta_table.data_source,
+        connector=connector,
+    )
 
 
 def test_source_table_name_rejects_parent_traversal():
@@ -570,14 +608,17 @@ def test_source_table_name_rejects_parent_traversal():
     t2_char_test_name = '../small_t2'
     graph.add(name='small_t1', pkey='c0', fkeys=[('count')])
     with pytest.raises(ValueError, match='cannot contain.*parent path'):
-        graph.add(name='small_t2', pkey='count', fkeys=[('c0', 'c1')],
-                  source_name=t2_char_test_name)
+        graph.add(
+            name='small_t2',
+            pkey='count',
+            fkeys=[('c0', 'c1')],
+            source_name=t2_char_test_name,
+        )
 
 
 def test_table_accepts_rootless_cloud_source_name():
     source_name = 'gs://company-data/nested/events.parquet'
-    table = Table(table_name='events', data_source='cloud',
-                  source_name=source_name)
+    table = Table(table_name='events', data_source='cloud', source_name=source_name)
 
     assert table.source_name == source_name
 
@@ -601,13 +642,16 @@ def test_table_list_types():
     # an inference rule that no longer exists; ``ALLOW_ARRAY_TARGETS`` no
     # longer gates list-stype inference here (it now only affects the
     # BigQuery dtype map). Assert the current Kumo-owned decision.
-    list_types = [("int", Dtype.intlist), ("string", Dtype.stringlist)]
+    list_types = [('int', Dtype.intlist), ('string', Dtype.stringlist)]
     for type_, dtype in list_types:
-        table_name = f"movie_{type_}list"
+        table_name = f'movie_{type_}list'
         metadata = parquet_test_connector.get_table_metadata([table_name])[0]
-        table = Table.from_source_config(metadata, name=table_name,
-                                         data_source=metadata.data_source,
-                                         connector=parquet_test_connector)
+        table = Table.from_source_config(
+            metadata,
+            name=table_name,
+            data_source=metadata.data_source,
+            connector=parquet_test_connector,
+        )
         table.infer_stypes()
         table.infer_dtypes_from_stypes()
 
@@ -623,8 +667,7 @@ def test_table_list_types():
         ['["red", "blue"]', '["green"]', '["blue"]'],
     ],
 )
-def test_scalar_strings_without_supported_delimiter_infer_categorical(
-        raw_values):
+def test_scalar_strings_without_supported_delimiter_infer_categorical(raw_values):
     """Time and JSON-like scalar strings must not become list semantics."""
     values = pd.Series(raw_values, dtype='string')
     computed = compute_col_stats_python(
@@ -636,7 +679,9 @@ def test_scalar_strings_without_supported_delimiter_infer_categorical(
         data_source='bigquery',
         cols=[Column('Time', dtype=Dtype.string)],
     )
-    table.compute_col_stats = MagicMock(return_value={'Time': computed}, )
+    table.compute_col_stats = MagicMock(
+        return_value={'Time': computed},
+    )
 
     table.infer_stypes()
 
@@ -730,34 +775,37 @@ def _unwrap_compute_col_stats():
     closure = getattr(fn, '__closure__', None) or ()
     for cell in closure:
         candidate = cell.cell_contents
-        if (callable(candidate)
-                and getattr(candidate, '__name__', '') == 'compute_col_stats'
-                and candidate is not fn):
+        if (
+            callable(candidate)
+            and getattr(candidate, '__name__', '') == 'compute_col_stats'
+            and candidate is not fn
+        ):
             return candidate
     return fn
 
 
-def _build_pandas_table(source_name: str = "users") -> Table:
+def _build_pandas_table(source_name: str = 'users') -> Table:
     import pandas as pd
 
     from kumo.connector.pandas_connector import PandasConnector
 
-    df = pd.DataFrame({
-        "id":
-        list(range(100)),
-        "name": [f"user_{i % 7}" if i % 5 else None for i in range(100)],
-        "score": [float(i) / 3.0 if i % 4 else None for i in range(100)],
-    })
+    df = pd.DataFrame(
+        {
+            'id': list(range(100)),
+            'name': [f'user_{i % 7}' if i % 5 else None for i in range(100)],
+            'score': [float(i) / 3.0 if i % 4 else None for i in range(100)],
+        }
+    )
     # ``source_name`` keys the on-disk col-stats cache dir; tests that persist
     # to it pass a unique name so they don't share state across the session.
     connector = PandasConnector({source_name: df})
     table = Table(
         table_name=source_name,
-        data_source="pandas",
-        pkey=PrimaryKey("id", dtype=Dtype.int64),
+        data_source='pandas',
+        pkey=PrimaryKey('id', dtype=Dtype.int64),
         cols=[
-            Column("name", dtype=Dtype.string, stype=Stype.text),
-            Column("score", dtype=Dtype.float32, stype=Stype.numerical),
+            Column('name', dtype=Dtype.string, stype=Stype.text),
+            Column('score', dtype=Dtype.float32, stype=Stype.numerical),
         ],
         source_name=source_name,
     )
@@ -765,8 +813,7 @@ def _build_pandas_table(source_name: str = "users") -> Table:
     return table
 
 
-def test_compute_col_stats_approx_falls_back_to_connector_on_cache_miss(
-        monkeypatch):
+def test_compute_col_stats_approx_falls_back_to_connector_on_cache_miss(monkeypatch):
     from kumo_core.types import ColStatType
 
     monkeypatch.setattr(Table, 'compute_col_stats', _unwrap_compute_col_stats())
@@ -778,11 +825,11 @@ def test_compute_col_stats_approx_falls_back_to_connector_on_cache_miss(
     # Tier-2 connector fallback must have produced stats. The cache is
     # empty (no DG ingest in this test), so any non-empty result proves
     # the fallback fired.
-    assert "name" in stats
-    assert "score" in stats
-    assert ColStatType.NA_FRACTION in stats["name"]
-    assert ColStatType.NA_FRACTION in stats["score"]
-    assert stats["name"][ColStatType.NA_FRACTION].approx is True
+    assert 'name' in stats
+    assert 'score' in stats
+    assert ColStatType.NA_FRACTION in stats['name']
+    assert ColStatType.NA_FRACTION in stats['score']
+    assert stats['name'][ColStatType.NA_FRACTION].approx is True
 
 
 def test_compute_col_stats_approx_fallback_persists_and_reuses(monkeypatch):
@@ -794,26 +841,28 @@ def test_compute_col_stats_approx_fallback_persists_and_reuses(monkeypatch):
 
     monkeypatch.setattr(Table, 'compute_col_stats', _unwrap_compute_col_stats())
     # Unique source so the on-disk cache dir isn't shared with sibling tests.
-    table = _build_pandas_table(source_name="users_persist_reuse")
+    table = _build_pandas_table(source_name='users_persist_reuse')
 
-    sample_calls = {"n": 0}
+    sample_calls = {'n': 0}
     real_sample = table.connector.compute_col_stats
 
     def _counting_sample(*args, **kwargs):
-        sample_calls["n"] += 1
+        sample_calls['n'] += 1
         return real_sample(*args, **kwargs)
 
     monkeypatch.setattr(table.connector, 'compute_col_stats', _counting_sample)
 
-    first = table.compute_col_stats(col_stat_types=[ColStatType.NA_FRACTION],
-                                    approx=True)
-    assert first["name"][ColStatType.NA_FRACTION].approx is True
-    assert sample_calls["n"] == 1  # sampled the source once
+    first = table.compute_col_stats(
+        col_stat_types=[ColStatType.NA_FRACTION], approx=True
+    )
+    assert first['name'][ColStatType.NA_FRACTION].approx is True
+    assert sample_calls['n'] == 1  # sampled the source once
 
-    second = table.compute_col_stats(col_stat_types=[ColStatType.NA_FRACTION],
-                                     approx=True)
-    assert second["name"][ColStatType.NA_FRACTION].approx is True
-    assert sample_calls["n"] == 1  # served from cache, not re-sampled
+    second = table.compute_col_stats(
+        col_stat_types=[ColStatType.NA_FRACTION], approx=True
+    )
+    assert second['name'][ColStatType.NA_FRACTION].approx is True
+    assert sample_calls['n'] == 1  # served from cache, not re-sampled
 
 
 def test_compute_col_stats_exact_wins_over_persisted_sample(monkeypatch):
@@ -826,28 +875,30 @@ def test_compute_col_stats_exact_wins_over_persisted_sample(monkeypatch):
     from kumo.stats import Stats
 
     monkeypatch.setattr(Table, 'compute_col_stats', _unwrap_compute_col_stats())
-    table = _build_pandas_table(source_name="users_exact_wins")
+    table = _build_pandas_table(source_name='users_exact_wins')
     data_version = table.connector.get_data_version(table.source_name)
     fingerprint = table.fingerprint()
     name_cfg = table.cols[0].base_config()
 
     # Fallback persists an approx NA_FRACTION...
-    table.compute_col_stats(col_stat_types=[ColStatType.NA_FRACTION],
-                            approx=True)
+    table.compute_col_stats(col_stat_types=[ColStatType.NA_FRACTION], approx=True)
     # ...then an exact NA_FRACTION lands for the same key.
     cache = get_active_cache()
     cache.add_col_stats(
-        fingerprint, {
+        fingerprint,
+        {
             name_cfg: {
-                ColStatType.NA_FRACTION:
-                Stats(value=0.0, approx=False, data_version=data_version),
+                ColStatType.NA_FRACTION: Stats(
+                    value=0.0, approx=False, data_version=data_version
+                ),
             },
-        })
+        },
+    )
     cache.save_col_stats_cache(fingerprint, data_version)
 
-    got = cache.get_col_stats(fingerprint,
-                              {name_cfg: [ColStatType.NA_FRACTION]},
-                              data_version, approx=True)
+    got = cache.get_col_stats(
+        fingerprint, {name_cfg: [ColStatType.NA_FRACTION]}, data_version, approx=True
+    )
     assert got[name_cfg][ColStatType.NA_FRACTION].approx is False
     assert got[name_cfg][ColStatType.NA_FRACTION].value == 0.0
 
@@ -858,9 +909,8 @@ def test_compute_col_stats_exact_still_raises_without_cache(monkeypatch):
     monkeypatch.setattr(Table, 'compute_col_stats', _unwrap_compute_col_stats())
     table = _build_pandas_table()
     with pytest.raises(
-            UnsupportedInDiskgraphError,
-            match="Requested col stats missing from the DiskGraph-"
-            "populated cache",
+        UnsupportedInDiskgraphError,
+        match='Requested col stats missing from the DiskGraph-populated cache',
     ):
         table.compute_col_stats(
             col_stat_types=[ColStatType.NA_FRACTION],
@@ -874,27 +924,27 @@ def _build_pandas_table_with_time_col() -> Table:
     from kumo.connector.pandas_connector import PandasConnector
 
     # Date range chosen so MIN/MAX are unambiguous and stable across runs.
-    df = pd.DataFrame({
-        "id":
-        list(range(60)),
-        "ts":
-        pd.to_datetime([f"2024-01-{(i % 28) + 1:02d}" for i in range(60)]),
-        "score": [float(i) / 3.0 if i % 4 else None for i in range(60)],
-    })
-    connector = PandasConnector({"events": df})
+    df = pd.DataFrame(
+        {
+            'id': list(range(60)),
+            'ts': pd.to_datetime([f'2024-01-{(i % 28) + 1:02d}' for i in range(60)]),
+            'score': [float(i) / 3.0 if i % 4 else None for i in range(60)],
+        }
+    )
+    connector = PandasConnector({'events': df})
     table = Table(
-        table_name="events",
-        data_source="pandas",
-        pkey=PrimaryKey("id", dtype=Dtype.int64),
+        table_name='events',
+        data_source='pandas',
+        pkey=PrimaryKey('id', dtype=Dtype.int64),
         cols=[
-            Column("score", dtype=Dtype.float32, stype=Stype.numerical),
+            Column('score', dtype=Dtype.float32, stype=Stype.numerical),
         ],
-        source_name="events",
+        source_name='events',
     )
     table.connector = connector
     # Mirrors the production pquery setup: a TimeColumn with date dtype that
     # `_get_target_time_range` later queries for MIN/MAX.
-    table.set_time_col("ts", dtype=Dtype.date)
+    table.set_time_col('ts', dtype=Dtype.date)
     return table
 
 
@@ -923,7 +973,8 @@ def test_compute_col_stats_min_max_approx_no_cache(monkeypatch):
 
 
 def test_compute_col_stats_partial_cache_approx_falls_back_for_missing_stats(
-        monkeypatch):
+    monkeypatch,
+):
     # Legacy-cache scenario: DG ingest populated *some* col stats for this
     # table but not the full set the caller asks for. The tier-2 fallback
     # must fill in the missing entries from the connector without
@@ -948,14 +999,14 @@ def test_compute_col_stats_partial_cache_approx_falls_back_for_missing_stats(
     # would be silently dropped from `col_stats_dict` before lookup. The
     # cache lookup key embeds (col_cfg.stype, col_cfg.dtype), so mirror
     # the shape `compute_col_stats` builds from `col.base_config()`.
-    sentinel_by_col = {"name": 4242, "score": 9999}
+    sentinel_by_col = {'name': 4242, 'score': 9999}
     seed: dict[BaseColumnConfig, dict[ColStatType, Stats]] = {}
     for col in table.cols:
         cfg = col.base_config()
         seed[cfg] = {
-            ColStatType.COUNT:
-            Stats(value=sentinel_by_col[col.name], approx=False,
-                  data_version=data_version),
+            ColStatType.COUNT: Stats(
+                value=sentinel_by_col[col.name], approx=False, data_version=data_version
+            ),
         }
     cache = get_active_cache()
     assert cache is not None
@@ -968,7 +1019,7 @@ def test_compute_col_stats_partial_cache_approx_falls_back_for_missing_stats(
     )
 
     for col_name, sentinel in sentinel_by_col.items():
-        assert col_name in stats, f"missing {col_name} in {stats}"
+        assert col_name in stats, f'missing {col_name} in {stats}'
         by_stat = stats[col_name]
         # COUNT came from the seeded cache entry — sentinel preserved.
         assert ColStatType.COUNT in by_stat
@@ -979,7 +1030,8 @@ def test_compute_col_stats_partial_cache_approx_falls_back_for_missing_stats(
 
 
 def test_compute_col_stats_connector_failure_still_raises_with_remaining_missing(
-        monkeypatch):
+    monkeypatch,
+):
     # Tier-2 failure path: the connector raises mid-fallback. The cache-miss
     # error must still surface with an accurate Missing: list (the stat type
     # the caller requested), not a stale snapshot from before the failed
@@ -990,9 +1042,9 @@ def test_compute_col_stats_connector_failure_still_raises_with_remaining_missing
     table = _build_pandas_table()
 
     def _raise(*args, **kwargs):
-        raise RuntimeError("simulated tier-2 failure")
+        raise RuntimeError('simulated tier-2 failure')
 
-    monkeypatch.setattr(table.connector, "compute_col_stats", _raise)
+    monkeypatch.setattr(table.connector, 'compute_col_stats', _raise)
 
     with pytest.raises(UnsupportedInDiskgraphError) as excinfo:
         table.compute_col_stats(
@@ -1000,25 +1052,28 @@ def test_compute_col_stats_connector_failure_still_raises_with_remaining_missing
             approx=True,
         )
     msg = str(excinfo.value)
-    assert "Requested col stats missing from the DiskGraph-populated cache" \
-        in msg
-    assert "NA_FRACTION" in msg
+    assert 'Requested col stats missing from the DiskGraph-populated cache' in msg
+    assert 'NA_FRACTION' in msg
 
 
-@pytest.mark.parametrize('name,dtype,expected', [
-    ('user_id', Dtype.int64, Stype.ID),
-    ('USER_ID', Dtype.string, Stype.ID),
-    ('user_id', Dtype.float64, Stype.numerical),
-    ('grid', Dtype.int64, Stype.numerical),
-    ('user_id', Dtype.bool, Stype.categorical),
-])
-def test_hosted_identifier_name_inference_matches_shared_rule(
-        name, dtype, expected):
+@pytest.mark.parametrize(
+    'name,dtype,expected',
+    [
+        ('user_id', Dtype.int64, Stype.ID),
+        ('USER_ID', Dtype.string, Stype.ID),
+        ('user_id', Dtype.float64, Stype.numerical),
+        ('grid', Dtype.int64, Stype.numerical),
+        ('user_id', Dtype.bool, Stype.categorical),
+    ],
+)
+def test_hosted_identifier_name_inference_matches_shared_rule(name, dtype, expected):
     from kumo_core.stype_inference import contains_identifier
 
     from common_utils.string import contains_identifier as hosted_identifier
+
     assert hosted_identifier is contains_identifier
-    table = Table(table_name='events', data_source='csv',
-                  cols=[Column(name, dtype=dtype)])
+    table = Table(
+        table_name='events', data_source='csv', cols=[Column(name, dtype=dtype)]
+    )
     table.infer_stypes(require_stats=False)
     assert table[name].stype == expected
