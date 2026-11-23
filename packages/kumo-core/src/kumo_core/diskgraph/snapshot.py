@@ -144,8 +144,7 @@ class LocalSnapshotStore:
 
     def use_legacy(self, handle: DiskgraphSnapshotHandle) -> None:
         """Select a verified restore at the legacy location, preserving old bases."""
-        legacy = LocalSnapshotStore(DiskgraphLocalConfig(self.config.data_root))
-        legacy.verify(handle)
+        self._verify_path(self.staging_path(handle))
         reference = self._reference(handle)
         if reference.is_file():
             reference.unlink()
@@ -277,9 +276,12 @@ class LocalSnapshotStore:
         return next(iter(found)) if len(found) == 1 else None
 
     def verify(self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
+        return self._verify_path(self.path(handle))
+
+    @staticmethod
+    def _verify_path(path: str) -> DiskgraphIngestResult:
         from diskgraph import read_success_marker, verify_snapshot_integrity
 
-        path = self.path(handle)
         verify_snapshot_integrity(path)
         marker = read_success_marker(path)
         if marker is None:

@@ -302,6 +302,36 @@ def test_existing_managed_reference_for_a_reserved_version_remains_readable(stag
     assert store.resolve_version_prefix(handle.graph_key, old_version.graph_data_version) == published.index_path
 
 
+@pytest.mark.parametrize('complete', [False, True])
+def test_selecting_legacy_checks_the_restore_before_removing_its_reference(
+        staged, complete):
+    from diskgraph import DiskgraphCorruptionError
+
+    store, handle, result, source = staged
+    (source / '_MANIFEST.json').write_text(json.dumps({
+        'schema_version': 1,
+        'files': [{'rel_path': name, 'size_bytes': (source / name).stat().st_size}
+                  for name in ('index_metadata.json', 'col_stats.json',
+                               'ingest_stats.json')],
+    }))
+    published = Path(store.publish(handle, result).index_path)
+    retained = {p.name: p.read_bytes() for p in published.iterdir() if p.is_file()}
+    reference = store._reference(handle).read_bytes()
+    restored = _completed_legacy(store, handle)
+    if not complete:
+        (restored / '_SUCCESS').unlink()
+        with pytest.raises(DiskgraphCorruptionError):
+            store.use_legacy(handle)
+        assert store._reference(handle).read_bytes() == reference
+        assert store.verify(handle).index_path == str(published)
+    else:
+        store.use_legacy(handle)
+        assert not store._reference(handle).exists()
+        assert store.verify(handle).index_path == str(restored)
+    assert {p.name: p.read_bytes() for p in published.iterdir()
+            if p.is_file()} == retained
+
+
 def test_selecting_legacy_restore_preserves_suffix_named_directory(staged):
     store, original, _, _ = staged
     restored = DiskgraphSnapshotHandle('graph', 'restore')
