@@ -121,7 +121,11 @@ class NativeAnchors:
         try:
             for file in files:
                 for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
-                    snapshot.update(batch.serialize())
+                    # A record-batch message alone omits dictionary values.
+                    sink = pa.BufferOutputStream()
+                    with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
+                        writer.write_batch(batch)
+                    snapshot.update(sink.getvalue())
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     entity = self._source._tables[self._sample.entity.table]
                     dtype = entity.columns[entity.primary_key]
