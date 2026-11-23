@@ -28,10 +28,14 @@ def continue_on_error(func: Callable) -> Callable:
     fails.
     """
     @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def wrapper(self: 'Explainer', *args: Any, **kwargs: Any) -> Any:
         try:
-            return func(*args, **kwargs)
+            return func(self, *args, **kwargs)
         except Exception as e:
+            self.completed = False
+            # Preserve the first producer failure even when execution continues.
+            if self.failure is None:
+                self.failure = f'{func.__qualname__}: {type(e).__name__}: {e}'
             # Fail in tests, unless explicitly turned on or off:
             in_test = 'PYTEST_CURRENT_TEST' in os.environ
             raise_on_error = os.getenv('KUMO_EXPLAINER_RAISE_ON_ERROR')
@@ -68,6 +72,8 @@ class Explainer:
 
         self.task_type = task_type
         self.root_dir = root_dir
+        self.failure: str | None = None
+        self.completed = False
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}()'
@@ -79,6 +85,8 @@ class Explainer:
         stage: TrainingStage,
     ) -> None:
         r"""Callback before model starts ``TrainingStage``."""
+        self.failure = None
+        self.completed = False
 
     def explain_pre_step(
         self,

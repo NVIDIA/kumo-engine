@@ -19,6 +19,8 @@ them. Live Snowflake tests still need credentials and access to the service.
 In `test` and `dev_local` deployment modes, instance discovery uses the hostname
 without querying the EC2 metadata service.
 
+Temporal-backed tests start a local dev server from the Temporal CLI release in [`.temporal-cli-version`](../../.temporal-cli-version), downloading it on first use. Set `KUMO_TEMPORAL_CLI_PATH` to a local `temporal` binary to skip the download, or `TEMPORAL_SERVER=cloud` to use Temporal Cloud.
+
 Run from the repository root unless a component guide says otherwise.
 Python package test suites have different roots and fixtures; inspect the
 package's configuration before invoking pytest over multiple packages.

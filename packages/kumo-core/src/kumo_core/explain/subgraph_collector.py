@@ -35,6 +35,7 @@ from torch_geometric.utils.sparse import index2ptr
 
 from kumo_core.io import filesystem as fsutil
 from kumo_core.io.json import save_json
+from kumo_core.training.config import LinkPredModuleType
 from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper, MultiCategoricalTensorMapper
 from kumo_core.explain.base import Explainer, continue_on_error
 from kumo_core.features.time import to_datetime
@@ -96,6 +97,17 @@ class SubgraphCollector(Explainer):
     # Whether this explainer requires gradients to be computed:
     requires_grad: bool = True
 
+    @classmethod
+    def supports(cls, task_type: TaskType,
+                 module: LinkPredModuleType | None = None) -> bool:
+        """Check eligibility; an omitted module checks task eligibility only."""
+        return task_type in cls.supported_task_types and (
+            not task_type.is_link_pred or module is None or module in {
+                LinkPredModuleType.HYBRID,
+                LinkPredModuleType.ID,
+                LinkPredModuleType.SHALLOW_RHS,
+            })
+
     def __init__(
         self,
         task_type: TaskType,
@@ -132,6 +144,25 @@ class SubgraphCollector(Explainer):
 
     @continue_on_error
     def explain_post_step(
+        self,
+        batch: HeteroData,
+        module: torch.nn.Module,
+        datamodule: Any,
+        step_output: dict[str, Tensor],
+        stage: TrainingStage,
+        batch_idx: int,
+    ) -> None:
+        seed_table = batch.input_type
+        assert isinstance(seed_table, str)
+        batch_size = batch[seed_table].batch_size
+        try:
+            self._collect_batch(batch, module, datamodule, step_output, stage,
+                                batch_idx)
+        finally:
+            # Failed rows leave gaps; later graphs retain their selected row IDs.
+            self._idx += batch_size
+
+    def _collect_batch(
         self,
         batch: HeteroData,
         module: torch.nn.Module,
@@ -282,7 +313,6 @@ class SubgraphCollector(Explainer):
                     step_output, module)
             else:
                 raise ValueError(f"Found unsupported format '{format}'")
-        self._idx += len(seed_entities)
 
     @continue_on_error
     def explain_end(
@@ -299,6 +329,7 @@ class SubgraphCollector(Explainer):
                 osp.join(self.remote_sync_dir, stage.value),
                 overwrite=True,
             )
+        self.completed = self.failure is None
 
     # Formatting ##############################################################
 
@@ -752,18 +783,21 @@ class SubgraphCollector(Explainer):
                         src_stack.append((dst_table_name, dst_index))
 
             if self.task_type.is_link_pred:
-                # For each seed entity, find the RHS nodes that do not exist
-                # in the batch subgraph:
-                batch_mask = (batch[rhs_name].batch == seed_id)
-                n_id = batch[rhs_name].n_id[batch_mask]
                 assert pred is not None
-                rhs_mask = ~torch.isin(pred[seed_id], n_id)
-                rhs_n_ids = pred[seed_id][rhs_mask]
-                for rhs_n_id in rhs_n_ids:
-                    # Add RHS target node as a "new" node to the subgraph
-                    assert rhs_index_map is not None
-                    pkey = rhs_index_map.loc[int(rhs_n_id)][rhs_pkey_name]
-                    pkey = to_python_scalar(pkey)
+                assert rhs_name is not None and rhs_index_map is not None
+                # Sampled items can be hidden by the per-relation fact limit.
+                # Every recommendation needs a concrete node in the export.
+                visible_nodes = (subgraph_store.nodes[node_id] for node_id in
+                                 subgraph_store.get_table_node_ids(rhs_name))
+                visible_keys = {node.pkey for node in visible_nodes
+                                if isinstance(node, SubgraphNode)}
+                predicted_keys = rhs_index_map.loc[pred[seed_id].tolist(),
+                                                   rhs_pkey_name]
+                for key in predicted_keys:
+                    pkey = to_python_scalar(key)
+                    if pkey in visible_keys:
+                        continue
+                    visible_keys.add(pkey)
                     node = SubgraphNode(
                         id=self.residual_id,
                         pkey_name=rhs_pkey_name,
@@ -776,7 +810,6 @@ class SubgraphCollector(Explainer):
                     # as the pred may contain duplicated predictions
                     features = pred_df[mask].iloc[0].to_dict()
                     # TODO (zecheng): Add gradient scores for each RHS node.
-                    assert rhs_name is not None
                     cols = [
                         Feature(
                             table_name=rhs_name,

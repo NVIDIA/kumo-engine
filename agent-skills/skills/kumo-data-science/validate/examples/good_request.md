@@ -57,6 +57,7 @@ Agent replies — then stops:
 > - Window: 0 to 30 days after the prediction anchor
 > - Task type: temporal binary classification
 > - Output: notebook only, no predictions written
+> - Threshold: 0.5 [default]
 > - Embeddings: not requested
 >
 > Shall I generate the notebook?

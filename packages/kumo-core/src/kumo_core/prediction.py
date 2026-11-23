@@ -566,36 +566,24 @@ def _score_prediction_shard(
     An in-process caller passes the ``manifest`` and ``encoders`` it already
     loaded, so each is parsed and held once.
     """
-    from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.task_dataset import DiskgraphTaskManifest
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
-    from kumo_core.train.trainer import load_encoders
-    from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
 
     if manifest is None:
         manifest = DiskgraphTaskManifest.load(config.manifest_path)
-    task = ResolvedNumericalTask.from_manifest(
-        manifest,
-        name=config.run_id,
-        **(config.task_options or {}),
-    )
-    load_options = {'accelerator': config.accelerator}
-    device = config.devices[worker_id]
-    if device is not None:
-        load_options['devices'] = [device]
-    if config.binary_threshold is not None:
-        load_options['binary_threshold'] = config.binary_threshold
-    trainer = DiskgraphNestedTrainer.load(
-        task,
-        config.model_dir,
-        diskgraph_task_dataset_bundle_dir=config.bundle_dir,
-        encoders=(encoders if encoders is not None else load_encoders(
-            config.model_dir)),
-        infer_config_path=False,
-        diskgraph_runtime=LocalDiskgraphTrainingRuntime(),
+    trainer = DiskgraphNestedTrainer.load_prediction(
+        manifest=manifest,
+        model_dir=config.model_dir,
+        bundle_dir=config.bundle_dir,
+        run_id=config.run_id,
+        encoders=encoders,
+        task_options=config.task_options,
+        binary_threshold=config.binary_threshold,
         embedding_models=config.embedding_models,
-        **load_options,
+        accelerator=config.accelerator,
+        device=config.devices[worker_id],
     )
+    task = trainer.task
     if manifest.task_type == "forecasting":
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts

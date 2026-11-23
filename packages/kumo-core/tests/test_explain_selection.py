@@ -18,6 +18,25 @@ from kumoapi.train import TrainingStage
 from torch import Tensor
 
 
+@pytest.mark.parametrize('task_type', [TaskType.REGRESSION,
+                                       TaskType.STATIC_LINK_PREDICTION])
+def test_prediction_selection_preserves_stage_ids(task_type):
+    class Store:
+        entity_table_names = ['users']
+        time_col_dict = {}
+
+        def __getitem__(self, key):
+            return key[2] + 100
+
+    selected, mapping = select_mod.select_input_nodes(
+        task_type, Store(), torch.tensor([9, 7, 9]),
+        torch.tensor([102, 100, 101]), {'pred': torch.ones(3)},
+        TrainingStage.PRED)
+    assert selected.tolist() == [100, 101, 102]
+    assert mapping.mappings['first'] == ['2', '0', '1']
+    assert mapping.orig_mappings['first'] == [109, 107, 109]
+
+
 @pytest.mark.parametrize(
     'strategy',
     ClassificationSelectionStrategy.get_strategies(

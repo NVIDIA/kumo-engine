@@ -187,6 +187,10 @@ class _StubEncoders:
         return self.encoders[key]
 
 
+class _PredictionStub(SimpleNamespace):
+    predict_setup = DiskgraphNestedTrainer.predict_setup
+
+
 class _StubTrainer:
     """Minimal stand-in for the bits of ``Trainer`` state that
     ``DiskgraphNestedTrainer.init()`` reads.
@@ -2355,7 +2359,7 @@ def test_predict_honors_output_options_and_progress(tmp_path) -> None:
         **_worker_shutdown_stub(),
     )
     init_prediction_modes: list[bool] = []
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2429,7 +2433,7 @@ def test_predict_non_lp_embeddings_only_omits_predictions(tmp_path,
 
     init_calls = []
     model = SimpleNamespace(eval_top_k=None, loss=object())
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=task_type),
         datamodule=SimpleNamespace(
             _seed_node_type='customers',
@@ -2509,7 +2513,7 @@ def test_predict_non_lp_embeddings_only_chunks_without_prediction_artifact(
                 if hasattr(callback, 'on_predict_end'):
                     callback.on_predict_end(self, kwargs['model'])
 
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.REGRESSION),
         datamodule=SimpleNamespace(
             _seed_node_type='customers',
@@ -2548,7 +2552,7 @@ def test_predict_non_lp_embeddings_only_chunks_without_prediction_artifact(
 
 
 def test_predict_rejects_no_outputs_before_init(tmp_path) -> None:
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.REGRESSION),
         init=lambda **_: pytest.fail('no-output request must fail before init'),
     )
@@ -2601,7 +2605,7 @@ def test_forecasting_predict_writes_horizon_and_requested_metadata(
         }],
     )
 
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.FORECASTING),
         datamodule=SimpleNamespace(
             _seed_node_type='customers',
@@ -2738,7 +2742,7 @@ def test_predict_chunks_predictions_and_embeddings_without_returning_predictions
         defer_dataloader_worker_shutdown=defer_shutdown,
         shutdown_dataloader_workers=shutdown_workers,
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2826,7 +2830,7 @@ def test_predict_streams_multiple_batches_into_single_partition(
                                     object()],
         **_worker_shutdown_stub(),
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2890,7 +2894,7 @@ def test_predict_multilabel_ranking_matches_legacy_long_format(
         predict_dataloader=lambda: [object()],
         **_worker_shutdown_stub(),
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.MULTILABEL_RANKING),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2949,7 +2953,7 @@ def _lp_stub(pl_model: Any, *, rhs_pkeys: list[Any]) -> Any:
         ),
         **_worker_shutdown_stub(),
     )
-    return SimpleNamespace(
+    return _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.TEMPORAL_LINK_PREDICTION),
         datamodule=datamodule,
         pl_model=pl_model,
@@ -3798,7 +3802,7 @@ def test_predict_bc_timestamp_is_ns_not_overflowed(tmp_path) -> None:
         predict_dataloader=lambda: [object()],
         **_worker_shutdown_stub(),
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),

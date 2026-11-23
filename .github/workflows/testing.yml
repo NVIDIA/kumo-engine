@@ -209,6 +209,10 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
           install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
 
+      - name: Set up Temporal CLI
+        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        uses: ./.github/actions/temporal-cli
+
       - name: Log in to Azure with GitHub OIDC
         if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
