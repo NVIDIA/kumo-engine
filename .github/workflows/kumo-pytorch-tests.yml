@@ -16,6 +16,8 @@ on:  # yamllint disable-line rule:truthy
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-tests.yml'
+      - '.github/workflows/kumo-pytorch-t2b.yml'
+      - '.github/workflows/_kumo-pytorch-t2b.yml'
   push:
     branches: [main]
     paths:
@@ -36,6 +38,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/experimental/kumo-pytorch
+
 jobs:
   diskgraph-wheel:
     uses: ./.github/workflows/_diskgraph-wheel.yml
@@ -45,14 +52,51 @@ jobs:
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    defaults:
-      run:
-        shell: bash
-        working-directory: packages/experimental/kumo-pytorch
+    permissions: {contents: read, id-token: write}
+    environment:
+      name: >-
+        ${{ github.repository == 'NVIDIA/kumo-engine' &&
+          ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) &&
+          'gha-kumo-workflow-tests' || 'kumo-pytorch-public' }}
+      deployment: false
+    env:
+      STAGE_PINNED_DATASETS: >-
+        ${{ github.repository == 'NVIDIA/kumo-engine' &&
+          ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
+      - id: aws
+        if: env.STAGE_PINNED_DATASETS == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          # Intersect the role's existing grants with read-only dataset and anchor access.
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",
+            "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*",
+            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/extracts/kumo-pytorch/streaming-25b/c160/a585a4d806d51fdcd03ecae37b395a572765e7f9e5edf5c691ea7bd525fb4495/viewers.parquet",
+            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/extracts/kumo-pytorch/streaming-25b/c160/0c5c424f33b3641b17f5584d678475d14373e83b0f85d80d78e40639010c3549/sessions.parquet"]}]}
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Stage pinned datasets
+        if: env.STAGE_PINNED_DATASETS == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+        run: |
+          root="$RUNNER_TEMP/kumo-pytorch-data"
+          python3 -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$root"
+          echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
+          # Bash also reads this before running package code inside the shared setup action.
+          echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
+          echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
@@ -66,3 +110,8 @@ jobs:
           uvx ruff@0.17.3 format --check .
       - name: Package build
         run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+
+  hm-lifecycle:
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
+    needs: diskgraph-wheel
+    uses: ./.github/workflows/_kumo-pytorch-t2b.yml

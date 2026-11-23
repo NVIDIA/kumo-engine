@@ -21,6 +21,42 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 | `flows/common.py` | What both flows share: the schema, the anchors, the caller's row lookup, the training loop |
 | `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
 
+## Pinned nightly datasets
+
+The CPU suite on same-repository pull requests and scheduled runs on `main` stages every `e2e/datasets/pins/*.json` manifest on the runner before pytest. Fork pull requests run the same pytest command with private staging disabled.
+For a new dataset, add a manifest with its S3 keys, sizes and SHA-256 hashes. The nightly role needs read access to those keys.
+To fill the local cache, run these commands from the package root with the AWS CLI and read access. A complete cache works offline.
+
+```bash
+export KUMO_PYTORCH_DATA_ROOT=/tmp/kumo-pytorch-data
+python -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$KUMO_PYTORCH_DATA_ROOT"
+python -m pytest -q tests/e2e/test_{aml,synthetic,mbd,streaming}.py
+```
+
+Benchmarks pass the files from `e2e.datasets.staging.verify(root, manifest)` to
+`prepare_hi_small` (E01–E05, selected by `binding`) or `prepare_l01` (LI Medium) in `e2e.datasets.aml`. Both take
+`(files, fresh_directory, anchor_rows=rows)` and return the contract, dataset and anchors.
+For HI Small, fit on `train` with `encoder_cutoff` one second before the latest training prediction time.
+For Synthetic Medium, `load_synthetic(root, entity_type)` and `prepare_synthetic(tables, fresh_directory, entity_type)`
+in `e2e.datasets.synthetic` accept `"customer"` (S02, four weekly anchors), `"account"` (S01, three),
+or `"ltv"` (S04, four LTV anchors). S04 adds one transfer shard and the v2 LTV anchor pair.
+Its graph runs one second before prediction. All three share the original source shards. The loader checks
+their event IDs against a full scan of all 1,610 published shards before applying a time cutoff.
+To repeat the scan, pass `read_synthetic(files, entity_type)` the verified files with all shards keyed by
+`<table>/<filename>`. Fit with `fit_split="train"` and `encoder_cutoff` one second before the latest training anchor.
+
+For MBD, use `load_mbd(root, manifest)` and `prepare_mbd(tables, fresh_directory)`
+from `e2e.datasets.mbd`. Use `M04_MANIFEST` for 30-day counts or `M03_MANIFEST` for category forecasts.
+Both use transaction parts 00171 (fold 0), 00014 (fold 3), and 00196 (fold 4). M04 stages nine objects
+totaling 1,029,139,562 bytes. M03 adds only the v1 anchor pair (963,739,896 bytes) to the shared nightly cache.
+To verify the extract against all clients and transactions, add the original shards to the file mapping
+using their paths from `extraction.json` and call `read_mbd(files, manifest)` again.
+
+Streaming 25B stages two private Parquet files (3,965 bytes). `load_streaming(root)` reads viewers 3 and 873
+and 36 sessions for the three forecast weeks. [`streaming-25b.json`](datasets/pins/streaming-25b.json)
+records the original shard keys, sizes and hashes. The full-cohort digest covers 10,000 rows sorted by viewer ID,
+each encoded as four little-endian int64 values (viewer ID, training count, validation count, test count).
+
 ## The H&M-shaped dataset
 
 ```bash

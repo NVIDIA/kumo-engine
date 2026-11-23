@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "anchor_rows": [
+    3899798,
+    9371016,
+    26822
+  ],
+  "client_ids_sha256": "43d50788e4715952956e89f5661adddba5c3380b98d3761b5cfaecc36f4e3ceb",
+  "event_ids_sha256": "f355257767843bd104b0b9686be1c8ef06fa18df76153ca8e35bec5867cf37e7",
+  "objects": {
+    "source_manifest": {
+      "key": "datasets/mbd/v1/extraction.json",
+      "size": 9704644,
+      "sha256": "db51ea0bf5bcae9252b87b684720dd7d74520acc34a4f042788abae1e0eb4bb5"
+    },
+    "anchor_manifest": {
+      "key": "anchors/mbd/v1/transaction-forecast/v2/manifest.json",
+      "size": 21613,
+      "sha256": "a6e69be8cb0ce4e4f96118c9503c12deac3d4ff4c8c2a6e7b8b84283ee147d32"
+    },
+    "anchors": {
+      "key": "anchors/mbd/v1/transaction-forecast/v2/anchors.parquet",
+      "size": 980925125,
+      "sha256": "31c1e09067d71acbf29c1842929ecd47140b81a430a85e463148977ae83a6cf1"
+    },
+    "detail/trx/fold=0/part-00171-a076eea3-ec6a-42d4-a896-ba629425d4f7.c000.snappy.parquet": {
+      "key": "datasets/mbd/v1/detail/trx/fold=0/part-00171-a076eea3-ec6a-42d4-a896-ba629425d4f7.c000.snappy.parquet",
+      "size": 4845362,
+      "sha256": "b070667ec1336ffc01a5b81adbd4ad5132967e57679f754710d8f30b99b696fd"
+    },
+    "detail/trx/fold=3/part-00014-a076eea3-ec6a-42d4-a896-ba629425d4f7.c000.snappy.parquet": {
+      "key": "datasets/mbd/v1/detail/trx/fold=3/part-00014-a076eea3-ec6a-42d4-a896-ba629425d4f7.c000.snappy.parquet",
+      "size": 4897455,
+      "sha256": "4dde9a2d4fc2b7625225ceeeea7fb98616764e95d685923b0031ffd3c31575d3"
+    },
+    "detail/trx/fold=4/part-00196-a076eea3-ec6a-42d4-a896-ba629425d4f7.c000.snappy.parquet": {
+      "key": "datasets/mbd/v1/detail/trx/fold=4/part-00196-a076eea3-ec6a-42d4-a896-ba629425d4f7.c000.snappy.parquet",
+      "size": 5129604,
+      "sha256": "5db8a9583e5ccae336a48f8d0174d6813455ebfa68028c945423ef2d030c0c4c"
+    },
+    "client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet": {
+      "key": "datasets/mbd/v1/client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+      "size": 7858072,
+      "sha256": "1fd1da2904eb1fe33ec724fe0c4594952b117d465ad5cbccb818fadfeefc0355"
+    },
+    "client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet": {
+      "key": "datasets/mbd/v1/client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+      "size": 7876130,
+      "sha256": "98e6e4092a431fce9908969af80439f984b8e15c2efe61854a30305e71cdfc18"
+    },
+    "client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet": {
+      "key": "datasets/mbd/v1/client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+      "size": 7881557,
+      "sha256": "97b329350ae40e3870b089398a8ff4e3a9177f4001f1b79baf78ee0d87de474c"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "event_ids_sha256": "2924c66eef053bdd71a709c099ec9293e2677457586355a8da9d050593f7a82b",
+  "objects": {
+    "source_manifest": {
+      "key": "datasets/pragma-synthetic/medium/v1/manifest.json",
+      "size": 483775,
+      "sha256": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34"
+    },
+    "accounts/part-00000.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/accounts/part-00000.parquet",
+      "size": 9689318,
+      "sha256": "d3147044975713b72c142872e42f7aef8337233b0d113cd51f223f8e7bf31ebf"
+    },
+    "card_txns/part-00199-b.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/card_txns/part-00199-b.parquet",
+      "size": 800420,
+      "sha256": "3864b700e9733385638cd7450c9f23f1411ff3a2f5a932b49d32dea35674288d"
+    },
+    "card_txns/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/card_txns/part-00199.parquet",
+      "size": 56438210,
+      "sha256": "0db6bd9c96132f505e7861e6e455216ea5c7d9b03c4a497539e4b8cc19879839"
+    },
+    "customers/part-00000.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/customers/part-00000.parquet",
+      "size": 7156974,
+      "sha256": "a3093c33257a67f6e967a3bb0baec840bf48b9404cf11e93347f2716a5372940"
+    },
+    "disputes/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/disputes/part-00199.parquet",
+      "size": 16726,
+      "sha256": "b75725ca9b61a20cb0b931c1d520ea1124e800064c6e83f14497ad567fca82d1"
+    },
+    "lifelong_events/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/lifelong_events/part-00199.parquet",
+      "size": 103292,
+      "sha256": "9ac1531296f08e869bbb16d0f595a089c6bfc75533c7e93d14ecfaa4ed439b17"
+    },
+    "logins/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/logins/part-00199.parquet",
+      "size": 9639974,
+      "sha256": "88f4c0c7b3d91524f093efd284822ba992e92731337754e9af43b8edbead3975"
+    },
+    "plan_events/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/plan_events/part-00199.parquet",
+      "size": 62414,
+      "sha256": "3137e8e27f6f573eb9fbb0d9734fbf56783e45c03daafbecb8e5110b3097d747"
+    },
+    "profile_changes/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/profile_changes/part-00199.parquet",
+      "size": 298825,
+      "sha256": "a2e940d87356692ec1cdd9d9b9cb594112f5fe1154077bd903d664621e663302"
+    },
+    "transfers/part-00014.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/transfers/part-00014.parquet",
+      "size": 20224260,
+      "sha256": "4248709e35fd314a916ef405bc6721e4f859d362ecec38bbf8c62e117abd8546"
+    },
+    "transfers/part-00199.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/transfers/part-00199.parquet",
+      "size": 20300874,
+      "sha256": "dd9c7a66166358ecea1ed30e1843703c9082dcf6a6f6d161c10738729f3826ec"
+    }
+  }
+}
