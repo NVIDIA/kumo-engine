@@ -522,14 +522,6 @@ def test_an_incompatible_index_is_refused_and_never_overwritten(
         assert fake.calls == [] and _snapshot(index) == before
 
 
-def test_a_missing_index_is_not_built_when_ingest_is_never(tmp_path: Path) -> None:
-    dataset = _write(SCHEMA, ROWS, tmp_path)
-    fake = FakeDiskGraph()
-    with recording(fake), pytest.raises(FileNotFoundError, match="does not exist"):
-        ensure_diskgraph_index(SCHEMA, dataset, tmp_path / "indexes" / "index", if_missing=False)
-    assert fake.calls == [] and not (tmp_path / "indexes" / "index").exists()
-
-
 def _always_rebuilt(schema: DataSchema, dataset: Dataset, index: Path, **keywords: int | bool):
     if Path(index).exists():
         shutil.rmtree(index)

@@ -73,7 +73,6 @@ def ensure_diskgraph_index(
     num_shards: int = 1,
     num_threads: int | None = None,
     dataset_name: str = "default",
-    if_missing: bool = True,
     column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
     index_build_id: str | None = None,
 ) -> _DiskGraphIndex:
@@ -82,7 +81,7 @@ def ensure_diskgraph_index(
     Accepts local Parquet with physical column names matching the logical
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
-    overwritten. ``if_missing=False`` requires the index to exist already.
+    overwritten.
     An ingest also computes ``column_stats``: requests at cutoffs in epoch nanoseconds.
     """
 
@@ -109,8 +108,6 @@ def ensure_diskgraph_index(
         artifact.validate_binding(schema, dataset)
         _warn_dropped_rows(output)
         return artifact
-    if not if_missing:
-        raise FileNotFoundError(f"DiskGraph index does not exist: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     diskgraph = _import_diskgraph()
