@@ -28,6 +28,13 @@ on:  # yamllint disable-line rule:truthy
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-tests.yml'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Package suite or Streaming 25B campaign on main or a trusted PR branch
+        type: choice
+        required: true
+        default: package
+        options: [package, all, smoke, training, lifecycle, full]
   schedule:
     - cron: '17 10 * * *'
 
@@ -35,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -49,6 +56,7 @@ jobs:
 
   cpu:
     name: kumo-pytorch-tests
+    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'package'
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -66,7 +74,8 @@ jobs:
           ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - &checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
       - id: aws
@@ -97,7 +106,8 @@ jobs:
           # Bash also reads this before running package code inside the shared setup action.
           echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
           echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/kumo-pytorch-setup
+      - &package_setup
+        uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
       - name: Golden cases on the in-memory engine
@@ -115,3 +125,49 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'pull_request'
     needs: diskgraph-wheel
     uses: ./.github/workflows/_kumo-pytorch-t2b.yml
+
+  streaming-25b:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode != 'package' &&
+      github.repository == 'NVIDIA/kumo-engine' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pull-request/'))
+    needs: diskgraph-wheel
+    runs-on: ${{ vars.KUMO_PYTORCH_25B_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    timeout-minutes: 720
+    steps:
+      - *checkout
+      - name: Check scratch for the full index
+        env:
+          SCRATCH: ${{ vars.KUMO_PYTORCH_25B_SCRATCH || runner.temp }}
+        run: |
+          [[ "$SCRATCH" == /* && -d "$SCRATCH" && -w "$SCRATCH" ]] || {
+            echo "::error::Set KUMO_PYTORCH_25B_SCRATCH to a writable scratch directory"; exit 1;
+          }
+          available=$(df -B1 --output=avail "$SCRATCH" | tail -1)
+          (( available >= 3 * 1024**4 )) || { echo "::error::25B needs 3 TiB of free scratch"; exit 1; }
+          mkdir -p "$SCRATCH/kumo-pytorch-25b/tmp"
+          echo "TMPDIR=$SCRATCH/kumo-pytorch-25b/tmp" >> "$GITHUB_ENV"
+          echo "KUMO_PYTORCH_25B_ROOT=$SCRATCH/kumo-pytorch-25b/cache" >> "$GITHUB_ENV"
+      - *package_setup
+      - name: Run the full-source campaign
+        id: campaign
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          suite=tests/e2e/test_streaming.py
+          smoke="$suite::test_streaming_weekly_session_forecast[25b-full]"
+          campaign="$suite::test_streaming_campaign"
+          case "$MODE" in
+            all) nodes=("$smoke" "$campaign") ;;
+            smoke) nodes=("$smoke") ;;
+            *) nodes=("$campaign[$MODE]") ;;
+          esac
+          python -m pytest -q --durations=0 -o tmp_path_retention_policy=none \
+            --junitxml="$RUNNER_TEMP/streaming-25b.xml" "${nodes[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        if: always() && steps.campaign.outcome != 'skipped'
+        with:
+          name: streaming-25b-${{ inputs.mode }}
+          path: ${{ runner.temp }}/streaming-25b.xml
+          if-no-files-found: error
