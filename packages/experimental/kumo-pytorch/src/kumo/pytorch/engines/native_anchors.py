@@ -499,6 +499,7 @@ class NativeAnchors:
             EventSource,
             Flatten,
             Nested,
+            NextTokenTarget,
             Packed,
             Tokens,
         )
@@ -728,6 +729,22 @@ class NativeAnchors:
             )
         row = spec.representation.row
         flatten = spec.representation.history
+        flatten_lengths = None
+        if isinstance(flatten, Flatten):
+            flatten_lengths = dict(
+                maximum=flatten.max_tokens,
+                keep_last=flatten.keep == "last",
+                event_boundary=flatten.prefer_event_boundary,
+                separator=flatten.separator is not None,
+                between=flatten.separator_placement == "between",
+                before=flatten.before is not None,
+                after=flatten.after is not None,
+            )
+            if any(
+                isinstance(target, NextTokenTarget) and target.input == policy.length_input
+                for target in assembler._emitted.targets.values()
+            ):
+                flatten_lengths["next_token"] = True
         contract = json.dumps(
             dict(
                 query=json.dumps(query),
@@ -736,17 +753,7 @@ class NativeAnchors:
                 fixed=fixed,
                 history_only=isinstance(row, (Columns, Composite)),
                 row_maximum=row.max_tokens if isinstance(row, Tokens) else None,
-                flatten=dict(
-                    maximum=flatten.max_tokens,
-                    keep_last=flatten.keep == "last",
-                    event_boundary=flatten.prefer_event_boundary,
-                    separator=flatten.separator is not None,
-                    between=flatten.separator_placement == "between",
-                    before=flatten.before is not None,
-                    after=flatten.after is not None,
-                )
-                if isinstance(flatten, Flatten)
-                else None,
+                flatten=flatten_lengths,
                 max_samples=maximum,
                 max_tokens=policy.max_tokens,
                 packed=isinstance(spec.layout, Packed)

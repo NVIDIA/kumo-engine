@@ -463,6 +463,8 @@ struct FlattenLengths {
     between: bool,
     before: bool,
     after: bool,
+    #[serde(default)]
+    next_token: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -691,6 +693,7 @@ impl LengthPlanning {
                         flatten.after,
                     )
                     .map_err(length_error)?
+                    .saturating_sub(usize::from(flatten.next_token))
                 } else {
                     events
                         .iter()

@@ -944,6 +944,53 @@ def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
     return api.AnchorTable(api.Parquet(str(path)), "entity", "at")
 
 
+@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()], ids=["packed", "padded"])
+def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, layout):
+    from tests.test_target_layouts import _text
+
+    schema, dataset, _, _, _ = history_data
+    orders = pq.read_table(dataset.tables["orders"].path).slice(0, 1)
+    path = tmp_path / "words.parquet"
+    orders = orders.set_column(orders.schema.get_field_index("kind"), "kind", pa.array(["abab"]))
+    pq.write_table(orders, path)
+    dataset = api.Dataset({**dataset.tables, "orders": api.Parquet(str(path))})
+    rows = api.Rows(("orders",), api.TimeWindow("at"))
+    sample = api.SampleSpec(
+        api.EntitySpec("users"), events={"orders": api.EventSpec(rows, {"text": api.Field("kind")})}
+    )
+    history = api.Input(
+        api.EventSource(("orders",)),
+        api.Fields(
+            (api.Encode("text", _text(), "tokens"),),
+            row=api.Tokens(),
+            history=api.Flatten(6, before="bos", after="eos"),
+        ),
+        layout,
+    )
+    roles = ("pad", "unknown", "missing", "mask", "bos", "eos")
+    batch = api.BatchSpec(
+        {"history": history},
+        targets={"answer": api.NextTokenTarget("history")},
+        id_spaces={"tokens": api.IdSpace({role: role for role in roles})},
+        batching=api.Batching(max_samples=1, max_tokens=5, length_input="history"),
+    )
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    anchors = _review_anchors(tmp_path, entities=(1,))
+    with api.prepare(api.DataLoaderSpec(schema, sample, batch), dataset, engine) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            (result,) = task.batches(output_format="model")
+            assert task._anchors._last_length_planning_stats == (1, 0)
+            inputs, labels = result.inputs["history"], result.targets["answer"]
+            # The six source tokens are BOS, a, b, a, b, EOS.
+            assert inputs["value_ids"].flatten().tolist() == [4, 6, 7, 6, 7]
+            assert labels["values"].flatten().tolist() == [6, 7, 6, 7, 5]
+            assert inputs["valid"].all() and labels["valid"].all()
+            fitted = task.fitted_state
+        with plan.materialize(anchors, fitted=fitted, inference=True) as task:
+            with pytest.raises(diskgraph.DiskgraphConfigError, match="one sample exceeds"):
+                next(task.batches(output_format="model"))
+
+
 def _reference_batches(task):
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
