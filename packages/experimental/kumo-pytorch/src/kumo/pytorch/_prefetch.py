@@ -21,21 +21,22 @@ class PrefetchGroup:
     def __init__(self):
         self.closed = False
         self._active: set[PrefetchIterator] = set()
-        self._lock = threading.Lock()
+        # A GC finalizer can signal a producer while this task's registry is locked.
+        self.lock = threading.RLock()
 
     def register(self, producer: PrefetchIterator) -> bool:
-        with self._lock:
+        with self.lock:
             if self.closed:
                 return False
             self._active.add(producer)
             return True
 
     def discard(self, producer: PrefetchIterator) -> None:
-        with self._lock:
+        with self.lock:
             self._active.discard(producer)
 
     def close(self) -> None:
-        with self._lock:
+        with self.lock:
             self.closed = True
             active = self._active.copy()
         for producer in active:
@@ -53,7 +54,7 @@ class PrefetchIterator(Iterator[T]):
     ):
         self._group = group
         self._ready: deque[T] = deque()
-        self._condition = threading.Condition()
+        self._condition = threading.Condition(group.lock if group is not None else None)
         self._stopped = False
         self._done = True
         self._error: BaseException | None = None
