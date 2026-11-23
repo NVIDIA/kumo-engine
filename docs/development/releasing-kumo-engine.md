@@ -302,12 +302,8 @@ code. Release-event calls remain enabled.
 
 The check reads project 6903 and verifies its name and owner. It does not build
 wheels, create a Kitmaker release, or publish packages. Success confirms
-connectivity and project-read access; release submission and wheel fetching
-still require a release dry run. Project 6903 acceptance of `win_amd64` wheels
-has not been confirmed. Obtain confirmation from the project owner before
-the 1.2 release; installed-wheel qualification does not verify this external
-publication prerequisite. A Kitmaker dry run submits a release request with
-upload disabled.
+connectivity and project-read access. A Kitmaker dry run submits a release
+request with upload disabled.
 
 The Charon grant allows `refs/heads/main`, `refs/tags/kumo-engine-v*`, and
 `refs/tags/kumo-glove-6b-50d-v*`. Feature branches are not authorized. The grant

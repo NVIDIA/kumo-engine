@@ -38,13 +38,9 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
 
-Kumo Engine selects CPU on native Windows. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
+Kumo Engine defaults to CPU for training and model loading on native Windows; use WSL2 for NVIDIA GPU workloads. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 
-On native Windows, `pip install kumo-engine` includes CPU Faiss; training and model loading default to CPU. Use WSL2 for NVIDIA GPU workloads.
-
-Install the [latest Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe), with a runtime at least as recent as the wheel's build tools, and [enable Win32 long paths](https://docs.python.org/3.14/using/windows.html#removing-the-max-path-limitation) for paths longer than 260 characters. The OS minimum follows [Rust](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html) and [Python](https://docs.python.org/3.14/using/windows.html#supported-windows-versions) requirements.
-
-CI builds on Windows Server 2022 and runs installed-wheel tests on Windows Server 2025 with an administrative account; desktop Windows and restricted accounts have not been qualified. The tests have not recorded the long-path registry setting.
+On Windows, install the [latest Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe) and [enable Win32 long paths](https://docs.python.org/3.14/using/windows.html#removing-the-max-path-limitation) for paths longer than 260 characters.
 
 Recommendation tasks use Faiss for retrieval. The base install includes GPU Faiss on Linux x86-64 and CPU Faiss on macOS and Windows. On Linux ARM64, install `pip install "kumo-engine[cpu]"` and choose `accelerator="cpu"` for CPU retrieval. For GPU Faiss on Linux ARM64, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md), which also covers CUDA training on ARM64.
 
