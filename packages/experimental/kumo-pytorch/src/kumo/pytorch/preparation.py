@@ -239,7 +239,7 @@ class Plan:
             raise ValueError("fit_split has nothing to fit in inference")
         cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
-        logical_anchors = anchors  # Scalar materialization can replace the binding with a temp path.
+        logical_anchors = anchors  # Scalar materialization uses a temporary Parquet path.
         directory = None
         if (
             values is None
