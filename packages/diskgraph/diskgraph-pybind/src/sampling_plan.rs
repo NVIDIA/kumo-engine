@@ -29,6 +29,11 @@ struct PyExponentialDecay {
 
 #[pymethods]
 impl PyExponentialDecay {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("ExponentialDecay(rate={:?})", self.rate)
+    }
+
     #[new]
     fn new(rate: f64) -> Self {
         Self { rate }
@@ -58,6 +63,11 @@ struct PyLinearDecay {
 
 #[pymethods]
 impl PyLinearDecay {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("LinearDecay(half_life_seconds={})", self.half_life_seconds)
+    }
+
     #[new]
     fn new(half_life_seconds: u64) -> Self {
         Self { half_life_seconds }
@@ -87,6 +97,11 @@ struct PyCustomExpression {
 
 #[pymethods]
 impl PyCustomExpression {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("CustomExpression(id={:?})", self.id)
+    }
+
     #[new]
     fn new(id: String) -> Self {
         Self { id }
@@ -116,6 +131,11 @@ struct PyWeightedSampling {
 
 #[pymethods]
 impl PyWeightedSampling {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("WeightedSampling({:?})", self.inner)
+    }
+
     #[new]
     #[pyo3(signature = (weighting, temporal=false))]
     fn new(weighting: &Bound<'_, PyAny>, temporal: bool) -> PyResult<Self> {
@@ -219,6 +239,11 @@ pub(crate) struct PyFanoutSpec {
 
 #[pymethods]
 impl PyFanoutSpec {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
     #[new]
     fn new(
         fanout: &Bound<'_, PyAny>,
@@ -321,6 +346,11 @@ impl PyLayerSpec {
 
 #[pymethods]
 impl PyLayerSpec {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
     #[new]
     #[pyo3(signature = (fanouts=None, default_fanout=None))]
     fn new(
@@ -388,6 +418,11 @@ pub struct PySamplingPlan {
 
 #[pymethods]
 impl PySamplingPlan {
+    /// Return the native configuration for diagnostics.
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
     #[new]
     #[pyo3(signature = (layers=None))]
     fn new(layers: Option<Vec<PyRef<'_, PyLayerSpec>>>) -> Self {

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import pickle
 import subprocess
@@ -38,6 +39,77 @@ class SeedTableFixture(TypedDict):
     parent_root: str
     n_users: int
     n_seeds: int
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (ExponentialDecay(0.125), "ExponentialDecay(rate=0.125)"),
+        (LinearDecay(3600), "LinearDecay(half_life_seconds=3600)"),
+        (CustomExpression("score"), 'CustomExpression(id="score")'),
+        (
+            WeightedSampling(ExponentialDecay(0.125), temporal=True),
+            (
+                "WeightedSampling(TemporalWeighted { weighting: "
+                "ExponentialDecay { lambda: 0.125 } })"
+            ),
+        ),
+        (
+            FanoutSpec(4, "uniform", "reject_plan"),
+            "FanoutSpec { fanout: 4, mode: Uniform, absent_key_policy: RejectPlan }",
+        ),
+        (LayerSpec(), "LayerSpec { fanouts: {}, default_fanout: None }"),
+        (SamplingPlan(), "SamplingPlan { layers: [] }"),
+    ],
+)
+def test_native_values_have_readable_representations(
+    value: object, expected: str
+) -> None:
+    """Standalone native values show their configuration in repr and log strings."""
+    assert repr(value) == expected
+    assert str(value) == expected
+
+
+def test_sampling_plan_log_contains_nested_configuration(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Trainer-style logging preserves relation, fanout, mode, and weighting data."""
+    plan = SamplingPlan(
+        [
+            LayerSpec(
+                fanouts={
+                    "users__orders": FanoutSpec(
+                        7,
+                        WeightedSampling(CustomExpression("score"), temporal=True),
+                        "uniform_fallback",
+                    )
+                },
+                default_fanout=FanoutSpec(4, "uniform", "reject_plan"),
+            ),
+            LayerSpec(
+                default_fanout=FanoutSpec(2, "temporal_most_recent", "reject_plan")
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.INFO):
+        logging.getLogger(__name__).info(
+            "Generated dynamic, model-driven sampling plan: %s", plan
+        )
+
+    for detail in (
+        "SamplingPlan",
+        "layers:",
+        "LayerSpec",
+        'fanouts: {"users__orders": FanoutSpec { fanout: 7',
+        'TemporalWeighted { weighting: CustomExpression { id: "score" } }',
+        "UniformFallback",
+        "default_fanout: Some(FanoutSpec { fanout: 4, mode: Uniform",
+        "fanout: 2, mode: TemporalMostRecent",
+        "RejectPlan",
+    ):
+        assert detail in caplog.text
+    assert "object at 0x" not in caplog.text
 
 
 def _plan(mode: SamplingMode) -> SamplingPlan:
