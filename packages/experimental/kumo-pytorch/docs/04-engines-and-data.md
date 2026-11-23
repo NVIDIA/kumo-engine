@@ -237,8 +237,11 @@ the original source tables.
 ### Storage lifetime and cleanup
 
 Closing a plan or task keeps `indexes/<index_build_id>/` and
-`cache/<index_build_id>/`. Task cleanup removes its own task directory;
-empty parent directories can remain. There is no automatic garbage collection
+`cache/<index_build_id>/`. Close tasks explicitly or use context managers for
+prompt cleanup. Closing a plan closes its live tasks before releasing the engine
+binding. Unclosed tasks also release their native readers and remove their task
+and scratch directories on collection or normal Python exit; empty parent
+directories can remain. There is no automatic garbage collection
 for unused bases, caches or abandoned builds, so repeated runs accumulate disk
 usage.
 

@@ -363,6 +363,100 @@ def test_empty_native_anchors_and_cleanup(native_task, tmp_path):
     assert plan._source._sampler is not None
 
 
+@pytest.mark.parametrize("lifetime", ["del", "cycle", "plan-close"])
+def test_unclosed_native_tasks_release_readers_and_owned_files(native_task, monkeypatch, lifetime):
+    import gc
+    import weakref
+    from pathlib import Path
+
+    plan, previous, table = native_task
+    source = plan._require_open()
+    base = Path(source._index_path)
+    before = {p.relative_to(base): p.read_bytes() for p in base.rglob("*") if p.is_file()}
+    cache = source._paths.cache_dir / "retained"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("keep")
+    task = plan.materialize(table, fitted=previous.fitted_state)
+    anchors = task._anchors
+    extension, scratch = Path(anchors._temporary.name), anchors.path
+    reference = weakref.ref(task)
+    cleanup = anchors._temporary.cleanup
+    cleaned = []
+
+    def cleanup_after_reader_release():
+        assert anchors._runtime is None
+        assert anchors._history_engine is None
+        assert source._sampler_context is None
+        cleaned.append(True)
+        cleanup()
+
+    monkeypatch.setattr(anchors._temporary, "cleanup", cleanup_after_reader_release)
+    if lifetime == "plan-close":
+        close_source = source.close
+
+        def close_source_after_tasks():
+            assert not extension.exists()
+            assert not scratch.exists()
+            close_source()
+
+        monkeypatch.setattr(source, "close", close_source_after_tasks)
+        # Keep both Tasks alive: plan.close must release their resources itself.
+        plan.close()
+        plan.close()
+        task.close()
+        assert reference() is task
+    else:
+        if lifetime == "cycle":
+            task.cycle = task
+        del task
+        gc.collect()
+        assert reference() is None
+        # Cleanup detached its finalizer; another close remains harmless.
+        anchors.close()
+        assert plan._source is source
+    assert cleaned == [True]
+    assert not extension.exists()
+    assert not scratch.exists()
+    assert cache.read_text() == "keep"
+    assert {p.relative_to(base): p.read_bytes() for p in base.rglob("*") if p.is_file()} == before
+
+
+def test_unclosed_native_task_is_cleaned_at_interpreter_exit(native_task, tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    plan, _, table = native_task
+    source = plan._require_open()
+    contract = tmp_path / "exit-contract.json"
+    contract.write_text(plan.contract.to_json())
+    result = tmp_path / "exit-task.json"
+    script = """
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+import kumo.settings
+from kumo.pytorch import api
+root, base, contract, anchors, result = sys.argv[1:]
+kumo.settings.configure(scratch_dir=root)
+engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=base, id="exit-test"))
+plan = api.prepare(contract=api.DataLoaderSpec.from_json(Path(contract).read_text()), engine=engine)
+table = api.AnchorTable(api.Parquet(anchors), "entity", "cutoff", sample_id="sid", split="split",
+                        targets={"label": "label"}, metadata=("details",))
+task = plan.materialize(table, fit_split="train")
+Path(result).write_text(json.dumps([task._anchors._temporary.name, str(task._anchors.path)]))
+# Keep plan and task live until normal interpreter shutdown; never close either.
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, str(source._paths.root), source._index_path,
+         str(contract), table.source.path, str(result)],
+        check=True, capture_output=True, text=True,
+    )
+    assert all(not Path(path).exists() for path in json.loads(result.read_text()))
+    assert Path(source._index_path).is_dir()
+
+
 @pytest.mark.parametrize(
     "column,value,match",
     [

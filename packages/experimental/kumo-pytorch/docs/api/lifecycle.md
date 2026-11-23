@@ -241,6 +241,7 @@ score. `materialize` binds anchors and returns the `Task` that is iterated.
 
 Owns the opened binding: close it with `plan.close()` or use the plan as a
 context manager. Tasks read through it and are usable while it is open.
+Closing the plan also closes its live tasks before releasing the binding.
 
 `inference` is true for a plan prepared with `prepare(..., inference=True)`:
 its targets were not checked against the engine, so it only materializes
@@ -301,7 +302,7 @@ and new targets cannot add members to a reused final ID space.
 Plan.close() -> None
 ```
 
-Release the engine binding. Idempotent.
+Close live tasks, then release the engine binding. Idempotent.
 
 ### `Task`
 
@@ -324,6 +325,9 @@ Anchors bound to a plan: what is iterated, served from, and written out.
 
 Produced by `Plan.materialize`. Reads through the plan's open binding, so it
 is usable while that plan is open.
+Close the task explicitly or use it as a context manager to release resources
+promptly. Unclosed tasks are also cleaned up on collection or normal Python
+exit, and when their plan closes.
 
 Attributes: `fitted_state` (a `FittedState`), `output_schema`, and
 `fingerprints`, covering the contract, inputs, dataset, anchors, input

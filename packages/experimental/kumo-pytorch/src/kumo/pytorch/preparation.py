@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+import weakref
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
@@ -197,6 +198,7 @@ class Plan:
 
     Owns the opened binding: close it with ``plan.close()`` or use the plan as a
     context manager. Tasks read through it and are usable while it is open.
+    Closing the plan also closes its live tasks before releasing the binding.
 
     ``inference`` is true for a plan prepared with ``prepare(..., inference=True)``:
     its targets were not checked against the engine, so it only materializes
@@ -217,6 +219,7 @@ class Plan:
         self.engine = engine
         self.inference = inference
         self._source: SampleSource | None = source
+        self._tasks: weakref.WeakSet[Task] = weakref.WeakSet()
         self._dataset_fingerprint = (
             source.artifact_identity
             if isinstance(source, ArtifactIdentitySource) and source.artifact_identity
@@ -455,7 +458,7 @@ class Plan:
         except BaseException:
             task_anchors.close()
             raise
-        return Task(
+        task = Task(
             contract=self.contract,
             assembler=assembler,
             anchors=task_anchors,
@@ -464,6 +467,8 @@ class Plan:
             fit=fit,
             has_targets=not input_only,
         )
+        self._tasks.add(task)
+        return task
 
     def _pinned_from_stats(
         self,
@@ -579,11 +584,16 @@ class Plan:
         return self._source
 
     def close(self) -> None:
-        """Release the engine binding. Idempotent."""
+        """Close live tasks, then release the engine binding. Idempotent."""
 
         source, self._source = self._source, None
         if source is not None:
-            source.close()
+            try:
+                for task in tuple(self._tasks):
+                    task.close()
+            finally:
+                self._tasks.clear()
+                source.close()
 
     def __enter__(self) -> Plan:
         return self

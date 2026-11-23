@@ -76,18 +76,19 @@ class TaskDirectory:
     """An exclusively owned loader task directory; never adopt another task's files."""
 
     def __init__(self, paths, task_id: str | None = None):
+        import shutil
         import uuid
+        import weakref
 
         self.task_id = uuid.uuid4().hex if task_id is None else task_id
         path = paths.task_dir(self.task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.mkdir()  # Refuse a live task or leftover state with the same ID.
         self.name = str(path)
+        self._finalizer = weakref.finalize(self, shutil.rmtree, self.name, ignore_errors=True)
 
     def cleanup(self):
-        import shutil
-
-        shutil.rmtree(self.name, ignore_errors=True)
+        self._finalizer()
 
 
 class ColumnCache:
