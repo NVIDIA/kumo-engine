@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -215,6 +215,36 @@ class LocalSnapshotStore:
             self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
         return DiskgraphIngestResult.for_index(self.path(handle))
 
+    def _ready_paths(
+            self, graph_key: str, version_prefix: str = "",
+    ) -> Iterator[tuple[DiskgraphSnapshotHandle, str]]:
+        graph_dir = os.path.join(self.config.data_root, graph_key)
+        try:
+            versions = sorted(os.listdir(graph_dir))
+        except OSError:
+            return
+        for version in versions:
+            snapshot_dir = os.path.join(graph_dir, version)
+            is_reference = (self.config.managed_root is not None
+                            and version.endswith(_SNAPSHOT_REFERENCE_SUFFIX)
+                            and os.path.isfile(snapshot_dir))
+            if is_reference:
+                version = version.removesuffix(_SNAPSHOT_REFERENCE_SUFFIX)
+            elif not os.path.isdir(snapshot_dir):
+                continue
+            if not version.startswith(version_prefix):
+                continue
+            handle = DiskgraphSnapshotHandle(graph_key, version)
+            try:
+                if is_reference:
+                    snapshot_dir = self.path(handle)
+                result = check_diskgraph_output(snapshot_dir)
+            except (DiskgraphSnapshotError, OSError, ValueError, KeyError):
+                logger.warning("Skipping invalid snapshot at %s", snapshot_dir)
+                continue
+            if result is not None:
+                yield handle, snapshot_dir
+
     def list_ready(self) -> list[DiskgraphSnapshotHandle]:
         ready: list[DiskgraphSnapshotHandle] = []
         seen: set[DiskgraphSnapshotHandle] = set()
@@ -223,35 +253,28 @@ class LocalSnapshotStore:
         except OSError:
             return ready
         for graph_key in graph_keys:
-            graph_dir = os.path.join(self.config.data_root, graph_key)
-            if not os.path.isdir(graph_dir):
-                continue
-            try:
-                versions = sorted(os.listdir(graph_dir))
-            except OSError:
-                continue
-            for version in versions:
-                snapshot_dir = os.path.join(graph_dir, version)
-                is_reference = (self.config.managed_root is not None
-                                and version.endswith(_SNAPSHOT_REFERENCE_SUFFIX)
-                                and os.path.isfile(snapshot_dir))
-                handle = DiskgraphSnapshotHandle(
-                    graph_key, version.removesuffix(_SNAPSHOT_REFERENCE_SUFFIX)
-                    if is_reference else version)
-                if not is_reference and not os.path.isdir(snapshot_dir):
-                    continue
-                try:
-                    if is_reference:
-                        snapshot_dir = self.path(handle)
-                    result = check_diskgraph_output(snapshot_dir)
-                except (DiskgraphSnapshotError, OSError, ValueError, KeyError):
-                    logger.warning("Skipping invalid snapshot at %s",
-                                   snapshot_dir)
-                    continue
-                if result is not None and handle not in seen:
+            for handle, _ in self._ready_paths(graph_key):
+                if handle not in seen:
                     ready.append(handle)
                     seen.add(handle)
         return ready
+
+    def resolve_version_prefix(self, graph_key: str,
+                               version_prefix: str) -> str | None:
+        """Resolve a literal version prefix to one completed snapshot path.
+
+        Managed references and legacy directories use the same readiness checks
+        as ``list_ready``. Incomplete snapshots, including statistics-only
+        directories, are excluded. Successful reads best-effort update marker
+        LRU time, as listing does. Missing, invalid or ambiguous lookups return
+        ``None``; duplicate references to the same path count only once.
+        """
+        for component in (graph_key, version_prefix):
+            if (not component or component in {".", ".."}
+                    or any(char in component for char in ("/", "\\", ":"))):
+                return None
+        found = {path for _, path in self._ready_paths(graph_key, version_prefix)}
+        return next(iter(found)) if len(found) == 1 else None
 
     def verify(self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
         from diskgraph import read_success_marker, verify_snapshot_integrity
