@@ -180,12 +180,6 @@ requires-dist = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = [
-  ".",
-  "src",
-  "packages/experimental/kumo-pytorch",
-  "packages/experimental/kumo-pytorch/src",
-]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
