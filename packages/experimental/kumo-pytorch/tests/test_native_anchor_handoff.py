@@ -546,7 +546,7 @@ def test_native_anchor_history_share_one_combined_reader(native_task):
     source = plan._source
     assert task._anchors._history_engine is source._sampler
     assert any(
-        name.startswith(Path(task._anchors._extension.name).name + "/")
+        name.startswith(Path(task._anchors._temporary.name).name + "/")
         for name in source._node_types
     )
     assert set(_base_index_mappings(source._index_path).values()) == {1}
@@ -606,7 +606,7 @@ def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, mon
                     assert torch.isfinite(values).all()
 
 
-def test_native_extension_uses_existing_base_directory_without_symlinks(native_task, monkeypatch):
+def test_native_extension_uses_managed_task_directory_without_symlinks(native_task, monkeypatch):
     from pathlib import Path
 
     plan, previous, table = native_task
@@ -616,7 +616,7 @@ def test_native_extension_uses_existing_base_directory_without_symlinks(native_t
 
     monkeypatch.setattr(Path, "symlink_to", forbidden)
     with plan.materialize(table, fitted=previous.fitted_state) as task:
-        extension = Path(task._anchors._extension.name)
+        extension = Path(task._anchors._temporary.name)
         assert extension.parent == plan._require_open()._paths.task_dir("probe").parent
         assert (extension / "index_metadata.json").is_file()
         assert not any(path.is_symlink() for path in extension.iterdir())

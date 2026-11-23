@@ -379,7 +379,7 @@ def test_saved_fit_record_omits_temporary_values_paths(history_data, tmp_path):
     index = engine.index
     with api.prepare(spec, dataset, engine) as plan:
         with plan.materialize(anchors, fit_split="train") as task:
-            directory = Path(task._anchors._extension.name)
+            directory = Path(task._anchors._temporary.name)
             assert directory.parent == tmp_path / "tasks" / index.name
             assert directory.exists()
             fit = task.fitted_state.fit["inputs"]

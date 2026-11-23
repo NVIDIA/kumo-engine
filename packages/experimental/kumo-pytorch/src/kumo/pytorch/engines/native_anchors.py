@@ -78,7 +78,6 @@ class NativeAnchors:
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
         self._temporary = directory or source.new_task_directory()
-        self._extension = self._temporary
         # Native ingest clears its output directory before reading inputs.
         # Keep scratch beside that output, within the same task build root.
         self._scratch = tempfile.TemporaryDirectory(
@@ -118,7 +117,7 @@ class NativeAnchors:
         writers = {}
         position = 0
         view = Path(self._source._index_path)
-        extension = Path(self._extension.name)
+        extension = Path(self._temporary.name)
         try:
             for file in files:
                 for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
