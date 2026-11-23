@@ -853,11 +853,18 @@ struct PublicationMarkerIdentity {
     device: u64,
     #[cfg(unix)]
     inode: u64,
+    #[cfg(windows)]
+    file_id: (u32, u64),
 }
 
 fn publication_marker_identity(root: &std::path::Path) -> Option<PublicationMarkerIdentity> {
-    let metadata =
-        fs::metadata(root.join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME)).ok()?;
+    let path = root.join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME);
+    #[cfg(windows)]
+    let file = fs::File::open(&path).ok()?;
+    #[cfg(windows)]
+    let metadata = file.metadata().ok()?;
+    #[cfg(not(windows))]
+    let metadata = fs::metadata(&path).ok()?;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
 
@@ -868,7 +875,30 @@ fn publication_marker_identity(root: &std::path::Path) -> Option<PublicationMark
         device: metadata.dev(),
         #[cfg(unix)]
         inode: metadata.ino(),
+        #[cfg(windows)]
+        file_id: windows_file_identity(&file)?,
     })
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &fs::File) -> Option<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // The handle remains open while both its metadata and file identity are read.
+    let information = unsafe {
+        if GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) == 0 {
+            return None;
+        }
+        information.assume_init()
+    };
+    Some((
+        information.dwVolumeSerialNumber,
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    ))
 }
 
 fn worker_committed_publication(
@@ -1652,7 +1682,13 @@ mod supervisor_tests {
 
         let replacement = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
         fs::write(replacement.path(), b"fresh").unwrap();
+        let modified =
+            filetime::FileTime::from_last_modification_time(&fs::metadata(&marker).unwrap());
+        filetime::set_file_mtime(replacement.path(), modified).unwrap();
         replacement.persist(&marker).unwrap();
+        let after = publication_marker_identity(directory.path()).unwrap();
+        assert_eq!(after.len, before.len);
+        assert_eq!(after.modified, before.modified);
         assert!(worker_committed_publication(
             directory.path(),
             Some(&before)
