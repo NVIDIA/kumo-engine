@@ -17,6 +17,13 @@ Each worker records setup once, fit stages per mode and batch stages per epoch.
 Stage times include nested calls. A missing stage did not run on that workload.
 On Linux, ``loader --cold-warm-cache`` verifies that the base index's file pages
 are cold before epoch 0 and warm before epoch 1 of each fit, outside epoch timing.
+Use ``loader --host-memory {kernel,sampled} --cgroup-parent DIR`` on Linux with
+a delegated cgroup v2 memory controller. Each worker runs unprivileged in its own
+cgroup. A root supervisor uses SUDO_UID/SUDO_GID to run pytest unprivileged.
+Its output directory must be accessible to that user. Kernel mode resets
+memory.peak per interval. Sampled mode reads memory.current every 10 ms.
+Both sample anonymous memory and include descendant charges. Epoch wall time
+includes collection overhead.
 Use ``banking`` in place of ``loader`` to time one CPU PyG training step per
 worker on the package banking fixture. Its step includes batch adaptation through
 the optimizer update and excludes model initialization and batch delivery.
@@ -104,6 +111,7 @@ def time_loader(
 ) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
     from kumo.pytorch import api
+    from tests.e2e.host_memory import memory_interval
     from tests.e2e.loader_timing import install_stages, measure_epoch, stage_observer
 
     work.mkdir(parents=True, exist_ok=True)
@@ -112,8 +120,12 @@ def time_loader(
     artifact = work / "artifact"
     try:
         for mode in ("fresh", "reloaded"):
+            results[mode] = {}
             with ExitStack() as tasks:
-                with stage_observer(install_stages) as profile:
+                with (
+                    stage_observer(install_stages) as profile,
+                    memory_interval(results[mode], "materialization"),
+                ):
                     started = time.perf_counter_ns()
                     fit = {"fit_split": options["split"]}
                     if mode == "reloaded":
@@ -121,7 +133,7 @@ def time_loader(
                             fit = {"fitted": api.Artifact.load(artifact).fitted_state}
                     task = tasks.enter_context(plan.materialize(table, **fit))
                     materialize_ns = time.perf_counter_ns() - started
-                results[mode] = {
+                results[mode] |= {
                     "materialize_ns": materialize_ns,
                     "stages": profile.stages,
                     "fitted_state": task.fitted_state.fingerprint,
@@ -165,22 +177,47 @@ def _ranges(rows):
 
 
 def _timing_campaign(
-    workload: str, directory: Path, repetitions: int, cold_warm_cache=False
+    workload: str,
+    e2e_dir: Path,
+    repetitions: int,
+    cold_warm_cache=False,
+    host_memory=None,
+    cgroup_parent=None,
 ) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=directory.resolve()))
+    e2e_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=e2e_dir.resolve()))
     case = TIMING_CASES[workload]
     report = root / "timings.json"
     completed = []
     workers = []
     cache_args = ["--cold-warm-cache"] if cold_warm_cache else []
+    env = {**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"}
+    env.pop("KUMO_PYTORCH_HOST_MEMORY", None)
+    if host_memory:
+        from tests.e2e.memory_worker import run_isolated, worker_identity
+
+        supervisor_root = os.geteuid() == 0
+        if supervisor_root:
+            _, gid = worker_identity()
+            os.chown(root, -1, gid)
+            root.chmod(0o710)
     for index in range(repetitions):
         work = root / str(index)
-        worker = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work), *cache_args],
-            cwd=REPOSITORY,
-            env={**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"},
-        )
+        command = [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work), *cache_args]
+        if host_memory:
+            try:
+                if supervisor_root:
+                    work.mkdir()
+                    os.chown(work, -1, gid)
+                    work.chmod(0o770)
+                worker = run_isolated(
+                    command, parent=cgroup_parent, method=host_memory, cwd=REPOSITORY, env=env
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                workers.append({"worker": index, "complete": False, "error": str(error)})
+                break
+        else:
+            worker = subprocess.run(command, cwd=REPOSITORY, env=env)
         result = work / workload / "results.json"
         ok = worker.returncode == 0 and result.is_file()
         workers.append(
@@ -210,6 +247,8 @@ def _timing_campaign(
     ]
     if workload == "loader":
         sources.append(Path(__file__).with_name("file_cache.py"))
+    if host_memory:
+        sources.extend(Path(__file__).with_name(f) for f in ("host_memory.py", "memory_worker.py"))
     revision = tracked_diff = None
     try:
         revision = subprocess.check_output(
@@ -222,6 +261,7 @@ def _timing_campaign(
     metadata = {
         "workload": case,
         **({"file_page_cache": "cold-warm"} if cold_warm_cache else {}),
+        **({"host_memory": host_memory} if host_memory else {}),
         "device": "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
         **(LOADER_BATCHING if workload == "loader" else {"batch_size": 2}),
@@ -253,6 +293,10 @@ def main(argv: list[str] | None = None) -> None:
     if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)
         if argv[0] == "loader":
+            parser.add_argument("--host-memory", choices=("kernel", "sampled"))
+            parser.add_argument(
+                "--cgroup-parent", type=Path, help="delegated Linux cgroup v2 parent"
+            )
             parser.add_argument(
                 "--cold-warm-cache",
                 action="store_true",
@@ -261,8 +305,12 @@ def main(argv: list[str] | None = None) -> None:
         args = parser.parse_args(argv[1:])
         if args.repetitions < 1:
             parser.error("--repetitions must be positive")
-        cold_warm_cache = getattr(args, "cold_warm_cache", False)
-        print(_timing_campaign(argv[0], args.e2e_dir, args.repetitions, cold_warm_cache))
+        options = vars(args)
+        if bool(options.get("host_memory")) != bool(options.get("cgroup_parent")):
+            parser.error("--host-memory and --cgroup-parent must be supplied together")
+        if options.get("host_memory") and sys.platform != "linux":
+            parser.error("--host-memory requires a delegated Linux cgroup")
+        print(_timing_campaign(argv[0], **options))
         return
     parser.add_argument("tier", choices=sorted(BY_NAME))
     parser.add_argument("flow", choices=sorted(FLOWS))

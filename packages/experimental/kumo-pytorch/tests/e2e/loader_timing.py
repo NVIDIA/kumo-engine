@@ -18,6 +18,7 @@ import torch
 from torch.utils._pytree import tree_leaves
 
 from kumo.pytorch import api
+from tests.e2e.host_memory import memory_interval
 
 NATIVE_COUNTERS = ("sampling_ns", "retrieval_ns", "rows_examined", "rows_decoded")
 _OBSERVER_LOCK = Lock()
@@ -259,18 +260,27 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
     totals = Counter(samples=0, padded=0)
     epoch = record["epoch"]
     start = perf_counter_ns()
-    batches = make_batches(
-        task, split=split, epoch=epoch, batch_size=batch_size, shuffle=False, drop_last=False
-    )
-    record["startup_ns"] = perf_counter_ns() - start
+    with memory_interval(record, "iterator.startup"):
+        startup = perf_counter_ns()
+        batches = make_batches(
+            task, split=split, epoch=epoch, batch_size=batch_size, shuffle=False, drop_last=False
+        )
+        record["startup_ns"] = perf_counter_ns() - startup
     while True:
         previous = source.last_sampling_profile
         observer.native = []
         request = perf_counter_ns()
+        end = None
         try:
-            batch = next(batches, None)
+            with memory_interval(record, "batch.request"):
+                request = perf_counter_ns()
+                try:
+                    batch = next(batches, None)
+                finally:
+                    end = perf_counter_ns()
         except Exception as error:
-            end = perf_counter_ns()
+            if end is None:  # Collection failed before the request started.
+                end = perf_counter_ns()
             failed_wait = end - request
             record.update(
                 totals,
@@ -281,7 +291,6 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
                 elapsed_ns=end - start,
             )
             raise
-        end = perf_counter_ns()
         if batch is None:
             break
         if not requests:

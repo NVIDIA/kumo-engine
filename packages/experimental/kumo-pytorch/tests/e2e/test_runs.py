@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import mmap
+import os
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -56,6 +58,54 @@ def test_fused_native_profile_counts_the_interval_once():
     }
 
 
+def _check_host_memory():
+    from tests.e2e.host_memory import memory_interval
+
+    assert os.geteuid() != 0
+    group = Path(os.environ["KUMO_PYTORCH_MEMORY_CGROUP"])
+    peaks = {}
+    mib = 1024**2
+    for name, size in (("large", 64), ("small", 4), ("child", 48)):
+        record = {}
+        baseline = int((group / "memory.current").read_text())
+        with memory_interval(record, name):
+            if name == "child":
+                program = f"import time; data = b'x' * {size * mib}; time.sleep(0.2)"
+                subprocess.run([sys.executable, "-c", program], check=True, timeout=15)
+            else:
+                data = b"x" * (size * mib)
+                time.sleep(0.2)
+                del data
+        result = peaks[name] = record["host_memory"]
+        (interval,) = result["intervals"]
+        assert result["complete"] and interval["sample_count"] > 2
+        samples = interval["samples"]
+        assert result["peak_anonymous_bytes"] == max(s["anonymous_bytes"] for s in samples)
+        if os.environ["KUMO_PYTORCH_HOST_MEMORY"] == "sampled":
+            assert result["peak_host_bytes"] == max(s["current_bytes"] for s in samples)
+        if name != "small":
+            assert result["peak_host_bytes"] >= baseline + size * mib * 0.75
+    for key in ("peak_host_bytes", "peak_anonymous_bytes"):
+        assert peaks["large"][key] > peaks["small"][key] + 32 * mib
+        assert peaks["child"][key] > peaks["small"][key] + 24 * mib
+
+
+@pytest.mark.parametrize("method", ["kernel", "sampled"])
+def test_loader_host_memory(method, pytestconfig):
+    from tests.e2e.memory_worker import run_isolated
+
+    parent = pytestconfig.getoption("--cgroup-parent", skip=True)
+    program = "from tests.e2e.test_runs import _check_host_memory; _check_host_memory()"
+    worker = run_isolated(
+        [sys.executable, "-c", program],
+        parent=parent,
+        method=method,
+        cwd=runs.REPOSITORY,
+        env=os.environ,
+    )
+    assert worker.returncode == 0
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux file-page residency")
 def test_loader_file_page_cache(tmp_path, pytestconfig):
     from tests.e2e.file_cache import IndexPageCache
@@ -88,6 +138,41 @@ def test_loader_file_page_cache(tmp_path, pytestconfig):
     path.write_bytes(contents[:1])
     with pytest.raises(RuntimeError, match="changed"):
         cache.condition("warm", {})
+
+
+def test_memory_worker_timeout_removes_only_its_cgroup(pytestconfig, tmp_path, capfd):
+    from tests.e2e.memory_worker import run_isolated, validate_membership
+
+    parent = pytestconfig.getoption("--cgroup-parent", skip=True)
+    (tmp_path / "cgroup.procs").write_text(f"{os.getpid()}\n{os.getppid()}\n")
+    with pytest.raises(RuntimeError, match="Unrelated PID"):
+        validate_membership(tmp_path)
+    command = """
+import os, subprocess
+from pathlib import Path
+from tests.e2e.memory_worker import validate_membership
+group = Path(os.environ["KUMO_PYTORCH_MEMORY_CGROUP"])
+assert os.getuid() > 0
+child = subprocess.Popen(["sleep", "60"], start_new_session=True)
+validate_membership(group)
+print(group, flush=True)
+child.wait()
+"""
+    with subprocess.Popen(["sleep", "60"]) as sibling:
+        try:
+            result = run_isolated(
+                [sys.executable, "-c", command],
+                parent=parent,
+                method="sampled",
+                env=os.environ,
+                cwd=runs.REPOSITORY,
+                timeout=2,
+            )
+            assert result.returncode == 124 and sibling.poll() is None
+            group = Path(capfd.readouterr().out.strip())
+            assert group.parent == parent.resolve() and not group.exists()
+        finally:
+            sibling.terminate()
 
 
 @pytest.fixture(scope="module")

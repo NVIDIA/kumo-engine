@@ -23,6 +23,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
     add_conformance_options(parser)
     parser.addoption(
+        "--cgroup-parent", type=Path, help="run host-memory validators on a delegated Linux cgroup"
+    )
+    parser.addoption(
         "--cold-warm-cache", action="store_true", help="verify Linux index page residency"
     )
     parser.addoption(

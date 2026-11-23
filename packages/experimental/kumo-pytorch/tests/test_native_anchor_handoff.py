@@ -480,18 +480,30 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
     from kumo.pytorch.engines import diskgraph
     from tests.e2e import runs
     from tests.e2e.file_cache import IndexPageCache
+    from tests.e2e.host_memory import memory_interval
     from tests.e2e.loader_timing import parquet_metadata, stage_observer
 
     index = tmp_path / "index"
     manifest = index / "index_manifest.json"
     engine = {"index": index, "num_threads": 1, "profile": True}
+    setup = {}
+    work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
+    memory = os.getenv("KUMO_PYTORCH_HOST_MEMORY")
+    if memory:
+
+        def save_failed_ingestion():
+            if setup.get("host_memory", {}).get("complete") is False:
+                work.mkdir(parents=True, exist_ok=True)
+                (work / "results.json").write_text(json.dumps({"setup": setup}) + "\n")
+
+        request.addfinalizer(save_failed_ingestion)
 
     def index_action(schema, dataset, destination, **options):
         return "index.reopen" if destination.exists() else "index.build"
 
     with stage_observer() as observer:
         observer.wrap(diskgraph, "ensure_diskgraph_index", index_action)
-        with observer.measure("ingestion"):
+        with memory_interval(setup, "ingestion"), observer.measure("ingestion"):
             contract, dataset, table = _native_inputs(tmp_path)
             with observer.measure("source.read"):
                 sources = {name: parquet_metadata(src.path) for name, src in dataset.tables.items()}
@@ -506,7 +518,7 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
     # Snapshot the base index before materialization creates each fit's temporary anchor files.
     index_cache = IndexPageCache(index)
     cache = index_cache if request.config.getoption("--cold-warm-cache") else None
-    setup = {
+    setup |= {
         "stages": observer.stages,
         "source_tables": sources,
         "source_read_scope": "Parquet footers and SHA-256 input identity",
@@ -517,7 +529,6 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         "index_bytes": sum(info.st_size for info in index_cache.selected.values()),
         "dataset_fingerprint": json.loads(manifest.read_text())["dataset_fingerprint"],
     }
-    work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
     results = runs.time_loader(
         plan,
         table,
@@ -543,8 +554,12 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         "index.reopen",
     }
     assert all(v["calls"] == 1 and v["elapsed_ns"] > 0 for v in setup["stages"].values())
+    if memory:
+        assert [i["operation"] for i in setup["host_memory"]["intervals"]] == ["ingestion"]
     for mode in ("fresh", "reloaded"):
         run = results[mode]
+        if memory:
+            assert [i["operation"] for i in run["host_memory"]["intervals"]] == ["materialization"]
         assert run["anchor_sha256"] == anchors["sha256"]
         for stage in ("input.fit", "target.fit"):
             assert run["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
@@ -557,6 +572,14 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         if cache is not None:
             assert [row["file_page_cache"]["mode"] for row in run["epochs"]] == ["cold", "warm"]
         for row in run["epochs"]:
+            if memory:
+                measured = row["host_memory"]
+                operations = [i["operation"] for i in measured["intervals"]]
+                assert operations == ["iterator.startup"] + ["batch.request"] * (row["batches"] + 1)
+                for peak in ("peak_host_bytes", "peak_anonymous_bytes"):
+                    assert measured[peak] == max(
+                        interval[peak] for interval in measured["intervals"]
+                    )
             assert row["batch_sizes"] == [5] * 6 + [3]
             for stage in ("python.postprocess", "python.labels"):
                 assert row["stages"][stage]["calls"] == len(row["batch_sizes"])
