@@ -192,10 +192,14 @@ def train(root, profile):
                         mlflow.log_artifacts(str(directory),
                                              artifact_path='customer')
                         example = np.zeros((2, 1), dtype=np.float32)
+                        example_tensor = torch.from_numpy(example).to(device)
                         with torch.no_grad():
-                            output = model(torch.from_numpy(example).to(device)).cpu().numpy()
+                            output = model(example_tensor).cpu().numpy()
+                        # SageMaker's MLflow PT2 exporter traces with the example as supplied.
+                        trace_example = (example_tensor if device == 'cuda'
+                                         and profile.config['platform'] == 'sagemaker' else example)
                         logged = mlflow.pytorch.log_model(
-                            model, name='model', input_example=example,
+                            model, name='model', input_example=trace_example,
                             signature=mlflow.models.infer_signature(example, output))
                         registered = mlflow.register_model(
                             logged.model_uri, name)
