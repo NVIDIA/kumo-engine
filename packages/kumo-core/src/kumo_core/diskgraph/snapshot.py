@@ -375,11 +375,50 @@ class LocalSnapshotStore:
         exists: Callable[[str], bool],
         copy_tree: Callable[[str, str], None],
     ) -> DiskgraphIngestResult | None:
+        """Restore a durable copy without writing into a published build.
+
+        Managed callers hold the graph lock, as for ``publish_import``. Healthy
+        local snapshots are reused; replacements are verified in staging first.
+        """
         source = self.durable_path(handle, durable_root)
         if not exists(source + "/_SUCCESS"):
             return None
-        copy_tree(source, self.path(handle))
-        return self.verify(handle)
+        if self.config.managed_root is None:
+            copy_tree(source, self.path(handle))
+            return self.verify(handle)
+
+        from diskgraph import DiskgraphCorruptionError
+
+        damage = (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                  FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                  ValueError, KeyError)
+        try:
+            self.verify(handle)
+            return rebased(self, handle)
+        except damage:
+            pass
+
+        staging = Path(self.staging_path(handle))
+        if staging.exists():
+            try:
+                self._verify_path(str(staging))
+            except damage:
+                shutil.rmtree(staging)
+            else:
+                raise FileExistsError(f"Restore staging contains a completed snapshot: {staging}")
+        try:
+            copy_tree(source, str(staging))
+            # Durable markers can name another machine's absolute paths. Parse
+            # the copied marker before replacing only its location fields.
+            DiskgraphIngestResult.from_json((staging / "_SUCCESS").read_text())
+            result = DiskgraphIngestResult.for_index(staging)
+            write_diskgraph_success_marker(str(staging), result)
+            self._verify_path(str(staging))
+            return self.publish_import(handle, result)
+        except BaseException:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
 
     def checkpoint(
         self,

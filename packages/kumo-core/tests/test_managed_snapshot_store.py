@@ -60,6 +60,132 @@ def test_publish_moves_bytes_and_rebases_results(staged, tmp_path):
     assert reopened.predicted_result(handle) == published
 
 
+def _durable_copy(store, handle, source, tmp_path):
+    root = tmp_path / 'durable'
+    destination = Path(store.durable_path(handle, str(root)))
+    shutil.copytree(source, destination)
+    return str(root), destination
+
+
+def _files(path):
+    return {str(p.relative_to(path)): p.read_bytes()
+            for p in path.rglob('*') if p.is_file()}
+
+
+def test_restore_reuses_a_published_build_without_copying(staged, tmp_path):
+    store, handle, result, source = staged
+    durable_root, _ = _durable_copy(store, handle, source, tmp_path)
+    published = Path(store.publish(handle, result).index_path)
+    before = _files(published), store._reference(handle).read_bytes()
+
+    def copy_tree(*args):
+        pytest.fail('A verified published build must not be copied over')
+
+    restored = store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
+                             copy_tree=copy_tree)
+    assert restored.index_path == str(published)
+    assert (_files(published), store._reference(handle).read_bytes()) == before
+
+
+@pytest.mark.parametrize('identified', [False, True])
+@pytest.mark.parametrize('stale_staging', [False, True])
+def test_restore_stages_and_publishes_new_managed_copies(
+        staged, tmp_path, identified, stale_staging):
+    store, handle, _, source = staged
+    if not identified:
+        (source / 'index_metadata.json').write_text('{}')
+        _manifest(source)
+    durable_root, durable = _durable_copy(store, handle, source, tmp_path)
+    expected = (durable / 'col_stats.json').read_bytes()
+    shutil.rmtree(source)  # The copied marker now names a vanished location.
+    if stale_staging:
+        source.mkdir()
+        (source / '_SUCCESS').write_text('interrupted old copy')
+    destinations = []
+
+    def copy_tree(origin, destination):
+        destinations.append(Path(destination))
+        assert Path(destination) == source
+        assert not Path(destination).is_relative_to(tmp_path / 'indexes')
+        shutil.copytree(origin, destination)
+
+    restored = store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
+                             copy_tree=copy_tree)
+    expected_path = tmp_path / 'indexes/build' if identified else source
+    assert restored.index_path == str(expected_path)
+    assert destinations == [source]
+    assert store.path(handle) == str(expected_path)
+    assert store.verify(handle) == restored
+    assert (expected_path / 'col_stats.json').read_bytes() == expected
+    assert store._reference(handle).is_file() == identified
+
+
+def test_restore_does_not_overwrite_a_valid_legacy_copy_hidden_by_a_bad_reference(
+        staged, tmp_path):
+    store, handle, _, source = staged
+    durable_root, _ = _durable_copy(store, handle, source, tmp_path)
+    store._reference(handle).write_text('damaged reference')
+    before = _files(source), store._reference(handle).read_bytes()
+
+    def copy_tree(*args):
+        pytest.fail('A valid retained legacy snapshot must not be overwritten')
+
+    with pytest.raises(FileExistsError, match='completed snapshot'):
+        store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
+                      copy_tree=copy_tree)
+    assert (_files(source), store._reference(handle).read_bytes()) == before
+
+
+@pytest.mark.parametrize('failure', ['copy', 'integrity'])
+def test_failed_restore_preserves_published_bytes_and_reference(
+        staged, tmp_path, failure):
+    store, handle, result, source = staged
+    durable_root, _ = _durable_copy(store, handle, source, tmp_path)
+    published = Path(store.publish(handle, result).index_path)
+    (published / 'index_metadata.json').unlink()
+    before = _files(published), store._reference(handle).read_bytes()
+    destinations = []
+
+    def copy_tree(origin, destination):
+        destinations.append(Path(destination))
+        assert Path(destination) == source
+        assert not Path(destination).is_relative_to(tmp_path / 'indexes')
+        shutil.copytree(origin, destination)
+        if failure == 'copy':
+            raise OSError('interrupted copy')
+        (Path(destination) / 'col_stats.json').write_text('truncated')
+
+    from diskgraph import DiskgraphCorruptionError
+
+    with pytest.raises(OSError if failure == 'copy' else DiskgraphCorruptionError):
+        store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
+                      copy_tree=copy_tree)
+    assert destinations == [source]
+    assert (_files(published), store._reference(handle).read_bytes()) == before
+    assert not source.exists()
+
+
+def test_restore_repairs_a_damaged_managed_build_after_staging(staged, tmp_path):
+    store, handle, result, source = staged
+    durable_root, _ = _durable_copy(store, handle, source, tmp_path)
+    published = Path(store.publish(handle, result).index_path)
+    (published / 'index_metadata.json').unlink()
+    damaged = _files(published)
+
+    def copy_tree(origin, destination):
+        assert Path(destination) == source
+        assert _files(published) == damaged
+        shutil.copytree(origin, destination)
+
+    restored = store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
+                             copy_tree=copy_tree)
+    assert restored.index_path == str(published)
+    assert store.verify(handle) == restored
+    assert not source.exists()
+    quarantined = list((source.parent / '.damaged').iterdir())
+    assert len(quarantined) == 1 and _files(quarantined[0]) == damaged
+
+
 def test_crash_after_rename_preserves_a_recoverable_build(
         staged, tmp_path, monkeypatch):
     import kumo_core.diskgraph.snapshot as snapshots
