@@ -1,0 +1,40 @@
+# Downstream adaptation on the search's winning checkpoint.
+#
+# - `lora_recipe`: the recipe's current arm (rank 8, alpha 16, qkv and out, 300
+#   steps), for reference.
+# - `lora_mlp_*`: PRAGMA's LoRA: qkv, out, and the MLP projections (`ff.0`,
+#   `ff.2` in every transformer block), alpha equal to rank, trained up to a
+#   few thousand steps with early stopping on 20% of the training entities.
+# - `lora_fusion_weak`: nuFormer's joint-fusion head over the embedding and the
+#   `xgboost_raw` row (the last event plus the profile), trained end to end:
+#   the fine-tuned counterpart of `xgboost_raw_embedding`.
+# - `full`: every weight trains; the ceiling.
+#
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run --all-extras python benchmarks/adapt_sweep.py \
+#     --spec benchmarks/sweeps/blueprint_v2_adapt.yaml --out outputs/proxy/adapt.json
+run_dir: outputs/proxy/stage3/causal
+tasks: [fraud, churn_6m, history_window]
+variants:
+  - name: lora_recipe
+    finetune: {method: lora, max_steps: 300, learning_rate: 0.001, batch_size: 32}
+    lora: {rank: 8, alpha: 16.0, targets: [qkv, out]}
+  - name: lora_mlp_lr3e-4
+    finetune: &early
+      method: lora
+      max_steps: 3000
+      learning_rate: 0.0003
+      batch_size: 32
+      validation_fraction: 0.2
+      eval_every: 50
+      patience: 4
+    lora: &pragma {rank: 8, alpha: 8.0, targets: [qkv, out, ff.0, ff.2]}
+  - name: lora_mlp_lr1e-3
+    finetune: {<<: *early, learning_rate: 0.001}
+    lora: *pragma
+  - name: lora_fusion_weak
+    finetune: {<<: *early, learning_rate: 0.001, head: joint_fusion}
+    lora: *pragma
+    raw: weak
+  - name: full
+    finetune: {<<: *early, method: full, learning_rate: 0.0001}

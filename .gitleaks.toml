@@ -50,3 +50,19 @@ condition = "AND"
 regexTarget = "secret"
 regexes = ['''^synthetic_sigv4$''']
 paths = ['''^scripts/benchmarks/object_store/compare_streams\.py$''']
+
+[[allowlists]]
+description = "The transaction import inventory contains source-file SHA-256 checksums."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
+paths = ['''^packages/kumo-transaction/UPSTREAM\.json$''']
+
+[[allowlists]]
+description = "This imported tokenizer call passes an attribute, not a credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^max_length=self\.max_length$''']
+paths = ['''^packages/kumo-transaction/src/tfm/data/token_cache/flat\.py$''']

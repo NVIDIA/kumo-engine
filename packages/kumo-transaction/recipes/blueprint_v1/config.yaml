@@ -1,0 +1,134 @@
+seed: 42
+
+# The v1 Blueprint's model and schedule on one GPU, from public data only.
+#
+# v1's Llama decoder, 25.9M parameters here (hidden 512, 8 layers, 8 query / 2 KV heads,
+# SwiGLU 1408, RoPE theta 5e5) pretrained by next-event prediction on 4,096-token
+# windows of each user's history, then probed per transaction: each labelled
+# transaction is scored with that user's last 128 transactions as context.
+#
+# Sized on a DGX Spark (GB10, 128 GB unified memory). The cap of 2,000 takes
+# every TabFormer user with training rows. `training.backend: ddp` is the eager
+# loop in one process, so one GPU runs a batch of 16 windows. Under
+# `torchrun --nproc-per-node N` every GPU holds a full replica of the model and
+# trains on its own 16 windows per step (a global batch of 16 * N); to shard
+# the model instead, see config.multi_gpu.yaml. config.cached.yaml is this run
+# with its pretraining windows read from a token cache.
+#
+#   uv sync --extra huggingface --extra baselines
+#   uv run tfm prepare-tabformer --root ~/data/TabFormer
+#   export TFM_TABFORMER_ROOT=~/data/TabFormer
+#   uv run tfm report --recipe blueprint_v1 --device cuda \
+#     --run-dir outputs/blueprint_v1/gb10
+#
+# Two GPUs:
+#
+#   uv run torchrun --nproc-per-node 2 -m tfm.cli.main report \
+#     --recipe blueprint_v1 --device cuda --run-dir outputs/blueprint_v1/gb10_2gpu
+
+data:
+  adapter: tabformer
+  path: null
+  split_protocol: precomputed
+  observation_window: 36500d
+  n_entities: 2000
+  max_entities: 2000
+  # 11 fields and a <sep> per event, plus <bos> and <eos>: 12 * 128 + 1.
+  sequence_length: 128
+  max_tokens: 1537
+  events_per_entity: 128
+  # Pretraining rows are wider than probe rows: 12 * 341 + 1 = 4093 tokens.
+  pretrain_windows:
+    events: 341
+    max_tokens: 4096
+  # `precomputed` takes its cutoffs from v1's train / val / test partitions
+  # (train ends 2017-05-13); only label_delay is read from temporal_split.
+  temporal_split:
+    train_end: "2016-01-01T00:00:00Z"
+    validation_end: "2018-01-01T00:00:00Z"
+    label_delay: 0h
+
+features:
+  tokenizer: transaction_field_tokenizer
+  # v1's fields without CUST, which is constant within a user's history.
+  fields: [AMT, MERCH, CAT, MCC, HOUR, DOW, MONTH, CARD, CHIP, ZIP3, STATE]
+
+model:
+  backbone: huggingface
+  huggingface:
+    pretrained_path: null
+    num_key_value_heads: 2
+    rope_theta: 500000.0
+    tie_word_embeddings: false
+  composition:
+    granularity:
+      type: flat
+      decoder:
+        depth: 8
+        mask: causal
+        hidden_size: 512
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 4096
+        ffn_size: 1408
+    position: rope
+    attention: sdpa
+    objective: next_event
+    readout: last_token
+    heads:
+      fraud: binary
+
+training:
+  max_steps: 3000
+  log_every: 50
+  batch_size: 16
+  learning_rate: 0.0002
+  precision: bf16
+  backend: ddp
+  packing: false
+  shuffle: true
+  optimizer:
+    betas: [0.9, 0.95]
+    weight_decay: 0.077
+    lr_schedule: cosine
+    warmup_steps: 500
+    min_learning_rate: 0.0000065
+    schedule_steps: 10000
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    # Every training-side fraud (about 17,000) with up to 5 negatives each; the
+    # evaluation side scores every test-period row of the evaluation users, at
+    # TabFormer's natural fraud rate (about 0.1%).
+    max_rows: null
+    train_negatives_per_positive: 5
+  inference_batch_size: 32
+  inference_precision: bf16
+  tabular_baselines:
+    enabled: true
+    # One setting for every arm, so arms differ only in their features: the
+    # median of seed 42's 30-trial searches on the five history-window arms,
+    # which saw training rows only.
+    xgboost_trials: 0
+    xgboost_params:
+      max_depth: 7
+      learning_rate: 0.02
+      min_child_weight: 2.8
+      subsample: 0.87
+      colsample_bytree: 0.76
+      reg_lambda: 0.43
+      reg_alpha: 0.09
+      scale_pos_weight: 1.0
+    n_jobs: 16
+    device: cuda
+    exclude_keys: [user]
+
+runtime:
+  device: auto

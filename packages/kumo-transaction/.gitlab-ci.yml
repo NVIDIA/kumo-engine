@@ -1,0 +1,104 @@
+# CPU-only merge gate. No GPU, network downloads, RAPIDS, or LFS weights.
+default:
+  image: python:3.12-bookworm
+  # A job that hangs fails in 30 minutes, not at the project's limit; a newer
+  # pipeline on the same branch cancels this one.
+  timeout: 30m
+  interruptible: true
+  after_script:
+    - uv cache prune --ci || true
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  UV_LINK_MODE: copy
+  # uv's default cache is ~/.cache/uv, outside the project, so GitLab never
+  # saved it and every job downloaded torch again.
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+  # pyright runs its bundled checker on the nodejs-wheel-binaries Node.js (the
+  # dev extra's `pyright[nodejs]`); this also skips its PyPI version lookup.
+  PYRIGHT_PYTHON_IGNORE_WARNINGS: "1"
+
+cache:
+  key:
+    files:
+      - uv.lock
+  paths:
+    - .cache/uv
+
+stages:
+  - lint
+  - test
+
+.uv_setup: &uv_setup
+  - python -m pip install --quiet uv
+  - uv sync --frozen --extra dev
+
+lint:
+  stage: lint
+  script:
+    - *uv_setup
+    - uv run ruff check src tests recipes benchmarks scripts
+    - uv run ruff format --check src tests recipes benchmarks scripts
+    - uv run pyright src/tfm
+
+# `needs: []` starts each test job at once instead of after lint, so a lint
+# failure no longer hides the test results.
+unit:
+  stage: test
+  needs: []
+  script:
+    - *uv_setup
+    - uv run pytest tests/unit -q
+
+contract:
+  stage: test
+  needs: []
+  script:
+    - *uv_setup
+    - uv run pytest tests/contract -q
+
+recipe-smoke:
+  stage: test
+  needs: []
+  script:
+    - *uv_setup
+    - uv run pytest tests/recipe_smoke -q
+
+# The Blueprint v2 lab notebooks read a downloaded book and checkpoint on a
+# GPU; TFM_NOTEBOOK_SMOKE=1 runs them on a generated book on CPU instead.
+notebooks:
+  stage: test
+  needs: []
+  variables:
+    TFM_NOTEBOOK_SMOKE: "1"
+  script:
+    - python -m pip install --quiet uv
+    - uv sync --frozen --extra dev --extra notebooks --extra baselines --extra umap
+    - env -u TFM_PRAGMATIQ_ROOT -u TFM_TABFORMER_ROOT -u TFM_V2_CHECKPOINT uv run pytest --nbmake notebooks -q
+
+docs:
+  stage: test
+  needs: []
+  script:
+    - python -m pip install --quiet uv
+    - uv sync --frozen --extra docs
+    - uv run mkdocs build --strict
+  artifacts:
+    paths:
+      - site
+    expire_in: 1 week
+
+# GitLab Pages serves what a job named `pages` leaves in `public/`. Only the
+# default branch publishes; every branch still builds the site in `docs`.
+pages:
+  stage: test
+  needs: []
+  script:
+    - python -m pip install --quiet uv
+    - uv sync --frozen --extra docs
+    - uv run mkdocs build --strict --site-dir public
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

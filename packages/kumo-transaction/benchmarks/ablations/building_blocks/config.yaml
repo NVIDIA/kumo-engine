@@ -1,0 +1,65 @@
+seed: 42
+
+# The base composition every variant in variants.yaml starts from: the
+# Blueprint v2 hybrid at CPU size, on a generated pragmatiq-shaped book.
+# Every variant shares this data section and seed, so the book, cutoffs, label
+# windows, and probe user split are identical; only the swapped slot differs.
+#
+# The fixture writes one event a day from 2024-01-01; every third is an app
+# event. These cutoffs leave two transactions per user in the evaluation label
+# window, (validation_end, test_cutoff], so the fraud probe has both classes.
+
+data:
+  adapter: pragmatiq
+  observation_window: 90d
+  sequence_length: 8
+  max_tokens: 24
+  n_entities: 48
+  events_per_entity: 9
+  temporal_split:
+    train_end: "2024-01-04T00:00:00Z"
+    validation_end: "2024-01-06T00:00:00Z"
+    label_delay: 0h
+
+features:
+  tokenizer: key_value_time
+
+model:
+  composition:
+    granularity:
+      type: profile_event_decoder
+      profile_depth: 1
+      event_depth: 2
+      decoder:
+        depth: 2
+        mask: causal
+        hidden_size: 32
+        num_heads: 4
+        dropout: 0.0
+        max_seq_len: 24
+    position: time_rope
+    attention: eager
+    objective: next_event_fields
+    readout: last_token
+    heads:
+      fraud: binary
+
+objective:
+  auxiliary: [token_event_key_mlm]
+
+training:
+  max_steps: 20
+  batch_size: 8
+  learning_rate: 0.001
+  precision: fp32
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 5
+
+runtime:
+  device: cpu

@@ -1,0 +1,47 @@
+recipes:
+  - id: blueprint_v1
+    title: NVIDIA TFM Blueprint v1 (flat tokens, causal decoder, XGBoost)
+    tier: experimental
+    data: tabformer
+    notebooks: blueprint_v1
+    configs:
+      smoke: eager decoder on generated data, CPU, about a minute
+      small: 24 TabFormer users and a small Llama, CPU, minutes
+      default: v1's 25.9M Llama on all of TabFormer, one GPU or ddp replicas under torchrun
+      cached: the default with pretraining windows read from a token cache (ADR 0016)
+      multi_gpu: the default model under fsdp2, several GPUs with torchrun
+    notes: >
+      v1's flow rebuilt on the SDK on public TabFormer data, with its
+      label-shift defect fixed and each transaction scored with the customer's
+      recent history. Raw-feature XGBoost against raw features plus the
+      embedding (ADR 0017).
+
+  - id: pragma_like
+    title: PRAGMA-like encoder (profile, event, and history encoders)
+    tier: experimental
+    data: pragmatiq
+    notebooks: pragmatiq
+    configs:
+      smoke: generated pragmatiq fixture, CPU
+      default: matched to blueprint_v2's default config, one GPU
+      pragma_s: PRAGMA-S dimensions
+      pragma_m: PRAGMA-M dimensions
+      pragma_l: PRAGMA-L dimensions
+      synth_1m: CPU run on a 1M-user book sample
+    notes: >
+      Revolut PRAGMA's encoder-only key-value-time stack with masked modelling
+      (ADR 0007). Shares its event and profile encoders with blueprint_v2.
+
+  - id: blueprint_v2
+    title: NVIDIA TFM Blueprint v2 (PRAGMA encoders, causal history decoder)
+    tier: experimental
+    data: pragmatiq
+    notebooks: pragmatiq
+    configs:
+      smoke: generated pragmatiq fixture, CPU
+      default: 8.4M parameters on a 100k-user book, one GPU
+      scale: about 100M parameters, one GPU or ddp
+    notes: >
+      PRAGMA-style profile and event encoders feeding a causal history decoder,
+      trained on next-event fields plus within-event MLM, scored on several
+      tasks of the same users (ADR 0012).

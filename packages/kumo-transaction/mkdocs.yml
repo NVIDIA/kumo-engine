@@ -1,0 +1,170 @@
+site_name: Transaction Foundation Model kit
+site_description: Reference architectures for transaction foundation models
+repo_name: NVIDIA/kumo-engine
+repo_url: https://github.com/NVIDIA/kumo-engine
+edit_uri: ""
+
+# Site-only pages (the API reference). Everything else is laid out at its
+# repository path by scripts/gen_doc_pages.py, so links work on the site and
+# on GitHub alike.
+docs_dir: docs/_site
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_doc_pages.py
+  - mkdocs-jupyter:
+      execute: false
+      include: ["notebooks/**/*.ipynb"]
+      include_source: true
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            show_symbol_type_heading: true
+            members_order: source
+            filters: ["!^_"]
+            docstring_style: google
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+validation:
+  omitted_files: info
+  absolute_links: warn
+  unrecognized_links: info
+  anchors: info
+
+exclude_docs: |
+  AGENTS.md
+  */AGENTS.md
+
+nav:
+  - Home: README.md
+  - Learn:
+      - Start here: notebooks/README.md
+      - "Blueprint v1 on TabFormer":
+          - notebooks/blueprint_v1/README.md
+          - notebooks/blueprint_v1/01_dataset_baseline.ipynb
+          - notebooks/blueprint_v1/02_seq_preproc_tokenization.ipynb
+          - notebooks/blueprint_v1/03_foundation_model_training.ipynb
+          - notebooks/blueprint_v1/04_inference_embedding_extraction.ipynb
+          - notebooks/blueprint_v1/05_xgboost_fraud_detection.ipynb
+      - "PRAGMA-like and Blueprint v2 on pragmatiq":
+          - notebooks/pragmatiq/README.md
+          - notebooks/pragmatiq/00_blueprint_v2_tour.ipynb
+          - notebooks/pragmatiq/01_data_and_labels.ipynb
+          - notebooks/pragmatiq/02_event_representation.ipynb
+          - notebooks/pragmatiq/03a_pragma_encoder.ipynb
+          - notebooks/pragmatiq/03b_blueprint_v2_decoder.ipynb
+          - notebooks/pragmatiq/04_readout_and_adaptation.ipynb
+          - notebooks/pragmatiq/05_scaling_up.ipynb
+          - notebooks/pragmatiq/06_swap_one_slot.ipynb
+      - Concepts:
+          - docs/concepts/building-blocks.md
+          - docs/concepts/transaction-sequences.md
+          - docs/concepts/data-contract.md
+          - docs/concepts/leakage-and-temporal-splits.md
+          - docs/concepts/objectives-and-embeddings.md
+          - docs/concepts/evaluation-protocol.md
+          - docs/concepts/industry-landscape.md
+  - Use:
+      - Recipes: recipes/README.md
+      - recipes/blueprint_v1/README.md
+      - recipes/pragma_like/README.md
+      - recipes/blueprint_v2/README.md
+      - benchmarks/ablations/building_blocks/README.md
+      - docs/reference/datasets.md
+      - docs/reference/config-schema.md
+      - docs/reference/compatibility-matrix.md
+      - docs/reference/hardware-and-runtimes.md
+      - docs/migration/v1-to-v2.md
+      - docs/migration/2.0.0a1-to-2.0.0a2.md
+      - docs/reference/glossary.md
+  - API reference:
+      - api/index.md
+      - api/tfm.md
+      - api/experimental.md
+      - api/config.md
+      - api/contracts.md
+      - api/runtime.md
+      - api/data.md
+      - api/features.md
+      - api/adaptation.md
+      - api/evaluation.md
+  - Results:
+      - benchmarks/results/README.md
+      - benchmarks/results/blueprint_v1_seeds.md
+      - benchmarks/results/pragma_like_tabformer_seed42.md
+      - benchmarks/results/flat_encoder_tabformer_seed42.md
+      - benchmarks/results/blueprint_v2_seeds.md
+      - benchmarks/results/blueprint_v2_final_sweep.md
+      - benchmarks/results/blueprint_v2_hybrid_lab_kvt_seeds.md
+      - benchmarks/results/blueprint_v2_hybrid_lab_v1_flat_splice_seeds.md
+      - benchmarks/results/blueprint_v2_hybrid_gb10_tuning.md
+      - benchmarks/results/pragmatiq_fraud_separability.md
+      - Archive:
+          - benchmarks/results/archive/tabformer_hf_decoder_gb10_seed42.md
+          - benchmarks/results/archive/blueprint_v2_hybrid_lab_seeds.md
+          - benchmarks/results/archive/blueprint_v2_hybrid_lab_splice_seeds.md
+          - benchmarks/results/archive/blueprint_v2_hybrid_lab_v1_flat_seeds.md
+      - docs/reference/roadmap.md
+  - Extend:
+      - docs/reference/architecture-overview.md
+      - docs/reference/extending.md
+      - docs/contracts/transaction-event-schema.md
+      - docs/contracts/model-input-output-contracts.md
+      - docs/contracts/task-label-contracts.md
+      - docs/reference/support-policy.md
+      - notebooks/STYLE.md
+      - docs/recipes/recipe-template.md
+      - CONTRIBUTING.md
+      - docs/governance/release-process.md
+      - docs/governance/data-governance.md
+      - docs/governance/responsible-ai.md
+      - docs/governance/model-card-template.md
+  - Decisions:
+      - docs/architecture/README.md
+      - docs/architecture/0001-domain-contracts.md
+      - docs/architecture/0002-config-composition.md
+      - docs/architecture/0003-architecture-support-tiers.md
+      - docs/architecture/0004-temporal-evaluation.md
+      - docs/architecture/0005-artifact-policy.md
+      - docs/architecture/0006-optional-extras.md
+      - docs/architecture/0007-experimental-profile-history.md
+      - docs/architecture/0008-probe-split-integrity.md
+      - docs/architecture/0011-training-backend-contract.md
+      - docs/architecture/0012-blueprint-v2-composition.md
+      - docs/architecture/0013-fraud-probe-split-integrity.md
+      - docs/architecture/0014-building-block-taxonomy.md
+      - docs/architecture/0015-dataset-strategy-and-spliced-fraud.md
+      - docs/architecture/0016-token-cache.md
+      - docs/architecture/0017-v1-blueprint-on-the-sdk.md
+      - docs/architecture/0018-one-headline-comparison.md
+      - docs/architecture/0019-flat-bert-encoder.md
+  - Changelog: CHANGELOG.md

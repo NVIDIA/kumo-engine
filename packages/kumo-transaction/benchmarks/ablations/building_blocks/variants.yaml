@@ -1,0 +1,50 @@
+# One variant per row. `overrides` are dotted keys into config.yaml; a mapping
+# value replaces that whole section. Each row changes one slot. When a slot
+# cannot change alone (a flat stream needs a flat structure), the row changes
+# the smallest set of keys that stays valid and says so in `note`.
+
+variants:
+  - name: v2_hybrid
+    slot: baseline
+    note: key-value-time tokens, TimeRoPE, profile + event encoders under a causal decoder, next-event fields + MLM, last-token readout.
+
+  - name: no_time_positions
+    slot: event representation
+    overrides:
+      model.composition.position: nope
+
+  - name: fixed_event_fields
+    slot: event representation
+    overrides:
+      features.tokenizer: event_fields
+      data.max_tokens: 12
+    note: the 12 flat Blueprint fields as key-value pairs; app events have none of them and are dropped.
+
+  - name: flat_decoder
+    slot: sequence architecture
+    overrides:
+      features.tokenizer: flat_key_value
+      data.max_tokens: 160
+      model.composition.position: nope
+      model.composition.objective: next_event
+      objective.auxiliary: []
+      model.composition.granularity:
+        type: flat
+        decoder: {depth: 2, mask: causal, hidden_size: 32, num_heads: 4, dropout: 0.0, max_seq_len: 160}
+    note: one flat token stream through a causal decoder, trained on next-token prediction; the token scheme and objective change with it because a flat stream has no event slots.
+
+  - name: next_fields_only
+    slot: objective
+    overrides:
+      objective.auxiliary: []
+    note: drops the within-event MLM loss.
+
+  - name: plus_contrastive
+    slot: objective
+    overrides:
+      objective.auxiliary: [token_event_key_mlm, subsequence_contrastive]
+
+  - name: mean_readout
+    slot: readout
+    overrides:
+      model.composition.readout: mean

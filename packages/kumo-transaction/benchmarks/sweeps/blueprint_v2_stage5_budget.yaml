@@ -1,0 +1,27 @@
+# Stage 5: budget. Stage 3's causal winner (128-event context, Muon) trained
+# three times as long: 4,500 steps of 128 windows x 128 events, about one pass
+# over the book's train-side windows. Warmup stays at 5% of steps. Whether the
+# probes still rise with tokens is the predictor of what a larger model and
+# budget on H100s would add.
+#
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run --all-extras python benchmarks/proxy_sweep.py \
+#     --spec benchmarks/sweeps/blueprint_v2_stage5_budget.yaml \
+#     --run-root outputs/proxy/stage5 --summary outputs/proxy/stage5.json
+base: benchmarks/ablations/blueprint_v2_lab.yaml
+set:
+  data.token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab_hkey
+  features.categorical_keys: [mcc, app_version]
+  features.hashed_keys: [merchant, device_id, counterparty]
+  features.hash_buckets: 4096
+  data.pretrain_windows.events: 128
+  training.batch_size: 128
+  training.learning_rate: 0.001
+  training.optimizer.max_grad_norm: 1.0
+  training.optimizer.name: muon
+  training.optimizer.muon.learning_rate: 0.01
+tasks: [history_window, fraud, churn_6m]
+xgboost_trials: 8
+variants:
+  - name: causal_3x
+    set: {training.max_steps: 4500, training.optimizer.warmup_steps: 225}

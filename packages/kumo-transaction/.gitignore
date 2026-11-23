@@ -1,0 +1,78 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+
+# Virtualenvs
+.venv/
+venv/
+env/
+.env
+
+# Tooling
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.pyright/
+
+# Jupyter
+.ipynb_checkpoints
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+.devcontainer/
+
+# Generated run artifacts — do not commit
+outputs/
+# MkDocs build output and the mkdocs-jupyter render cache (`make docs`)
+/site/
+/.cache/
+artifacts/runs/
+
+# Large / private data (never commit real financial records)
+data/raw/
+data/processed/
+data/TabFormer/
+data/decoder_corpus/
+data/embeddings/
+*.csv
+*.parquet
+!tests/fixtures/pragmatiq/*.parquet
+!tests/fixtures/pragmatiq/labels/*.parquet
+*.jsonl
+*.npy
+*.npz
+
+# Model weights (v2 stores manifests only; checkpoints stay off the default tree)
+*.bin
+*.pt
+*.pth
+*.onnx
+*.trt
+*.safetensors
+models/
+
+# Logs
+*.log
+wandb/
+runs/
+tensorboard/
+logs/
+
+# uv
+uv.lock.bak

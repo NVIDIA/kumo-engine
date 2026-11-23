@@ -1,0 +1,53 @@
+# pragmatiq WorldConfig for the book the blueprint_v2 pragmatiq configs
+# are sized against. Same as pragmatiq v1.1.0's configs/data/synthetic.yaml,
+# except for the span and the label evaluation months, which are moved so that
+# every forecast label is dated after this kit's train cutoff (2024-06-01).
+# The encoder then never pretrains on events inside a label's horizon, and
+# `default_12m` is scored instead of skipped (ADR 0013).
+#
+#   month 18 = 2024-07-01: default_12m, 12 months of lookahead (to 2025-07)
+#   month 24 = 2025-01-01: churn_6m and ltv_positive, 6 months of lookahead
+#   31 months: 2023-01-01 to 2025-08-01
+#
+# From a dynamiq-ai/pragmatiq v1.1.0 checkout:
+#   uv run pragmatiq synth generate --out data/synth_100k_gen2_m31_seed0 \
+#     --config <this file> --n-users 100000 --seed 0 --n-workers 40
+
+n_users: 100_000
+start_date: "2023-01-01"
+months: 31
+n_merchants: 50_000
+fraud_rate: 0.004
+default_rate: 0.03
+mule_ring_count: 8
+seed: 0
+
+country_mix:
+  GB: 0.55
+  IE: 0.10
+  FR: 0.10
+  DE: 0.10
+  ES: 0.05
+  PL: 0.05
+  LT: 0.05
+
+archetype_mix:
+  student: 0.10
+  salaried: 0.38
+  freelancer: 0.10
+  family: 0.16
+  pensioner: 0.07
+  high_net_worth: 0.03
+  trader: 0.05
+  dormant: 0.06
+  mule: 0.01
+  fraud_victim: 0.04
+
+trait_noise: 0.55
+label_noise: 0.005
+activity_scale: 1.0
+missing_field_rate: 0.0
+
+eval_month_credit: 18
+eval_month_short: 24
+campaigns_per_month: 2.0

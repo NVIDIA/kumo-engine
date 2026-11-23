@@ -1,0 +1,68 @@
+seed: 42
+
+# The recipe's pipeline on a generated book, with no extras: an eager decoder
+# (which declares no positions) instead of Llama, and the logistic arms only.
+# tests/recipe_smoke also runs it with Llama and the XGBoost arms when those
+# extras are installed.
+
+data:
+  adapter: synthetic
+  split_protocol: timestamp
+  observation_window: 90d
+  sequence_length: 12
+  max_tokens: 145
+  n_entities: 24
+  events_per_entity: 16
+  temporal_split:
+    train_end: "2024-01-04T00:00:00Z"
+    validation_end: "2024-01-07T00:00:00Z"
+    label_delay: 12h
+
+features:
+  tokenizer: transaction_field_tokenizer
+  fields: [AMT, MERCH, CAT, MCC, HOUR, DOW, MONTH, CARD, CHIP, ZIP3, STATE]
+
+model:
+  backbone: eager
+  composition:
+    granularity:
+      type: flat
+      decoder:
+        depth: 2
+        mask: causal
+        hidden_size: 64
+        num_heads: 4
+        dropout: 0.0
+        max_seq_len: 145
+    position: nope
+    attention: eager
+    objective: next_event
+    readout: last_token
+    heads:
+      fraud: binary
+
+training:
+  max_steps: 8
+  batch_size: 8
+  learning_rate: 0.0003
+  precision: fp32
+  backend: eager
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 5
+  history_window:
+    enabled: true
+    max_rows: 200
+    train_negatives_per_positive: 4
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 0
+    exclude_keys: [user]
+
+runtime:
+  device: cpu

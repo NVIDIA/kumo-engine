@@ -1,0 +1,135 @@
+seed: 42
+
+# PRAGMA-like at the size and on the rows of recipes/blueprint_v2/config.yaml,
+# so the two architectures are compared on one book, split, token cache, and
+# probe sample. Only the architecture slots differ:
+#
+# - granularity: bidirectional profile / event / history encoders
+#   (`profile_history`, depths 2/4/4, d=256, 8 heads) instead of the causal
+#   history decoder;
+# - objective: the token / event / key MLM alone (PRAGMA has no next-event
+#   head, so there is no next-event surprise arm);
+# - readout: the profile `[USR]` token instead of the last event.
+#
+# Build the cache once (shared with blueprint_v2), then train and report:
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run tfm cache-tokens --recipe pragma_like --workers 6
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+#   uv run tfm report --recipe pragma_like --device cuda \
+#     --run-dir outputs/pragma_like/lab
+
+data:
+  adapter: pragmatiq
+  path: null
+  observation_window: 730d
+  sequence_length: 128
+  max_tokens: 40
+  n_entities: 10000
+  max_entities: 10000
+  events_per_entity: 128
+  pretrain_windows:
+    events: 128
+  token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab_hkey
+  temporal_split:
+    train_end: "2024-06-01T00:00:00Z"
+    validation_end: "2024-09-01T00:00:00Z"
+    label_delay: 0h
+  fraud_labels: spliced_identity_theft
+  identity_theft:
+    victim_fraction: 0.2
+    negative_window: 7d
+    theft_lookback: 28d
+    donors: matched
+
+features:
+  tokenizer: key_value_time
+  categorical_keys: [mcc, app_version]
+  hashed_keys: [merchant, device_id, counterparty]
+  hash_buckets: 4096
+
+model:
+  composition:
+    granularity:
+      type: profile_history
+      profile_depth: 2
+      event_depth: 4
+      history_depth: 4
+      varlen: true
+      decoder:
+        depth: 4
+        mask: causal
+        hidden_size: 256
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 40
+    position: time_rope
+    attention: sdpa
+    objective: token_event_key_mlm
+    readout: usr_token
+    heads:
+      fraud: binary
+
+objective:
+  mlm:
+    p_token: 0.15
+    p_event: 0.10
+    p_key: 0.10
+    p_unk: 0.10
+    label_smoothing: 0.1
+
+training:
+  max_steps: 1500
+  batch_size: 128
+  learning_rate: 0.001
+  precision: bf16
+  backend: eager
+  shuffle: true
+  optimizer:
+    name: muon
+    muon:
+      learning_rate: 0.01
+    max_grad_norm: 1.0
+    betas: [0.9, 0.95]
+    weight_decay: 0.01
+    lr_schedule: cosine
+    warmup_steps: 75
+    min_learning_rate: 0.00002
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+  finetune:
+    enabled: true
+    method: lora
+    head: linear
+    rank: 8
+    alpha: 8.0
+    targets: [qkv, out, ff.0, ff.2]
+    max_steps: 3000
+    learning_rate: 0.001
+    batch_size: 32
+    validation_fraction: 0.2
+    eval_every: 50
+    patience: 4
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    max_rows: 4000
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 0
+    xgboost_params:
+      max_depth: 5
+      learning_rate: 0.05
+      min_child_weight: 8.0
+      subsample: 0.75
+      colsample_bytree: 0.6
+      reg_lambda: 0.04
+      reg_alpha: 0.05
+      scale_pos_weight: 1.0
+
+runtime:
+  device: auto
