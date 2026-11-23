@@ -195,3 +195,18 @@ def test_snowflake_phase_evidence_requires_receipt_hashes_and_worker_exits(tmp_p
         notebook_receipt=dict(logical_files=names, artifacts=hashes))))
     with pytest.raises(ValueError, match='checksum|exit code'):
         runner.verify('snowflake', 'gpu', execution)
+
+
+def test_reusable_matrix_receives_only_declared_platform_credentials():
+    import yaml
+
+    keys = {'KUMO_DATABRICKS_TEST_HOST', 'KUMO_DATABRICKS_TEST_PAT',
+            'KUMO_DATABRICKS_TEST_USER', 'SNOWFLAKE_TEST_CONFIG',
+            'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'}
+    caller = yaml.safe_load((ROOT / '.github/workflows/kumo-engine-sagemaker-notebook.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/kumo-engine-byom-platforms.yml').read_text())
+    declared = workflow[True]['workflow_call']['secrets']
+    forwarded = caller['jobs']['byom-platforms']['secrets']
+    assert set(declared) == keys
+    assert forwarded == {key: '${{ secrets.' + key + ' }}' for key in keys}
+    assert workflow['jobs']['lifecycle']['environment'] == '${{ matrix.environment }}'

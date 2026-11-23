@@ -217,6 +217,13 @@ jobs:
   byom-platforms:
     if: inputs.platform_matrix
     uses: ./.github/workflows/kumo-engine-byom-platforms.yml
+    secrets:
+      KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+      KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+      KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+      SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
+      SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
     with:
       platform: ${{ inputs.platform }}
       accelerator: ${{ inputs.accelerator }}

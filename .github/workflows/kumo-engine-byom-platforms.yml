@@ -23,6 +23,19 @@ on:  # yamllint disable-line rule:truthy
         description: Dedicated single-node KUMO_TEST_ GPU Databricks cluster
         type: string
   workflow_call:
+    secrets:
+      KUMO_DATABRICKS_TEST_HOST:
+        required: false
+      KUMO_DATABRICKS_TEST_PAT:
+        required: false
+      KUMO_DATABRICKS_TEST_USER:
+        required: false
+      SNOWFLAKE_TEST_CONFIG:
+        required: false
+      SNOWFLAKE_PRIVATE_KEY:
+        required: false
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:
+        required: false
     inputs:
       platform:
         type: string
