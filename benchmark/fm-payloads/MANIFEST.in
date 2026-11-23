@@ -1,0 +1,5 @@
+recursive-include fixtures *.json *.parquet
+recursive-include tests *.py
+include README.md
+include runner.py
+include make_fixture.py

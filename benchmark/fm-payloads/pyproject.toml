@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-fm-benchmark"
+version = "0.1.0a1"
+description = "Deferred frozen-bundle and DuckDB comparison tooling for kumo.fm"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["kumo-fm>=0.1.0a1", "duckdb==2.0.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+relbench = ["PyYAML>=6,<7"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"kumo_fm_benchmark._dataset_support" = ["presets/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
