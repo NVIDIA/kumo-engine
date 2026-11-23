@@ -104,7 +104,8 @@ def test_reference_comparison_requires_equal_known_instance_types():
 def test_runner_registers_with_repository_scope(tmp_path, tier):
     runner = ROOT / ".github/scripts/engine-e2e-runner.sh"
     source = runner.read_text()
-    start, end = source.index("mode=()\n"), source.index("unset RUNNER_TOKEN")
+    start = source.index("instance_hash=$(printf")
+    end = source.index("unset RUNNER_TOKEN")
     command = source[start:end]
     (tmp_path / "config.sh").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
     (tmp_path / "config.sh").chmod(0o755)
@@ -121,7 +122,7 @@ def test_runner_registers_with_repository_scope(tmp_path, tier):
     assert result[result.index("--name") + 1] == "pool-type-" + digest[:12]
     assert not any("i-0123456789abcdef0" in arg for arg in result)
     assert "--runnergroup" not in result
-    assert ("--ephemeral" in result) == (tier == "weekly")
+    assert "--ephemeral" in result
 
 
 @pytest.mark.parametrize("region,status", [("ap-northeast-2", 0),

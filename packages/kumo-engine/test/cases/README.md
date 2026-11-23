@@ -102,7 +102,7 @@ A launch that returns VMs clears the saved errors of its zone and its region. Wh
 If the Lambda cannot read the group of a region, it still counts the known VMs of that region. It changes nothing in that region in that sweep. If it can read no group, the sweep writes nothing.
 Each sweep writes a record under `<run>/<attempt>/pools/` in `ENGINE_E2E_RESULTS_S3`.
 Capacity waits are four hours nightly and 24 hours weekly. Case execution limits are 180 and 360 minutes, respectively.
-Weekly replaces its VM after each case. Nightly can reuse VMs. Re-run all jobs to create a new pool for an attempt.
+Each VM runs one case and then shuts down, and the pool launches a new VM for the next queued case. Re-run all jobs to create a new pool for an attempt.
 The Lambda treats a pool as drained only after all planned jobs are visible and none remains queued or waiting.
 It then gives no runner token, and an unused VM exits cleanly. Existing workers continue. The sweep schedule ends at the capacity deadline.
 Deletion is scheduled in the region of each group at the capacity deadline plus the case job timeout and a 30-minute cleanup buffer.

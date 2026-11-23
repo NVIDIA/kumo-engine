@@ -91,9 +91,12 @@ def _finite(values: Sequence[Any], dtype: DType, identity: str) -> np.ndarray:
     import pyarrow as pa
 
     try:
-        result = arrow_float64(pa.array(values, type=dtype.to_arrow())).to_numpy(
-            zero_copy_only=False
+        column = (
+            values
+            if isinstance(values, (pa.Array, pa.ChunkedArray))
+            else pa.array(values, type=dtype.to_arrow())
         )
+        result = arrow_float64(column).to_numpy(zero_copy_only=False)
     except (OverflowError, ValueError) as exc:
         raise ValueError(f"encoder {identity}: numeric conversion overflow") from exc
     if not np.isfinite(result).all():
@@ -463,17 +466,30 @@ def fit_encoder(
 ) -> FittedEncoder:
     """Fit once from permitted observations, excluding NULLs and padding."""
 
-    if hasattr(values, "to_pylist"):
-        values = values.to_pylist()
-    observed = (
-        ()
-        if isinstance(config, Text) and config.state is None
-        else [
-            dtype.normalize(value, path=f"encoder {identity}")
-            for value in values
-            if value is not None
-        ]
-    )
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if (
+        isinstance(config, (ZScore, Buckets))
+        and dtype.numeric
+        and isinstance(values, (pa.Array, pa.ChunkedArray))
+        and values.type == dtype.to_arrow()
+    ):
+        # Typed columns already validate the scalar domain. Keep every selected
+        # occurrence, in order, for the existing exact NumPy fitting reductions.
+        observed = pc.drop_null(values)
+    else:
+        if hasattr(values, "to_pylist"):
+            values = values.to_pylist()
+        observed = (
+            ()
+            if isinstance(config, Text) and config.state is None
+            else [
+                dtype.normalize(value, path=f"encoder {identity}")
+                for value in values
+                if value is not None
+            ]
+        )
     if isinstance(config, (ZScore, Buckets)) and not dtype.numeric:
         raise ValueError(f"encoder {identity}: {type(config).__name__} requires a numeric dtype")
     if isinstance(config, Text) and dtype.name != "string":

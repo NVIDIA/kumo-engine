@@ -100,11 +100,9 @@ unset token_file
 [[ -n $RUNNER_TOKEN ]] || exit 0
 boot_check='runner configuration'
 cd /opt/actions-runner
-mode=()
-if [[ $TIER == weekly ]]; then mode+=(--ephemeral); fi
 instance_hash=$(printf '%s' "$instance_id" | sha256sum | cut -c 1-12)
 [[ $instance_hash =~ ^[0-9a-f]{12}$ ]]
-runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./config.sh --unattended --disableupdate --url "https://github.com/$REPOSITORY" --token "$RUNNER_TOKEN" --name "$LABEL-$instance_hash" --labels "$LABEL" --no-default-labels --work /mnt/localssd/engine-e2e/_work "${mode[@]}"
+runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./config.sh --unattended --disableupdate --url "https://github.com/$REPOSITORY" --token "$RUNNER_TOKEN" --name "$LABEL-$instance_hash" --labels "$LABEL" --no-default-labels --work /mnt/localssd/engine-e2e/_work --ephemeral
 unset RUNNER_TOKEN
 printf 'ENGINE_E2E_INSTANCE_TYPE=%s\nENGINE_E2E_CAPACITY_DEADLINE=%s\n' "$actual_instance" "$CAPACITY_DEADLINE" >> .env
 chown engine-e2e:engine-e2e .env

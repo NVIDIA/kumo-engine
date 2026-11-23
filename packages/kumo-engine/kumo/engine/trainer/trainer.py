@@ -162,6 +162,10 @@ from kumo.engine.trainer.output_config import (
 )
 
 if TYPE_CHECKING:
+    from kumo.engine._explainability import ExplainabilityView
+    from kumo.engine._explainability._prediction import (
+        PredictionExplainabilityView,
+    )
     from kumo.engine._monitoring import DriftReport, EvaluationResult
 
 logger = logging.getLogger(__name__)
@@ -245,6 +249,19 @@ class TrainingResult:
         manifest = self.manifest
         return self._tracking or (None if manifest is None else
                                   manifest.tracking)
+
+    def visualize(self) -> 'ExplainabilityView':
+        """The model's evaluation and explanation widget.
+
+        Displayed in a notebook cell, it shows how the model scores on the
+        holdout against simple baselines and the last-epoch training score, and
+        which input columns it relies on. It reads the files this fit left
+        on disk; a result restored from a bundle alone shows what the bundle
+        holds. ``.html()`` returns the same widget as self-contained HTML.
+        """
+        from kumo.engine._explainability import ExplainabilityView
+
+        return ExplainabilityView(self)
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
@@ -350,6 +367,18 @@ class PredictionResult:
 
     explanations: PredictionExplanations = field(
         default_factory=PredictionExplanations.unavailable)
+
+    def visualize(self) -> 'PredictionExplainabilityView':
+        """Display retained batch cohorts and subgraphs without running
+        prediction."""
+        from kumo.engine._explainability._prediction import (
+            PredictionExplainabilityView,
+        )
+
+        manifest = (self.manifest if self.selection is not None
+                    or self._exported is not None else None)
+        run_id = self.selection.job_id if self.selection is not None else None
+        return PredictionExplainabilityView(self.explanations, manifest, run_id)
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
@@ -1120,6 +1149,7 @@ class Trainer:
             name. Defaults to the installed ones (``kumo-engine[text]``).
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
             ``gpu``, or ``mps``. Applies to training and prediction.
+            On native Windows, ``auto`` selects CPU.
     """
     def __init__(
         self,
@@ -1131,6 +1161,8 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        if accelerator == 'auto' and platform.system() == 'Windows':
+            accelerator = 'cpu'
         # Lightning maps 'gpu' to MPS on a Mac, and MPS kernels abort the
         # process before macOS 15.
         release = platform.mac_ver()[0]
@@ -1950,6 +1982,7 @@ class Trainer:
         with, registered in ``embedding_models`` under any name or installed.
         ``accelerator`` selects the device for this instance, defaulting to
         ``auto`` independently of the device used to train the model.
+        On native Windows, ``auto`` selects CPU.
         """
         return cls._load_bundle(Path(bundle_path), embedding_models,
                                 accelerator=accelerator)
@@ -1975,6 +2008,7 @@ class Trainer:
         Hashes detect corruption, not publisher authentication. Load only models
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
+        On native Windows, ``auto`` selects CPU.
         A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
         root (``models/<id>``) and ``location`` in its tracker's registry.
         """
