@@ -90,6 +90,7 @@ def test_entity_and_builder_key_overrides_are_not_accepted():
         api.DataLoaderSpec.from_json(json.dumps(payload))
 
 
+@pytest.mark.parametrize("engine_name", ["diskgraph"], indirect=True)
 def test_primary_key_answers_metadata_and_artifact_contract(engine_name, tmp_path):
     case = _case()
     assert "key" not in case.contract.to_dict()["sample"]["entity"]
@@ -114,6 +115,7 @@ def test_primary_key_answers_metadata_and_artifact_contract(engine_name, tmp_pat
 
 
 @pytest.mark.parametrize("candidate", (False, True))
+@pytest.mark.parametrize("engine_name", ["diskgraph"], indirect=True)
 def test_unknown_entity_table_is_rejected_before_engine_opening(candidate, engine_name):
     case = _case()
     entity = api.EntitySpec("absent")
@@ -181,6 +183,7 @@ def test_candidates_use_their_own_tables_primary_key():
     assert result.metadata["candidate_entity_ids"]["items"] == ((2, 1),)
 
 
+@pytest.mark.parametrize("engine_name", ["diskgraph"], indirect=True)
 def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name):
     case = _case()
     relation = api.RelationSpec("peer", "users", "pk", "users", "external")

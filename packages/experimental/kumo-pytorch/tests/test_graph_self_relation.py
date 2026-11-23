@@ -10,7 +10,7 @@ from conformance.assertions import bound_tables
 from kumo.pytorch import api
 
 
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 @pytest.mark.parametrize("pk_left", [True, False])
 @pytest.mark.parametrize("direction", ["forward", "reverse"])
 @pytest.mark.parametrize("connected", [True, False])

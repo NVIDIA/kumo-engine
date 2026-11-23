@@ -52,8 +52,8 @@ from kumo.pytorch.contract.sample import (
 )
 from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
 from kumo.pytorch.encoding import fit_encoder, typed_key
-from kumo.pytorch.engines.in_memory.source import InMemorySource
 from kumo.pytorch.spec import DataLoaderSpec
+from tests.native_fixtures import prepare_rows
 
 
 def _tables():
@@ -171,7 +171,7 @@ def _contract(*, flat=False, composite=False, masking=False):
 
 
 def _source(contract):
-    return InMemorySource(contract.schema, _tables())
+    return prepare_rows(contract, _tables())._source
 
 
 def _plan(contract):
@@ -555,7 +555,7 @@ def test_threshold_labels_refuse_nonfinite_cut_points():
         )
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 @pytest.mark.parametrize(
     "dtype,values",
     [

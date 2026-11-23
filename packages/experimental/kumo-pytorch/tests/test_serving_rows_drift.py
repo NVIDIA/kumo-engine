@@ -8,18 +8,17 @@ If it were ever narrower than inference, serving code that fetches what it lists
 would silently build other batches. For every golden case and each generated
 family (tabular, graph, sequence), this fetches per anchor exactly the rows the
 spec selects (`tests.serving_fetch`), assembles them with `ServingAssembler`, and
-compares the result with reference (in-memory) batch inference over the whole
-dataset.
+compares the result with offline batch inference over the whole dataset.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from functools import cache
 
 import pytest
 
-from conformance.assertions import bound_tables, case_settings
 from conformance.cases import discover_cases
 from conformance.generate import PHYSICAL_TYPES, GeneratedCase, generate_batch
 from conformance.graph_cases import graph_batch
@@ -27,11 +26,12 @@ from conformance.properties import SEEDS
 from conformance.registry import KNOWN_GAPS
 from conformance.sequence_cases import sequence_batch
 from kumo.pytorch import api
-from tests.serving_fetch import Tables, fetch
+from tests.serving_fetch import Tables, assert_offline_batch, fetch, offline_batches
 from tests.test_inference_lifecycle import assert_same_batches
 
 SEED = 7
-ENGINE = "in_memory"
+# Keep the original generated inputs, including seeds 0, 1 and 2.
+GENERATION_PROFILE = "in_memory"
 #: Properties whose generated batch is the shared covering array of its family:
 #: no known gap removes rows from it.
 GRAPH_PROPERTY, SEQUENCE_PROPERTY = "graph_structure", "sequence_point_in_time"
@@ -75,12 +75,12 @@ def drift_cases() -> Iterator[DriftCase]:
             {},
             case.physical_types,
         )
-    for seed in SEEDS[ENGINE]:
-        for case in generate_batch(seed, ENGINE):
+    for seed in SEEDS[GENERATION_PROFILE]:
+        for case in generate_batch(seed, GENERATION_PROFILE):
             yield _generated("tabular", case, PHYSICAL_TYPES)
-        for case in graph_batch(seed, ENGINE, GRAPH_PROPERTY):
+        for case in graph_batch(seed, GENERATION_PROFILE, GRAPH_PROPERTY):
             yield _generated("graph", case)
-        for case in sequence_batch(seed, ENGINE, SEQUENCE_PROPERTY):
+        for case in sequence_batch(seed, GENERATION_PROFILE, SEQUENCE_PROPERTY):
             yield _generated("sequence", case)
 
 
@@ -91,22 +91,18 @@ def test_the_generated_batches_are_the_shared_covering_arrays() -> None:
     assert not any(gap.property in (GRAPH_PROPERTY, SEQUENCE_PROPERTY) for gap in KNOWN_GAPS)
 
 
-def _run(case: DriftCase) -> tuple[api.Artifact, dict[str, api.Batch]]:
-    """Fit as the case does, then batch inference over the case's whole dataset."""
-
-    requests = list(case.requests)
-    with (
-        case_settings(case.dimensions),
-        bound_tables(case.contract, case.tables, ENGINE, types=case.physical_types) as bound,
-    ):
-        dataset, bound_engine = bound
-        with api.prepare(case.contract, dataset, bound_engine) as plan:
-            with plan.materialize(requests) as task:
-                artifact = task.to_artifact()
-        with api.prepare(artifact.contract, dataset, bound_engine) as plan:
-            with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-                batches = task.batches(batch_size=1, seed=SEED)
-                return artifact, {batch.metadata["sample_ids"][0]: batch for batch in batches}
+@cache
+def _run(case_id: str):
+    """The parity and row-deletion checks share the same immutable offline result."""
+    case = CASES[case_id]
+    return offline_batches(
+        case.contract,
+        case.tables,
+        case.requests,
+        case_id=case.id,
+        dimensions=case.dimensions,
+        types=case.physical_types,
+    )
 
 
 def _served(server: api.ServingAssembler, case: DriftCase, request: api.SampleRequest) -> api.Batch:
@@ -118,10 +114,16 @@ def _served(server: api.ServingAssembler, case: DriftCase, request: api.SampleRe
 @pytest.mark.parametrize("case_id", sorted(CASES))
 def test_serving_what_the_spec_lists_equals_reference_batch_inference(case_id: str) -> None:
     case = CASES[case_id]
-    artifact, expected = _run(case)
+    artifact, expected = _run(case.id)
     server = api.ServingAssembler(artifact)
     for request in case.requests:
-        assert_same_batches([_served(server, case, request)], [expected[request.sample_id]])
+        assert_offline_batch(
+            _served(server, case, request),
+            expected[request.sample_id],
+            artifact,
+            case.tables,
+            request,
+        )
 
 
 def test_dropping_a_row_the_spec_lists_changes_some_batches() -> None:
@@ -130,7 +132,7 @@ def test_dropping_a_row_the_spec_lists_changes_some_batches() -> None:
     changed: dict[str, int] = {}
     for case in CASES.values():
         changed.setdefault(case.family, 0)
-        artifact, _ = _run(case)
+        artifact, _ = _run(case.id)
         server = api.ServingAssembler(artifact)
         changed[case.family] += _some_row_is_read(server, case)
     assert all(changed.values()), changed

@@ -48,7 +48,7 @@ from kumo.pytorch.api import (
     Vocabulary,
     ZScore,
 )
-from tests.helpers import Plans
+from tests.helpers import NativePlans
 
 I64, F64, STRING = DType("int64"), DType("float64"), DType("string")
 TIME = DType("timestamp", unit="s", timezone="UTC")
@@ -404,8 +404,8 @@ def test_built_graph_contract_runs():
     }
     contract = build.contract(schema=SCHEMA, sample=SAMPLE, batch=BATCH)
     requests = (SampleRequest(sample_id="u1", entity_id=1, as_of_time=30),)
-    with Plans(contract.schema, tables).prepare(contract, requests) as task:
-        batch = next(task.batches(requests, batch_size=1, seed=17))
+    with NativePlans(contract.schema, tables).prepare(contract, requests) as task:
+        batch = next(task.batches(batch_size=1, seed=17))
         assert batch.inputs["graph"]["nodes"]["users"]["features"]["country"][
             "values"
         ].tolist() == [2]

@@ -39,7 +39,7 @@ from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import ALL_REDUCTIONS, Reduce
 from kumo.pytorch.engines.in_memory.graph import GraphRoot, InMemoryGraphSampler
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples, prepare_rows, request_anchor_table
 
 USERS = TableSpec(
     name="users",
@@ -96,16 +96,16 @@ def _neighborhood(**kwargs: object) -> NeighborhoodSpec:
 
 
 def _sampled_event_ids(neighborhood: NeighborhoodSpec, schema: DataSchema = SCHEMA) -> set[int]:
-    neighborhood = _contract(neighborhood, schema).resolve().sample.neighborhoods["history"]
-    sampler = InMemoryGraphSampler(schema, ROWS)
-    node_rows, _owners, _edges = sampler._collect(
-        "users",
-        neighborhood,
-        (GraphRoot(sample_id="s1", entity_id=1, cutoff=CUTOFF),),
-        seed=0,
-        epoch=0,
-    )
-    return {row["event_id"] for row in node_rows.get("events", ())}
+    with prepare_rows(_contract(neighborhood, schema), ROWS) as plan:
+        with plan.materialize(
+            request_anchor_table([SampleRequest("s1", 1, CUTOFF)], schema=plan.contract.schema)
+        ) as task:
+            graph = next(task.batches(output_format="model")).inputs["neighborhood"]
+            return (
+                set(graph["nodes"]["events"]["ids"].tolist())
+                if "events" in graph["nodes"]
+                else set()
+            )
 
 
 def _contract(neighborhood: NeighborhoodSpec, schema: DataSchema = SCHEMA) -> DataLoaderSpec:
@@ -233,7 +233,7 @@ class TestReductions:
                 )
             },
         )
-        engine = InMemorySampleBuilder(SCHEMA, ROWS)
+        engine = NativeSamples(SCHEMA, ROWS)
         built = engine.build(spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),))[0]
         return next((v.value for v in built.history.entity.values if v.key == "value"), None)
 
@@ -250,7 +250,7 @@ class TestReductions:
                 )
             },
         )
-        engine = InMemorySampleBuilder(SCHEMA, ROWS)
+        engine = NativeSamples(SCHEMA, ROWS)
         built = engine.build(spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),))[0]
         return next(value.value for value in built.history.entity.values if value.key == "value")
 
@@ -273,16 +273,29 @@ class TestReductions:
         assert self._value("recency") == pytest.approx(60.0)
 
     def test_empty_sum_is_zero_but_all_null_sum_is_missing(self) -> None:
-        assert (
-            InMemorySampleBuilder._reduce([], Reduce("sum", "amount", dtype=DType("float64")), 100)
-            == 0.0
+        sample = SampleSpec(
+            entity=EntitySpec("users"),
+            entity_values={
+                "value": Aggregate(
+                    Rows(("user_events",), TimeWindow("occurred_at", stop=0)),
+                    "sum",
+                    "amount",
+                    dtype=DType("float64"),
+                )
+            },
         )
-        assert (
-            InMemorySampleBuilder._reduce(
-                [{"amount": None}], Reduce("sum", "amount", dtype=DType("float64")), 100
+        # Nonempty storage with no eligible rows isolates empty-window semantics.
+        for events, expected in [
+            ([ROWS["events"][-1]], 0.0),
+            ([{**ROWS["events"][0], "amount": None}], None),
+        ]:
+            built = NativeSamples(SCHEMA, {**ROWS, "events": events}).build(
+                sample, (SampleRequest("s1", 1, CUTOFF),)
+            )[0]
+            assert (
+                next((f.value for f in built.history.entity.values if f.key == "value"), None)
+                == expected
             )
-            is None
-        )
 
     def test_new_reductions_are_rejected_without_a_column(self) -> None:
         with pytest.raises(ValueError, match="requires a column"):
@@ -364,7 +377,7 @@ class TestRecencySemantics:
                 )
             },
         )
-        engine = InMemorySampleBuilder(SCHEMA, ROWS)
+        engine = NativeSamples(SCHEMA, ROWS)
         built = engine.build(spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),))[0]
         assert not [v for v in built.history.entity.values if v.key == "gap"]
 
@@ -422,7 +435,7 @@ class TestExternalStandardDeviationParity:
                 )
             },
         )
-        built = InMemorySampleBuilder(schema, rows).build(
+        built = NativeSamples(schema, rows).build(
             spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),)
         )[0]
         return next(v.value for v in built.history.entity.values if v.key == "value")
@@ -445,26 +458,48 @@ class TestReducerDispatch:
     silently answered with a standard deviation instead of failing.
     """
 
-    @staticmethod
-    def _unchecked(operation: str) -> Reduce:
-        spec = object.__new__(Reduce)
-        object.__setattr__(spec, "operation", operation)
-        object.__setattr__(spec, "column", "x")
-        return spec
-
     def test_an_unknown_operation_raises_rather_than_guessing(self) -> None:
-        rows = [{"x": 10}, {"x": 30}]
-        with pytest.raises(ValueError, match="unsupported reduction operation 'median'"):
-            InMemorySampleBuilder._reduce(rows, self._unchecked("median"), 0)
+        value = Aggregate(Rows(("user_events",)), "sum", "amount", dtype=DType("float64"))
+        object.__setattr__(value, "operation", "median")
+        from diskgraph import DiskgraphConfigError
+
+        with pytest.raises((ValueError, DiskgraphConfigError), match="unsupported .*reduction"):
+            NativeSamples(SCHEMA, ROWS).build(
+                SampleSpec(EntitySpec("users"), entity_values={"value": value}),
+                (SampleRequest("s1", 1, CUTOFF),),
+            )
 
     def test_the_construction_guard_is_still_the_first_defence(self) -> None:
         with pytest.raises(ValueError, match="unsupported reduction operation"):
             Reduce("median", "x", dtype=DType("float64"))
 
     def test_every_declared_reduction_is_reachable(self) -> None:
-        rows = [{"x": 10}, {"x": 30}]
-        for operation in sorted(ALL_REDUCTIONS):
-            column = None if operation == "count" else "x"
-            InMemorySampleBuilder._reduce(
-                rows, Reduce(operation, column, dtype=DType("float64")), 100
+        expected = {
+            "count": 2,
+            "count_distinct": 2,
+            "sum": 40,
+            "mean": 20,
+            "min": 10,
+            "max": 30,
+            "mode": 10,
+            "recency": 60,
+            "var_population": 100,
+            "var_sample": 200,
+            "std_population": 10,
+            "std_sample": 200**0.5,
+        }
+        assert set(expected) == set(ALL_REDUCTIONS)
+        rows = Rows(("user_events",), TimeWindow("occurred_at", stop=0))
+        columns = {"count": None, "recency": "occurred_at"}
+        values = {
+            operation: Aggregate(
+                rows,
+                operation,
+                columns.get(operation, "amount"),
+                dtype=DType("int64" if operation in {"count", "count_distinct"} else "float64"),
             )
+            for operation in expected
+        }
+        sample = SampleSpec(EntitySpec("users"), entity_values=values)
+        built = NativeSamples(SCHEMA, ROWS).build(sample, (SampleRequest("s1", 1, CUTOFF),))[0]
+        assert {v.key: v.value for v in built.history.entity.values} == pytest.approx(expected)

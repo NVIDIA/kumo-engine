@@ -20,6 +20,7 @@ from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import table_column_encoders
 from kumo.pytorch.engine import GraphRoot
+from tests.native_fixtures import prepare_rows
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 from tests.test_field_outputs import _stored_field_contract
 
@@ -190,7 +191,7 @@ def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
         ),
     )
     assert '["shared","amounts"]' not in table_column_encoders(shared)
-    fitted = _encoders(shared, *_setup("in_memory", tmp_path))
+    fitted = _encoders(shared, *_setup("diskgraph", tmp_path))
     values = _column("accounts", "account_type", LATEST) + _column(
         "card_transactions", "channel", LATEST
     )
@@ -265,7 +266,7 @@ def test_a_shared_encoder_fits_the_graph_values_of_every_root_then_the_aggregate
     assert (fitted.mean, fitted.scale) == (float(expected.mean()), float(expected.std()))
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 @pytest.mark.parametrize("cutoff", ("latest", "2024-11-21T16:00:00", None))
 def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine_name, cutoff):
     dataset, engine = _setup(engine_name, tmp_path)
@@ -352,13 +353,13 @@ def test_a_value_supplied_for_a_generated_target_is_refused_while_fitting(tmp_pa
     sample = replace(contract.sample, targets={**contract.sample.targets, "future": generated})
     request = _requests()[0]
     request = replace(request, targets=(*request.targets, api.TargetValue("future", 1)))
-    with api.prepare(replace(contract, sample=sample), *_setup("in_memory", tmp_path)) as plan:
+    with api.prepare(replace(contract, sample=sample), *_setup("diskgraph", tmp_path)) as plan:
         with pytest.raises(ValueError, match="'future' was both supplied and generated"):
             plan.materialize([request], fit_split="train")
 
 
 def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):
-    dataset, engine = _setup("in_memory", tmp_path)
+    dataset, engine = _setup("diskgraph", tmp_path)
     at = LATEST + timedelta(microseconds=500_000)
     requests = [replace(request, as_of_time=at) for request in _requests()]
     fitted = []
@@ -378,7 +379,7 @@ def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):
 
 
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
-    dataset, engine = _setup("in_memory", tmp_path)
+    dataset, engine = _setup("diskgraph", tmp_path)
     for cutoff in ("2025-01-01", None):
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="kumo.pytorch.preparation"):
@@ -409,7 +410,7 @@ COLUMN_TYPES = {
 }
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
     rows = [
         {"id": i, **{n: values[i] for n, (_, values) in COLUMN_TYPES.items()}} for i in range(3)
@@ -430,16 +431,13 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
         batching=api.Batching(max_samples=2),
     )
     contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
-    if engine_name == "in_memory":
-        dataset, engine = api.Dataset({table: api.InMemoryRows(rows)}), api.InMemoryEngine()
-    else:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
-        types = pa.schema([(name, dtype.to_arrow()) for name, dtype in columns.items()])
-        pq.write_table(pa.Table.from_pylist(rows, types), tmp_path / "items.parquet")
-        dataset = api.Dataset({table: api.Parquet(str(tmp_path / "items.parquet"))})
-        engine = api.DiskGraphEngine(index=tmp_path / "index")
+    types = pa.schema([(name, dtype.to_arrow()) for name, dtype in columns.items()])
+    pq.write_table(pa.Table.from_pylist(rows, types), tmp_path / "items.parquet")
+    dataset = api.Dataset({table: api.Parquet(str(tmp_path / "items.parquet"))})
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
             for name, (_, values) in COLUMN_TYPES.items():
@@ -447,9 +445,8 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
                 expected = sorted(counts, key=lambda value: (-counts[value], value))
                 entries = task.output("entity").field(name=name).encoder.entries
                 assert [value for value, _ in entries] == expected, name
-    if engine_name == "diskgraph":
-        (path,) = (tmp_path / "index" / "col_stats").glob("*/*.col_stats.json")
-        assert path.name == "%2E%2E%2Fitems%2Fx%20y.col_stats.json"
+    (path,) = (tmp_path / "index" / "col_stats").glob("*/*.col_stats.json")
+    assert path.name == "%2E%2E%2Fitems%2Fx%20y.col_stats.json"
 
 
 def test_buckets_cut_values_near_the_float_limits():
@@ -481,7 +478,7 @@ def test_buckets_cut_values_near_the_float_limits():
     contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
     rows = [{"id": i, "v": v} for i, v in enumerate(values)]
     dataset = api.Dataset({"items": api.InMemoryRows(rows)})
-    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
             cuts = _state(task.fitted_state, '"v"')["boundaries"]
     assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)

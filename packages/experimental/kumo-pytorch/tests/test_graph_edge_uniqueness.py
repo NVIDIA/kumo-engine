@@ -63,7 +63,7 @@ def _contract(first_fanout=4) -> api.DataLoaderSpec:
     )
 
 
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 def test_revisited_edges_appear_once_per_sample(engine_name):
     if engine_name == "diskgraph":
         pytest.importorskip("diskgraph")

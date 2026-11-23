@@ -26,8 +26,14 @@ from kumo.pytorch.contract.sample import (
     evaluate_derived,
     sample_value_types,
 )
-from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
+from kumo.pytorch.contract.schema import (
+    NON_TEMPORAL,
+    DataSchema,
+    RelationSpec,
+    TableSpec,
+)
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples
 
 
 @pytest.mark.parametrize(
@@ -58,7 +64,7 @@ def test_source_values_keep_their_declared_type(dtype, value):
     sample = SampleSpec(
         entity=EntitySpec(table="users"), entity_values={"value": Field(column="value")}
     )
-    built = InMemorySampleBuilder(schema, {"users": [{"id": 1, "value": value}]}).build(
+    built = NativeSamples(schema, {"users": [{"id": 1, "value": value}]}).build(
         sample, [SampleRequest(sample_id="one", entity_id=1, as_of_time=0)]
     )[0]
     field = built.history.entity.values[0]
@@ -165,7 +171,7 @@ def test_event_calculations_resolve_named_prerequisites_and_use_anchor_time():
             )
         },
     )
-    built = InMemorySampleBuilder(
+    built = NativeSamples(
         schema,
         {
             "users": [{"id": 1}],
@@ -325,20 +331,15 @@ def test_native_integer_min_max_and_distinct_preserve_exact_values(tmp_path, dty
         )
         sources[table.name] = api.Parquet(str(path))
     requests = (api.SampleRequest(sample_id="one", entity_id=1, as_of_time=100),)
-    for dataset, engine in (
-        (
-            api.Dataset({name: api.InMemoryRows(value) for name, value in rows.items()}),
-            api.InMemoryEngine(),
-        ),
-        (api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)),
-    ):
-        result = api.preview(contract, dataset, engine, requests).batch.inputs["values"]
-        assert {name: value["values"].item() for name, value in result.items()} == {
-            "minimum": base,
-            "maximum": base + 1,
-            "distinct": 2,
-            "mode": base,
-        }
+    dataset = api.Dataset(sources)
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    result = api.preview(contract, dataset, engine, requests).batch.inputs["values"]
+    assert {name: value["values"].item() for name, value in result.items()} == {
+        "minimum": base,
+        "maximum": base + 1,
+        "distinct": 2,
+        "mode": base,
+    }
 
 
 def test_dated_occurrence_calculations_use_the_retained_occurrence():

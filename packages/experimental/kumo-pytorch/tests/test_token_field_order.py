@@ -11,6 +11,7 @@ import torch
 
 from kumo.pytorch import api
 from tests.helpers import reorder_dicts
+from tests.native_fixtures import prepare_rows, preview_rows
 
 INTEGER, STRING = api.DType("int64"), api.DType("string")
 SCHEMA = api.DataSchema(
@@ -52,12 +53,8 @@ ROWS = {
 REQUESTS = (api.SampleRequest("one", 1, 10),)
 
 
-@pytest.fixture(params=("in_memory", "diskgraph"))
-def binding(request, tmp_path):
-    if request.param == "in_memory":
-        return api.Dataset(
-            {name: api.InMemoryRows(rows) for name, rows in ROWS.items()}
-        ), api.InMemoryEngine()
+@pytest.fixture(params=("diskgraph",))
+def binding(tmp_path):
     pytest.importorskip("diskgraph")
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -169,20 +166,18 @@ def test_field_order_precedes_truncation(binding, monkeypatch, scope, packed, fi
                     for name, value in expected
                 ]
                 assert not tokens["position_ids"][tokens["valid"]].any()
-                if engine.name == "diskgraph":
-                    with monkeypatch.context() as patcher:
-                        patcher.setattr(
-                            plan._source,
-                            "_adapt_temporal_result",
-                            lambda *_: pytest.fail("model output constructed readable records"),
-                        )
-                        model = next(task.batches(REQUESTS, batch_size=1, output_format="model"))
-                    torch.testing.assert_close(model.inputs, batch.inputs)
+                with monkeypatch.context() as patcher:
+                    patcher.setattr(
+                        plan._source,
+                        "_adapt_temporal_result",
+                        lambda *_: pytest.fail("model output constructed readable records"),
+                    )
+                    model = next(task.batches(REQUESTS, batch_size=1, output_format="model"))
+                torch.testing.assert_close(model.inputs, batch.inputs)
 
 
 @pytest.mark.parametrize("shared", (False, True))
 def test_composite_components_preserve_order_and_supplied_mappings(shared):
-    dataset = api.Dataset({name: api.InMemoryRows(rows) for name, rows in ROWS.items()})
     configs = {
         "z_first": api.Vocabulary(values=(("US", 9),)),
         "a_second": api.Vocabulary(values=(("GB", 3),)),
@@ -218,7 +213,7 @@ def test_composite_components_preserve_order_and_supplied_mappings(shared):
     assert swapped.fingerprint != contract.fingerprint
     for variant in (contract, swapped):
         restored = api.DataLoaderSpec.from_json(variant.to_json())
-        with api.prepare(restored, dataset, api.InMemoryEngine()) as plan:
+        with prepare_rows(restored, ROWS) as plan:
             with plan.materialize(REQUESTS) as task:
                 expected = task.preview(REQUESTS).batch.inputs
                 bound = task.bound_contract()
@@ -237,9 +232,7 @@ def test_composite_components_preserve_order_and_supplied_mappings(shared):
                 assert task.output("tokens").field(name="a_second").encoder.entries == (("GB", 3),)
         permuted = api.DataLoaderSpec.from_dict(reorder_dicts(bound.to_dict()))
         assert permuted.fingerprint == bound.fingerprint
-        torch.testing.assert_close(
-            api.preview(permuted, dataset, api.InMemoryEngine(), REQUESTS).batch.inputs, expected
-        )
+        torch.testing.assert_close(preview_rows(permuted, ROWS, REQUESTS).batch.inputs, expected)
 
 
 @pytest.mark.parametrize("fields", ({"a": None}, {"a"}, "a", (), ((None, None),)))
@@ -304,9 +297,7 @@ def test_text_pieces_keep_positions_within_field_order(binding, scope):
     )
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(REQUESTS) as task:
-            for output_format in (
-                ("inspectable", "model") if engine.name == "diskgraph" else ("inspectable",)
-            ):
+            for output_format in ("inspectable", "model"):
                 tokens = next(
                     task.batches(REQUESTS, batch_size=1, output_format=output_format)
                 ).inputs["tokens"]

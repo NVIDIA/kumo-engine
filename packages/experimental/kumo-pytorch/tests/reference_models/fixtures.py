@@ -16,6 +16,7 @@ from kumo.pytorch.api import (
     prepare,
 )
 from kumo.pytorch.architectures import build_architecture
+from tests.native_fixtures import native_engine, parquet_dataset, request_anchor_table
 from tests.reference_models.architecture_definitions import ARCHITECTURES, MODEL_BINDINGS
 from tests.reference_models.batch_adapters import MODEL_BATCH_ADAPTERS
 from tests.reference_models.batch_definitions import BATCH_SPECS
@@ -185,6 +186,7 @@ def model_task(
     requests=None,
     fitted=None,
     targets=True,
+    native=False,
 ):
     """Fit the ordinary loader contract; callers build model modules separately."""
     batch = batch or BATCH_SPECS[name]
@@ -196,8 +198,14 @@ def model_task(
     dataset = Dataset(
         tables={table: InMemoryRows(rows=rows) for table, rows in (tables or _tables()).items()}
     )
-    with prepare(contract=contract, dataset=dataset, engine=InMemoryEngine()) as plan:
-        with plan.materialize(requests or requests_for(name), fitted=fitted) as task:
+    anchors = requests or requests_for(name)
+    if native:
+        contract.validate()
+        dataset = parquet_dataset(contract.schema, dataset)
+        anchors = request_anchor_table(anchors, schema=contract.schema)
+    engine = native_engine() if native else InMemoryEngine()
+    with prepare(contract=contract, dataset=dataset, engine=engine) as plan:
+        with plan.materialize(anchors, fitted=fitted) as task:
             yield task
 
 

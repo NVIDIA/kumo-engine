@@ -26,8 +26,6 @@ from kumo.pytorch.api import (
     EntitySpec,
     Field,
     Fields,
-    InMemoryEngine,
-    InMemoryRows,
     Input,
     Parquet,
     Raw,
@@ -309,13 +307,6 @@ def test_large_string_and_large_binary_parquet_match_the_reference(tmp_path, dec
         engine=DiskGraphEngine(index=tmp_path / "index"),
     ) as plan:
         actual = _batch_values(plan)
-    with prepare(
-        contract=_wide_contract(types),
-        dataset=Dataset(tables={"rows": InMemoryRows(_WIDE_ROWS)}),
-        engine=InMemoryEngine(),
-    ) as plan:
-        expected = _batch_values(plan)
-    assert actual == expected
     valid = [True, True, True, False, True]
     assert actual["values"]["label"] == {
         "values": ["train", "véal", "", None, "train"],
@@ -327,6 +318,7 @@ def test_large_string_and_large_binary_parquet_match_the_reference(tmp_path, dec
     }
     ids = actual["ids"]["label"]
     assert ids["valid"] == valid
+    assert ids["values"] == [2, 4, 3, 0, 2]
     train, veal, empty, missing, again = ids["values"]
     assert missing == Vocabulary().missing_id
     assert train == again

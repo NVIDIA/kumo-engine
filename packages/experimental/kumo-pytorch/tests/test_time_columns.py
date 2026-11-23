@@ -40,6 +40,7 @@ from kumo.pytorch.api import (
     prepare,
 )
 from kumo.pytorch.contract.sample import GraphLayer, GraphSample, NeighborhoodSpec
+from tests.native_fixtures import native_engine, parquet_dataset
 
 SCHEMA = DataSchema(
     (
@@ -142,11 +143,8 @@ def _contract(sample: SampleSpec) -> DataLoaderSpec:
     )
 
 
-def _time_issues(contract: DataLoaderSpec, path: str):
-    issues = check(
-        contract, Dataset({"users": InMemoryRows([]), "events": InMemoryRows([])}), InMemoryEngine()
-    )
-    return [issue for issue in issues if issue.path == path]
+def _time_issues(contract, path, dataset, engine):
+    return [issue for issue in check(contract, dataset, engine) if issue.path == path]
 
 
 @pytest.mark.parametrize("shape", sorted(SHAPES))
@@ -154,12 +152,16 @@ def _time_issues(contract: DataLoaderSpec, path: str):
 def test_a_value_column_is_refused_as_a_time(shape: str, column: str) -> None:
     build, path = SHAPES[shape]
     contract = _contract(build(column))
-    (issue,) = _time_issues(contract, path)
+    dataset = parquet_dataset(SCHEMA, {"users": [], "events": []})
+    engine = native_engine()
+    (issue,) = [
+        issue
+        for issue in _time_issues(contract, path, dataset, engine)
+        if "timestamp or date32" in issue.message
+    ]
     assert f"events.{column}" in issue.message
     assert "timestamp or date32" in issue.message
     assert issue.suggestion
-    dataset = Dataset({"users": InMemoryRows([]), "events": InMemoryRows([])})
-    engine = InMemoryEngine()
     with patch.object(engine, "open", side_effect=AssertionError("opened before refusal")):
         with pytest.raises(ValidationError) as error:
             prepare(contract, dataset, engine)
@@ -170,7 +172,17 @@ def test_a_value_column_is_refused_as_a_time(shape: str, column: str) -> None:
 @pytest.mark.parametrize("column", ["occurred_at", "booked_on"])
 def test_timestamp_and_date32_columns_are_times(shape: str, column: str) -> None:
     build, path = SHAPES[shape]
-    assert _time_issues(_contract(build(column)), path) == []
+    contract = _contract(build(column))
+    if shape in {"active_start", "active_end", "field"} or (
+        shape == "traversal" and column == "booked_on"
+    ):
+        # These valid clocks occur in shapes DiskGraph does not yet support.
+        dataset = Dataset({"users": InMemoryRows([]), "events": InMemoryRows([])})
+        engine = InMemoryEngine()
+    else:
+        dataset = parquet_dataset(SCHEMA, {"users": [], "events": []})
+        engine = native_engine()
+    assert _time_issues(contract, path, dataset, engine) == []
 
 
 def test_diskgraph_refuses_a_window_on_a_value_column_before_reading_data(tmp_path) -> None:

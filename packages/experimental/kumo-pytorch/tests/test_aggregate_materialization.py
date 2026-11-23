@@ -10,30 +10,30 @@ import pytest
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.api import (
     Aggregate,
-    AnchorTable,
     DType,
     ExternalTarget,
-    InMemoryEngine,
     InMemoryRows,
     Parquet,
     Rows,
     TimeWindow,
     prepare,
 )
+from tests.native_fixtures import native_anchor_table, prepare_rows
 from tests.test_anchor_tables import ANCHORS, DATASET, _contract, _table
 
 
 def test_materializes_in_chunks_and_reuses_values_without_reading_rows(tmp_path, monkeypatch):
-    with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+    with prepare_rows(_contract(), DATASET) as plan:
         source = plan._require_open()
         sizes = []
-        build = source.build
+        build = source.materialize_scalar_batches
 
-        def counted(spec, requests):
-            sizes.append(len(requests))
-            return build(spec, requests)
+        def counted(spec, anchors, batch_size):
+            for columns, features, targets, times in build(spec, anchors, batch_size):
+                sizes.append(len(times))
+                yield columns, features, targets, times
 
-        monkeypatch.setattr(source, "build", counted)
+        monkeypatch.setattr(source, "materialize_scalar_batches", counted)
         values = plan._materialize_values(_table(), tmp_path / "values.parquet", batch_size=3)
         assert sizes and max(sizes) <= 3
         assert sum(sizes) == len(ANCHORS)
@@ -44,19 +44,15 @@ def test_materializes_in_chunks_and_reuses_values_without_reading_rows(tmp_path,
         reopened = MaterializedValues.open(tmp_path / "values.parquet")
         assert reopened == values
         base = plan._require_open()
-        original = base.build
-        seen = []
 
-        def no_aggregates(spec, requests):
-            assert not spec.entity_values
-            seen.append(len(requests))
-            return original(spec, requests)
+        def no_aggregates(*args, **kwargs):
+            pytest.fail("reused materialized values recomputed aggregates")
 
-        monkeypatch.setattr(base, "build", no_aggregates)
+        monkeypatch.setattr(base, "materialize_scalar_batches", no_aggregates)
+        monkeypatch.setattr(base, "_query_values", no_aggregates)
         task = plan.materialize(values.anchors, values=reopened, fit_split="train")
         got = [b for b in task.batches(batch_size=4)]
         assert sum(b.batch_size for b in got) == len(ANCHORS)
-        assert seen
         assert all(
             not any(key.startswith("_value_") for key in m)
             for b in got
@@ -74,14 +70,14 @@ def test_duplicates_and_distinct_labels_stay_aligned(tmp_path):
         {"sid": "first", "user_id": 1, "at": 100, "label": 3.0},
         {"sid": "second", "user_id": 1, "at": 100, "label": 9.0},
     ]
-    anchors = AnchorTable(
+    anchors = native_anchor_table(
         InMemoryRows(rows),
         entity_id="user_id",
         as_of_time="at",
         sample_id="sid",
         targets={"manual": "label"},
     )
-    with prepare(contract, DATASET, InMemoryEngine()) as plan:
+    with prepare_rows(contract, DATASET) as plan:
         values = plan._materialize_values(anchors, tmp_path / "duplicates.parquet", batch_size=1)
     saved = pq.read_table(values.anchors.source.path)
     assert saved.column("_anchor_id").to_pylist() == ["first", "second"]
@@ -98,8 +94,10 @@ def test_forward_targets_and_all_null_first_chunk_keep_declared_types(tmp_path):
     )
     contract = replace(contract, sample=replace(contract.sample, targets={"future": target}))
     rows = [{"sid": "before", "user_id": 1, "at": 0}, {"sid": "after", "user_id": 1, "at": 100}]
-    anchors = AnchorTable(InMemoryRows(rows), entity_id="user_id", as_of_time="at", sample_id="sid")
-    with prepare(contract, DATASET, InMemoryEngine()) as plan:
+    anchors = native_anchor_table(
+        InMemoryRows(rows), entity_id="user_id", as_of_time="at", sample_id="sid"
+    )
+    with prepare_rows(contract, DATASET) as plan:
         values = plan._materialize_values(anchors, tmp_path / "targets.parquet", batch_size=1)
         saved = pq.read_table(values.anchors.source.path)
         assert saved.column(values.targets["future"]).to_pylist() == [1.0, 0.0]
@@ -110,19 +108,17 @@ def test_forward_targets_and_all_null_first_chunk_keep_declared_types(tmp_path):
 
 
 def test_failure_never_publishes_partial_values(tmp_path, monkeypatch):
-    with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+    with prepare_rows(_contract(), DATASET) as plan:
         source = plan._require_open()
-        original = source.build
-        calls = 0
+        original = source.materialize_scalar_batches
 
-        def fail_second(spec, requests):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise RuntimeError("injected computation failure")
-            return original(spec, requests)
+        def fail_second(*args, **kwargs):
+            for i, batch in enumerate(original(*args, **kwargs)):
+                if i == 1:
+                    raise RuntimeError("injected computation failure")
+                yield batch
 
-        monkeypatch.setattr(source, "build", fail_second)
+        monkeypatch.setattr(source, "materialize_scalar_batches", fail_second)
         with pytest.raises(RuntimeError, match="injected"):
             plan._materialize_values(_table(), tmp_path / "partial.parquet", batch_size=3)
     assert not (tmp_path / "partial.parquet").exists()
@@ -142,7 +138,7 @@ def test_parquet_scan_is_bounded_and_positional_ids_do_not_restart(tmp_path, mon
         source=Parquet(str(path)),
         sample_id=None,
     )
-    with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+    with prepare_rows(_contract(), DATASET) as plan:
         monkeypatch.setattr(
             ParquetAnchors, "__init__", lambda *a, **k: pytest.fail("full anchor read")
         )
@@ -196,7 +192,7 @@ def test_nullable_profile_field_materializes_as_null(tmp_path):
 
     users = [dict(row, score=None if row["user_id"] == 1 else row["score"]) for row in USERS]
     dataset = Dataset({**DATASET.tables, "users": InMemoryRows(users)})
-    with prepare(_contract(), dataset, InMemoryEngine()) as plan:
+    with prepare_rows(_contract(), dataset) as plan:
         values = plan._materialize_values(_table(), tmp_path / "nullable.parquet", batch_size=2)
     assert pq.read_table(values.anchors.source.path)[values.features["score"]].to_pylist() == [
         None,

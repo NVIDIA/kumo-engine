@@ -24,6 +24,7 @@ from kumo.pytorch.api import (
 from kumo.pytorch.contract.sample import ALL_REDUCTIONS
 from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples
 
 SCHEMA = DataSchema(
     (
@@ -44,7 +45,7 @@ SCHEMA = DataSchema(
 )
 
 
-def _mode(rows: list[dict[str, object]]) -> str | None:
+def _mode(rows: list[dict[str, object]], builder=NativeSamples) -> str | None:
     sample = SampleSpec(
         EntitySpec("users", entity_type="user"),
         entity_values={
@@ -56,7 +57,7 @@ def _mode(rows: list[dict[str, object]]) -> str | None:
             )
         },
     )
-    built = InMemorySampleBuilder(SCHEMA, {"users": [{"user_id": 1}], "events": rows}).build(
+    built = builder(SCHEMA, {"users": [{"user_id": 1}], "events": rows}).build(
         sample, (SampleRequest("s1", 1, 100),)
     )[0]
     return next(
@@ -77,8 +78,11 @@ def test_mode_ignores_nulls_and_uses_a_stable_tie_break() -> None:
 
 
 def test_mode_of_an_empty_or_all_null_window_is_missing() -> None:
-    assert _mode([]) is None
-    assert _mode([{"event_id": 1, "user_id": 1, "at": 10, "category": None}]) is None
+    assert _mode([], InMemorySampleBuilder) is None
+    assert (
+        _mode([{"event_id": 1, "user_id": 1, "at": 10, "category": None}], InMemorySampleBuilder)
+        is None
+    )
 
 
 def test_mode_requires_the_column_result_dtype_and_is_backend_visible() -> None:

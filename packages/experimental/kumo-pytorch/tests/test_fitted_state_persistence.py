@@ -33,6 +33,7 @@ from kumo.pytorch.assembly import (
     pin_fitted_state,
 )
 from kumo.pytorch.contract._frozen import FrozenMapping
+from tests.native_fixtures import request_anchor_table
 from tests.reference_models.batch_definitions import BATCH_SPECS
 from tests.reference_models.data_schema import SYNTHETIC_SCHEMA
 from tests.reference_models.fixtures import SAMPLES, requests_for
@@ -40,7 +41,6 @@ from tests.reference_models.fixtures import _tables as _recipe_tables
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema
 from tests.test_inference_lifecycle import (
     CONTRACTS,
-    ENGINES,
     EPOCH,
     SEED,
     _dataset,
@@ -184,7 +184,7 @@ class _ShardedInference(IterableDataset[api.Batch]):
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    [("in_memory", "inspectable"), ("diskgraph", "model")],
+    [("diskgraph", "inspectable"), ("diskgraph", "model")],
 )
 def test_spawned_dataloader_workers_build_the_same_batches(
     tmp_path: Path, engine_name: str, output_format: str
@@ -248,7 +248,7 @@ def _future_spend_encoders(state: api.FittedState) -> dict[str, Any]:
     return {key: value for key, value in state["encoders"].items() if "future_spend" in key}
 
 
-@pytest.mark.parametrize("engine_name", ENGINES)
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 def test_an_artifact_input_half_is_reused_under_other_targets(
     tmp_path: Path, engine_name: str
 ) -> None:
@@ -291,9 +291,11 @@ def test_an_artifact_input_half_is_reused_under_other_targets(
 
 def test_an_artifact_with_inconsistent_fitted_state_is_refused(tmp_path: Path) -> None:
     contract = CONTRACTS["pragma"](_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             task.to_artifact().save(tmp_path / "artifact")
 
     def changed(name: str, text: str) -> Path:
@@ -361,7 +363,7 @@ def _with_test_anchor(requests: tuple[api.SampleRequest, ...]) -> list[api.Sampl
 
 def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path: Path) -> None:
     contract = CONTRACTS["temporal"](_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             task.to_artifact().save(tmp_path / "trained")
@@ -388,7 +390,7 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
 
     rows = _fixture_rows()
     rows["merchants"] = rows["merchants"][:-1]
-    other, other_engine = _dataset("in_memory", rows, tmp_path)
+    other, other_engine = _dataset("diskgraph", rows, tmp_path / "changed")
     with api.prepare(artifact.contract, other, other_engine) as plan:
         with plan.materialize(
             _with_test_anchor(_requests()), fitted=artifact.fitted_state, inference=True
@@ -413,7 +415,7 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
 
 def test_weights_follow_the_fitted_values_not_the_fit_record(tmp_path: Path) -> None:
     contract = CONTRACTS["temporal"](_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             weights: Mapping[str, torch.Tensor] = {"w": torch.ones(2)}
@@ -429,9 +431,11 @@ def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
     tmp_path: Path, contract_name: str
 ) -> None:
     contract = CONTRACTS[contract_name](_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             task.to_artifact().save(tmp_path / "artifact")
             expected = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
             manifest = dict(task.manifest)
@@ -439,7 +443,9 @@ def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
         written = json.loads((tmp_path / "artifact" / "fitted-state.json").read_text())
         assert pin_fitted_state(contract, written) == bound
         loaded = api.Artifact.load(tmp_path / "artifact").fitted_state
-        with plan.materialize(_requests(), fitted=loaded) as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fitted=loaded
+        ) as task:
             assert task.manifest == manifest
             assert_same_batches(list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH)), expected)
 
@@ -453,7 +459,7 @@ def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
 
 def test_an_artifact_written_with_a_length_summary_still_loads(tmp_path: Path) -> None:
     contract = CONTRACTS["pragma"](_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")
     expected = api.Artifact.load(tmp_path / "artifact")
     summary = {"input": "events", "count": 2, "mean": 3.0}

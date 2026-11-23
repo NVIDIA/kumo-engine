@@ -295,3 +295,19 @@ def native_anchor_delivery(monkeypatch):
         return task.batches(output_format="model", **options)
 
     return batches
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _native_session_resources():
+    from tests.native_fixtures import native_resources
+
+    with native_resources():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _native_fixture_resources():
+    from tests.native_fixtures import native_resources
+
+    with native_resources():
+        yield
