@@ -7,8 +7,9 @@ Pages keep their repository paths on the site (`docs/concepts/x.md` is served
 at `docs/concepts/x/`), so every relative link that works on GitHub also
 works on the site, and `mkdocs build --strict` fails on one that does not.
 Linked non-Markdown files (configs, scripts, JSON results) are copied as
-static files for the same reason. `docs/_site/` holds the site-only pages
-(the API reference) and is MkDocs' own `docs_dir`, so it is not copied.
+static files for the same reason. `docs/_site/` is MkDocs' own `docs_dir`.
+Its API pages receive virtual copies with source-relative links adapted to
+the site layout.
 """
 
 from __future__ import annotations
@@ -55,3 +56,12 @@ def _published(path: str) -> bool:
 for path in filter(_published, _repository_files()):
     with mkdocs_gen_files.open(path, "wb") as out:
         out.write((ROOT / path).read_bytes())
+
+# API pages live deeper in the source tree than on the rendered site. Keep
+# their source links relative, then adapt only those links in the virtual copy.
+for source in (ROOT / "docs/_site/api").glob("*.md"):
+    markdown = source.read_text()
+    for section in ("concepts", "reference"):
+        markdown = markdown.replace(f"(../../{section}/", f"(../docs/{section}/")
+    with mkdocs_gen_files.open(f"api/{source.name}", "w") as out:
+        out.write(markdown)

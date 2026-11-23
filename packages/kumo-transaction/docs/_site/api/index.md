@@ -16,5 +16,5 @@ package and lists what it exports.
 | [`tfm.evaluation`](evaluation.md) | Metrics, fraud baselines, reports | Public |
 
 Which component belongs to which building-block slot is in
-[Building blocks](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-transaction/docs/concepts/building-blocks.md). How to add one is in
-[Extending the kit](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-transaction/docs/reference/extending.md).
+[Building blocks](../../concepts/building-blocks.md). How to add one is in
+[Extending the kit](../../reference/extending.md).

@@ -1,7 +1,7 @@
 # `tfm.data`
 
 Data adapters, labels, splits, and sequence construction. Temporal rules are
-in [Leakage and temporal splits](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-transaction/docs/concepts/leakage-and-temporal-splits.md).
+in [Leakage and temporal splits](../../concepts/leakage-and-temporal-splits.md).
 
 ## Adapters
 

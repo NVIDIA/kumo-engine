@@ -13,11 +13,12 @@ Python distribution's version remains `2.0.0a2`.
 - `benchmarks/results/pragmatiq_fraud_separability.json`: replace the original
   developer's absolute dataset path with its dataset name; preserve all measurements.
 
-- `docs/_site/api/*.md`: use public source links for concept pages so the
-  API pages resolve in both the source tree and the rendered site.
+- `docs/_site/api/*.md`: use relative links that resolve within this source
+  snapshot. The documentation generator adapts them in its virtual API-page
+  copies to preserve links on the rendered site.
 - `benchmarks/results/README.md`: repair the stale config-migration link.
-- `scripts/gen_doc_pages.py`: include the sync guide and provenance inventory
-  in the generated documentation site.
+- `scripts/gen_doc_pages.py`: include sync/provenance files in the site and
+  adapt source-relative API links for its rendered layout.
 
 Engine's `docs/maintenance/agent-contract.json` registers the imported
 instruction scopes.
