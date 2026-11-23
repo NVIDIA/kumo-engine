@@ -18,6 +18,36 @@ jobs:
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
 
+  diskgraph:
+    name: Package tests
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Both engines against the same golden cases
+        env: &diagnostics
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/golden.log" python -m conformance --engine all
+      - name: Every test, failing any that skips for a missing dependency
+        env: *diagnostics
+        run: |
+          python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
+            python -m pytest -q --require-imports --ignore=tests/conformance --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with: {name: kumo-pytorch-diskgraph}
+
   distribution:
     name: Distribution
     needs: diskgraph-wheel

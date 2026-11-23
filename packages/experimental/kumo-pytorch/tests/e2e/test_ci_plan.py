@@ -4,6 +4,9 @@
 
 import hashlib
 import json
+import re
+import shlex
+from pathlib import Path
 
 import pytest
 
@@ -79,6 +82,33 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence(monkeypatch)
     fork = dict(PR, head={"sha": "head", "repo": {"full_name": "fork/project"}})
     with pytest.raises(ValueError, match="private datasets and a same-repository PR"):
         plan(pull_request=fork)
+
+
+def test_integrated_suite_runs_full_package_pytest_once():
+    root = Path(__file__).resolve().parents[5]
+    suite = root / ci.WORKFLOW
+    calls = re.findall(r"^    uses: \./(\.github/workflows/\S+\.yml)$", suite.read_text(), re.M)
+    assert ".github/workflows/kumo-pytorch-diskgraph.yml" not in calls  # Standalone launcher.
+    full_runs = []
+    for workflow in [suite, *(root / path for path in calls)]:
+        jobs = workflow.read_text().split("\njobs:\n", 1)[1].replace("\\\n", " ")
+        job = None
+        for line in jobs.splitlines():
+            if header := re.fullmatch(r"  ([\w-]+):", line):
+                job = header[1]
+            if line.lstrip().startswith(("#", "name:", "- name:")) or not (
+                cmd := re.search(r"(?:^|\s)pytest(?=\s|$)(.*)", line)
+            ):
+                continue
+            args = shlex.split(cmd[1])
+            paths = (arg.removeprefix("./").rstrip("/") for arg in args if not arg.startswith("-"))
+            if {"-k", "-m"}.intersection(args) or any(
+                path.startswith("tests/") or path.split("::")[0].endswith(".py") for path in paths
+            ):
+                continue
+            full_runs.append((workflow.name, job, args))
+    assert [(file, job) for file, job, _ in full_runs] == [(suite.name, "cpu")]
+    assert {"--complete-fixtures", "--require-imports"} <= set(full_runs[0][2])
 
 
 def test_gate_checks_attempt_membership_and_requires_every_selected_row(tmp_path):

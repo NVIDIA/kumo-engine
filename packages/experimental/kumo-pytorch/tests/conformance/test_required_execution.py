@@ -78,7 +78,9 @@ def test_package_fixture_profile_requires_whole_modules(tmp_path, monkeypatch, s
     (tests / "test_model.py").write_text(f"import pytest\ndef test_model(): {body}\n")
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(REPOSITORY), str(REPOSITORY / "src")]))
     command = [sys.executable, "-m", "pytest", "-q", "--complete-fixtures"]
-    if scenario == "ignore":
+    if scenario == "pass":
+        command.append("--ignore=tests/conformance")
+    elif scenario == "ignore":
         command.append("--ignore=tests/test_model.py")
     result = run_pytest(command, tmp_path)
     assert result.returncode == {"pass": 0, "xfail": 1, "ignore": 4}[scenario], result.stdout

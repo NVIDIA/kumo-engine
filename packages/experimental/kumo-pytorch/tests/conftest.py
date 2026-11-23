@@ -134,7 +134,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             or config.inipath != tests.parent / "pyproject.toml"
             or config.option.keyword
             or config.option.markexpr != "not notebook"
-            or config.option.ignore
+            or (config.option.ignore or []) not in ([], ["tests/conformance"])
             or config.option.ignore_glob
             or config.option.deselect
             or config.option.collectonly

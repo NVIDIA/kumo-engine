@@ -136,8 +136,7 @@ def planned_jobs(plan):
         return expected
 
     expected["Package tests"] = True
-    for child in ("DiskGraph tests", "Run notebooks", "Install from wheel"):
-        expected[f"Distribution / {child}"] = True
+    expected["Distribution / Install from wheel"] = True
     for dataset in ("H&M Small", "H&M Medium"):
         expected[f"Lifecycle · {dataset} / Check saved models"] = True
     for i in range(len(CONFORMANCE)):
