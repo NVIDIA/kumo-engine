@@ -2,6 +2,9 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import threading
+from contextlib import nullcontext
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 
@@ -123,4 +126,69 @@ def test_failed_snapshot_restores_the_callers_root(
         assert get_scratch_dir() == caller_root
     assert get_scratch_dir() == other
     assert not caller_root.exists()
+    assert not other.exists()
+
+
+
+def test_snapshot_transfer_workers_keep_the_callers_spool_root(
+        tmp_path, monkeypatch):
+    from kumo_core.chunked_fs import ChunkedFileHandler
+    from kumo_core.sources import object_store
+    from pyarrow.fs import PyFileSystem
+
+    from kumo import settings
+    from kumo.engine import _snapshot_io
+
+    class ChunkedExport(ChunkedFileHandler):
+        def __init__(self):
+            self.objects = {}
+            self.spooled = []
+
+        def get_type_name(self):
+            return 'test-snapshot-export'
+
+        def _size(self, path):
+            data = self.objects.get(path)
+            return None if data is None else len(data)
+
+        def _list(self, directory):
+            return {path: len(data) for path, data in self.objects.items()
+                    if path.startswith(directory + '/')}
+
+        def _put(self, local, path):
+            self.spooled.append(Path(local).parent.parent)
+            self.objects[path] = Path(local).read_bytes()
+
+    previous = settings.scratch_dir()
+    producer, other = tmp_path / 'producer', tmp_path / 'other'
+    handler = ChunkedExport()
+    filesystem = PyFileSystem(handler)
+    monkeypatch.setattr(_snapshot_io, '_location',
+                        lambda connector, path: (filesystem, path))
+    monkeypatch.setattr(object_store, 'copies', lambda items: nullcontext(2))
+    together = threading.Barrier(2)
+    worker_state = ContextVar('snapshot-transfer-test', default='outside')
+    token = worker_state.set('caller')
+
+    def upload(filesystem, item, stop):
+        assert worker_state.get() == 'caller'
+        worker_state.set(item)
+        with filesystem.open_output_stream(f'exports/{item}') as writer:
+            together.wait(timeout=10)
+            writer.write(b'abc')
+        return item
+
+    try:
+        kumo.configure(scratch_dir=other)
+        with scoped_scratch_dir(producer):
+            assert _snapshot_io._transfer(
+                None, 'exports', [0, 1], [3, 3], upload, 'store') == [0, 1]
+            assert worker_state.get() == 'caller'
+        assert get_scratch_dir() == other
+    finally:
+        worker_state.reset(token)
+        kumo.configure(scratch_dir=previous)
+    assert handler.objects == {'exports/0': b'abc', 'exports/1': b'abc'}
+    assert handler.spooled == [producer / 'spool'] * 2
+    assert not list((producer / 'spool').iterdir())
     assert not other.exists()
