@@ -7,7 +7,7 @@ local check does not establish a supported deployment or GPU profile.
 | --- | --- | --- |
 | Documentation | [Reference, agent, and catalog checks](../maintenance/README.md#validation) | Python 3; Bash and standard shell tools |
 | Focused Python | `.venv/bin/pytest path/to/test.py -k test_name`; package-local tests | Matching installed environment and test dependencies |
-| Lint and types | `uvx ruff@0.17.3 check --config pyproject.toml .`, `.venv/bin/pyright -p pyrightconfig.json` | uv for Ruff; `uv sync --extra dev --extra cpu` (or `--extra cu130` for GPU) environment for Pyright |
+| Lint and types | `uv run --only-group dev ruff check --config pyproject.toml .`, `.venv/bin/pyright -p pyrightconfig.json` | uv for Ruff; `uv sync --extra dev --extra cpu` (or `--extra cu130` for GPU) environment for Pyright |
 | UI | `npm --prefix ui run test -- --run <test-path>`, `npm --prefix ui run type-check` | Installed UI and in-tree catalog dependencies |
 | Catalog | `npm --prefix packages/kumo-ui-catalog run test:ci` | Catalog dependencies and configured Playwright browser |
 | Rust | `cargo test --manifest-path packages/diskgraph/Cargo.toml -p diskgraph-train-table` | Rust toolchain, native build prerequisites, and crate dependencies |
@@ -25,8 +25,12 @@ Run from the repository root unless a component guide says otherwise.
 The root Ruff check enables Flake8-style rules and import sorting, preserving
 the previous package and generated-code exclusions. The explicit `--config`
 applies the root policy even where packages have standalone Ruff settings.
+Ruff is pinned in the default `dev` dependency group and `uv.lock`.
+`uv run --only-group dev` selects that version without installing application
+or native dependencies. In a configured application environment, `uv run ruff`
+uses the same development dependency.
 Use the same command with `--fix` to apply automatic fixes. Run
-`uvx ruff@0.17.3 format --config pyproject.toml .` to format Python with
+`uv run --only-group dev ruff format --config pyproject.toml .` to format Python with
 88-character lines and single quotes; add `--check` to verify formatting.
 The root pre-commit hooks run both Ruff commands. Type checking remains separate.
 

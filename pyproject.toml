@@ -26,6 +26,9 @@ dynamic = [
 ]
 
 [dependency-groups]
+dev = [
+    "ruff==0.17.3",
+]
 # Public engine tests use CPU Torch with the engine's GPU Faiss dependency.
 public-tests = ["torch"]
 
