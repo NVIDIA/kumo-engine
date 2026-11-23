@@ -26,12 +26,14 @@ on:  # yamllint disable-line rule:truthy
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-tests.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '17 10 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
