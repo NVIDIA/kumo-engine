@@ -30,6 +30,7 @@ from tests.e2e.runs import (
 from tests.e2e.tiers import T2A, T2B, matrix
 
 WORKFLOW = ".github/workflows/kumo-pytorch-tests.yml"
+PACKAGE_JOB = "Package tests / Package and dataset tests"
 AML = ("aml", "l01-cuda", "hi-small-memory")
 STREAMING = ("all", "smoke", "training", "lifecycle", "full")
 CONFORMANCE = [f"kumo-pytorch-t2b-conformance-{i}" for i in range(3)]
@@ -135,12 +136,12 @@ def planned_jobs(plan):
         )
         return expected
 
-    expected["Package tests"] = True
+    expected[PACKAGE_JOB] = True
     expected["Distribution / Install from wheel"] = True
     for dataset in ("H&M Small", "H&M Medium"):
         expected[f"Lifecycle · {dataset} / Check saved models"] = True
-    for i in range(len(CONFORMANCE)):
-        expected[f"Package tests / Engine conformance (shard {i})"] = True
+    for i in range(1, len(CONFORMANCE) + 1):
+        expected[f"Package tests / Engine conformance {i}/{len(CONFORMANCE)}"] = True
     return expected
 
 
@@ -164,7 +165,7 @@ def account_jobs(plan, raw):
         ):
             errors.append(f"Duplicate or stale job: {name}")
         jobs[name] = {"result": job["conclusion"], "url": job["html_url"]}
-        if name == "Package tests":
+        if name == PACKAGE_JOB:
             jobs[name]["steps"] = {
                 s["name"]: s["conclusion"]
                 for s in job.get("steps", [])
