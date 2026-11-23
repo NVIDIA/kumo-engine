@@ -98,9 +98,9 @@ class _Source:
         random_seed: int | None = 0,
     ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
+        self.artifact_identity = identity
         self._paths = paths
         self.random_seed = random_seed
-        self.artifact_identity = identity
 
 
 def _write(schema: DataSchema, tables: Tables, directory: Path, parts: int = 1) -> Dataset:

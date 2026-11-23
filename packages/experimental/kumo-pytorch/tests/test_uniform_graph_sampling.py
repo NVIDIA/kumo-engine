@@ -116,7 +116,7 @@ def test_native_strategy_semantics(graph_data, tmp_path, clock, strategy):
         anchors = replace(anchors, as_of_time=None)
         requests = tuple(replace(request, as_of_time=None) for request in requests)
     spec = contract(schema, strategy)
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     if not clock and strategy == "recent":
         with pytest.raises(api.ValidationError, match="no time column"):
             api.prepare(spec, dataset, engine)
@@ -157,8 +157,9 @@ def test_seed_replays_direct_native_and_named_neighborhoods(
     schema, dataset, anchors, requests = graph_data
     spec = contract(schema, "uniform", names=names)
     answers = []
+    engine = api.DiskGraphEngine(num_threads=1)
     for seed in (7, 7, 19):
-        engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, random_seed=seed)
+        engine.random_seed = seed
         with api.prepare(spec, dataset, engine) as plan, plan.materialize(anchors) as task:
             expected = selections(task, requests, batch_size=1)
             for output_format in ("inspectable", "model"):
@@ -183,7 +184,7 @@ def test_seed_replays_direct_native_and_named_neighborhoods(
 def test_diskgraph_rejects_unresolved_strategy(graph_data, tmp_path):
     schema, dataset, _anchors, _requests = graph_data
     spec = contract(schema)
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=tmp_path / "index")) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine()) as plan:
         with pytest.raises(ValueError, match="resolve GraphSample.strategy"):
             plan._source._sampling_plan(spec.sample.neighborhoods["graph"])
 
@@ -195,7 +196,7 @@ def test_inspectable_reuses_every_prefetched_neighborhood(graph_data, tmp_path, 
         api.prepare(
             contract(schema, "uniform", names=names),
             dataset,
-            api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+            api.DiskGraphEngine(num_threads=1),
         ) as plan,
         plan.materialize(anchors) as task,
     ):
@@ -216,7 +217,7 @@ def test_uniform_returns_all_neighbors_when_fanout_covers_degree(graph_data, tmp
         api.prepare(
             contract(schema, "uniform", fanout),
             dataset,
-            api.DiskGraphEngine(index=tmp_path / "index", random_seed=None),
+            api.DiskGraphEngine(random_seed=None),
         ) as plan,
         plan.materialize(anchors) as task,
     ):
@@ -228,7 +229,7 @@ def test_uniform_empty_neighborhood(graph_data, tmp_path):
     requests = (api.SampleRequest("empty", 2, 50),)
     with (
         api.prepare(
-            contract(schema, "uniform"), dataset, api.DiskGraphEngine(index=tmp_path / "index")
+            contract(schema, "uniform"), dataset, api.DiskGraphEngine()
         ) as plan,
         plan.materialize(requests) as task,
     ):
@@ -238,4 +239,4 @@ def test_uniform_empty_neighborhood(graph_data, tmp_path):
 @pytest.mark.parametrize("seed", [-1, 2**64, True, 1.5])
 def test_sampling_seed_is_a_native_u64(seed):
     with pytest.raises(ValueError, match="random_seed"):
-        api.DiskGraphEngine(index="/unused", random_seed=seed)
+        api.DiskGraphEngine(random_seed=seed)

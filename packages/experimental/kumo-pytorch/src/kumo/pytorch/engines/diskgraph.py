@@ -512,9 +512,9 @@ class DiskGraphEngine:
             artifact,
             schema,
             num_threads=self.num_threads,
-            random_seed=self.random_seed,
             paths=self._paths,
             identity=self.index_build_id,
+            random_seed=self.random_seed,
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:

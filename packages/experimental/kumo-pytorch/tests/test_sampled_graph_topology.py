@@ -118,7 +118,7 @@ def sampled_plan(tmp_path):
     )
     anchors = api.AnchorTable(api.Parquet(str(paths["anchors"])), "entity", "cutoff", split="split")
     with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+        contract, dataset, api.DiskGraphEngine(num_threads=2)
     ) as plan:
         yield plan, anchors
 
@@ -746,7 +746,7 @@ def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):
     with api.prepare(
         contract,
         api.Dataset({"people": api.Parquet(str(path))}),
-        api.DiskGraphEngine(index=tmp_path / "index", num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         with plan.materialize(
             api.AnchorTable(api.Parquet(str(anchor_path)), "entity", "cutoff")
@@ -802,7 +802,7 @@ def test_native_graph_inspectable_keeps_raw_string_inputs_and_targets(
     with api.prepare(
         contract,
         original.dataset,
-        api.DiskGraphEngine(index=tmp_path / f"raw-{topology}", num_threads=1),
+        api.DiskGraphEngine(num_threads=1),
     ) as plan:
         with plan.materialize(anchors, fit_split="train") as task:
             batches = list(task.batches(split="train", output_format="inspectable"))

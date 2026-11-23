@@ -124,7 +124,7 @@ def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
     else:
         anchors = tuple(api.SampleRequest(str(i), i, cutoff) for i in ids)
     dataset = api.Dataset({"users": api.Parquet(str(source))})
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
         values = next(task.batches(batch_size=len(ids), shuffle=False)).inputs["entity"]
     assert values["time"]["values"].equals(times)

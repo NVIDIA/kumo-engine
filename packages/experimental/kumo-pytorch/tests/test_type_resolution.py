@@ -135,7 +135,7 @@ def test_partial_parquet_resolution_preserves_explicit_int64(tmp_path):
     )
     dataset = api.Dataset({"users": api.Parquet(str(tmp_path))})
     contract = _source_contract({"id": None, "value": int64})
-    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    engine = api.DiskGraphEngine()
     # The decimal overflows int64. Metadata validation leaves that check to ingest.
     with patch("pyarrow.parquet.read_table", side_effect=AssertionError("read source rows")):
         assert api.check(contract, dataset, engine) == ()
