@@ -4,10 +4,12 @@
 
 """AML account-day histories and forecasts checked against original transaction rows."""
 
+import hashlib
 import json
 import os
 from bisect import bisect_right
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -23,6 +25,7 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
+from e2e.datasets import bind_tables
 from e2e.datasets.aml import (
     E01_MANIFEST,
     L01_MANIFEST,
@@ -421,6 +424,214 @@ def _source_counts(spec, root, cutoff, history):
             )
             counts[name] = count
     return counts
+
+
+@pytest.mark.skipif(
+    os.getenv("KUMO_PYTORCH_PROFILE_HI_SMALL") != "1", reason="run the HI Small benchmark"
+)
+def test_hi_small_fitting_memory(request):
+    from e2e.datasets.aml import prepare_hi_small_benchmark
+    from tests.e2e.host_memory import memory_interval
+    from tests.e2e.loader_timing import parquet_metadata
+
+    work = request.config.getoption("--e2e-dir")
+    work.mkdir(parents=True, exist_ok=True)
+    binding = work.parents[1].name
+    prepared = work.parents[2] / "prepared"
+    index = work.parent / "index"
+    build = work.name == "index-setup"
+    if build and not prepared.exists():
+        prepare_hi_small_benchmark(Path(os.environ["KUMO_PYTORCH_DATA_ROOT"]), prepared)
+    identity = json.loads((prepared / "identity.json").read_text())
+    info = identity["bindings"][binding]
+    spec_file = (prepared / f"{binding}.json").read_bytes()
+    assert hashlib.sha256(spec_file).hexdigest() == info["contract_sha256"]
+    spec = api.DataLoaderSpec.from_json(spec_file.decode())
+    _, dataset, anchors = bind_tables(prepared, spec, "entity_id", spec.sample.targets)
+    torch.set_num_threads(1)
+    assert index.exists() == (not build), f"unexpected index state for {work.name}: {index}"
+    engine = api.DiskGraphEngine(
+        index=index, ingest="if_missing" if build else "never", num_threads=1
+    )
+    with api.prepare(spec, dataset, engine) as plan:
+        report = {
+            "binding": binding,
+            "pid": os.getpid(),
+            "prefix_sha256": info["prefix_sha256"],
+            "contract": plan.contract.fingerprint,
+            "source_sha256": json.loads((index / "index_manifest.json").read_text())[
+                "dataset_fingerprint"
+            ],
+            "encoder_cutoff": info["encoder_cutoff_seconds"],
+        }
+        output = work / "results.json"
+        request.addfinalizer(lambda: output.write_text(json.dumps(report) + "\n"))
+        if build:
+            return
+        count = int(work.name)
+        path = prepared / f"{binding}-{count}.parquet"
+        metadata = parquet_metadata(path)
+        assert (metadata["rows"], metadata["sha256"]) == (count, info["anchors_sha256"][work.name])
+        anchors = replace(anchors, source=api.Parquet(str(path)))
+        assert os.environ["KUMO_PYTORCH_HOST_MEMORY"] in ("kernel", "sampled")
+        with ExitStack() as stack:
+            with memory_interval(report, "materialization", sample_interval_ns=50_000_000):
+                task = stack.enter_context(
+                    plan.materialize(
+                        anchors, fit_split="train", encoder_cutoff=report["encoder_cutoff"]
+                    )
+                )
+            assert task.count() == task.count("train") == count
+            for half in ("inputs", "targets"):
+                fit = task.fitted_state.fit[half]
+                assert (
+                    fit["fit_split"] == ["train"] and fit["anchors"] == task.fingerprints["anchors"]
+                )
+            statistics = task.fitted_state.fit["inputs"].get("statistics")
+            if statistics:
+                assert statistics["cutoff"] == report["encoder_cutoff"] * 10**9
+            report.update(
+                anchors=count,
+                anchor_sha256=metadata["sha256"],
+                fitted_state=task.fitted_state.fingerprint,
+            )
+        assert report["host_memory"]["complete"]
+
+
+@pytest.mark.skipif(os.getenv("KUMO_PYTORCH_PROFILE_L01") != "1", reason="run the l01 benchmark")
+@pytest.mark.parametrize("mode", ["fresh", "reloaded"])
+def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
+    import diskgraph
+
+    from kumo.pytorch.engines import diskgraph as backend
+    from tests.e2e.file_cache import IndexPageCache
+    from tests.e2e.host_memory import memory_interval
+    from tests.e2e.loader_timing import parquet_metadata, stage_observer
+    from tests.e2e.runs import L01_BATCHING, time_loader
+
+    work = request.config.getoption("--e2e-dir")
+    prepared = work.parents[1] / "prepared"
+    fresh = work.parent / "fresh" / "l01"
+    spec = api.DataLoaderSpec.from_json((prepared / "contract.json").read_text())
+    length_planning = os.getenv("KUMO_PYTORCH_L01_LENGTH_PLANNING") == "1"
+    if length_planning:
+        batching = replace(spec.batch.batching, length_input="history", bucket_by_length=True)
+        spec = replace(spec, batch=replace(spec.batch, batching=batching))
+    _, data, table = bind_tables(prepared, spec, "entity_id", spec.batch.targets)
+    anchors = pq.read_table(table.source.path, columns=["sample_id", "split"])
+    splits = Counter(anchors["split"].to_pylist())
+    assert splits == dict.fromkeys(("train", "valid", "test"), 512)
+    assert pc.count_distinct(anchors["sample_id"]).as_py() == len(anchors)
+    expected = anchors.filter(pc.equal(anchors["split"], "train"))["sample_id"].to_pylist()
+    delivered = []
+
+    def observe(batch):
+        delivered[-1].extend(batch.metadata["sample_ids"])
+        return batch
+
+    def batches(task, **options):
+        setup["fit_anchors"] = {
+            half: [record["anchors"], record["fit_split"]]
+            for half, record in task.fitted_state.fit.items()
+        }
+        delivered.append([])
+        return map(observe, native_anchor_delivery(task, seed=0, **options))
+
+    torch.set_num_threads(4)
+    torch.manual_seed(0)
+    cuda = os.getenv("KUMO_PYTORCH_L01_CUDA") == "1"
+    make_step = None
+    if cuda:
+        from tests.e2e.l01_model import make_l01_step
+
+        make_step = make_l01_step
+        assert os.environ["KUMO_PYTORCH_HOST_MEMORY"] == "sampled"
+    action = os.getenv("KUMO_PYTORCH_L01_INDEX_ACTION")
+    index = (prepared.parent if action else tmp_path) / "index"
+    engine = api.DiskGraphEngine(
+        index=index,
+        ingest="never" if action == "reopen" else "if_missing",
+        num_threads=4,
+        profile=True,
+    )
+    population = {
+        "source_sha256": hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
+        "anchor_sha256": parquet_metadata(table.source.path)["sha256"],
+        "anchor_binding": {k: v for k, v in table.to_dict().items() if k != "source"},
+        "split_counts": splits,
+    }
+    setup = {"pid": os.getpid(), **population}
+    with ExitStack() as stack:
+        with memory_interval(setup, "index.prepare"), stage_observer() as observer:
+            if action:
+                observer.wrap(backend, "ensure_diskgraph_index", "index.ensure")
+                observer.wrap(diskgraph, "ingest", "index.ingest")
+            plan = stack.enter_context(api.prepare(spec, data, engine))
+        if action:
+            assert observer.stages["index.ensure"]["calls"] == 1
+            ingests = observer.stages.get("index.ingest", {}).get("calls", 0)
+            assert ingests == int(action == "build"), (
+                f"expected {action}, observed {ingests} ingests"
+            )
+            setup.update(
+                index_path=str(index),
+                index_action=action,
+                index_ingests=ingests,
+                index_ensure_ns=observer.stages["index.ensure"]["elapsed_ns"],
+            )
+        fit = time_loader(
+            plan,
+            table,
+            work / "l01",
+            batches,
+            setup=setup,
+            modes=(mode,),
+            artifact=fresh / "artifact",
+            cache=IndexPageCache(index) if cuda else None,
+            make_step=make_step,
+            event_tables=("transactions",),
+            **L01_BATCHING,
+        )[mode]
+    if length_planning:
+        assert [Counter(ids) for ids in delivered] == [Counter(expected)] * 2
+    else:
+        assert delivered == [expected, expected]
+    for epoch in fit["epochs"]:
+        assert epoch["complete"] and epoch["batch_sizes"] == [4] * 128
+        assert (epoch["samples"], epoch["padded"], epoch["post_warmup"]["batches"]) == (512, 0, 126)
+        assert epoch["native_totals"]
+        if length_planning:
+            assert "file_page_cache" not in epoch and "train_step_ns" not in epoch
+            assert (epoch["lengths_computed"], epoch["length_cache_hits"]) == (
+                (512, 0) if epoch["epoch"] == 0 else (0, 512)
+            )
+            assert epoch["length_cache_reused"] == (epoch["epoch"] == 1)
+            assert epoch["merged_history_batches"] == epoch["batches"] == 128
+            assert epoch["events"] == 10_293  # Causal account events for the pinned train anchors.
+        if cuda:
+            pages = epoch["file_page_cache"]
+            assert (
+                pages["status"] == "verified" and pages["mode"] == ("cold", "warm")[epoch["epoch"]]
+            )
+            assert (epoch["eligible_amount"], epoch["eligible_currency"]) == (512, 512)
+            assert epoch["optimizer_updates"] == len(epoch["batch_sizes"])
+            assert epoch["cuda"]["complete"] and epoch["cuda"]["steady_samples"] >= 2
+            assert len(epoch["cuda"]["transfers"]) == epoch["optimizer_updates"]
+            assert epoch["host_memory"]["complete"]
+    for stage in ("input.fit", "target.fit"):
+        assert fit["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
+    assert fit["stages"].get("artifact.load", {}).get("calls", 0) == int(mode == "reloaded")
+    if mode == "reloaded":
+        prior = json.loads((fresh / "results.json").read_text())
+        assert prior["setup"]["pid"] != setup["pid"]
+        for key in (*population, "fit_anchors"):
+            assert setup[key] == prior["setup"][key]
+        for key in ("fitted_state", "contract"):
+            assert prior["fresh"][key] == fit[key]
+    else:
+        assert setup["fit_anchors"] == dict.fromkeys(
+            ("inputs", "targets"), [fit["anchors"], ["train"]]
+        )
 
 
 def test_li_medium_l01_combined_forecast(tmp_path):

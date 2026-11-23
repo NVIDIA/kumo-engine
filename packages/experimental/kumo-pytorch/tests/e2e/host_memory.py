@@ -25,7 +25,7 @@ def _byte_count(value):
 
 
 @contextmanager
-def memory_interval(record, operation):
+def memory_interval(record, operation, *, sample_interval_ns=SAMPLE_INTERVAL_NS):
     """Measure an operation when the supervisor has selected a host-memory mode."""
     method = os.getenv("KUMO_PYTORCH_HOST_MEMORY")
     if not method:
@@ -39,7 +39,7 @@ def memory_interval(record, operation):
         {
             "method": method,
             "cgroup": str(path),
-            "sample_interval_ns": SAMPLE_INTERVAL_NS,
+            "sample_interval_ns": sample_interval_ns,
             "complete": True,
             "intervals": [],
         },
@@ -62,7 +62,7 @@ def memory_interval(record, operation):
 
     def poll():
         try:
-            while not stop.wait(SAMPLE_INTERVAL_NS / 1e9):
+            while not stop.wait(sample_interval_ns / 1e9):
                 sample("periodic")
         except Exception as error:
             poll_errors.append(error)

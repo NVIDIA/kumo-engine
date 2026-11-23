@@ -28,6 +28,10 @@ from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parque
 from kumo.pytorch.materialization import _diskgraph_dtype
 
 
+class _UnsupportedLengthInput(ValueError):
+    """The native planner cannot derive the input's materialized lengths."""
+
+
 def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
     """Decode a timestamp timezone once, rather than once per Arrow scalar."""
     if values.null_count == len(values):
@@ -510,14 +514,16 @@ class NativeAnchors:
         prepared = assembler._prepared_inputs[policy.length_input]
         spec = prepared.spec
         if not isinstance(spec.source, EventSource) or compiled is None:
-            raise ValueError(
+            raise _UnsupportedLengthInput(
                 "native length planning currently requires an EventSource length input"
             )
         if (
             not isinstance(spec.layout, (Packed, Nested))
             and spec.layout.__class__.__name__ != "Padded"
         ):
-            raise ValueError("native length planning requires Packed/Padded or Nested layout")
+            raise _UnsupportedLengthInput(
+                "native length planning requires Packed/Padded or Nested layout"
+            )
         event_source = spec.source
         selection_key = (
             tuple(event_source.events),
@@ -586,7 +592,7 @@ class NativeAnchors:
                 elif set(declared_columns) != set(stored_costs["columns"]) or len(
                     declared_columns
                 ) != len(set(declared_columns)):
-                    raise ValueError(
+                    raise _UnsupportedLengthInput(
                         "event token metadata does not match this component's stored fields"
                     )
                 if stored_costs and spec.representation.row.missing == "emit":
@@ -615,9 +621,8 @@ class NativeAnchors:
                         and event.rows.time is not None
                         and value.column == event.rows.time.column
                     )
-                if (
-                    isinstance(value, Derived)
-                    and value.operation.__class__.__name__ == "CalendarPart"
+                if isinstance(value, Derived) and (
+                    value.operation.__class__.__name__ == "CalendarPart" or value.operation == "add"
                 ):
                     return all(always_present(event.fields[name]) for name in value.inputs)
                 return False
@@ -696,13 +701,13 @@ class NativeAnchors:
                             and row.missing == "omit"
                         ):
                             continue
-                        raise ValueError(
+                        raise _UnsupportedLengthInput(
                             "native length planning needs validity metadata for this derived field"
                         )
                     metadata = None
                     column = None if supplied and not composite else value.column
                     if column is None and metadata is None:
-                        raise ValueError(
+                        raise _UnsupportedLengthInput(
                             f"post-fit text token lengths missing for {logical}.{local}"
                         )
                     costs.append(
@@ -1217,8 +1222,18 @@ class NativeAnchors:
                 ):
                     yield _surface_padding(batch)
 
+        stages = self._selection(selection)
+        single_rank_model = output_format == "model" and world_size == 1
+        graph_bucketing = (
+            single_rank_model
+            and len(neighborhoods) == 1
+            and len(stages) == 1
+            and policy.bucket_by_length
+            and policy.max_tokens is None
+            and assembler._source is self._source
+        )
         named = {}
-        if len(neighborhoods) > 1:
+        if len(neighborhoods) > 1 or graph_bucketing:
             for name in sorted(neighborhoods):
                 fields = {table: [] for table in source._tables}
                 for prepared in assembler._prepared_inputs.values():
@@ -1245,14 +1260,13 @@ class NativeAnchors:
                     "plan": source._sampling_plan(self._sample.neighborhoods[name])[0],
                     "projections": fields,
                 }
-        stages = self._selection(selection)
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
         inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
             assembler
         )
         if (
             (output_format in {"model", "columnar"} or inspectable_graph or sampled)
-            and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
+            and (fixed or graph_bucketing or single_rank_model and not neighborhoods)
             and assembler._source is self._source
         ):
             first_owned = None
@@ -1286,7 +1300,7 @@ class NativeAnchors:
 
             projections[self._sample.entity.table].extend(entity_columns)
             for stage in stages:
-                yield from self._typed_batches(
+                typed = self._typed_batches(
                     assembler,
                     stage,
                     plan=plan,
@@ -1304,7 +1318,17 @@ class NativeAnchors:
                     deduplicate_edges=deduplicate_edges,
                     padding_anchor=padding_anchor,
                 )
-            return
+                try:
+                    yield from typed
+                except _UnsupportedLengthInput:
+                    if not graph_bucketing:
+                        raise
+                    # The request batcher samples this neighborhood after grouping the anchors.
+                    name, named = None, {}
+                    projections = {table: [] for table in source._tables}
+                    break
+            else:
+                return
 
         pending: list[SampleRequest] = []
         first = None
