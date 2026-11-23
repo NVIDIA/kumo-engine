@@ -1,8 +1,9 @@
 # Kumo FM payload loader
 
 The primary workflow starts with a graph built through `kumo.engine` connectors.
-Adopt its snapshot with `api.DiskGraphEngine.from_snapshot(snapshot,
-work_dir=...)`, declare a public PyTorch `SampleSpec` with one
+Configure storage once with `kumo.settings.configure(scratch_dir=...)`, then
+adopt its snapshot with `api.DiskGraphEngine.from_snapshot(snapshot)`.
+Declare a public PyTorch `SampleSpec` with one
 `NeighborhoodSpec` and a bounded future `Aggregate` or `Compare` target, then
 call `fm.prepare(engine=..., sample=..., target=..., task=..., features=...)`.
 See the runnable
@@ -10,7 +11,12 @@ See the runnable
 FM derives table and relation metadata from `engine.schema`; it creates
 context/query anchors, computes context labels in a separate public PyTorch
 plan, samples one columnar graph plan over the same index, and aligns both by
-occurrence ID. The base index remains unchanged. Columnar graph output does not
+occurrence ID. The snapshot must belong to the configured root when it is adopted. The engine
+keeps that root after settings change; task extensions and caches use managed
+sibling directories, and the base index remains unchanged. To use an exported
+snapshot under another root, configure that root, load it with
+`GraphSnapshot.load_from_connector(...)`, then adopt the returned handle.
+Columnar graph output does not
 currently fuse computed labels into the graph batch.
 For an advanced public relation alias or table projection, pass
 `schema=api.DataSchema(...)`; PyTorch checks it against the adopted index.
@@ -63,8 +69,9 @@ only in that benchmark environment. The connector snapshot path uses the base
 wheel without DuckDB.
 
 ```python
-from kumo import fm
+from kumo import fm, settings
 
+settings.configure(scratch_dir="/data/kumo-scratch")
 with fm.prepare("/data/bundle", "/data/workload.json", index="/data/fm-index") as loader:
     with loader.materialize(context=[101, 102], predict=[201]) as request:
         batch = request.load()
@@ -100,9 +107,14 @@ The production path accepts frozen `native_multihop` workloads whose graph
 sampling can be expressed exactly as public `kumo.pytorch` recent sampling.
 Uniform sampling into timeless tables and empty graph layers fail explicitly.
 The old `local_native` and `temporal_query` selection implementations are
-comparison references, not fallbacks in this package. A supplied index must
-match the dataset snapshot, contract fingerprint, and recorded dependency
-provenance; an unrelated or incomplete index is refused.
+comparison references, not fallbacks in this package. The frozen path's `index`
+argument names its FM workspace for source links, anchors and provenance; it
+does not select a DiskGraph index. Its marker must match the bundle, contract
+and dependencies; unrelated or incomplete workspaces are refused. Each opening
+creates a fresh Dataset engine and ingests independently under the configured
+root. That costs ingest time and disk space; closing tasks retains base indexes
+and caches, with no automatic garbage collection. Reuse one loader for repeated
+frozen requests, or use the connector snapshot path to reuse a completed base.
 
 | Contract area | Status |
 | --- | --- |

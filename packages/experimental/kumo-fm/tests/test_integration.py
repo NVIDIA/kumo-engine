@@ -42,6 +42,7 @@ def test_installed_wheel_samples_once_and_batch_survives_close(tmp_path):
     index = tmp_path / "index"
     with fm.prepare(bundle, spec, index=index) as loader:
         assert loader.preparation_mode == "index_build"
+        first_index = loader._backend.engine.index
         with loader.materialize() as request:
             batch = request.load()
             loader._backend.extract = lambda *_: (_ for _ in ()).throw(
@@ -58,8 +59,15 @@ def test_installed_wheel_samples_once_and_batch_survives_close(tmp_path):
                    query_events["interaction_id"].to_pylist())) == {
                        (100, 2), (101, 4), (102, 2)}
     assert all(value is not None for value in query_events["__fm_edge_interaction_user"].to_pylist())
+    # Old FM workspaces recorded a build selector. It must never select the
+    # new Dataset engine's base.
+    marker = index / "fm_snapshot.json"
+    marker.write_text(json.dumps({**json.loads(marker.read_text()),
+                                  "index_build_id": first_index.name}))
     with fm.prepare(bundle, spec, index=index) as loader:
-        assert loader.preparation_mode == "cached_index_open"
+        assert loader.preparation_mode == "index_build"
+        assert loader._backend.engine.index != first_index
+        assert first_index.is_dir()
         with loader.materialize(context=[], predict=[100]) as request:
             single = request.load()
     assert single.splits == ("predict",)

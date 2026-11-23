@@ -29,8 +29,11 @@ The notebook includes `fixture/bundle/` and `fixture/workload.json`. Run it
 from this directory to use them by default. Set `FM_SDM_FIXTURE` to
 another directory containing `bundle/` and `workload.json` to use your own
 eligible `native_multihop` workload. Set `FM_SDM_BUNDLE` when its bundle has
-another path. The notebook opens or creates `fm-index/` in the fixture directory, samples one
-batch, converts its retained Arrow tables through public
+another path. The notebook uses `fm-index/` for its FM workspace and configures
+`kumo-scratch/` for managed storage, both in the fixture directory. Each opening
+builds a fresh base; repeated requests in that loader reuse it. Base indexes and
+caches remain after closing, with no automatic garbage collection. It samples
+one batch, converts its retained Arrow tables through public
 `TableTensor.from_arrow` and `RelatedTables`, and exercises both model
 call forms. The helper only repairs zero-chunk columns and read-only string
 buffers when SDM requires it. The same batch is encoded as arrays and IPC.

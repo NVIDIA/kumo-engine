@@ -35,7 +35,7 @@ graph = kumo.Graph(
     edges=[kumo.Edge(src_table="orders", fkey="user_id", dst_table="users")],
 )
 engine = api.DiskGraphEngine.from_snapshot(
-    graph.snapshot(), work_dir=root / "consumer", num_threads=2)
+    graph.snapshot(), num_threads=2)
 relation = engine.schema.relations[0].name
 
 horizon = 30 * 24 * 60 * 60

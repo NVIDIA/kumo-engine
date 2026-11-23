@@ -51,7 +51,7 @@ class PreparedRequest:
 
 
 class FMLoader:
-    """Open a validated bundle and its compatible reusable DiskGraph index."""
+    """Open a validated bundle and build one managed DiskGraph engine."""
 
     def __init__(self, dataset, spec, *, index, threads=2, verify_files=True):
         bundle = Bundle(dataset.root if isinstance(dataset, Bundle) else Path(dataset),

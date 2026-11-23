@@ -131,9 +131,12 @@ class KumoPytorchBackend:
             name: {"version": (dist := importlib.metadata.distribution(name)).version,
                    "source": json.loads(dist.read_text("direct_url.json") or "null")}
             for name in ("diskgraph", "kumo-pytorch")}
-        if marker.exists() and json.loads(marker.read_text()) != provenance:
+        previous = json.loads(marker.read_text()) if marker.exists() else None
+        if previous is not None and {
+            key: value for key, value in previous.items() if key != "index_build_id"
+        } != provenance:
             raise ValueError("kumo-pytorch cache belongs to another snapshot/contract")
-        self.preparation_mode = "cached_index_open" if marker.exists() else "index_build"
+        self.preparation_mode = "index_build"
         try:
             # Exact file inventories: do not glob sibling files into immutable data.
             source_root = self.index / "sources"
@@ -147,10 +150,11 @@ class KumoPytorchBackend:
                         link.symlink_to(path)
                 sources[name] = api.Parquet(path=str(directory))
             with phase("kumo_pytorch_prepare", "preparation"):
+                self.engine = api.DiskGraphEngine(num_threads=threads)
                 self.plan = self._stack.enter_context(api.prepare(
                     contract=contract, dataset=api.Dataset(tables=sources),
-                    engine=api.DiskGraphEngine(index=self.index / "engine", num_threads=threads)))
-            metadata = json.loads((self.index / "engine" / "index_metadata.json").read_text())
+                    engine=self.engine))
+            metadata = json.loads((self.engine.index / "index_metadata.json").read_text())
             counts = {t["name"]: t["max_id"] + 1 for t in metadata["node_types"]}
             for name in workload.table_names:
                 if counts.get(name, 0) != self.bundle.tables[name]["rows"]:

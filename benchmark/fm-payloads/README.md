@@ -13,6 +13,7 @@ Run correctness first, then warmups and interleaved measured draws:
 python make_fixture.py /tmp/fm-case
 python runner.py --bundle /tmp/fm-case/bundle \
   --workload /tmp/fm-case/workload.json --index /tmp/fm-case/index \
+  --scratch-dir /tmp/fm-case/scratch \
   --draws 5 --output /tmp/fm-report.json
 ```
 
@@ -20,7 +21,7 @@ For an existing bundle and workload:
 
 ```bash
 python runner.py --bundle /data/bundle --workload /data/workload.json \
-  --index /data/fm-index --draws 7 --output /tmp/fm-report.json
+  --index /data/fm-index --scratch-dir /data/kumo-scratch --draws 7 --output /tmp/fm-report.json
 ```
 
 The workload must be eligible for the public `kumo.pytorch` recent-sampling
@@ -44,3 +45,8 @@ counts. Median phase times in milliseconds:
 
 The backend paths and measured phase boundaries differ. This small smoke
 case validates parity and timing instrumentation, not general throughput.
+
+`--index` is the FM workspace. DiskGraph allocates a fresh base for each runner
+invocation under `--scratch-dir`; repeated draws reuse that engine. Base indexes
+and caches remain after task cleanup and have no automatic garbage collection.
+The retained smoke report predates this storage migration.

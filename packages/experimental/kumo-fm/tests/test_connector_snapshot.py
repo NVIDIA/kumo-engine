@@ -8,12 +8,14 @@ import hashlib
 import json
 import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 
+import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from kumo import fm
+from kumo import fm, settings
 from kumo.pytorch import api
 
 kumo = pytest.importorskip("kumo.engine")
@@ -31,7 +33,7 @@ def at(second):
     return datetime.fromtimestamp(second, tz=timezone.utc)
 
 
-def test_connector_export_reuse_and_aliased_relation(tmp_path):
+def test_connector_export_reuse_and_aliased_relation(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
     pq.write_table(pa.table({"id": [-5, 9007199254740993]}), source / "users.parquet")
@@ -40,20 +42,24 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
                              "at": pa.array([10, 20, 30, 10], pa.timestamp("s"))}),
                    source / "events.parquet")
     connector = kumo.FileConnector(root_dir=str(source))
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / "producer")
     graph = kumo.Graph(tables={
         "users": kumo.Table.from_source_table(connector["users.parquet"], primary_key="id"),
         "events": kumo.Table.from_source_table(connector["events.parquet"],
                                                primary_key="id", time_column="at").with_column("user", stype=Stype.ID),
     }, edges=[kumo.Edge(src_table="events", fkey="user", dst_table="users")])
-    previous = get_scratch_dir()
     try:
-        kumo.configure(scratch_dir=tmp_path / "producer")
         snapshot = graph.snapshot()
+        assert snapshot.index_path.parent == (tmp_path / "producer" / "indexes")
         original_hashes = inventory(snapshot.index_path)
 
-        def run(snapshot, work):
-            engine = api.DiskGraphEngine.from_snapshot(snapshot, work_dir=work,
-                                                       num_threads=2)
+        def run(snapshot):
+            engine = api.DiskGraphEngine.from_snapshot(snapshot, num_threads=2)
+            captured_root = settings.scratch_dir().resolve()
+            assert engine.index == snapshot.index_path
+            # Adoption captures this root for both label and graph tasks.
+            kumo.configure(scratch_dir=tmp_path / "other")
             physical = engine.schema.relations[0]
             alias = api.RelationSpec("events_selected", physical.left_table,
                                      physical.left_key, physical.right_table, physical.right_key)
@@ -65,6 +71,20 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
             sample = api.SampleSpec(
                 entity=api.EntitySpec("users"), targets={"next": future},
                 neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+            ingest = diskgraph.ingest
+            extensions = []
+
+            def ingest_task(*args, **kwargs):
+                assert kwargs.get("parent_index_path") == str(engine.index), "unexpected base ingest"
+                extensions.append(args[1])
+                assert Path(args[1]).parent == captured_root / "tasks" / engine.index_build_id
+                return ingest(*args, **kwargs)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(diskgraph, "ingest", ingest_task)
+                return load(engine, schema, sample, extensions)
+
+        def load(engine, schema, sample, extensions):
             with fm.prepare(engine=engine, schema=schema, sample=sample, target="next",
                             task="regression", features={"users": [], "events": ["at"]},
                             batch_size=1) as loader:
@@ -72,6 +92,8 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
                                                               (-5, at(15), 89), (9007199254740993, at(15), 90)]),
                                     query=fm.Query(pairs=[(-5, at(40), 91),
                                                           (9007199254740993, at(40), 92)]))
+            assert len(extensions) == 3
+            assert not (tmp_path / "other").exists()
             context = batch.tables("context")
             assert [(row["instance_id"], row["__fm_target"])
                     for row in context["instance_table"].to_pylist()] == [
@@ -97,7 +119,7 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
                         encoded["payload_base64"])).read_all()
                     assert decoded.equals(table)
             return batch.tables("predict")["related_tables"]["events"]
-        first = run(snapshot, tmp_path / "work1")
+        first = run(snapshot)
         assert inventory(snapshot.index_path) == original_hashes
         exports = kumo.FileConnector(root_dir=str(tmp_path / "exports"))
         location = snapshot.export(kumo.SnapshotOutputConfig(exports, "saved"))
@@ -106,7 +128,7 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
         kumo.configure(scratch_dir=tmp_path / "consumer")
         reopened = kumo.GraphSnapshot.load_from_connector(exports, path=location)
         exported_hashes = inventory(reopened.index_path)
-        second = run(reopened, tmp_path / "work2")
+        second = run(reopened)
         assert first.equals(second)
         assert inventory(reopened.index_path) == exported_hashes
     finally:

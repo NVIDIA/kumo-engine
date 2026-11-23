@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from kumo import fm
+from kumo import fm, settings
 from kumo.fm._pytorch import compatibility_issues
 from kumo.fm.bundle import Bundle
 from kumo.fm.workload import Workload
@@ -46,7 +46,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--workload", type=Path, required=True)
-    parser.add_argument("--index", type=Path, required=True)
+    parser.add_argument("--index", type=Path, required=True, help="FM workspace")
+    parser.add_argument("--scratch-dir", type=Path, required=True, help="Managed Kumo storage root")
     parser.add_argument("--draws", type=int, default=7)
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--output", type=Path, required=True)
@@ -60,6 +61,7 @@ def main():
     from fm_dataloader.payload import build_payload, decode_payload
     from fm_dataloader.workload import Workload as OldWorkload
 
+    settings.configure(scratch_dir=args.scratch_dir)
     old_bundle = OldBundle(args.bundle)
     old_workload = OldWorkload.load(old_bundle, args.workload)
     new_bundle = Bundle(args.bundle)

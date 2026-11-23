@@ -4,6 +4,8 @@
 
 """Integrated multi-layer FM sampling over a reusable native index."""
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -73,19 +75,37 @@ def build_index(tmp_path):
             for name, keys_and_types in ((table.name, table.columns) for table in tables
                                          if table.name in ("users", "orders"))
         }), None)}, batching=api.Batching(max_samples=2)))
-    index = tmp_path / "index"
+    engine = api.DiskGraphEngine(num_threads=2)
     with api.prepare(contract=contract, dataset=api.Dataset(sources),
-                     engine=api.DiskGraphEngine(index=index, num_threads=2)):
+                     engine=engine):
         pass
-    return index, schema
+    return engine.index, schema
 
 
 @pytest.mark.parametrize("depth", [2, 3, 4])
-def test_snapshot_multihop_and_occurrence_alignment(tmp_path, depth):
+def test_snapshot_multihop_and_occurrence_alignment(tmp_path, depth, monkeypatch):
     index, schema = build_index(tmp_path)
-    work = tmp_path / "consumer"
-    engine = api.DiskGraphEngine.from_index(index, work_dir=work, num_threads=2)
+    engine = api.DiskGraphEngine.from_snapshot(
+        SimpleNamespace(index_path=index, id="fm-test"), num_threads=2)
     assert engine.schema == schema
+    # No original sources or new base ingest may be needed after adoption.
+    for source in tmp_path.glob("*.parquet"):
+        source.unlink()
+    import diskgraph
+
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=tmp_path / "other")
+    ingest = diskgraph.ingest
+    extensions = []
+
+    def ingest_task(*args, **kwargs):
+        assert kwargs.get("parent_index_path") == str(index), "unexpected base ingest"
+        extensions.append(args[1])
+        assert Path(args[1]).parent == index.parent.parent / "tasks" / engine.index_build_id
+        return ingest(*args, **kwargs)
+
+    monkeypatch.setattr(diskgraph, "ingest", ingest_task)
     names = ("order_user", "payment_order", "audit_payment", "note_audit")
     future = api.Aggregate(api.Rows(
         path=(names[0],), time=api.TimeWindow("at", start=0, stop=7*86400)), "count")
@@ -137,5 +157,7 @@ def test_snapshot_multihop_and_occurrence_alignment(tmp_path, depth):
         assert "__fm_edge_" + step in related[child].column_names
         assert related[child]["__fm_edge_" + step].null_count == 0
         assert related[child]["__fm_edge_" + step].to_pylist() == expected_edges[step]
+    assert len(extensions) == 3  # Context labels, context graph, query graph.
+    assert not (tmp_path / "other").exists()
     assert batch.encode("arrays") == batch.encode("arrays")
     assert batch.encode("arrow_ipc") == batch.encode("arrow_ipc")
