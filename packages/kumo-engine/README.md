@@ -89,7 +89,7 @@ When training completes, the example prints the first five predictions:
 
 `result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. The prediction time defaults to the latest `order_time` in the snapshot, so predictions cover the 30 days after it. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
 
-`graph.snapshot()` writes the graph to a scratch directory, `~/.cache/kumo-engine` by default, which also holds training runs, model bundles, and predictions. If your home directory is on a network volume, such as an Amazon EBS boot volume, call `kumo.engine.configure(scratch_dir=...)` before taking the snapshot to use a directory on a local NVMe SSD instead.
+`graph.snapshot()` writes the graph to a scratch directory, `~/.cache/kumo-engine` by default, which also holds training runs, model bundles, and predictions. If your home directory is on a network volume, such as an Amazon EBS boot volume, call `kumo.engine.configure(scratch_dir=...)` before constructing the `Graph` to use a directory on a local NVMe SSD instead. Each `Graph` captures that root at construction; later `configure()` calls affect new graphs, while existing graphs keep their original snapshot storage and reuse.
 
 New completed snapshots live at `<scratch>/indexes/<index_build_id>`. Kumo
 keeps a graph/data-version reference under `<scratch>/snapshots` for reuse;
