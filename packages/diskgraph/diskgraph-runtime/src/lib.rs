@@ -8,11 +8,14 @@ use diskgraph_core::sampling::{NegativeSamplingSpec, SamplingFlags, SamplingPlan
 use diskgraph_engine::{engine::DiskGraphEngine, output::RuntimeBatch};
 use diskgraph_index::graph::TableReader;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
-use serde::Deserialize;
 use std::{collections::VecDeque, sync::Arc};
 
 mod errors;
+mod weighted_sampling;
 pub use errors::{Result, RuntimeError};
+pub use weighted_sampling::{
+    WeightedSeedBucketConfig, WeightedSeedSampling, WeightedSeedSamplingConfig,
+};
 
 /// Native traversal plans and feature projections keyed by neighborhood name.
 pub type NeighborhoodPlans = std::collections::BTreeMap<
@@ -435,22 +438,6 @@ fn make_worker_offsets(
         .collect())
 }
 
-#[derive(Debug, Deserialize)]
-struct WeightedSeedSamplingConfig {
-    buckets: Vec<WeightedSeedBucketConfig>,
-    num_samples: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct WeightedSeedBucketConfig {
-    name: String,
-    node_ids_path: String,
-    count: u64,
-    mass: f64,
-    cdf_path: Option<String>,
-    total_weight: Option<f64>,
-}
-
 /// A TT's mmapped `fact_pseudo_time.bin` plus the seed pseudo time.
 pub struct PseudoTimeSeed {
     node_type: String,
@@ -825,7 +812,7 @@ impl WeightedSeedBucket {
 
 #[allow(clippy::too_many_arguments)]
 fn make_weighted_stage_node_ids(
-    config_json: &str,
+    config: WeightedSeedSamplingConfig,
     contains_node: impl Fn(u64) -> bool,
     stage_key: &str,
     num_workers: u64,
@@ -833,8 +820,6 @@ fn make_weighted_stage_node_ids(
     rnd_seed: Option<u64>,
     epoch: u64,
 ) -> Result<Vec<u64>> {
-    let config: WeightedSeedSamplingConfig = serde_json::from_str(config_json)
-        .map_err(|e| RuntimeError::config(format!("Invalid weighted_seed_sampling JSON: {e}")))?;
     if config.num_samples == 0 {
         return Ok(Vec::new());
     }
@@ -1260,6 +1245,7 @@ pub struct RuntimeIndex {
     reader: Arc<diskgraph_index::graph::GraphIndexReader>,
     engine: Arc<DiskGraphEngine>,
     namespace: String,
+    weighted_manifest: std::sync::OnceLock<serde_json::Value>,
 }
 impl RuntimeIndex {
     /// Open the graph and training-table extension; propagate typed index errors.
@@ -1282,6 +1268,7 @@ impl RuntimeIndex {
             reader,
             engine,
             namespace,
+            weighted_manifest: std::sync::OnceLock::new(),
         })
     }
 
@@ -1322,7 +1309,7 @@ impl RuntimeIndex {
         rhs_seed_node_type: Option<String>,
         rhs_seed_time: Option<i64>,
         group_by_timestamp: bool,
-        weighted_seed_sampling_json: Option<String>,
+        weighted_seed_sampling: Option<WeightedSeedSampling>,
         selected_stage_node_ids: Option<Vec<u64>>,
         use_seed_timestamps: bool,
         pseudo_seed_time: Option<i64>,
@@ -1356,6 +1343,26 @@ impl RuntimeIndex {
         // skew tripwire and must never be aliased back.
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> Result<RuntimeBatchIterator> {
+        let weighted_seed_sampling = weighted_seed_sampling
+            .map(|options| {
+                let root = self.reader.tt_extension_root().ok_or_else(|| {
+                    RuntimeError::config("weighted_seed_sampling requires a TT extension root")
+                })?;
+                let manifest = match self.weighted_manifest.get() {
+                    Some(manifest) => manifest,
+                    None => {
+                        let manifest = weighted_sampling::read_manifest(root)?;
+                        self.weighted_manifest.get_or_init(|| manifest)
+                    }
+                };
+                weighted_sampling::resolve(
+                    manifest,
+                    root,
+                    stage_table.rsplit('/').next().unwrap_or(&stage_table),
+                    options,
+                )
+            })
+            .transpose()?;
         RuntimeBatchIterator::build(
             Arc::clone(&self.reader),
             Arc::clone(&self.engine),
@@ -1382,7 +1389,7 @@ impl RuntimeIndex {
             rhs_seed_node_type,
             rhs_seed_time,
             group_by_timestamp,
-            weighted_seed_sampling_json,
+            weighted_seed_sampling,
             selected_stage_node_ids,
             use_seed_timestamps,
             pseudo_seed_time,
@@ -1458,7 +1465,7 @@ impl RuntimeBatchIterator {
         // Mutually exclusive with NodeRange mode (the RHS catalog pass has no
         // per-row timestamp to group on).
         group_by_timestamp: bool,
-        weighted_seed_sampling_json: Option<String>,
+        weighted_seed_sampling: Option<WeightedSeedSamplingConfig>,
         // XAI / targeted replay mode: explicit stage-table node ids, in caller
         // order. These are the same ids emitted as task.tt_stage_node_ids.
         selected_stage_node_ids: Option<Vec<u64>>,
@@ -1510,7 +1517,7 @@ impl RuntimeBatchIterator {
         };
         let stage_key = if let Some(rhs_type) = rhs_seed_node_type.as_ref() {
             rhs_type.clone()
-        } else if group_by_timestamp || weighted_seed_sampling_json.is_some() {
+        } else if group_by_timestamp || weighted_seed_sampling.is_some() {
             stage_catalog_key.clone()
         } else {
             stage_table.clone()
@@ -1541,7 +1548,7 @@ impl RuntimeBatchIterator {
             drop_last,
             rhs,
             selected_stage_node_ids,
-            weighted_seed_sampling_json,
+            weighted_seed_sampling,
             bucket_extension_root,
         })?;
         let pseudo_time = PseudoTimeSeed::for_stage(
@@ -1847,7 +1854,7 @@ pub struct SeedScheduleConfig {
     /// Ordered stage IDs to shard, preserving duplicates.
     pub selected_stage_node_ids: Option<Vec<u64>>,
     /// Existing weighted-sampling settings and sidecar paths.
-    pub weighted_seed_sampling_json: Option<String>,
+    pub weighted_seed_sampling: Option<WeightedSeedSamplingConfig>,
     /// Local extension containing timestamp bucket metadata and IDs.
     pub bucket_extension_root: Option<std::path::PathBuf>,
 }
@@ -1870,7 +1877,7 @@ impl SeedSchedule {
     ///
     /// Returns a configuration error for invalid worker assignments, ranges,
     /// or mode combinations, and a data/system error for invalid sidecars.
-    pub fn new(config: SeedScheduleConfig) -> Result<Self> {
+    pub fn new(mut config: SeedScheduleConfig) -> Result<Self> {
         if config.batch_size == 0
             || config.num_workers == 0
             || config.worker_id >= config.num_workers
@@ -1889,7 +1896,7 @@ impl SeedSchedule {
         }
         let grouped = config.bucket_extension_root.is_some();
         let selected = config.selected_stage_node_ids.is_some();
-        let weighted = config.weighted_seed_sampling_json.is_some();
+        let weighted = config.weighted_seed_sampling.is_some();
         if selected && (config.shuffle || config.drop_last || grouped || config.rhs || weighted) {
             return Err(RuntimeError::config(
                 "selected_stage_node_ids is incompatible with shuffle, drop_last, grouped, RHS, or weighted sampling",
@@ -1939,11 +1946,11 @@ impl SeedSchedule {
             })
             .transpose()?;
         let weighted_stage_node_ids = config
-            .weighted_seed_sampling_json
-            .as_deref()
-            .map(|config_json| {
+            .weighted_seed_sampling
+            .take()
+            .map(|weighted| {
                 make_weighted_stage_node_ids(
-                    config_json,
+                    weighted,
                     contains,
                     &config.stage_key,
                     config.num_workers,

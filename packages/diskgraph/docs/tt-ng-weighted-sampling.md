@@ -218,9 +218,11 @@ falling back to the natural seed order.
 
 ## Runtime Contract
 
-Kumo passes `weighted_seed_sampling` to the Python wrapper. The wrapper resolves
-manifest-relative sidecar paths and emits a compact JSON config consumed by the
-Rust runtime iterator:
+Kumo passes `weighted_seed_sampling` to the Python wrapper, which forwards the
+`WeightedSeedSampling` dataclass directly to Rust. Rust lazily caches the opened
+extension's `diskgraph_manifest.json`, selects metadata by stage table name, and
+resolves sidecar paths relative to that extension. No extra metadata arguments
+are needed. The native seed scheduler consumes typed buckets with this shape:
 
 ```json
 {

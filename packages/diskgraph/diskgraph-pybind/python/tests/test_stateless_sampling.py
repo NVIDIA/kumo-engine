@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import struct
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -261,7 +263,7 @@ def test_schedule_config_is_native_and_owns_its_inputs() -> None:
     assert config.shuffle is False
     assert config.drop_last is False
     assert config.rhs is False
-    assert config.weighted_seed_sampling_json is None
+    assert config.weighted_seed_sampling is None
     assert config.bucket_extension_root is None
     schedule = SeedSchedule(config)
     ranges.append((20, 21))
@@ -406,3 +408,42 @@ def test_named_neighborhoods_accept_native_plans_without_json(
         native.with_neighborhoods(
             {"invalid": {"plan": {"layers": []}, "projections": {}}}
         )
+
+
+def test_schedule_accepts_resolved_weighted_buckets(tmp_path: Path) -> None:
+    """Verify native bucket extraction and config snapshot ownership.
+
+    Args:
+        tmp_path: Temporary directory for the node ID sidecar.
+    """
+    sidecar = tmp_path / "weighted_ids.bin"
+    sidecar.write_bytes(struct.pack("<3Q", 10, 11, 12))
+    weighted = {
+        "num_samples": 7,
+        "buckets": [
+            {
+                "name": "all",
+                "node_ids_path": str(sidecar),
+                "count": 3,
+                "mass": 3.0,
+            }
+        ],
+    }
+    config = SeedScheduleConfig(
+        stage_key="train",
+        ranges=[(10, 12)],
+        batch_size=3,
+        weighted_seed_sampling=weighted,
+    )
+
+    schedule = SeedSchedule(config)
+    weighted["num_samples"] = 100
+    snapshot = config.weighted_seed_sampling
+    snapshot["num_samples"] = 200
+    batches = []
+    while (batch := schedule.next_seed_ids()) is not None:
+        batches.extend(batch)
+
+    assert len(batches) == 7
+    assert set(batches) <= {10, 11, 12}
+    assert config.weighted_seed_sampling["num_samples"] == 7

@@ -26,6 +26,7 @@ import inspect
 import json
 import pathlib
 import struct
+from dataclasses import replace
 from typing import Any
 
 import diskgraph
@@ -491,8 +492,7 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
     false_node_ids.write_bytes((0).to_bytes(8, "little") + (1).to_bytes(8, "little"))
     true_node_ids.write_bytes((2).to_bytes(8, "little"))
 
-    manifest = json.loads(pathlib.Path(
-        seed_table_fixture["manifest_path"]).read_text())
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
     stage = manifest["stages"]["train"]
     stage["binary_label_index"] = {
         "false_node_ids": str(false_node_ids),
@@ -500,11 +500,15 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
         "true_node_ids": str(true_node_ids),
         "true_count": 1,
     }
+    extension_manifest = pathlib.Path(stage["index_path"]) / "diskgraph_manifest.json"
+    extension_payload = {"task_dataset": {"stages": {"train": stage}}}
+    extension_manifest.write_text(json.dumps(extension_payload))
+    del stage["binary_label_index"]
     manifest_path = tmp_path / "weighted_manifest.json"
     manifest_path.write_text(json.dumps(manifest))
 
-    iterator, num_samples = make_runtime_batch_iterator(
-        dataset_ref=str(manifest_path),
+    index = RuntimeIndex(str(manifest_path), rnd_seed=11)
+    options = SamplingOptions(
         stage="train",
         entity_node_type="users",
         sampling_plan=_sampling_plan(),
@@ -519,6 +523,7 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
         ),
     )
 
+    iterator, num_samples = index.iter(options)
     assert num_samples == 6
     seen: list[int] = []
     for batch in iterator:
@@ -527,6 +532,26 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
     assert set(seen) <= {0, 1, 2}
     assert seen.count(2) > seen.count(0)
     assert seen.count(2) > seen.count(1)
+
+    extension_manifest.write_text("invalid json after first iteration")
+    iterator, num_samples = index.iter(
+        replace(
+            options,
+            weighted_seed_sampling=WeightedSeedSampling(
+                false_weight=0.0,
+                true_weight=1.0,
+                num_samples=4,
+            ),
+        )
+    )
+    assert num_samples == 4
+    assert [
+        value
+        for batch in iterator
+        for value in batch["task"]["tt_stage_node_ids"].to_pylist()
+    ] == [2] * 4
+    with pytest.raises(TypeError, match="diskgraph.WeightedSeedSampling"):
+        index.iter(replace(options, weighted_seed_sampling=object()))
 
 
 def test_iterator_weighted_seed_sampling_partitions_across_workers(
@@ -546,8 +571,7 @@ def test_iterator_weighted_seed_sampling_partitions_across_workers(
         b"".join(value.to_bytes(8, "little") for value in true_values)
     )
 
-    manifest = json.loads(pathlib.Path(
-        seed_table_fixture["manifest_path"]).read_text())
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
     stage = manifest["stages"]["train"]
     stage["binary_label_index"] = {
         "false_node_ids": str(false_node_ids),
@@ -555,6 +579,10 @@ def test_iterator_weighted_seed_sampling_partitions_across_workers(
         "true_node_ids": str(true_node_ids),
         "true_count": len(true_values),
     }
+    extension_manifest = pathlib.Path(stage["index_path"]) / "diskgraph_manifest.json"
+    extension_payload = {"task_dataset": {"stages": {"train": stage}}}
+    extension_manifest.write_text(json.dumps(extension_payload))
+    del stage["binary_label_index"]
     manifest_path = tmp_path / "weighted_workers_manifest.json"
     manifest_path.write_text(json.dumps(manifest))
 
@@ -580,9 +608,7 @@ def test_iterator_weighted_seed_sampling_partitions_across_workers(
         )
         seen: list[int] = []
         for batch in iterator:
-            seen.extend(
-                int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist()
-            )
+            seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
         return seen, num_samples
 
     global_seen, global_num_samples = collect(worker_id=0, num_workers=1)
@@ -627,8 +653,7 @@ def test_iterator_row_weight_seed_sampling_uses_cdf(
         cdf_bytes.extend(struct.pack("<d", total))
     cdf.write_bytes(cdf_bytes)
 
-    manifest = json.loads(pathlib.Path(
-        seed_table_fixture["manifest_path"]).read_text())
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
     manifest["stages"]["train"]["sample_weight_index"] = {
         "all": {
             "node_ids": str(node_ids),
@@ -637,6 +662,11 @@ def test_iterator_row_weight_seed_sampling_uses_cdf(
             "total_weight": total,
         },
     }
+    stage = manifest["stages"]["train"]
+    extension_manifest = pathlib.Path(stage["index_path"]) / "diskgraph_manifest.json"
+    extension_payload = {"task_dataset": {"stages": {"train": stage}}}
+    extension_manifest.write_text(json.dumps(extension_payload))
+    del stage["sample_weight_index"]
     manifest_path = tmp_path / "row_weight_manifest.json"
     manifest_path.write_text(json.dumps(manifest))
 

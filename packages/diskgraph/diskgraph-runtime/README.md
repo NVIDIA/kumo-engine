@@ -60,7 +60,7 @@ optional mode:
 | `batch_size`, `drop_last` | Positive batch bound and mode-specific partial-tail policy; see below. |
 | `rhs` | Whether the ranges describe one nonempty dense RHS candidate domain. |
 | `selected_stage_node_ids` | Optional ordered selection, preserving duplicates. |
-| `weighted_seed_sampling_json` | Optional weighted-sampling settings and sidecars. |
+| `weighted_seed_sampling` | Optional resolved weighted-sampling buckets and draw count. |
 | `bucket_extension_root` | Optional extension containing timestamp buckets. |
 
 To reproduce local ordering, flat schedules must use the exact `stage_table`

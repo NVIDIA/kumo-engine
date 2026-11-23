@@ -262,6 +262,67 @@ fn raw_feature_bank_to_pydict<'py>(
 pub struct RuntimeIndex {
     inner: diskgraph_runtime::RuntimeIndex,
 }
+fn extract_weighted_seed_sampling(
+    value: Option<Bound<'_, PyAny>>,
+) -> PyResult<Option<diskgraph_runtime::WeightedSeedSampling>> {
+    value
+        .map(|value| {
+            let class = value
+                .py()
+                .import("diskgraph.sampling_options")?
+                .getattr("WeightedSeedSampling")?;
+            if !value.is_instance(&class)? {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "weighted_seed_sampling must be a diskgraph.WeightedSeedSampling",
+                ));
+            }
+            Ok(diskgraph_runtime::WeightedSeedSampling {
+                num_samples: value.getattr("num_samples")?.extract()?,
+                false_weight: value.getattr("false_weight")?.extract()?,
+                true_weight: value.getattr("true_weight")?.extract()?,
+                use_sample_weights: value.getattr("use_sample_weights")?.extract()?,
+            })
+        })
+        .transpose()
+}
+
+fn extract_weighted_buckets(
+    value: Option<Bound<'_, PyAny>>,
+) -> PyResult<Option<diskgraph_runtime::WeightedSeedSamplingConfig>> {
+    value
+        .map(|value| {
+            let buckets = value
+                .get_item("buckets")?
+                .try_iter()?
+                .map(|bucket| {
+                    let bucket = bucket?;
+                    let optional = |key: &str| -> PyResult<Option<Bound<'_, PyAny>>> {
+                        bucket.cast::<PyDict>()?.get_item(key)
+                    };
+                    Ok(diskgraph_runtime::WeightedSeedBucketConfig {
+                        name: bucket.get_item("name")?.extract()?,
+                        node_ids_path: bucket.get_item("node_ids_path")?.extract()?,
+                        count: bucket.get_item("count")?.extract()?,
+                        mass: bucket.get_item("mass")?.extract()?,
+                        cdf_path: optional("cdf_path")?
+                            .map(|v| v.extract::<Option<String>>())
+                            .transpose()?
+                            .flatten(),
+                        total_weight: optional("total_weight")?
+                            .map(|v| v.extract::<Option<f64>>())
+                            .transpose()?
+                            .flatten(),
+                    })
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(diskgraph_runtime::WeightedSeedSamplingConfig {
+                num_samples: value.get_item("num_samples")?.extract()?,
+                buckets,
+            })
+        })
+        .transpose()
+}
+
 /// Rust-owned configuration for graph-independent seed scheduling.
 ///
 /// Fields are read-only. See the native batch runtime's configuration contract
@@ -279,7 +340,7 @@ pub struct RuntimeIndex {
 ///     drop_last: Drop partial flat/RHS batches.
 ///     rhs: Use one nonempty RHS candidate range.
 ///     selected_stage_node_ids: Ordered stage IDs, preserving duplicates.
-///     weighted_seed_sampling_json: Weighted-sampling settings and sidecars.
+///     weighted_seed_sampling: Resolved bucket dictionary and draw count.
 ///     bucket_extension_root: Extension containing timestamp buckets.
 #[pyclass(frozen, module = "diskgraph._c")]
 pub struct SeedScheduleConfig {
@@ -292,7 +353,7 @@ impl SeedScheduleConfig {
     #[pyo3(signature = (
         *, stage_key, ranges, batch_size, num_workers=1, worker_id=0,
         shuffle=false, rnd_seed=None, epoch=0, drop_last=false, rhs=false,
-        selected_stage_node_ids=None, weighted_seed_sampling_json=None,
+        selected_stage_node_ids=None, weighted_seed_sampling=None,
         bucket_extension_root=None,
     ))]
     fn new(
@@ -307,10 +368,10 @@ impl SeedScheduleConfig {
         drop_last: bool,
         rhs: bool,
         selected_stage_node_ids: Option<Vec<u64>>,
-        weighted_seed_sampling_json: Option<String>,
+        weighted_seed_sampling: Option<Bound<'_, PyAny>>,
         bucket_extension_root: Option<std::path::PathBuf>,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        Ok(Self {
             inner: diskgraph_runtime::SeedScheduleConfig {
                 stage_key,
                 ranges,
@@ -323,10 +384,10 @@ impl SeedScheduleConfig {
                 drop_last,
                 rhs,
                 selected_stage_node_ids,
-                weighted_seed_sampling_json,
+                weighted_seed_sampling: extract_weighted_buckets(weighted_seed_sampling)?,
                 bucket_extension_root,
             },
-        }
+        })
     }
     #[getter]
     fn stage_key(&self) -> &str {
@@ -373,8 +434,28 @@ impl SeedScheduleConfig {
         self.inner.selected_stage_node_ids.as_deref()
     }
     #[getter]
-    fn weighted_seed_sampling_json(&self) -> Option<&str> {
-        self.inner.weighted_seed_sampling_json.as_deref()
+    fn weighted_seed_sampling(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.inner
+            .weighted_seed_sampling
+            .as_ref()
+            .map(|config| {
+                let out = PyDict::new(py);
+                let buckets = PyList::empty(py);
+                for bucket in &config.buckets {
+                    let item = PyDict::new(py);
+                    item.set_item("name", &bucket.name)?;
+                    item.set_item("node_ids_path", &bucket.node_ids_path)?;
+                    item.set_item("count", bucket.count)?;
+                    item.set_item("mass", bucket.mass)?;
+                    item.set_item("cdf_path", &bucket.cdf_path)?;
+                    item.set_item("total_weight", bucket.total_weight)?;
+                    buckets.append(item)?;
+                }
+                out.set_item("num_samples", config.num_samples)?;
+                out.set_item("buckets", buckets)?;
+                Ok(out.into_any().unbind())
+            })
+            .transpose()
     }
     #[getter]
     fn bucket_extension_root(&self) -> Option<&std::path::Path> {
@@ -848,7 +929,7 @@ impl RuntimeIndex {
         rhs_seed_node_type=None,
         rhs_seed_time=None,
         group_by_timestamp=false,
-        weighted_seed_sampling_json=None,
+        weighted_seed_sampling=None,
         selected_stage_node_ids=None,
         use_seed_timestamps=true,
         pseudo_seed_time=None,
@@ -880,7 +961,7 @@ impl RuntimeIndex {
         rhs_seed_node_type: Option<String>,
         rhs_seed_time: Option<i64>,
         group_by_timestamp: bool,
-        weighted_seed_sampling_json: Option<String>,
+        weighted_seed_sampling: Option<Bound<'_, PyAny>>,
         selected_stage_node_ids: Option<Vec<u64>>,
         use_seed_timestamps: bool,
         pseudo_seed_time: Option<i64>,
@@ -916,7 +997,7 @@ impl RuntimeIndex {
                     rhs_seed_node_type,
                     rhs_seed_time,
                     group_by_timestamp,
-                    weighted_seed_sampling_json,
+                    extract_weighted_seed_sampling(weighted_seed_sampling)?,
                     selected_stage_node_ids,
                     use_seed_timestamps,
                     pseudo_seed_time,
@@ -1012,7 +1093,7 @@ impl RuntimeBatchIterator {
         rhs_seed_node_type=None,
         rhs_seed_time=None,
         group_by_timestamp=false,
-        weighted_seed_sampling_json=None,
+        weighted_seed_sampling=None,
         selected_stage_node_ids=None,
         use_seed_timestamps=true,
         pseudo_seed_time=None,
@@ -1046,7 +1127,7 @@ impl RuntimeBatchIterator {
         rhs_seed_node_type: Option<String>,
         rhs_seed_time: Option<i64>,
         group_by_timestamp: bool,
-        weighted_seed_sampling_json: Option<String>,
+        weighted_seed_sampling: Option<Bound<'_, PyAny>>,
         selected_stage_node_ids: Option<Vec<u64>>,
         use_seed_timestamps: bool,
         pseudo_seed_time: Option<i64>,
@@ -1082,7 +1163,7 @@ impl RuntimeBatchIterator {
                     rhs_seed_node_type,
                     rhs_seed_time,
                     group_by_timestamp,
-                    weighted_seed_sampling_json,
+                    extract_weighted_seed_sampling(weighted_seed_sampling)?,
                     selected_stage_node_ids,
                     use_seed_timestamps,
                     pseudo_seed_time,
