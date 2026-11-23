@@ -670,3 +670,50 @@ def test_native_graph_projection_allows_keyless_nonentity_tables(
                     nodes = batch.inputs[name]["nodes"]["events"]
                     assert nodes["ids"].numel() == 2 * batch.batch_size
                     assert torch.isfinite(nodes["features"]["amount"]["values"]).all()
+
+
+def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
+    native_task, tmp_path, monkeypatch
+):
+    plan, _, table = native_task
+    tables = {table.name: table for table in plan.contract.schema.tables}
+    tables["users"] = replace(
+        tables["users"], columns={"id": api.DType("string"), "score": api.DType("float64")}
+    )
+    path = tmp_path / "scored_users.parquet"
+    pq.write_table(pa.table({"id": ["u1", "u2", "u3"], "score": [0.5, 1.5, 2.5]}), path)
+    entity = api.Input(
+        api.EntitySource(), api.Fields((api.Encode("score", api.Raw()),)), api.Separate()
+    )
+    contract = replace(
+        plan.contract,
+        schema=replace(plan.contract.schema, tables=tuple(tables.values())),
+        sample=replace(plan.contract.sample, entity_values={"score": api.Field("score")}),
+        batch=replace(plan.contract.batch, inputs={**plan.contract.batch.inputs, "entity": entity}),
+    )
+    dataset = api.Dataset(tables={**plan.dataset.tables, "users": api.Parquet(str(path))})
+    engine = api.DiskGraphEngine(index=tmp_path / "scored-index", num_threads=1)
+    with api.prepare(contract, dataset, engine) as prepared:
+        with prepared.materialize(table, fit_split="train") as task:
+            native = task._anchors
+            projections = []
+            iterate = native._iter
+
+            def spy(stage, **kwargs):
+                projections.append(kwargs.get("projections"))
+                return iterate(stage, **kwargs)
+
+            def resampled(*args, **kwargs):
+                raise AssertionError("native graph topology was sampled again")
+
+            sampler = task._assembler._source._sampler
+
+            class Guard:
+                def __getattr__(self, name):
+                    return resampled if name == "sample" else getattr(sampler, name)
+
+            monkeypatch.setattr(native, "_iter", spy)
+            monkeypatch.setattr(task._assembler._source, "_sampler", Guard())
+            batches = list(task.batches(split=frozenset({"train", "valid"}), shuffle=True, epoch=1))
+            assert sum(batch.batch_size for batch in batches) == 6
+            assert projections and all("score" not in p["users"] for p in projections)

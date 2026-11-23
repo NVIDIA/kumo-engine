@@ -26,7 +26,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--prefetch-batches",
         type=int,
-        choices=(0, 1, 4),
         default=0,
         help="default Task.batches prefetch depth for existing tests",
     )

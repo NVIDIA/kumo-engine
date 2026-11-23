@@ -118,6 +118,7 @@ export type ChartPlotPoints = {
 export type QueryProgressStats = {
     xAxisLabels: Array<string | number>;
     datasets: Array<ChartPlotPoints>;
+    trialIds: Array<string>;
     xLabel: string;
     yLabel: string;
     mode: string;

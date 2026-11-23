@@ -12,11 +12,17 @@ import {
 
 import {
     getFromLocalStorage,
-    removeFromLocalStorage
+    removeFromLocalStorage,
+    storeToLocalStorage
 } from "@kumo-ai/kumo-ui-catalog";
 
 import { isValid } from "./Helpers/typeGuards";
-import { getProjectPath, navRoutes, storageKeys } from "./Constants";
+import {
+    defaultModelsPageURL,
+    getProjectPath,
+    navRoutes,
+    storageKeys
+} from "./Constants";
 import { getSelectedGroup } from "./storage";
 
 /**
@@ -43,6 +49,20 @@ export const navigateToLandingPageAfterLoginSuccess = (
     }
     // Clearing stored navigation path after navigation
     removeFromLocalStorage(storageKeys.navPath);
+};
+
+export const openProject = (
+    navigate: NavigateFunction,
+    projectId: string,
+    groupId: string | null
+) => {
+    storeToLocalStorage(storageKeys.selectedProject, projectId);
+    storeToLocalStorage(storageKeys.selectedGroup, groupId);
+    navigate(
+        getProjectPath(projectId).ModelJobsList +
+            "?" +
+            defaultModelsPageURL.split("?")[1]
+    );
 };
 
 export const useCustomNavigation = () => {

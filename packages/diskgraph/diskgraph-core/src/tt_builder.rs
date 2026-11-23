@@ -50,6 +50,30 @@ pub const WEIGHT_COL: &str = "WEIGHT";
 pub const ENTITY_NODE_ID_COL: &str = "entity_node_id";
 /// Resolved LP RHS positives (`list<i64>` node-ids).
 pub const TARGET_NODE_IDS_COL: &str = "target_node_ids";
+pub const FREQUENCY_COL: &str = "__kumo_internal_frequency_column__";
+/// The customer-provided custom-TT split column (kumo baseline convention).
+/// It is dropped from the per-stage seed parquets at routing time (the primary
+/// guarantee), so it should never reach a seed rowpack; this is a cheap
+/// belt-and-suspenders so it can never be materialized as a feature.
+pub const SPLIT_COL: &str = "split_col";
+
+/// True when `name` is a seed (stage-table) column that the engine reads as
+/// part of the task, not as a feature: the entity, anchor time, target,
+/// resolved node-id, exclusion, weight and split columns.
+pub fn is_seed_task_column(name: &str) -> bool {
+    name.starts_with("TARGET")
+        || name.starts_with("ENTITY")
+        || matches!(
+            name,
+            TIMESTAMP_COL
+                | ENTITY_NODE_ID_COL
+                | TARGET_NODE_IDS_COL
+                | "exclude_node_ids"
+                | WEIGHT_COL
+                | FREQUENCY_COL
+                | SPLIT_COL
+        )
+}
 
 use crate::time::{Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};

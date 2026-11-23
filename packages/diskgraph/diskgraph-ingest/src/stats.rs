@@ -149,6 +149,9 @@ pub struct IngestStats {
     pub pk_duplicate_total: u64,
     pub pk_duplicate_samples: HashMap<String, Vec<String>>,
     pub dropped_rows_counts: HashMap<String, u64>,
+    /// Rows over the node-data limit, kept with their features stored as null.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub oversized_rows_counts: HashMap<String, u64>,
     /// Logical Arrow rows consumed from each input table.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub source_rows_by_table: HashMap<String, u64>,

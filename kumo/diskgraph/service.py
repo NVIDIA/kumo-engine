@@ -1446,6 +1446,7 @@ class DiskgraphService:
         *,
         predict_staging_dir: str,
         predict_seed_time_ns: Optional[int] = None,
+        predict_candidate_filter: Optional[str] = None,
     ) -> MaterializeResult:
         """Materialize a TT-NG prediction task dataset (BP inference).
 
@@ -1529,6 +1530,7 @@ class DiskgraphService:
             stage_counts=stage_counts,
             stage_table_refs=stage_table_refs,
             stage_seed_times=stage_seed_times,
+            predict_candidate_filter=predict_candidate_filter,
         )
 
     def _write_prediction_bundle(
@@ -1541,6 +1543,7 @@ class DiskgraphService:
         stage_counts: dict,
         stage_table_refs: dict,
         stage_seed_times: dict[str, list[int]] | None = None,
+        predict_candidate_filter: Optional[str] = None,
     ) -> MaterializeResult:
         """Write the thin + flat ``predict``-stage manifests for a BP task
         dataset. Shared by both ingest bridges so the bundle layout is identical.
@@ -1556,6 +1559,7 @@ class DiskgraphService:
             has_time=True,
             has_weight=False,
             column_stats=False,
+            predict_candidate_filter=predict_candidate_filter,
         )
         bundle_dir = os.path.dirname(manifest_path)
 

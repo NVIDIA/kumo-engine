@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
 import tempfile
-from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.sources.identity import hour_version
 from kumo_core.types import ColStatType
 from kumo_core.types.schema import BaseColumnConfig
 from kumo_databricks.sql import quote_identifier
@@ -29,7 +30,6 @@ from kumo.testing.databricks import (
 from statedb.config.typing import PANDAS_TO_SQL
 
 _HOST = os.environ.get('DATABRICKS_HOST', 'workspace.cloud.databricks.com')
-
 
 _TEST_SEED_STAGING_PATH = os.environ.get(
     'VOLUME_MOUNT_PATH',
@@ -266,24 +266,19 @@ def test_get_exact_col_stats(databricks_hm_connector: DatabricksConnector):
 def test_databricks_data_version(databricks_hm_connector: DatabricksConnector):
     connector = databricks_hm_connector
 
-    # _get_data_version issues a Databricks metadata query to return a
-    # version ID tracked internally for Databricks Delta tables.
-    table_data_versions = {
-        'customers': '2_1777913429',
-        'articles': '0_1777913450',
-        'transactions': '1_1777913534',
-    }
+    # A Delta table's version is its latest commit, `<version>_<epoch>`; the
+    # hour-window fallback has no `_`. Databricks maintenance can add commits
+    # to these shared tables at any time, so exact values are not asserted.
+    for table_name in ['customers', 'articles', 'transactions']:
+        version = connector._get_data_version(table_name)
+        assert re.fullmatch(r'\d+_\d+', version), version
+        # An unchanged table keeps its version, so cached reads are reused.
+        assert connector._get_data_version(table_name) == version
 
-    for table_name, version in table_data_versions.items():
-        # get table data versions
-        assert connector._get_data_version(table_name) == str(version)
-
-    # Views do not have history tracked. Data version is current timestamp.
-    timestamp = datetime.now(timezone.utc).replace(minute=0, second=0,
-                                                   microsecond=0)
-    current_hour = str(timestamp.timestamp()).split('.')[0]
-    assert int(
-        connector._get_data_version('customer_view')) >= int(current_hour)
+    # Views have no Delta history, so their version is the current hour.
+    before = hour_version()
+    version = connector._get_data_version('customer_view')
+    assert version in {before, hour_version()}
 
 
 @withDatabricksOauthCredentials
@@ -295,10 +290,10 @@ def test_databricks_table_info(databricks_hm_connector: DatabricksConnector):
     assert connector._get_table_num_rows('articles') == 105542
     assert connector._get_table_num_rows('transactions') == 31788324
 
-    # table size (in bytes)
-    assert connector._get_table_source_size('customers') == 167722166
-    assert connector._get_table_source_size('articles') == 6273226
-    assert connector._get_table_source_size('transactions') == 776368084
+    # Table size in bytes comes from `DESCRIBE DETAIL`; the fallback is 0.
+    # Maintenance such as OPTIMIZE rewrites files, so sizes are not pinned.
+    for table_name in ['customers', 'articles', 'transactions']:
+        assert connector._get_table_source_size(table_name) > 0
 
 
 @withDatabricksOauthCredentials
@@ -512,7 +507,8 @@ def test_connector_validate_table_schema(
 
 
 @withDatabricksOauthCredentials
-def test_databricks_table_info(databricks_otto_connector: DatabricksConnector):
+def test_databricks_sample_rows_numeric_timestamps(
+        databricks_otto_connector: DatabricksConnector):
     connector = databricks_otto_connector
     from rest.utils.connector import get_sample_rows
 

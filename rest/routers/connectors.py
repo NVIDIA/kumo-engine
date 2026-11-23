@@ -66,6 +66,9 @@ class ConnectorResource:
         self.router.add_api_route('/{connector_id}', self.delete_connector,
                                   methods=['DELETE'],
                                   response_model=api.ConnectorResponse)
+        self.router.add_api_route('/{connector_id}/copy', self.copy_connector,
+                                  methods=['POST'],
+                                  response_model=api.ConnectorResponse)
         self.router.add_api_route('/{connector_id}/validate',
                                   self.validate_connector, methods=['POST'],
                                   response_model=api.ConnectorResponse)
@@ -137,6 +140,24 @@ class ConnectorResource:
             response = await self._driver.create_project_connector(
                 project_id, args, principal)
             return response
+
+    async def copy_connector(
+        self,
+        project_id: ProjectID,
+        connector_id: ConnectorID,
+        args: api.CopyConnectorArgs,
+        request: Request,
+    ) -> api.ConnectorResponse:
+        with wrap_driver_errors({
+                ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
+                IdentityForbiddenError: HTTPStatus.FORBIDDEN,
+                IdentityDoesNotExistError: HTTPStatus.NOT_FOUND,
+                ConnectorNameConflictError: HTTPStatus.CONFLICT,
+                ConnectorValidationError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                ValueError: HTTPStatus.BAD_REQUEST,
+        }):
+            return await self._driver.copy_project_connector(
+                project_id, connector_id, args, self._principal(request))
 
     async def list_connectors(
         self,

@@ -45,6 +45,7 @@ from unittest import mock
 from unittest.mock import AsyncMock as _MockController
 
 import pytest
+from kumo_core.job_config import PredStatus
 from temporalio import activity
 
 import pool.activities as activities
@@ -2515,6 +2516,9 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
     prediction_config_path = tmp_path / 'pred.json'
     prediction_config_path.write_text('{}')
     prediction_config = _make_prediction_config(str(tmp_path / 'output'))
+    prediction_config.home_dir = str(tmp_path)
+    PredStatus(error_msg='bad column',
+               stacktrace='Traceback ...').save(str(tmp_path))
 
     with mock.patch('pool.activities._run_kumo_subprocess',
                     _fake_subprocess), \
@@ -2527,7 +2531,7 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
             mock.patch(
                 'pool.activities.restore_job_sidecars_for_use_from_config_path',
                 return_value=SimpleNamespace(cleanup=lambda: None)):
-        await asyncio.gather(
+        _, prediction = await asyncio.gather(
             instance.train('graph-1bf8d6a669f6a6caba68a2393f1044e3@v1', 'job-1',
                            '/tmp/cfg-a.json'),
             instance.predict('graph-44a6dcdb089c6e81b7171d8a74a7da57@v1',
@@ -2546,6 +2550,8 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
     else:
         assert pred_end_idx < train_start_idx, (
             f'predict should end before train starts: {events}')
+    assert prediction.failure_info.message == 'bad column'
+    assert prediction.failure_info.stacktrace == 'Traceback ...'
 
 
 @pytest.mark.asyncio
@@ -2804,6 +2810,7 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
     )
 
     assert result.state is JobState.SUCCEEDED
+    assert result.failure_info is None
     assert result.artifact_manifest is not None
     manifest = load_shard_manifest(result.artifact_manifest)
     assert manifest.producer_stats is True

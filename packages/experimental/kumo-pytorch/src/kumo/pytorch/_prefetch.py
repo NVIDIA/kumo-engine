@@ -15,6 +15,33 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
+class PrefetchGroup:
+    """The producers that must finish before their task releases its resources."""
+
+    def __init__(self):
+        self.closed = False
+        self._active: set[PrefetchIterator] = set()
+        self._lock = threading.Lock()
+
+    def register(self, producer: PrefetchIterator) -> bool:
+        with self._lock:
+            if self.closed:
+                return False
+            self._active.add(producer)
+            return True
+
+    def discard(self, producer: PrefetchIterator) -> None:
+        with self._lock:
+            self._active.discard(producer)
+
+    def close(self) -> None:
+        with self._lock:
+            self.closed = True
+            active = self._active.copy()
+        for producer in active:
+            producer.close()
+
+
 class PrefetchIterator(Iterator[T]):
     def __init__(
         self,
@@ -22,18 +49,21 @@ class PrefetchIterator(Iterator[T]):
         *,
         capacity: int,
         skip: int,
-        registry: set[PrefetchIterator] | None = None,
+        group: PrefetchGroup | None = None,
     ):
-        self._registry = registry
+        self._group = group
         self._ready: deque[T] = deque()
         self._condition = threading.Condition()
         self._stopped = False
-        self._done = False
+        self._done = True
         self._error: BaseException | None = None
 
         def run():
             iterator = None
             try:
+                with self._condition:
+                    if self._stopped:
+                        return
                 iterator = produce()
                 for _ in range(skip):
                     with self._condition:
@@ -70,6 +100,8 @@ class PrefetchIterator(Iterator[T]):
                         self._error = error
                 finally:
                     with self._condition:
+                        if self._group is not None:
+                            self._group.discard(self)
                         self._done = True
                         self._condition.notify_all()
 
@@ -77,9 +109,23 @@ class PrefetchIterator(Iterator[T]):
         self._thread = threading.Thread(
             target=context.run, args=(run,), name="kumo-batch-prefetch", daemon=True
         )
-        self._thread.start()
-        if registry is not None:
-            registry.add(self)
+
+    def start(self) -> None:
+        # The worker must acquire this condition before opening the source.
+        # An interrupted start can therefore revoke access even after launch.
+        with self._condition:
+            try:
+                if self._stopped or (self._group is not None and not self._group.register(self)):
+                    self._stopped = True
+                    return
+                self._done = False
+                self._thread.start()
+            except BaseException:
+                self._stopped = self._done = True
+                if self._group is not None:
+                    self._group.discard(self)
+                self._condition.notify_all()
+                raise
 
     def __next__(self) -> T:
         with self._condition:
@@ -94,18 +140,15 @@ class PrefetchIterator(Iterator[T]):
             raise error
         raise StopIteration
 
-    def close(self) -> None:
+    def stop(self) -> None:
         with self._condition:
             self._stopped = True
             self._condition.notify_all()
-        if threading.current_thread() is not self._thread:
-            self._thread.join()
-            # An interrupted join can mark a thread stopped before it exits
-            # on some Python versions. Confirm producer cleanup independently.
-            with self._condition:
-                self._condition.wait_for(lambda: self._done)
+
+    def close(self) -> None:
+        self.stop()
         with self._condition:
+            if threading.current_thread() is not self._thread:
+                self._condition.wait_for(lambda: self._done)
             self._ready.clear()
             self._error = None
-            if self._done and self._registry is not None:
-                self._registry.discard(self)

@@ -619,8 +619,8 @@ pub struct FileColStats {
     /// Shared per-column category count state (for abort checks + DashMaps).
     cat_shared: Option<Arc<TableCategoryCounts>>,
     /// Per-file local category count state per column (Hybrid & Graduation).
-    /// Indexed by col_idx. None for non-eligible columns.
-    cat_local: Vec<Option<LocalColumnCounts>>,
+    /// Indexed by col_idx. Empty for columns that aren't counted.
+    cat_local: Vec<LocalColumnCounts>,
     /// Whether per-row subsampling is enabled.
     row_subsample: bool,
     /// xorshift64* PRNG state for per-row subsampling.
@@ -856,7 +856,7 @@ impl FileColStats {
             extra_cols,
             cat_strategy: CategoryCountStrategy::None,
             cat_shared: None,
-            cat_local: (0..n).map(|_| None).collect(),
+            cat_local: (0..n).map(|_| LocalColumnCounts::default()).collect(),
             row_subsample: false,
             rng: 1,
             grad_snapshots: (0..n).map(|_| None).collect(),
@@ -921,13 +921,12 @@ impl FileColStats {
             CategoryCountStrategy::Hybrid | CategoryCountStrategy::Graduation => table_cat
                 .columns
                 .iter()
-                .map(|shared| {
-                    shared
-                        .as_ref()
-                        .map(|_| LocalColumnCounts::with_capacity(HYBRID_LOCAL_CAP))
+                .map(|shared| match shared {
+                    Some(_) => LocalColumnCounts::with_capacity(HYBRID_LOCAL_CAP),
+                    None => LocalColumnCounts::default(),
                 })
                 .collect(),
-            _ => (0..n).map(|_| None).collect(),
+            _ => (0..n).map(|_| LocalColumnCounts::default()).collect(),
         };
         // Graduation: init grad_snapshots as empty sets for eligible columns
         let grad_snapshots = match strategy {
@@ -997,37 +996,30 @@ impl FileColStats {
         }
     }
 
-    /// Flush local category counts to shared state (called at file boundary).
-    /// Handles Hybrid, Graduation, and early abort checks.
+    /// Merges pending local counts into shared state and frees the local
+    /// allocations. Observation can continue afterwards.
     pub fn flush_categories(&mut self) {
+        // Freeing matters: a flushed FileColStats can sit in an unbounded
+        // channel until all files complete, and retained map capacity across
+        // 19K+ files would consume 100+ GB.
         match self.cat_strategy {
             CategoryCountStrategy::Hybrid => {
                 if let Some(ref shared) = self.cat_shared {
                     for (col_idx, local) in self.cat_local.iter_mut().enumerate() {
-                        if let Some(inner) = local.as_mut() {
-                            if let Some(ref col_shared) = shared.columns[col_idx] {
-                                col_shared.merge_local_batch(inner);
-                            }
+                        if let Some(ref col_shared) = shared.columns[col_idx] {
+                            col_shared.merge_local_batch(&mut std::mem::take(local));
                         }
-                        // Drop the local HashMap entirely to free bucket arrays.
-                        // After merging to shared, local counts are never reused
-                        // and the FileColStats will sit in an unbounded channel
-                        // until all files complete — retaining capacity across
-                        // 19K+ files would consume 100+ GB.
-                        *local = None;
                     }
                 }
             }
             CategoryCountStrategy::Graduation => {
                 if let Some(ref shared) = self.cat_shared {
                     for (col_idx, local) in self.cat_local.iter_mut().enumerate() {
-                        if let Some(inner) = local.as_mut() {
-                            if let Some(ref col_shared) = shared.columns[col_idx] {
-                                let snap = col_shared.merge_local_batch_graduation(inner);
-                                self.grad_snapshots[col_idx] = Some(snap);
-                            }
+                        if let Some(ref col_shared) = shared.columns[col_idx] {
+                            let snap =
+                                col_shared.merge_local_batch_graduation(&mut std::mem::take(local));
+                            self.grad_snapshots[col_idx] = Some(snap);
                         }
-                        *local = None;
                     }
                 }
             }
@@ -2622,20 +2614,18 @@ impl FileColStats {
             CategoryCountStrategy::Hybrid => {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
-                        if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.increment_if_present(hash, value) {
-                                return;
-                            }
-                            // Shared state owns membership: count/admit the
-                            // first occurrence before caching only future
-                            // unmerged deltas locally. This prevents a hot
-                            // early value from being stranded in a worker map
-                            // while unrelated workers fill the global cap.
-                            if col_shared.observe_hashed(hash, value)
-                                && local.len() < HYBRID_LOCAL_CAP
-                            {
-                                local.cache_admitted(hash, value);
-                            }
+                        let local = &mut self.cat_local[col_idx];
+                        if local.increment_if_present(hash, value) {
+                            return;
+                        }
+                        // Shared state owns membership: count/admit the
+                        // first occurrence before caching only future
+                        // unmerged deltas locally. This prevents a hot
+                        // early value from being stranded in a worker map
+                        // while unrelated workers fill the global cap.
+                        if col_shared.observe_hashed(hash, value) && local.len() < HYBRID_LOCAL_CAP
+                        {
+                            local.cache_admitted(hash, value);
                         }
                     }
                 }
@@ -2653,18 +2643,17 @@ impl FileColStats {
                             }
                         }
                         // Then local HashMap (same as Hybrid)
-                        if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.counts.contains_key(&hash) {
-                                *local.counts.get_mut(&hash).unwrap() += 1;
-                            } else if local.len() < HYBRID_LOCAL_CAP {
-                                local.observe(hash, value);
-                            } else {
-                                let snap = col_shared.merge_local_batch_graduation(local);
-                                local.clear();
-                                // Refresh graduated snapshot
-                                self.grad_snapshots[col_idx] = Some(snap);
-                                local.observe(hash, value);
-                            }
+                        let local = &mut self.cat_local[col_idx];
+                        if local.counts.contains_key(&hash) {
+                            *local.counts.get_mut(&hash).unwrap() += 1;
+                        } else if local.len() < HYBRID_LOCAL_CAP {
+                            local.observe(hash, value);
+                        } else {
+                            let snap = col_shared.merge_local_batch_graduation(local);
+                            local.clear();
+                            // Refresh graduated snapshot
+                            self.grad_snapshots[col_idx] = Some(snap);
+                            local.observe(hash, value);
                         }
                     }
                 }
@@ -2691,15 +2680,14 @@ impl FileColStats {
             CategoryCountStrategy::Hybrid => {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
-                        if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.increment_i64_if_present(hash, value) {
-                                return;
-                            }
-                            if col_shared.observe_hashed_i64(hash, value)
-                                && local.len() < HYBRID_LOCAL_CAP
-                            {
-                                local.cache_admitted_i64(hash, value);
-                            }
+                        let local = &mut self.cat_local[col_idx];
+                        if local.increment_i64_if_present(hash, value) {
+                            return;
+                        }
+                        if col_shared.observe_hashed_i64(hash, value)
+                            && local.len() < HYBRID_LOCAL_CAP
+                        {
+                            local.cache_admitted_i64(hash, value);
                         }
                     }
                 }
@@ -2717,30 +2705,29 @@ impl FileColStats {
                             }
                         }
                         // Then local HashMap (same as Hybrid)
-                        if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.counts.contains_key(&hash) {
-                                *local.counts.get_mut(&hash).unwrap() += 1;
-                            } else if local.len() < HYBRID_LOCAL_CAP {
-                                use std::collections::hash_map::Entry;
-                                match local.counts.entry(hash) {
-                                    Entry::Occupied(mut e) => *e.get_mut() += 1,
-                                    Entry::Vacant(e) => {
-                                        e.insert(1);
-                                        local.strings.insert(hash, value.to_string());
-                                    }
+                        let local = &mut self.cat_local[col_idx];
+                        if local.counts.contains_key(&hash) {
+                            *local.counts.get_mut(&hash).unwrap() += 1;
+                        } else if local.len() < HYBRID_LOCAL_CAP {
+                            use std::collections::hash_map::Entry;
+                            match local.counts.entry(hash) {
+                                Entry::Occupied(mut e) => *e.get_mut() += 1,
+                                Entry::Vacant(e) => {
+                                    e.insert(1);
+                                    local.strings.insert(hash, value.to_string());
                                 }
-                            } else {
-                                let snap = col_shared.merge_local_batch_graduation(local);
-                                local.clear();
-                                self.grad_snapshots[col_idx] = Some(snap);
-                                // Observe the current value in the now-empty local buffer
-                                use std::collections::hash_map::Entry;
-                                match local.counts.entry(hash) {
-                                    Entry::Occupied(mut e) => *e.get_mut() += 1,
-                                    Entry::Vacant(e) => {
-                                        e.insert(1);
-                                        local.strings.insert(hash, value.to_string());
-                                    }
+                            }
+                        } else {
+                            let snap = col_shared.merge_local_batch_graduation(local);
+                            local.clear();
+                            self.grad_snapshots[col_idx] = Some(snap);
+                            // Observe the current value in the now-empty local buffer
+                            use std::collections::hash_map::Entry;
+                            match local.counts.entry(hash) {
+                                Entry::Occupied(mut e) => *e.get_mut() += 1,
+                                Entry::Vacant(e) => {
+                                    e.insert(1);
+                                    local.strings.insert(hash, value.to_string());
                                 }
                             }
                         }

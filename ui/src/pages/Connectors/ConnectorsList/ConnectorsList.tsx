@@ -4,8 +4,15 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import { AddCircle, Button, DeleteIcon, Edit } from "@kumo-ai/kumo-ui-catalog";
+import {
+    AddCircle,
+    Button,
+    DeleteIcon,
+    Duplicate,
+    Edit
+} from "@kumo-ai/kumo-ui-catalog";
 
+import { CopyConnectorDialog } from "components/Connectors/CopyConnector/CopyConnectorDialog";
 import Overview from "components/Connectors/Overview/Overview";
 import EmptyEntities from "components/Empty/EmptyEntities";
 import ListOverview from "components/ListOverview/ListOverview";
@@ -50,6 +57,7 @@ const ConnectorsList = () => {
     const [selectedConnector, setSelectedConnector] =
         useState<JsConnector | null>(null);
     const [connectedTables, setConnectedTables] = useState<JSTable[]>([]);
+    const [isCopyDialogOpen, setIsCopyDialogOpen] = useState(false);
 
     const [banner, alert, handleError, clearErrors, dialogRef] =
         useValidationState(setPageLoading);
@@ -130,6 +138,20 @@ const ConnectorsList = () => {
         {
             content: (
                 <>
+                    <Duplicate className="size-4 fill-icon-secondary" />
+                    {" Copy to project "}
+                </>
+            ),
+            disabled: false,
+            onSelect: () => {
+                clearErrors();
+                setIsCopyDialogOpen(true);
+            },
+            tooltipText: ""
+        },
+        {
+            content: (
+                <>
                     <DeleteIcon className="size-4" /> {" Delete "}
                 </>
             ),
@@ -207,6 +229,14 @@ const ConnectorsList = () => {
                     />
                 }
             />
+            {projectId && isCopyDialogOpen && (
+                <CopyConnectorDialog
+                    open={isCopyDialogOpen}
+                    onClose={() => setIsCopyDialogOpen(false)}
+                    connector={connectorInfo}
+                    sourceProjectId={projectId}
+                />
+            )}
         </>
     );
 };

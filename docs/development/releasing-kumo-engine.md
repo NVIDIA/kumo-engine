@@ -30,11 +30,12 @@ encoded and the error asks for `pip install "kumo-engine[text]"`.
 `torch-geometric>=2.8.1,<3` is also resolved separately at install time.
 
 Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux x86-64 and
-`faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
+`faiss-cpu==1.14.3` on macOS and Windows. These markers live on the engine's direct
 dependencies so merging bundled packages preserves them. This dependency
 selection does not establish wheel or runtime support. Faiss is optional on
-Linux ARM64 and experimental native Windows builds; the `cpu` extra opts into
-CPU Faiss there. Windows support for this release is WSL2 only.
+Linux ARM64; the `cpu` extra opts into CPU Faiss there. See the
+[package README](../../packages/kumo-engine/README.md#installation) for platform
+requirements and device selection.
 
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
@@ -49,9 +50,12 @@ The build matrix targets `cp311-abi3-manylinux_2_34_x86_64` and
 WSL uses the Linux x86-64 wheel. All require CPython >= 3.11
 (DiskGraph's stable-ABI floor), with classifiers for 3.11–3.14. Adding build
 targets does not establish published availability or installed-wheel runtime
-qualification. Native Windows builds and tests are experimental: their wheels
-remain CI artifacts and are excluded from public release attachments and
-Kitmaker publication. The supported Windows route for this release is WSL2.
+qualification. Native Windows wheels are attached and published alongside the
+Linux and macOS wheels only after the candidate passes the required checks.
+The shared [desktop qualification](../../packages/kumo-engine/platform-smoke.md)
+gates publication on native Windows CPU training, Faiss retrieval, and fresh
+process export and reload on Python 3.11–3.14. Restricted accounts and native
+Windows CUDA are outside this qualification.
 The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.
@@ -115,6 +119,8 @@ platform's `release-version`.
    - fails fast unless the tag is exactly `kumo-engine-v` plus the `VERSION`
      file and every stamped file agrees with it;
    - builds the wheels with `--release`, so the version is exactly the tag's;
+   - runs the shared desktop reload check on the native Windows CPU wheel with
+     Python 3.11–3.14 before attachment;
    - resolves each platform's wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
    - runs the shared eight-task GPU check on the finished Linux x86_64 wheel
@@ -125,12 +131,41 @@ platform's `release-version`.
      Labels and ranks can change only when their scores justify the change
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
-   - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
-     release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
-     routes remain disabled despite experimental build/test coverage.
+   - attaches the Linux x86_64/ARM64, macOS ARM64 and native Windows x86_64
+     wheels to the GitHub release; the Linux x86_64 wheel also serves WSL2.
+
+   Before you approve the `kitmaker` job, start
+   [`Kumo Engine - Desktop reload qualification`][desktop-reload] by hand with
+   the ID of this build run. Its 32 `Reload` jobs run
+   `desktop_reload_qualification.py` with Python 3.11 to 3.14. They cover native
+   Windows on CPU, Linux x86-64 and WSL2 on CPU and CUDA, Linux ARM64 on CPU, and macOS 15 and 26 on
+   CPU. A producer process trains the `binary` and `static_link` tasks, exports
+   the model and snapshot, and predicts. The job ends it and deletes its files.
+   A new process loads the exports and predicts, and the predictions must match.
+
+   Two Mac rows run outside CI with Python 3.12: macOS 14 on CPU (a VM is
+   enough) and macOS 15 on MPS (bare metal). Install the macOS wheel file of the
+   build run by its path (`uv pip install <wheel>`) in a clean Python 3.12 venv.
+   Download the object that `packages/kumo-engine/test/pr172/inputs.json` names,
+   make sure that its SHA-256 equals the `sha256` in that file, and extract it.
+   In a folder outside the checkout with `desktop_reload_qualification.py` and
+   `wheel_gpu_smoke.py` from the commit of the build run, run
+   `python -I desktop_reload_qualification.py run --wheel <wheel> --device <cpu|mps> --data-dir <inputs> --output-dir <dir> --commit <sha>`.
+   Set `<wheel>` to that same path and `<sha>` to the full 40-character commit
+   SHA of the build run. Use a new `<dir>` for each attempt, and keep the failed
+   ones. Save `uv pip freeze` in `<dir>`. MPS on macOS 26 is not run, because
+   hosted macOS runners are VMs without MPS. CUDA on Linux ARM64 is not run,
+   because this repository has no ARM64 GPU runner. The ARM64 wheel also has no
+   GPU Faiss, and the DGX Spark guide asks for a source build. Approve the
+   `kitmaker` job only after all 32 `Reload` jobs pass. The newest
+   `summary.json` of each Mac row (`label` `macos-14-cpu-py3.12` or
+   `macos-15-mps-py3.12`) must also show `PASS` for both tasks. Its `commit`
+   must be the commit of the build run.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
    `kumo-engine-release` environment and waits for approval from
    `kumo-engineers`. The person who starts the run cannot approve it.
+   The Portal job reads `KITMAKER_API_TOKEN` from that environment after
+   approval; reusable-workflow callers do not need access to the token.
    It checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
@@ -149,6 +184,7 @@ Other releases in the repository (for example `kumo-sdk-v*`) do not trigger
 this workflow.
 
 [workflow]: ../../.github/workflows/kumo-engine-wheel.yml
+[desktop-reload]: ../../.github/workflows/kumo-engine-desktop-reload.yml
 [glove-workflow]: ../../.github/workflows/kumo-glove-6b-50d-wheel.yml
 
 ## If a release fails
@@ -199,18 +235,10 @@ and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
 Command Line Tools, and CMake are required. The release workflow builds this
 wheel on a macOS ARM64 runner with the same deployment target.
 
-### Experimental native Windows builds
+### Native Windows builds
 
-These instructions are for development and CI qualification, not a supported
-installation route for this release. Use WSL2 and the Linux x86-64 wheel on
-Windows. Native Windows release uploads are disabled.
-
-Experimental native Windows x64 installations require a Microsoft Visual C++ v14 runtime
-at least as recent as the build tools used for the wheel. If the runtime is
-missing or too old, install the
-[latest supported x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
-This runtime prerequisite is separate from the MSVC build tools required to
-build from source; the engine wheel does not bundle the redistributable.
+For installed-wheel prerequisites, see the
+[package README](../../packages/kumo-engine/README.md#installation).
 
 On native Windows, run the builder in Git Bash with native Windows Python,
 the Rust MSVC toolchain, CMake, and an activated Visual Studio x64 C++/Windows
@@ -254,9 +282,9 @@ The engine and GloVe release jobs call
 [Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
 It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
 Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
-plus the Kitmaker bearer token. Both release callers explicitly forward
-`KITMAKER_API_TOKEN`, which the reusable workflow declares as required.
-Portal credentials stay in the `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
+plus the Kitmaker bearer token. Callers do not forward the token.
+The approved Portal job resolves `KITMAKER_API_TOKEN` solely from
+the protected `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
 workflow, and ref; authorization for cuOpt does not grant access to Kumo.
 The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
 used an older staging proxy; its replacement is documented in
@@ -274,8 +302,8 @@ code. Release-event calls remain enabled.
 
 The check reads project 6903 and verifies its name and owner. It does not build
 wheels, create a Kitmaker release, or publish packages. Success confirms
-connectivity and project-read access; release submission and wheel fetching
-still require a release dry run.
+connectivity and project-read access. A Kitmaker dry run submits a release
+request with upload disabled.
 
 The Charon grant allows `refs/heads/main`, `refs/tags/kumo-engine-v*`, and
 `refs/tags/kumo-glove-6b-50d-v*`. Feature branches are not authorized. The grant

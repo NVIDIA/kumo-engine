@@ -1,20 +1,24 @@
 # Local MLOps lifecycle validation
 
 Run a small Linux CPU lifecycle against an installed candidate wheel using a
-local SQLite MLflow tracker and registry. The fixture has 60 users and 1,500
-events; it trains two versions for two epochs each, with two steps per epoch.
-An untracked fit also tries two candidates and records two epochs each. It
-refits the selected candidate on train and validation data and generates
-training explanations.
-Tracked phases set both ambient MLflow URIs to the attempt's SQLite database.
+local SQLite MLflow tracker and registry. For managed execution and UI checks,
+see [Snowflake notebook tests](snowflake-notebook-actions.md). The fixture has
+60 users and 1,500 events; it trains two versions for two epochs each, with two
+steps per epoch. Local execution also trains an untracked model with two
+candidates and two epochs each, refits the selected candidate on train and
+validation data, and generates training explanations. It verifies exported
+epoch history after a fresh-process reload and re-export. Managed profiles
+retain the two tracked fits and their platform-specific negative checks.
+Tracked local phases set both ambient MLflow URIs to the attempt's SQLite database.
 
 ## Scenario
 
 The [runner](../../packages/kumo-engine/test/wheel_mlops_lifecycle.py) executes
-five separate processes:
+five separate processes locally (managed profiles use the first four):
 
 1. **Fit:** export the training snapshot/table, train and register two versions,
-   verify multi-epoch tracking, and point `champion` to the first version.
+   verify multi-epoch tracking, and point `champion` to the first version. Local
+   execution also exports an untracked model with both candidates’ epoch history.
 2. **Score:** restore models, snapshots and the training table from durable
    artifacts. Predict by each explicit version and by alias before and after
    promotion. Verify resolved model identity, tracking, complete prediction IDs,
@@ -24,7 +28,8 @@ five separate processes:
    later events, and evaluate the original predictions. Verify drift identities,
    label coverage, an independent event-window label join and recomputed AUROC.
 4. **Negative cases:** reject an incomplete model, an unwritable artifact root
-   and a prediction export without completion markers.
+   and a prediction export without completion markers. Verify the untracked model’s
+   history survives reload/re-export without importing MLflow.
 5. **Explain:** reopen a copy of the untracked training run with the public
    explanation API. Verify that the explanations describe the published refit
    model and not the pre-refit model. Render the gradient and cohort plots and
@@ -84,9 +89,11 @@ The required CPU job reuses the candidate-wheel build.
 Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.
 Unreached phases remain `blocked`.
 
-Removing completion markers checks incomplete-artifact rejection. Active-writer
-interruption/retry remains covered by the existing snapshot-export tests.
-Local execution does not qualify Databricks, Snowflake or SageMaker.
+Drift checks cover identity and zero self-comparison, not independently nonzero
+sensitivity. Removing completion markers checks incomplete-artifact rejection;
+this scenario does not interrupt an active remote writer. Existing snapshot-export
+tests cover writer interruption separately. Local execution does not qualify
+Databricks, Snowflake, SageMaker, or their UI.
 
 Run the harness checks and existing shared-runner checks without training:
 

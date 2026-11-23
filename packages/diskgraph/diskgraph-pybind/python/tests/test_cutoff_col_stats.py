@@ -143,6 +143,21 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     assert _stats(str(index)) == _stats(ingested)
 
 
+def test_private_cache_writer_keeps_base_unchanged(data, ingested, tmp_path):
+    index_dir = tmp_path / "base"
+    cache_dir = tmp_path / "cache"
+    shutil.copytree(ingested, index_dir, ignore=shutil.ignore_patterns("col_stats"))
+    from diskgraph._c import _cutoff_col_stats_at
+
+    with pytest.raises(TypeError, match="output_dir"):
+        diskgraph.cutoff_col_stats(str(index_dir), json.dumps(REQUEST),
+                                   output_dir=str(cache_dir))
+    _cutoff_col_stats_at(str(index_dir), str(cache_dir), json.dumps(REQUEST),
+                         num_threads=2)
+    assert _stats(str(cache_dir)) == _stats(ingested)
+    assert not (index_dir / "col_stats").exists()
+
+
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
@@ -164,7 +179,7 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
     pq.write_table(pa.table({"id": range(60), "at": times, "tier": pa.array(tiers, pa.large_string())}),
                    tmp_path / "events.parquet")
     request = {"cutoffs": [T0 + 29, None], "dirs": ["at-cutoff", "every-row"],
-               "columns": {"events": {"tier": ["categorical"]}}}
+               "columns": {"events": {"id": ["numerical"], "tier": ["categorical"]}}}
     index = tmp_path / "index"
     diskgraph.ingest(
         config_json=json.dumps({"dataset_name": "dropped", "tables": [{
@@ -177,15 +192,19 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
     )
 
     def counts():
-        return [dict(map(tuple, json.loads((index / "col_stats" / d / "events.col_stats.json").read_text())
-                         ["events"]["tier"]["category_counts"])) for d in request["dirs"]]
+        stats = [json.loads((index / "col_stats" / d / "events.col_stats.json").read_text())["events"]
+                 for d in request["dirs"]]
+        return [(s["id"]["count"], dict(map(tuple, s["tier"]["category_counts"]))) for s in stats]
 
     ingested = counts()
     shutil.rmtree(index / "col_stats")
     diskgraph.cutoff_col_stats(str(index), json.dumps(request))
-    stored = [i for i in range(60) if i not in (3, 4, 7)]
-    assert counts() == ingested == [collections.Counter(tiers[i] for i in stored if i <= 29),
-                                    collections.Counter(tiers[i] for i in stored)]
+    # Row 7 is over the node-data limit: it is stored, and counted, with a null tier.
+    stored = [i for i in range(60) if i not in (3, 4)]
+    assert counts() == ingested == [
+        (28, collections.Counter(tiers[i] for i in stored if i <= 29 and i != 7)),
+        (58, collections.Counter(tiers[i] for i in stored if i != 7)),
+    ]
 
 
 def test_recompute_counts_strings_that_decode_past_2_gib_per_chunk(tmp_path):

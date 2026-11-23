@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 import torch
 
-from kumo.pytorch._prefetch import PrefetchIterator
+from kumo.pytorch._prefetch import PrefetchGroup, PrefetchIterator
 from kumo.pytorch.anchors import (
     ALL_ANCHORS,
     PADDING_KEY,
@@ -74,10 +74,28 @@ class TaskBatches(Iterator[Batch]):
         if type(prefetch_batches) is not int or prefetch_batches < 0:
             raise ValueError("prefetch_batches must be a nonnegative integer")
         self._prefetch_batches = prefetch_batches
-        self._prefetch_producers: set[PrefetchIterator] | None = None
+        self._prefetch_group: PrefetchGroup | None = None
         self._closed = False
         self._close_complete = False
         self._finalizer = None
+
+    @classmethod
+    def _for_task(
+        cls,
+        task: Task,
+        produce: Callable[[], Iterator[Batch]],
+        config: Mapping[str, Any],
+        prefetch_batches: int,
+    ) -> TaskBatches:
+        batches = cls(
+            produce,
+            task_fingerprint=task.fingerprints["task"],
+            config=config,
+            prefetch_batches=prefetch_batches,
+        )
+        if prefetch_batches:
+            batches._prefetch_group = task._prefetch_group
+        return batches
 
     def __iter__(self) -> TaskBatches:
         return self
@@ -85,20 +103,25 @@ class TaskBatches(Iterator[Batch]):
     def __next__(self) -> Batch:
         if self._closed:
             raise StopIteration
-        if self._iterator is None:
-            if self._prefetch_batches:
-                self._iterator = PrefetchIterator(
-                    self._produce,
-                    capacity=self._prefetch_batches,
-                    skip=self._skip,
-                    registry=self._prefetch_producers,
-                )
-                self._finalizer = weakref.finalize(self, self._iterator.close)
-            else:
-                self._iterator = self._produce()
-                for _ in range(self._skip):
-                    next(self._iterator)
+        if self._prefetch_group is not None and self._prefetch_group.closed:
+            self.close()
+            raise StopIteration
         try:
+            if self._iterator is None:
+                if self._prefetch_batches:
+                    producer = PrefetchIterator(
+                        self._produce,
+                        capacity=self._prefetch_batches,
+                        skip=self._skip,
+                        group=self._prefetch_group,
+                    )
+                    self._iterator = producer
+                    self._finalizer = weakref.finalize(self, producer.stop)
+                    producer.start()
+                else:
+                    self._iterator = self._produce()
+                    for _ in range(self._skip):
+                        next(self._iterator)
             batch = next(self._iterator)
         except BaseException:
             self.close()
@@ -116,12 +139,8 @@ class TaskBatches(Iterator[Batch]):
         if self._close_complete:
             return
         self._closed = True
-        if self._iterator is not None and callable(
-            close := getattr(self._iterator, "close", None)
-        ):
+        if self._iterator is not None and callable(close := getattr(self._iterator, "close", None)):
             close()
-        # Explicit cleanup must remain retryable; invoking the one-shot
-        # finalizer would disarm it even if the producer's join is interrupted.
         if self._finalizer is not None:
             self._finalizer.detach()
         self._close_complete = True
@@ -186,9 +205,7 @@ class Task:
         self.contract = contract
         self._assembler = assembler
         self._anchors = anchors
-        self._prefetch_iterators: weakref.WeakSet[TaskBatches] = weakref.WeakSet()
-        # A wrapper can disappear while its finalizer is still joining the producer.
-        self._prefetch_producers: set[PrefetchIterator] = set()
+        self._prefetch_group = PrefetchGroup()
         serialized = assembler.fitted_state
         manifest = assembler.manifest
         self.fitted_state = FittedState(
@@ -265,7 +282,8 @@ class Task:
         drop_last: bool | None = None,
         chunk_batches: int = 8,
         prefetch_batches: int = 0,
-        output_format: Literal["inspectable", "model"] = "inspectable",
+        output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
+        deduplicate_edges: bool = False,
     ) -> TaskBatches:
         """Emit batches over this task's anchors, or over requests built in code.
 
@@ -281,12 +299,34 @@ class Task:
         marks those rows so a loss can exclude them. ``drop_last`` applies to
         the final batch of each rank's pass, not to every chunk.
 
+        Native DiskGraph graph batches keep complete
+        split-stage batches for refit: shuffle, rank partitioning, padding and
+        ``drop_last`` apply separately to each selected split, without mixing
+        partial tails. A split smaller than one batch may be dropped completely
+        with ``drop_last=True``, independently of graph topology.
+        An empty stage shard pads from
+        an anchor the rank owns in another selected split; only a rank owning
+        no selected anchors borrows marked padding from another rank.
+        Relations-inspectable contracts using Python fallback (for example,
+        those with targets) retain their existing scheduling instead.
+
         Order is a pure function of ``seed``, ``epoch``, ``shuffle``, ``rank``
         and ``world_size``; ranks are disjoint before padding. A token budget
         (`Batching.max_tokens`) with ``world_size > 1`` is refused.
         ``output_format="model"`` refuses raw types without a tensor
         representation before fetching a batch; ``"inspectable"`` keeps them
         as Arrow arrays. Both emit the same `Batch` structure.
+
+        ``"columnar"`` emits `ColumnarGraph` inputs with Arrow feature tables
+        and selected edge indexes, without tensor encoding. It requires
+        materialized DiskGraph anchors, one graph input with explicit Raw
+        fields and fixed sample counts. Both topologies support refit stages.
+        Other sample values, targets, entity filters and availability checks
+        are refused before iteration. Shuffle, sharding, padding, drop-last
+        and resume retain their normal semantics. By default, selected edge pairs
+        may repeat across native chunks. ``deduplicate_edges=True`` is available
+        only for columnar output: it allocates edge arrays to retain the first
+        occurrence of each pair per relation, preserving example isolation.
 
         ``prefetch_batches=0`` runs synchronously (the default). A positive
         integer prepares that many batches ahead on one background CPU thread,
@@ -302,9 +342,8 @@ class Task:
         iteration starts; PyTorch grad/inference/autocast modes are not inherited.
         Backend observation hooks must support producer-thread calls.
 
-        With prefetch, source ``last_temporal_profile``, ``last_length_profile``,
-        ``last_graph_profile`` and anchor ``_last_length_planning_stats`` describe
-        producer activity and may be up to ``prefetch_batches`` batches ahead.
+        With prefetch, source profiles and anchor length-planning statistics
+        describe producer activity and may be up to ``prefetch_batches`` batches ahead.
         They are not synchronized snapshots of the batch just returned; inspect
         them after iteration finishes or the iterator is closed.
         """
@@ -327,8 +366,6 @@ class Task:
             drop_last = False  # inference scores every anchor, whatever the training policy
         if chunk_batches <= 0:
             raise ValueError("chunk_batches must be positive")
-        if type(prefetch_batches) is not int or prefetch_batches < 0:
-            raise ValueError("prefetch_batches must be a nonnegative integer")
         config = {
             "split": describe_selection(selection) if requests is None else None,
             "requests": None if requests is None else _fingerprint(tuple(requests)),
@@ -342,8 +379,18 @@ class Task:
             "chunk_batches": chunk_batches,
             "output_format": output_format,
         }
-        if output_format not in {"inspectable", "model"}:
-            raise ValueError("output_format must be 'inspectable' or 'model'")
+        if output_format not in {"inspectable", "model", "columnar"}:
+            raise ValueError("output_format must be 'inspectable', 'model', or 'columnar'")
+        if not isinstance(deduplicate_edges, bool):
+            raise ValueError("deduplicate_edges must be a bool")
+        if deduplicate_edges and output_format != "columnar":
+            raise ValueError("deduplicate_edges requires columnar output")
+        if output_format == "columnar":
+            config["deduplicate_edges"] = deduplicate_edges
+            validate = getattr(self._anchors, "validate_columnar", None)
+            if requests is not None or not callable(validate):
+                raise ValueError("columnar output requires materialized DiskGraph anchors")
+            validate(self._assembler, selection)
         if requests is None:
             self._anchors.count(selection)  # an unknown split is refused now, not mid-iteration
             max_samples = (
@@ -367,6 +414,7 @@ class Task:
                     world_size=world_size,
                     drop_last=drop_last,
                     output_format=output_format,
+                    deduplicate_edges=deduplicate_edges,
                 )
 
         else:
@@ -386,16 +434,7 @@ class Task:
                     output_format=output_format,
                 )
 
-        batches = TaskBatches(
-            produce,
-            task_fingerprint=self.fingerprints["task"],
-            config=config,
-            prefetch_batches=prefetch_batches,
-        )
-        if prefetch_batches:
-            batches._prefetch_producers = self._prefetch_producers
-            self._prefetch_iterators.add(batches)
-        return batches
+        return TaskBatches._for_task(self, produce, config, prefetch_batches)
 
     def _anchor_batches(
         self,
@@ -409,7 +448,8 @@ class Task:
         rank: int,
         world_size: int,
         drop_last: bool | None,
-        output_format: Literal["inspectable", "model"] = "inspectable",
+        output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
+        deduplicate_edges: bool = False,
     ) -> Iterator[Batch]:
         anchors = self._anchors
         view = getattr(anchors, "iteration_anchors", None)
@@ -429,6 +469,7 @@ class Task:
                 world_size=world_size,
                 drop_last=drop_last,
                 output_format=output_format,
+                **({"deduplicate_edges": deduplicate_edges} if output_format == "columnar" else {}),
             )
             return
         positions = padded_positions(
@@ -506,10 +547,7 @@ class Task:
         self._anchors.close()
 
     def _close_prefetch(self) -> None:
-        for batches in list(self._prefetch_iterators):
-            batches.close()
-        for producer in self._prefetch_producers.copy():
-            producer.close()
+        self._prefetch_group.close()
 
     def __enter__(self) -> Task:
         return self

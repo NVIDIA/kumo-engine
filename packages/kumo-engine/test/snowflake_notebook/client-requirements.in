@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Host submission client; notebook dependencies use their separate staged inventory.
+snowflake-connector-python==4.6.0
+cryptography==49.0.0

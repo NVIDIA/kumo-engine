@@ -140,25 +140,21 @@ def graph_schema(dims: Mapping[str, DimensionValue]) -> DataSchema:
     )
 
 
-def traversal(schema: DataSchema, hop: Hop, fanout: int, static: bool) -> GraphSample:
+def traversal(schema: DataSchema, hop: Hop, fanout: int) -> GraphSample:
     relation = next(r for r in schema.relations if {r.left_table, r.right_table} == set(hop))
     return GraphSample(
         relation.name,
         fanout,
         direction="forward" if relation.left_table == hop[0] else "reverse",
         strategy="recent",
-        temporal="static" if static and hop == ("users", "events") else "inherit",
     )
 
 
-def graph_contract(
-    dims: Mapping[str, DimensionValue], *, static: bool | None = None
-) -> DataLoaderSpec:
+def graph_contract(dims: Mapping[str, DimensionValue]) -> DataLoaderSpec:
     schema = graph_schema(dims)
-    static = dims["contract.graph_temporal"] == "static" if static is None else static
     fanout = int(dims["contract.graph_fanout"])
     layers = tuple(
-        GraphLayer(tuple(traversal(schema, hop, fanout, static) for hop in layer))
+        GraphLayer(tuple(traversal(schema, hop, fanout) for hop in layer))
         for layer in PATHS[str(dims["schema_shape.graph_path"])]
     )
     return DataLoaderSpec(
@@ -415,7 +411,7 @@ def candidate_clocks(case: GeneratedCase, sample: GraphSample, key: Key, cutoff:
 
     _, source, source_key, target, target_key = _hop(case.contract.schema, sample)
     value = _rows(case.tables)[source][key][source_key]
-    timed = sample.temporal == "inherit"
+    timed = sample.strategy == "recent"
     clocks = [
         _clock(row, target)
         for row in case.tables[target]
@@ -486,7 +482,7 @@ class _Candidates:
             for row in self.tables[target]:
                 index.setdefault(row[target_key], []).append(row)
             self.joins[(target, target_key)] = index
-        timed = sample.temporal == "inherit"
+        timed = sample.strategy == "recent"
         found: dict[Key, int] = {}
         for row in self.joins[(target, target_key)].get(self.rows[source][key][source_key], ()):
             if not (timed and _clock(row, target) > cutoff):
@@ -678,11 +674,10 @@ def graph_differential(case: GeneratedCase, engine: str, position: int) -> None:
 def with_future_graph_rows(case: GeneratedCase, rng: random.Random) -> tuple[Tables, set[str]]:
     """Events and owned shops dated after an entity's cutoff; the anchors they can't reach.
 
-    A static case gets no future events: a static traversal may reach them.
+    These generated cases use recent sampling at every hop.
     """
 
     tables = {name: [dict(row) for row in rows] for name, rows in case.tables.items()}
-    static = case.dimensions["contract.graph_temporal"] == "static"
     cutoffs: dict[int, list[int]] = {}
     for request in case.requests:
         cutoffs.setdefault(int(request.entity_id), []).append(int(request.as_of_time))
@@ -692,10 +687,9 @@ def with_future_graph_rows(case: GeneratedCase, rng: random.Random) -> tuple[Tab
         shop = len(tables["shops"]) + 1
         tables["shops"].append({"shop_id": shop, "owner_id": entity, "opened": threshold + 1})
         dated.append(threshold + 1)
-        if not static:
-            for time in (threshold + 1, threshold + rng.randint(2, 100)):
-                event = {"event_id": len(tables["events"]) + 1, "user_id": entity}
-                tables["events"].append(event | {"shop_id": rng.choice([shop, 1]), "at": time})
+        for time in (threshold + 1, threshold + rng.randint(2, 100)):
+            event = {"event_id": len(tables["events"]) + 1, "user_id": entity}
+            tables["events"].append(event | {"shop_id": rng.choice([shop, 1]), "at": time})
     # Fan-in reaches other entities' rows, so guard only anchors before every new row.
     guarded = {str(r.sample_id) for r in case.requests if int(r.as_of_time) < min(dated)}
     return tables, guarded
@@ -704,29 +698,17 @@ def with_future_graph_rows(case: GeneratedCase, rng: random.Random) -> tuple[Tab
 def graph_point_in_time(case: GeneratedCase, engine: str, position: int) -> None:
     """No neighbor is dated after its cutoff (rule 1); future rows change nothing.
 
-    Events reached through the static users-events relation are exempt from the
-    date check; events reached any other way are not.
+    All traversals in these generated cases use recent sampling.
     """
 
     base = _base(case, engine)
     rows = _rows(case.tables)
-    relations = {relation.name: relation for relation in case.contract.schema.relations}
-    static = {
-        sample.relation for sample in traversals(case.contract) if sample.temporal == "static"
-    }
     cutoffs = {str(r.sample_id): (int(r.entity_id), int(r.as_of_time)) for r in case.requests}
     late = []
     for sample_id, graph in sorted(base.items()):
         entity, cutoff = cutoffs[sample_id]
-        unfiltered = {
-            pair[0 if relations[name].left_table == "events" else 1]
-            for name in static
-            for pair in graph.edges.get(name, ())
-        }
         for table, keys in graph.nodes.items():
             for key in keys:
-                if table == "events" and key in unfiltered:
-                    continue
                 dated = int(str(rows[table][key][CLOCKS[table]]))
                 if dated > cutoff and (table, key) != ("users", entity):
                     late.append(f"{sample_id}: {table} {key} dated {dated} > cutoff {cutoff}")
@@ -794,8 +776,6 @@ def graph_structure(case: GeneratedCase, engine: str, position: int) -> None:
     _most_recent(case, graphs)
     problems = _expansion(case, graphs)
     require(not problems, f"{EXPANSION}:\n  " + "\n  ".join(problems[:4]))
-    if engine == "diskgraph":
-        _static_refused(case)
 
 
 def _most_recent(case: GeneratedCase, graphs: GraphAnswer) -> None:
@@ -812,18 +792,6 @@ def _most_recent(case: GeneratedCase, graphs: GraphAnswer) -> None:
                 stale.append(f"{sample_id}: {hop} kept {kept[hop]}, most recent {expected}")
     require(
         not stale, "recent kept other than the most recent neighbors:\n  " + "\n  ".join(stale[:4])
-    )
-
-
-def _static_refused(case: GeneratedCase) -> None:
-    """The declared DiskGraph refusal of static traversals happens at check()."""
-
-    contract = graph_contract(case.dimensions, static=True)
-    with bound_tables(contract, case.tables, "diskgraph", refusal=True) as (dataset, bound):
-        issues = check(contract, dataset, bound)
-    require(
-        bool(issues) and all(i.path.endswith(".temporal") and i.suggestion for i in issues),
-        f"static traversal not refused at check(): {issues}",
     )
 
 

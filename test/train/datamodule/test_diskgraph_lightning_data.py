@@ -1549,7 +1549,7 @@ def test_explain_dataloader_maps_pred_stage_to_predict_runtime_stage(
     assert calls["kwargs"]["stage"] == "predict"
 
 
-def test_explain_dataloader_skips_lp_target_resolution_for_pred(
+def test_explain_dataloader_pred_resolves_only_entity(
     monkeypatch: pytest.MonkeyPatch, ) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
@@ -1567,11 +1567,11 @@ def test_explain_dataloader_skips_lp_target_resolution_for_pred(
     assert calls["kwargs"]["target_node_type"] == "Article"
 
     list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
-    assert "entity_node_type" not in calls["kwargs"]
+    assert calls["kwargs"]["entity_node_type"] == "User"
     assert "target_node_type" not in calls["kwargs"]
 
 
-def test_explain_dataloader_link_prediction_pred_uses_predict_loader(
+def test_explain_dataloader_lp_pred_keeps_selected_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1584,7 +1584,7 @@ def test_explain_dataloader_link_prediction_pred_uses_predict_loader(
     list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
 
     assert calls["kwargs"]["stage"] == "predict"
-    assert "selected_stage_node_ids" not in calls["kwargs"]
+    assert calls["kwargs"]["selected_stage_node_ids"] == [10, 12]
 
 
 def test_explain_selection_capture_forces_single_worker_eval_loader() -> None:

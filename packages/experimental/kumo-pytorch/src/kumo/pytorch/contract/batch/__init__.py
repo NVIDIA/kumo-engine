@@ -4,6 +4,7 @@
 
 """Batch declarations: sources, explicit encodings, arrangements, and layouts."""
 
+from kumo.pytorch.contract.batch.columnar import ColumnarEdges, ColumnarGraph, ColumnarNodes
 from kumo.pytorch.contract.batch.encodings import (
     Buckets,
     Raw,
@@ -55,6 +56,9 @@ __all__ = [
     "Buckets",
     "CandidateSource",
     "CandidateTarget",
+    "ColumnarEdges",
+    "ColumnarGraph",
+    "ColumnarNodes",
     "Columns",
     "Composite",
     "Encode",

@@ -818,6 +818,8 @@ class TrainingTableGeneratorV2:
                 # kumo builds/threads no edge config here.
                 input_timestamp_unit=TimeUnit.Nanoseconds,
                 target_stype=self.query.target_stype.value,
+                start_time=(self.start_time.value if isinstance(
+                    self.start_time, Timestamp) else None),
             ),
             entity_table=self.entity_table_name,
             timestamp_count=len(timestamp_nanos),

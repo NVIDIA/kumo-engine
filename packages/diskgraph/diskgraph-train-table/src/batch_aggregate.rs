@@ -23,6 +23,7 @@ use arrow::array::{
     TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow_array::{RecordBatch, RecordBatchOptions};
+use diskgraph_core::indexed_time_range::{unclipped_bucket_end, IndexedTimeRange};
 use diskgraph_core::metadata::EdgeSortKeyMetadata;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::time::{
@@ -34,6 +35,7 @@ use diskgraph_core::tt_builder::{
 };
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
+use diskgraph_rowpack::IngestedType;
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Deserialize;
@@ -449,9 +451,11 @@ fn table_rows(
             .edges_for_node(node_id)
             .map_err(|error| error.to_string())?;
         rows.push(
-            view.node_data()
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
+            decoder.row_or_null(
+                view.node_data()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
+            ),
         );
     }
     decoder
@@ -531,7 +535,7 @@ fn relation_columns(
     relation_name: &str,
     node_id: u64,
     include_sort_keys: bool,
-    window: Option<(&SortKeyDecoder, Option<i64>, Option<i64>, &str)>,
+    window: Option<(&IndexedTimeRange, Option<i64>, Option<i64>, &str)>,
     edges_visited: &mut u64,
 ) -> Result<(Vec<u64>, Vec<u64>), String> {
     let relation_id = table
@@ -554,44 +558,36 @@ fn relation_columns(
         .iter()
         .find(|segment| segment.layout.relation_id as usize == relation_id)
         .ok_or_else(|| format!("relation {relation_name:?} has no physical segment"))?;
-    let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
-    let mut destinations = Vec::with_capacity(segment.count as usize);
+    let keys = EdgeUnpacker::new(segment.data, &segment.layout);
+    let ranges = window.map_or([0..keys.len(), 0..0, 0..0], |(clock, lower, upper, _)| {
+        clock.candidate_ranges(keys.len(), lower, upper, |i| keys.key_at(i))
+    });
+    let candidates = ranges.iter().map(|range| range.len()).sum();
+    let mut destinations = Vec::with_capacity(candidates);
     let mut sort_keys = if include_sort_keys {
-        Vec::with_capacity(segment.count as usize)
+        Vec::with_capacity(candidates)
     } else {
         Vec::new()
     };
     let mut destination_buffer = [0u64; 256];
     let mut sort_key_buffer = [0u64; 256];
-    loop {
-        let count = unpacker.unpack_batch(&mut destination_buffer, &mut sort_key_buffer);
-        if count == 0 {
-            break;
+    for range in ranges {
+        if range.is_empty() {
+            continue;
         }
-        if let Some((decoder, lower, upper, _)) = window {
-            for (&destination, &key) in destination_buffer[..count]
-                .iter()
-                .zip(&sort_key_buffer[..count])
-            {
-                // A clipped code is not the row's time; the rowpack check decides it.
-                let admitted = exact_key_time(decoder, key).is_none_or(|timestamp| {
-                    lower.is_none_or(|bound| timestamp > bound)
-                        && upper.is_none_or(|bound| timestamp <= bound)
-                });
-                if admitted {
-                    destinations.push(destination);
-                    if include_sort_keys {
-                        sort_keys.push(key);
-                    }
-                }
+        let bytes = range.start * segment.layout.entry_bytes..range.end * segment.layout.entry_bytes;
+        let mut unpacker = EdgeUnpacker::new(&segment.data[bytes], &segment.layout);
+        loop {
+            let count = unpacker.unpack_batch(&mut destination_buffer, &mut sort_key_buffer);
+            if count == 0 {
+                break;
             }
-        } else {
             destinations.extend_from_slice(&destination_buffer[..count]);
             if include_sort_keys {
                 sort_keys.extend_from_slice(&sort_key_buffer[..count]);
             }
+            *edges_visited = edges_visited.saturating_add(count as u64);
         }
-        *edges_visited = edges_visited.saturating_add(count as u64);
     }
     Ok((destinations, sort_keys))
 }
@@ -600,11 +596,13 @@ fn relation_destinations(
     table: &TableReader,
     relation_name: &str,
     node_id: u64,
-    window: Option<(&SortKeyDecoder, Option<i64>, Option<i64>, &str)>,
+    window: Option<(&IndexedTimeRange, Option<i64>, Option<i64>, &str)>,
     sequence: Option<&SequencePlan>,
     distinct: bool,
     stats: &mut QueryStats,
 ) -> Result<Vec<u64>, String> {
+    // Coarse keys only admit candidates: row refinement must precede any cap.
+    let sequence = sequence.filter(|_| window.is_some_and(|(clock, ..)| clock.is_exact()));
     let (mut destinations, keys) = relation_columns(
         table,
         relation_name,
@@ -613,7 +611,8 @@ fn relation_destinations(
         window,
         &mut stats.edges_visited,
     )?;
-    if let (Some(sequence), Some((decoder, ..))) = (sequence, window) {
+    if let (Some(sequence), Some((clock, ..))) = (sequence, window) {
+        let decoder = clock.decoder();
         if let Some(limit) = sequence.limit.filter(|&n| n > 0 && n < destinations.len()) {
             // All-one bits decode to the maximum ordered timestamp, regardless
             // of timestamp width or weight bits. Ingestion may clamp later rows
@@ -720,8 +719,7 @@ fn row_clock_time(array: &dyn Array, row: usize, clock: TimeUnit) -> Result<Opti
 }
 
 fn exact_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
-    let timestamp = decoder.decode(key).0?;
-    (Some(timestamp) != decoder.decode(u64::MAX).0).then_some(timestamp)
+    unclipped_bucket_end(decoder, key)
 }
 
 fn matching_time_decoder(
@@ -729,14 +727,9 @@ fn matching_time_decoder(
     destination: &str,
     clock: &str,
 ) -> Option<SortKeyDecoder> {
-    metadata.and_then(|metadata| {
-        metadata.timestamp.as_ref().and_then(|timestamp| {
-            (timestamp.table == destination
-                && timestamp.column == clock
-                && timestamp.encoding.step == 1)
-                .then(|| SortKeyDecoder::new(metadata))
-        })
-    })
+    IndexedTimeRange::matching(metadata, destination, clock)
+        .filter(IndexedTimeRange::is_exact)
+        .map(|clock| clock.decoder().clone())
 }
 
 fn validate_frame_plan(plan: &FramePlan, root_type: &str) -> Result<(), String> {
@@ -872,7 +865,7 @@ fn materialize_frame(
                 && (plan.start_seconds.is_some() || plan.stop_seconds.is_some())
             {
                 plan.time_column.as_deref().and_then(|clock| {
-                    matching_time_decoder(
+                    IndexedTimeRange::matching(
                         relation.dest_sort_key.as_ref(),
                         edge.dst_table.node_type(),
                         clock,
@@ -1310,7 +1303,7 @@ fn aggregate_result(
                 .entity_col_indices
                 .iter()
                 .map(|(_, column)| {
-                    crate::ttgen_traversal::read_column_value(
+                    crate::ttgen_traversal::read_column_number(
                         &selection.entity_table,
                         roots[anchor],
                         *column,
@@ -1376,6 +1369,34 @@ fn aggregate_result(
     })
 }
 
+/// Frames carry decimals as text, which would order lexicographically.
+fn refuse_decimal_extrema(
+    reader: &GraphIndexReader,
+    frame: &MaterializedFrame,
+    plan: &AggregatePlan,
+) -> Result<(), String> {
+    let Some(table) = reader.table(&frame.destination) else {
+        return Ok(());
+    };
+    let Some(decoder) = table.node_data_decoder() else {
+        return Ok(());
+    };
+    let reductions = std::iter::once((&plan.operation, &plan.column)).chain(
+        plan.groups.iter().flat_map(|group| group.values.iter().map(|v| (&v.operation, &v.column))),
+    );
+    for (operation, column) in reductions {
+        let Some(column) = column else { continue };
+        let decimal = decoder.context().columns.iter().any(|c| {
+            &c.name == column
+                && matches!(c.logical_type, IngestedType::Decimal128 | IngestedType::Decimal256)
+        });
+        if decimal && matches!(operation.as_str(), "min" | "max") {
+            return Err(format!("{operation} over decimal column {column:?} is not supported"));
+        }
+    }
+    Ok(())
+}
+
 /// The scalar kind an aggregate produces, independent of its values.
 fn aggregate_kind(frame: &MaterializedFrame, plan: &AggregatePlan) -> Option<ScalarValue> {
     use arrow_schema::DataType;
@@ -1429,9 +1450,21 @@ fn count_frame(
 
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
-    for &root in roots {
+    for (anchor, &root) in roots.iter().enumerate() {
         let mut frontier = vec![(root, 0)];
-        for edge in &hops {
+        for (hop, edge) in hops.iter().enumerate() {
+            let clock = if hop + 1 == hops.len()
+                && (plan.start_seconds.is_some() || plan.stop_seconds.is_some()) {
+                plan.time_column.as_deref().and_then(|column| {
+                    IndexedTimeRange::matching(final_sort_key.as_ref(), &destination, column)
+                })
+            } else { None };
+            let (lower, upper) = if clock.is_some() {
+                frame_bounds(plan, cutoffs[anchor], reader.metadata().timestamp_unit)?
+            } else {
+                (None, None)
+            };
+            let window = clock.as_ref().map(|clock| (clock, lower, upper, plan.name.as_str()));
             let table = &edge.src_table;
             let mut next = Vec::new();
             for (node_id, _) in frontier {
@@ -1440,7 +1473,7 @@ fn count_frame(
                     &table.relations()[edge.relation_idx].name,
                     node_id,
                     true,
-                    None,
+                    window,
                     &mut stats.edges_visited,
                 )?;
                 next.extend(destinations.into_iter().zip(sort_keys));
@@ -2016,7 +2049,12 @@ struct PreparedRowSelection {
 
 impl PreparedAggregatePlan {
     pub fn prepare(reader: &GraphIndexReader, root: &str, json: &str) -> Result<Self, String> {
-        use diskgraph_core::tt_builder::{DiskGraphTTPlan, Op};
+        use diskgraph_core::tt_builder::{plan_timestamp_unit, DiskGraphTTPlan, Op};
+        let plan_clock = plan_timestamp_unit(json)
+            .map_err(|e| format!("invalid DGTTPlan clock: {e}"))?;
+        if !plan_clock.is_index_clock() {
+            return Err("scalar plan timestamp_unit must be a fixed index clock".into());
+        }
         let mut plan: DiskGraphTTPlan<Seconds> =
             serde_json::from_str(json).map_err(|e| format!("invalid DGTTPlan: {e}"))?;
         plan.normalize_scalar_ops()?;
@@ -2040,10 +2078,13 @@ impl PreparedAggregatePlan {
                 return Err("scalar materialization does not accept stage side effects".into());
             }
             let mut pql = Vec::new();
-            for op in stage.ops.drain(..) {
-                let Op::RowAggregate { rows, reduction } = &op else {
+            for mut op in stage.ops.drain(..) {
+                let Op::RowAggregate { rows, reduction } = &mut op else {
                     return Err("scalar materialization requires row aggregate ops".into());
                 };
+                // The Seconds deserialization above does not retain the JSON
+                // clock tag, including for frames generated by normalization.
+                rows.cutoff_unit.get_or_insert(plan_clock);
                 if !names.insert(reduction.name.clone()) {
                     return Err("duplicate scalar output name".into());
                 }
@@ -2058,13 +2099,12 @@ impl PreparedAggregatePlan {
                 }
                 if selected_rows && (reader.metadata().timestamp_unit != TimeUnit::Seconds
                     || rows.cutoff_unit.is_some_and(|u| u != TimeUnit::Seconds)
-                    || diskgraph_core::tt_builder::plan_timestamp_unit(json)
-                        .map_err(|e| e.to_string())? != TimeUnit::Seconds)
+                    || plan_clock != TimeUnit::Seconds)
                 {
                     return Err("PQL row filters/limits require matching seconds plan, cutoff and index clocks".into());
                 }
                 if let Some(old) = query.frames.iter().find(|f| f.name == rows.name) {
-                    if old != rows {
+                    if old != &*rows {
                         return Err("conflicting shared row-source declarations".into());
                     }
                 } else {
@@ -2080,6 +2120,7 @@ impl PreparedAggregatePlan {
             }
             stage.ops = pql;
         }
+        query.cutoff_unit()?;
         query.selection = if selected.stages.iter().any(|s| !s.ops.is_empty()) {
             let entity_table = reader.table(root).ok_or("unknown entity table")?;
             let context = entity_table
@@ -2334,14 +2375,19 @@ fn execute_prepared_parallel(
     plan: &QueryPlan,
     pool: &rayon::ThreadPool,
 ) -> Result<QueryResult, String> {
-    if roots.len() != cutoffs.len() || roots.len() < 64 || pool.current_num_threads() == 1 {
+    let anchors_per_chunk = if plan.aggregates.is_empty() && !plan.sequences.is_empty() {
+        8
+    } else {
+        64
+    };
+    if roots.len() != cutoffs.len() || roots.len() < anchors_per_chunk || pool.current_num_threads() == 1 {
         if roots.len() != cutoffs.len() {
             return Err("root IDs and cutoffs must have equal length".into());
         }
         return execute_query(reader, root_type, roots, cutoffs, plan);
     }
     let started = Instant::now();
-    let chunks = roots.len().div_ceil(64).min(pool.current_num_threads() * 2);
+    let chunks = roots.len().div_ceil(anchors_per_chunk).min(pool.current_num_threads() * 2);
     let size = roots.len().div_ceil(chunks);
     let results = pool.install(|| {
         roots
@@ -2559,6 +2605,7 @@ fn execute_query(
                     aggregate.name, aggregate.frame
                 )
             })?;
+            refuse_decimal_extrema(reader, frame, aggregate)?;
             aggregate_result(frame, aggregate, cutoffs, roots, plan.selection.as_ref())
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -2869,5 +2916,65 @@ mod tests {
             reduce(RowsView::Owned(&tied), "mode", Some("value"), 0, None).unwrap(),
             ScalarValue::String(value) if value == "a"
         ));
+    }
+
+    #[test]
+    fn table_rows_reads_a_row_without_node_data_as_null() {
+        // Its FK value alone is over the node-data limit, so ingest stores it
+        // without node data. It is random because rowpack LZ4-compresses long
+        // strings.
+        let mut state = 1u64;
+        let parent: String = (0..65 << 20)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(b'a' + (state % 26) as u8)
+            })
+            .collect();
+        let batch = RecordBatch::try_from_iter([
+            (
+                "note_id",
+                Arc::new(StringArray::from(vec!["n1"])) as ArrayRef,
+            ),
+            ("parent", Arc::new(StringArray::from(vec![parent]))),
+        ])
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes.parquet");
+        let file = std::fs::File::create(&notes).unwrap();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let config = dir.path().join("config.json");
+        let config_json = serde_json::json!({
+            "dataset_name": "notes",
+            "tables": [{
+                "name": "Notes",
+                "source": {"type": "parquet", "paths": [notes]},
+                "primary_key": "note_id",
+                "columns": [
+                    {"name": "note_id", "ingested_dtype": "string"},
+                    {"name": "parent", "ingested_dtype": "string"}
+                ],
+                "fkeys": [{"src_column": "parent", "dst_table": "Notes"}]
+            }]
+        });
+        std::fs::write(&config, config_json.to_string()).unwrap();
+        let output = dir.path().join("index");
+        diskgraph_ingest::ingest_with_stats(
+            &config,
+            output.to_str().unwrap(),
+            diskgraph_ingest::io::Dest::Local,
+            diskgraph_ingest::IngestOptions::default(),
+        )
+        .unwrap();
+        let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output).unwrap();
+
+        let table = reader.table("Notes").unwrap();
+        let rows = table_rows(&table, &[0], &[0, 1]).unwrap();
+        assert!(rows.columns().iter().all(|column| column.is_null(0)));
+        let value = crate::ttgen_traversal::read_column_value_nullable(&table, 0, 1);
+        assert_eq!(value, Some(None));
     }
 }
