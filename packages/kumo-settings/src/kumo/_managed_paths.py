@@ -8,8 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import kumo.settings
-
 
 def _component(value: str, name: str) -> str:
     if (not value.strip() or value in {".", ".."}
@@ -20,23 +18,17 @@ def _component(value: str, name: str) -> str:
 
 @dataclass(frozen=True)
 class _ManagedIndexPaths:
+    """Derive build paths from an explicit root already resolved by the caller."""
+
     index_build_id: str
-    root: Path | None = None
+    root: Path
 
     def __post_init__(self) -> None:
         _component(self.index_build_id, "index_build_id")
 
     @property
     def managed_root(self) -> Path:
-        return (self.root if self.root is not None else kumo.settings.scratch_dir()).resolve()
-
-    @classmethod
-    def from_index_dir(cls, index: Path) -> _ManagedIndexPaths:
-        resolved = Path(index).resolve()
-        paths = cls(resolved.name)
-        if resolved != paths.index_dir:
-            raise ValueError("index path must be under the configured Kumo root's indexes")
-        return paths
+        return self.root
 
     @property
     def index_dir(self) -> Path:

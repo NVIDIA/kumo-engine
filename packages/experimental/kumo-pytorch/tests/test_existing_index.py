@@ -100,6 +100,26 @@ def test_external_cache_refuses_redirected_cutoff(tmp_path):
         ColumnCache(index, cache).destination("cutoff/table.col_stats.json")
 
 
+def test_engine_captures_resolved_root_before_cwd_and_symlink_changes(tmp_path, monkeypatch):
+    import kumo.settings
+
+    root = tmp_path / "original"
+    root.mkdir()
+    redirect = tmp_path / "scratch"
+    redirect.symlink_to(root, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    kumo.settings.configure(scratch_dir="scratch")
+    engine = api.DiskGraphEngine()
+
+    redirect.unlink()
+    redirect.symlink_to(tmp_path / "replacement", target_is_directory=True)
+    monkeypatch.chdir(tmp_path.parent)
+    assert engine._paths.managed_root == root
+    assert engine.index == root / "indexes" / engine.index_build_id
+    assert engine._paths.task_dir("task") == root / "tasks" / engine.index_build_id / "task"
+    assert engine._paths.cache_dir == root / "cache" / engine.index_build_id
+
+
 def inventory(root):
     return {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
