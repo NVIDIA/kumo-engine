@@ -15,6 +15,8 @@ is an error instead.
 33-anchor CPU fixture in fresh pytest workers and prints the timing report path.
 Each worker records setup once, fit stages per mode and batch stages per epoch.
 Stage times include nested calls. A missing stage did not run on that workload.
+On Linux, ``loader --cold-warm-cache`` verifies that the base index's file pages
+are cold before epoch 0 and warm before epoch 1 of each fit, outside epoch timing.
 Use ``banking`` in place of ``loader`` to time one CPU PyG training step per
 worker on the package banking fixture. Its step includes batch adaptation through
 the optimizer update and excludes model initialization and batch delivery.
@@ -97,7 +99,9 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
     return work, seconds
 
 
-def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options) -> dict:
+def time_loader(
+    plan, table, work: Path, make_batches, *, setup, cache=None, **batch_options
+) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
     from kumo.pytorch import api
     from tests.e2e.loader_timing import install_stages, measure_epoch, stage_observer
@@ -133,6 +137,11 @@ def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options
                     with stage_observer(install_stages) as profile:
                         record = {"epoch": epoch, "complete": False, "stages": profile.stages}
                         results[mode]["epochs"].append(record)
+                        if cache is not None:
+                            record["file_page_cache"] = {}
+                            cache.condition(
+                                "cold" if epoch == 0 else "warm", record["file_page_cache"]
+                            )
                         measure_epoch(task, make_batches, record, profile, **options)
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
@@ -155,17 +164,20 @@ def _ranges(rows):
     return metrics
 
 
-def _timing_campaign(workload: str, directory: Path, repetitions: int) -> Path:
+def _timing_campaign(
+    workload: str, directory: Path, repetitions: int, cold_warm_cache=False
+) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=directory.resolve()))
     case = TIMING_CASES[workload]
     report = root / "timings.json"
     completed = []
     workers = []
+    cache_args = ["--cold-warm-cache"] if cold_warm_cache else []
     for index in range(repetitions):
         work = root / str(index)
         worker = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work)],
+            [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work), *cache_args],
             cwd=REPOSITORY,
             env={**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"},
         )
@@ -196,6 +208,8 @@ def _timing_campaign(workload: str, directory: Path, repetitions: int) -> Path:
         Path(__file__).with_name("loader_timing.py"),
         REPOSITORY / case.split("::")[0],
     ]
+    if workload == "loader":
+        sources.append(Path(__file__).with_name("file_cache.py"))
     revision = tracked_diff = None
     try:
         revision = subprocess.check_output(
@@ -207,6 +221,7 @@ def _timing_campaign(workload: str, directory: Path, repetitions: int) -> Path:
         pass  # Source distributions can run outside a Git checkout.
     metadata = {
         "workload": case,
+        **({"file_page_cache": "cold-warm"} if cold_warm_cache else {}),
         "device": "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
         **(LOADER_BATCHING if workload == "loader" else {"batch_size": 2}),
@@ -237,10 +252,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--e2e-dir", type=Path, required=True)
     if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)
+        if argv[0] == "loader":
+            parser.add_argument(
+                "--cold-warm-cache",
+                action="store_true",
+                help="verify index page residency before each epoch (Linux)",
+            )
         args = parser.parse_args(argv[1:])
         if args.repetitions < 1:
             parser.error("--repetitions must be positive")
-        print(_timing_campaign(argv[0], args.e2e_dir, args.repetitions))
+        cold_warm_cache = getattr(args, "cold_warm_cache", False)
+        print(_timing_campaign(argv[0], args.e2e_dir, args.repetitions, cold_warm_cache))
         return
     parser.add_argument("tier", choices=sorted(BY_NAME))
     parser.add_argument("flow", choices=sorted(FLOWS))

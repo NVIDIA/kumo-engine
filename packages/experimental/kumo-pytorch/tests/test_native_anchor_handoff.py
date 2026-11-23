@@ -8,7 +8,6 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
-from stat import S_ISREG
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -450,15 +449,6 @@ def test_native_anchor_batch_boundaries_and_cleanup(native_task, tmp_path, count
     assert plan._source._sampler is not None
 
 
-def _index_bytes(index):
-    files = {}
-    for path in index.rglob("*"):
-        info = path.lstat()
-        if S_ISREG(info.st_mode):
-            files[info.st_dev, info.st_ino] = info.st_size
-    return sum(files.values())
-
-
 @pytest.mark.parametrize("native_task", ["profile"], indirect=True)
 def test_loader_failure_keeps_delivered_batch(native_task, native_anchor_delivery, tmp_path):
     from tests.e2e.loader_timing import parquet_metadata
@@ -489,6 +479,7 @@ def test_loader_failure_keeps_delivered_batch(native_task, native_anchor_deliver
 def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
     from kumo.pytorch.engines import diskgraph
     from tests.e2e import runs
+    from tests.e2e.file_cache import IndexPageCache
     from tests.e2e.loader_timing import parquet_metadata, stage_observer
 
     index = tmp_path / "index"
@@ -512,6 +503,9 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         with api.prepare(contract, dataset, api.DiskGraphEngine(**engine, ingest="never")):
             pass
     anchors = parquet_metadata(table.source.path)
+    # Snapshot the base index before materialization creates each fit's temporary anchor files.
+    index_cache = IndexPageCache(index)
+    cache = index_cache if request.config.getoption("--cold-warm-cache") else None
     setup = {
         "stages": observer.stages,
         "source_tables": sources,
@@ -520,12 +514,18 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         "anchors": anchors["rows"],
         "anchor_bytes": anchors["bytes"],
         "anchor_sha256": anchors["sha256"],
-        "index_bytes": _index_bytes(index),
+        "index_bytes": sum(info.st_size for info in index_cache.selected.values()),
         "dataset_fingerprint": json.loads(manifest.read_text())["dataset_fingerprint"],
     }
     work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
     results = runs.time_loader(
-        plan, table, work, native_anchor_delivery, setup=setup, event_tables=("events",)
+        plan,
+        table,
+        work,
+        native_anchor_delivery,
+        setup=setup,
+        cache=cache,
+        event_tables=("events",),
     )
     fitted = api.Artifact.load(work / "artifact").fitted_state
     assert results["setup"]["anchors"] == 33
@@ -554,6 +554,8 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         for record in fitted.fit.values():
             assert record["anchors"] == run["anchors"] and record["fit_split"] == ["train"]
         assert [row["epoch"] for row in run["epochs"]] == [0, 1]
+        if cache is not None:
+            assert [row["file_page_cache"]["mode"] for row in run["epochs"]] == ["cold", "warm"]
         for row in run["epochs"]:
             assert row["batch_sizes"] == [5] * 6 + [3]
             for stage in ("python.postprocess", "python.labels"):
