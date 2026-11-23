@@ -1284,10 +1284,20 @@ def test_local_index_resolves_snapshot_storage(
             json.dumps({'index_build_id': 'build'}))
     else:
         index = logical
-    index.mkdir(parents=True)
-    (index / 'index_metadata.json').write_text(
-        json.dumps({'index_build_id': 'build'}))
-    (index / 'col_stats.json').write_text('{}')
+
+    def complete(path):
+        from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
+
+        path.mkdir(parents=True)
+        (path / 'index_metadata.json').write_text(
+            json.dumps({'index_build_id': 'build'}))
+        (path / 'col_stats.json').write_text('{}')
+        (path / 'ingest_stats.json').write_text('{}')
+        (path / 'kumo_col_stats').mkdir()
+        (path / '_SUCCESS').write_text(
+            DiskgraphIngestResult.for_index(path).to_json())
+
+    complete(index)
 
     snapshot_id = 'graph@' + (version[:16] if short_id else version)
     assert _monitoring._local_index(snapshot_id) == index
@@ -1295,6 +1305,5 @@ def test_local_index_resolves_snapshot_storage(
     assert _monitoring._local_index('invalid') is None
     if short_id:
         other = logical.with_name(version[:16] + '-other')
-        other.mkdir()
-        (other / 'col_stats.json').write_text('{}')
+        complete(other)
         assert _monitoring._local_index(snapshot_id) is None

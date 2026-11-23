@@ -202,6 +202,7 @@ def test_legacy_directory_with_reference_suffix_remains_readable(staged):
     assert store.path(legacy) == str(path)
     assert legacy in store.list_ready()
     assert DiskgraphSnapshotHandle('graph', 'old') not in store.list_ready()
+    assert store.resolve_version_prefix('graph', 'old') == str(path)
 
 
 def test_reserved_version_publication_is_rejected_before_mutation(staged):
@@ -297,6 +298,7 @@ def test_existing_managed_reference_for_a_reserved_version_remains_readable(stag
 
     assert store.path(old_version) == published.index_path
     assert store.list_ready() == [old_version]
+    assert store.resolve_version_prefix(handle.graph_key, old_version.graph_data_version) == published.index_path
 
 
 def test_selecting_legacy_restore_preserves_suffix_named_directory(staged):
@@ -329,3 +331,83 @@ def test_nonobject_ingest_metadata_is_rejected_before_publication(
     assert (source / '_SUCCESS').read_bytes() == marker
     assert not (source.parents[2] / 'indexes').exists()
     assert not store._reference(handle).exists()
+
+
+@pytest.mark.parametrize('managed', [False, True])
+def test_version_prefix_resolves_completed_snapshot(staged, managed):
+    store, handle, result, source = staged
+    index = store.publish(handle, result).index_path if managed else str(source)
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') == index
+    assert store.resolve_version_prefix(handle.graph_key, 'version') == index
+    assert store.resolve_version_prefix(handle.graph_key, 'missing') is None
+    assert store.resolve_version_prefix('missing', 'ver') is None
+
+
+def test_version_prefix_rejects_ambiguity_within_one_graph(staged):
+    store, handle, result, _ = staged
+    store.publish(handle, result)
+    other = DiskgraphSnapshotHandle(handle.graph_key, 'version-other')
+    other_path = _completed_legacy(store, other)
+    _completed_legacy(store, DiskgraphSnapshotHandle('another-graph', 'version'))
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') is None
+    assert store.resolve_version_prefix(handle.graph_key, 'version-other') == str(other_path)
+    assert store.resolve_version_prefix('another-graph', 'ver') is not None
+
+
+def test_version_prefix_deduplicates_the_same_physical_path(staged):
+    store, handle, result, _ = staged
+    published = store.publish(handle, result)
+    alias = DiskgraphSnapshotHandle(handle.graph_key, 'version-alias')
+    store._reference(alias).write_bytes(store._reference(handle).read_bytes())
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') == published.index_path
+
+
+def test_version_prefix_keeps_legacy_fallback_for_a_broken_reference(staged):
+    store, handle, result, _ = staged
+    store.publish(handle, result)
+    legacy = _completed_legacy(store, handle)
+    store._reference(handle).write_text('[]')
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') == str(legacy)
+
+
+@pytest.mark.parametrize('damage', ['statistics_only', 'missing_marker',
+                                    'invalid_reference', 'invalid_metadata'])
+def test_version_prefix_excludes_incomplete_or_invalid_candidates(staged, damage):
+    store, handle, result, source = staged
+    if damage == 'statistics_only':
+        for name in ('_SUCCESS', 'index_metadata.json', 'ingest_stats.json'):
+            (source / name).unlink()
+        (source / 'kumo_col_stats').rmdir()
+    elif damage == 'missing_marker':
+        (source / '_SUCCESS').unlink()
+    else:
+        index = Path(store.publish(handle, result).index_path)
+        if damage == 'invalid_reference':
+            store._reference(handle).write_text('[]')
+        else:
+            (index / 'index_metadata.json').write_text('[]')
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') is None
+
+
+def test_version_prefix_treats_glob_metacharacters_literally(staged):
+    store, handle, _, _ = staged
+    literal = DiskgraphSnapshotHandle(handle.graph_key, 'literal[1]-version')
+    path = _completed_legacy(store, literal)
+
+    assert store.resolve_version_prefix(handle.graph_key, 'literal[1]') == str(path)
+    assert store.resolve_version_prefix(handle.graph_key, 'literal*') is None
+
+
+@pytest.mark.parametrize(('graph_key', 'prefix'), [
+    ('', 'ver'), ('graph', ''), ('..', 'ver'), ('../graph', 'ver'),
+    ('/graph', 'ver'), ('graph\\other', 'ver'), ('C:graph', 'ver'),
+    ('graph', '../ver'), ('graph', 'ver/other'), ('graph', 'ver\\other'),
+])
+def test_version_prefix_refuses_path_components(staged, graph_key, prefix):
+    store, _, _, _ = staged
+    assert store.resolve_version_prefix(graph_key, prefix) is None
