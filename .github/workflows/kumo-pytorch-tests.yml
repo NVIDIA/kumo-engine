@@ -25,6 +25,7 @@ defaults:
 
 jobs:
   plan:
+    name: Select suite jobs
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     outputs:
@@ -40,12 +41,13 @@ jobs:
         run: python3 -m tests.e2e.ci_plan plan --output "$RUNNER_TEMP/plan.json"
 
   diskgraph-wheel:
+    name: Build
     needs: plan
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
 
   cpu:
-    name: kumo-pytorch-tests
+    name: Package tests
     if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan, diskgraph-wheel]
     runs-on: ubuntu-24.04
@@ -82,20 +84,24 @@ jobs:
         with: {name: kumo-pytorch-tests}
 
   distribution:
+    name: Distribution
     needs: [plan, diskgraph-wheel]
     uses: ./.github/workflows/kumo-pytorch-diskgraph.yml
     with: {prebuilt-wheel: true}
 
   hm-small:
+    name: H&M Small
     needs: [plan, diskgraph-wheel]
     uses: ./.github/workflows/kumo-pytorch-t2a.yml
     with: {prebuilt-wheel: true}
 
   hm-lifecycle:
+    name: H&M Medium and conformance
     needs: [plan, diskgraph-wheel]
     uses: ./.github/workflows/_kumo-pytorch-t2b.yml
 
   binding-train:
+    name: GPU training
     if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan, diskgraph-wheel]
     permissions: {contents: read, id-token: write}
@@ -103,6 +109,7 @@ jobs:
     with: {bindings: '${{ needs.plan.outputs.training_bindings }}'}
 
   results:
+    name: Publish results
     if: always()
     needs: [plan, diskgraph-wheel, cpu, distribution, hm-small, hm-lifecycle, binding-train]
     runs-on: ubuntu-24.04

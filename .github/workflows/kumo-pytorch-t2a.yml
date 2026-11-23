@@ -31,7 +31,7 @@ jobs:
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   plan:
-    name: Plan the end-to-end runs
+    name: Select model runs
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -44,7 +44,7 @@ jobs:
         run: echo "matrix=$(python3 tests/e2e/tiers.py t2a)" >> "$GITHUB_OUTPUT"
 
   run:
-    name: End-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size S)
+    name: Train and evaluate ${{ matrix.flow }} (seed ${{ matrix.seed }})
     needs: [diskgraph-wheel, plan]
     if: ${{ !cancelled() && needs.plan.result == 'success' && (inputs.prebuilt-wheel || needs.diskgraph-wheel.result == 'success') }}
     runs-on: ubuntu-24.04
@@ -79,7 +79,7 @@ jobs:
         with: {name: 't2a-log-${{ matrix.flow }}-${{ matrix.seed }}'}
 
   checks:
-    name: kumo-pytorch-t2a
+    name: Verify lifecycle results
     needs: run
     if: ${{ !cancelled() && needs.run.result == 'success' }}
     runs-on: ubuntu-24.04

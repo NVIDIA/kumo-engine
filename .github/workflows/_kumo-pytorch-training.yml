@@ -22,7 +22,7 @@ defaults:
 
 jobs:
   train:
-    name: GPU training ${{ matrix.binding }}
+    name: ${{ startsWith(matrix.binding, 'S') && 'Synthetic' || startsWith(matrix.binding, 'M') && 'MBD' || 'AML' }} ${{ matrix.binding }}
     strategy:
       fail-fast: false
       matrix:

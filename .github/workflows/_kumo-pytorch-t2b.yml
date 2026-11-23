@@ -17,7 +17,7 @@ defaults:
 
 jobs:
   plan:
-    name: Plan the end-to-end runs
+    name: Select model runs
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -41,7 +41,7 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
   run:
-    name: End-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size M)
+    name: Train and evaluate ${{ matrix.flow }} (seed ${{ matrix.seed }})
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 75
@@ -75,7 +75,7 @@ jobs:
         with: {name: 't2b-log-${{ matrix.flow }}-${{ matrix.seed }}'}
 
   checks:
-    name: kumo-pytorch-t2b
+    name: Verify lifecycle results
     needs: run
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -130,7 +130,7 @@ jobs:
             !${{ runner.temp }}/e2e/t2b/**/index/**
 
   conformance:
-    name: kumo-pytorch-t2b-conformance-${{ matrix.shard }}
+    name: Engine conformance (shard ${{ matrix.shard }})
     needs: plan
     strategy:
       fail-fast: false

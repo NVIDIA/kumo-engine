@@ -57,9 +57,11 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence():
     for mode in ("correctness", "training", "lifecycle"):
         assert {r["binding"] for r in rows if r["mode"] == mode} == set(ci.BINDINGS)
     assert [r["binding"] for r in rows if r["scope"] == "full_source"] == pr["training_bindings"]
-    assert all(pr["jobs"]["hm-lifecycle / " + name] for name in ci.CONFORMANCE)
-    for caller, size in (("hm-small", "S"), ("hm-lifecycle", "M")):
-        assert pr["jobs"][f"{caller} / End-to-end gnn seed 0 (size {size})"]
+    assert all(
+        pr["jobs"][f"H&M Medium and conformance / Engine conformance (shard {i})"] for i in range(3)
+    )
+    for caller in ("H&M Small", "H&M Medium and conformance"):
+        assert pr["jobs"][f"{caller} / Train and evaluate gnn (seed 0)"]
     fork = dict(PR, head={"sha": "head", "repo": {"full_name": "fork/project"}})
     with pytest.raises(ValueError, match="private datasets and a same-repository PR"):
         plan(pull_request=fork)
@@ -75,7 +77,7 @@ def test_gate_checks_attempt_membership_and_requires_every_selected_row(tmp_path
     evidence.update(errors=[], status="passed", selections=[])
     with pytest.raises(ValueError, match="selection set"):
         ci.gate(p, evidence)
-    del evidence["jobs"]["plan"]
+    del evidence["jobs"]["Select benchmark"]
     with pytest.raises(ValueError, match="job set"):
         ci.gate(p, evidence)
     _, errors = ci.account_jobs(p, raw + [dict(raw[0], run_attempt=1)])
@@ -86,15 +88,15 @@ def test_manual_benchmarks_select_only_requested_work():
     manual = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "all"})
     assert manual["training_bindings"] == list(ci.NIGHTLY_TRAINING)
     assert [r["binding"] for r in manual["selections"]] == manual["training_bindings"]
-    assert manual["jobs"]["binding-train / GPU training M03"]
+    assert manual["jobs"]["GPU training / MBD M03"]
     assert manual["jobs"]["dataset-source"]
-    for job in ("kumo-pytorch-tests", "hm-small", "distribution"):
+    for job in ("Package tests", "H&M Small", "Distribution"):
         assert not any(name.startswith(job) for name in manual["jobs"])
     with pytest.raises(ValueError, match="Unknown training binding"):
         plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "E01"})
     for mode in ("cuda", *ci.AML, *ci.STREAMING):
         p = plan("workflow_dispatch", inputs={"mode": mode})
-        assert p["jobs"]["dataset-source"] and not p["jobs"]["binding-train"]
+        assert p["jobs"]["dataset-source"] and not p["jobs"]["GPU training"]
         assert p["selections"] and all(row["status"] == "required" for row in p["selections"])
 
 
@@ -241,12 +243,12 @@ def test_scheduled_verification_distinguishes_firing_and_failing(tmp_path):
     p = plan("schedule")
     raw = jobs(p)
     raw[0]["conclusion"] = "failure"
-    next(j for j in raw if j["name"] == "binding-train / GPU training S02")["completed_at"] = (
+    next(j for j in raw if j["name"] == "GPU training / Synthetic S02")["completed_at"] = (
         "2026-11-01T01:30:00Z"
     )
     report = ci.results(p, raw, [], tmp_path)
     assert report["training_wall_seconds"] == 5400
-    for name, result in (("results", "success"), ("kumo-pytorch-gate", "failure")):
+    for name, result in (("Publish results", "success"), ("kumo-pytorch-gate", "failure")):
         raw.append(dict(raw[0], name=name, conclusion=result))
     run = dict(
         path=ci.WORKFLOW,

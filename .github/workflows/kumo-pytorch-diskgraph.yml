@@ -32,7 +32,7 @@ jobs:
     with: {diagnostics: true}
 
   diskgraph:
-    name: kumo-pytorch-diskgraph
+    name: DiskGraph tests
     needs: diskgraph-wheel
     if: &wheel_ready ${{ !cancelled() && (inputs.prebuilt-wheel || needs.diskgraph-wheel.result == 'success') }}
     runs-on: ubuntu-24.04
@@ -63,7 +63,7 @@ jobs:
         with: {name: kumo-pytorch-diskgraph}
 
   notebooks:
-    name: kumo-pytorch-notebooks
+    name: Run notebooks
     needs: diskgraph-wheel
     if: *wheel_ready
     runs-on: ubuntu-24.04
@@ -86,7 +86,7 @@ jobs:
         run: python -m pytest -m notebook --require-imports -q --durations=0
 
   install:
-    name: kumo-pytorch-install
+    name: Install from wheel
     needs: diskgraph-wheel
     if: *wheel_ready
     runs-on: ubuntu-24.04

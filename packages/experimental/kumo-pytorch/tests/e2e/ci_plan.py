@@ -82,15 +82,21 @@ def make_plan(event_name, event, *, ref, **identity):
     return plan
 
 
+def training_job(binding):
+    dataset = {"S": "Synthetic", "M": "MBD", "L": "AML"}[binding[0]]
+    return f"GPU training / {dataset} {binding}"
+
+
 def planned_jobs(plan):
     mode = plan["mode"]
-    expected = {"plan": True, "diskgraph-wheel / diskgraph-wheel": True}
+    expected = {
+        "Select suite jobs" if plan["suite"] else "Select benchmark": True,
+        "Build / diskgraph-wheel": True,
+    }
     if plan["training_bindings"]:
-        expected.update(
-            {f"binding-train / GPU training {b}": True for b in plan["training_bindings"]}
-        )
+        expected.update({training_job(b): True for b in plan["training_bindings"]})
     else:
-        expected["binding-train"] = False
+        expected["GPU training"] = False
     if not plan["suite"]:
         expected.update(
             {
@@ -103,17 +109,17 @@ def planned_jobs(plan):
         )
         return expected
 
-    expected["kumo-pytorch-tests"] = True
-    for child in ("kumo-pytorch-diskgraph", "kumo-pytorch-notebooks", "kumo-pytorch-install"):
-        expected[f"distribution / {child}"] = True
-    for tier, caller, size in ((T2A, "hm-small", "S"), (T2B, "hm-lifecycle", "M")):
-        children = ["Plan the end-to-end runs", f"kumo-pytorch-{tier.name}"]
+    expected["Package tests"] = True
+    for child in ("DiskGraph tests", "Run notebooks", "Install from wheel"):
+        expected[f"Distribution / {child}"] = True
+    for tier, caller in ((T2A, "H&M Small"), (T2B, "H&M Medium and conformance")):
+        children = ["Select model runs", "Verify lifecycle results"]
         children.extend(
-            f"End-to-end {row['flow']} seed {row['seed']} (size {size})"
+            f"Train and evaluate {row['flow']} (seed {row['seed']})"
             for row in matrix(tier)["include"]
         )
         if tier == T2B:
-            children.extend(CONFORMANCE)
+            children.extend(f"Engine conformance (shard {i})" for i in range(len(CONFORMANCE)))
         expected.update({f"{caller} / {child}": True for child in children})
     return expected
 
@@ -123,10 +129,10 @@ def account_jobs(plan, raw):
     jobs, errors = {}, []
     for job in raw:
         name = job["name"]
-        if name in {"results", "kumo-pytorch-gate"}:
+        if name in {"Publish results", "kumo-pytorch-gate"}:
             continue  # These are evaluated at the gate and in the completed scheduled run.
         if (
-            name in {"distribution / diskgraph-wheel", "hm-small / diskgraph-wheel"}
+            name in {"Distribution / diskgraph-wheel", "H&M Small / diskgraph-wheel"}
             and job["conclusion"] == "skipped"
         ):
             continue  # The coordinating workflow supplies this wheel.
@@ -137,7 +143,7 @@ def account_jobs(plan, raw):
         ):
             errors.append(f"Duplicate or stale job: {name}")
         jobs[name] = {"result": job["conclusion"], "url": job["html_url"]}
-        if name == "kumo-pytorch-tests":
+        if name == "Package tests":
             jobs[name]["steps"] = {
                 s["name"]: s["conclusion"]
                 for s in job.get("steps", [])
@@ -417,7 +423,7 @@ def results(plan, jobs, artifacts, directory):
         try:
             intervals = []
             for binding in plan["training_bindings"]:
-                job = workers[f"binding-train / GPU training {binding}"]
+                job = workers[training_job(binding)]
                 intervals.append(
                     (
                         datetime.fromisoformat(job["started_at"]),
@@ -578,13 +584,15 @@ def scheduled(report, run, jobs):
     if observed != report["jobs"] or not set(errors).issubset(report["errors"]):
         raise ValueError("Scheduled evidence differs from actual job outcomes")
     final = {
-        j["name"]: j["conclusion"] for j in jobs if j["name"] in {"results", "kumo-pytorch-gate"}
+        j["name"]: j["conclusion"]
+        for j in jobs
+        if j["name"] in {"Publish results", "kumo-pytorch-gate"}
     }
     success = not report["errors"]
     if success:
         gate(plan, report)
     if final != {
-        "results": "success",
+        "Publish results": "success",
         "kumo-pytorch-gate": "success" if success else "failure",
     } or run["conclusion"] != ("success" if success else "failure"):
         raise ValueError(

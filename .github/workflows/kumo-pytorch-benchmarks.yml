@@ -34,6 +34,7 @@ defaults:
 
 jobs:
   plan:
+    name: Select benchmark
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     outputs:
@@ -49,6 +50,7 @@ jobs:
         run: python3 -m tests.e2e.ci_plan plan --output "$RUNNER_TEMP/plan.json"
 
   diskgraph-wheel:
+    name: Build
     needs: plan
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
@@ -215,6 +217,7 @@ jobs:
         with: {name: 'binding-full-${{ inputs.binding }}'}
 
   binding-train:
+    name: GPU training
     if: github.repository == 'NVIDIA/kumo-engine' && github.event_name == 'workflow_dispatch' && inputs.mode == 'binding-train'
     needs: [plan, diskgraph-wheel, dataset-source]
     permissions: {contents: read, id-token: write}
@@ -282,6 +285,7 @@ jobs:
           name: streaming-25b-${{ inputs.mode }}
 
   results:
+    name: Publish results
     if: always()
     needs: [plan, diskgraph-wheel, dataset-source, cuda, aml-benchmark, binding-full, binding-train, streaming-25b]
     runs-on: ubuntu-24.04
