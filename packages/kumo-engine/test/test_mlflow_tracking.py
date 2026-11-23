@@ -38,6 +38,7 @@ from test_tracking_contract import (
 )
 
 import kumo.engine as kumo
+from kumo.engine._card import REPORT_FILE
 from kumo.engine._manifest import TrackingRef
 from kumo.engine._tracking import (
     RunRecord,
@@ -146,6 +147,18 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, quick_plan,
     assert health['data'][0][:2] == ['ents', 400]
     assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
+    page = mlflow.artifacts.load_text(
+        f'{parent.info.artifact_uri}/{REPORT_FILE}')
+    assert page.startswith('<!doctype html>')
+    assert '<title>ents-regression training report</title>' in page
+    payload = page.split('class="kumo-widget-data">',
+                         1)[1].split('</script>', 1)[0]
+    assert json.loads(payload) == json.loads(json.dumps(
+        result.visualize().data))
+    assert (f'**[Open the interactive training report](#/experiments/'
+            f'{parent.info.experiment_id}/runs/{parent.info.run_id}/artifacts/'
+            f'{REPORT_FILE}?workflowType=machine_learning)**'
+            in parent.data.tags['mlflow.note.content'])
     ents, = parent.inputs.dataset_inputs
     assert (ents.dataset.name, ents.dataset.source_type) == ('ents', 'local')
     assert json.loads(ents.dataset.source) == {
@@ -829,6 +842,68 @@ def test_a_fit_run_gets_a_card_before_the_users_notes():
         '| train | 3 |', '', *WHERE,
         'Full lineage: `_provenance.json`. Tables: `data/health.json`.',
         *TAIL])) + '\n\nMine.'
+
+
+def _fit_with_a_report(tracker):
+    record = RunRecord(
+        name='r', tags={
+            'kumo.kind': 'fit',
+            'kumo.tune_metric': 'mae',
+            'kumo.task_type': 'regression',
+            'kumo.entity': 'ents'
+        }, metrics={'test/mae': 0.25}, description=f'`{QUERY}`', artifacts={
+            PROVENANCE_FILE: '{}',
+            REPORT_FILE: '<!doctype html>'
+        })
+    tracker.start(record)
+    tracker.finish(record, None)
+    return mlflow.get_run(tracker.run_id)
+
+
+def test_a_fit_card_links_its_report_page():
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    run = _fit_with_a_report(MlflowTracking('e', log_system_metrics=False))
+
+    link = (f'#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}'
+            f'/artifacts/{REPORT_FILE}?workflowType=machine_learning')
+    assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
+        f'{FIT_HEAD[0]} · **[Open the interactive training report]({link})**',
+        *FIT_HEAD[1:], *MAE, 'Full lineage: `_provenance.json`.', *TAIL
+    ]))
+    assert mlflow.artifacts.load_text(
+        f'{run.info.artifact_uri}/{REPORT_FILE}') == '<!doctype html>'
+
+
+def test_a_refreshed_fit_card_keeps_its_report_link():
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking('e', log_system_metrics=False)
+    run = _fit_with_a_report(tracker)
+    client = mlflow.MlflowClient()
+    client.log_metric(run.info.run_id, 'test/mae', 0.2)
+
+    tracker._update_card(run.info.run_id)
+
+    card = client.get_run(run.info.run_id).data.tags['mlflow.note.content']
+    before = run.data.tags['mlflow.note.content'].split('\n')
+    assert card.split('\n')[0] == before[0].replace('holdout mae 0.25',
+                                                    'holdout mae 0.2')
+    assert card.split('\n')[1:-1] == before[1:-1]
+
+
+def test_a_databricks_fit_card_names_its_report_file(monkeypatch):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.setattr(MlflowTracking, 'platform',
+                        property(lambda self: 'databricks'))
+    run = _fit_with_a_report(MlflowTracking('e', log_system_metrics=False))
+
+    assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
+        f'{FIT_HEAD[0]} · Interactive training report: '
+        f"`{REPORT_FILE}` in this run's artifacts.", *FIT_HEAD[1:], *MAE,
+        'Full lineage: `_provenance.json`.', *TAIL
+    ]))
 
 
 def test_an_edited_card_is_frozen_with_one_warning():

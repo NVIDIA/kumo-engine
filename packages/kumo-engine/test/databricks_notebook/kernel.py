@@ -38,7 +38,9 @@ def execute(config, dbutils):
     with zipfile.ZipFile(wheel) as archive:
         for name in ('graph.py', 'table.py', '_widget.py', '_visualization.py',
                      '_visualization_viewer.py', '_visualization_pdf.py',
-                     '_visualization_layout.py'):
+                     '_visualization_layout.py', 'explain/results.py',
+                     'explain/_artifacts.py', 'explain/plotting.py',
+                     'explain/types.py', 'explain/errors.py'):
             relative = 'kumo/engine/' + name
             assert archive.read(relative) == (installed /
                                               relative).read_bytes(), relative
@@ -69,6 +71,8 @@ def execute(config, dbutils):
     assert os.environ.get('KUMO_DATABRICKS_TEST_PAT'
                           ) is None, 'Runner PAT must not enter the notebook'
     report = exercise(ROOT / 'results', FIXTURE, display=display)
+    from explanation import exercise as explain
+    report['explanations'] = explain(ROOT / 'results', display)
     report.update(
         execution_id=execution_id, attempt=config['attempt'],
         wheel_sha256=config['candidate']['wheel_sha256'],
@@ -81,9 +85,8 @@ def execute(config, dbutils):
         json.dumps(report, indent=2))
     destination = Path(config['output'])
     destination.mkdir(parents=True, exist_ok=False)
-    for file in (ROOT / 'results').iterdir():
-        if file.is_file():
-            shutil.copyfile(file, destination / file.name)
+    for name in config['expected_files']:
+        shutil.copyfile(ROOT / 'results' / name, destination / name)
     receipt = dict(
         status='passed', attempt=config['attempt'], execution_id=execution_id,
         output=config['output'], files={

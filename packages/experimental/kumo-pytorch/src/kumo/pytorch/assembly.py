@@ -2195,7 +2195,11 @@ class PreparedBatchPlan:
         requests=(),
         columnar=False,
         deduplicate_edges=False,
+        encoding_model=None,
     ) -> Batch:
+        # Native buffers and the requested encoding surface are independent:
+        # inspectable output still permits Raw values without tensor encodings.
+        encoding_model = model if encoding_model is None else encoding_model
         declarations = {
             name: value.declarations
             for name, value in self._prepared_inputs.items()
@@ -2214,6 +2218,7 @@ class PreparedBatchPlan:
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
+                    topology=prepared.spec.representation.topology,
                 )
                 if columnar:
                     result[name] = self._source.columnar_graph_batch(
@@ -2252,7 +2257,7 @@ class PreparedBatchPlan:
                 )
             elif isinstance(prepared.spec.representation.row, Columns):
                 result[name] = _column_output(
-                    prepared, rows[name], model=model, state=self._input_state
+                    prepared, rows[name], model=encoding_model, state=self._input_state
                 )
             else:
                 result[name], produced = _token_output(
@@ -2262,7 +2267,7 @@ class PreparedBatchPlan:
                     self._input_state,
                     self._emitted,
                     entity_ids,
-                    model=model,
+                    model=encoding_model,
                     packer=getattr(self._source, "pack_token_stream", None) if model else None,
                     seed=seed,
                     epoch=epoch,
@@ -2276,7 +2281,7 @@ class PreparedBatchPlan:
                     self._prepared_inputs,
                     rows,
                     values,
-                    model=model,
+                    model=encoding_model,
                 )
             )
         if model:

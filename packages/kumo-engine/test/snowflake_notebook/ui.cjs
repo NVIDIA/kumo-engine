@@ -62,6 +62,14 @@ function captureRoute(value, account, notebook = null) {
   }
 }
 
+function accountMenu(page, config) {
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const user = escape("Account Menu: " + config.auth.user);
+  const role = config.target?.role;
+  const suffix = role ? "(?:, " + escape(role) + ")?" : "";
+  return page.getByRole("button", {name: new RegExp("^" + user + suffix + "$" )});
+}
+
 async function captureAllowed(page, config, authenticated, requireContent = true) {
   try {
     if (
@@ -71,12 +79,7 @@ async function captureAllowed(page, config, authenticated, requireContent = true
     )
       return false;
     if (
-      !(await page
-        .getByRole("button", {
-          name: "Account Menu: " + config.auth.user,
-          exact: true,
-        })
-        .isVisible())
+      !(await accountMenu(page, config).isVisible())
     )
       return false;
     for (const frame of page.frames()) {
@@ -303,6 +306,7 @@ async function run(config) {
     );
   }
   function event(action, details = {}) {
+    if (config.training_submitted) result.training_submitted = true;
     if (DIAGNOSTIC_STEPS.has(action)) lastStep = action;
     events.push({ at: new Date().toISOString(), action, ...details });
     write("ui-events.json", events);
@@ -312,7 +316,9 @@ async function run(config) {
     await captureElement(
       page, config.output, name,
       () => captureAllowed(page, config, authenticated),
-      frame.locator("body"), { fullPage: true },
+      (frame === page && config.notebook
+        ? page.frameLocator("iframe") : frame).locator("body"),
+      { fullPage: true },
     );
     event("evidence", { name });
   }
@@ -379,12 +385,7 @@ async function run(config) {
           : "Snowsight login did not complete.";
       return result;
     }
-    await page
-      .getByRole("button", {
-        name: "Account Menu: " + config.auth.user,
-        exact: true,
-      })
-      .waitFor();
+    await accountMenu(page, config).waitFor();
     authenticated = true;
     result.authentication = "passed";
     event("authenticated");
@@ -588,6 +589,7 @@ async function run(config) {
           error, "notebook_cleanup", lastStep);
       }
     }
+    result.training_submitted ||= config.training_submitted === true;
     result.elapsed_seconds = (Date.now() - started) / 1000;
     if (browser) {
       try {
@@ -605,7 +607,7 @@ async function run(config) {
   return result;
 }
 
-module.exports = {
+module.exports = { accountMenu,
   runMetrics,
   totp,
   metricValue,

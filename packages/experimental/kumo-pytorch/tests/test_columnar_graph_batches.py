@@ -137,7 +137,7 @@ def test_columnar_reuses_native_buffers(graph_task, monkeypatch):
                     )
 
 
-@pytest.mark.parametrize("graph_task", ["mixed", "availability"], indirect=True)
+@pytest.mark.parametrize("graph_task", ["availability"], indirect=True)
 def test_unsupported_columnar_contract_fails_before_iteration(graph_task, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("unsupported contract opened native iterator")

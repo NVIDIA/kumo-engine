@@ -67,7 +67,7 @@ def kernel_metadata(value: Any) -> Any:
         return value
     result = {name: kernel_metadata(item) for name, item in value.items()}
     for name, item in value.items():
-        if name != "offsets" and not name.endswith("_offsets"):
+        if not isinstance(name, str) or (name != "offsets" and not name.endswith("_offsets")):
             continue
         if not isinstance(item, torch.Tensor) or item.ndim != 1 or not item.numel():
             continue

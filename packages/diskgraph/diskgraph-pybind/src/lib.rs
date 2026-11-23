@@ -1520,6 +1520,7 @@ pub fn convert_kumo_config(
     index_threads=None,
     parent_index_path=None,
     cutoff_col_stats=None,
+    index_build_id=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -1546,6 +1547,7 @@ pub fn ingest(
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
     cutoff_col_stats: Option<&str>,
+    index_build_id: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1582,6 +1584,7 @@ pub fn ingest(
         .transpose()?;
 
     let options = diskgraph_ingest::IngestOptions {
+        index_build_id: index_build_id.map(str::to_owned),
         profile_dir: None,
         progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
@@ -1641,6 +1644,11 @@ pub fn ingest(
             s
         })
         .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize stats: {e}")))
+}
+
+#[pyfunction]
+fn new_index_build_id() -> String {
+    diskgraph_core::metadata::new_index_build_id()
 }
 
 // ---------------------------------------------------------------------------
@@ -2008,6 +2016,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
+    m.add_function(wrap_pyfunction!(new_index_build_id, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;

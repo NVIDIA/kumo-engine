@@ -217,10 +217,13 @@ fn train_table_parts(
             TTGenError::SystemError("training table row count overflow".to_string())
         })?;
         parts.push(TrainTablePartRef {
-            path: Path::new(TT_DATASET_DIR)
-                .join(path.file_name().expect("dataset part has a filename"))
-                .to_string_lossy()
-                .into_owned(),
+            // Manifest paths are portable bundle-relative names, not native paths.
+            path: format!(
+                "{TT_DATASET_DIR}/{}",
+                path.file_name()
+                    .expect("dataset part has a filename")
+                    .to_string_lossy()
+            ),
             row_count: part_rows,
             size_bytes: part_size,
         });
@@ -3188,6 +3191,7 @@ where
                                 let view = table.edges_for_node(node)
                                     .map_err(|e| TTGenError::SystemError(e.to_string()))?;
                                 view.node_data()
+                                    .map(|row| row.map(|row| decoder.row_or_null(row)))
                                     .map_err(|e| TTGenError::SystemError(e.to_string()))
                             })
                             .collect::<TTGenResult<Option<Vec<_>>>>()?;
@@ -3567,6 +3571,34 @@ mod tests {
         drop(sender);
 
         assert_eq!(write_tt_dataset(receiver, &dataset, 3).unwrap(), 7);
+        let (size_bytes, declared) = train_table_parts(&dataset, 7).unwrap();
+        let serialized = serde_json::to_value(&declared).unwrap();
+        assert_eq!(
+            serialized
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "tt.parquet/part-00000.parquet",
+                "tt.parquet/part-00001.parquet",
+                "tt.parquet/part-00002.parquet"
+            ]
+        );
+        // Resolve the portable names against real native paths, including drive
+        // prefixes and backslash separators when this test runs on Windows.
+        assert_eq!(
+            declared
+                .iter()
+                .map(|part| {
+                    let path = dir.path().join(&part.path);
+                    assert!(path.is_file());
+                    std::fs::metadata(path).unwrap().len()
+                })
+                .sum::<u64>(),
+            size_bytes
+        );
         let parts = ordered_tt_dataset_parts(&dataset).unwrap();
         assert_eq!(
             parts

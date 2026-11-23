@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -203,6 +203,13 @@ enum OutputTarget {
 }
 
 fn parse_output_target(output: &str) -> Result<OutputTarget> {
+    // Preserve native drive paths before interpreting URL schemes.
+    if matches!(
+        Path::new(output).components().next(),
+        Some(std::path::Component::Prefix(_))
+    ) {
+        return Ok(OutputTarget::Local(PathBuf::from(output)));
+    }
     if let Ok(url) = Url::parse(output) {
         match url.scheme() {
             "s3" => {
@@ -341,5 +348,62 @@ fn fmt_column(col: &Option<diskgraph_ingest::graph_config::ColumnSpec>) -> Strin
     match col {
         Some(spec) => format!("{}:{:?}", spec.name, spec.ingested_dtype),
         None => "<missing>".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::{parse_output_target, write_output, OutputTarget};
+    #[cfg(windows)]
+    use std::path::Path;
+
+    #[test]
+    fn writes_local_output_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("nested").join("config.json");
+        for input in [
+            output.to_str().unwrap().to_string(),
+            url::Url::from_file_path(&output).unwrap().to_string(),
+        ] {
+            let target = parse_output_target(&input).unwrap();
+            assert!(matches!(&target, OutputTarget::Local(path) if path == &output));
+            write_output(&target, b"{}".to_vec()).unwrap();
+            assert_eq!(std::fs::read(&output).unwrap(), b"{}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preserves_windows_output_paths() {
+        for input in [
+            r"C:\data with spaces\100%raw.json",
+            "c:/data/config.json",
+            r"D:relative\config.json",
+            r"\\server\share\config.json",
+            r"\\?\C:\long\config.json",
+            r"\\?\UNC\server\share\config.json",
+        ] {
+            assert!(matches!(parse_output_target(input).unwrap(),
+                OutputTarget::Local(path) if path == Path::new(input)));
+        }
+    }
+
+    #[test]
+    fn retains_output_url_schemes() {
+        assert!(
+            matches!(parse_output_target("s3://bucket/config.json").unwrap(),
+            OutputTarget::S3 { bucket, key } if bucket == "bucket" && key == "config.json")
+        );
+        assert!(
+            matches!(parse_output_target("gs://bucket/config.json").unwrap(),
+            OutputTarget::Gcs { bucket, key } if bucket == "bucket" && key == "config.json")
+        );
+        assert!(
+            matches!(parse_output_target("az://account/container/config.json").unwrap(),
+            OutputTarget::Adls { account, container, key }
+                if account == "account" && container == "container" && key == "config.json")
+        );
+        assert!(parse_output_target("https://example.com/config.json").is_err());
+        assert!(parse_output_target("s3://bucket").is_err());
     }
 }

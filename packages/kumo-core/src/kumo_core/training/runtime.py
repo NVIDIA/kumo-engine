@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import os
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
 
 import psutil
-
 from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
 from kumo_core.diskgraph.stores import (
     DiskgraphFeatureStore,
@@ -19,8 +19,10 @@ from kumo_core.diskgraph.stores import (
 )
 
 if TYPE_CHECKING:
+    from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
     from kumo_core.embedding_models import EmbeddingModelStore
     from kumo_core.instrumentation import TrainingInstrumentation
+    from torch import Tensor
 
 
 class TrainingArtifactRuntime(Protocol):
@@ -105,6 +107,16 @@ class LocalExplainRuntime:
     max_batches = 50
     max_facts = 16
     mapping_file_name = 'strategy_mappings.json'
+
+    def get_prediction_inputs(
+        self, datamodule: DiskgraphLightningDataModule, limit: int,
+    ) -> tuple[Tensor, Tensor]:
+        return datamodule.prediction_inputs(limit)
+
+    def prediction_rows(
+        self, datamodule: DiskgraphLightningDataModule, rows: Tensor,
+    ) -> AbstractContextManager[None]:
+        return datamodule.selected_prediction_rows(rows)
 
     def get_explain_node_inputs(self, datamodule: Any,
                                 stage: Any) -> Tuple[Any, Any]:

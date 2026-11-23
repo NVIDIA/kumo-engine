@@ -51,9 +51,10 @@ print(written.num_rows, written.files)
 ```
 
 **APPEND rows say which run wrote them.** An APPEND write to a table adds `PREDICTION_ID` (this
-prediction run) and `BUNDLE_ID` (the model that scored it), and the `extra_fields` above add
-`JOB_TIMESTAMP` (when the run started) and `ANCHOR_TIMESTAMP` (the time its predictions are for),
-so the table's history can be ordered and filtered by run, and a retried run shows as a second
+prediction run) and `BUNDLE_ID` (the model that scored it), whatever `extra_fields` says (Source:
+shipped package (`kumo.engine.trainer.output_config.PredictionOutputConfig`)). The `extra_fields`
+above add `JOB_TIMESTAMP` (when the run started) and `ANCHOR_TIMESTAMP` (the time its predictions
+are for), so the table's history can be ordered and filtered by run, and a retried run shows as a second
 `PREDICTION_ID` and `JOB_TIMESTAMP`. `BUNDLE_ID` is the model id the run's prediction manifest
 names. When there is none — `trainer.result.id` is `None` because the id could not be computed at
 fit, or `predict` warns `Predicting without a prediction manifest` — the writer leaves the
@@ -79,6 +80,9 @@ other. Column types:
 | Snowflake | `VARCHAR` | `TIMESTAMP_NTZ` |
 | Databricks | `STRING` | `TIMESTAMP_NTZ` |
 | BigQuery | `STRING` | `TIMESTAMP` |
+
+The timestamps take the type the destination's sink writes: on BigQuery a `DATETIME` column fails
+the APPEND (Source: shipped package (`kumo_bigquery.write`, `kumo_databricks.write`)).
 
 OVERWRITE onto an existing Snowflake table keeps the table and its grants, so the run's columns
 must be exactly the table's: an OVERWRITE run writes no run columns, so a table that earlier

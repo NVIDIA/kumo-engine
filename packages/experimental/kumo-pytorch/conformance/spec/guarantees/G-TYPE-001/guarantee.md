@@ -3,12 +3,12 @@
 ## Rule
 
 Every resolved table column has one scalar DType. During authoring, omitted
-column types are inferred from Parquet metadata. Explicit types must match
-that metadata. A table may mix explicit types and inferred entries; omitting
-its columns discovers all source columns. `InMemoryRows`, the Python rows that
-serving and small in-process examples supply, requires explicit types because
-Python rows provide no authoritative type metadata. Field reads retain that
-resolved type; Raw preserves it rather than converting values to fit a model.
+column types are inferred from Parquet metadata and must agree across files.
+Explicit types require compatible physical types. A table may mix explicit
+types and inferred entries. Omitting its columns discovers all source columns.
+`InMemoryRows`, which serving and small in-process examples use, requires
+explicit types because Python rows provide no authoritative type metadata.
+Field reads and Raw encoding preserve the resolved type.
 Vocabulary accepts any supported scalar type, Text accepts string only, and
 ZScore/Buckets accept signed or unsigned integers, floats, and decimals only.
 Booleans, dates, timestamps, bytes, and numeric-looking strings are not numbers
@@ -19,14 +19,16 @@ type, not the type of its original source column.
 
 NULL remains absent with explicit validity; zero and false are real values.
 Integer width and signedness, decimal precision/scale, and timestamp units are
-part of the declaration. Stored timestamps are whole-second UTC instants;
-finer physical timestamps round toward positive infinity to the next whole
-second, including negative epochs. For example, -1 microsecond becomes second 0
-and +1 microsecond becomes second 1. Physical type mismatches fail when binding metadata
-is available, not by parsing or silently casting values. Unsupported raw tensor
-types refuse model output before fetching the requested batch; inspectable
-output may retain typed non-tensor columns. Array-valued cells are outside this
-scalar contract.
+part of the declaration. For a declared `int64`, DiskGraph accepts narrower
+signed integers and scale-zero `decimal128` or `decimal256` from Parquet.
+Native ingest rejects decimal values outside the signed 64-bit range.
+Stored timestamps are whole-second UTC instants. Finer physical timestamps
+round toward positive infinity to the next whole second, including negative
+epochs. For example, -1 microsecond becomes second 0 and +1 microsecond becomes
+second 1. Incompatible physical types fail when binding metadata is available.
+Model output refuses unsupported raw tensor types before fetching the batch.
+Inspectable output may retain typed non-tensor columns. Array-valued cells
+are outside this scalar contract.
 
 ## Scope
 

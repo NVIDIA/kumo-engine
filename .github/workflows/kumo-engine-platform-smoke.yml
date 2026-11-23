@@ -11,6 +11,13 @@ permissions:
   contents: read
 
 jobs:
+  windows-reload:
+    permissions: {actions: read, contents: read, id-token: write}
+    uses: ./.github/workflows/kumo-engine-desktop-reload.yml
+    with:
+      wheel_run_id: ${{ format('{0}', github.run_id) }}
+      native_windows_only: true
+
   smoke:
     name: CPU wheel (${{ matrix.target.platform }}, Python ${{ matrix.python }})
     timeout-minutes: 60
@@ -20,7 +27,7 @@ jobs:
         python: ['3.11', '3.12', '3.13', '3.14']
         target:
           - platform: windows-native
-            runner: windows-2022
+            runner: windows-amd64-cpu4
             artifact: windows-x86_64
           - platform: windows-wsl
             runner: wsl-amd64-gpu-t4-latest-1

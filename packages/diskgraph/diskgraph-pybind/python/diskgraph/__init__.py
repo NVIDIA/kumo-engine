@@ -12,6 +12,7 @@ from ._c import (
     convert_kumo_config,
     convert_ticks,
     ingest,
+    new_index_build_id,
     ExportConfig,
     FkeyConfig,
     TimeUnit,
@@ -112,6 +113,10 @@ def __getattr__(name):
         "TASK_DATASET_SCHEMA_VERSION",                  # bundle schema version constant
         "TASK_DATASET_IMPLEMENTATION_KIND",             # mock/dev implementation marker
     }
+    if name == "SeedScheduleConfig":
+        from .seed_schedule import SeedScheduleConfig
+        return SeedScheduleConfig
+
     _TD_REOPEN = {
         "RuntimeIndex",  # reusable opened index; iterate many epochs/shards from one open
         "task_stage_size",              # stage-size query from runtime manifest
@@ -198,6 +203,7 @@ __all__ = [
     "TASK_DATASET_SCHEMA_VERSION",
     "TASK_DATASET_IMPLEMENTATION_KIND",
     "RuntimeIndex",
+    "SeedScheduleConfig",
     "task_stage_size",
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",

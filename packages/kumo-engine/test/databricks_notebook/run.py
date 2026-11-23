@@ -21,13 +21,19 @@ from client import APIError, Client, admit_cluster, configuration
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE.parent / 'snowflake_notebook'
+sys.path.append(str(SHARED))
+from explanation import FILES as EXPLANATION_FILES  # noqa: E402
+from explanation import validate_exports  # noqa: E402
+
 FILES = {
     'graph.svg', 'graph.pdf', 'graph.md', 'default.html', 'sampled.html',
-    'graph-result.json'
+    'graph-result.json', *EXPLANATION_FILES
 }
 MODULES = ('graph.py', 'table.py', '_widget.py', '_visualization.py',
            '_visualization_viewer.py', '_visualization_pdf.py',
-           '_visualization_layout.py')
+           '_visualization_layout.py', 'explain/results.py',
+           'explain/_artifacts.py', 'explain/plotting.py', 'explain/types.py',
+           'explain/errors.py')
 
 
 def candidate_path():
@@ -90,7 +96,7 @@ def notebook(config):
     wheel = config['assets'][config['candidate']['wheel_file']]['path']
     codes = [
         "import platform; assert platform.machine() == 'x86_64', platform.machine()",
-        '%pip install "' + wheel + '[databricks]" "pypdf==6.21.4"',
+        '%pip install "' + wheel + '[databricks,plots]" "pypdf==6.21.4"',
         'dbutils.library.restartPython()',
         'CONFIG = ' + repr(config) + '\n' + (HERE / 'kernel.py').read_text() +
         '\nexecute(CONFIG, dbutils)',
@@ -206,6 +212,11 @@ def collect(client, run, config, root, submitted):
             or stored.get('payload') != config['assets'] or stored.get(
                 'runtime', {}).get('notebook_path') != config['notebook_path']):
         raise ValueError('Stored graph report differs from submitted scenario')
+    validate_exports(stored.get('explanations', {}), receipt['files'])
+    if json.loads(
+        (output /
+         'explanation-result.json').read_text()) != stored['explanations']:
+        raise ValueError('Stored explanation receipt differs from graph result')
     save(root / 'receipt.json', receipt)
     return stored
 
@@ -267,6 +278,7 @@ def committed_graph_sources():
                                      text=True).strip()
     paths = list(HERE.glob('*.py')) + list(HERE.glob('*.cjs')) + [
         SHARED / 'graph_fixture.py', SHARED / 'graph_ui.cjs',
+        SHARED / 'explanation.py', SHARED / 'explanation_ui.cjs',
         SHARED / 'verification.cjs', HERE.parent / 'wheel_gpu_smoke.py',
         HERE.parent / 'platform_candidate.py', HERE.parent /
         'wheel_mlops_lifecycle.py', HERE.parent / 'pr172/inputs.json'
@@ -295,6 +307,8 @@ def execute(args, root):
         ('wheel_mlops_lifecycle.py',
          digest((HERE.parent / 'wheel_mlops_lifecycle.py').read_bytes()),
          HERE.parent / 'wheel_mlops_lifecycle.py'),
+        ('explanation.py', digest((SHARED / 'explanation.py').read_bytes()),
+         SHARED / 'explanation.py'),
         ('graph_fixture.py', digest((SHARED / 'graph_fixture.py').read_bytes()),
          SHARED / 'graph_fixture.py'),
         ('wheel_gpu_smoke.py',
@@ -308,7 +322,8 @@ def execute(args, root):
     path = config['workspace_dir'] + '/kumo-test-graph-' + attempt
     spec = dict(attempt=attempt, assets=assets, candidate=candidate,
                 output=config['volume'] + '/runs/' + attempt + '/outputs',
-                source_commit=commit, modules={}, notebook_path=path)
+                source_commit=commit, modules={}, notebook_path=path,
+                expected_files=sorted(FILES))
     save(root / 'scenario.json', spec)
     from cleanup import AttemptResources
     with AttemptResources(client, config, spec, root) as resources:
@@ -344,7 +359,7 @@ def execute(args, root):
             wheel_sha256=candidate['wheel_sha256'], source_commit=commit,
             ui=json.loads((root / 'ui-result.json').read_text()), limitations=[
                 'No live workspace-editor or native registry UI coverage',
-                'No training lifecycle or full dependency compatibility qualification',
+                'Selected explanation fits only; no registry lifecycle or full dependency compatibility qualification',
                 'Only admitted dedicated x86 test clusters are supported; ARM attempts fail before installation'
             ])
 
