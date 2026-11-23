@@ -309,17 +309,39 @@ def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
     assert trainer._training_query is None
 
 
-@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
+@pytest.mark.parametrize(('system', 'automatic'), [
+    ('Windows', 'cpu'), ('Linux', 'auto'), ('Darwin', 'auto'),
+])
+@pytest.mark.parametrize('accelerator', [None, 'cpu', 'gpu', 'mps', 'auto'])
+def test_constructor_resolves_accelerator(
+        monkeypatch, system, automatic, accelerator):
+    monkeypatch.setattr('kumo.engine.trainer.trainer.platform.system',
+                        lambda: system)
+    trainer = (Trainer(ModelPlan()) if accelerator is None else
+               Trainer(ModelPlan(), accelerator=accelerator))
+    assert trainer._accelerator == (automatic if accelerator in (None, 'auto')
+                                    else accelerator)
+
+
+@pytest.mark.parametrize(('system', 'automatic'), [
+    ('Windows', 'cpu'), ('Linux', 'auto'), ('Darwin', 'auto'),
+])
+@pytest.mark.parametrize('accelerator', [None, 'cpu', 'gpu', 'mps', 'auto'])
 def test_load_reconstructs_trainer_from_published_bundle(
-        tmp_path: Path, accelerator: str) -> None:
+        tmp_path: Path, monkeypatch, system: str, automatic: str,
+        accelerator: Optional[str]) -> None:
+    monkeypatch.setattr('kumo.engine.trainer.trainer.platform.system',
+                        lambda: system)
     bundle = _fake_published_bundle(tmp_path)
     model_plan = ModelPlan()
     write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                         model_plan=model_plan, snapshot_id='snap-123',
                         training_table_generation=_generation_plan())
 
-    loaded = Trainer.load(bundle, accelerator=accelerator)
-    assert loaded._accelerator == accelerator
+    loaded = (Trainer.load(bundle) if accelerator is None else
+              Trainer.load(bundle, accelerator=accelerator))
+    assert loaded._accelerator == (automatic if accelerator in (None, 'auto')
+                                   else accelerator)
 
     assert loaded._snapshot_id == 'snap-123'
     assert loaded._training_result is not None
@@ -332,9 +354,16 @@ def test_load_reconstructs_trainer_from_published_bundle(
     assert loaded.training_table_generation_plan == _generation_plan()
 
 
-@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
+@pytest.mark.parametrize(('system', 'automatic'), [
+    ('Windows', 'cpu'), ('Linux', 'auto'), ('Darwin', 'auto'),
+])
+@pytest.mark.parametrize('accelerator', [None, 'cpu', 'gpu', 'mps', 'auto'])
 def test_load_from_connector_fetches_then_uses_local_loader(
-        tmp_path: Path, accelerator: str) -> None:
+        tmp_path: Path, monkeypatch, system: str, automatic: str,
+        accelerator: Optional[str]) -> None:
+    monkeypatch.setattr('kumo.engine.trainer.trainer.platform.system',
+                        lambda: system)
+    monkeypatch.setattr('kumo.engine._scratch._root', tmp_path / 'scratch')
     bundle = _fake_published_bundle(tmp_path / 'source')
     write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                         model_plan=ModelPlan(), snapshot_id='snap-123',
@@ -343,10 +372,12 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     location = ModelRegistryLocation(model_name='CHURN_GNN')
     sink.publish_model(None, str(bundle), location=location)
 
-    loaded = Trainer.load_from_connector(_FakeConnector(sink),
-                                         location=location,
-                                         accelerator=accelerator)
-    assert loaded._accelerator == accelerator
+    connector = _FakeConnector(sink)
+    loaded = (Trainer.load_from_connector(connector, location=location)
+              if accelerator is None else Trainer.load_from_connector(
+                  connector, location=location, accelerator=accelerator))
+    assert loaded._accelerator == (automatic if accelerator in (None, 'auto')
+                                   else accelerator)
 
     assert loaded._snapshot_id == 'snap-123'
     assert loaded._training_result is not None
