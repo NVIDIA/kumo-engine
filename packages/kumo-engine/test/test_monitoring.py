@@ -1296,6 +1296,12 @@ def test_local_index_resolves_snapshot_storage(
         (path / 'kumo_col_stats').mkdir()
         (path / '_SUCCESS').write_text(
             DiskgraphIngestResult.for_index(path).to_json())
+        (path / '_MANIFEST.json').write_text(json.dumps({
+            'schema_version': 1,
+            'files': [{'rel_path': name, 'size_bytes': (path / name).stat().st_size}
+                      for name in ('index_metadata.json', 'col_stats.json',
+                                   'ingest_stats.json')],
+        }))
 
     complete(index)
 

@@ -40,6 +40,11 @@ def completed_diskgraph_ingest():
         (index / 'ingest_stats.json').write_text('{}')
         (index / 'kumo_col_stats').mkdir()
         (index / 'node-data.bin').write_bytes(b'completed index bytes')
+        (index / '_MANIFEST.json').write_text(json.dumps({
+            'schema_version': 1,
+            'files': [{'rel_path': path.name, 'size_bytes': path.stat().st_size}
+                      for path in index.iterdir() if path.is_file()],
+        }))
         result = DiskgraphIngestResult.for_index(index)
         (index / '_SUCCESS').write_text(result.to_json())
         return result
