@@ -973,6 +973,16 @@ def _local_index(snapshot_id: str) -> Optional[Path]:
     graph_key, _, version = snapshot_id.partition('@')
     if not graph_key or not version:
         return None
+    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+
+    from kumo.engine.graph import _store
+
+    try:
+        index = Path(_store().path(DiskgraphSnapshotHandle(graph_key, version)))
+    except (OSError, ValueError, KeyError):
+        return None
+    if (index / 'col_stats.json').is_file():
+        return index
     root = get_scratch_dir() / 'snapshots' / graph_key
     found = sorted(path for path in root.glob(f'{version}*')
                    if (path / 'col_stats.json').is_file())

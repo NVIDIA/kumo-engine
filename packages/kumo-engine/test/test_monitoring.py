@@ -1264,3 +1264,28 @@ def test_feature_drift_reads_the_training_snapshot_of_a_derived_model(
     features = _compare(trainer, after, None, reasons)
     assert reasons == {}
     assert features['users']['AGE']['standardized_mean_shift'] > 2
+
+
+@pytest.mark.parametrize('managed', [False, True])
+def test_local_index_resolves_snapshot_storage(tmp_path, monkeypatch, managed):
+    import json
+
+    from kumo.engine import _monitoring
+
+    monkeypatch.setattr('kumo.engine._scratch._root', tmp_path)
+    logical = tmp_path / 'snapshots' / 'graph' / 'version'
+    if managed:
+        index = tmp_path / 'indexes' / 'build'
+        logical.parent.mkdir(parents=True)
+        logical.with_suffix('.index.json').write_text(
+            json.dumps({'index_build_id': 'build'}))
+    else:
+        index = logical
+    index.mkdir(parents=True)
+    (index / 'index_metadata.json').write_text(
+        json.dumps({'index_build_id': 'build'}))
+    (index / 'col_stats.json').write_text('{}')
+
+    assert _monitoring._local_index('graph@version') == index
+    assert _monitoring._local_index('graph@missing') is None
+    assert _monitoring._local_index('invalid') is None

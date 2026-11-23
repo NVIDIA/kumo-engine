@@ -14,8 +14,9 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
-from kumo._managed_paths import _ManagedIndexPaths
 from kumoapi.plugin import SnapshotStore, _Handle
+
+from kumo._managed_paths import _ManagedIndexPaths
 
 logger = logging.getLogger(__name__)
 
