@@ -104,7 +104,42 @@ class MaterializedValues:
             {"value": None, "unit": self.feature_stats.get("clock", "seconds")},
             # FitRecord's file references are durable index/col_stats entries.
             # These task-local values/statistics may disappear when the task closes.
+            rescan=self._rescan_zscore,
         )
+
+    def _rescan_zscore(self, request, unit):
+        """Recover the selected column's spread in units that keep its variance representable."""
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.dataset as ds
+
+        from kumo.pytorch.column_stats import pool_zscore
+        from kumo.pytorch.contract.dtypes import arrow_float64
+        from kumo.pytorch.dataset import _local_parquet_files
+
+        selection = self.feature_stats["fit_split"]
+        predicate = None
+        if selection != describe_selection(ALL_ANCHORS):
+            predicate = ds.field("_anchor_split").isin(pa.array(selection, type=pa.string()))
+        table = ds.dataset(_local_parquet_files(self.anchors.source.path), format="parquet")
+        batches = table.to_batches(
+            columns=[request[1]],
+            filter=predicate,
+            batch_size=65536,
+            batch_readahead=0,
+            fragment_readahead=0,
+        )
+
+        def groups():
+            for batch in batches:
+                values = arrow_float64(batch.column(0)).to_numpy(zero_copy_only=False)
+                values = values[np.isfinite(values)]
+                if len(values):
+                    scaled = values / unit
+                    yield len(values), float(np.mean(scaled)), float(np.std(scaled - scaled[0]))
+
+        count, mean, scale = pool_zscore(groups())
+        return count, mean * unit, scale * unit
 
     def _bind(self, contract, source, anchors, dataset):
         if self.contract != contract.fingerprint:
@@ -495,10 +530,22 @@ class _ValuesSource:
         selected = self.values.selected_column_stats(task)
         collect = getattr(self.source, "column_stats", None)
         base = collect(stored, cutoff) if stored and collect is not None else None
+        if base is None:
+            return selected
+        if not task:
+            return base
+
+        def rescan(request, unit):
+            callback = (selected if request in selected.columns else base).rescan
+            if callback is None:
+                raise ValueError(f"no ZScore rescan available for {request}")
+            return callback(request, unit)
+
         return ColumnStats(
-            {**(base.columns if base else {}), **selected.columns},
-            base.cutoff if base else selected.cutoff,
-            (*(base.files if base else ()), *selected.files),
+            {**base.columns, **selected.columns},
+            base.cutoff,
+            (*base.files, *selected.files),
+            rescan,
         )
 
     def _online(self, spec):

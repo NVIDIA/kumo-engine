@@ -14,10 +14,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
-from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
+from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, USERS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
 diskgraph = pytest.importorskip("diskgraph")
@@ -71,6 +72,37 @@ def test_materialized_label_stats_accept_declared_types(tmp_path, dtype, labels)
             assert encoder.dtype == dtype
             assert len(encoder.entries) == 2
             assert {value for value, _ in encoder.entries} == set(labels)
+
+
+def test_materialized_zscore_recovers_only_the_selected_nonnull_labels(tmp_path):
+    spec = _contract(temporal=False)
+    spec = replace(
+        spec,
+        sample=replace(spec.sample, targets={"label": api.ExternalTarget(api.DType("float64"))}),
+        batch=replace(spec.batch, targets={"label": api.LabelTarget("label", api.ZScore())}),
+    )
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "user_id": [1, 2, 3, 4, 5, 6],
+                "at": [100] * 6,
+                "split": ["train", None, "train", None, "train", "valid"],
+                "label": [0.0, 2.0**-599, 0.0, 2.0**-599, None, 1.0],
+            }
+        ),
+        path,
+    )
+    anchors = api.AnchorTable(
+        api.Parquet(str(path)), "user_id", "at", split="split", targets={"label": "label"}
+    )
+    with (
+        bound_tables(spec, {"users": USERS, "events": EVENTS}, "diskgraph") as (dataset, engine),
+        api.prepare(spec, dataset, engine) as plan,
+        plan.materialize(anchors, fit_split={"train", None}) as task,
+    ):
+        encoder = task.target("label").field(name="value").encoder
+        assert encoder.mean == encoder.scale == 2.0**-600
 
 
 def test_generated_bool_target_statistics(tmp_path):

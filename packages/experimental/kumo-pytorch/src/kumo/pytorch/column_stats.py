@@ -11,8 +11,9 @@ import hashlib
 import json
 import logging
 import math
+import tempfile
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -85,6 +86,8 @@ class ColumnStats:
     cutoff: Mapping[str, Any]
     #: The ``col_stats/`` files read.
     files: tuple[str, ...] = ()
+    # Only a nonconstant column whose stored variance lost range needs a scan.
+    rescan: Callable[[StatRequest, float], tuple[int, float, float]] | None = None
 
 
 @dataclass(frozen=True)
@@ -309,10 +312,28 @@ def read_column_stats(
         request = stats_request(missing, [ticks], unit)
         diskgraph.cutoff_col_stats(str(index), json.dumps(request), num_threads=num_threads)
         found = read()
+
+    def rescan(request, unit):
+        from diskgraph._c import _scaled_column_moments
+
+        table, column, _ = request
+        key = hashlib.sha256(json.dumps([table, column]).encode()).hexdigest()
+        name = f"zscore-v1-{key}.json"
+        path = directory / name
+        if path.is_file():
+            return tuple(json.loads(path.read_text()))
+        result = _scaled_column_moments(str(index), table, column, ticks, unit, num_threads)
+        with tempfile.TemporaryDirectory(dir=directory) as work:
+            temporary = Path(work, name)
+            temporary.write_text(json.dumps(result, allow_nan=False))
+            temporary.replace(path)
+        return result
+
     return ColumnStats(
         {item: found[item[0]][item[1]] for item in requests},
         {"value": ticks, "unit": unit},
         tuple(f"{directory.name}/{path.name}" for _, path in sorted(paths.items())),
+        rescan,
     )
 
 
@@ -478,6 +499,66 @@ def _resolve_nanos(value: str | dt.date) -> int | None:
     return diskgraph.resolve_temporal(array, timestamp_unit="nanoseconds")[0][0]
 
 
+def _needs_zscore_scan(data, count):
+    # Below this deviation the stored variance can lose precision to underflow.
+    return (
+        count > 2
+        and not data["invalid_count"]
+        and data["min"] != data["max"]
+        and (data["mean"] is None or data["std"] is None or data["std"] < 2.0**-511)
+    )
+
+
+def column_moments(stats: ColumnStats, request: StatRequest) -> tuple[int, float, float]:
+    data = stats.columns[request]
+    n = data["count"] - data["null_count"]
+    if not n:
+        return 0, 0.0, 0.0
+    low, high = float(data["min"]), float(data["max"])
+    if low == high:
+        return n, low, 0.0
+    if n == 2:
+        # The endpoints are the entire population. Scale before taking the difference.
+        _, exponent = math.frexp(max(abs(low), abs(high)))
+        a, b = math.ldexp(low, -exponent), math.ldexp(high, -exponent)
+        return n, math.ldexp((a + b) / 2, exponent), math.ldexp((b - a) / 2, exponent)
+    if _needs_zscore_scan(data, n):
+        if stats.rescan is None:
+            raise ValueError(f"cannot recover the ZScore spread of {request[:2]} from its summary")
+        _, exponent = math.frexp(max(abs(low), abs(high)))
+        count, mean, scale = stats.rescan(request, math.ldexp(1.0, exponent - 1))
+        if count != n:
+            raise ValueError(
+                f"ZScore scan of {request[:2]} found {count} finite rows, expected {n}"
+            )
+        return count, mean, scale
+    return n, data["mean"], data["std"] / math.sqrt(n / (n - 1))
+
+
+def pool_zscore(groups: Iterable[tuple[int, float, float]]) -> tuple[int, float, float]:
+    """Pool population deviations without squaring unscaled values."""
+    count, mean, scale = 0, 0.0, 0.0
+    for n, column_mean, column_std in groups:
+        if not n:
+            continue
+        if not count:
+            count, mean, scale = n, column_mean, column_std
+            continue
+        total = count + n
+        left, right = count / total, n / total
+        weight = math.sqrt(left * right)
+        delta = column_mean - mean
+        if math.isfinite(delta):
+            between = delta * weight
+            mean += delta * right
+        else:
+            between = column_mean * weight - mean * weight
+            mean = mean * left + column_mean * right
+        scale = math.hypot(scale * math.sqrt(left), column_std * math.sqrt(right), between)
+        count = total
+    return count, mean, scale
+
+
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:
     config, dtype = encoder.config, encoder.dtype
     datas = [stats.columns[request] for request in encoder.requests]
@@ -506,17 +587,8 @@ def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStat
         )
     if any(data["invalid_count"] for data in datas):
         raise ValueError(f"encoder {identity}: numeric transforms require finite values")
-    finite = [data["count"] - data["null_count"] for data in datas]
     if isinstance(config, ZScore):
-        count, mean, m2 = 0, 0.0, 0.0
-        for data, n in zip(datas, finite, strict=True):
-            if n:
-                total = count + n
-                delta = data["mean"] - mean
-                mean += delta * n / total
-                m2 += data["std"] ** 2 * (n - 1) + delta * delta * count * n / total
-                count = total
-        scale = math.sqrt(m2 / count) if count else 1.0
+        _, mean, scale = pool_zscore(column_moments(stats, request) for request in encoder.requests)
         if not math.isfinite(mean) or not math.isfinite(scale):
             raise ValueError(f"encoder {identity}: fitted statistics overflow")
         return FittedEncoder(
@@ -526,7 +598,9 @@ def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStat
         identity=identity,
         config=config,
         dtype=dtype,
-        boundaries=_bucket_cuts(config, datas, finite),
+        boundaries=_bucket_cuts(
+            config, datas, [data["count"] - data["null_count"] for data in datas]
+        ),
     )
 
 

@@ -11,14 +11,25 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from statistics import mean, pstdev, stdev
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
+import torch
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
-from kumo.pytorch.column_stats import table_column_encoders
+from kumo.pytorch.column_stats import (
+    ColumnStats,
+    TableColumnEncoder,
+    fit_from_stats,
+    table_column_encoders,
+)
 from kumo.pytorch.engine import GraphRoot
+from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.conformance.test_dtype_matrix import _contract as scalar_contract
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 
 pytest.importorskip("diskgraph")
@@ -483,3 +494,95 @@ def test_buckets_cut_values_near_the_float_limits():
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
             cuts = _state(task.fitted_state, '"v"')["boundaries"]
     assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [([1.0, 3.0, 5.0], [7.0, 9.0, 11.0, 13.0]), ([-1e308], [1e308])],
+    ids=["unequal-groups-with-spread", "opposite-large-constants"],
+)
+def test_shared_zscore_pools_native_column_stats(left, right):
+    encoder = TableColumnEncoder(
+        api.ZScore(), api.DType("float64"), (("items", "left"), ("items", "right"))
+    )
+    columns = {
+        request: {
+            "count": len(values) + 1,
+            "null_count": 1,
+            "invalid_count": 0,
+            "min": min(values),
+            "max": max(values),
+            "mean": mean(values),
+            "std": stdev(values) if len(values) > 1 else 0.0,
+        }
+        for request, values in zip(encoder.requests, (left, right), strict=True)
+    }
+    fitted = fit_from_stats("shared", encoder, ColumnStats(columns, {}))
+    assert fitted.mean == pytest.approx(mean(left + right), rel=1e-14, abs=0)
+    assert fitted.scale == pytest.approx(pstdev(left + right), rel=1e-14, abs=0)
+
+
+@pytest.mark.parametrize(
+    "low,high,size,rescans",
+    [
+        (0.0, 2.0**-499, 2, 0),
+        (0.0, 2.0**-599, 2, 0),
+        (2.0**600, 2.0**600, 2, 0),
+        (0.0, 2.0**600, 2, 0),
+        (0.0, 2.0, 4, 0),
+        (0.0, 2.0**-599, 4, 1),
+        (0.0, 2.0**600, 4, 1),
+        (-np.finfo(float).max, np.finfo(float).max, 4, 1),
+    ],
+    ids=[
+        "tiny-pair",
+        "underflow-pair",
+        "large-constant",
+        "overflow-pair",
+        "ordinary",
+        "variance-underflows",
+        "variance-overflows",
+        "subtraction-overflows",
+    ],
+)
+def test_native_zscore_preserves_representable_results(low, high, size, rescans):
+    from diskgraph import _c
+
+    contract = scalar_contract(api.DType("float64"), api.ZScore(dtype="float64"))
+    values = [low] + [high] * (size - 1)
+    rows = [{"id": i, "value": v} for i, v in enumerate(values)]
+    center, scale = mean(values), pstdev(values) or 1.0
+    # Scaling the reference values first keeps the expected scores in float64 range.
+    reference = np.asarray(values) / max(abs(low), abs(high))
+    expected = (reference - reference.mean()) / (reference.std() or 1.0)
+    with (
+        bound_tables(contract, {"users": rows}, "diskgraph") as (dataset, engine),
+        api.prepare(
+            contract, dataset, api.DiskGraphEngine(index=engine.index, encoder_cutoffs=(None,))
+        ) as plan,
+        patch.object(_c, "_scaled_column_moments", wraps=_c._scaled_column_moments) as scan,
+    ):
+        anchors = api.AnchorTable(dataset.tables["users"], "id", sample_id="id")
+        (summary,) = (engine.index / "col_stats").glob("*/*.col_stats.json")
+        original = summary.read_bytes()
+        for _ in range(2):
+            with (
+                plan.materialize(anchors, encoder_cutoff=None) as task,
+                patch.object(
+                    task._assembler, "batches", side_effect=AssertionError("used Python batching")
+                ),
+            ):
+                assert isinstance(task._anchors, NativeAnchors)
+                fitted = task.output("entity").field(name="value").encoder
+                assert (fitted.mean, fitted.scale) == pytest.approx(
+                    (center, scale), rel=1e-14, abs=0
+                )
+                (batch,) = task.batches(batch_size=size, shuffle=False, output_format="model")
+                field = batch.inputs["entity"]["value"]
+                assert field["values"].dtype == torch.float64
+                assert field["valid"].all()
+                np.testing.assert_allclose(
+                    field["values"], expected, rtol=0 if size == 2 else 1e-14
+                )
+            assert scan.call_count == rescans
+            assert summary.read_bytes() == original
