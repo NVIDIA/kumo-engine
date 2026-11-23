@@ -258,6 +258,8 @@ pub struct SamplingState {
     pub seed_maps: Vec<GxHashMap<u64, u32>>,
     pub commit_scratch: CommitScratch,
     pub raw_edges: Vec<Vec<RawEdge>>,
+    /// Existing destination IDs reached this hop, ordered by type and local ID.
+    pub(crate) revisits: Option<std::collections::BTreeSet<(usize, u32)>>,
 }
 
 /// A discovered edge before it is formally committed to the SamplingState.
@@ -319,10 +321,12 @@ impl SamplingState {
             seed_maps: Vec::new(),
             commit_scratch: CommitScratch::default(),
             raw_edges: Vec::new(),
+            revisits: None,
         }
     }
 
     fn reset(&mut self) {
+        self.revisits = None;
         // Recurse into type states
         for state in self.type_states.values_mut() {
             state.adaptive_reset(RESET_THRESHOLD);

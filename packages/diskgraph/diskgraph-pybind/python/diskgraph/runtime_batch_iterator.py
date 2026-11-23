@@ -292,6 +292,9 @@ class RuntimeIndex:
     produces different (individually reproducible) batches for different
     thread counts, so two iterators that disagree on it are not sampling
     the same graph.
+
+    With ``revisit_nodes``, each hop expands every node reached in the
+    preceding hop once per seed, including nodes seen earlier.
     """
 
     def __init__(
@@ -299,6 +302,8 @@ class RuntimeIndex:
         dataset_ref: TaskDatasetRef,
         rnd_seed: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        revisit_nodes: bool = False,
     ) -> None:
         # Resolved lazily, on first iter(). Reading the manifest in the
         # constructor would put file I/O ahead of argument validation, and a
@@ -309,6 +314,7 @@ class RuntimeIndex:
         self._resolved: Any = None
         self._rnd_seed = int(rnd_seed) if rnd_seed is not None else None
         self._num_threads = int(num_threads) if num_threads is not None else None
+        self._revisit_nodes = revisit_nodes
         # Stages normally share one train-table extension, but nothing
         # guarantees it, and a Rust RuntimeIndex is bound to a single one.
         # Keyed here so a dataset whose stages differ still works, and still
@@ -329,14 +335,11 @@ class RuntimeIndex:
         idx = self._indexes.get(extension_ref)
         if idx is None:
             from ._c import RuntimeIndex as _RuntimeIndex
-            if Path(extension_ref).is_absolute():
-                idx = _RuntimeIndex._from_extension_path(
-                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
-                )
-            else:
-                idx = _RuntimeIndex(
-                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
-                )
+            open_index = _RuntimeIndex._from_extension_path if Path(extension_ref).is_absolute() else _RuntimeIndex
+            idx = open_index(
+                self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                self._revisit_nodes,
+            )
             self._indexes[extension_ref] = idx
         return idx
 

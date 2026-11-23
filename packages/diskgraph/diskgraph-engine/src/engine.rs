@@ -464,6 +464,8 @@ pub struct DiskGraphEngine {
     pub thread_pool: rayon::ThreadPool,
     /// Record edges through the global `index_map`; same output.
     pub legacy_recording: bool,
+    /// Expand previously discovered destinations again when a later hop reaches them.
+    pub revisit_nodes: bool,
     /// Smallest layer (in edges) whose per-seed dedup runs on the pool.
     pub parallel_commit_min_edges: usize,
 }
@@ -887,6 +889,7 @@ impl DiskGraphEngine {
             random_seed,
             thread_pool,
             legacy_recording: false,
+            revisit_nodes: false,
             parallel_commit_min_edges: 1 << 15,
         }
     }
@@ -2304,16 +2307,36 @@ impl DiskGraphEngine {
             let hop_start = Instant::now();
             let edges_before = state.stats.total_edges;
             let nodes_before = state.stats.total_nodes;
+            let layer = &compiled_plan.layers[layer_idx];
+            state.revisits = (self.revisit_nodes
+                && layer_idx + 1 < num_hops
+                && (layer.default_fanout.is_some()
+                    || layer.fanouts.keys().any(|&rel| {
+                        state.type_states
+                            .get(&self.relation_info[rel])
+                            .is_some_and(|ts| !ts.nodes.is_empty())
+                    })))
+                .then(Default::default);
 
             self.process_layer(
                 layer_idx,
-                &compiled_plan.layers[layer_idx],
+                layer,
                 request,
                 &anchors,
                 state,
                 output,
                 cutoff,
             )?;
+
+            if let Some(revisits) = state.revisits.take() {
+                for (ty, id) in revisits {
+                    let ts = state.type_states.get_mut(&ty).expect("recorded destination");
+                    let new_count = state.stats.nodes_per_type[ty][layer_idx + 1] as usize;
+                    if (id as usize) < ts.nodes.len() - new_count {
+                        ts.next_frontier.push(ts.nodes[id as usize]);
+                    }
+                }
+            }
 
             debug!(
                 hop = layer_idx,
@@ -2952,7 +2975,8 @@ impl DiskGraphEngine {
                         EngineError::Internal(format!("no decoder for type {}", src_type_id))
                     })?;
 
-                for node in &frontier {
+                let new_count = state.stats.nodes_per_type[src_type_id][layer_idx] as usize;
+                for (position, node) in frontier.iter().enumerate() {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
                     let shard = &shards[shard_idx];
                     let local_id = node.global_id - shard.min_id;
@@ -2966,8 +2990,8 @@ impl DiskGraphEngine {
                         .parse()
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-                    // FETCH SOURCE FEATURES (Locality)
-                    {
+                    // Newly discovered nodes precede revisits and need their features exactly once.
+                    if position < new_count {
                         let scratch = &mut state.decode_scratch;
                         let type_state = state.type_states.get_mut(&src_type_id).unwrap();
                         self.accumulate_features_from_data(
@@ -3303,6 +3327,9 @@ impl DiskGraphEngine {
             } else if r & PENDING != 0 {
                 cs.res[(r & !PENDING) as usize].load(Relaxed)
             } else {
+                if let Some(revisits) = &mut state.revisits {
+                    revisits.insert((e.dst_type_id, r));
+                }
                 r
             };
             self.emit_edge(
@@ -3410,6 +3437,9 @@ impl DiskGraphEngine {
         };
 
         let dst_local_id = if let Some(&id) = dst_type_state.index_map.get(&key) {
+            if let Some(revisits) = &mut state.revisits {
+                revisits.insert((dst_type_id, id));
+            }
             id
         } else {
             let id = dst_type_state.nodes.len() as u32;

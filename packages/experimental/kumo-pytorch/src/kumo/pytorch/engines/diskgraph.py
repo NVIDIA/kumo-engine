@@ -461,6 +461,7 @@ class DiskGraphSource:
                 artifact.path,
                 random_seed=random_seed,
                 num_threads=num_threads,
+                revisit_nodes=True,
             )
         )
         self._last_temporal_profile: Mapping[str, Any] | None = None
@@ -477,6 +478,7 @@ class DiskGraphSource:
                     self._index_path,
                     random_seed=self._random_seed,
                     num_threads=self._num_threads,
+                    revisit_nodes=True,
                 )
             )
         return self._sampler_context

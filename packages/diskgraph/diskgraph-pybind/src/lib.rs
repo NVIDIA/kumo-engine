@@ -743,17 +743,18 @@ fn lookup_node_ids_from_arrow(
 #[pymethods]
 impl SamplerEngine {
     #[new]
-    #[pyo3(signature = (path, random_seed=None, num_threads=None))]
+    #[pyo3(signature = (path, random_seed=None, num_threads=None, *, revisit_nodes=false))]
     #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
-    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>,
+    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>, revisit_nodes: bool,
     ) -> PyResult<Self> {
         let root = std::path::Path::new(&path);
         let reader = Arc::new(
             diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
                 .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?,
         );
-        let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
+        let mut engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
             .map_err(map_engine_err)?;
+        engine.revisit_nodes = revisit_nodes;
         info!("SamplerEngine initialized successfully");
         Ok(Self {
             reader,

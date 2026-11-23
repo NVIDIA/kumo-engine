@@ -5,7 +5,10 @@
 """G-GRAPH-001 rule 3: an edge appears at most once per sample."""
 
 from collections import Counter
+from unittest.mock import patch
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from conformance.assertions import bound_tables
@@ -19,10 +22,10 @@ EVENTS = [
 ]
 
 
-def _contract() -> api.DataLoaderSpec:
-    def hop(direction: str) -> api.GraphLayer:
+def _contract(first_fanout=4) -> api.DataLoaderSpec:
+    def hop(direction: str, fanout=4) -> api.GraphLayer:
         return api.GraphLayer(
-            (api.GraphSample("user_events", 4, direction=direction, strategy="recent"),)
+            (api.GraphSample("user_events", fanout, direction=direction, strategy="recent"),)
         )
 
     timestamp = api.DType("timestamp", unit="s", timezone="UTC")
@@ -52,7 +55,9 @@ def _contract() -> api.DataLoaderSpec:
         api.SampleSpec(
             api.EntitySpec("users"),
             neighborhoods={
-                "history": api.NeighborhoodSpec((hop("forward"), hop("reverse"), hop("forward")))
+                "history": api.NeighborhoodSpec(
+                    (hop("forward", first_fanout), hop("reverse"), hop("forward"))
+                )
             },
         ),
         api.BatchSpec({"graph": api.Input(api.NeighborhoodSource("history"), api.Graph(), None)}),
@@ -108,3 +113,21 @@ def test_revisited_edges_appear_once_per_sample(engine_name):
     assert {key: sorted(value) for key, value in actual.items()} == expected
     owners = Counter(users["batch"].tolist())
     assert owners == Counter({0: 1, 1: 1, 2: 1})
+
+
+def test_native_revisit_with_larger_fanout(tmp_path):
+    contract = _contract(first_fanout=1)
+    tables = {"users": USERS, "events": [*EVENTS, {"event_id": 12, "user_id": 1, "at": 9}]}
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.table({"id": [1], "at": [100]}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
+    with (
+        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+        patch.object(task._assembler, "batches", side_effect=AssertionError("Python fallback")),
+    ):
+        graph = next(task.batches(batch_size=1, output_format="model")).inputs["graph"]
+    src, dst = graph["edges"]["user_events"]["index"]
+    assert graph["nodes"]["users"]["ids"][src].tolist() == [1, 1, 1]
+    assert sorted(graph["nodes"]["events"]["ids"][dst].tolist()) == [10, 11, 12]
