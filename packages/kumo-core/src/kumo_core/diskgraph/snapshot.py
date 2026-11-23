@@ -277,37 +277,51 @@ class LocalSnapshotStore:
 
         try:
             graph_dir = self._paths.graph_dir(graph_key)
-            versions = sorted(os.listdir(graph_dir))
+            names = os.listdir(graph_dir)
         except (FileNotFoundError, NotADirectoryError, ValueError):
             return
-        for version in versions:
+        versions: set[str] = set()
+        for name in names:
             try:
-                snapshot_dir = str(self._paths.version_dir(graph_key, version))
+                path = self._paths.version_dir(graph_key, name)
             except ValueError:
                 continue
-            reference_version = self._paths.reference_version(version)
-            is_reference = (self.config.managed_root is not None
-                            and reference_version is not None
-                            and os.path.isfile(snapshot_dir))
-            if is_reference and reference_version is not None:
-                version = reference_version
-            elif not os.path.isdir(snapshot_dir):
-                continue
+            if path.is_dir():
+                versions.add(name)
+            elif self.config.managed_root is not None and path.is_file():
+                version = self._paths.reference_version(name)
+                if version is not None:
+                    versions.add(version)
+
+        damage = (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                  FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                  ValueError, KeyError)
+        for version in sorted(versions):
             if not version.startswith(version_prefix):
                 continue
             handle = DiskgraphSnapshotHandle(graph_key, version)
+            legacy = self.staging_path(handle)
+            candidates = [legacy]
             try:
-                if is_reference:
-                    snapshot_dir = self.path(handle)
-                self._verify_path(snapshot_dir)
-                result = check_diskgraph_output(snapshot_dir)
-            except (DiskgraphCorruptionError, DiskgraphSnapshotError,
-                    FileNotFoundError, IsADirectoryError, NotADirectoryError,
-                    ValueError, KeyError):
-                logger.warning("Skipping invalid snapshot at %s", snapshot_dir)
-                continue
-            if result is not None:
-                yield handle, snapshot_dir
+                selected = self.path(handle)
+            except damage:
+                logger.warning("Skipping invalid snapshot reference at %s",
+                               self._reference(handle))
+            else:
+                if selected != legacy:
+                    candidates.insert(0, selected)
+            # One logical version selects one completed physical build. Prefer
+            # its managed reference, falling back to legacy only if necessary.
+            for snapshot_dir in candidates:
+                try:
+                    self._verify_path(snapshot_dir)
+                    result = check_diskgraph_output(snapshot_dir)
+                except damage:
+                    logger.warning("Skipping invalid snapshot at %s", snapshot_dir)
+                    continue
+                if result is not None:
+                    yield handle, snapshot_dir
+                    break
 
     def list_ready(self) -> list[DiskgraphSnapshotHandle]:
         ready: list[DiskgraphSnapshotHandle] = []
@@ -329,12 +343,13 @@ class LocalSnapshotStore:
 
         Managed references and legacy directories use the same readiness checks
         as ``list_ready``. Incomplete snapshots, including statistics-only
-        directories, are excluded. Successful reads best-effort update marker
-        LRU time, as listing does. Missing, invalid or ambiguous lookups return
-        ``None``; duplicate references to the same path count only once.
+        directories, are excluded. Each version prefers a healthy managed
+        reference, then a healthy legacy directory. Successful reads best-effort
+        update marker LRU time, as listing does. Missing, invalid or ambiguous
+        lookups return ``None``; duplicate references to the same path count once.
         """
         for component in (graph_key, version_prefix):
-            if (not component or component in {".", ".."}
+            if (not component.strip() or component in {".", ".."}
                     or any(char in component for char in ("/", "\\", ":"))):
                 return None
         found = {path for _, path in self._ready_paths(graph_key, version_prefix)}

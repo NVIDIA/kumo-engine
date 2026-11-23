@@ -1266,10 +1266,10 @@ def test_feature_drift_reads_the_training_snapshot_of_a_derived_model(
     assert features['users']['AGE']['standardized_mean_shift'] > 2
 
 
-@pytest.mark.parametrize('managed', [False, True])
+@pytest.mark.parametrize('storage', ['legacy', 'managed', 'both'])
 @pytest.mark.parametrize('short_id', [False, True])
 def test_local_index_resolves_snapshot_storage(
-        tmp_path, monkeypatch, managed, short_id):
+        tmp_path, monkeypatch, storage, short_id):
     import json
 
     from kumo.engine import _monitoring
@@ -1277,7 +1277,7 @@ def test_local_index_resolves_snapshot_storage(
     monkeypatch.setattr('kumo.engine._scratch._root', tmp_path)
     version = '0123456789abcdef' * 4
     logical = tmp_path / 'snapshots' / 'graph' / version
-    if managed:
+    if storage != 'legacy':
         index = tmp_path / 'indexes' / 'build'
         logical.parent.mkdir(parents=True)
         logical.with_suffix('.index.json').write_text(
@@ -1304,6 +1304,8 @@ def test_local_index_resolves_snapshot_storage(
         }))
 
     complete(index)
+    if storage == 'both':
+        complete(logical)
 
     snapshot_id = 'graph@' + (version[:16] if short_id else version)
     assert _monitoring._local_index(snapshot_id) == index

@@ -546,6 +546,27 @@ def test_version_prefix_resolves_completed_snapshot(staged, managed):
     assert store.resolve_version_prefix('missing', 'ver') is None
 
 
+@pytest.mark.parametrize('managed_ready', [False, True])
+@pytest.mark.parametrize('legacy_ready', [False, True])
+def test_version_prefix_selects_one_ready_build_per_version(
+        staged, managed_ready, legacy_ready):
+    store, handle, result, _ = staged
+    managed = Path(store.publish(handle, result).index_path)
+    legacy = _completed_legacy(store, handle)
+    if not managed_ready:
+        (managed / 'ingest_stats.json').unlink()
+    if not legacy_ready:
+        (legacy / 'col_stats.json').unlink()
+    expected = str(managed if managed_ready else legacy) if (
+        managed_ready or legacy_ready) else None
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') == expected
+    assert store.resolve_version_prefix(handle.graph_key, 'version') == expected
+    assert list(store._ready_paths(handle.graph_key)) == (
+        [(handle, expected)] if expected is not None else [])
+    assert store.list_ready() == ([handle] if expected is not None else [])
+
+
 def test_version_prefix_rejects_ambiguity_within_one_graph(staged):
     store, handle, result, _ = staged
     store.publish(handle, result)
@@ -606,7 +627,8 @@ def test_version_prefix_treats_glob_metacharacters_literally(staged):
 
 
 @pytest.mark.parametrize(('graph_key', 'prefix'), [
-    ('', 'ver'), ('graph', ''), ('..', 'ver'), ('../graph', 'ver'),
+    ('', 'ver'), ('graph', ''), ('  ', 'ver'), ('graph', '  '),
+    ('..', 'ver'), ('../graph', 'ver'),
     ('/graph', 'ver'), ('graph\\other', 'ver'), ('C:graph', 'ver'),
     ('graph', '../ver'), ('graph', 'ver/other'), ('graph', 'ver\\other'),
 ])
