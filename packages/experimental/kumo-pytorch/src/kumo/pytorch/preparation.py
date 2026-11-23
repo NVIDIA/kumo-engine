@@ -239,6 +239,7 @@ class Plan:
             raise ValueError("fit_split has nothing to fit in inference")
         cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
+        logical_anchors = anchors  # Scalar materialization can replace the binding with a temp path.
         directory = None
         if (
             values is None
@@ -318,7 +319,7 @@ class Plan:
                 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
                 task_anchors = ParquetAnchors(anchors)
-            anchors_fingerprint = _fingerprint(anchors)
+            anchors_fingerprint = _fingerprint(logical_anchors)
         else:
             requests = tuple(anchors)
             declares_splits = any(request.split is not None for request in requests)

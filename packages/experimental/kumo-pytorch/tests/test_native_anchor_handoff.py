@@ -672,10 +672,8 @@ def test_native_graph_projection_allows_keyless_nonentity_tables(
                     assert torch.isfinite(nodes["features"]["amount"]["values"]).all()
 
 
-def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
-    native_task, tmp_path, monkeypatch
-):
-    plan, _, table = native_task
+def _scored_graph_plan(native_task, tmp_path):
+    plan, _, _ = native_task
     tables = {table.name: table for table in plan.contract.schema.tables}
     tables["users"] = replace(
         tables["users"], columns={"id": api.DType("string"), "score": api.DType("float64")}
@@ -693,7 +691,14 @@ def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
     )
     dataset = api.Dataset(tables={**plan.dataset.tables, "users": api.Parquet(str(path))})
     engine = api.DiskGraphEngine(index=tmp_path / "scored-index", num_threads=1)
-    with api.prepare(contract, dataset, engine) as prepared:
+    return api.prepare(contract, dataset, engine)
+
+
+def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
+    native_task, tmp_path, monkeypatch
+):
+    _, _, table = native_task
+    with _scored_graph_plan(native_task, tmp_path) as prepared:
         with prepared.materialize(table, fit_split="train") as task:
             native = task._anchors
             projections = []
@@ -717,3 +722,35 @@ def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
             batches = list(task.batches(split=frozenset({"train", "valid"}), shuffle=True, epoch=1))
             assert sum(batch.batch_size for batch in batches) == 6
             assert projections and all("score" not in p["users"] for p in projections)
+
+
+def test_native_scalar_anchor_cursor_survives_fitted_reload(native_task, tmp_path, monkeypatch):
+    _, _, table = native_task
+
+    def fallback(*args, **kwargs):
+        pytest.fail("expected native DiskGraph delivery from Parquet anchors")
+
+    def batches(task):
+        assert isinstance(task._anchors, NativeAnchors)
+        monkeypatch.setattr(task._anchors, "_requests", fallback)
+        monkeypatch.setattr(task._assembler, "batches", fallback)
+        return task.batches(split="train", shuffle=False, output_format="model")
+
+    with _scored_graph_plan(native_task, tmp_path) as prepared:
+        with prepared.materialize(table, fit_split="train") as task:
+            stream = batches(task)
+            assert next(stream).metadata["sample_ids"] == ("a", "b")
+            cursor = stream.state_dict()
+            (last,) = stream
+            assert last.metadata["sample_ids"] == ("d", "f")
+            assert last.targets["label"]["values"].tolist() == [4.0, 6.0]
+            path = tmp_path / "artifact"
+            task.to_artifact().save(path)
+        with prepared.materialize(table, fitted=api.Artifact.load(path).fitted_state) as reloaded:
+            resumed = batches(reloaded)
+            resumed.load_state_dict(cursor)
+            (restored,) = resumed
+            assert restored.metadata["sample_ids"] == last.metadata["sample_ids"]
+            torch.testing.assert_close(
+                restored.targets["label"]["values"], last.targets["label"]["values"]
+            )
