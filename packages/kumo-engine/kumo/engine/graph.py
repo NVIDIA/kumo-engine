@@ -36,10 +36,12 @@ an existing `GraphSnapshot` is never invalidated by a later one.
 `LocalSnapshotStore` also gives this a safe, free reuse check
 (`check_diskgraph_output`, used the same way its own `list_ready()` does): if
 a valid completed build already exists for this exact `(graph.id,
-data_version)`, ingest is skipped and the existing index is reused --
-reusing was *not* safe under the old schema-only id (two calls could
-legitimately mean different data), but is now, since the id changes
-whenever the data does.
+data_version)`, ingest is skipped and the existing index is reused. That
+relies on each table's version changing whenever its data does. A version of
+kind `unknown` (an undated BigQuery table, a single object with no
+modification time, or a plugin returning a plain `str`) isn't known to, so
+a graph with one gets a fresh token in its `data_version` and rebuilds on
+every call.
 
 Two `snapshot()` calls sharing a `graph_key` (`self.id`) -- different
 processes, or different threads in this one -- would otherwise race on two
@@ -80,6 +82,7 @@ from typing import (
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
+from kumo_core.sources.identity import version_kind
 from kumoapi.graph import Edge
 from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
@@ -99,6 +102,7 @@ from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
+    new_run_id,
     snapshot_scratch_dir,
 )
 from kumo.engine._storage import network_storage
@@ -934,6 +938,14 @@ class Graph:
             ]
             if timestamp_precision != 'seconds':
                 version_parts.append(timestamp_precision.encode())
+            unknown = sorted(alias
+                             for alias, version in table_data_versions.items()
+                             if version_kind(version) == 'unknown')
+            if unknown:
+                logger.info(
+                    'Graph.snapshot: building a new index; data versions of '
+                    'kind unknown: %s', ', '.join(unknown))
+                version_parts.append(new_run_id().encode())
             data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
