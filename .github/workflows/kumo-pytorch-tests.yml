@@ -30,11 +30,11 @@ on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       mode:
-        description: Package suite or Streaming 25B campaign on main or a trusted PR branch
+        description: Package suite, CUDA measurements or Streaming 25B campaign
         type: choice
         required: true
         default: package
-        options: [package, all, smoke, training, lifecycle, full]
+        options: [package, cuda, all, smoke, training, lifecycle, full]
   schedule:
     - cron: '17 10 * * *'
 
@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.mode == 'cuda' && 'cuda' || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -126,9 +126,30 @@ jobs:
     needs: diskgraph-wheel
     uses: ./.github/workflows/_kumo-pytorch-t2b.yml
 
+  cuda:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'cuda' && github.repository == 'NVIDIA/kumo-engine'
+    needs: diskgraph-wheel
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 45
+    steps:
+      - *checkout
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-backend: cu130
+      - run: python -m tests.e2e.runs cuda --e2e-dir "$RUNNER_TEMP/cuda" --repetitions 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        if: always()
+        with:
+          name: cuda-measurements
+          path: |
+            ${{ runner.temp }}/cuda/**/*.json
+            ${{ runner.temp }}/cuda/**/*.xml
+          if-no-files-found: error
+
   streaming-25b:
     if: >-
-      github.event_name == 'workflow_dispatch' && inputs.mode != 'package' &&
+      github.event_name == 'workflow_dispatch' && inputs.mode != 'package' && inputs.mode != 'cuda' &&
       github.repository == 'NVIDIA/kumo-engine' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pull-request/'))
     needs: diskgraph-wheel

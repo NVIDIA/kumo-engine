@@ -4,7 +4,7 @@
 
 name: kumo-pytorch setup
 description: >-
-  kumo-engine's locked CPU workspace environment (CPU torch, kumo-core and its
+  kumo-engine's locked workspace environment (torch, kumo-core and its
   torch-geometric) plus kumo-pytorch and its dev extra (with notebooks: 'true',
   also its examples extra and a pinned Jupyter kernel and client); with
   diskgraph-wheel-artifact, also DiskGraph from that wheel of this commit's
@@ -13,6 +13,9 @@ inputs:
   python-version:
     required: false
     default: '3.12'
+  torch-backend:
+    description: Workspace Torch extra (cpu or cu130).
+    default: cpu
   diskgraph-wheel-artifact:
     description: Artifact from _diskgraph-wheel.yml. Unset, DiskGraph is not installed and its tests skip.
     required: false
@@ -46,16 +49,21 @@ runs:
       shell: bash
       env:
         NOTEBOOKS: ${{ inputs.notebooks }}
+        TORCH_BACKEND: ${{ inputs.torch-backend }}
       run: |
         set -euo pipefail
         examples=()
         if [ "$NOTEBOOKS" = true ]; then examples=(--extra examples); fi
         # --inexact keeps the DiskGraph wheel installed above and the root environment.
-        uv sync --locked --inexact --no-install-package diskgraph --extra cpu
+        uv sync --locked --inexact --no-install-package diskgraph --extra "$TORCH_BACKEND"
         uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
           --package kumo-pytorch --extra dev "${examples[@]}"
         # The notebook runner's tools are not package dependencies.
         if [ "$NOTEBOOKS" = true ]; then uv pip install nbclient==0.11.0 ipykernel==7.4.0; fi
+        if [ "$TORCH_BACKEND" = cu130 ]; then
+          uv export --frozen --package kumo-engine --extra mlflow --no-hashes --no-annotate |
+            grep '^nvidia-ml-py==' | uv pip install --no-deps -r -
+        fi
     - name: Runner
       shell: bash
       run: |

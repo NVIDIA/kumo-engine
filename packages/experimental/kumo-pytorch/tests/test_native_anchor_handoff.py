@@ -430,6 +430,65 @@ def _anchor_population(table, path, count):
     return replace(table, source=api.Parquet(str(path))), rows
 
 
+@pytest.mark.skipif(os.getenv("KUMO_PYTORCH_PROFILE_CUDA") != "1", reason="run the cuda benchmark")
+def test_native_cuda_epochs(native_task, native_anchor_delivery, tmp_path, request):
+    from tests.e2e.cuda_metrics import cuda_epoch
+    from tests.e2e.runs import LOADER_BATCHING
+
+    plan, original, table = native_task
+    table, rows = _anchor_population(table, tmp_path / "population.parquet", 33)
+    device = torch.device("cuda", torch.cuda.current_device())
+    model = torch.nn.Linear(2, 1).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
+    work = (request.config.getoption("--e2e-dir") or tmp_path) / "cuda"
+    work.mkdir(parents=True, exist_ok=True)
+    epochs = []
+    report = {"training": {"epochs": epochs}}
+    request.addfinalizer(lambda: (work / "results.json").write_text(json.dumps(report) + "\n"))
+    with plan.materialize(table, fitted=original.fitted_state) as task:
+        for epoch in range(2):
+            record = {"epoch": epoch, "batch_sizes": []}
+            epochs.append(record)
+            # Establish a stale allocator peak outside the window to exercise each reset.
+            probe_bytes = torch.cuda.memory_reserved(device) + (16 << 20)
+            probe = torch.empty(probe_bytes, dtype=torch.uint8, device=device)
+            record["prior_peak_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
+            record["prior_peak_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
+            del probe
+            torch.cuda.empty_cache()
+            losses, ids = [], []
+            with cuda_epoch(device, record) as gpu:
+                batches = native_anchor_delivery(task, epoch=epoch, **LOADER_BATCHING)
+                for index, batch in enumerate(batches):
+                    batch = gpu.transfer(batch, start_steady=index == 2)
+                    ids.extend(batch.metadata["sample_ids"])
+                    size = batch.batch_size
+                    record["batch_sizes"].append(size)
+                    features = batch.inputs["graph"]["nodes"]["events"]["features"]
+                    amounts = features["amount"]["values"]
+                    predicted = model(amounts.float().reshape(size, 2)).flatten()
+                    loss = torch.nn.functional.mse_loss(
+                        predicted, batch.targets["label"]["values"].float()
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    optimizer.step()
+                    losses.append(loss.detach())
+            measurement = record["cuda"]
+            assert ids == [row["sid"] for row in rows]
+            assert record["batch_sizes"] == [5] * 6 + [3]
+            assert measurement["complete"]
+            assert measurement["warmup_samples"] and measurement["steady_samples"]
+            assert measurement["reset_allocated_bytes"] < record["prior_peak_allocated_bytes"]
+            assert measurement["reset_reserved_bytes"] < record["prior_peak_reserved_bytes"]
+            assert measurement["peak_reserved_bytes"] >= measurement["peak_allocated_bytes"] > 0
+            transfers = measurement["transfers"]
+            assert len(transfers) == len(losses) and all(t["dispatch_ns"] > 0 for t in transfers)
+            assert sum(t["event_ms"] for t in transfers) > 0
+            assert torch.stack(losses).isfinite().all()
+            record["final_batch_loss"] = losses[-1].item()
+
+
 @pytest.mark.usefixtures("native_anchor_delivery")
 @pytest.mark.parametrize(
     "count,kept_with_drop", [(1, 0), (15, 0), (16, 16), (17, 16), (32, 32), (33, 32)]

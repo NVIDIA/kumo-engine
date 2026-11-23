@@ -20,6 +20,21 @@ from e2e.datasets.hm import HMDataset, generate, sample_anchors
 from tests.e2e import runs
 
 
+@pytest.mark.parametrize(
+    "contents,passes",
+    [
+        ("<testcase classname='tests.model' name='test_cuda'/>", True),
+        ("<testcase classname='tests.model' name='test_cuda'><skipped/></testcase>", False),
+        ("<testcase classname='tests.other' name='test_cuda'/>", False),
+        ("", False),
+    ],
+)
+def test_cuda_campaign_requires_the_selected_junit_cases(tmp_path, contents, passes):
+    path = tmp_path / "junit.xml"
+    path.write_text(f"<testsuite>{contents}</testsuite>")
+    assert (runs._cuda_junit_error(path, ["tests/model.py::test_cuda"]) is None) == passes
+
+
 def test_loader_stage_observer_scopes_calls_and_restores_patches():
     from tests.e2e.loader_timing import stage_observer
 
