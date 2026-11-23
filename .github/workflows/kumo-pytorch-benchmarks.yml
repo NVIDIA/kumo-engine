@@ -51,7 +51,7 @@ jobs:
 
   diskgraph-wheel:
     name: Build
-    needs: plan
+    if: github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
 

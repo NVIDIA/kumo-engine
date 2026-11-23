@@ -42,7 +42,7 @@ jobs:
 
   diskgraph-wheel:
     name: Build
-    needs: plan
+    if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
 
@@ -110,6 +110,8 @@ jobs:
 
   results:
     name: Publish results
+    outputs:
+      gate_outcome: ${{ steps.validate.outcome }}
     if: always()
     needs: [plan, diskgraph-wheel, cpu, distribution, hm-small, hm-lifecycle, binding-train]
     runs-on: ubuntu-24.04
@@ -121,20 +123,21 @@ jobs:
           pattern: ${{ needs.plan.outputs.evidence_pattern }}
           plan: ${{ needs.plan.outputs.plan }}
 
+      - name: Validate the published report
+        id: validate
+        continue-on-error: true
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: python3 -m tests.e2e.ci_plan gate --results "$RUNNER_TEMP/results.json"
+
   gate:
     name: kumo-pytorch-gate
     if: always()
     needs: [plan, results]
     runs-on: ubuntu-24.04
     steps:
-      - *checkout
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: kumo-pytorch-results${{ github.run_attempt != 1 && format('-attempt-{0}', github.run_attempt) || '' }}
-          path: ${{ runner.temp }}
-      - env:
-          PLAN_JSON: ${{ needs.plan.outputs.plan }}
-          PRODUCERS_SUCCEEDED: ${{ needs.plan.result == 'success' && needs.results.result == 'success' }}
-        run: |
-          test "$PRODUCERS_SUCCEEDED" = true
-          python3 -m tests.e2e.ci_plan gate --results "$RUNNER_TEMP/results.json"
+      - name: Require successful planning, publication, and validation
+        working-directory: .
+        env:
+          ACCEPTED: ${{ needs.plan.result == 'success' && needs.results.result == 'success' && needs.results.outputs.gate_outcome == 'success' }}
+        run: test "$ACCEPTED" = true
