@@ -26,7 +26,7 @@ METRICS = (
     ("materialization_seconds", "Materialize / fit (s)", 1),
     ("training_seconds", "Training (s)", 1),
     ("samples_per_second", "Samples/s", 1),
-    ("tokens_per_second", "Tokens/s", 1),
+    ("tokens_per_second", "History tokens/s", 1),
     ("peak_ram_bytes", "Peak RAM (GiB)", 2**30),
     ("average_gpu_utilization_percent", "Mean GPU (%)", 1),
     ("ssd_bytes", "SSD (GiB)", 2**30),
@@ -214,7 +214,12 @@ def training_tables(rows, wall_seconds):
         if not result:
             lines.append(f"| {model} ({row['status']}) |" + " — |" * len(columns))
             continue
-        numbers = [f"{result['metrics'][k] / scale:,.3f}" for k, _, scale in METRICS]
+        numbers = [
+            "N/A (graph-only)"
+            if k == "tokens_per_second" and row["binding"] == "M04"
+            else f"{result['metrics'][k] / scale:,.3f}"
+            for k, _, scale in METRICS
+        ]
         if bounded:
             numbers = [
                 f"{result['staging_seconds']:,.3f}",

@@ -245,6 +245,7 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
     )
     markdown = ci.render(result)
     assert "Mean loss" in markdown and all(label in markdown for _, label, _ in METRICS)
+    assert "| History tokens/s |" in markdown and "| N/A (graph-only) |" in markdown
     assert "64 recent events" in markdown
     assert "First GPU job start to last finish took **1:00:00**" in markdown
     del data["history_limit"]
