@@ -57,6 +57,39 @@ def snapshot(index):
     return SimpleNamespace(index_path=index, id="graph@version", graph_config={})
 
 
+def test_snapshot_factory_uses_stored_identity_and_one_root(indexed, tmp_path, monkeypatch):
+    import kumo.settings
+
+    index, _, _, spec, _ = indexed
+    roots = []
+
+    def configured_root():
+        roots.append(tmp_path)
+        assert len(roots) == 1, "snapshot construction reread configured storage"
+        return tmp_path
+
+    def forbidden():
+        raise AssertionError("snapshot construction allocated a fresh build identity")
+
+    class Engine(api.DiskGraphEngine):
+        pass
+
+    monkeypatch.setattr(kumo.settings, "scratch_dir", configured_root)
+    monkeypatch.setattr(diskgraph, "new_index_build_id", forbidden)
+    engine = Engine.from_snapshot(snapshot(index), num_threads=2)
+    assert isinstance(engine, Engine)
+    assert engine.index == index
+    assert engine.index_build_id == index.name
+    assert engine.schema == spec.schema
+    assert engine.num_threads == 2
+    assert engine.random_seed == 0
+    assert engine.num_shards == 1
+    assert engine.encoder_cutoffs == ()
+    assert engine._paths.task_dir("task") == tmp_path / "tasks" / index.name / "task"
+    assert engine._paths.cache_dir == tmp_path / "cache" / index.name
+    assert roots == [tmp_path]
+
+
 def test_external_cache_refuses_redirected_cutoff(tmp_path):
     index = tmp_path / "index"
     (index / "col_stats").mkdir(parents=True)

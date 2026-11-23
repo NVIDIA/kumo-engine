@@ -24,7 +24,13 @@ from diskgraph import SamplingPlan
 
 from kumo._managed_paths import _ManagedIndexPaths
 
-from kumo.pytorch._storage import ColumnCache, TaskDirectory, managed_paths, verify_managed_roots
+from kumo.pytorch._storage import (
+    ColumnCache,
+    TaskDirectory,
+    managed_paths,
+    managed_root,
+    verify_managed_roots,
+)
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
@@ -84,7 +90,7 @@ from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
-from kumo.pytorch.index_binding import open_index
+from kumo.pytorch.index_binding import IndexBinding, open_index
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
 
@@ -242,12 +248,30 @@ class DiskGraphEngine:
         num_shards: int = 1,
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
     ):
+        self._initialize(
+            managed_paths(),
+            num_threads=num_threads,
+            random_seed=random_seed,
+            num_shards=num_shards,
+            encoder_cutoffs=encoder_cutoffs,
+        )
+
+    def _initialize(
+        self,
+        paths: _ManagedIndexPaths,
+        *,
+        num_threads: int | None = None,
+        random_seed: int | None = 0,
+        num_shards: int = 1,
+        encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
+        binding: IndexBinding | None = None,
+    ) -> None:
         if isinstance(encoder_cutoffs, str):
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
-        self._paths = managed_paths()
-        self.index = self._paths.index_dir
-        self.index_build_id = self._paths.index_build_id
-        self._binding = None
+        self._paths = paths
+        self.index = paths.index_dir if binding is None else Path(binding.artifact.path)
+        self.index_build_id = paths.index_build_id
+        self._binding = binding
         self.num_threads = num_threads
         if random_seed is not None and (
             type(random_seed) is not int or not 0 <= random_seed < 2**64
@@ -268,19 +292,16 @@ class DiskGraphEngine:
         Cross-root imports and snapshots without a build ID are refused.
         """
         base = Path(snapshot.index_path).resolve()
-        import kumo.settings
-
-        root = kumo.settings.scratch_dir().resolve()
+        root = managed_root()
         if not base.is_relative_to(root):
             raise ValueError(
                 "snapshot must belong to the configured Kumo root; cross-root import is unsupported"
             )
         binding = open_index(base, snapshot_id=snapshot.id)
-        result = cls(num_threads=num_threads)
-        result._paths = _ManagedIndexPaths(binding.identity, root=root)
-        result.index_build_id = binding.identity
-        result.index = base
-        result._binding = binding
+        result = cls.__new__(cls)
+        result._initialize(
+            managed_paths(binding.identity, root=root), num_threads=num_threads, binding=binding
+        )
         verify_managed_roots(result._paths, base)
         return result
 

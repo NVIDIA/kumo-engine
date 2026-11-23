@@ -12,7 +12,12 @@ import kumo.settings
 from kumo._managed_paths import _ManagedIndexPaths
 
 
-def managed_paths(index_build_id: str | None = None):
+def managed_root() -> Path:
+    """Capture the configured storage root for one engine."""
+    return kumo.settings.scratch_dir().resolve()
+
+
+def managed_paths(index_build_id: str | None = None, *, root: Path | None = None):
     """Resolve one physical build under the process-wide Kumo scratch root."""
     try:
         from diskgraph import new_index_build_id
@@ -23,7 +28,7 @@ def managed_paths(index_build_id: str | None = None):
         ) from error
     return _ManagedIndexPaths(
         new_index_build_id() if index_build_id is None else index_build_id,
-        root=kumo.settings.scratch_dir().resolve(),
+        root=managed_root() if root is None else root,
     )
 
 
