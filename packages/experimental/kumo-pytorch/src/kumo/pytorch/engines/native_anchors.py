@@ -24,6 +24,7 @@ from typing import Any
 
 from diskgraph import SamplingPlan
 
+from kumo.pytorch._storage import verify_task_manifest
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
@@ -251,6 +252,9 @@ class NativeAnchors:
                     key: threads for key in ("context_threads", "encode_threads", "index_threads")
                 }
             )
+            verify_task_manifest(
+                manifest, paths=self._source._paths, index=view, task_id=self._temporary.task_id
+            )
             self._source._diskgraph.ingest(
                 json.dumps(
                     {
@@ -265,6 +269,9 @@ class NativeAnchors:
                 col_stats=False,
                 **options,
             )
+        verify_task_manifest(
+            manifest, paths=self._source._paths, index=view, task_id=self._temporary.task_id
+        )
         self._manifest = manifest
         path = self.path / "runtime.json"
         path.write_text(json.dumps(manifest))

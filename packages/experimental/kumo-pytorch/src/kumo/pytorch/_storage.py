@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import kumo.settings
 from kumo._managed_paths import _ManagedIndexPaths
@@ -44,6 +46,30 @@ def verify_managed_roots(paths, index: str | Path) -> None:
     stats = paths.cache_dir / "col_stats"
     if stats.resolve() != stats:
         raise ValueError("managed col_stats path must not redirect to another location")
+
+
+def verify_task_manifest(
+    manifest: Mapping[str, Any], *, paths: _ManagedIndexPaths, index: str | Path, task_id: str
+) -> None:
+    """Validate Kumo's manifest placement before ingest and native handoff.
+
+    Layout comes from the captured managed paths. DiskGraph owns the separate
+    extension-to-parent build identity check.
+    """
+    def verify_path(value: str, expected: Path, field: str) -> None:
+        path = Path(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"{field} must be an absolute path without traversal")
+        if path != expected or path.resolve() != path:
+            raise ValueError(f"{field} must match its bound path without redirects: {expected}")
+
+    base = Path(index)
+    if not base.is_relative_to(paths.root):
+        raise ValueError("manifest graph.index_path must be within the captured Kumo root")
+    verify_path(manifest["graph"]["index_path"], base, "manifest graph.index_path")
+    task = paths.task_dir(task_id)
+    for name, stage in manifest["stages"].items():
+        verify_path(stage["index_path"], task, f"manifest stages[{name!r}].index_path")
 
 
 class TaskDirectory:

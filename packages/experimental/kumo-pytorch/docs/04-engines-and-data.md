@@ -206,6 +206,12 @@ the producer's base across engines or processes. Kumo allocates IDs and chooses
 index, task and cache paths internally; callers configure only the process-wide
 scratch root.
 
+Before native task ingest and runtime handoff, Kumo validates the task manifest
+against the engine's captured root: the graph path must match its bound base,
+and every stage path must match the task's allocated directory. Relative paths,
+traversal and symlink redirects are rejected. Snapshot bases retain their
+producer's layout within that root. DiskGraph checks parent build identity.
+
 Fitting reads any statistics already stored under the base's `col_stats/` and
 writes missing statistics, tokenizers and token lengths under the managed
 `cache/<index_build_id>/col_stats/`. Each encoder cutoff has a directory with a

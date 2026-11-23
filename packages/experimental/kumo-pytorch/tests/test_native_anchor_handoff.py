@@ -629,6 +629,78 @@ def test_native_extension_uses_managed_task_directory_without_symlinks(native_ta
     assert not extension.exists()
 
 
+@pytest.mark.parametrize("boundary", ["ingest", "runtime"])
+@pytest.mark.parametrize("field", ["graph", "stage"])
+def test_manifest_placement_is_checked_before_native_calls(
+    native_task, monkeypatch, boundary, field
+):
+    import kumo.pytorch.engines.native_anchors as module
+
+    plan, previous, table = native_task
+    source = plan._require_open()
+    verify = module.verify_task_manifest
+    ingest = source._diskgraph.ingest
+    manifests = []
+    ingested = []
+
+    def corrupt(manifest):
+        entry = manifest["graph"] if field == "graph" else next(iter(manifest["stages"].values()))
+        entry["index_path"] = str(source._paths.root.parent / "outside")
+
+    def check(manifest, **options):
+        manifests.append(manifest)
+        if boundary == "ingest":
+            corrupt(manifest)
+        verify(manifest, **options)
+
+    def ingest_then_corrupt(*args, **kwargs):
+        ingested.append(True)
+        result = ingest(*args, **kwargs)
+        # Simulate a manifest changed between the pre-ingest check and handoff.
+        corrupt(manifests[-1])
+        return result
+
+    def forbidden_runtime(*args, **kwargs):
+        pytest.fail("invalid manifest reached the native runtime")
+
+    monkeypatch.setattr(module, "verify_task_manifest", check)
+    monkeypatch.setattr(source._diskgraph, "ingest", ingest_then_corrupt)
+    monkeypatch.setattr(source._diskgraph, "RuntimeIndex", forbidden_runtime)
+    with pytest.raises(ValueError, match="index_path"):
+        plan.materialize(table, fitted=previous.fitted_state)
+    assert len(ingested) == (0 if boundary == "ingest" else 1)
+    assert len(manifests) == (1 if boundary == "ingest" else 2)
+
+
+def test_snapshot_manifest_preserves_producer_layout_after_reconfiguration(native_task):
+    import shutil
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import kumo.settings
+
+    plan, _, table = native_task
+    source = plan._require_open()
+    base = source._paths.root / "producer-snapshots" / "graph-version"
+    shutil.copytree(source._index_path, base)
+    engine = api.DiskGraphEngine.from_snapshot(
+        SimpleNamespace(index_path=base, id="graph@version"), num_threads=1
+    )
+    new_root = source._paths.root / "reconfigured"
+    kumo.settings.configure(scratch_dir=new_root)
+    with api.prepare(contract=plan.contract, engine=engine) as bound:
+        with bound.materialize(table, fit_split="train") as task:
+            manifest = task._anchors._manifest
+            assert Path(manifest["graph"]["index_path"]) == base
+            assert {
+                Path(stage["index_path"]) for stage in manifest["stages"].values()
+            } == {engine._paths.task_dir(task._anchors._temporary.task_id)}
+            assert _by_sample(task.batches(split="train", output_format="model")) == {
+                "a": 1.0, "b": 2.0, "d": 4.0, "f": 6.0,
+            }
+    assert not new_root.exists()
+
+
 @pytest.mark.parametrize("neighborhood_count", [1, 2])
 def test_native_graph_projection_allows_keyless_nonentity_tables(
     native_task, monkeypatch, neighborhood_count
