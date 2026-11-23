@@ -54,8 +54,8 @@ qualification. Native Windows wheels are attached and published alongside the
 Linux and macOS wheels only after the candidate passes the required checks.
 The shared [desktop qualification](../../packages/kumo-engine/platform-smoke.md)
 gates publication on native Windows CPU training, Faiss retrieval, and fresh
-process export and reload on Python 3.11–3.14. CI loader settings are preserved;
-this does not qualify restricted accounts or native Windows CUDA.
+process export and reload on Python 3.11–3.14. Restricted accounts and native
+Windows CUDA are outside this qualification.
 The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.

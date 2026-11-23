@@ -23,20 +23,12 @@ The shared [desktop harness](test/desktop_reload_qualification.py) additionally
 gates every build on four native Windows CPU jobs. Binary and static-link tasks
 train, export models and snapshots, delete the producer's temporary storage,
 and predict in fresh consumers. Retrieval must perform CPU Faiss searches.
-Windows installs the bare wheel and exercises automatic CPU selection. CI
-loader settings are preserved. Native CUDA and restricted accounts are outside
-this qualification. Evidence is saved in
-`engine-wheel-reload-windows-native-cpu-*` artifacts.
+Windows installs the bare wheel and exercises automatic CPU selection.
+Native CUDA and restricted accounts are outside this qualification. Evidence is
+saved in `engine-wheel-reload-windows-native-cpu-*` artifacts.
 
-The [successful rehearsal](https://github.com/NVIDIA/kumo-engine/actions/runs/44794111567)
-at `67b1de9d0` built on Windows Server 2022 and qualified installed wheels on
-the `windows-amd64-cpu4` Windows Server 2025 administrative runner for all four
-Python versions, including CPU Faiss retrieval and fresh-process reload.
-That earlier candidate used the `[cpu]` extra and different loader settings;
-it does not qualify later artifacts or prove their published availability.
-The long-path registry setting was not recorded. See the
-[installation requirements](README.md#installation) for the long-path and
-Visual C++ runtime prerequisites.
+See the [installation requirements](README.md#installation) for the long-path
+and Visual C++ runtime prerequisites.
 
 Consumer jobs rebuild no native artifacts. WSL checks the Linux guest kernel;
 an ordinary Linux runner cannot substitute for WSL. The existing Linux CUDA
