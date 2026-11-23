@@ -156,9 +156,7 @@ def account_jobs(plan, raw):
         name = job["name"]
         if name in {"Publish results", "kumo-pytorch-gate"}:
             continue  # These are evaluated at the gate and in the completed scheduled run.
-        if job["conclusion"] == "skipped" and (
-            name in inactive_workers or name == "Distribution / diskgraph-wheel"
-        ):
+        if job["conclusion"] == "skipped" and name in inactive_workers:
             continue
         if name in jobs or (job["head_sha"], job["run_attempt"], job["run_id"]) != (
             plan["source_revision"],

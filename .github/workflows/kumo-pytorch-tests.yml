@@ -94,8 +94,7 @@ jobs:
   distribution:
     name: Distribution
     needs: [plan, diskgraph-wheel]
-    uses: ./.github/workflows/kumo-pytorch-diskgraph.yml
-    with: {prebuilt-wheel: true}
+    uses: ./.github/workflows/_kumo-pytorch-distribution.yml
 
   conformance:
     name: Package tests
