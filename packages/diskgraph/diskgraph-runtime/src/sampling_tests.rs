@@ -18,7 +18,7 @@ fn config() -> SeedScheduleConfig {
         drop_last: false,
         rhs: false,
         selected_stage_node_ids: None,
-        weighted_seed_sampling_json: None,
+        weighted_seed_sampling: None,
         bucket_extension_root: None,
     }
 }
@@ -228,15 +228,21 @@ fn metadata_schedule_reuses_weighted_draws() {
     for id in [10u64, 11, 12] {
         file.write_all(&id.to_le_bytes()).unwrap();
     }
-    let weighted = json!({"num_samples": 12, "buckets": [{
-        "name": "all", "node_ids_path": ids_path.to_str().unwrap(),
-        "count": 3, "mass": 3.0,
-    }]})
-    .to_string();
+    let weighted = super::WeightedSeedSamplingConfig {
+        num_samples: 12,
+        buckets: vec![super::WeightedSeedBucketConfig {
+            name: "all".into(),
+            node_ids_path: ids_path.to_string_lossy().into_owned(),
+            count: 3,
+            mass: 3.0,
+            cdf_path: None,
+            total_weight: None,
+        }],
+    };
     let mut c = config();
-    c.weighted_seed_sampling_json = Some(weighted.clone());
+    c.weighted_seed_sampling = Some(weighted.clone());
     let expected = super::make_weighted_stage_node_ids(
-        &weighted,
+        weighted,
         |id| (10..=12).contains(&id),
         "task/train",
         2,

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from ._c import RuntimeBatchIterator
 
 from ._exceptions import DiskgraphConfigError
-from .sampling_options import InheritEngineSeed, SamplingOptions, WeightedSeedSampling
+from .sampling_options import InheritEngineSeed, SamplingOptions
 from .sampling_plan import SamplingPlan
 
 TaskDatasetRef = str
@@ -90,12 +90,6 @@ def _stage_tables(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             "table_name": str(table_name),
             "index_path": str(index_path),
         }
-        binary_label_index = value.get("binary_label_index")
-        if isinstance(binary_label_index, Mapping):
-            out[str(stage)]["binary_label_index"] = dict(binary_label_index)
-        sample_weight_index = value.get("sample_weight_index")
-        if isinstance(sample_weight_index, Mapping):
-            out[str(stage)]["sample_weight_index"] = dict(sample_weight_index)
     return out
 
 
@@ -138,116 +132,6 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
         "or <graph_index_path>/pred_tables/: "
         f"parent={abs_parent}, stage={abs_stage}"
     )
-
-
-def _weighted_seed_sampling_json(
-    ref: Mapping[str, Any],
-    stage: str,
-    weighted_seed_sampling: WeightedSeedSampling | None,
-) -> str | None:
-    if weighted_seed_sampling is None:
-        return None
-    if not isinstance(weighted_seed_sampling, WeightedSeedSampling):
-        raise TypeError(
-            "weighted_seed_sampling must be a diskgraph.WeightedSeedSampling"
-        )
-    root = str(ref["index_path"])
-
-    def _path(value: Any, *, context: str) -> str:
-        if not value:
-            raise DiskgraphConfigError(
-                f"weighted_seed_sampling for stage {stage!r} missing {context}"
-            )
-        return os.path.join(root, str(value))
-
-    def _weighted_bucket(
-        index: Mapping[str, Any],
-        key: str,
-        *,
-        multiplier: float = 1.0,
-    ) -> dict[str, Any]:
-        bucket = index.get(key)
-        if not isinstance(bucket, Mapping):
-            raise DiskgraphConfigError(
-                f"sample_weight_index for stage {stage!r} missing {key!r} bucket"
-            )
-        total_weight = float(bucket.get("total_weight", 0.0))
-        return {
-            "name": key,
-            "node_ids_path": _path(bucket.get("node_ids"),
-                                   context=f"{key}.node_ids"),
-            "count": int(bucket.get("count", 0)),
-            "mass": total_weight * multiplier,
-            "cdf_path": _path(bucket.get("cdf"), context=f"{key}.cdf"),
-            "total_weight": total_weight,
-        }
-
-    def _class_bucket(
-        binary_index: Mapping[str, Any],
-        key: str,
-        *,
-        class_weight: float,
-    ) -> dict[str, Any]:
-        node_key = f"{key}_node_ids"
-        count_key = f"{key}_count"
-        count = int(binary_index.get(count_key, 0))
-        return {
-            "name": key,
-            "node_ids_path": _path(binary_index.get(node_key),
-                                   context=node_key),
-            "count": count,
-            "mass": count * class_weight,
-        }
-
-    use_sample_weights = weighted_seed_sampling.use_sample_weights
-    has_class_weights = (
-        weighted_seed_sampling.false_weight is not None
-        or weighted_seed_sampling.true_weight is not None
-    )
-    false_weight = (
-        1.0
-        if weighted_seed_sampling.false_weight is None
-        else weighted_seed_sampling.false_weight
-    )
-    true_weight = (
-        1.0
-        if weighted_seed_sampling.true_weight is None
-        else weighted_seed_sampling.true_weight
-    )
-
-    buckets: list[dict[str, Any]]
-    if use_sample_weights:
-        sample_index = ref.get("sample_weight_index")
-        if not isinstance(sample_index, Mapping):
-            raise DiskgraphConfigError(
-                f"weighted_seed_sampling requires sample_weight_index for stage {stage!r}"
-            )
-        if has_class_weights:
-            buckets = [
-                _weighted_bucket(sample_index, "false_bucket",
-                                 multiplier=false_weight),
-                _weighted_bucket(sample_index, "true_bucket",
-                                 multiplier=true_weight),
-            ]
-        else:
-            buckets = [_weighted_bucket(sample_index, "all")]
-    else:
-        binary_index = ref.get("binary_label_index")
-        if not isinstance(binary_index, Mapping):
-            raise DiskgraphConfigError(
-                f"weighted_seed_sampling requires binary_label_index for stage {stage!r}"
-            )
-        buckets = [
-            _class_bucket(binary_index, "false",
-                          class_weight=false_weight),
-            _class_bucket(binary_index, "true", class_weight=true_weight),
-        ]
-
-    payload = {
-        "buckets": buckets,
-        "num_samples": weighted_seed_sampling.num_samples,
-    }
-    return json.dumps(payload, sort_keys=True)
 
 
 def _validate_worker_iterator_inputs(
@@ -454,9 +338,7 @@ class RuntimeIndex:
             options.rhs_seed_node_type,
             int(options.rhs_seed_time) if options.rhs_seed_time is not None else None,
             bool(options.group_by_timestamp),
-            _weighted_seed_sampling_json(
-                ref, options.stage, options.weighted_seed_sampling
-            ),
+            options.weighted_seed_sampling,
             options.selected_stage_node_ids,
             _use_seed_timestamps(self._manifest),
             int(options.pseudo_seed_time)

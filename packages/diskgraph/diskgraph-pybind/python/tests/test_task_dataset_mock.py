@@ -355,7 +355,7 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(
     assert captured.args[-1] is projections
 
 
-def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monkeypatch):
+def test_native_iterator_surface_forwards_weighted_seed_sampling(tmp_path, monkeypatch):
     root = tmp_path / "idx" / "train_tables" / "tt1"
     (root / "train_seeds").mkdir(parents=True)
     false_node_ids = root / "train_seeds" / "false_node_ids.bin"
@@ -412,25 +412,12 @@ def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monke
     )
 
     assert num_samples == 6
-    config = json.loads(captured.args[-6])
-    assert config["buckets"] == [
-        {
-            "name": "false",
-            "node_ids_path": str(false_node_ids),
-            "count": 5,
-            "mass": 5.0,
-        },
-        {
-            "name": "true",
-            "node_ids_path": str(true_node_ids),
-            "count": 2,
-            "mass": 6.0,
-        },
-    ]
-    assert config["num_samples"] == 6
+    assert captured.args[-6] == WeightedSeedSampling(
+        false_weight=1.0, true_weight=3.0, num_samples=6
+    )
 
 
-def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypatch):
+def test_native_iterator_surface_forwards_row_weight_sampling(tmp_path, monkeypatch):
     root = tmp_path / "idx" / "train_tables" / "tt1"
     (root / "train_seeds").mkdir(parents=True)
     ids = root / "train_seeds" / "sample_weight_node_ids.bin"
@@ -489,16 +476,9 @@ def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypa
     )
 
     assert num_samples == 12
-    config = json.loads(captured.args[-6])
-    assert config["buckets"] == [{
-        "name": "all",
-        "node_ids_path": str(ids),
-        "count": 7,
-        "mass": 11.5,
-        "cdf_path": str(cdf),
-        "total_weight": 11.5,
-    }]
-    assert config["num_samples"] == 12
+    assert captured.args[-6] == WeightedSeedSampling(
+        use_sample_weights=True, num_samples=12
+    )
 
 
 def test_native_iterator_surface_disables_seed_timestamps_for_static_task(

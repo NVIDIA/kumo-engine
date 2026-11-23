@@ -20,7 +20,8 @@ next_epoch, _ = index.iter(replace(options, epoch=1))
 
 `SamplingOptions` and `WeightedSeedSampling` are frozen Python dataclasses.
 `RuntimeIndex.iter` accepts a `SamplingOptions` object rather than keyword
-arguments; the underlying Rust iterator API is unchanged. An omitted `rnd_seed`
+arguments. Rust derives weighted-sampling sidecars from the opened extension
+manifest. An omitted `rnd_seed`
 inherits the index seed, while explicit `None` disables it and is rejected when
 shuffling. Projections and selected seed IDs retain their existing dictionary
 and list formats; treat those containers as read-only while options are in use.
