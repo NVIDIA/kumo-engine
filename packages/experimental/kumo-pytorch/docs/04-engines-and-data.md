@@ -220,6 +220,14 @@ is not part of that check; an existing index keeps the shard count it was built
 with. Use `DiskGraphEngine.from_snapshot(snapshot)` to prepare an existing index
 without source ingestion.
 
+The removed `ingest="never"` option guarded against unexpected ingestion: `prepare`
+refused a missing base instead of ingesting it. Dataset engine construction no
+longer exposes that guard; its first `prepare` ingests the dataset. Migrate
+callers requiring an existing base to `DiskGraphEngine.from_snapshot(snapshot)`
+and omit the Dataset from `prepare`. Snapshot binding validates the completed
+base and refuses missing or incompatible state without rebuilding it or reading
+the original source tables.
+
 ### Storage lifetime and cleanup
 
 Closing a plan or task keeps `indexes/<index_build_id>/` and

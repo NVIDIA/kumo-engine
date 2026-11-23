@@ -463,9 +463,12 @@ user-3-at-34 scores 0.647
 The first `prepare` builds the index under the configured scratch root's
 `indexes/<index_build_id>/`. Reuse the same engine for later preparations in
 this process. For a scheduled scoring job, reopen a core snapshot through
-`DiskGraphEngine.from_snapshot(snapshot)`. See
-[building and reusing the index](04-engines-and-data.md#building-and-reusing-the-index).
-To score from a completed build without source tables, [open its snapshot](04-engines-and-data.md#open-an-existing-snapshot).
+`DiskGraphEngine.from_snapshot(snapshot)` and omit the Dataset from `prepare`.
+This validates an existing completed base without rebuilding it or reading its
+original source tables. It replaces the removed `ingest="never"` guard, which
+refused a missing base. Constructing a fresh dataset engine in each scoring job
+instead triggers a new ingest. See [opening an existing snapshot](04-engines-and-data.md#open-an-existing-snapshot)
+for the scoring workflow that requires an existing base.
 
 ### What inference mode changes
 
