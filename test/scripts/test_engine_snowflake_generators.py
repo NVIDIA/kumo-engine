@@ -153,13 +153,15 @@ def test_gpu_resolver_preserves_the_official_cuda_tag_in_the_offline_inventory(m
                 archive.writestr('torch.dist-info/METADATA', 'Name: torch\nVersion: 2.9.1+cu128\n')
         else:
             assert path.exists()
+            assert str(wheel.resolve()) + '[snowflake,pytorch]' in command
             assert command[command.index('--index-url') + 1] == 'https://pypi.org/simple'
         assert 'torch==2.9.1+cu128' in command
 
     monkeypatch.setattr(generator.subprocess, 'run', pip)
     plan = dict(target=target, local_wheels=[], source_index='https://pypi.org/simple')
-    archive = generator.resolve(wheel, tmp_path / 'dependencies', plan, accelerator='gpu')
+    archive = generator.resolve(wheel, tmp_path / 'dependencies', plan, accelerator='gpu', pytorch=True)
     result = json.loads(archive.with_name('dependencies.json').read_text())
     assert len(calls) == 2
     assert result['accelerator'] == 'gpu'
+    assert result['pytorch'] is True
     assert list(result['wheels'].values())[0]['version'] == '2.9.1+cu128'

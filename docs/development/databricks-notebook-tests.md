@@ -344,16 +344,13 @@ of the supplied attempt-scoped model. Cleanup retains the ownership, creation-ti
 and concurrency checks, with this bound included in the signed recovery record.
 The default Kumo scenario keeps its two-version bound.
 
-For the experimental PyTorch regression example, build `kumo-pytorch` from the
-same checkout. Also retain the exact DiskGraph constituent wheel from the
-complete Engine build (`--keep-work` retains its build directory). Install it
-alongside Engine so pip can satisfy `kumo-pytorch`'s DiskGraph requirement.
+The candidate Engine wheel bundles `kumo.pytorch` and DiskGraph. The launcher
+installs the `pytorch` extra for customer workloads.
 The launcher rejects dependency wheels that overwrite any candidate Engine
 file with different bytes, including members relocated from wheel `purelib`
 or `platlib` directories and conflicting dependency wheels. Additional wheels
 must install their files into site-packages; prefix-level `data`, `scripts`, and
 `headers` layouts are refused because their destinations vary with the runtime.
-A separately built native wheel is not equivalent.
 
 ```sh
 python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
@@ -361,8 +358,6 @@ python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
   --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
   --candidate /absolute/path/candidate.json \
   --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
-  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
-  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
   --output-dir /tmp/databricks-customer-model-001
 ```
 

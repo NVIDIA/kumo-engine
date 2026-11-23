@@ -304,7 +304,7 @@ def test_workflows_admit_the_same_explicit_branch():
 
 
 @pytest.mark.parametrize('selected', ['kumo', 'pytorch'])
-def test_actions_dispatch_stages_matching_wheels_and_native_workload(tmp_path, selected):
+def test_actions_dispatch_stages_bundled_pytorch_and_native_workload(tmp_path, selected):
     import os
     import subprocess
     import sys
@@ -319,8 +319,7 @@ def test_actions_dispatch_stages_matching_wheels_and_native_workload(tmp_path, s
                       'import json, os, sys\n' +
                       "with open(os.environ['CAPTURE'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n")
     python.chmod(0o755)
-    for folder, files in {'snowflake-wheel': ['engine.whl'], 'pytorch-wheels':
-                          ['diskgraph-matching.whl', 'kumo_pytorch-candidate.whl']}.items():
+    for folder, files in {'snowflake-wheel': ['engine.whl']}.items():
         directory = tmp_path / folder
         directory.mkdir()
         for name in files:
@@ -336,10 +335,9 @@ def test_actions_dispatch_stages_matching_wheels_and_native_workload(tmp_path, s
         assert result.returncode == 0, result.stderr
     stage, prepare = [json.loads(line) for line in capture.read_text().splitlines()]
     if selected == 'pytorch':
-        assert stage.count('--workload-wheel') == 2
-        assert str(tmp_path / 'pytorch-wheels/diskgraph-matching.whl') in stage
+        assert '--pytorch' in stage
         assert prepare[prepare.index('--workload') + 1].endswith('/wheel_mlops_pytorch_snowflake.py')
         assert prepare[prepare.index('--workload-helper') + 1].endswith('/wheel_mlops_pytorch.py')
     else:
-        assert '--workload-wheel' not in stage
+        assert '--pytorch' not in stage
         assert '--workload' not in prepare

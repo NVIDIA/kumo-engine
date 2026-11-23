@@ -192,8 +192,8 @@ python -m pytest -q -c /dev/null --confcutdir=test/scripts \
 
 The [shared platform test](../../packages/kumo-engine/test/byom_platform_test.py)
 uses one workload contract across Databricks, SageMaker and Snowflake. It installs
-the complete Engine wheel, its matching DiskGraph constituent wheel and
-`kumo-pytorch`. Engine supplies platform connectors and MLOps configuration;
+the candidate Engine wheel with the `pytorch` extra. The wheel bundles DiskGraph
+and `kumo.pytorch`. Engine supplies platform connectors and MLOps configuration;
 `kumo-pytorch` supplies batches and persisted preprocessing; the customer owns
 the PyTorch model and optimizer. This example uses the in-memory batch engine.
 
@@ -230,7 +230,7 @@ For one Actions run, open **SageMaker notebook platform checks**, select the
 reviewed branch, set `platform_matrix=true`, `platform=all` and
 `accelerator=all`, and supply both Databricks cluster IDs. This existing entrypoint
 calls the [customer-model matrix](../../.github/workflows/kumo-engine-byom-platforms.yml),
-which builds both packages once and executes all six platform/device cases.
+which builds the candidate wheel once and executes all six platform/device cases.
 `platform` or `accelerator` can select a smaller diagnostic run. Manual dispatch,
 exact branch admission and environment-specific identities remain enforced.
 The three test environments admit `main` and `egu/byom-mlops-lifecycle`, have no
@@ -244,8 +244,6 @@ The same test can run locally with already configured platform credentials:
 python packages/kumo-engine/test/byom_platform_test.py --execute \
   --platform all --accelerator all \
   --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
-  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
-  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
   --cpu-cluster-id CPU_CLUSTER_ID --gpu-cluster-id GPU_CLUSTER_ID \
   --output-dir /tmp/byom-platforms-001
 ```

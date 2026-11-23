@@ -93,7 +93,8 @@ def execute(config, dbutils):
                 sys.executable, '-I', '-m', 'pip', '--isolated', '--python',
                 str(python), 'install', '--index-url',
                 'https://pypi.org/simple', 'pip',
-                str(wheel) + '[databricks,mlflow,s3]'
+                str(wheel) + ('[databricks,mlflow,s3,pytorch]' if custom is not None
+                              else '[databricks,mlflow,s3]')
             ]
             if custom is not None:
                 install += [str(payload / name) for name in custom['wheels']]

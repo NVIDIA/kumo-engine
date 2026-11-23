@@ -16,10 +16,6 @@ on:  # yamllint disable-line rule:truthy
         type: string
   workflow_call:
     inputs:
-      build_pytorch:
-        description: Retain matching DiskGraph and build the customer PyTorch adapter.
-        type: boolean
-        default: false
       build_only:
         description: Build the source revision without candidate checks or GPU tests.
         type: boolean
@@ -111,8 +107,6 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the candidate wheel
-        env:
-          BUILD_PYTORCH: ${{ inputs.build_pytorch }}
         run: |
           set -euo pipefail
           export PIP_BUILD_CONSTRAINT="$RUNNER_TEMP/engine-build-constraints.txt"
@@ -130,35 +124,12 @@ jobs:
           done
           printf '#!/bin/sh\nexec cargo-zigbuild zig ranlib -- "$@"\n' > "$compiler_dir/zigranlib"
           chmod +x "$compiler_dir"/*
-          build_args=()
-          if [[ "${BUILD_PYTORCH:-false}" == true ]]; then
-            export TMPDIR="$RUNNER_TEMP/pytorch-build"
-            mkdir -p "$TMPDIR"
-            build_args+=(--keep-work)
-          fi
-          packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel" "${build_args[@]}"
-          if [[ "${BUILD_PYTORCH:-false}" == true ]]; then
-            mkdir -p "$RUNNER_TEMP/pytorch-wheels"
-            native_wheels=("$TMPDIR"/kumo-wheel-*/wheels/diskgraph-*.whl)
-            test "${#native_wheels[@]}" -eq 1
-            cp "${native_wheels[0]}" "$RUNNER_TEMP/pytorch-wheels/"
-            python -m pip --isolated wheel --no-deps --wheel-dir "$RUNNER_TEMP/pytorch-wheels" ./packages/experimental/kumo-pytorch
-          fi
+          packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
       - name: Retain the candidate wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/pr-wheel/*.whl
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Retain matching PyTorch workload wheels
-        if: ${{ inputs.build_pytorch }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: engine-pytorch-wheels-${{ github.sha }}
-          path: ${{ runner.temp }}/pytorch-wheels/*.whl
           compression-level: 0
           if-no-files-found: error
           retention-days: 14

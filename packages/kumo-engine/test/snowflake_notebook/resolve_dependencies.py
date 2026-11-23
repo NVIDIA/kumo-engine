@@ -25,7 +25,7 @@ def runtime_target():
                 system=platform.system(), architecture=platform.machine())
 
 
-def resolve(wheel, destination, plan, workload_wheels=None, accelerator='cpu'):
+def resolve(wheel, destination, plan, workload_wheels=None, accelerator='cpu', pytorch=False):
     if accelerator not in ('cpu', 'gpu'):
         raise ValueError('Select a CPU or GPU dependency environment')
     target = plan['target']
@@ -95,7 +95,7 @@ def resolve(wheel, destination, plan, workload_wheels=None, accelerator='cpu'):
             'none', *platforms, '--find-links',
             str(wheels), '--dest',
             str(wheels),
-            str(wheel.resolve()) + '[snowflake]',
+            str(wheel.resolve()) + ('[snowflake,pytorch]' if pytorch else '[snowflake]'),
             *[str(path.resolve()) for path in extra_wheels], *gpu_requirements
         ], check=True)
     archive = destination / 'wheelhouse.tar'
@@ -113,6 +113,8 @@ def resolve(wheel, destination, plan, workload_wheels=None, accelerator='cpu'):
                 bundle.addfile(member, source)
             path.unlink()
     resolved_plan = dict(plan)
+    if pytorch:
+        resolved_plan['pytorch'] = True
     if accelerator == 'gpu':
         resolved_plan['accelerator'] = accelerator
         resolved_plan['cuda_torch'] = dict(requirement=CUDA_TORCH, source_index=CUDA_INDEX)

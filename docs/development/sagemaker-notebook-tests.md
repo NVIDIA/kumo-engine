@@ -325,8 +325,8 @@ Customer modules cannot use built-in helper basenames. Their committed bytes
 and SHA-256 are recorded alongside the notebook sources.
 
 Pass each additional installed dependency with `--workload-wheel PATH`.
-For `kumo-pytorch`, supply both its wheel and the exact DiskGraph constituent
-wheel retained from the candidate Engine build. Admission uses the same
+The candidate Engine wheel bundles `kumo.pytorch` and DiskGraph. The launcher
+installs the `pytorch` extra for customer workloads. Admission uses the same
 [dependency checks as Databricks](databricks-notebook-tests.md#customer-model-lifecycle),
 including normalized installation paths and cross-dependency conflicts.
 Initialization installs these wheels with the Engine product, separately from
@@ -338,8 +338,6 @@ python packages/kumo-engine/test/sagemaker_notebook/run.py \
   --candidate /absolute/path/candidate.json \
   --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
   --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
-  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
-  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
   --output-dir /tmp/sagemaker-customer-model-001
 ```
 
@@ -357,8 +355,7 @@ native Studio and native MLflow UI qualification unverified.
 
 
 In Actions, select `workload=pytorch`, `scenario=engine` and
-`engine_checks_only=true`. The dispatch builds the adapter and retains the
-matching DiskGraph constituent wheel. Published phase results include
+`engine_checks_only=true`. The dispatch uses the bundled Engine wheel. Published phase results include
 `platform-prerequisite`, `train` and `reload`.
 
 The branch exception is limited to `egu/byom-mlops-lifecycle` in this workflow

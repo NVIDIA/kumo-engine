@@ -111,7 +111,8 @@ def prepare(config, session=None):
          ['--require-hashes', '-r',
           str(payload / 'kernel-requirements.txt')]),
         ('product-install',
-         [str(payload / config['candidate']['wheel_file']) + '[sagemaker]']),
+         [str(payload / config['candidate']['wheel_file'])
+          + ('[sagemaker,pytorch]' if config.get('workload') is not None else '[sagemaker]')]),
     ]:
         if name == 'product-install' and config.get('workload') is not None:
             requirements += [

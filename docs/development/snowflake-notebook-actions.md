@@ -335,23 +335,14 @@ custom weight loader and native `ModelVersion.load`. It never uses Engine's
 `Trainer` loader. This fixture checks the small in-memory batch engine, not
 DiskGraph execution, model quality or a deployed inference endpoint.
 
-Build a `kumo-pytorch` wheel from the same source checkout. Retain the exact
-DiskGraph constituent wheel produced by the complete Engine build (`--keep-work`
-retains its build directory). The extra native wheel supplies the distribution
-metadata needed by `kumo-pytorch`; its installed files must match Engine's
-bundled native files. Staging rejects dependency wheels that replace Engine or
-another supplied dependency with different bytes.
-
-Stage the extra wheels as dependency-resolution roots so the notebook can
-install them offline:
+Stage the candidate Engine wheel with `--pytorch` to resolve the bundled
+PyTorch extra for offline notebook installation.
 
 ```sh
 python packages/kumo-engine/test/snowflake_notebook/staging.py \
   --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
   --source-ref "$(git rev-parse HEAD)" \
-  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
-  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
-  --output /tmp/customer-snowflake-candidate.json
+  --pytorch --output /tmp/customer-snowflake-candidate.json
 python packages/kumo-engine/test/snowflake_notebook/prepare.py \
   --candidate /tmp/customer-snowflake-candidate.json \
   --workload packages/kumo-engine/test/wheel_mlops_pytorch_snowflake.py \
@@ -376,8 +367,8 @@ The default Kumo scenario retains its four phases and existing qualification gap
 
 
 
-In Actions, select `workload=pytorch` and `mode=engine`. The dispatch builds
-the adapter, retains the matching DiskGraph constituent wheel and selects the
+In Actions, select `workload=pytorch` and `mode=engine`. The dispatch resolves
+the candidate Engine wheel with the PyTorch extra and selects the
 native Snowflake customer workload plus its shared helper. Published phase
 results include `platform-prerequisite`, `train` and `reload`.
 

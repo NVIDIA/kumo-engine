@@ -71,10 +71,7 @@ def test_workflow_builds_and_downloads_this_dispatch_without_historical_pin():
     jobs = workflow['jobs']
     assert jobs['notebook']['needs'] == ['configuration', 'wheel']
     assert jobs['wheel']['uses'] == './.github/workflows/kumo-engine-pr.yml'
-    assert jobs['wheel']['with'] == {
-        'build_only': True,
-        'build_pytorch': "${{ inputs.workload == 'pytorch' }}",
-    }
+    assert jobs['wheel']['with'] == {'build_only': True}
     shared = yaml.safe_load(
         (DIRECTORY / '.github/workflows/kumo-engine-pr.yml').read_text())
     upload = next(s for s in shared['jobs']['wheel']['steps']

@@ -102,7 +102,6 @@ def verify(platform, accelerator, execution):
 
 def commands(args, platform, accelerator, root, source):
     python, wheel = sys.executable, str(args.wheel.resolve())
-    extra = [value for path in args.workload_wheel for value in ('--workload-wheel', str(path.resolve()))]
     execution = root / 'execution'
     common = ['--wheel', wheel, '--accelerator', accelerator]
     if platform == 'snowflake':
@@ -110,7 +109,7 @@ def commands(args, platform, accelerator, root, source):
         candidate, payload = root / 'candidate.json', root / 'payload'
         runtime = 'V2.9-' + accelerator.upper() + '-PY3.12'
         return [
-            [python, str(base / 'staging.py'), *common, *extra,
+            [python, str(base / 'staging.py'), *common, '--pytorch',
              '--source-ref', source, '--output', str(candidate)],
             [python, str(base / 'prepare.py'), '--accelerator', accelerator,
              '--candidate', str(candidate), '--output-dir', str(payload),
@@ -126,7 +125,7 @@ def commands(args, platform, accelerator, root, source):
     candidate = args.candidate or root.parent / 'candidate.json'
     command = [python, str(HERE / (platform + '_notebook') /
                            ('lifecycle_notebook.py' if platform == 'databricks' else 'run.py')),
-               '--execute', '--engine-checks-only', *common, *extra,
+               '--execute', '--engine-checks-only', *common,
                '--candidate', str(candidate), '--workload', str(workload(platform)),
                '--output-dir', str(execution)]
     if platform == 'databricks':
@@ -140,8 +139,8 @@ def commands(args, platform, accelerator, root, source):
 def run(args):
     platforms = PLATFORMS if args.platform == 'all' else (args.platform,)
     accelerators = ACCELERATORS if args.accelerator == 'all' else (args.accelerator,)
-    if args.wheel is None or len(args.workload_wheel) != 2:
-        raise ValueError('Supply the Engine wheel and matching DiskGraph/kumo-pytorch wheels')
+    if args.wheel is None:
+        raise ValueError('Supply the candidate Engine wheel')
     if args.execute and 'databricks' in platforms:
         for accelerator in accelerators:
             if not getattr(args, accelerator + '_cluster_id'):
@@ -199,7 +198,6 @@ def main():
     parser.add_argument('--platform', choices=(*PLATFORMS, 'all'), default='all')
     parser.add_argument('--accelerator', choices=(*ACCELERATORS, 'all'), default='all')
     parser.add_argument('--wheel', type=Path)
-    parser.add_argument('--workload-wheel', type=Path, action='append', default=[])
     parser.add_argument('--candidate', type=Path)
     parser.add_argument('--cpu-cluster-id')
     parser.add_argument('--gpu-cluster-id')

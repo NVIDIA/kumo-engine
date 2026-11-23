@@ -150,7 +150,7 @@ try:
         str(python), '-I', '-m', 'pip', '--isolated', 'install', '--no-index',
         '--find-links',
         str(wheelhouse),
-        str(wheel) + '[snowflake]'
+        str(wheel) + ('[snowflake,pytorch]' if dependencies.get('pytorch') else '[snowflake]')
     ]
     if custom is not None:
         install += [str(wheelhouse / name) for name in custom['wheels']]

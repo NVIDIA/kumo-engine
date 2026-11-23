@@ -1614,7 +1614,8 @@ def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_pa
     assert '--require-hashes' in kernel[0]
     assert str(tmp_path / 'kernel-requirements.txt') in kernel[0]
     assert '--require-hashes' not in product[0]
-    assert str(tmp_path / 'candidate.whl') + '[sagemaker]' in product[0]
+    extras = '[sagemaker,pytorch]' if custom else '[sagemaker]'
+    assert str(tmp_path / 'candidate.whl') + extras in product[0]
     assert product[0][product[0].index('--index-url') + 1] == 'https://pypi.org/simple'
     if custom:
         for name in ('diskgraph.whl', 'kumo_pytorch.whl'):
@@ -2028,10 +2029,6 @@ def test_actions_dispatch_selects_customer_workload(tmp_path, monkeypatch, selec
     script = step['run'].split("python - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
     candidate = tmp_path / 'candidate.json'
     candidate.write_text(json.dumps({'candidate': {'wheel_file': 'engine.whl'}}))
-    wheels = tmp_path / 'pytorch-wheels'
-    wheels.mkdir()
-    for name in ('diskgraph-matching.whl', 'kumo_pytorch-candidate.whl'):
-        (wheels / name).touch()
     monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
     monkeypatch.setenv('SAGEMAKER_TEST_CANDIDATE', str(candidate))
     monkeypatch.setenv('WORKLOAD', selected)
@@ -2046,9 +2043,7 @@ def test_actions_dispatch_selects_customer_workload(tmp_path, monkeypatch, selec
     assert '--engine-checks-only' in command
     if selected == 'pytorch':
         assert command[command.index('--workload') + 1].endswith('/wheel_mlops_pytorch.py')
-        assert command.count('--workload-wheel') == 2
-        assert str(wheels / 'diskgraph-matching.whl') in command
-        assert str(wheels / 'kumo_pytorch-candidate.whl') in command
+        assert '--workload-wheel' not in command
     else:
         assert '--workload' not in command
         assert '--workload-wheel' not in command

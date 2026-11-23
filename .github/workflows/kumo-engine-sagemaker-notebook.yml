@@ -85,7 +85,6 @@ jobs:
     uses: ./.github/workflows/kumo-engine-pr.yml
     with:
       build_only: true
-      build_pytorch: ${{ inputs.workload == 'pytorch' }}
     permissions:
       contents: read
       pull-requests: read
@@ -131,12 +130,6 @@ jobs:
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/sagemaker-wheel
-      - name: Download matching PyTorch workload wheels
-        if: ${{ inputs.workload == 'pytorch' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: engine-pytorch-wheels-${{ github.sha }}
-          path: ${{ runner.temp }}/pytorch-wheels
       - name: Identify this dispatch's wheel
         run: |
           export SAGEMAKER_TEST_CANDIDATE="$RUNNER_TEMP/sagemaker-candidate.json"
@@ -187,11 +180,6 @@ jobs:
                      '--output-dir', str(temp / 'sagemaker-notebook')]
           if os.environ['WORKLOAD'] == 'pytorch':
               command.extend(['--workload', str(base.parent / 'wheel_mlops_pytorch.py')])
-              wheels = sorted((temp / 'pytorch-wheels').glob('*.whl'))
-              if len(wheels) != 2:
-                  raise SystemExit('Expected matching DiskGraph and kumo-pytorch wheels')
-              for wheel in wheels:
-                  command.extend(['--workload-wheel', str(wheel)])
           if os.environ['ENGINE_ONLY'] == 'true':
               command.append('--engine-checks-only')
           raise SystemExit(subprocess.call(command))

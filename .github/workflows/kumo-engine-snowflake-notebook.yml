@@ -59,7 +59,6 @@ jobs:
     uses: ./.github/workflows/kumo-engine-pr.yml
     with:
       build_only: true
-      build_pytorch: ${{ inputs.workload == 'pytorch' }}
     permissions:
       contents: read
       pull-requests: read
@@ -110,12 +109,6 @@ jobs:
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/snowflake-wheel
-      - name: Download matching PyTorch workload wheels
-        if: ${{ inputs.workload == 'pytorch' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: engine-pytorch-wheels-${{ github.sha }}
-          path: ${{ runner.temp }}/pytorch-wheels
       - name: Stage this dispatch's candidate
         env:
           WORKLOAD: ${{ inputs.workload }}
@@ -127,11 +120,7 @@ jobs:
           printf 'SNOWFLAKE_TEST_CANDIDATE=%s\n' "$SNOWFLAKE_TEST_CANDIDATE" >> "$GITHUB_ENV"
           workload_args=()
           if [[ "$WORKLOAD" == pytorch ]]; then
-            wheels=("$RUNNER_TEMP"/pytorch-wheels/*.whl)
-            test "${#wheels[@]}" -eq 2
-            for wheel in "${wheels[@]}"; do
-              workload_args+=(--workload-wheel "$wheel")
-            done
+            workload_args+=(--pytorch)
           fi
           python packages/kumo-engine/test/snowflake_notebook/staging.py "${workload_args[@]}" \
             --wheel "$RUNNER_TEMP"/snowflake-wheel/*.whl \

@@ -108,7 +108,6 @@ jobs:
     uses: ./.github/workflows/kumo-engine-pr.yml
     with:
       build_only: true
-      build_pytorch: true
     permissions:
       contents: read
       pull-requests: read
@@ -159,10 +158,6 @@ jobs:
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/engine-wheel
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: engine-pytorch-wheels-${{ github.sha }}
-          path: ${{ runner.temp }}/pytorch-wheels
       - name: Authenticate as the dedicated SageMaker test runner
         if: matrix.platform == 'sagemaker'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
@@ -202,12 +197,9 @@ jobs:
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
           set -euo pipefail
-          wheels=("$RUNNER_TEMP"/pytorch-wheels/*.whl)
-          test "${#wheels[@]}" -eq 2
           python packages/kumo-engine/test/byom_platform_test.py --execute \
             --platform "$PLATFORM" --accelerator "$ACCELERATOR" \
             --wheel "$RUNNER_TEMP"/engine-wheel/*.whl \
-            --workload-wheel "${wheels[0]}" --workload-wheel "${wheels[1]}" \
             --cpu-cluster-id "$CPU_CLUSTER" --gpu-cluster-id "$GPU_CLUSTER" \
             --output-dir "$RUNNER_TEMP/byom-result"
       - name: Recover owned Databricks attempt resources

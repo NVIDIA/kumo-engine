@@ -67,7 +67,6 @@ def test_default_plan_contains_all_six_cases_and_no_cloud_execution(tmp_path, mo
     monkeypatch.setattr(runner.subprocess, 'check_output', lambda *a, **k: 'a' * 40)
     args = SimpleNamespace(platform='all', accelerator='all', execute=False,
                            verify_existing=False, wheel=tmp_path / 'engine.whl',
-                           workload_wheel=[tmp_path / 'diskgraph.whl', tmp_path / 'kumo_pytorch.whl'],
                            candidate=None, cpu_cluster_id=None, gpu_cluster_id=None,
                            output_dir=tmp_path / 'matrix')
     result = runner.run(args)
@@ -80,13 +79,13 @@ def test_default_plan_contains_all_six_cases_and_no_cloud_execution(tmp_path, mo
         assert '--accelerator' in command
         assert command[command.index('--accelerator') + 1] == name.rsplit('-', 1)[1]
     snowflake = json.loads((args.output_dir / 'snowflake-gpu/plan.json').read_text())
+    assert '--pytorch' in snowflake[0]
     assert 'V2.9-GPU-PY3.12' in snowflake[2]
 
 
 def test_missing_gpu_cluster_fails_before_any_case_is_submitted(tmp_path):
     args = SimpleNamespace(platform='all', accelerator='all', execute=True,
                            verify_existing=False, wheel=tmp_path / 'engine.whl',
-                           workload_wheel=[tmp_path / 'diskgraph.whl', tmp_path / 'kumo_pytorch.whl'],
                            cpu_cluster_id='0101-010101-test', gpu_cluster_id=None)
     with pytest.raises(ValueError, match='gpu Databricks cluster'):
         runner.run(args)
@@ -97,7 +96,6 @@ def test_interrupted_matrix_never_reports_unrun_cases_as_passed(tmp_path, monkey
     monkeypatch.setattr(runner.subprocess, 'call', lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
     args = SimpleNamespace(platform='all', accelerator='all', execute=True,
                            verify_existing=False, wheel=tmp_path / 'engine.whl',
-                           workload_wheel=[tmp_path / 'diskgraph.whl', tmp_path / 'kumo_pytorch.whl'],
                            candidate=tmp_path / 'candidate.json',
                            cpu_cluster_id='0101-010101-test', gpu_cluster_id='0202-020202-test',
                            output_dir=tmp_path / 'matrix')

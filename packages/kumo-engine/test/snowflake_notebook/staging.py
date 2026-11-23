@@ -40,7 +40,7 @@ def identity(wheel, source):
 
 
 def stage(wheel, source, run, output, key_file=None, workload_wheels=None,
-          accelerator='cpu'):
+          accelerator='cpu', pytorch=False):
     from resources import require
 
     extra_wheels = list(workload_wheels or [])
@@ -61,7 +61,7 @@ def stage(wheel, source, run, output, key_file=None, workload_wheels=None,
         plan = json.loads(
             Path(__file__).with_name('dependency-plan.json').read_text())
         wheelhouse = resolve(wheel, work / 'dependencies', plan, extra_wheels,
-                             accelerator=accelerator)
+                             accelerator=accelerator, **({'pytorch': True} if pytorch else {}))
         manifest = json.loads(
             wheelhouse.with_name('dependencies.json').read_text())
         with launch.connect(
@@ -94,6 +94,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
+    parser.add_argument('--pytorch', action='store_true', help='Resolve the bundled PyTorch extra')
     parser.add_argument('--source-ref', required=True)
     parser.add_argument(
         '--workload-wheel', type=Path, action='append',
@@ -105,7 +106,7 @@ def main():
         help='Encrypted local RSA key already unlocked in the memory cache')
     args = parser.parse_args()
     stage(args.wheel, args.source_ref, args.github_run, args.output,
-          args.key_file, args.workload_wheel, args.accelerator)
+          args.key_file, args.workload_wheel, args.accelerator, args.pytorch)
     print('Staged this checkout candidate; dependency cache verified')
 
 
