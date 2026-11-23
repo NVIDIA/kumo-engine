@@ -43,22 +43,22 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
         data / 'events.parquet',
     )
     connector = kumo.FileConnector(root_dir=str(data))
-    graph = kumo.Graph(
-        tables={
-            'users':
-            kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='id'),
-            'events':
-            kumo.Table.from_source_table(connector['events.parquet'],
-                                         primary_key='id',
-                                         time_column='at').with_column(
-                                             'user', stype=Stype.ID),
-        },
-        edges=[Edge(src_table='events', fkey='user', dst_table='users')],
-    )
     previous = get_scratch_dir()
     try:
         kumo.configure(scratch_dir=tmp_path / 'producer')
+        graph = kumo.Graph(
+            tables={
+                'users':
+                kumo.Table.from_source_table(connector['users.parquet'],
+                                             primary_key='id'),
+                'events':
+                kumo.Table.from_source_table(connector['events.parquet'],
+                                             primary_key='id',
+                                             time_column='at').with_column(
+                                                 'user', stype=Stype.ID),
+            },
+            edges=[Edge(src_table='events', fkey='user', dst_table='users')],
+        )
         snapshot = graph.snapshot()
         assert not (snapshot.index_path / 'index_manifest.json').exists()
         build_id = json.loads(
