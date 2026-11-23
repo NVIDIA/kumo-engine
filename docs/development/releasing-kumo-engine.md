@@ -30,14 +30,12 @@ encoded and the error asks for `pip install "kumo-engine[text]"`.
 `torch-geometric>=2.8.1,<3` is also resolved separately at install time.
 
 Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux x86-64 and
-`faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
+`faiss-cpu==1.14.3` on macOS and Windows. These markers live on the engine's direct
 dependencies so merging bundled packages preserves them. This dependency
 selection does not establish wheel or runtime support. Faiss is optional on
-Linux ARM64 and native Windows builds; the `cpu` extra opts into CPU Faiss
-there. Native Windows x86-64 supports CPU execution, including recommendation
-retrieval with `pip install "kumo-engine[cpu]"`. Select `accelerator="cpu"`
-when training and loading models. Native Windows CUDA is deferred; WSL2
-retains the Linux x86-64 GPU route.
+Linux ARM64; the `cpu` extra opts into CPU Faiss there. See the
+[package README](../../packages/kumo-engine/README.md#installation) for platform
+requirements and device selection.
 
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
@@ -122,7 +120,7 @@ platform's `release-version`.
      file and every stamped file agrees with it;
    - builds the wheels with `--release`, so the version is exactly the tag's;
    - runs the shared desktop reload check on the native Windows CPU wheel with
-     Python 3.11–3.14 before attachment; native Windows wheels remain CI artifacts;
+     Python 3.11–3.14 before attachment;
    - resolves each platform's wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
    - runs the shared eight-task GPU check on the finished Linux x86_64 wheel
@@ -239,17 +237,8 @@ wheel on a macOS ARM64 runner with the same deployment target.
 
 ### Native Windows builds
 
-Native Windows x86-64 supports CPU execution. Install the published wheel with
-`pip install "kumo-engine[cpu]"` for CPU Faiss retrieval, and select
-`accelerator="cpu"` when training and loading models. Use WSL2 and the Linux
-x86-64 wheel for NVIDIA GPU workloads; native Windows CUDA is deferred.
-
-Native Windows x64 installations require a Microsoft Visual C++ v14 runtime
-at least as recent as the build tools used for the wheel. If the runtime is
-missing or too old, install the
-[latest supported x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
-This runtime prerequisite is separate from the MSVC build tools required to
-build from source; the engine wheel does not bundle the redistributable.
+For installed-wheel prerequisites, see the
+[package README](../../packages/kumo-engine/README.md#installation).
 
 On native Windows, run the builder in Git Bash with native Windows Python,
 the Rust MSVC toolchain, CMake, and an activated Visual Studio x64 C++/Windows
@@ -293,8 +282,8 @@ The engine and GloVe release jobs call
 [Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
 It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
 Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
-plus the Kitmaker bearer token. The reusable workflow's caller token is optional.
-The approved Portal job resolves the required `KITMAKER_API_TOKEN` secret from
+plus the Kitmaker bearer token. Callers do not forward the token.
+The approved Portal job resolves `KITMAKER_API_TOKEN` solely from
 the protected `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
 workflow, and ref; authorization for cuOpt does not grant access to Kumo.
 The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
@@ -314,7 +303,11 @@ code. Release-event calls remain enabled.
 The check reads project 6903 and verifies its name and owner. It does not build
 wheels, create a Kitmaker release, or publish packages. Success confirms
 connectivity and project-read access; release submission and wheel fetching
-still require a release dry run.
+still require a release dry run. Project 6903 acceptance of `win_amd64` wheels
+has not been confirmed. Obtain confirmation from the project owner before
+the 1.2 release; installed-wheel qualification does not verify this external
+publication prerequisite. A Kitmaker dry run submits a release request with
+upload disabled.
 
 The Charon grant allows `refs/heads/main`, `refs/tags/kumo-engine-v*`, and
 `refs/tags/kumo-glove-6b-50d-v*`. Feature branches are not authorized. The grant

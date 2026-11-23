@@ -78,7 +78,7 @@ Choose your hardware and runtime environment:
 
 - **Hardware:** [Prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) · [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
 - **Setup guides:** [Linux](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/linux-machine-deployment) · [macOS](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/macos) · [Windows (WSL2)](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/windows-wsl2) · [Snowflake notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/snowflake-notebook) · [Databricks notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/databricks-notebook)
-- **Platform details:** the [package README](packages/kumo-engine/README.md#installation) covers native Windows CPU installation with `kumo-engine[cpu]` and ARM64 Linux setup, including Faiss for recommendation tasks. Native Windows CUDA is deferred.
+- **Platform details:** the [package README](packages/kumo-engine/README.md#installation) covers native Windows CPU prerequisites and ARM64 Linux setup. Use WSL2 for NVIDIA GPUs on Windows.
 
 ## Quickstart
 

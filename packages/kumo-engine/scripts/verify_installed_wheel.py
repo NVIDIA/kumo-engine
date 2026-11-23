@@ -59,6 +59,16 @@ def check_install(source: str | None, wheel: Path) -> None:
         raise ValueError('Installed distribution differs from the downloaded wheel')
 
 
+def check_faiss(target: str, present: bool, versions: dict[str, str]) -> None:
+    if target == 'windows-native':
+        if not present or versions.get('faiss-cpu') != '1.14.3':
+            raise ValueError('Bare Windows wheel requires CPU Faiss 1.14.3')
+        if any(name.startswith('faiss-gpu') for name in versions):
+            raise ValueError('Native Windows qualification must omit GPU Faiss')
+    elif target == 'linux-arm64' and present:
+        raise ValueError('Bare ARM wheel qualification must omit Faiss')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', required=True, type=Path)
@@ -85,8 +95,17 @@ def main() -> None:
     if not ingest.is_file() or not os.access(ingest, os.X_OK):
         raise ValueError('Installed wheel ingestion executable is missing')
     faiss_present = importlib.util.find_spec('faiss') is not None
-    if args.platform != 'windows-wsl' and faiss_present:
-        raise ValueError('Bare Windows/ARM wheel qualification must omit Faiss')
+    faiss_versions = {}
+    for name in ('faiss-cpu', 'faiss-gpu', 'faiss-gpu-cu11', 'faiss-gpu-cu12'):
+        try:
+            faiss_versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    check_faiss(args.platform, faiss_present, faiss_versions)
+    faiss_origin = None
+    if args.platform == 'windows-native':
+        faiss_origin = check_origin(importlib.import_module('faiss').__file__,
+                                    Path(sys.prefix))
     import torch
     with args.wheel.open('rb') as wheel_file:
         wheel_sha256 = hashlib.file_digest(wheel_file, 'sha256').hexdigest()
@@ -98,6 +117,7 @@ def main() -> None:
         'platform': args.platform, 'system': platform.platform(),
         'python': sys.version, 'executable': sys.executable,
         'origins': origins, 'ingest': str(ingest), 'faiss_present': faiss_present,
+        'faiss_versions': faiss_versions, 'faiss_origin': faiss_origin,
         'torch': torch.__version__, 'torch_cuda_build': torch.version.cuda,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

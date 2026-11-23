@@ -18,7 +18,7 @@ pip install kumo-engine
 | Requirement | Details |
 | --- | --- |
 | Python | CPython 3.11 or later |
-| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows x86-64 on CPU. Windows through WSL2 also supports NVIDIA GPUs. |
+| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows 10 / Windows Server 2016 or later on x86-64 CPU. |
 | CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
 | GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
@@ -27,7 +27,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 
 | Extra | Adds |
 | --- | --- |
-| `cpu` | CPU Faiss for recommendation retrieval on native Windows and Linux ARM64 |
+| `cpu` | CPU Faiss for recommendation retrieval on Linux ARM64 |
 | `s3` | Amazon S3 |
 | `gcs` | Google Cloud Storage |
 | `adls` | Azure Data Lake Storage Gen2 |
@@ -38,11 +38,15 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
 
-Kumo Engine trains on an NVIDIA GPU or an Apple silicon GPU when one is available, and on the CPU otherwise. To choose the device, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
+Kumo Engine selects CPU on native Windows. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 
-On native Windows, install `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. Native Windows CUDA support is deferred; use WSL2 for NVIDIA GPU workloads.
+On native Windows, `pip install kumo-engine` includes CPU Faiss; training and model loading default to CPU. Use WSL2 for NVIDIA GPU workloads.
 
-Recommendation tasks use Faiss for retrieval. On Linux x86-64 and macOS, `pip install kumo-engine` installs Faiss as a dependency. On native Windows and Linux ARM64, Faiss is optional, and other tasks run without it. To run recommendation tasks there, install CPU Faiss with `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`. For GPU Faiss on Linux ARM64, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md), which also covers CUDA training on ARM64.
+Install the [latest Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe), with a runtime at least as recent as the wheel's build tools, and [enable Win32 long paths](https://docs.python.org/3.14/using/windows.html#removing-the-max-path-limitation) for paths longer than 260 characters. The OS minimum follows [Rust](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html) and [Python](https://docs.python.org/3.14/using/windows.html#supported-windows-versions) requirements.
+
+CI builds on Windows Server 2022 and runs installed-wheel tests on Windows Server 2025 with an administrative account; desktop Windows and restricted accounts have not been qualified. The tests have not recorded the long-path registry setting.
+
+Recommendation tasks use Faiss for retrieval. The base install includes GPU Faiss on Linux x86-64 and CPU Faiss on macOS and Windows. On Linux ARM64, install `pip install "kumo-engine[cpu]"` and choose `accelerator="cpu"` for CPU retrieval. For GPU Faiss on Linux ARM64, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md), which also covers CUDA training on ARM64.
 
 On NVIDIA GPUs, the optional `torch-scatter` package speeds up some training workloads. Install the build for your PyTorch and CUDA versions as described in [PyG's installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
 

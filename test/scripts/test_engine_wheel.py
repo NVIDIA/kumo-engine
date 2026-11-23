@@ -8,7 +8,6 @@ import runpy
 import subprocess
 import sys
 import tomllib
-import types
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
@@ -275,17 +274,18 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
     ('linux', 'aarch64', set()),
     ('darwin', 'arm64', {'faiss-cpu'}),
     ('darwin', 'x86_64', {'faiss-cpu'}),
-    ('win32', 'AMD64', set()),
-    ('win32', 'ARM64', set()),
+    ('win32', 'AMD64', {'faiss-cpu'}),
+    ('win32', 'ARM64', {'faiss-cpu'}),
 ])
 @pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
         tmp_path, monkeypatch, platform, machine, expected, extra):
+    import setuptools
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
-    monkeypatch.setitem(sys.modules, 'setuptools', types.SimpleNamespace(
-        setup=lambda **kwargs: setup_kwargs.update(kwargs)))
+    monkeypatch.setattr(setuptools, 'setup',
+                        lambda **kwargs: setup_kwargs.update(kwargs))
     runpy.run_path(str(REPO_ROOT / 'packages/kumo-engine/setup.py'))
     engine = COMPONENTS['kumo-engine']
     provider_requirements = [

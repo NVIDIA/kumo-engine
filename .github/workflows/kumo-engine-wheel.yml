@@ -11,7 +11,9 @@
 #   3. This workflow builds the wheels at that tag and attaches them to the
 #      release once `check-requirements` resolves each platform's Python
 #      dependencies and `wheel-smoke` tests the finished Linux x86_64 wheel
-#      on all eight GPU task types. The agent skill zips
+#      on all eight GPU task types, and `platform-qualification` validates
+#      the installed platform wheels and native Windows CPU/Faiss reloads.
+#      The agent skill zips
 #      (`kumo-data-science-<host>.zip`, built from the same commit by
 #      `skill-zips`) are attached beside them; the docs and install scripts
 #      link to them by release tag.
@@ -328,8 +330,6 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/kitmaker-portal.yml
-    secrets:
-      KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
     with:
       project: kumo-engine
       project_id: 6903
