@@ -101,7 +101,6 @@ uses the same root for sibling `tasks/<build>/<task>` and `cache/<build>` state.
 A crash before reference publication can leave an unreferenced build;
 [#486](https://github.com/NVIDIA/kumo-engine/issues/486) tracks recovery and safe orphan cleanup.
 
-
 ## Next Steps
 
 ### Use a Coding Agent
