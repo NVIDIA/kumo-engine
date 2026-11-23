@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # 2.0.0a1 keys: the GTC Berlin lab's data/blueprint_v2_lab_tuned/config.yaml as
 # shipped (paths below are the lab container's). tests/unit/test_config_migration.py
 # migrates it.

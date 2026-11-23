@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 seed: 42
 
 # Blueprint v2 final-sweep candidate D: recipes/blueprint_v2/config.yaml with

@@ -279,6 +279,20 @@ def validate_text(path: str, text: str, policy: dict[str, Any]) -> str | None:
     start, preamble_error = header_start(path, lines, policy)
     if preamble_error is not None:
         return preamble_error
+    # Preserve the pinned Blueprint source while validating its exact header
+    # with the same attribution, license and duplicate checks as other files.
+    blueprint_header = [
+        "# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
+        "# SPDX-License-Identifier: Apache-2.0",
+    ]
+    if (path.startswith("packages/kumo-transaction/")
+            and ".." not in PurePosixPath(path).parts
+            and lines[start:start + 2] == blueprint_header):
+        lines = lines[:start] + [
+            blueprint_header[0].removesuffix(" All rights reserved."),
+            "# All rights reserved.",
+            blueprint_header[1],
+        ] + lines[start + 2:]
     limit = min(len(lines), policy["max_header_lines"])
     style_errors: list[str] = []
     for style in styles:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # One variant per row. `overrides` are dotted keys into config.yaml; a mapping
 # value replaces that whole section. Each row changes one slot. When a slot
 # cannot change alone (a flat stream needs a flat structure), the row changes

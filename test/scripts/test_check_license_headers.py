@@ -23,6 +23,48 @@ SHADCN_HEADER = """// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
 """
 
 
+def test_blueprint_header_normalization_is_exact_and_scoped() -> None:
+    path = "packages/kumo-transaction/src/tfm/example.py"
+    header = """# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""
+    assert check_license_headers.validate_text(path, header + "value = 1\n",
+                                               POLICY) is None
+    assert check_license_headers.validate_text(
+        path, "#!/usr/bin/env python\n" + header, POLICY) is None
+    for other in ("example.py", "packages/kumo-transaction-other/a.py",
+                  "packages/kumo-transaction/../other.py"):
+        assert check_license_headers.validate_text(other, header,
+                                                   POLICY) is not None
+    for invalid in (
+            header.replace("Apache-2.0", "MIT"),
+            header.replace("NVIDIA", "OTHER"),
+            header.replace("All rights reserved.", "Some rights reserved."),
+            header + header,
+            header + HASH_HEADER,
+            HASH_HEADER + header,
+            "value = 1\n" + header,
+    ):
+        assert check_license_headers.validate_text(path, invalid,
+                                                   POLICY) is not None
+
+
+def test_all_pinned_blueprint_headers_pass_without_changing_source() -> None:
+    root = REPOSITORY_ROOT / "packages/kumo-transaction"
+    paths = check_license_headers.tracked_files(REPOSITORY_ROOT)
+    for path in paths:
+        if not path.startswith("packages/kumo-transaction/"):
+            continue
+        try:
+            text = (REPOSITORY_ROOT / path).read_text()
+        except UnicodeError:
+            continue
+        assert check_license_headers.validate_text(path, text,
+                                                   POLICY) is None, path
+    assert root.joinpath("LICENSE").read_bytes() != REPOSITORY_ROOT.joinpath(
+        "LICENSE").read_bytes()
+
+
 def test_header_validation_covers_supported_syntax_and_preambles() -> None:
     valid = {
         "example.py":

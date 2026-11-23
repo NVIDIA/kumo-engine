@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 0: does pretraining beat a random initialization on the proxy?
 # Scores the two one-epoch 100k-user checkpoints (one row per user; every
 # 128-event window) and the same architecture untrained. See

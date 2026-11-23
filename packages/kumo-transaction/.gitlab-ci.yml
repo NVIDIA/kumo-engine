@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # CPU-only merge gate. No GPU, network downloads, RAPIDS, or LFS weights.
 default:
   image: python:3.12-bookworm

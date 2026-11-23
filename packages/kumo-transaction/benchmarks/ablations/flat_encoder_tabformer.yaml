@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 seed: 42
 
 # A flat BERT-style encoder on Blueprint v1's TabFormer rows (ADR 0019): v1's

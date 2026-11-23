@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 3: objective. The causal hybrid (next-event fields plus MLM, read at
 # the last event) against PRAGMA's bidirectional MLM-only stack read at
 # [USR] (`profile_history`), at the same width, depth, budget, and optimizer.

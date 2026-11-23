@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # pragmatiq WorldConfig for the book the blueprint_v2 pragmatiq configs
 # are sized against. Same as pragmatiq v1.1.0's configs/data/synthetic.yaml,
 # except for the span and the label evaluation months, which are moved so that

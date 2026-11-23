@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 2: Muon on the hidden matrices, AdamW (stage 1's lr 1e-3) on the rest.
 #
 # Also re-scores the stage 1 checkpoints with the surprise readout and the

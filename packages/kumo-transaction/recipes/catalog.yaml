@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 recipes:
   - id: blueprint_v1
     title: NVIDIA TFM Blueprint v1 (flat tokens, causal decoder, XGBoost)

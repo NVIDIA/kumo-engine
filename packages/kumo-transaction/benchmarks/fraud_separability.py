@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """How much of a fraud label one transaction gives away, on a pragmatiq book.
 
 Fits the same gradient-boosted classifier on three feature sets, on a

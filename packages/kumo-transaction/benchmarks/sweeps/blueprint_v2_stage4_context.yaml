@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 4: context. 512 events per window, for pretraining and for the probe
 # histories, against stage 3's 128. Batch 32 keeps the events per step (and
 # the step count) equal to stage 3's 128 x 128, so the comparison is at the

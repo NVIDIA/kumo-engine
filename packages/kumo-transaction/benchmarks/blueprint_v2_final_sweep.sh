@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Blueprint v2 final sweep (benchmarks/results/blueprint_v2_final_sweep.md):
 # candidates A, B, C, D at seeds 42, 43, 44, run one after another. C and D
 # reuse A's and B's checkpoints and only re-run evaluation with LoRA rank 16.

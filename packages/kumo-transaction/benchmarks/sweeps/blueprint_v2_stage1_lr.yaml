@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 1: learning rate at batch 128, on the hashed-identity tokenizer.
 #
 # Stage 0 showed the byte-level merchant was not learned (next-event

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Downstream adaptation on the search's winning checkpoint.
 #
 # - `lora_recipe`: the recipe's current arm (rank 8, alpha 16, qkv and out, 300

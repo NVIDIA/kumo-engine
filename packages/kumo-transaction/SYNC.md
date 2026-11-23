@@ -7,8 +7,8 @@ Python distribution's version remains `2.0.0a2`.
 ## Local adaptations
 
 - `README.md`: retain the Kumo Transaction entry point and explain package-local commands.
-- `pyproject.toml`: link to this public package and declare an independent uv
-  workspace so package-local commands use this kit's lockfile and dependencies.
+- `pyproject.toml`: use public metadata, SPDX `Apache-2.0`, the package-owned
+  `LICENSE`, a setuptools>=77 build backend, and an independent uv workspace.
 - `mkdocs.yml`: use public repository metadata and remove the private Pages URL.
 - `benchmarks/results/pragmatiq_fraud_separability.json`: replace the original
   developer's absolute dataset path with its dataset name; preserve all measurements.
@@ -21,6 +21,18 @@ Python distribution's version remains `2.0.0a2`.
 
 Engine's `docs/maintenance/agent-contract.json` registers the imported
 instruction scopes.
+
+`UPSTREAM.json` also lists 42 files under `header_added_files`. These authored
+configuration/build/example files had no file-level attribution; their pinned
+source tree declares NVIDIA copyright and Apache-2.0 in its own `LICENSE`.
+Engine adds canonical SPDX headers without changing executable content. No
+provenance exclusions are needed. The 224 existing Blueprint two-line SPDX
+headers stay byte-for-byte intact; Engine recognizes that exact form only here.
+
+The always-reporting `transaction-blueprint` CI check detects package and policy
+changes before running frozen CPU checks and wheel-license verification. Root
+Flake8/isort defer to the package's Ruff policy. Making this status required
+needs repository branch-protection configuration after the workflow is available.
 
 All other imported files match the pinned source byte for byte. The source
 hash inventory covers every imported file, including adapted files before

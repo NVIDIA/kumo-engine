@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Stage 5: budget. Stage 3's causal winner (128-event context, Muon) trained
 # three times as long: 4,500 steps of 128 windows x 128 events, about one pass
 # over the book's train-side windows. Warmup stays at 5% of steps. Whether the
