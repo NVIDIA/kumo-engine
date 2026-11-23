@@ -201,6 +201,7 @@ class DiskGraphEngine:
 
     :param index: directory of the base index.
     :param num_threads: native sampling threads.
+    :param profile: collect native DiskGraph work counters and operation times.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
         ``None`` uses fresh randomness. A fixed seed repeats selections for the
         same index and sampling plan across epochs. This is independent of the
@@ -222,6 +223,7 @@ class DiskGraphEngine:
         *,
         index: str | Path,
         num_threads: int | None = None,
+        profile: bool = False,
         random_seed: int | None = 0,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
@@ -233,6 +235,7 @@ class DiskGraphEngine:
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
         self.index = Path(index)
         self.num_threads = num_threads
+        self.profile = profile
         if random_seed is not None and (
             type(random_seed) is not int or not 0 <= random_seed < 2**64
         ):
@@ -409,6 +412,7 @@ class DiskGraphEngine:
             schema,
             num_threads=self.num_threads,
             random_seed=self.random_seed,
+            **({"profile": True} if self.profile else {}),
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
@@ -420,12 +424,17 @@ class DiskGraphEngine:
 class DiskGraphSource:
     """Adapt direct DiskGraph graph/temporal results to kumo-pytorch's source contract."""
 
+    _profile = False
+    last_sampling_profile: Mapping[str, int] | None = None
+    last_retrieval_profile: Mapping[str, int] | None = None
+
     def __init__(
         self,
         artifact: _DiskGraphIndex,
         schema: DataSchema,
         *,
         num_threads: int | None,
+        profile: bool = False,
         random_seed: int | None = 0,
     ) -> None:
         try:
@@ -444,6 +453,7 @@ class DiskGraphSource:
         self._index_path = artifact.path
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
+        self._profile = profile
         self._num_threads = num_threads
         self._random_seed = random_seed
         self._tables = {table.name: table for table in schema.tables}
@@ -459,6 +469,7 @@ class DiskGraphSource:
                 artifact.path,
                 random_seed=random_seed,
                 num_threads=num_threads,
+                **({"profile": True} if profile else {}),
             )
         )
         self._last_temporal_profile: Mapping[str, Any] | None = None
@@ -475,6 +486,7 @@ class DiskGraphSource:
                     self._index_path,
                     random_seed=self._random_seed,
                     num_threads=self._num_threads,
+                    **({"profile": True} if self._profile else {}),
                 )
             )
         return self._sampler_context
@@ -713,6 +725,8 @@ class DiskGraphSource:
         from kumo.pytorch.aggregate_materialization import _ModelValuesSource
 
         bound = copy.copy(self)
+        if self._profile:
+            bound.last_sampling_profile = bound.last_retrieval_profile = None
         bound._materialized_values = values
         # Explicit-request/reference assembly retains its established adapter;
         # native batches consume the typed seed columns directly.
@@ -1535,6 +1549,8 @@ class DiskGraphSource:
         source: str,
         roots: Sequence[GraphRoot],
     ) -> tuple[Any, list[Mapping[str, Any]], Mapping[str, str]]:
+        if self._profile:
+            self.last_sampling_profile = None
         neighborhood = sample.neighborhoods.get(source)
         if neighborhood is None:
             raise ValueError(f"unknown neighborhood {source!r}")
@@ -1545,20 +1561,24 @@ class DiskGraphSource:
             and runtime["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
-            return self._runtime_graph_events(sample, source, runtime)
+            result = self._runtime_graph_events(sample, source, runtime)
+            if self._profile:
+                self.last_sampling_profile = runtime.get("native_profile")
+            return result
         root_ids = self._root_ids(sample.entity.table, roots)
 
         plan, physical_relations = self._sampling_plan(neighborhood)
-        events = list(
-            self._sampler.sample(
-                {sample.entity.table: root_ids},
-                json.dumps(plan),
-                fused=False,
-                seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
-                swap_edge_direction=False,
-                seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
-            )
+        iterator = self._sampler.sample(
+            {sample.entity.table: root_ids},
+            json.dumps(plan),
+            fused=False,
+            seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
+            swap_edge_direction=False,
+            seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
         )
+        events = list(iterator)
+        if self._profile:
+            self.last_sampling_profile = getattr(iterator, "native_profile", None)
         return neighborhood, events, physical_relations
 
     def close(self) -> None:
@@ -2323,6 +2343,8 @@ class DiskGraphSource:
         node_ids: Sequence[int],
         names: Sequence[str],
     ) -> dict[str, Any]:
+        if self._profile:
+            self.last_retrieval_profile = None
         runtime = getattr(self, "_runtime_batch", None)
         if runtime is not None and table in runtime["raw_features"]:
             ids = runtime["graphs"]["main"]["node_ids"].get(table)
@@ -2344,9 +2366,10 @@ class DiskGraphSource:
                 for name in names
             }
         chunks: dict[str, list[Any]] = {name: [] for name in names}
-        for event in self._sampler.fetch_features(
+        iterator = self._sampler.fetch_features(
             [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
-        ):
+        )
+        for event in iterator:
             if event["type"] == "feature":
                 batch = event["batch"]
                 for name in names:
@@ -2371,6 +2394,8 @@ class DiskGraphSource:
                     f"{len(node_ids)} {table!r} nodes"
                 )
             result[name] = self._decode_decimal_array(table, name, values)
+        if self._profile:
+            self.last_retrieval_profile = getattr(iterator, "native_profile", None)
         return result
 
     @staticmethod

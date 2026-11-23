@@ -33,13 +33,15 @@ def _assert_equal(actual: object, expected: object) -> None:
         assert isinstance(expected, Mapping)
         assert actual.keys() == expected.keys()
         for name in actual:
-            if name == "timings_ns":
-                durations, reference_durations = actual[name], expected[name]
-                assert durations.keys() == reference_durations.keys()
-                assert all(
-                    isinstance(value, int) and value >= 0
-                    for value in (*durations.values(), *reference_durations.values())
-                )
+            if name in {"timings_ns", "native_profile"}:
+                observed, reference = actual[name], expected[name]
+                assert observed.keys() == reference.keys()
+                for key in observed:
+                    if name == "timings_ns" or key in {"sampling_ns", "retrieval_ns"}:
+                        for value in (observed[key], reference[key]):
+                            assert type(value) is int and value >= 0
+                    else:
+                        _assert_equal(observed[key], reference[key])
                 continue
             _assert_equal(actual[name], expected[name])
     elif isinstance(actual, (list, tuple)):
@@ -65,7 +67,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
 ) -> None:
     """Explicit requests preserve graph/history outputs and the iterator cursor."""
     index = RuntimeIndex(
-        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2
+        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2, profile=True
     )
     sampling_plan = _sampling_plan()
     for layer in sampling_plan["layers"]:

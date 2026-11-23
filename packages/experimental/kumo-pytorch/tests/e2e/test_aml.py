@@ -517,10 +517,23 @@ def test_li_medium_l01_combined_forecast(tmp_path):
     ids=["l02-delay", "l03-format", "l04-involvement"],
 )
 def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score, loss_sums):
+    from e2e.datasets import aml
+    from tests.e2e.loader_timing import parquet_metadata, stage_observer
+
     files, cutoff = li_heads_source
-    spec, data, table = prepare_li_medium(
-        files, tmp_path / "prepared", anchor_rows=range(6), binding=binding
-    )
+    with stage_observer(optional=True) as observer:
+        if observer is not None:
+            observer.wrap(aml, "_prepare_aml", "source.convert")
+        spec, data, table = prepare_li_medium(
+            files, tmp_path / "prepared", anchor_rows=range(6), binding=binding
+        )
+    if observer is not None and binding == "L03":
+        for raw, output, rows in (("mapping", "accounts", 1), ("transactions", "transactions", 2)):
+            source = parquet_metadata(files[raw])
+            converted = parquet_metadata(data.tables[output].path)
+            assert source["rows"] == converted["rows"] == rows
+            assert source["sha256"] != converted["sha256"]
+        assert observer.stages["source.convert"]["calls"] == 1
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with (
         api.prepare(spec, data, engine) as plan,

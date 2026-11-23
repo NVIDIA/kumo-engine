@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::temporal_query::QueryPython as _;
-use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
+use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError, ProfileOperation};
 use arrow::array::{make_array, ArrayData};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, UInt32Array, UInt64Array};
@@ -168,6 +168,9 @@ fn runtime_batch_to_pydict<'py>(
         raw_features.set_item(ns, raw_feature_bank_to_pydict(py, ns, bank)?)?;
     }
     dict.set_item("raw_features", raw_features)?;
+    if let Some(profile) = &batch.profile {
+        dict.set_item("native_profile", ProfileOperation::Batch.to_dict(py, profile)?)?;
+    }
 
     Ok(dict)
 }
@@ -797,15 +800,16 @@ fn map_runtime_err(error: diskgraph_runtime::RuntimeError) -> PyErr {
 #[pymethods]
 impl RuntimeIndex {
     #[new]
-    #[pyo3(signature = (parent_root, tt_id, rnd_seed=None, num_threads=None))]
+    #[pyo3(signature = (parent_root, tt_id, rnd_seed=None, num_threads=None, profile=false))]
     pub fn new(
         parent_root: String,
         tt_id: String,
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
+        profile: bool,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
+            inner: diskgraph_runtime::RuntimeIndex::with_profiling(parent_root, tt_id, rnd_seed, num_threads, profile)
                 .map_err(map_runtime_err)?,
         })
     }
@@ -1017,6 +1021,8 @@ impl RuntimeBatchIterator {
         pseudo_seed_time=None,
         disable_pseudo_time=false,
         projections=None,
+        *,
+        profile=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1051,11 +1057,12 @@ impl RuntimeBatchIterator {
         pseudo_seed_time: Option<i64>,
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
+        profile: bool,
     ) -> PyResult<Self> {
         Ok(Self {
             history: None,
             planning: None,
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
+            inner: diskgraph_runtime::RuntimeIndex::with_profiling(parent_root, tt_id, rnd_seed, num_threads, profile)
                 .map_err(map_runtime_err)?
                 .iter(
                     stage_table,
@@ -1123,7 +1130,7 @@ impl RuntimeBatchIterator {
     ) -> PyResult<()> {
         let plan = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
             &sampler.reader, &root_type, &plan,
-        ).map_err(DiskgraphConfigError::new_err)?;
+        ).map_err(DiskgraphConfigError::new_err)?.with_profile(sampler.engine.profile);
         let merges: Vec<crate::temporal_query::EventMerge> = serde_json::from_str(&merges)
             .map_err(|e| DiskgraphConfigError::new_err(format!("invalid history merges: {e}")))?;
         for merge in &merges {

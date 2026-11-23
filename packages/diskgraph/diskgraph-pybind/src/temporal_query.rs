@@ -11,7 +11,7 @@ use crate::DiskgraphConfigError;
 use serde::Deserialize;
 use diskgraph_train_table::batch_aggregate::{scalar_values_to_array, ScalarValue};
 pub(crate) use diskgraph_train_table::batch_aggregate::{
-    execute_parallel, execute_aggregate_plan, execute_lengths_parallel, QueryResult, LengthResult,
+    PreparedTemporalPlan, PreparedAggregatePlan, execute_lengths_parallel, QueryResult, LengthResult,
 };
 
 #[derive(Deserialize)]
@@ -162,6 +162,9 @@ impl QueryPython for QueryResult {
         let stats = PyDict::new(py);
         stats.set_item("frames_materialized", self.stats.frames_materialized)?;
         stats.set_item("rows_materialized", self.stats.rows_materialized)?;
+        if let Some(count) = self.stats.rows_considered {
+            stats.set_item("rows_considered", count)?;
+        }
         stats.set_item("rows_decoded", self.stats.rows_decoded)?;
         stats.set_item("values_decoded", self.stats.values_decoded)?;
         stats.set_item("edges_visited", self.stats.edges_visited)?;

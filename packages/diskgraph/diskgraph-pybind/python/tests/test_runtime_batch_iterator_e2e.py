@@ -54,6 +54,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         dataset_ref,
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
+        profile=kwargs.pop("profile", False),
     )
     return index.iter(**kwargs)
 
@@ -1054,6 +1055,15 @@ def test_execute_tt_plan_end_to_end(tmp_path):
     assert seen == train_stage["row_count"]
 
 
+def _assert_native_profile(batch, fused):
+    profile = batch["native_profile"]
+    assert profile["fused"] is fused
+    assert profile["rows_examined"] >= profile["rows_decoded"] > 0
+    assert profile["sampling_ns"] > 0 and profile["retrieval_ns"] > 0
+    if fused:
+        assert profile["sampling_ns"] == profile["retrieval_ns"]
+
+
 def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
     """Both sampler dispatch paths produce the same dict structure."""
     def collect_keys(fused: bool):
@@ -1072,6 +1082,7 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
             fused=fused,
         )
         batch = next(iter(it))
+        assert "native_profile" not in batch
         return {
             "task": sorted(batch["task"].keys()),
             "graphs.main": sorted(batch["graphs"]["main"].keys()),
@@ -1099,6 +1110,8 @@ def _projected_batch(
     *,
     fused: bool | None,
     projections: dict[str, list[str]] | None = None,
+    neighborhoods=(),
+    profile=False,
 ) -> dict[str, Any]:
     # `projections` is an ARGUMENT to iter(), not a key inside the plan:
     # the plan describes the traversal, this describes what the caller consumes.
@@ -1108,6 +1121,7 @@ def _projected_batch(
         entity_node_type="users",
         sampling_plan=_sampling_plan(),
         projections=projections,
+        profile=profile,
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -1117,7 +1131,22 @@ def _projected_batch(
         drop_last=False,
         fused=fused,
     )
+    if neighborhoods:
+        root_only = {"plan": {"layers": []}, "projections": {"users": ["user_id"]}}
+        it.with_neighborhoods(json.dumps(dict.fromkeys(neighborhoods, root_only)))
     return next(iter(it))
+
+
+def test_named_neighborhoods_count_each_root_once(seed_table_fixture):
+    main = _projected_batch(seed_table_fixture, fused=False, profile=True)
+    root_count = len(set(main["task"]["seed_node_ids"].to_pylist()))
+    for names in (("left",), ("left", "right")):
+        batch = _projected_batch(seed_table_fixture, fused=False, neighborhoods=names, profile=True)
+        assert set(batch["graphs"]) == {"main", *names}
+        for counter in ("rows_examined", "rows_decoded"):
+            assert batch["native_profile"][counter] == (
+                main["native_profile"][counter] + len(names) * root_count
+            )
 
 
 def _namespace_columns(
@@ -2452,14 +2481,17 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
     )
 
 
-def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_table_fixture):
+@pytest.mark.parametrize("fused", [False, True])
+def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_table_fixture, fused):
     iterator, count = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"], stage="train",
         sampling_plan=_sampling_plan(), num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0, batch_size=3, drop_last=False,
-        rhs_seed_node_type="users", rhs_seed_time=100,
+        rhs_seed_node_type="users", rhs_seed_time=100, fused=fused, profile=True,
     )
     assert count == seed_table_fixture["n_users"]
     batches = list(iterator)
+    for batch in batches:
+        _assert_native_profile(batch, fused)
     roots = [int(value) for batch in batches for value in batch["task"]["seed_node_ids"].to_pylist()]
     assert roots == list(range(seed_table_fixture["n_users"]))

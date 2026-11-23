@@ -64,7 +64,7 @@ def keyless_graph(request, tmp_path_factory):
         ],
     }
     diskgraph.ingest(json.dumps(config), str(root / "index"), col_stats=False)
-    engine = diskgraph.SamplerEngine(str(root / "index"), num_threads=2)
+    engine = diskgraph.SamplerEngine(str(root / "index"), num_threads=2, profile=True)
     relation = next(
         r["name"]
         for r in json.loads(engine.get_type_mapping())["edge_relations"]
@@ -156,6 +156,7 @@ def test_keyless_count_without_projected_columns(keyless_graph, output_format):
     plan["sequences"] = []
     plan["aggregates"] = plan["aggregates"][:1]
     result = query(engine, plan, output_format)
+    assert result["stats"]["rows_considered"] == 4
     assert result["stats"]["rows_decoded"] == 0
     assert values(result["aggregates"][0]["values"]) == [
         4,

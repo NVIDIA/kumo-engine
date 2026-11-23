@@ -6,12 +6,52 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from e2e.datasets.hm import HMDataset, generate, sample_anchors
 from tests.e2e import runs
+
+
+def test_loader_stage_observer_scopes_calls_and_restores_patches():
+    from tests.e2e.loader_timing import stage_observer
+
+    original = str.upper
+    target = SimpleNamespace(call=original)
+
+    def broken_setup(observer):
+        observer.wrap(target, "call", "first")
+        observer.wrap(target, "missing", "second")
+
+    with pytest.raises(AttributeError, match="missing"), stage_observer(broken_setup):
+        pytest.fail("observer setup should fail")
+    assert target.call is original
+
+    with stage_observer() as observer:
+        observer.wrap(target, "call", lambda value: value)
+        with pytest.raises(RuntimeError, match="already active"), stage_observer():
+            pytest.fail("overlapping observers should be rejected")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(target.call, "other").result() == "OTHER"
+        assert target.call("owner") == "OWNER"
+    assert target.call is original
+    assert set(observer.stages) == {"owner"}
+    assert observer.stages["owner"]["calls"] == 1
+    assert observer.stages["owner"]["elapsed_ns"] > 0
+
+
+def test_fused_native_profile_counts_the_interval_once():
+    from tests.e2e.loader_timing import _native_totals
+
+    fused = {"operation": "runtime", "fused": True, "sampling_ns": 7, "retrieval_ns": 7}
+    assert _native_totals([[fused]]) == {"sample_and_retrieve_ns": 7}
+    assert _native_totals([[fused], []]) is None
+    assert _native_totals([[fused], [dict(fused, rows_decoded=4)]]) == {
+        "sample_and_retrieve_ns": 14
+    }
 
 
 @pytest.fixture(scope="module")

@@ -10,6 +10,14 @@ under ``DIR/<tier>`` and trains into ``DIR/<tier>/<flow>-seed<seed>``, the layou
 training anchors is reused, not retrained: after changing a flow, use a fresh
 ``DIR``. With ``KUMO_PYTORCH_E2E_REUSE_ONLY=1`` (the CI checks job) a missing run
 is an error instead.
+
+``python -m tests.e2e.runs loader --e2e-dir DIR [--repetitions N]`` times the
+33-anchor CPU fixture in fresh pytest workers and prints the timing report path.
+Each worker records setup once, fit stages per mode and batch stages per epoch.
+Stage times include nested calls. A missing stage did not run on that workload.
+Use ``banking`` in place of ``loader`` to time one CPU PyG training step per
+worker on the package banking fixture. Its step includes batch adaptation through
+the optimizer update and excludes model initialization and batch delivery.
 """
 
 from __future__ import annotations
@@ -18,10 +26,15 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
+from contextlib import ExitStack
+from importlib.metadata import distributions
 from pathlib import Path
 
 from e2e.datasets.hm import HMDataset, generate, sample_anchors
@@ -30,6 +43,12 @@ from tests.e2e.tiers import BY_NAME, Tier
 REPOSITORY = Path(__file__).resolve().parents[2]
 FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
 MARKER = "run.json"
+TIMING_CASES = {
+    "loader": "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing",
+    "banking": "tests/test_diskgraph_backend.py::"
+    "test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible",
+}
+LOADER_BATCHING = {"split": "train", "batch_size": 5}
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
@@ -78,12 +97,154 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
     return work, seconds
 
 
+def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options) -> dict:
+    """Measure two complete train epochs for a fresh fit and its saved artifact."""
+    from kumo.pytorch import api
+    from tests.e2e.loader_timing import install_stages, measure_epoch, stage_observer
+
+    work.mkdir(parents=True, exist_ok=True)
+    options = LOADER_BATCHING | batch_options
+    results = {"setup": setup}
+    artifact = work / "artifact"
+    try:
+        for mode in ("fresh", "reloaded"):
+            with ExitStack() as tasks:
+                with stage_observer(install_stages) as profile:
+                    started = time.perf_counter_ns()
+                    fit = {"fit_split": options["split"]}
+                    if mode == "reloaded":
+                        with profile.measure("artifact.load"):
+                            fit = {"fitted": api.Artifact.load(artifact).fitted_state}
+                    task = tasks.enter_context(plan.materialize(table, **fit))
+                    materialize_ns = time.perf_counter_ns() - started
+                results[mode] = {
+                    "materialize_ns": materialize_ns,
+                    "stages": profile.stages,
+                    "fitted_state": task.fitted_state.fingerprint,
+                    "anchors": task.fingerprints["anchors"],
+                    "anchor_sha256": setup["anchor_sha256"],
+                    "contract": task.fingerprints["contract"],
+                    "num_threads": plan.engine.num_threads,
+                    "epochs": [],
+                }
+                if mode == "fresh":
+                    task.to_artifact().save(artifact)
+                for epoch in range(2):
+                    with stage_observer(install_stages) as profile:
+                        record = {"epoch": epoch, "complete": False, "stages": profile.stages}
+                        results[mode]["epochs"].append(record)
+                        measure_epoch(task, make_batches, record, profile, **options)
+    finally:
+        (work / "results.json").write_text(json.dumps(results) + "\n")
+    return results
+
+
+def _ranges(rows):
+    """Keep each completed worker's value alongside the median and range."""
+    metrics = {}
+    for key in rows[0]:
+        values = [row.get(key) for row in rows]
+        if all(isinstance(v, dict) for v in values):
+            metrics[key] = _ranges(values)
+        elif all(type(v) in (int, float) for v in values):
+            metrics[key] = {
+                "values": values,
+                "median": statistics.median(values),
+                "range": [min(values), max(values)],
+            }
+    return metrics
+
+
+def _timing_campaign(workload: str, directory: Path, repetitions: int) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=directory.resolve()))
+    case = TIMING_CASES[workload]
+    report = root / "timings.json"
+    completed = []
+    workers = []
+    for index in range(repetitions):
+        work = root / str(index)
+        worker = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work)],
+            cwd=REPOSITORY,
+            env={**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"},
+        )
+        result = work / workload / "results.json"
+        ok = worker.returncode == 0 and result.is_file()
+        workers.append(
+            {
+                "worker": index,
+                "returncode": worker.returncode,
+                "complete": ok,
+                "results": str(result.relative_to(root)) if result.is_file() else None,
+            }
+        )
+        if ok:
+            completed.append(json.loads(result.read_text()))
+
+    summary = {}
+    for mode in completed[0] if completed else ():
+        fits = [run[mode] for run in completed]
+        summary[mode] = _ranges(fits)
+        if "epochs" not in fits[0]:
+            continue
+        summary[mode]["epochs"] = [
+            _ranges(rows) for rows in zip(*(fit["epochs"] for fit in fits), strict=True)
+        ]
+    sources = [
+        Path(__file__),
+        Path(__file__).with_name("loader_timing.py"),
+        REPOSITORY / case.split("::")[0],
+    ]
+    revision = tracked_diff = None
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True
+        ).strip()
+        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPOSITORY)
+        tracked_diff = hashlib.sha256(diff).hexdigest() if diff else None
+    except (OSError, subprocess.CalledProcessError):
+        pass  # Source distributions can run outside a Git checkout.
+    metadata = {
+        "workload": case,
+        "device": "cpu",
+        "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
+        **(LOADER_BATCHING if workload == "loader" else {"batch_size": 2}),
+        "revision": revision,
+        "tracked_diff_sha256": tracked_diff,
+        "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "versions": {
+            d.name: d.version
+            for d in distributions()
+            if d.name in ("torch", "pyarrow", "diskgraph", "torch-geometric")
+        },
+        "workers": workers,
+        "summary": summary,
+    }
+    report.write_text(json.dumps(metadata, indent=2) + "\n")
+    if len(completed) != repetitions:
+        raise SystemExit(f"{len(completed)}/{repetitions} workers completed. See {report}")
+    return report
+
+
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    argv = sys.argv[1:] if argv is None else argv
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--e2e-dir", type=Path, required=True)
+    if argv and argv[0] in TIMING_CASES:
+        parser.add_argument("--repetitions", type=int, default=3)
+        args = parser.parse_args(argv[1:])
+        if args.repetitions < 1:
+            parser.error("--repetitions must be positive")
+        print(_timing_campaign(argv[0], args.e2e_dir, args.repetitions))
+        return
     parser.add_argument("tier", choices=sorted(BY_NAME))
     parser.add_argument("flow", choices=sorted(FLOWS))
     parser.add_argument("seed", type=int)
-    parser.add_argument("--e2e-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     tier = BY_NAME[args.tier]
     root = args.e2e_dir / tier.name

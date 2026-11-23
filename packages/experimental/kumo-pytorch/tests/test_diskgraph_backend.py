@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +19,7 @@ import pytest
 import torch
 
 from kumo.pytorch import api
+from tests.e2e.loader_timing import _dimensions
 from tests.helpers import parquet_anchors
 
 FIXTURE = Path(__file__).parent / "data" / "synthetic_banking_subset.json"
@@ -617,6 +620,8 @@ def test_diskgraph_flat_model_stream_matches_inspectable(tmp_path, monkeypatch, 
                     "flat model execution must not construct inspectable events"
                 )
                 actual = next(iter(task.batches(requests, batch_size=2, output_format="model")))
+                if max_events == 2:
+                    assert _dimensions(task, actual, ())["events"] == 4
                 assert_tree_equal(expected.inputs, actual.inputs)
                 assert_tree_equal(expected.targets, actual.targets)
                 assert_tree_equal(expected.metadata, actual.metadata)
@@ -678,36 +683,32 @@ def _canonical_graph(graph: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _train_one_pyg_step(batch: object) -> float:
+def _train_one_pyg_step(batch: object, measure=nullcontext) -> float:
     torch = pytest.importorskip("torch")
     nn = torch.nn
     HeteroData = pytest.importorskip("torch_geometric.data").HeteroData
     hetero = pytest.importorskip("torch_geometric.nn")
-    data = HeteroData()
     graph = batch.inputs["graph"]
-    for node_type, node in graph["nodes"].items():
-        data[node_type].node_id = node["ids"]
-        data[node_type].batch = node["batch"]
+    edges = {}
     for relation, edge in graph["edges"].items():
         source = edge["source_type"]
         destination = edge["destination_type"]
-        data[source, relation, destination].edge_index = edge["index"]
-        data[destination, f"reverse_{relation}", source].edge_index = edge["index"].flip(0)
+        edges[source, relation, destination] = (edge["index"], False)
+        edges[destination, f"reverse_{relation}", source] = (edge["index"], True)
 
     class ActivityGNN(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            node_types, edge_types = data.metadata()
             hidden_size = 16
             self.node_vectors = nn.ParameterDict(
-                {node_type: nn.Parameter(torch.randn(1, hidden_size)) for node_type in node_types}
+                {name: nn.Parameter(torch.randn(1, hidden_size)) for name in graph["nodes"]}
             )
             self.layers = nn.ModuleList(
                 [
                     hetero.HeteroConv(
                         {
-                            edge_type: hetero.SAGEConv((-1, -1), hidden_size)
-                            for edge_type in edge_types
+                            edge_type: hetero.SAGEConv(hidden_size, hidden_size)
+                            for edge_type in edges
                         },
                         aggr="sum",
                     )
@@ -716,7 +717,7 @@ def _train_one_pyg_step(batch: object) -> float:
             )
             self.head = nn.Linear(hidden_size, 1)
 
-        def forward(self) -> object:
+        def forward(self, data) -> object:
             node_vectors = {
                 node_type: self.node_vectors[node_type].expand(data[node_type].num_nodes, -1)
                 for node_type in data.node_types
@@ -732,13 +733,25 @@ def _train_one_pyg_step(batch: object) -> float:
     torch.manual_seed(7)
     model = ActivityGNN()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    predictions = model()
-    targets = batch.targets["future_activity"]["values"].to(predictions.dtype)
     before = model.head.weight.detach().clone()
-    loss = nn.functional.mse_loss(predictions, targets)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+    with measure("step"):
+        with measure("adapt"):
+            data = HeteroData()
+            for name, node in graph["nodes"].items():
+                data[name].node_id = node["ids"]
+                data[name].batch = node["batch"]
+            for edge_type, (index, reverse) in edges.items():
+                data[edge_type].edge_index = index.flip(0) if reverse else index
+        with measure("forward"):
+            predictions = model(data)
+        with measure("loss"):
+            targets = batch.targets["future_activity"]["values"].to(predictions.dtype)
+            loss = nn.functional.mse_loss(predictions, targets)
+        with measure("backward"):
+            optimizer.zero_grad()
+            loss.backward()
+        with measure("optimizer"):
+            optimizer.step()
     assert predictions.shape == targets.shape == (2,)
     assert torch.isfinite(loss)
     assert not torch.equal(before, model.head.weight.detach())
@@ -746,8 +759,10 @@ def _train_one_pyg_step(batch: object) -> float:
 
 
 def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
-    tmp_path: Path,
+    tmp_path: Path, pytestconfig: pytest.Config
 ) -> None:
+    from tests.e2e.loader_timing import stage_observer
+
     pytest.importorskip("diskgraph")
     rows = _fixture_rows()
     rows["card_transactions"].append(
@@ -806,7 +821,23 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
         == json.loads((indexes[1] / "index_manifest.json").read_text())["config_fingerprint"]
     )
     assert all((index / "index_manifest.json").is_file() for index in indexes)
-    assert _train_one_pyg_step(batches[0]) >= 0.0
+    timing = stage_observer() if os.getenv("KUMO_PYTORCH_PROFILE_BANKING") == "1" else nullcontext()
+    with timing as profile:
+        assert _train_one_pyg_step(batches[0], profile.measure if profile else nullcontext) >= 0.0
+    if profile:
+        stages = profile.stages
+        assert set(stages) == {"step", "adapt", "forward", "loss", "backward", "optimizer"}
+        assert all(s["calls"] == 1 and s["elapsed_ns"] > 0 for s in stages.values())
+        steps = stages["step"]["calls"]
+        training = {
+            "stages": stages,
+            "steps": steps,
+            "optimizer_updates": stages["optimizer"]["calls"],
+            "steps_per_s": steps * 1e9 / stages["step"]["elapsed_ns"],
+        }
+        work = (pytestconfig.getoption("--e2e-dir") or tmp_path) / "banking"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "results.json").write_text(json.dumps({"training": training}) + "\n")
     with api.prepare(
         contract, parquet, api.DiskGraphEngine(index=indexes[0], num_threads=1)
     ) as plan:
@@ -1186,6 +1217,8 @@ def test_prepare_builds_declared_columns_drops_null_clocks_and_reuses_index(tmp_
 
 
 def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_path: Path) -> None:
+    from tests.e2e.loader_timing import _native_totals, install_native, stage_observer
+
     pytest.importorskip("diskgraph")
     rows = _fixture_rows()
     schema = _schema()
@@ -1291,7 +1324,7 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
                     assert actual_value == expected_value
     assert_equal(actual_batch.targets, expected_batch.targets)
     with api.prepare(
-        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
+        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1, profile=True)
     ) as plan:
         task = plan.materialize(requests, fit_split="train")
         inspectable_batch = next(
@@ -1300,14 +1333,34 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
         plan._source._adapt_temporal_result = lambda *_args: pytest.fail(
             "model output entered the inspectable Event/FieldValue adapter"
         )
-        model_batch = next(
-            iter(task.batches(requests, batch_size=2, output_format="model", seed=7))
+        with stage_observer(install_native) as observer:
+            model_batch = next(
+                iter(task.batches(requests, batch_size=2, output_format="model", seed=7))
+            )
+        operations = [p["operation"] for p in observer.native]
+        assert operations.count("sample") == operations.count("temporal") == 1
+        assert operations.count("fetch") > 1
+        temporal = plan._source.last_temporal_profile["native_timings_ns"]
+        totals = _native_totals([observer.native])
+        assert totals["aggregation_ns"] == temporal["aggregation"]
+        assert (
+            totals["sampling_ns"]
+            == temporal["traversal"] + plan._source.last_sampling_profile["sampling_ns"]
         )
+        assert totals["retrieval_ns"] == temporal["decode_and_select"] + sum(
+            p["retrieval_ns"] for p in observer.native if p["operation"] == "fetch"
+        )
+        # Each sample delivers five transaction rows and four timeline rows alongside the graph.
+        assert _dimensions(task, model_batch, ("card_transactions",))["events"] == 18
         assert_equal(model_batch.inputs, inspectable_batch.inputs)
         assert_equal(model_batch.targets, inspectable_batch.targets)
         assert_equal(model_batch.metadata, inspectable_batch.metadata)
         assert task._assembler.last_batch_profile["output_format"] == "model"
         assert plan._source.last_temporal_profile["output_format"] == "model"
+        assert plan._source.last_sampling_profile["sampling_ns"] > 0
+        assert plan._source.last_retrieval_profile["rows_decoded"] > 0
+        plan._source._feature_arrays("users", (), ())
+        assert plan._source.last_retrieval_profile is None
         assert set(plan._source.last_graph_profile) == {
             "samples",
             "sampling_ns",
@@ -1528,20 +1581,30 @@ def _native_pragma_contract():
 
 @pytest.mark.usefixtures("native_anchor_delivery")
 def test_native_banking_pragma_supervision(tmp_path):
+    from tests.e2e.loader_timing import install_stages, stage_observer
+
     pytest.importorskip("diskgraph")
     contract = _native_pragma_contract()
     rows = _fixture_rows()
     dataset = _write_parquet(rows, tmp_path / "parquet")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     requests = _requests()
-    with api.prepare(contract, dataset, engine) as plan:
+    observer = stage_observer(install_stages, optional=True)
+    with observer as profile, api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_banking_anchors(tmp_path), fit_split="train") as task:
             state = task.fitted_state.to_dict()
             key = '["shared","categories"]'
             shared_ids = dict(state["spaces"]["pragma"]["members"][key])
             categories = {value: shared_ids[i] for value, i in state["encoders"][key]["entries"]}
             (model_batch,) = task.batches(output_format="model", seed=17, epoch=3)
+            assert _dimensions(task, model_batch, ())["events"] == 13
 
+    if profile is not None:
+        timed = {name for name, stage in profile.stages.items() if stage["elapsed_ns"] > 0}
+        assert {"vocabulary.fit", "statistics.fit"} <= timed
+        assert {"python.merge", "python.encode", "python.assemble"} <= timed
+        assert {"python.tokenize", "python.masks"} <= timed
+        assert profile.stages["bpe.fit"]["calls"] == 1
     history = model_batch.inputs["history"]
     targets = model_batch.targets["masked_values"]
     users = {r["user_id"]: r for r in rows["users"]}

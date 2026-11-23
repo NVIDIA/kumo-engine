@@ -7,6 +7,11 @@ use crate::state::SamplingState;
 
 /// Trait for handling the output stream of the sampler.
 pub trait OutputHandler {
+    /// Work counters for an explicitly profiled sampling or fetch operation.
+    fn profile_mut(&mut self) -> Option<&mut NativeProfile> {
+        None
+    }
+
     /// Called when an edge is traversed.
     fn handle_edge(
         &mut self,
@@ -215,6 +220,18 @@ pub struct RuntimeBatch {
     /// (e.g. "tt_id/train_seeds") is included here only when the seed has
     /// feature columns; otherwise `hetero[train_table_name].tf` stays empty.
     pub raw_features: HashMap<String, RawFeatureBank>,
+    pub profile: Option<NativeProfile>,
+}
+
+/// Native graph work across all neighborhoods in this batch. Fused sampling
+/// and retrieval share one elapsed interval.
+#[derive(Debug, Default, Clone)]
+pub struct NativeProfile {
+    pub sampling_ns: u64,
+    pub retrieval_ns: u64,
+    pub rows_examined: u64,
+    pub rows_decoded: u64,
+    pub fused: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -294,12 +311,20 @@ impl RuntimeBatchOutput {
         self.current_features_namespace = Some(namespace.into());
     }
 
+    pub fn enable_profile(&mut self) {
+        self.batch.profile = Some(NativeProfile::default());
+    }
+
     pub fn into_runtime_batch(self) -> RuntimeBatch {
         self.batch
     }
 }
 
 impl OutputHandler for RuntimeBatchOutput {
+    fn profile_mut(&mut self) -> Option<&mut NativeProfile> {
+        self.batch.profile.as_mut()
+    }
+
     fn handle_edge(
         &mut self,
         _hop: usize,

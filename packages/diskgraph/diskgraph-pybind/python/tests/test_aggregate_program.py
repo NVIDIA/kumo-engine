@@ -15,7 +15,7 @@ from test_shared_numeric_aggregates import numeric_graph as _numeric_graph
 
 @pytest.fixture(scope="module")
 def numeric_graph(tmp_path_factory):
-    return _numeric_graph.__wrapped__(tmp_path_factory)
+    return _numeric_graph.__wrapped__(tmp_path_factory, profile=True)
 
 
 def program(relation):
@@ -106,6 +106,7 @@ def test_dgtt_plan_anchor_chunks_preserve_order_duplicates_and_types(
     for name, reference in values(expected).items():
         assert values(actual)[name].equals(reference), name
     assert values(actual)["full:count"].to_pylist() == [600, 3, 600]
+    assert actual["stats"]["rows_considered"] == expected["stats"]["rows_considered"] == 1203
 
 
 def test_plan_does_not_silently_drop_staged_side_effects(numeric_graph):
@@ -257,8 +258,10 @@ def test_prepared_plan_reuses_typed_operations_across_chunks(numeric_graph):
     roots = engine.lookup_node_ids("users", pa.array([6, 1, 6], type=pa.int64()))
     expected = values(engine.query_temporal({"users": roots}, {"users": [1000]*3}, json.dumps(fragment), output_format="model"))
     actual = {name: [] for name in expected}
-    for root in roots:
-        result = values(prepared.execute([root], [1000], anchor_batch_size=1))
+    for root, count in zip(roots, (600, 3, 600), strict=True):
+        batch = prepared.execute([root], [1000], anchor_batch_size=1)
+        assert batch["stats"]["rows_considered"] == count
+        result = values(batch)
         for name in actual: actual[name].extend(result[name].to_pylist())
     assert actual == {name: array.to_pylist() for name, array in expected.items()}
     with pytest.raises(Exception, match="equal length"):

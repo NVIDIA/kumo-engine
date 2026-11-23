@@ -10,7 +10,7 @@ Not a pytest test — run directly:
   python3 python/tests/bench_runtime_batch_iterator.py [--n-users N] [--orders-per-user O] \
       [--n-seeds S] [--batch-size B] [--n-iter K]
 
-Reports wall time, batches/sec, batches' avg edge count, and peak RSS
+Reports wall time, batches/sec, batches' avg edge count, peak RSS and native graph work
 for fused vs non-fused dispatch. Establishes a baseline number we can
 defend (and compare against PR 269's TaskBatchIterator if/when we
 resurrect it for a head-to-head — see plan doc §9 Follow-up C).
@@ -50,6 +50,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         dataset_ref,
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
+        profile=kwargs.pop("profile", False),
     )
     return index.iter(**kwargs)
 
@@ -182,7 +183,7 @@ def _build_fixture(
     return {"manifest_path": str(manifest_path), "n_seeds": n_seeds}
 
 
-def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
+def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool, profile: bool = False) -> dict:
     plan = {
         "layers": [
             {"fanouts": {}, "default_fanout": {
@@ -202,7 +203,7 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=batch_size, drop_last=False,
-        fused=fused,
+        fused=fused, profile=profile,
         entity_node_type="users",
     )
     _ = next(iter(iterator))
@@ -215,16 +216,24 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=batch_size, drop_last=False,
-        fused=fused,
+        fused=fused, profile=profile,
         entity_node_type="users",
     )
 
     edge_counts: list[int] = []
+    totals = (
+        dict.fromkeys(("sampling_ns", "retrieval_ns", "rows_examined", "rows_decoded"), 0)
+        if profile else None
+    )
     t0 = time.perf_counter()
     n = 0
     for batch in iterator:
         edges = batch["graphs"]["main"]["edge_index_dict"]
         edge_counts.append(sum(len(e["src"]) for e in edges))
+        if totals is not None:
+            counters = batch["native_profile"]
+            for key in totals:
+                totals[key] += counters[key]
         n += 1
         if n >= n_iter:
             break
@@ -237,6 +246,7 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
         "batches_per_s": n / wall if wall > 0 else float("inf"),
         "avg_edges_per_batch": (sum(edge_counts) / len(edge_counts)) if edge_counts else 0,
         "peak_rss_mb": _peak_rss_mb(),
+        "native_profile": totals if n else None,
     }
 
 
@@ -247,6 +257,7 @@ def main() -> None:
     parser.add_argument("--n-seeds", type=int, default=10_000)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--n-iter", type=int, default=100)
+    parser.add_argument("--profile", action="store_true", help="Collect native timings and row counters")
     args = parser.parse_args()
 
     print(
@@ -267,7 +278,7 @@ def main() -> None:
         print(f"# ingest: {ingest_s:.2f}s ({args.n_users + args.n_users * args.orders_per_user + args.n_seeds:,} rows total)")
 
         for mode in (False, True):
-            stats = _run_one(fixture, args.batch_size, args.n_iter, fused=mode)
+            stats = _run_one(fixture, args.batch_size, args.n_iter, fused=mode, profile=args.profile)
             label = "fused" if stats["fused"] else "non-fused"
             print(
                 f"  {label:>10}: batches={stats['batches']:>4}, "
@@ -276,6 +287,15 @@ def main() -> None:
                 f"avg_edges/batch={stats['avg_edges_per_batch']:>7.1f}, "
                 f"peak_rss={stats['peak_rss_mb']:>6.0f} MB"
             )
+            if (profile := stats["native_profile"]) is not None:
+                if mode:
+                    timing = f"sample+fetch_ns={profile['sampling_ns']}"
+                else:
+                    timing = f"sampling_ns={profile['sampling_ns']}, retrieval_ns={profile['retrieval_ns']}"
+                print(
+                    f"    {timing}, rows_examined={profile['rows_examined']}, "
+                    f"rows_decoded={profile['rows_decoded']}"
+                )
 
 
 if __name__ == "__main__":

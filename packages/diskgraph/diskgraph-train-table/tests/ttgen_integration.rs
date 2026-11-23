@@ -10694,7 +10694,7 @@ fn integ_parallel_history_preserves_ragged_batches() {
         });
         let prepared = PreparedTemporalPlan::prepare_history(
             &reader, "users", &json.to_string(),
-        ).unwrap();
+        ).unwrap().with_profile(true);
         for size in [0, 1, 7, 8, 31, 32, 63, 64, 65, 128, 256] {
             for repeated in [false, true] {
                 let roots = (0..size).map(|i| ids[if repeated { 0 } else { i % ids.len() }])
@@ -10718,6 +10718,7 @@ fn integ_parallel_history_preserves_ragged_batches() {
                     }
                     for pool in &pools[1..] {
                         let actual = prepared.execute(&reader, &roots, &cutoffs, pool).unwrap();
+                        assert_eq!(actual.stats.rows_considered, expected.stats.rows_considered, "{context}");
                         assert_eq!(actual.sequences.len(), expected.sequences.len(), "{context}");
                         for (actual, expected) in actual.sequences.iter().zip(&expected.sequences) {
                             assert_eq!(actual.name, expected.name, "{context}");
