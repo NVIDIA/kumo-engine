@@ -42,7 +42,7 @@ Mitigation: Review and scan skill before deployment. <br>
 
 
 ## Evaluation Tasks: <br>
-5 evaluation tasks (4 positive, 1 negative), 1 attempt per task, each in an isolated sandbox pod (`k8s-sandbox`); evaluator version `1.6.10`, evaluated 2026-11-19. Baseline is the same task attempted without the skill. <br>
+5 evaluation tasks (4 positive, 1 negative), 1 attempt per task, each in an isolated sandbox pod (`k8s-sandbox`); evaluator version `1.6.10`, evaluated 2026-11-23. Baseline is the same task attempted without the skill. <br>
 
 ## Evaluation Metrics Used: <br>
 Reported benchmark dimensions: <br>
@@ -74,12 +74,12 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 96.3% — baseline ran, but no comparable score was available; uplift unavailable | 92.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 95.8% — baseline ran, but no comparable score was available; uplift unavailable | 93.4% — baseline ran, but no comparable score was available; uplift unavailable |
 | Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
-| Correctness | 52.0% → 100.0% (+48.0 points) | 72.0% → 96.0% (+24.0 points) |
-| Discoverability | 97.5% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 52.0% → 86.0% (+34.0 points) | 46.0% → 76.0% (+30.0 points) |
-| Efficiency | 98.1% — baseline ran, but no comparable score was available; uplift unavailable | 96.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Correctness | 52.0% → 100.0% (+48.0 points) | 64.0% → 96.0% (+32.0 points) |
+| Discoverability | 98.8% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 50.0% → 82.0% (+32.0 points) | 34.0% → 80.0% (+46.0 points) |
+| Efficiency | 98.2% — baseline ran, but no comparable score was available; uplift unavailable | 96.1% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -94,9 +94,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 98.0% → 96.3% (-1.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 98.1% → 96.3% (-1.8 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 88.5% → 92.1% (+3.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 89.2% → 92.1% (+2.9 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ### Tier Status
 
@@ -107,7 +107,7 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Tier 3 | Live agent evaluation | **PASS** | 2 agent(s); 5 task(s) |
 
 ## Skill Version(s): <br>
-0.1.0 (source: pyproject.toml); git SHA 2bbedbe6, committed 2026-11-18 <br>
+0.1.0 (source: pyproject.toml); git SHA 5b471bdc, committed 2026-11-23 <br>
 
 ## Ethical Considerations: <br>
 NVIDIA believes Trustworthy AI is a shared responsibility and we have established policies and practices to enable development for a wide array of AI applications. When downloaded or used in accordance with our terms of service, developers should work with their internal team to ensure this skill meets requirements for the relevant industry and use case and addresses unforeseen product misuse. <br>

@@ -10,7 +10,7 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 - Skill: `kumoai-reference`
 - Validation status: `passed`
-- Evaluation date: 2026-11-19
+- Evaluation date: 2026-11-23
 - Evaluator version: `1.6.10`
 - Agents: Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`), Codex (`openai/openai/gpt-6.1-sol`)
 - Tasks: 5 evaluation tasks (4 positive, 1 negative)
@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 90.1% — baseline ran, but no comparable score was available; uplift unavailable | 86.3% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 100.0% → 80.0% (-20.0 points) | 100.0% → 80.0% (-20.0 points) |
-| Correctness | 68.0% → 100.0% (+32.0 points) | 80.0% → 100.0% (+20.0 points) |
-| Discoverability | 96.3% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 52.2% → 84.0% (+31.8 points) | 60.2% → 71.6% (+11.4 points) |
-| Efficiency | 90.1% — baseline ran, but no comparable score was available; uplift unavailable | 85.2% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 94.1% — baseline ran, but no comparable score was available; uplift unavailable | 91.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 80.0% → 100.0% (+20.0 points) |
+| Correctness | 72.0% → 100.0% (+28.0 points) | 96.0% → 100.0% (+4.0 points) |
+| Discoverability | 98.8% — baseline ran, but no comparable score was available; uplift unavailable | 88.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 62.2% → 80.0% (+17.8 points) | 68.9% → 81.6% (+12.7 points) |
+| Efficiency | 91.5% — baseline ran, but no comparable score was available; uplift unavailable | 86.5% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 97.2% → 88.9% (-8.3 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 96.7% → 88.0% (-8.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 80.3% → 87.0% (+6.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 79.2% → 87.6% (+8.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,19 +80,19 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 1,422,067 | 516,770 | +905,297 | +175.18% | skill 5/5; base 5/5 |
-| claude-code | kref-01 | 121,639 | 35,714 | +85,925 | +240.59% | skill 1/1; base 1/1 |
-| claude-code | kref-02 | 511,856 | 149,172 | +362,684 | +243.13% | skill 1/1; base 1/1 |
-| claude-code | kref-03 | 210,623 | 146,408 | +64,215 | +43.86% | skill 1/1; base 1/1 |
-| claude-code | kref-04 | 312,657 | 38,324 | +274,333 | +715.83% | skill 1/1; base 1/1 |
-| claude-code | kref-05 | 265,292 | 147,152 | +118,140 | +80.28% | skill 1/1; base 1/1 |
-| codex | All cases | 683,131 | 650,550 | +32,581 | +5.01% | skill 5/5; base 5/5 |
-| codex | kref-01 | 50,294 | 44,401 | +5,893 | +13.27% | skill 1/1; base 1/1 |
-| codex | kref-02 | 166,708 | 347,313 | -180,605 | -52.00% | skill 1/1; base 1/1 |
-| codex | kref-03 | 123,388 | 92,347 | +31,041 | +33.61% | skill 1/1; base 1/1 |
-| codex | kref-04 | 119,304 | 47,349 | +71,955 | +151.97% | skill 1/1; base 1/1 |
-| codex | kref-05 | 223,437 | 119,140 | +104,297 | +87.54% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 2,105,198 | 1,167,320 | +937,878 | +80.34% | skill 10/10; base 10/10 |
+| claude-code | All cases | 1,355,484 | 749,745 | +605,739 | +80.79% | skill 5/5; base 5/5 |
+| claude-code | kref-01 | 121,585 | 35,643 | +85,942 | +241.12% | skill 1/1; base 1/1 |
+| claude-code | kref-02 | 460,738 | 186,914 | +273,824 | +146.50% | skill 1/1; base 1/1 |
+| claude-code | kref-03 | 232,928 | 270,869 | -37,941 | -14.01% | skill 1/1; base 1/1 |
+| claude-code | kref-04 | 392,790 | 109,586 | +283,204 | +258.43% | skill 1/1; base 1/1 |
+| claude-code | kref-05 | 147,443 | 146,733 | +710 | +0.48% | skill 1/1; base 1/1 |
+| codex | All cases | 640,454 | 953,631 | -313,177 | -32.84% | skill 5/5; base 5/5 |
+| codex | kref-01 | 68,761 | 29,521 | +39,240 | +132.92% | skill 1/1; base 1/1 |
+| codex | kref-02 | 237,048 | 522,373 | -285,325 | -54.62% | skill 1/1; base 1/1 |
+| codex | kref-03 | 118,328 | 82,811 | +35,517 | +42.89% | skill 1/1; base 1/1 |
+| codex | kref-04 | 118,577 | 51,584 | +66,993 | +129.87% | skill 1/1; base 1/1 |
+| codex | kref-05 | 97,740 | 267,342 | -169,602 | -63.44% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 1,995,938 | 1,703,376 | +292,562 | +17.18% | skill 10/10; base 10/10 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 
@@ -101,7 +101,7 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
 | Tier | Purpose | Status | Evidence |
 |---|---|---|---|
 | Tier 1 | Static validation | **PASSED WITH OBSERVATIONS** | 11 validator(s); 15 finding(s) |
-| Tier 2 | Semantic deduplication | **PASSED WITH OBSERVATIONS** | 2 validator(s); 2 finding(s) |
+| Tier 2 | Semantic deduplication | **PASSED WITH OBSERVATIONS** | 2 validator(s); 4 finding(s) |
 | Tier 3 | Live agent evaluation | **PASS** | 2 agent(s); 5 task(s) |
 
 ## Findings and Observations
@@ -109,6 +109,12 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
 <details>
 <summary>Show detailed findings and successful checks</summary>
 
+- **HIGH** DUPLICATE/duplicate: Duplicate content found across references/graph_construction.md and references/kumo_finetuning_sdk.md:
+  "## Concept" in references/graph_construction.md (lines 28-51)
+  vs "## Step 4: build the graph" in references/graph_construction.md (lines 188-208)
+  vs "# for tables that exist behind it." in references/graph_construction.md (lines 364-397)
+  vs "## 5. Graph" in references/kumo_finetuning_sdk.md (lines 355-392)
+  vs "# 3. Graph — list of tables, Edge objects, explicit validate." in references/kumo_finetuning_sdk.md (lines 716-725) (`references/graph_construction.md:28`)
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across references/graph_construction.md and references/kumo_finetuning_sdk.md:
   "### Defining tables" in references/graph_construction.md (lines 106-143)
   vs "## 4. Tables" in references/kumo_finetuning_sdk.md (lines 308-354) (`references/graph_construction.md:106`)
@@ -118,10 +124,11 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
   vs "## SDK usage" in references/pql_writing.md (lines 438-471)
   vs "### Required pre-flight, before any training step" in references/pql_writing.md (lines 472-490)
   vs "## Classification and regression" in references/task_journeys.md (lines 9-26) (`references/kumo_finetuning_sdk.md:393`)
+- **HIGH** DUPLICATE/duplicate: Duplicate content found across references/graph_construction.md and references/troubleshooting_signals.md:
+  "## Step 5: time columns and temporal correctness" in references/graph_construction.md (lines 238-249)
+  vs "### Symptom: an event table has no time column" in references/troubleshooting_signals.md (lines 146-156) (`references/graph_construction.md:238`)
 - **MEDIUM** QUALITY/quality_correctness: SKILL_SPEC recommended field missing: 'metadata.author' (`skills/kumoai-reference/SKILL.md`)
-- **MEDIUM** QUALITY/quality_correctness: SKILL_SPEC recommended field missing: 'metadata.tags' (`skills/kumoai-reference/SKILL.md`)
-- **MEDIUM** QUALITY/quality_efficiency: Deeply nested references in outputs.md (`skills/kumoai-reference/SKILL.md`)
-- 12 additional finding(s) are available in the full evaluation artifacts.
+- 14 additional finding(s) are available in the full evaluation artifacts.
 
 </details>
 
