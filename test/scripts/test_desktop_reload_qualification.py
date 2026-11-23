@@ -153,3 +153,24 @@ def test_spawn_removes_storage_after_timeout(tmp_path, monkeypatch, cleanup_erro
         RELOAD.spawn('produce', 'binary', 'cpu', tmp_path, tmp_path / 'produce')
     assert processes[0].poll() is not None
     assert not bases[0].exists()
+
+
+def test_spawn_retains_live_worker_storage(tmp_path, monkeypatch):
+    base = tmp_path / 'worker'
+    base.mkdir()
+    original = base / 'keep.txt'
+    original.write_text('worker state')
+    monkeypatch.setattr(RELOAD.tempfile, 'mkdtemp', lambda prefix: str(base))
+    process = Mock()
+    process.wait.side_effect = subprocess.TimeoutExpired('worker', 3600)
+    process.poll.return_value = None
+    monkeypatch.setattr(subprocess, 'Popen', Mock(return_value=process))
+    error = subprocess.TimeoutExpired('taskkill', 30)
+    monkeypatch.setattr(RELOAD, 'finish_process', Mock(side_effect=error))
+
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        RELOAD.spawn('produce', 'binary', 'cpu', tmp_path, tmp_path / 'produce')
+
+    assert failure.value is error
+    assert original.read_text() == 'worker state'
+    assert (base / 'cwd').is_dir()

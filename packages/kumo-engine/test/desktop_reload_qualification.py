@@ -248,7 +248,8 @@ def spawn(phase, task, device, durable, out, data=None, **extra):
             try:
                 finish_process(process)
             finally:
-                shutil.rmtree(base)
+                if process.poll() is not None:
+                    shutil.rmtree(base)
 
 
 def qualify(task, device, data, out, work, result):
