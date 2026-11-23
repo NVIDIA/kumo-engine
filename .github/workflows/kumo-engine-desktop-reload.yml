@@ -4,11 +4,16 @@
 
 name: Kumo Engine - Desktop reload qualification
 
-# Runs only by hand. See docs/development/releasing-kumo-engine.md.
+# Shared release gate and manual desktop check. See docs/development/releasing-kumo-engine.md.
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       wheel_run_id: {description: 'ID of the build run whose wheels to qualify.', type: string, required: true}
+
+  workflow_call:
+    inputs:
+      wheel_run_id: {type: string, required: true}
+      native_windows_only: {type: boolean, default: false}
 
 permissions: {}
 
@@ -17,11 +22,11 @@ jobs:
     name: Find the build run
     runs-on: ubuntu-24.04
     permissions: {actions: read}
-    outputs: {sha: '${{ steps.run.outputs.sha }}'}
+    outputs: {sha: '${{ steps.run.outputs.sha }}', targets: '${{ steps.run.outputs.targets }}'}
     steps:
       - id: run
         shell: bash
-        env: {GH_TOKEN: '${{ github.token }}', RUN_ID: '${{ inputs.wheel_run_id }}'}
+        env: {GH_TOKEN: '${{ github.token }}', RUN_ID: '${{ inputs.wheel_run_id }}', NATIVE_WINDOWS_ONLY: '${{ inputs.native_windows_only }}'}
         run: |
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'wheel_run_id must be a run ID.' >&2; exit 1; }
           # Only a release or manual run of this repository's wheel workflow counts.
@@ -31,6 +36,31 @@ jobs:
             .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha')
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Run $RUN_ID is not a wheel build of this repository." >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          python - <<'PYTHON'
+          import json, os
+          targets = [
+              {'name': 'linux-x86_64', 'runner': 'ubuntu-24.04',
+               'artifact': 'x86_64', 'device': 'cpu', 'torch': '--torch-backend=cpu'},
+              {'name': 'linux-x86_64', 'runner': 'linux-amd64-gpu-rtxpro6000-latest-1',
+               'artifact': 'x86_64', 'device': 'gpu'},
+              {'name': 'linux-arm64', 'runner': 'ubuntu-24.04-arm',
+               'artifact': 'aarch64', 'device': 'cpu', 'torch': '--torch-backend=cpu', 'extra': '[cpu]'},
+              {'name': 'windows-wsl', 'runner': 'wsl-amd64-gpu-t4-latest-1',
+               'artifact': 'x86_64', 'device': 'cpu', 'torch': '--torch-backend=cpu'},
+              {'name': 'windows-wsl', 'runner': 'wsl-amd64-gpu-t4-latest-1',
+               'artifact': 'x86_64', 'device': 'gpu'},
+              {'name': 'macos-15', 'runner': 'macos-15',
+               'artifact': 'arm64', 'device': 'cpu'},
+              {'name': 'macos-26', 'runner': 'macos-26',
+               'artifact': 'arm64', 'device': 'cpu'},
+              {'name': 'windows-native', 'runner': 'windows-amd64-cpu4',
+               'artifact': 'windows-x86_64', 'device': 'cpu', 'torch': '--torch-backend=cpu', 'extra': '[cpu]'},
+          ]
+          if os.environ['NATIVE_WINDOWS_ONLY'] == 'true':
+              targets = [row for row in targets if row['name'] == 'windows-native']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('targets=' + json.dumps(targets) + '\n')
+          PYTHON
 
   # Runs desktop_reload_qualification.py. A person runs the macOS 14 and MPS rows.
   reload:
@@ -41,14 +71,7 @@ jobs:
       fail-fast: false
       matrix:
         python: ['3.11', '3.12', '3.13', '3.14']
-        target:
-          - {name: linux-x86_64, runner: ubuntu-24.04, artifact: x86_64, device: cpu, torch: --torch-backend=cpu}
-          - {name: linux-x86_64, runner: linux-amd64-gpu-rtxpro6000-latest-1, artifact: x86_64, device: gpu}
-          - {name: linux-arm64, runner: ubuntu-24.04-arm, artifact: aarch64, device: cpu, torch: --torch-backend=cpu, extra: '[cpu]'}
-          - {name: windows-wsl, runner: wsl-amd64-gpu-t4-latest-1, artifact: x86_64, device: cpu, torch: --torch-backend=cpu}
-          - {name: windows-wsl, runner: wsl-amd64-gpu-t4-latest-1, artifact: x86_64, device: gpu}
-          - {name: macos-15, runner: macos-15, artifact: arm64, device: cpu}
-          - {name: macos-26, runner: macos-26, artifact: arm64, device: cpu}
+        target: ${{ fromJSON(needs.wheel.outputs.targets) }}
     runs-on: ${{ matrix.target.runner }}
     environment: {name: gha-kumo-workflow-tests, deployment: false}  # For the private PR172 fixture.
     permissions: {actions: read, contents: read, id-token: write}
@@ -95,16 +118,30 @@ jobs:
         run: |
           # Only the credential step may mint OIDC tokens, so restart without the token variables.
           [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash --noprofile --norc -eo pipefail "$0"
-          cd "$RUNNER_TEMP/reload"
+          stage="$RUNNER_TEMP/reload"
+          inputs="$RUNNER_TEMP/reload-inputs"
+          workspace="$GITHUB_WORKSPACE"
+          if [ "$RUNNER_OS" = Windows ]; then
+            stage="$(cygpath -u "$stage")"
+            inputs="$(cygpath -u "$inputs")"
+            workspace="$(cygpath -u "$workspace")"
+          fi
+          cd "$stage"
           mkdir test results
-          cp "$GITHUB_WORKSPACE"/packages/kumo-engine/test/{desktop_reload_qualification,wheel_gpu_smoke}.py test/
-          wheels=(artifacts/kumo_engine-*.whl) && [ "${#wheels[@]}" -eq 1 ]
+          cp "$workspace"/packages/kumo-engine/test/{desktop_reload_qualification,wheel_gpu_smoke}.py test/
+          wheels=(artifacts/kumo_engine-*.whl)
+          [ "${#wheels[@]}" -eq 1 ] && [ -f "${wheels[0]}" ]
           uv venv --python '${{ matrix.python }}' venv
-          uv pip install --python venv/bin/python ${{ matrix.target.torch }} "${wheels[0]}${{ matrix.target.extra }}"
-          uv pip check --python venv/bin/python
-          uv pip freeze --python venv/bin/python > results/freeze.txt
-          venv/bin/python -I test/desktop_reload_qualification.py run --wheel "${wheels[0]}" --device ${{ matrix.target.device }} \
-            --data-dir "$RUNNER_TEMP/reload-inputs" --output-dir results --commit "$CANDIDATE_SHA"
+          if [ "$RUNNER_OS" = Windows ]; then
+            python="$stage/venv/Scripts/python.exe"
+          else
+            python="$stage/venv/bin/python"
+          fi
+          uv pip install --python "$python" ${{ matrix.target.torch }} "${wheels[0]}${{ matrix.target.extra }}"
+          uv pip check --python "$python"
+          uv pip freeze --python "$python" > results/freeze.txt
+          "$python" -I test/desktop_reload_qualification.py run --wheel "${wheels[0]}" --device ${{ matrix.target.device }} \
+            --data-dir "$inputs" --output-dir results --commit "$CANDIDATE_SHA"
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:

@@ -132,6 +132,11 @@ def observe(work):
                 yield
 
 
+def worker_accelerator(device: str) -> str:
+    """Exercise native Windows' default CPU choice and explicit devices elsewhere."""
+    return 'auto' if sys.platform == 'win32' and device == 'cpu' else device
+
+
 def worker(phase, task, device, durable, out, base, data):
     """Produce or consume one task here. Save the prediction and the work."""
     if os.environ.get('DRQ_HIDE_FAISS'):
@@ -146,6 +151,7 @@ def worker(phase, task, device, durable, out, base, data):
     files = kumo.FileConnector(root_dir=str(durable))
     seed = lambda: (random.seed(0), np.random.seed(0), torch.manual_seed(0))
     kumo.configure(scratch_dir=base / 'scratch')
+    accelerator = worker_accelerator(device)
     work = dict(train=set(), predict=set(), search=set(), steps=set())
     if phase == 'produce':  # Only deleted producer storage holds the tables.
         graph = tasks.TASKS[task]['graph']
@@ -162,7 +168,7 @@ def worker(phase, task, device, durable, out, base, data):
     with observe(work):
         if phase == 'produce':
             seed()
-            trainer = kumo.Trainer(tasks.make_plan(task), accelerator=device)
+            trainer = kumo.Trainer(tasks.make_plan(task), accelerator=accelerator)
             trainer.fit(prepared['training_table'], snapshot=snapshot).export(
                 kumo.ModelOutputConfig(files, path='model'))
             meta['model'] = trainer.result.id
@@ -170,7 +176,7 @@ def worker(phase, task, device, durable, out, base, data):
                 kumo.SnapshotOutputConfig(files, path='snapshot'))
         else:
             trainer = kumo.Trainer.load_from_connector(files, path='model',
-                                                       accelerator=device)
+                                                       accelerator=accelerator)
             snapshot = kumo.GraphSnapshot.load_from_connector(
                 files, path=meta['snapshot'])
         options = dict(entities=files['inputs.parquet'])  # As the GPU smoke.
@@ -187,16 +193,15 @@ def worker(phase, task, device, durable, out, base, data):
         work['predict'].clear()  # Only this prediction's batches count.
         frame = trainer.predict(snapshot, **options).frame
     frame.to_parquet(out.with_suffix('.parquet'))
-    meta.update(work)
+    meta.update(work, accelerator_argument=accelerator)
     out.with_suffix('.json').write_text(json.dumps(meta, default=sorted))
 
 
 def worker_environment(base, device, extra):
-    """Give each process fresh caches and ordinary-user loader defaults."""
+    """Give each process fresh storage and caches."""
     drop = ('KUMO_', 'DISKGRAPH_')
-    masked = {'PYTEST_CURRENT_TEST', 'GITHUB_ACTIONS', 'SYNC_DATA_LOADER', 'CI'}
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(drop) and k not in masked}
+           if not k.startswith(drop)}
     env.update(extra, HOME=str(base / 'home'), USERPROFILE=str(base / 'home'),
                TMPDIR=str(base / 'tmp'), TEMP=str(base / 'tmp'),
                TMP=str(base / 'tmp'), XDG_CACHE_HOME=str(base / 'cache'),
@@ -240,8 +245,10 @@ def spawn(phase, task, device, durable, out, data=None, **extra):
         try:
             return process.wait(timeout=3600)
         finally:
-            finish_process(process)
-            shutil.rmtree(base)
+            try:
+                finish_process(process)
+            finally:
+                shutil.rmtree(base)
 
 
 def qualify(task, device, data, out, work, result):
@@ -263,7 +270,9 @@ def qualify(task, device, data, out, work, result):
             cpu = 'torch' if sys.platform == 'darwin' else 'faiss-cpu'
             want['search'] = [dict(gpu='cuda', mps='metal').get(device, cpu)]
         record = json.loads((out / f'{phase}.json').read_text())
-        done = result[phase] = {key: record[key] for key in want}
+        done = {key: record[key] for key in want}
+        result[phase] = dict(
+            done, accelerator_argument=record['accelerator_argument'])
         if done != want:
             raise RuntimeError(f'The {phase} work is {done}, not {want}')
     meta = json.loads((out / 'produce.json').read_text())
