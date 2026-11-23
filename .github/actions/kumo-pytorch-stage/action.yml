@@ -37,7 +37,9 @@ runs:
             [[ $pin == */streaming-25b.json ]] || pins+=("$pin")
           done
         fi
+        start=$(python3 -c 'from time import monotonic; print(monotonic())')
         python3 -m e2e.datasets.staging "${pins[@]}" --root "$root"
+        python3 -c 'import sys, time; print("KUMO_PYTORCH_STAGE_SECONDS=", time.monotonic() - float(sys.argv[1]), sep="")' "$start" >> "$GITHUB_ENV"
         echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
         # Bash also reads this before running package code inside the shared setup action.
         echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"

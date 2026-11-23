@@ -62,7 +62,14 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence(monkeypatch)
     assert all(row["status"] == "required" for row in rows)
     for mode in ("correctness", "training", "lifecycle"):
         assert {r["binding"] for r in rows if r["mode"] == mode} == set(ci.BINDINGS)
-    assert [r["binding"] for r in rows if r["scope"] == "full_source"] == pr["training_bindings"]
+    training_rows = [r for r in rows if r["group"] == "GPU training"]
+    assert [r["binding"] for r in training_rows] == pr["training_bindings"]
+    assert all(
+        (r["mode"], r["scope"], r["artifact"])
+        == ("binding-throughput", "extract", f"binding-throughput-{r['binding']}")
+        for r in training_rows
+    )
+    assert all(r["scope"] != "full_source" for r in rows)
     assert pr["jobs"]["Package tests / Package and dataset tests"]
     assert all(pr["jobs"][f"Package tests / Engine conformance {i}/3"] for i in (1, 2, 3))
     training = [name for name in pr["jobs"] if name.startswith("Training · ")]
@@ -135,6 +142,11 @@ def test_manual_benchmarks_select_only_requested_work():
     manual = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "all"})
     assert manual["training_bindings"] == list(ci.NIGHTLY_TRAINING)
     assert [r["binding"] for r in manual["selections"]] == manual["training_bindings"]
+    assert all(
+        (r["mode"], r["scope"], r["artifact"])
+        == ("two-epoch-training", "full_source", f"binding-train-{r['binding']}")
+        for r in manual["selections"]
+    )
     assert manual["jobs"]["GPU training / MBD M03 / GPU"]
     assert manual["jobs"]["dataset-source"]
     for job in ("Package tests", "H&M Small", "Distribution"):
@@ -147,15 +159,10 @@ def test_manual_benchmarks_select_only_requested_work():
         assert p["selections"] and all(row["status"] == "required" for row in p["selections"])
 
 
-def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
+def m04_training_report(counts):
     from e2e.datasets.binding_sources import PINS
 
-    p = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "M04"})
-    name = "binding-train-M04-attempt-2"
-    folder = tmp_path / name
-    folder.mkdir()
     pins = json.loads((PINS / "mbd-m04.json").read_text())["objects"]
-    counts = dict(zip(("train", "valid", "test"), ci.NIGHTLY_TRAINING["M04"], strict=True))
 
     def split(s, e):
         n = counts[s]
@@ -169,7 +176,7 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
             heads={"count": dict(eligible=n, loss_sum=n / 4, mean_loss=0.25)},
         )
 
-    data = dict(
+    return dict(
         binding="M04",
         workload="binding-train",
         revision="candidate",
@@ -203,6 +210,15 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
             ssd_bytes=4096,
         ),
     )
+
+
+def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
+    p = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "M04"})
+    name = "binding-train-M04-attempt-2"
+    folder = tmp_path / name
+    folder.mkdir()
+    counts = dict(zip(("train", "valid", "test"), ci.NIGHTLY_TRAINING["M04"], strict=True))
+    data = m04_training_report(counts)
     artifacts = [
         dict(id=1, name=name, expired=False, workflow_run={"id": 14, "head_sha": "candidate"})
     ]
@@ -239,6 +255,56 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
     data["epochs"][1]["samples"] += 1
     data["validation"][0]["heads"].clear()
     assert "loss head" in report()["errors"][0]
+
+
+def test_nightly_report_accepts_only_the_pinned_training_window(tmp_path):
+    from e2e.datasets.binding_sources import PINS
+
+    p = plan("schedule")
+    pin = (PINS / "throughput" / "m04.json").read_bytes()
+    extract = json.loads(pin)
+    data = m04_training_report(extract["split_counts"])
+    data.update(
+        workload="binding-throughput",
+        scope="extract",
+        batch_size=32,
+        staging_seconds=12,
+        extract_seconds=0.01,
+        extract_manifest_sha256=hashlib.sha256(pin).hexdigest(),
+        expected_eligible=extract["expected_eligible"],
+    )
+    for row, phase, updates in zip(
+        data.pop("epochs"), ("warmup", "measurement"), (10, 100), strict=True
+    ):
+        n = updates * data["batch_size"]
+        row.update(phase=phase, epoch=1, optimizer_updates=updates, samples=n)
+        row["heads"]["count"].update(eligible=n, loss_sum=n / 4)
+        data[phase] = row
+    data["validation"].pop()
+    data["test"]["epoch"] = 1
+    data["metrics"].update(training_seconds=1, samples_per_second=3200)
+    name = "binding-throughput-M04-attempt-2"
+    folder = tmp_path / name
+    folder.mkdir()
+    artifacts = [
+        dict(id=1, name=name, expired=False, workflow_run={"id": 14, "head_sha": "candidate"})
+    ]
+
+    def selection():
+        (folder / "report.json").write_text(json.dumps(data))
+        report = ci.results(p, jobs(p), artifacts, tmp_path)
+        return next(
+            r
+            for r in report["selections"]
+            if r["binding"] == "M04" and r["scope"] == "extract" and r["group"] == "GPU training"
+        )
+
+    assert selection()["status"] == "executed"
+    data["measurement"]["optimizer_updates"] -= 1
+    assert "optimizer_updates" in selection()["error"]
+    data["measurement"]["optimizer_updates"] += 1
+    data["metrics"]["training_seconds"] += 1
+    assert "aggregate metrics" in selection()["error"]
 
 
 def test_single_full_binding_requires_successful_full_source_receipt(tmp_path):

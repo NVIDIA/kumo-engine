@@ -335,11 +335,11 @@ def selection_rows(plan):
     rows.extend(
         dict(
             binding=b,
-            mode="two-epoch-training",
+            mode="binding-throughput" if plan["suite"] else "two-epoch-training",
             representation=BINDINGS[b][-1],
             group="GPU training",
-            scope="full_source",
-            artifact=f"binding-train-{b}",
+            scope="extract" if plan["suite"] else "full_source",
+            artifact=f"binding-throughput-{b}" if plan["suite"] else f"binding-train-{b}",
             status="required",
         )
         for b in plan["training_bindings"]
@@ -467,7 +467,7 @@ def results(plan, jobs, artifacts, directory):
                 (row,) = group
                 path = only(source, "report.json")
                 data = read_json(path)
-                validate_training(data, row["binding"], plan)
+                validate_training(data, row["binding"], plan, scope=row["scope"])
                 row.update(status="executed", report=path.name, training=data)
             elif group[0]["group"] == "benchmark":
                 benchmark_evidence(source, group, plan["revision"], plan["mode"])

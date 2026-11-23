@@ -2,13 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Prepare complete registered populations and train the nightly package bindings."""
+"""Prepare and train registered bindings on a pinned extract or their full population."""
 
 import hashlib
 import json
 import math
 import os
 import sys
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC
 from functools import partial
@@ -16,15 +17,16 @@ from itertools import chain
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
+from unittest.mock import patch
 
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
 
-from e2e.datasets.binding_sources import full_source
+from e2e.datasets.binding_sources import PINS, full_source
 from kumo.pytorch import api
-from tests.e2e.binding_plan import BINDINGS, NIGHTLY_HISTORY_EVENTS
+from tests.e2e.binding_plan import BINDINGS, NIGHTLY_HISTORY_EVENTS, TRAINING_BATCH_SIZE
 from tests.e2e.cuda_metrics import training_gpu_window
 
 _SPLITS = ("train", "valid", "test")
@@ -163,17 +165,32 @@ def _allocated_bytes(files, work):
     return size
 
 
-def run_full_binding(binding, e2e_dir, output):
+@contextmanager
+def _native_training(task):
+    """An extract must reach DiskGraph's model batch path for every timed batch."""
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    if not isinstance(task._anchors, NativeAnchors):
+        raise ValueError("Throughput requires native DiskGraph Parquet anchors")
+    fallback = RuntimeError("Throughput used the Python request batcher")
+    with (
+        patch.object(task._anchors, "_requests", side_effect=fallback),
+        patch.object(task._assembler, "batches", side_effect=fallback),
+    ):
+        yield
+
+
+def run_full_binding(binding, e2e_dir, output, *, bounded=False):
     from tests.e2e.runs import _provenance
 
     output.parent.mkdir(parents=True, exist_ok=True)
     _, _, selector, representation = BINDINGS[binding]
     report = dict(
-        _provenance("binding-train"),
+        _provenance("binding-throughput" if bounded else "binding-train"),
         binding=binding,
         selector=selector,
         representation=representation,
-        scope="full_source",
+        scope="extract" if bounded else "full_source",
         complete=False,
         run_id=int(os.environ["GITHUB_RUN_ID"]) if "GITHUB_RUN_ID" in os.environ else None,
         run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"])
@@ -192,7 +209,7 @@ def run_full_binding(binding, e2e_dir, output):
     try:
         publish("setup")
         if sys.platform != "linux" or not torch.cuda.is_available():
-            raise RuntimeError("Full binding training requires a Linux CUDA worker")
+            raise RuntimeError("Binding training requires a Linux CUDA worker")
         import resource
 
         from tests.e2e.binding_training import train_full_binding
@@ -202,16 +219,31 @@ def run_full_binding(binding, e2e_dir, output):
             raise ValueError("Source staging duration must be finite and nonnegative")
         report["staging_seconds"] = staging
         device = torch.device("cuda", torch.cuda.current_device())
-        batch_size = 32
+        batch_size = TRAINING_BATCH_SIZE
         e2e_dir.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=e2e_dir, prefix=f"{binding}-") as directory:
             work = Path(directory)
-            publish("ingestion")
+            publish("extract" if bounded else "ingestion")
             start = perf_counter()
-            files = full_source(binding, Path(os.environ["KUMO_PYTORCH_DATA_ROOT"]))
-            column, counts, targets, cutoff, identities = source_population(binding, files)
-            for key in ("source_manifest", "anchor_manifest"):
-                report[key + "_sha256"] = hashlib.sha256(files[key].read_bytes()).hexdigest()
+            root = Path(os.environ["KUMO_PYTORCH_DATA_ROOT"])
+            if bounded:
+                from e2e.datasets.throughput_sources import load_extract
+
+                spec, data, anchors, files, cutoff, identities, counts, targets = load_extract(
+                    binding, root
+                )
+                pin = (PINS / "throughput" / f"{binding.lower()}.json").read_bytes()
+                report["extract_manifest_sha256"] = hashlib.sha256(pin).hexdigest()
+                upstream = json.loads(pin)["upstream_sha256"]
+                for key in ("source_manifest", "anchor_manifest"):
+                    report[key + "_sha256"] = upstream[key]
+                report["extract_seconds"] = perf_counter() - start
+                column = "split"
+            else:
+                files = full_source(binding, root)
+                column, counts, targets, cutoff, identities = source_population(binding, files)
+                for key in ("source_manifest", "anchor_manifest"):
+                    report[key + "_sha256"] = hashlib.sha256(files[key].read_bytes()).hexdigest()
             report.update(
                 split_counts=counts,
                 split_column=column,
@@ -222,10 +254,16 @@ def run_full_binding(binding, e2e_dir, output):
                 device=device.type,
                 history_limit=NIGHTLY_HISTORY_EVENTS,
             )
-            spec, data, anchors = full_tables(binding, files, work / "prepared")
+            if bounded:
+                publish("ingestion")
+                start = perf_counter()
+            else:
+                spec, data, anchors = full_tables(binding, files, work / "prepared")
             engine = api.DiskGraphEngine(index=work / "index", num_threads=4)
             with api.prepare(training_contract(spec), data, engine) as plan:
-                metrics["ingestion_seconds"] = staging + (perf_counter() - start)
+                metrics["ingestion_seconds"] = (perf_counter() - start) + (
+                    0 if bounded else staging
+                )
                 publish("materialization")
                 start = perf_counter()
                 with plan.materialize(anchors, fit_split="train", encoder_cutoff=cutoff) as task:
@@ -236,34 +274,53 @@ def run_full_binding(binding, e2e_dir, output):
                             f"Source split counts {counts} differ from task {observed}"
                         )
                     report["fingerprints"] = dict(task.fingerprints)
-                    report.update(epochs=[], validation=[])
-                    publish("training")
+                    report["validation"] = []
+                    if not bounded:
+                        report["epochs"] = []
+                    publish("warmup" if bounded else "training")
 
                     def save_split(row):
                         split = row["split"]
                         for head, loss in row["heads"].items():
                             expected = targets[head]
-                            if expected is not None and loss["eligible"] != expected[split]:
+                            if (
+                                expected is not None
+                                and not (bounded and split == "train")
+                                and loss["eligible"] != expected[split]
+                            ):
                                 raise ValueError(
                                     f"{split}: eligible {head} count differs from source"
                                 )
-                        if split == "test":
+                        if "phase" in row:
+                            report[row["phase"]] = row
+                        elif split == "test":
                             report["test"] = row
                         else:
                             report["epochs" if split == "train" else "validation"].append(row)
-                        publish("training")
+                        if bounded:
+                            following = {
+                                "warmup": "measurement",
+                                "measurement": "validation",
+                                "valid": "test",
+                                "test": "finalize",
+                            }
+                            publish(following[row.get("phase", split)])
+                        else:
+                            publish("training")
 
-                    train_full_binding(
-                        task,
-                        binding,
-                        batch_size=batch_size,
-                        device=device,
-                        split_batches=partial(full_batches, task, identities, batch_size),
-                        train_window=partial(training_gpu_window, device),
-                        on_split=save_split,
-                    )
+                    with _native_training(task) if bounded else nullcontext():
+                        train_full_binding(
+                            task,
+                            binding,
+                            batch_size=batch_size,
+                            device=device,
+                            split_batches=partial(full_batches, task, identities, batch_size),
+                            train_window=partial(training_gpu_window, device),
+                            on_split=save_split,
+                            bounded=bounded,
+                        )
                     metrics["ssd_bytes"] = _allocated_bytes(files, work)
-        epochs = report["epochs"]
+        epochs = [report["measurement"]] if bounded else report["epochs"]
         seconds = sum(e["elapsed_ns"] for e in epochs) / 1e9
         readings = sum(e["gpu"]["samples"] for e in epochs)
         metrics.update(

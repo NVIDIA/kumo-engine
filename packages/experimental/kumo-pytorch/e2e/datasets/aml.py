@@ -278,19 +278,22 @@ def _hi_targets(binding):
 prepare_e01 = prepare_hi_small
 
 
-def prepare_li_medium(
-    files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="L01"
-):
-    """Prepare an LI Medium stored-target binding from the supplied source tables."""
+def _li_targets(binding):
     if binding not in _LI_TARGETS:
         raise ValueError(f"Unknown LI Medium binding: {binding}")
-    targets = {
+    return {
         name: (column, "string", api.Vocabulary())
         if kind == "categorical"
         else (column, "float32", api.Raw())
         for name, (column, kind) in _LI_TARGETS[binding].items()
     }
-    return _prepare_aml(files, directory, anchor_rows, targets, binding)
+
+
+def prepare_li_medium(
+    files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="L01"
+):
+    """Prepare an LI Medium stored-target binding from the supplied source tables."""
+    return _prepare_aml(files, directory, anchor_rows, _li_targets(binding), binding)
 
 
 prepare_l01 = prepare_li_medium
@@ -402,14 +405,7 @@ def prepare_full_aml(files, directory, binding):
     """Project every eligible published anchor and all original AML transactions."""
     directory.mkdir(parents=True)
     mapping, ids = _accounts(files)
-    targets = (
-        _hi_targets(binding)
-        if binding.startswith("E")
-        else {
-            "amount": ("next_amount", "float32", api.Raw()),
-            "currency": ("next_currency", "string", api.Vocabulary()),
-        }
-    )
+    targets = _hi_targets(binding) if binding.startswith("E") else _li_targets(binding)
     graph = binding in {"E01", "E02", "L01"}
     fanout = _write_source_tables(files, directory, mapping, ids, ids, history=binding != "E01")
     dataset = ds.dataset(files["anchors"])

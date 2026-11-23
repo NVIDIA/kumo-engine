@@ -5,6 +5,9 @@
 """Registered selections exercised by package-owned dataset tests."""
 
 NIGHTLY_HISTORY_EVENTS = 64
+TRAINING_BATCH_SIZE = 32
+WARMUP_UPDATES = 10
+MEASURED_UPDATES = 100
 
 # Train, validation and test counts from the registered anchor manifests.
 # L01 uses the next-outgoing-amount-currency workload's forecast_split.

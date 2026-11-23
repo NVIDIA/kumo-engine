@@ -9,9 +9,28 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 import pytest
 
 from e2e.datasets.staging import admit, verify
+from e2e.datasets.throughput_sources import select_positions, take_positions
+
+
+def test_extract_uses_original_parquet_positions(tmp_path):
+    path = tmp_path / "anchors.parquet"
+    splits = ["train", None, "test", "valid"] * 12
+    rows = pa.table({"id": range(len(splits)), "split": splits})
+    pq.write_table(rows, path, row_group_size=3)
+    sizes = {"train": 6, "valid": 2, "test": 3}
+    positions = select_positions(path, "split", sizes=sizes)
+    selected = take_positions(path, positions, ["id", "split"])
+    assert selected["id"].to_pylist() == sorted(set(positions))
+    for split, size in sizes.items():
+        ids = selected.filter(pc.equal(selected["split"], split))["id"].to_pylist()
+        strata = [i // 4 * size // 12 for i in ids]
+        assert strata == list(range(size))
 
 
 def test_stage_pinned_datasets(tmp_path, monkeypatch):

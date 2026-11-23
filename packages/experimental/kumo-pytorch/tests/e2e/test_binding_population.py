@@ -5,7 +5,9 @@
 """Deliver each eligible original source row through the selected DiskGraph binding."""
 
 import os
+from contextlib import nullcontext
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -18,6 +20,7 @@ from kumo.pytorch import api
 from tests.e2e.binding_plan import BINDINGS, NIGHTLY_HISTORY_EVENTS
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.full_binding_run import (
+    _native_training,
     full_batches,
     full_tables,
     source_population,
@@ -25,6 +28,57 @@ from tests.e2e.full_binding_run import (
 )
 from tests.helpers import parquet_anchors
 from tests.test_history_cap_pushdown import _history_case
+
+
+def test_training_windows_continue_after_warmup_and_ignore_ineligible_batches(
+    tmp_path, monkeypatch
+):
+    from e2e.datasets.mbd import CATEGORIES, prepare_mbd
+    from tests.e2e import binding_training
+
+    anchors = pa.table(
+        {
+            "sample_id": list("abcdef"),
+            "entity_id": ["client"] * 6,
+            "anchor_row_position": range(6),
+            "split": ["train"] * 4 + ["valid", "test"],
+            "future_count": [None, 1, 2, 3, 4, 5],
+            **dict.fromkeys(
+                ("as_of_time", "graph_as_of_time"), pa.array([20] * 6, pa.timestamp("s"))
+            ),
+        }
+    )
+    events = pa.table(
+        {
+            "client_id": ["client"],
+            "event_id": [0],
+            "event_time": pa.array([10], pa.timestamp("ns")),
+            "amount": [1.0],
+            **dict.fromkeys(CATEGORIES, [1]),
+        }
+    )
+    spec, data, table = prepare_mbd((anchors, events, {"client": 0}), tmp_path / "prepared")
+    monkeypatch.setattr(binding_training, "WARMUP_UPDATES", 1)
+    monkeypatch.setattr(binding_training, "MEASURED_UPDATES", 2)
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
+    with (
+        api.prepare(spec, data, engine) as plan,
+        plan.materialize(table, fit_split="train") as task,
+        _native_training(task),
+    ):
+        result = binding_training.train_full_binding(
+            task,
+            "M04",
+            batch_size=1,
+            split_batches=partial(full_batches, task, anchors, 1),
+            device="cpu",
+            train_window=nullcontext,
+            bounded=True,
+        )
+    rows = (result["warmup"], result["measurement"], *result["validation"], result["test"])
+    assert [r["samples"] for r in rows] == [2, 2, 1, 1]
+    assert [r["optimizer_updates"] for r in rows] == [1, 2, 0, 0]
+    assert [r["heads"]["count"]["eligible"] for r in rows] == [1, 2, 1, 1]
 
 
 def test_training_verifies_reordered_native_rows_exactly_once(tmp_path):

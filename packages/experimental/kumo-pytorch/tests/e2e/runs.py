@@ -49,6 +49,9 @@ source under ``KUMO_PYTORCH_DATA_ROOT`` first. Ingestion includes source staging
 (``KUMO_PYTORCH_STAGE_SECONDS``, zero for pre-staged sources), re-verification,
 projection and DiskGraph preparation. RAM is process peak RSS.
 SSD usage includes the staged source and live prepared tables and index.
+Use ``binding-throughput BINDING`` with the same arguments to measure 100 eligible
+updates after 10 warmup updates on a pinned extract. Its report times extract staging,
+verification, DiskGraph preparation and fitting separately.
 """
 
 from __future__ import annotations
@@ -701,14 +704,14 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--e2e-dir", type=Path, required=True)
-    if argv and argv[0] == "binding-train":
+    if argv and argv[0] in ("binding-train", "binding-throughput"):
         from tests.e2e.binding_plan import NIGHTLY_TRAINING
         from tests.e2e.full_binding_run import run_full_binding
 
         parser.add_argument("binding", choices=NIGHTLY_TRAINING)
         parser.add_argument("--output", type=Path, required=True)
         args = parser.parse_args(argv[1:])
-        run_full_binding(**vars(args))
+        run_full_binding(**vars(args), bounded=argv[0] == "binding-throughput")
         print(args.output)
         return
     if argv and argv[0] == "aml":

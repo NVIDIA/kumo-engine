@@ -7,7 +7,7 @@ measured against. It's development tooling, not part of the `kumo.pytorch` wheel
 
 Pull requests and nightly runs use the same [package suite](../../../../.github/workflows/kumo-pytorch-tests.yml)
 to run package and distribution checks, H&M at sizes S and M, conformance shards
-and six full-population GPU training jobs. Both publish the same reports. To replay the nightly suite, manually dispatch this
+and six GPU throughput measurements on pinned real-data extracts. Both publish the same reports. To replay the nightly suite, manually dispatch this
 workflow without inputs on main or the current head of an open same-repository PR.
 
 For an on-demand CUDA, AML, full-binding or Streaming 25B run, select the
@@ -309,11 +309,11 @@ equal the generator's at all 700,000 anchors.
 The GPU matrix runs S02 (Synthetic nuFormer), L01 (AML LI Medium
 Combined), S01 (Synthetic PRAGMA), M04 (MBD GraphSAGE), S04 (Synthetic
 Combined) and M03 (MBD nuFormer). The package runner prepares DiskGraph and
-loads batches on CPU. Each GPU model trains for two complete passes over its
-registered training split, including the tail. Each pass verifies every original
-row and sample ID exactly once in the order delivered by DiskGraph. It evaluates
-validation after each epoch and test after epoch two. Batches without eligible targets count
-toward delivery and skip the optimizer update. For each anchor, the training
+loads batches from Parquet anchors on CPU. Each suite job stages the prepared
+Parquet files named in `datasets/pins/throughput/` and fits on 8,192 training
+anchors. With a batch size of 32 it warms up for 10 optimizer updates, times
+the next 100 and evaluates 256 validation and 256 test anchors. Batches without
+eligible targets count toward throughput and skip the optimizer update. For each anchor, the training
 runner selects the latest 64 history events across its event sources and
 delivers them oldest first. Each graph hop samples up to 64 recent neighbors
 per relation and keeps smaller configured fanouts. These limits apply to model
@@ -322,8 +322,13 @@ original time windows. The package correctness tests use the original histories.
 HI Small retains its source and behavior checks. The 25B fixtures and campaigns
 run on manual dispatch.
 
-Use manual benchmark mode `binding-train` with a binding ID to replay one job or with
-`binding=all` to run the six jobs and publish one combined report.
+To reproduce an extract and its object hashes from staged original Parquet files,
+run `python -m e2e.datasets.throughput_sources S04 --source-root /scratch/source --output /scratch/new-s04`
+from the package directory. The command writes a local `pin.json` alongside the prepared tables.
+
+Manual benchmark mode `binding-train` fits on the full registered training split.
+It trains for two complete epochs, checks every sample ID, validates after each
+epoch and tests after epoch two. Select one binding or use `binding=all` to run all six.
 The manual `cuda` job also runs L01 training row 2,172,838 through this model
 context and checks its 12 counts against the pinned transaction source.
 The existing `KUMO_PYTORCH_BINDING_RUNNER` and `KUMO_PYTORCH_BINDING_SCRATCH`
@@ -335,9 +340,10 @@ python -m tests.e2e.runs binding-train S04 --e2e-dir /scratch/work --output repo
 ```
 
 The combined `results.md` and `results.json` contain per-head eligible counts
-and mean losses for each pass. Ingestion covers staging, source projection and
-index preparation. Materialization covers fitting. Training time and throughput
-cover both training epochs, including CPU batch loading and GPU synchronization.
+and mean losses for each window. The suite reports extract staging, verification,
+index preparation and materialization/fit separately. Its throughput covers the
+100 timed updates, including CPU batch loading and GPU synchronization. The
+manual report includes staging and projection in ingestion and times both epochs.
 Tokens count valid input history tokens (zero for graph-only M04). RAM is peak
 process RSS, GPU utilization is the mean of device-wide NVML samples during
 training, and SSD usage is allocated space for the staged binding and its

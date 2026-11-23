@@ -225,7 +225,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.training) }}
     uses: ./.github/workflows/_kumo-pytorch-training.yml
-    with: {binding: '${{ matrix.binding }}'}
+    with: {binding: '${{ matrix.binding }}', full-population: true}
 
   streaming-25b:
     if: >-

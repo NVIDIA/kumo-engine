@@ -4,6 +4,7 @@
 
 """Stream complete registered Synthetic and MBD populations through the package projections."""
 
+import json
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -41,7 +42,7 @@ def _paths(files, table):
     return [path for name, path in sorted(files.items()) if name.startswith(table + "/")]
 
 
-def _synthetic(work, files, kind):
+def _synthetic(work, files, kind, *, selected=None):
     owner = "account" if kind == "account" else "customer"
     root_key = owner + "_id"
     accounts = pq.read_table(
@@ -57,13 +58,24 @@ def _synthetic(work, files, kind):
     roots = entities[root_key].combine_chunks()
     if roots.null_count or len(roots.unique()) != len(roots):
         raise ValueError(f"Invalid Synthetic {root_key} identity")
-    pq.write_table(
-        pa.table({"root_id": roots, "available_at": entities[clock].cast(pa.timestamp("s"))}),
-        work / "roots.parquet",
+    cohort = selected[root_key].unique() if selected is not None else None
+    root_rows = pa.table(
+        {"root_id": roots, "available_at": entities[clock].cast(pa.timestamp("s"))}
     )
+    if cohort is not None:
+        root_rows = root_rows.filter(pc.is_in(roots, value_set=cohort))
+    pq.write_table(root_rows, work / "roots.parquet")
 
     def anchors():
-        for rows, positions in _blocks([files["anchors"]], synthetic._anchor_columns(kind)):
+        batches = (
+            (
+                rows.append_column("anchor_row_position", pa.array(positions))
+                for rows, positions in _blocks([files["anchors"]], synthetic._anchor_columns(kind))
+            )
+            if selected is None
+            else (selected,)
+        )
+        for rows in batches:
             if not rows[root_key].cast(pa.string()).equals(rows["entity_id"]):
                 raise ValueError("Registered Synthetic root differs from its anchor")
             if pc.index_in(rows[root_key], value_set=roots).null_count:
@@ -72,9 +84,7 @@ def _synthetic(work, files, kind):
                 indices = pc.index_in(rows[root_key], value_set=accounts["account_id"])
                 if not accounts["customer_id"].take(indices).equals(rows["customer_id"]):
                     raise ValueError("Registered Synthetic account has the wrong owner")
-            yield synthetic._project_anchors(
-                rows.append_column("anchor_row_position", pa.array(positions)), kind
-            )
+            yield synthetic._project_anchors(rows, kind)
 
     _write(work / "anchors.parquet", anchors())
     capacity = 0
@@ -92,16 +102,41 @@ def _synthetic(work, files, kind):
                 if idx.null_count:
                     raise ValueError(f"Unknown Synthetic root in {family}")
                 counts[idx.to_numpy()] += frequencies.field("counts").to_numpy()
-                yield rows
+                yield (
+                    rows
+                    if cohort is None
+                    else rows.filter(pc.is_in(rows["root_id"], value_set=cohort))
+                )
 
         _write(work / f"{family}.parquet", events())
         capacity += max(1, counts.max())
     targets = ("label",) if kind == "ltv" else ()
+    if cohort is not None:
+        # Use the full source's shape, including its padded history width.
+        (work / "meta.json").write_text(json.dumps({"capacity": int(capacity)}) + "\n")
     return synthetic._contract(int(capacity), kind), root_key, targets
 
 
 def _mbd(work, files, binding):
+    capacity = project_mbd(binding, files, None, work)
     categories = binding == "M03"
+    return mbd._contract(capacity, categories), "root_id", mbd._HEADS if categories else ("count",)
+
+
+def project_mbd(binding, files, positions, directory):
+    """Project complete client histories with the original global client and transaction IDs."""
+    import pyarrow.dataset as ds
+
+    categories = binding == "M03"
+    selected = None
+    if positions is not None:
+        columns = ["sample_id", "entity_id", "split", "source_fold", "as_of_time"]
+        columns += (
+            [f"next_{head}{suffix}" for head in mbd._HEADS for suffix in ("", "_valid")]
+            if categories
+            else ["graph_as_of_time", "future_count"]
+        )
+        selected = ds.dataset(files["anchors"]).take(positions, columns=columns)
     members = []
     for name, path in sorted(files.items()):
         if name.startswith("client_split/"):
@@ -115,8 +150,16 @@ def _mbd(work, files, binding):
     if names.null_count or len(names.unique()) != len(names):
         raise ValueError("Invalid MBD client membership")
     ranks = np.arange(len(names), dtype=np.int64)
-    pq.write_table(pa.table({"root_id": ranks}), work / "roots.parquet")
     counts = np.zeros_like(ranks)
+    if selected is not None:
+        chosen = pc.index_in(selected["entity_id"].unique(), value_set=names)
+        if chosen.null_count:
+            raise ValueError("MBD throughput anchor has no client in the source membership")
+        chosen = chosen.sort()
+        ranks = ranks[chosen.to_numpy()]
+        names = names.take(chosen)
+        membership = membership.take(chosen)
+    pq.write_table(pa.table({"root_id": ranks}), directory / "roots.parquet")
 
     def root_ids(rows, column, fold_column):
         indices = pc.index_in(rows[column], value_set=names)
@@ -125,39 +168,52 @@ def _mbd(work, files, binding):
             or not pc.all(pc.equal(membership["fold"].take(indices), rows[fold_column])).as_py()
         ):
             raise ValueError(f"MBD {column} disagrees with its source fold")
-        return indices.cast(pa.int64())
+        return indices.cast(pa.int64()) if selected is None else pa.array(ranks).take(indices)
 
     def events():
-        for rows, positions in _blocks(
+        for rows, physical in _blocks(
             _paths(files, "detail/trx"),
             ["client_id", "fold", "event_time", "amount", *mbd.CATEGORIES],
         ):
+            if selected is not None:
+                keep = pc.indices_nonzero(pc.is_in(rows["client_id"], value_set=names))
+                if not len(keep):
+                    continue
+                rows, physical = rows.take(keep), physical[keep.to_numpy()]
             ids = root_ids(rows, "client_id", "fold")
             frequencies = pc.value_counts(ids)
             counts[frequencies.field("values").to_numpy()] += frequencies.field("counts").to_numpy()
             yield mbd._project_events(
-                rows.append_column("event_id", pa.array(positions)), ids, categories
+                rows.append_column("event_id", pa.array(physical)), ids, categories
             )
 
     def anchors():
-        for rows, positions in _blocks([files["anchors"]]):
+        batches = (
+            _blocks([files["anchors"]])
+            if selected is None
+            else [(selected, np.arange(len(selected)))]
+        )
+        for rows, local_positions in batches:
             ids = root_ids(rows, "entity_id", "source_fold")
             expected = pc.take(
                 pa.array(["train", "train", "train", "valid", "test"]), rows["source_fold"]
             )
             if not pc.all(pc.fill_null(pc.equal(expected, rows["split"]), False)).as_py():
                 raise ValueError("MBD source fold disagrees with registered split")
-            yield mbd._project_anchors(
-                rows.append_column("anchor_row_position", pa.array(positions)), ids, categories
+            labels = mbd._project_anchors(
+                rows.append_column("anchor_row_position", pa.array(local_positions)),
+                ids,
+                categories,
+            )
+            yield (
+                labels
+                if selected is None
+                else labels.append_column("source_row_position", pa.array(positions))
             )
 
-    _write(work / "transactions.parquet", events())
-    _write(work / "anchors.parquet", anchors())
-    return (
-        mbd._contract(int(max(1, counts.max())), categories),
-        "root_id",
-        mbd._HEADS if categories else ("count",),
-    )
+    _write(directory / "transactions.parquet", events())
+    _write(directory / "anchors.parquet", anchors())
+    return int(max(1, counts.max()))
 
 
 def prepare_full(binding, files, directory):

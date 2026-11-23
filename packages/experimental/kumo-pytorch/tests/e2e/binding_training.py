@@ -5,7 +5,7 @@
 """Bounded reproducibility checks and full-split training on a registered package task."""
 
 from collections import Counter
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, closing, nullcontext
 from copy import deepcopy
 from itertools import count
 from pathlib import Path
@@ -17,34 +17,39 @@ from torch import nn
 from e2e.flows.common import BatchDigest
 from kumo.pytorch import api
 from tests.e2e.binding_model import make_model
+from tests.e2e.binding_plan import MEASURED_UPDATES, WARMUP_UPDATES
 from tests.e2e.loader_timing import _rates
 from tests.test_inference_lifecycle import assert_same
 
 
 def train_full_binding(
-    task, binding, *, batch_size, split_batches, device, train_window, on_split=None
+    task, binding, *, batch_size, split_batches, device, train_window, on_split=None, bounded=False
 ):
-    """Train twice on verified source batches, validate after each epoch and test once."""
+    """Use one model and optimizer for the selected full epochs or bounded update windows."""
     device = torch.device(device)
     torch.manual_seed(17)
     model = make_model(task, binding).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0)
 
-    def run_split(split, epoch):
+    def run_split(split, epoch, *, batches=None, phase=None, updates=None):
         training = split == "train"
         model.train(training)
         row = dict(epoch=epoch, split=split, samples=0, tokens=0, optimizer_updates=0)
+        if phase:
+            row["phase"] = phase
         totals = {name: torch.zeros((), dtype=torch.float64, device=device) for name in model.heads}
         eligible = Counter()
         with train_window(row) if training else nullcontext(), torch.set_grad_enabled(training):
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             start = perf_counter_ns()
-            for batch in split_batches(split, epoch):
+            for batch in batches if batches is not None else split_batches(split, epoch):
                 if not 0 < batch.batch_size <= batch_size or batch.metadata["is_padding"].any():
                     raise ValueError(
                         f"{binding} {split} delivered unexpected padding or batch size"
                     )
+                if updates is not None and batch.batch_size != batch_size:
+                    raise ValueError(f"{binding} {phase} exhausted full-size training batches")
                 row["samples"] += batch.batch_size
                 if "history" in batch.inputs:
                     row["tokens"] += int(batch.inputs["history"]["valid"].sum())
@@ -59,10 +64,14 @@ def train_full_binding(
                     loss.backward()
                     optimizer.step()
                     row["optimizer_updates"] += 1
+                    if row["optimizer_updates"] == updates:
+                        break
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             row["elapsed_ns"] = perf_counter_ns() - start
-        if row["samples"] != task.count(split) or not row["samples"]:
+        if updates is not None and row["optimizer_updates"] != updates:
+            raise ValueError(f"{binding} {phase} needs {updates} eligible optimizer updates")
+        if updates is None and (row["samples"] != task.count(split) or not row["samples"]):
             raise ValueError(f"{binding} {split} delivered {row['samples']} of {task.count(split)}")
         if training and not row["optimizer_updates"]:
             raise ValueError(f"{binding} epoch {epoch} had no eligible optimizer updates")
@@ -78,6 +87,20 @@ def train_full_binding(
         if on_split is not None:
             on_split(row)
         return row
+
+    if bounded:
+        # Share the iterator and optimizer so warmup anchors cannot re-enter the measurement.
+        with closing(split_batches("train", 1)) as train:
+            warmup = run_split("train", 1, batches=train, phase="warmup", updates=WARMUP_UPDATES)
+            measured = run_split(
+                "train", 1, batches=train, phase="measurement", updates=MEASURED_UPDATES
+            )
+        return dict(
+            warmup=warmup,
+            measurement=measured,
+            validation=[run_split("valid", 1)],
+            test=run_split("test", 1),
+        )
 
     epochs, validation = [], []
     for epoch in (1, 2):
