@@ -13,6 +13,7 @@ const REGIONS = ['us-west-2', 'us-east-2', 'us-east-1', 'eu-west-2', 'eu-central
 const STATUS = {AccessDenied: 403, ValidationError: 400, Throttling: 400, IdempotentParameterMismatchError: 400, InternalFailure: 500,
   ResourceContentionFault: 500, IdempotentCallInProgress: 500, IdempotentCallInProgressFault: 500};
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+const md5 = body => '"' + createHash('md5').update(body).digest('hex') + '"';
 const runnerName = (label, id) => label + '-' + sha256(id).slice(0, 12);
 const sdkError = (name, status, attempts) => Object.assign(Error(name + ' from the fixture'), {$fault: status < 500 ? 'client' : 'server',
   $retryable: undefined, $metadata: {httpStatusCode: status, requestId: '11111111-2222-3333-4444-555555555555', attempts,
@@ -43,7 +44,7 @@ function fixture(tier = 'weekly', runControls = false, scales = [tier === 'weekl
     {id: 2, name: 'engine-e2e-41-1-old-host', labels: [{name: 'engine-e2e-41-1-old'}]},
     {id: 3, name: owned[0].AutoScalingGroupName + '-other', labels: [{name: 'foreign'}]},
     {id: 4, name: 'foreign', labels: [{name: owned[0].AutoScalingGroupName}]}];
-  let version = 0, instances = 0, owners = 0;
+  let instances = 0, owners = 0;
   const io = {env, now: () => now, uuid: () => 'owner-' + ++owners,
     preconditionFailed: error => error.message === 'existing claim' || [409, 412].includes(error.$metadata?.httpStatusCode),
     api: async (path, method = 'GET', data) => {
@@ -98,7 +99,7 @@ function fixture(tier = 'weekly', runControls = false, scales = [tier === 'weekl
       if (operation === 'put-object') {
         if (input.IfNoneMatch === '*' ? claims.has(input.Key) : input.IfMatch !== undefined && etags.get(input.Key) !== input.IfMatch)
           throw Error('existing claim');
-        claims.set(input.Key, JSON.parse(input.Body)); etags.set(input.Key, '"' + ++version + '"');
+        claims.set(input.Key, JSON.parse(input.Body)); etags.set(input.Key, md5(input.Body));
         return {ETag: etags.get(input.Key)};
       }
       return {};
@@ -1331,11 +1332,12 @@ test('only one sweep of a pool works at a time', async () => {
   const results = await Promise.all([sweep(event, f.io), sweep(event, f.io)]);
   assert.deepEqual(results.map(r => r.skipped).sort(), ['leased', undefined]);
   assert.equal(launches(f).length, 4);
-  const writes = f.calls.filter(c => c.operation === 'put-object' && c.input.Key === key).map(c => ({...c.input, Body: JSON.parse(c.input.Body)}));
+  const writes = f.calls.filter(c => c.operation === 'put-object' && c.input.Key === key)
+    .map(c => ({...c.input, Body: JSON.parse(c.input.Body), etag: md5(c.input.Body)}));
   assert.deepEqual([writes[0].IfNoneMatch, writes[0].Body.lease_until, writes[0].Body.lease_owner], ['*', f.io.now() + 120, 'owner-1']);
-  const saved = writes.find(w => w.IfMatch === '"1"');
+  const saved = writes.find(w => w.IfMatch === writes[0].etag);
   assert.deepEqual([Object.keys(saved.Body.launched), saved.Body.lease_owner], [['i-00000001'], 'owner-1'], 'The launch is saved under the lease');
-  assert.deepEqual([writes.at(-1).IfMatch, writes.at(-1).Body.lease_until, writes.at(-1).Body.lease_owner], ['"2"', 0, 'owner-1']);
+  assert.deepEqual([writes.at(-1).IfMatch, writes.at(-1).Body.lease_until, writes.at(-1).Body.lease_owner], [saved.etag, 0, 'owner-1']);
   const state = f.claims.get(key);
   f.claims.set(key, {...state, lease_until: f.io.now() + 30, lease_owner: 'other'});
   assert.deepEqual(await sweep(event, f.io), {skipped: 'leased'});
@@ -1350,14 +1352,7 @@ test('only one sweep of a pool works at a time', async () => {
   assert.deepEqual(await sweep(event, f.io), {skipped: 'leased'}, 'A lost conditional write leaves the work to the other sweep');
 });
 test('a sweep that read the state before another sweep took and released the lease stays out, even when S3 makes ETags from the content', async () => {
-  const f = await started(), event = f.sweeps[0], key = stateKey(event.instance), aws = f.io.aws;
-  const md5 = body => '"' + createHash('md5').update(body).digest('hex') + '"';
-  f.io.aws = async (service, operation, input, region) => {
-    const out = await aws(service, operation, input, region);
-    if (operation !== 'put-object' || input.Key !== key) return out;
-    f.etags.set(key, md5(input.Body));
-    return {...out, ETag: f.etags.get(key)};
-  };
+  const f = await started(), event = f.sweeps[0], key = stateKey(event.instance);
   f.zones['us-west-2/subnet-1'] = 5;
   for (let k = 0; k < 2; k++) await sweep(event, f.io);
   let open, reached, held = false;
@@ -1367,9 +1362,13 @@ test('a sweep that read the state before another sweep took and released the lea
     return f.io.aws(service, operation, input, region);
   }};
   const second = sweep(event, late);
-  await waiting;
+  await Promise.race([waiting, second]);
   const first = await sweep(event, f.io);
   open();
+  const releases = f.calls.filter(c => c.operation === 'put-object' && c.input.Key === key && JSON.parse(c.input.Body).lease_until === 0)
+    .map(c => { const {lease_owner, ...rest} = JSON.parse(c.input.Body); return [lease_owner, JSON.stringify(rest)]; });
+  assert.deepEqual([releases.length, releases.at(-1)[1] === releases.at(-2)[1], releases.at(-1)[0] === releases.at(-2)[0]], [3, true, false],
+    'Apart from its lease owner, the first sweep releases the bytes that the second sweep read');
   assert.deepEqual([first.skipped, first.missing, first.launched], [undefined, 0, []], 'The first sweep changes nothing in the pool');
   assert.deepEqual(await second, {skipped: 'leased'});
 });
@@ -2105,7 +2104,7 @@ test('broker preserves authentication, routing, regional clients and S3 failure 
       'One client per service and region, and no request waits longer than 10 seconds');
     assert.deepEqual(launches(f).map(c => c.region), ['us-west-2', 'us-west-2', 'us-east-2']);
     const leases = f.calls.filter(c => c.operation === 'put-object' && c.input.Key === stateKey(pool.instance)).map(c => c.input);
-    assert.deepEqual(leases.map(c => c.IfNoneMatch || c.IfMatch), ['*', '"1"', '"2"', '"4"', '"5"']);
+    assert.deepEqual(leases.map(c => c.IfNoneMatch || c.IfMatch), ['*', ...leases.slice(0, -1).map(c => md5(c.Body))]);
     const owners = leases.map(c => JSON.parse(c.Body).lease_owner);
     assert.deepEqual(owners.map(o => /^[0-9a-f-]{36}$/.test(o)), [true, true, true, true, true]);
     assert.deepEqual([new Set(owners.slice(0, 3)).size, new Set(owners.slice(3)).size, owners[0] === owners[3]], [1, 1, false],
