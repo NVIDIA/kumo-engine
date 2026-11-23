@@ -85,10 +85,31 @@ def make_plan(event_name, event, *, ref, **identity):
     return plan
 
 
-def training_job(binding, plan):
+def binding_label(binding):
     dataset = {"S": "Synthetic", "M": "MBD", "L": "AML"}[binding[0]]
-    caller = "Training" if plan["suite"] else "GPU training"
-    return f"{caller} / {dataset} {binding}"
+    return f"{dataset} {binding}"
+
+
+def training_matrix(plan):
+    rows = [dict(label=binding_label(b), binding=b) for b in plan["training_bindings"]]
+    if plan["suite"]:
+        for tier, dataset in ((T2A, "H&M Small"), (T2B, "H&M Medium")):
+            for row in matrix(tier)["include"]:
+                flow, seed = row["flow"], str(row["seed"])
+                rows.append(
+                    dict(
+                        label=f"{dataset} · {flow} (seed {seed})",
+                        tier=tier.name,
+                        flow=flow,
+                        seed=seed,
+                    )
+                )
+    return {"include": rows}
+
+
+def training_job(label, worker, plan):
+    prefix = "Training · " if plan["suite"] else "GPU training / "
+    return f"{prefix}{label} / {worker}"
 
 
 def planned_jobs(plan):
@@ -98,7 +119,8 @@ def planned_jobs(plan):
         "Build / diskgraph-wheel": True,
     }
     if plan["training_bindings"]:
-        expected.update({training_job(b, plan): True for b in plan["training_bindings"]})
+        for row in training_matrix(plan)["include"]:
+            expected[training_job(row["label"], "GPU" if "binding" in row else "CPU", plan)] = True
     else:
         expected["GPU training"] = False
     if not plan["suite"]:
@@ -116,10 +138,8 @@ def planned_jobs(plan):
     expected["Package tests"] = True
     for child in ("DiskGraph tests", "Run notebooks", "Install from wheel"):
         expected[f"Distribution / {child}"] = True
-    for tier, dataset in ((T2A, "H&M Small"), (T2B, "H&M Medium")):
-        expected[f"Lifecycle / {dataset}"] = True
-        for row in matrix(tier)["include"]:
-            expected[f"Training / {dataset} · {row['flow']} (seed {row['seed']})"] = True
+    for dataset in ("H&M Small", "H&M Medium"):
+        expected[f"Lifecycle · {dataset} / Check saved models"] = True
     for i in range(len(CONFORMANCE)):
         expected[f"Package tests / Engine conformance (shard {i})"] = True
     return expected
@@ -127,13 +147,19 @@ def planned_jobs(plan):
 
 def account_jobs(plan, raw):
     expected = plan["jobs"]
+    inactive_workers = {
+        training_job(row["label"], "CPU" if "binding" in row else "GPU", plan)
+        for row in training_matrix(plan)["include"]
+    }
     jobs, errors = {}, []
     for job in raw:
         name = job["name"]
         if name in {"Publish results", "kumo-pytorch-gate"}:
             continue  # These are evaluated at the gate and in the completed scheduled run.
-        if name == "Distribution / diskgraph-wheel" and job["conclusion"] == "skipped":
-            continue  # The coordinating workflow supplies this wheel.
+        if job["conclusion"] == "skipped" and (
+            name in inactive_workers or name == "Distribution / diskgraph-wheel"
+        ):
+            continue
         if name in jobs or (job["head_sha"], job["run_attempt"], job["run_id"]) != (
             plan["source_revision"],
             plan["attempt"],
@@ -421,7 +447,7 @@ def results(plan, jobs, artifacts, directory):
         try:
             intervals = []
             for binding in plan["training_bindings"]:
-                job = workers[training_job(binding, plan)]
+                job = workers[training_job(binding_label(binding), "GPU", plan)]
                 intervals.append(
                     (
                         datetime.fromisoformat(job["started_at"]),
@@ -656,10 +682,7 @@ def main():
                 raise ValueError(f"Planned test path is missing: {path}")
         if output := os.getenv("GITHUB_OUTPUT"):
             with open(output, "a") as handle:
-                print(f"training_bindings={json.dumps(data['training_bindings'])}", file=handle)
-                if data["suite"]:
-                    for tier in (T2A, T2B):
-                        print(f"{tier.name}={json.dumps(matrix(tier))}", file=handle)
+                print(f"training={json.dumps(training_matrix(data))}", file=handle)
                 names = sorted(evidence_names(data))
                 pattern = "{" + ",".join(names) + "}" if len(names) > 1 else "".join(names)
                 print(f"evidence_pattern={pattern}", file=handle)

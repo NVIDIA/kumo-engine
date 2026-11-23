@@ -21,6 +21,7 @@ concurrency:
 jobs:
   suite:
     uses: ./.github/workflows/kumo-pytorch-t2a.yml
+    permissions: {contents: read, id-token: write}
     with:
       tier: t2b
       seed_start: ${{ inputs.seed_start }}

@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   checks:
-    name: ${{ inputs.tier == 't2a' && 'H&M Small' || 'H&M Medium' }}
+    name: Check saved models
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.tier == 't2a' && 30 || 45 }}
     defaults:

@@ -53,16 +53,22 @@ jobs:
           echo "seed_start=$start" >> "$GITHUB_OUTPUT"
 
   training:
-    name: Training
+    name: Training · H&M ${{ inputs.tier == 't2b' && 'Medium' || 'Small' }} · ${{ matrix.flow }} (seed ${{ matrix.seed }})
     needs: [diskgraph-wheel, plan]
     if: ${{ !cancelled() && needs.plan.result == 'success' && (inputs.prebuilt-wheel || needs.diskgraph-wheel.result == 'success') }}
-    uses: ./.github/workflows/_kumo-pytorch-train-model.yml
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/_kumo-pytorch-training.yml
+    permissions: {contents: read, id-token: write}
     with:
+      binding: ''
       tier: ${{ inputs.tier || 't2a' }}
-      matrix: ${{ needs.plan.outputs.matrix }}
+      flow: ${{ matrix.flow }}
+      seed: ${{ format('{0}', matrix.seed) }}
 
   lifecycle:
-    name: Lifecycle
+    name: Lifecycle · H&M ${{ inputs.tier == 't2b' && 'Medium' || 'Small' }}
     needs: training
     if: ${{ !cancelled() && needs.training.result == 'success' }}
     uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml

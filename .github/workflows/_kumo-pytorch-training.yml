@@ -2,18 +2,26 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: PyTorch full-population training
+name: PyTorch training
 on:  # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
-      bindings:
-        description: JSON list of registered training bindings.
+      binding:
+        description: Registered full-population binding, or empty for a CPU model.
         type: string
         required: true
+      tier:
+        description: CPU model dataset tier.
+        type: string
+      flow:
+        description: CPU model flow.
+        type: string
+      seed:
+        description: CPU model training seed.
+        type: string
 
 permissions:
   contents: read
-  id-token: write
 
 defaults:
   run:
@@ -21,24 +29,51 @@ defaults:
     working-directory: packages/experimental/kumo-pytorch
 
 jobs:
-  train:
-    name: ${{ startsWith(matrix.binding, 'S') && 'Synthetic' || startsWith(matrix.binding, 'M') && 'MBD' || 'AML' }} ${{ matrix.binding }}
-    strategy:
-      fail-fast: false
-      matrix:
-        binding: ${{ fromJSON(inputs.bindings) }}
+  cpu:
+    name: CPU
+    if: inputs.binding == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.tier == 't2a' && 30 || 75 }}
+    steps:
+      - &checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with: {persist-credentials: false}
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with: {diskgraph-wheel-artifact: diskgraph-wheel}
+      - name: Train, persist, infer and serve
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: &diagnostics ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+          TIER: ${{ inputs.tier }}
+          FLOW: ${{ inputs.flow }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
+            python -m tests.e2e.runs "$TIER" "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-pytorch-${{ inputs.tier }}-${{ github.run_attempt }}-${{ inputs.flow }}-seed${{ inputs.seed }}
+          path: |
+            ${{ runner.temp }}/e2e/${{ inputs.tier }}/${{ inputs.flow }}-seed${{ inputs.seed }}/
+            !${{ runner.temp }}/e2e/${{ inputs.tier }}/**/index/**
+          retention-days: 14
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with:
+          name: ${{ inputs.tier }}-log-${{ inputs.flow }}-${{ inputs.seed }}
+
+  gpu:
+    name: GPU
+    if: inputs.binding != ''
     runs-on: ${{ vars.KUMO_PYTORCH_BINDING_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
     timeout-minutes: 4320
     environment: {name: gha-kumo-workflow-tests, deployment: false}
     permissions: {contents: read, id-token: write}
     env:
-      BINDING: ${{ matrix.binding }}
+      BINDING: ${{ inputs.binding }}
       SCRATCH: ${{ vars.KUMO_PYTORCH_BINDING_SCRATCH }}
       STAGE_FULL_BINDING: 'true'
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-        with:
-          persist-credentials: false
+      - *checkout
       - name: Select read access for this binding
         run: |
           policy=$(python3 -m e2e.datasets.binding_sources "$BINDING" --policy)
@@ -51,12 +86,12 @@ jobs:
           torch-backend: cu130
       - name: Train for two complete epochs
         env:
-          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+          KUMO_PYTORCH_DIAGNOSTICS: *diagnostics
         run: |
           python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
             python -m tests.e2e.runs binding-train "$BINDING" --e2e-dir "$TMPDIR" --output "$KUMO_PYTORCH_DIAGNOSTICS/report.json"
       - uses: ./.github/actions/kumo-pytorch-results
         if: always()
         with:
-          name: binding-train-${{ matrix.binding }}
+          name: binding-train-${{ inputs.binding }}
           path: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/report.json

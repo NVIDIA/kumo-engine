@@ -31,10 +31,8 @@ jobs:
     permissions: {contents: read, pull-requests: read}
     outputs:
       plan: ${{ steps.select.outputs.plan }}
-      training_bindings: ${{ steps.select.outputs.training_bindings }}
+      training: ${{ steps.select.outputs.training }}
       evidence_pattern: ${{ steps.select.outputs.evidence_pattern }}
-      small_models: ${{ steps.select.outputs.t2a }}
-      medium_models: ${{ steps.select.outputs.t2b }}
     steps:
       - &checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -106,44 +104,40 @@ jobs:
     with:
       seed_start: ${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}
 
-  train-small:
-    name: Training
-    needs: [plan, diskgraph-wheel]
-    uses: ./.github/workflows/_kumo-pytorch-train-model.yml
-    with: {tier: t2a, matrix: '${{ needs.plan.outputs.small_models }}'}
-
-  train-medium:
-    name: Training
-    needs: [plan, diskgraph-wheel]
-    uses: ./.github/workflows/_kumo-pytorch-train-model.yml
-    with: {tier: t2b, matrix: '${{ needs.plan.outputs.medium_models }}'}
-
-  lifecycle-small:
-    name: Lifecycle
-    needs: train-small
-    uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml
-    with: {tier: t2a}
-
-  lifecycle-medium:
-    name: Lifecycle
-    needs: train-medium
-    uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml
-    with: {tier: t2b}
-
-  binding-train:
-    name: Training
+  training:
+    name: Training · ${{ matrix.label }}
     if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan, diskgraph-wheel]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.training) }}
     permissions: {contents: read, id-token: write}
     uses: ./.github/workflows/_kumo-pytorch-training.yml
-    with: {bindings: '${{ needs.plan.outputs.training_bindings }}'}
+    with:
+      binding: ${{ matrix.binding || '' }}
+      tier: ${{ matrix.tier || '' }}
+      flow: ${{ matrix.flow || '' }}
+      seed: ${{ matrix.seed || '' }}
+
+  lifecycle:
+    name: Lifecycle · ${{ matrix.dataset }}
+    needs: [plan, training]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {dataset: H&M Small, tier: t2a}
+          - {dataset: H&M Medium, tier: t2b}
+    uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml
+    with: {tier: '${{ matrix.tier }}'}
 
   results:
     name: Publish results
     outputs:
       gate_outcome: ${{ steps.validate.outcome }}
     if: always()
-    needs: [plan, diskgraph-wheel, cpu, distribution, conformance, lifecycle-small, lifecycle-medium, binding-train]
+    needs: [plan, diskgraph-wheel, cpu, distribution, conformance, training, lifecycle]
     runs-on: ubuntu-24.04
     permissions: {contents: read, actions: read}
     steps:

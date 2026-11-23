@@ -61,14 +61,21 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence(monkeypatch)
         assert {r["binding"] for r in rows if r["mode"] == mode} == set(ci.BINDINGS)
     assert [r["binding"] for r in rows if r["scope"] == "full_source"] == pr["training_bindings"]
     assert all(pr["jobs"][f"Package tests / Engine conformance (shard {i})"] for i in range(3))
-    training = [name for name in pr["jobs"] if name.startswith("Training / ")]
+    training = [name for name in pr["jobs"] if name.startswith("Training · ")]
     assert len(training) == 15
-    assert "Training / AML L01" in training
+    assert "Training · AML L01 / GPU" in training
+    matrix = ci.training_matrix(pr)["include"]
+    assert len(matrix) == 15
+    assert all(row["seed"] in {"0", "1", "2"} for row in matrix if "tier" in row)
     for dataset, seeds in (("H&M Small", 3), ("H&M Medium", 2)):
-        assert pr["jobs"][f"Lifecycle / {dataset}"]
+        assert pr["jobs"][f"Lifecycle · {dataset} / Check saved models"]
         for flow, count in (("gnn", seeds), ("pragma", 2)):
             for i in range(count):
-                assert f"Training / {dataset} · {flow} (seed {i})" in training
+                assert f"Training · {dataset} · {flow} (seed {i}) / CPU" in training
+    raw = jobs(pr)
+    inactive = dict(raw[0], name="Training · AML L01 / CPU", conclusion="skipped")
+    assert ci.account_jobs(pr, [*raw, inactive])[1] == []
+    assert ci.account_jobs(pr, [*raw, dict(inactive, conclusion="success")])[1]
     fork = dict(PR, head={"sha": "head", "repo": {"full_name": "fork/project"}})
     with pytest.raises(ValueError, match="private datasets and a same-repository PR"):
         plan(pull_request=fork)
@@ -95,7 +102,7 @@ def test_manual_benchmarks_select_only_requested_work():
     manual = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "all"})
     assert manual["training_bindings"] == list(ci.NIGHTLY_TRAINING)
     assert [r["binding"] for r in manual["selections"]] == manual["training_bindings"]
-    assert manual["jobs"]["GPU training / MBD M03"]
+    assert manual["jobs"]["GPU training / MBD M03 / GPU"]
     assert manual["jobs"]["dataset-source"]
     for job in ("Package tests", "H&M Small", "Distribution"):
         assert not any(name.startswith(job) for name in manual["jobs"])
@@ -250,7 +257,7 @@ def test_scheduled_verification_distinguishes_firing_and_failing(tmp_path):
     p = plan("schedule")
     raw = jobs(p)
     raw[0]["conclusion"] = "failure"
-    next(j for j in raw if j["name"] == "Training / Synthetic S02")["completed_at"] = (
+    next(j for j in raw if j["name"] == "Training · Synthetic S02 / GPU")["completed_at"] = (
         "2026-11-01T01:30:00Z"
     )
     report = ci.results(p, raw, [], tmp_path)

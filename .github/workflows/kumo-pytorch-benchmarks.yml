@@ -39,7 +39,7 @@ jobs:
     permissions: {contents: read}
     outputs:
       plan: ${{ steps.select.outputs.plan }}
-      training_bindings: ${{ steps.select.outputs.training_bindings }}
+      training: ${{ steps.select.outputs.training }}
       evidence_pattern: ${{ steps.select.outputs.evidence_pattern }}
     steps:
       - &checkout
@@ -217,12 +217,15 @@ jobs:
         with: {name: 'binding-full-${{ inputs.binding }}'}
 
   binding-train:
-    name: GPU training
+    name: ${{ matrix.label && format('GPU training / {0}', matrix.label) || 'GPU training' }}
     if: github.repository == 'NVIDIA/kumo-engine' && github.event_name == 'workflow_dispatch' && inputs.mode == 'binding-train'
     needs: [plan, diskgraph-wheel, dataset-source]
     permissions: {contents: read, id-token: write}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.training) }}
     uses: ./.github/workflows/_kumo-pytorch-training.yml
-    with: {bindings: '${{ needs.plan.outputs.training_bindings }}'}
+    with: {binding: '${{ matrix.binding }}'}
 
   streaming-25b:
     if: >-
