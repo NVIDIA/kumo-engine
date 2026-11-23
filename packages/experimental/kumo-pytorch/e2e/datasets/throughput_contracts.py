@@ -48,15 +48,10 @@ def mbd(capacity):
     layer = api.GraphLayer(
         (api.GraphSample(relation.name, min(capacity, HISTORY_EVENTS), time_column="event_time"),)
     )
-    future = api.Rows((relation.name,), api.TimeWindow("event_time", 0, 30 * 86400))
-    targets = {
-        "generated_count": api.Aggregate(future, "count", dtype=api.DType("int64")),
-        "count": api.ExternalTarget(api.DType("float32")),
-    }
     sample = api.SampleSpec(
         api.EntitySpec("roots", entity_type="client"),
         neighborhoods={"history_graph": api.NeighborhoodSpec((layer,))},
-        targets=targets,
+        targets={"count": api.ExternalTarget(api.DType("float32"))},
     )
     graph = _graph(
         (
@@ -68,9 +63,7 @@ def mbd(capacity):
     return api.DataLoaderSpec(
         schema,
         sample,
-        api.BatchSpec(
-            {"graph": graph}, {name: api.LabelTarget(name, api.Raw()) for name in targets}
-        ),
+        api.BatchSpec({"graph": graph}, {"count": api.LabelTarget("count", api.Raw())}),
     )
 
 

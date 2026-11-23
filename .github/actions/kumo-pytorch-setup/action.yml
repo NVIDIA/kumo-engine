@@ -58,10 +58,6 @@ runs:
         uv sync --locked --inexact --no-install-package diskgraph --extra "$TORCH_BACKEND"
         uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
           --package kumo-pytorch --extra dev "${examples[@]}"
-        if [ "$TORCH_BACKEND" = cu130 ]; then
-          uv export --frozen --package kumo-engine --extra mlflow --no-hashes --no-annotate |
-            grep '^nvidia-ml-py==' | uv pip install --no-deps -r -
-        fi
         # The notebook runner's tools are not package dependencies.
         if [ "$NOTEBOOKS" = true ]; then uv pip install nbclient==0.11.0 ipykernel==7.4.0; fi
     - name: Runner
