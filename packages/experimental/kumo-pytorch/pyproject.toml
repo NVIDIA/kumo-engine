@@ -58,11 +58,3 @@ version = {attr = "kumo.pytorch.__about__.__version__"}
 testpaths = ["tests"]
 addopts = "-m 'not notebook'"
 markers = ["notebook: executes an examples/ notebook; deselected unless -m notebook"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-extend-exclude = ["docs/api", "scripts/check_license_headers.py"]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP"]

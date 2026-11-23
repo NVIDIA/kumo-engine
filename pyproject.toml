@@ -177,6 +177,19 @@ requires-dist = [
   "keyring<26.0.0,>=23.1.0; extra == 'secure-local-storage'",
 ]
 
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = [
+  ".",
+  "src",
+  "packages/experimental/kumo-pytorch",
+  "packages/experimental/kumo-pytorch/src",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
 [tool.vulture]
 # Include high-confidence findings such as unused imports while avoiding the
 # noisier 60% class, function, method, and variable findings for now.
