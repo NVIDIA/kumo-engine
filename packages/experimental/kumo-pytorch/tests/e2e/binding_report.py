@@ -10,8 +10,6 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from tests.e2e.binding_plan import nightly_correctness
-
 _PENDING = {}
 
 
@@ -135,8 +133,6 @@ def finish_binding_reports(item, report, *, call_passed=True):
         mark.args[0] if mark.args else item.callspec.params["mode"]
         for mark in item.iter_markers("binding_report")
     }
-    if "correctness" in expected and nightly_correctness():
-        expected -= {"training", "lifecycle"}
     try:
         if modes.keys() != expected:
             raise ValueError(

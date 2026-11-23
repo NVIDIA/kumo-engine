@@ -4,8 +4,6 @@
 
 """Registered selections exercised by package-owned dataset tests."""
 
-import os
-
 NIGHTLY_HISTORY_EVENTS = 64
 
 # Train, validation and test counts from the registered anchor manifests.
@@ -30,13 +28,6 @@ def binding_heads(binding):
         "E04": ("next_token",),
         "S02": ("next_token",),
     }.get(binding, ("label",))
-
-
-def nightly_correctness():
-    return (
-        os.getenv("GITHUB_EVENT_NAME") == "schedule"
-        or os.getenv("KUMO_PYTORCH_NIGHTLY_CORRECTNESS") == "1"
-    )
 
 
 # The package test IDs also distinguish the bounded sources from the offline fixtures.

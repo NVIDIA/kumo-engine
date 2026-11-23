@@ -4,10 +4,7 @@
 
 name: kumo-pytorch end-to-end
 
-# The end-to-end flows at S (train, persist, fresh-process batch inference on
-# DiskGraph, serving) on every main commit that changes kumo-pytorch or
-# DiskGraph. Not a required check. Pull requests run it only when they change
-# the flows or this workflow.
+# Small H&M flows train, persist, and run fresh-process inference and serving.
 on:  # yamllint disable-line rule:truthy
   workflow_call:
     inputs:

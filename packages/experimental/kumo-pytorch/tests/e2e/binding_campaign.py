@@ -19,7 +19,7 @@ import torch
 from e2e.datasets.binding_sources import PINS, _sources
 from kumo.pytorch import api
 from tests.e2e.binding_lifecycle import run_lifecycle
-from tests.e2e.binding_plan import NIGHTLY_TRAINING, nightly_correctness
+from tests.e2e.binding_plan import NIGHTLY_TRAINING
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.binding_training import run_training, train_full_binding
 from tests.e2e.cuda_metrics import training_gpu_window
@@ -89,8 +89,6 @@ def _lifecycle_table(task, table, binding, root, work):
 
 
 def exercise_binding(task, data, table, engine, work, source):
-    if nightly_correctness():
-        return
     binding = source.identity["binding"]
     if device := os.getenv("KUMO_PYTORCH_BINDING_SMOKE_DEVICE"):
         assert binding in NIGHTLY_TRAINING and device in ("cuda", "cpu")

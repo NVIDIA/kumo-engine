@@ -5,9 +5,14 @@ it, and run batch inference and serving in a fresh process. The flows are
 written the way a user would write them; this directory holds what they're
 measured against. It's development tooling, not part of the `kumo.pytorch` wheel.
 
-The H&M end-to-end tests run at sizes S (T2a) and M (T2b) on relevant PRs or
-manual runs. The nightly schedule uses the package correctness suite, the T2b
-conformance shards and the six GPU training bindings below.
+Pull requests and nightly runs use the same [package suite](../../../../.github/workflows/kumo-pytorch-tests.yml)
+to run package and distribution checks, H&M at sizes S and M, conformance shards
+and six full-population GPU training jobs. Both publish the same reports.
+
+For an on-demand CUDA, AML, full-binding or Streaming 25B run, select the
+[manual benchmark workflow](../../../../.github/workflows/kumo-pytorch-benchmarks.yml)
+and choose its mode. GitHub enables manual dispatch once that workflow exists
+on the default branch.
 
 | Path | What it is |
 |---|---|
@@ -20,9 +25,9 @@ conformance shards and the six GPU training bindings below.
 | `flows/common.py` | What both flows share: the schema, the anchors, the caller's row lookup, the training loop |
 | `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
 
-## Pinned nightly datasets
+## Pinned suite datasets
 
-The CPU suite on same-repository pull requests and scheduled runs on `main` stages the non-25B correctness pins before pytest. Fork pull requests run the same pytest command with private staging disabled.
+The suite stages the non-25B correctness pins before pytest. The private sources require a trusted repository run. Fork PRs fail the suite preflight before private staging.
 For a new dataset, add a manifest with its S3 keys, sizes and SHA-256 hashes. The nightly role needs read access to those keys.
 To fill the local cache, run these commands from the package root with the AWS CLI and read access. A complete cache works offline.
 
@@ -69,7 +74,7 @@ The existing stager downloads missing objects and verifies all 744 shards agains
 manifest. The test checks the 30,000 weekly counts, compares indexed row counts for all seven tables
 with the manifest, and replays viewers 3 and 873 over the three weeks.
 
-The **kumo-pytorch tests** workflow offers five manual Streaming 25B modes on `main`
+The manual benchmark workflow offers five Streaming 25B modes on `main`
 or a trusted `pull-request/<number>` branch.
 
 | Mode | What runs |
@@ -298,9 +303,9 @@ batches of 512 (10 epochs ran), so it sees fewer examples than the kumo-pytorch 
 125,000-anchor sample over its epochs. kumo-engine's own labels
 equal the generator's at all 700,000 anchors.
 
-## Nightly training and results
+## Suite training and results
 
-The nightly GPU matrix runs S02 (Synthetic nuFormer), L01 (AML LI Medium
+The GPU matrix runs S02 (Synthetic nuFormer), L01 (AML LI Medium
 Combined), S01 (Synthetic PRAGMA), M04 (MBD GraphSAGE), S04 (Synthetic
 Combined) and M03 (MBD nuFormer). The package runner prepares DiskGraph and
 loads batches on CPU. Each GPU model trains for two complete passes over its
@@ -316,7 +321,7 @@ original time windows. The package correctness tests use the original histories.
 HI Small retains its source and behavior checks. The 25B fixtures and campaigns
 run on manual dispatch.
 
-Use workflow mode `binding-train` with a binding ID to replay one job or with
+Use manual benchmark mode `binding-train` with a binding ID to replay one job or with
 `binding=all` to run the six jobs and publish one combined report.
 The manual `cuda` job also runs L01 training row 2,172,838 through this model
 context and checks its 12 counts against the pinned transaction source.
@@ -339,9 +344,9 @@ live projected tables and index.
 
 ## Package CI results and required check
 
-The `kumo-pytorch tests` workflow publishes an attempt-specific
+The package suite publishes an attempt-specific
 `kumo-pytorch-results` artifact. Its JSON and job summary identify the tested
-revision, jobs, dataset selections, opt-in modes and missing evidence. A pull
+revision, jobs, dataset selections and missing evidence. A pull
 request can test a merge commit. The report records its source head separately.
 Use **Re-run all jobs** when an entire new attempt needs acceptance.
 
@@ -356,7 +361,7 @@ GITHUB_REPOSITORY=NVIDIA/kumo-engine python3 -m tests.e2e.ci_plan scheduled --re
 This verifies the actual workflow, revision, attempt and job conclusions. A
 scheduled run that fails its tests still records that the schedule fired.
 
-After relevant and exempt PRs demonstrate reliable reporting, a repository
+After verifying the PR and scheduled reports, a repository
 administrator can add a branch ruleset targeting `main` with **Require status
 checks to pass**. Select the exact check `kumo-pytorch-gate` from GitHub Actions,
 keep the existing rulesets in force, and enable the new rule when ready.

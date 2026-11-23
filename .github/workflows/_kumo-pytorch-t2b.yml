@@ -17,7 +17,7 @@ defaults:
 
 jobs:
   plan:
-    name: Plan the nightly end-to-end runs
+    name: Plan the end-to-end runs
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -28,28 +28,20 @@ jobs:
         with:
           persist-credentials: false
       - id: matrix
-        if: github.event_name != 'schedule'
         run: echo "matrix=$(python3 tests/e2e/tiers.py t2b)" >> "$GITHUB_OUTPUT"
       - name: Pick today's seed batches
         id: seeds
         working-directory: .
-        env:
-          REQUESTED: ${{ github.event.inputs.seed_start }}
         run: |
           # 12 new batches a day; the required ones always run as well.
-          start=${REQUESTED:-$(( $(date -u +%s) / 86400 * 12 ))}
-          if ! [[ $start =~ ^[0-9]+$ ]]; then
-            echo "::error::seed_start must be a non-negative integer, not '$start'"
-            exit 1
-          fi
+          start=$(( $(date -u +%s) / 86400 * 12 ))
           echo "start=$start" >> "$GITHUB_OUTPUT"
           echo "Conformance seed batches $start-$((start + 11)) plus the required ones;" \
             "reproduce with \`python -m conformance --engine all --seeds 12 --seed-start $start\`" \
             >> "$GITHUB_STEP_SUMMARY"
 
   run:
-    name: ${{ github.event_name == 'schedule' && 'Nightly H&M training' || format('Nightly end-to-end {0} seed {1} (size M)', matrix.flow, matrix.seed) }}
-    if: github.event_name != 'schedule'
+    name: End-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size M)
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 75

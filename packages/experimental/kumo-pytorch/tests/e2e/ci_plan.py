@@ -28,21 +28,10 @@ from tests.e2e.runs import (
 )
 from tests.e2e.tiers import T2A, T2B, matrix
 
-PACKAGE = "packages/experimental/kumo-pytorch/"
 WORKFLOW = ".github/workflows/kumo-pytorch-tests.yml"
 AML = ("aml", "l01-cuda", "hi-small-memory")
 STREAMING = ("all", "smoke", "training", "lifecycle", "full")
 CONFORMANCE = [f"kumo-pytorch-t2b-conformance-{i}" for i in range(3)]
-# Actions returns the literal name expression for a job skipped before matrix expansion.
-SKIPPED_MATRIX_NAMES = {
-    "matrix.binding && format('GPU training {0}', matrix.binding) || 'binding-train'": (
-        "binding-train"
-    ),
-    "hm-lifecycle / github.event_name == 'schedule' && 'Nightly H&M training' || "
-    "format('Nightly end-to-end {0} seed {1} (size M)', matrix.flow, matrix.seed)": (
-        "hm-lifecycle / Nightly H&M training"
-    ),
-}
 
 
 def gh(endpoint, *, pages=False):
@@ -53,91 +42,29 @@ def gh(endpoint, *, pages=False):
     return json.loads(subprocess.check_output(args, text=True))
 
 
-def changed_paths(event):
-    """A stale head, an incomplete list, or an unavailable API selects the whole suite."""
-    try:
-        if "pull_request" not in event:
-            # The compare endpoint reports at most 300 files for a push.
-            comparison = gh(f"compare/{event['before']}...{event['after']}")
-            files = comparison["files"]
-            complete = comparison["status"] == "ahead" and 0 < len(files) < 300
-        else:
-            pr = event["pull_request"]
-
-            pages = gh(f"pulls/{pr['number']}/files?per_page=100", pages=True)
-            files = [f for page in pages for f in page]
-            after = gh(f"pulls/{pr['number']}")
-            complete = (
-                after["head"]["sha"] == pr["head"]["sha"]
-                and after["base"]["sha"] == pr["base"]["sha"]
-                and 0 < len(files) == after["changed_files"] <= 3000
-            )
-        if complete and all(
-            f.get("filename") and (f.get("status") != "renamed" or f.get("previous_filename"))
-            for f in files
-        ):
-            return {
-                f[key] for f in files for key in ("filename", "previous_filename") if f.get(key)
-            }
-    except (OSError, KeyError, ValueError, subprocess.SubprocessError):
-        pass
-    return None
-
-
-def make_plan(event_name, event, paths, *, ref, **identity):
+def make_plan(event_name, event, *, ref, **identity):
     pr = event.get("pull_request", {})
     repository = identity["repository"]
-    small_paths = (
-        PACKAGE + "e2e/",
-        PACKAGE + "tests/e2e/",
-        ".github/actions/kumo-pytorch-",
-        ".github/workflows/kumo-pytorch-t2a.yml",
-        WORKFLOW,
-    )
-    affected_paths = (
-        PACKAGE,
-        "packages/diskgraph/",
-        "scripts/diskgraph",
-        ".github/actions/kumo-pytorch-",
-        ".github/workflows/kumo-pytorch-",
-        ".github/workflows/_kumo-pytorch-",
-        ".github/workflows/_diskgraph-wheel.yml",
-        ".github/actions/apt-install/",
-        ".github/actions/rust-toolchain/",
-    )
-    affected = (
-        event_name not in {"pull_request", "push"}
-        or paths is None
-        or any(
-            p.startswith(affected_paths) or p in {"setup.py", "uv.lock", "pyproject.toml"}
-            for p in paths
+    suite = event_name in {"pull_request", "schedule"}
+    if event_name == "pull_request" and pr["head"]["repo"]["full_name"] != repository:
+        raise ValueError(
+            "The full package suite requires private datasets and a same-repository PR"
         )
-    )
-    inputs = (event.get("inputs") or {}) if event_name == "workflow_dispatch" else {}
-    mode = inputs.get("mode", "package")
-    seed_start = int(inputs["seed_start"]) if inputs.get("seed_start") not in (None, "") else None
-    if seed_start is not None and seed_start < 0:
-        raise ValueError("Conformance seed start must be nonnegative")
-    if mode not in ("package", "cuda", "binding-full", "binding-train", *AML, *STREAMING):
-        raise ValueError(f"Unknown package mode {mode}")
-    suite = affected and mode == "package"
-    nightly = event_name == "schedule" and ref == "refs/heads/main"
+    inputs = event.get("inputs") or {}
+    mode = "package" if suite else inputs.get("mode")
+    if not suite and (
+        event_name != "workflow_dispatch"
+        or mode not in ("cuda", "binding-full", "binding-train", *AML, *STREAMING)
+    ):
+        raise ValueError(f"Unknown benchmark mode {mode}")
+    if repository != "NVIDIA/kumo-engine" or (not pr and not ref.startswith("refs/heads/")):
+        raise ValueError("Package CI requires a trusted repository branch")
     binding = inputs.get("binding", "")
     training = []
-    if nightly or mode == "binding-train":
-        if repository != "NVIDIA/kumo-engine" or not ref.startswith("refs/heads/"):
-            raise ValueError("Full training requires a trusted repository branch")
-        if mode == "binding-train" and binding != "all" and binding not in NIGHTLY_TRAINING:
+    if suite or mode == "binding-train":
+        if not suite and binding != "all" and binding not in NIGHTLY_TRAINING:
             raise ValueError(f"Unknown training binding: {binding}")
-        training = list(NIGHTLY_TRAINING) if nightly or binding == "all" else [binding]
-    private = (
-        suite
-        and repository == "NVIDIA/kumo-engine"
-        and (
-            nightly
-            or (event_name == "pull_request" and pr["head"]["repo"]["full_name"] == repository)
-        )
-    )
+        training = list(NIGHTLY_TRAINING) if suite or binding == "all" else [binding]
     plan = dict(
         **identity,
         event=event_name,
@@ -147,18 +74,8 @@ def make_plan(event_name, event, paths, *, ref, **identity):
         torch_backend="cu130" if mode in ("cuda", "aml", "l01-cuda", "binding-train") else "cpu",
         binding=binding,
         training_bindings=training,
-        seed_start=seed_start,
-        affected=affected,
+        seed_start=None,
         suite=suite,
-        private=private,
-        t2a=suite
-        and not nightly
-        and (
-            event_name != "pull_request"
-            or paths is None
-            or any(p.startswith(small_paths) for p in paths)
-        ),
-        t2b=suite,
     )
     plan["jobs"] = planned_jobs(plan)
     plan["selections"] = selection_rows(plan)
@@ -167,56 +84,37 @@ def make_plan(event_name, event, paths, *, ref, **identity):
 
 def planned_jobs(plan):
     mode = plan["mode"]
-    expected = {
-        "plan": True,
-        "kumo-pytorch-tests": plan["suite"],
-        "cuda": mode == "cuda",
-        "binding-full": mode == "binding-full",
-        "dataset-source": mode in (*AML, *STREAMING, "cuda", "binding-full")
-        or bool(plan["training_bindings"]),
-        "aml-benchmark": mode in AML,
-        "streaming-25b": mode in STREAMING,
-    }
+    expected = {"plan": True, "diskgraph-wheel / diskgraph-wheel": True}
     if plan["training_bindings"]:
-        expected.update({f"GPU training {b}": True for b in plan["training_bindings"]})
+        expected.update(
+            {f"binding-train / GPU training {b}": True for b in plan["training_bindings"]}
+        )
     else:
         expected["binding-train"] = False
+    if not plan["suite"]:
+        expected.update(
+            {
+                "dataset-source": True,
+                "cuda": mode == "cuda",
+                "binding-full": mode == "binding-full",
+                "aml-benchmark": mode in AML,
+                "streaming-25b": mode in STREAMING,
+            }
+        )
+        return expected
 
-    def reusable(caller, active, children):
-        if active:
-            expected.update({f"{caller} / {child}": True for child in children})
-        else:
-            expected[caller] = False
-
-    reusable("diskgraph-wheel", plan["affected"], ["diskgraph-wheel"])
-    reusable(
-        "distribution",
-        plan["suite"],
-        ["kumo-pytorch-diskgraph", "kumo-pytorch-notebooks", "kumo-pytorch-install"],
-    )
-    for tier, caller, prefix, label in (
-        (T2A, "hm-small", "End-to-end", "S"),
-        (T2B, "hm-lifecycle", "Nightly end-to-end", "M"),
-    ):
-        children = [
-            "Plan the end-to-end runs" if tier == T2A else "Plan the nightly end-to-end runs",
-            f"kumo-pytorch-{tier.name}",
-        ]
-        children += [
-            f"{prefix} {row['flow']} seed {row['seed']} (size {label})"
+    expected["kumo-pytorch-tests"] = True
+    for child in ("kumo-pytorch-diskgraph", "kumo-pytorch-notebooks", "kumo-pytorch-install"):
+        expected[f"distribution / {child}"] = True
+    for tier, caller, size in ((T2A, "hm-small", "S"), (T2B, "hm-lifecycle", "M")):
+        children = ["Plan the end-to-end runs", f"kumo-pytorch-{tier.name}"]
+        children.extend(
+            f"End-to-end {row['flow']} seed {row['seed']} (size {size})"
             for row in matrix(tier)["include"]
-        ]
+        )
         if tier == T2B:
-            if plan["event"] == "schedule":
-                children = children[:1]
-                expected.update(
-                    {
-                        "hm-lifecycle / Nightly H&M training": False,
-                        "hm-lifecycle / kumo-pytorch-t2b": False,
-                    }
-                )
-            children += CONFORMANCE
-        reusable(caller, plan[tier.name], children)
+            children.extend(CONFORMANCE)
+        expected.update({f"{caller} / {child}": True for child in children})
     return expected
 
 
@@ -225,8 +123,6 @@ def account_jobs(plan, raw):
     jobs, errors = {}, []
     for job in raw:
         name = job["name"]
-        if job["conclusion"] == "skipped":
-            name = SKIPPED_MATRIX_NAMES.get(name, name)
         if name in {"results", "kumo-pytorch-gate"}:
             continue  # These are evaluated at the gate and in the completed scheduled run.
         if (
@@ -263,7 +159,6 @@ def evidence_names(plan):
     names = {r["artifact"] for r in plan["selections"] if r["status"] == "required"}
     if plan["suite"]:
         names.add("kumo-pytorch-tests")
-    if plan["t2b"]:
         names.update(CONFORMANCE)
     return {artifact_name(name, plan["attempt"]) for name in names}
 
@@ -386,10 +281,18 @@ def benchmark_evidence(directory, rows, revision, mode):
 
 def selection_rows(plan):
     mode = plan["mode"]
-    rows = selections()
-    for row in rows:
-        # The six default lifecycle bindings exclude the separately grouped HI Small probes.
+    rows = []
+    for row in selections():
         mode_name = row["mode"]
+        if mode_name == "full":
+            if mode != "binding-full" or plan["binding"] != row["binding"]:
+                continue
+            row["artifact"] = f"binding-full-{row['binding']}"
+        elif plan["suite"]:
+            row["artifact"] = "kumo-pytorch-tests"
+        else:
+            continue
+        # The six default lifecycle bindings exclude the separately grouped HI Small probes.
         if mode_name == "histories" and row["binding"] == "L01":
             row["campaign"] = "correctness"
         elif (
@@ -397,18 +300,9 @@ def selection_rows(plan):
             and row["group"] != "hi-small-lifecycle"
         ):
             row["campaign"] = mode_name
-        if mode_name == "full":
-            active = mode == "binding-full" and plan["binding"] == row["binding"]
-            row["artifact"] = f"binding-full-{row['binding']}"
-            reason = "manual"
-        else:
-            active = plan["private"]
-            row["artifact"] = "kumo-pytorch-tests"
-            reason = "private pins" if plan["suite"] else "outside selected mode"
-            if plan["event"] == "schedule" and mode_name in {"training", "lifecycle"}:
-                active, reason = False, "PR probe"
-        row["status"] = "required" if active else reason
-    if mode == "binding-full" and not any(r["status"] == "required" for r in rows):
+        row["status"] = "required"
+        rows.append(row)
+    if mode == "binding-full" and not rows:
         raise ValueError(f"Unknown full-population binding: {plan['binding']}")
     rows.extend(
         dict(
@@ -423,6 +317,8 @@ def selection_rows(plan):
         for b in plan["training_bindings"]
     )
     for campaign in STREAMING[1:]:
+        if mode not in ("all", campaign):
+            continue
         node = (
             "test_streaming_weekly_session_forecast[25b-full]"
             if campaign == "smoke"
@@ -435,7 +331,7 @@ def selection_rows(plan):
                 representation="graphsage",
                 group="real 25B",
                 artifact="streaming-25b-" + mode,
-                status="required" if mode in ("all", campaign) else "manual",
+                status="required",
                 selector="25b-full" if campaign == "smoke" else "streaming-25b-full.json",
                 scope="full_source" if campaign == "full" else "bounded",
                 nodeid="tests/e2e/test_streaming.py::" + node,
@@ -453,11 +349,12 @@ def selection_rows(plan):
                     )
                 )
     for name in (*AML_MODES, "cuda"):
-        active = (
+        if not (
             mode == name
             or (mode == "aml" and name in AML_MODES)
             or (mode == "hi-small-memory" and name == "hi-small")
-        )
+        ):
+            continue
         pairs = (
             product(HI_SMALL_BINDINGS, range(3))
             if name == "hi-small"
@@ -472,7 +369,7 @@ def selection_rows(plan):
                     representation="Linear" if name == "cuda" else BINDINGS[binding][-1],
                     repetition=rep,
                     artifact=mode + "-measurements",
-                    status="required" if active else "manual",
+                    status="required",
                 )
             )
     return rows
@@ -520,7 +417,7 @@ def results(plan, jobs, artifacts, directory):
         try:
             intervals = []
             for binding in plan["training_bindings"]:
-                job = workers[f"GPU training {binding}"]
+                job = workers[f"binding-train / GPU training {binding}"]
                 intervals.append(
                     (
                         datetime.fromisoformat(job["started_at"]),
@@ -559,7 +456,7 @@ def results(plan, jobs, artifacts, directory):
                 if row["status"] == "required":
                     row.update(status="missing or invalid", error=str(exc))
             errors.append(f"{name}: {exc}")
-    if plan["t2b"]:
+    if plan["suite"]:
         from conformance.shards import verify_shards
 
         try:
@@ -573,7 +470,7 @@ def results(plan, jobs, artifacts, directory):
             )
         except (KeyError, TypeError, ValueError, OSError) as exc:
             errors.append(f"Conformance: {exc}")
-    report["status"] = "failed" if errors else ("passed" if plan["affected"] else "exempt")
+    report["status"] = "failed" if errors else "passed"
     return report
 
 
@@ -629,7 +526,7 @@ def render(report):
 def gate(plan, report):
     require_fields(
         report,
-        {"plan": plan, "errors": [], "status": "passed" if plan["affected"] else "exempt"},
+        {"plan": plan, "errors": [], "status": "passed"},
         "gate",
     )
     jobs = {name: row["result"] for name, row in report["jobs"].items()}
@@ -729,7 +626,6 @@ def main():
         data = make_plan(
             name,
             event,
-            changed_paths(event) if name in {"pull_request", "push"} else None,
             ref=os.environ["GITHUB_REF"],
             **identity,
         )
@@ -754,8 +650,7 @@ def main():
                 raise ValueError(f"Planned test path is missing: {path}")
         if output := os.getenv("GITHUB_OUTPUT"):
             with open(output, "a") as handle:
-                for key in ("affected", "suite", "t2a", "t2b", "training_bindings"):
-                    print(f"{key}={json.dumps(data[key])}", file=handle)
+                print(f"training_bindings={json.dumps(data['training_bindings'])}", file=handle)
                 names = sorted(evidence_names(data))
                 pattern = "{" + ",".join(names) + "}" if len(names) > 1 else "".join(names)
                 print(f"evidence_pattern={pattern}", file=handle)

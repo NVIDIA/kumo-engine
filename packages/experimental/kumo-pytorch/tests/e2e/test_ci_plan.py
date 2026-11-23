@@ -14,13 +14,12 @@ REPO = "NVIDIA/kumo-engine"
 PR = {"number": 1, "head": {"sha": "head", "repo": {"full_name": REPO}}, "base": {"sha": "base"}}
 
 
-def plan(event="pull_request", paths=("docs/README.md",), **payload):
+def plan(event="pull_request", **payload):
     return ci.make_plan(
         event,
         {"pull_request": PR, **payload} if event == "pull_request" else payload,
-        paths,
         revision="candidate",
-        ref="refs/heads/main",
+        ref="refs/pull/1/merge" if event == "pull_request" else "refs/heads/main",
         repository=REPO,
         run_id=14,
         attempt=2,
@@ -43,80 +42,60 @@ def jobs(p):
     ]
 
 
-def test_rename_and_incomplete_lists_select_the_package(monkeypatch):
-    old = "packages/experimental/kumo-pytorch/tests/e2e/test_aml.py"
-    after = {**PR, "changed_files": 1}
-    monkeypatch.setattr(
-        ci,
-        "gh",
-        lambda path, **kw: (
-            [[{"filename": "unrelated.py", "previous_filename": old}]] if kw else after
-        ),
-    )
-    moved = ci.changed_paths({"pull_request": PR})
-    assert plan(paths=moved)["t2a"]
-    assert plan(paths=[ci.WORKFLOW])["t2a"]
-    assert plan(paths=["packages/diskgraph/src/lib.rs"])["t2b"]
-    after["changed_files"] = 2
-    assert ci.changed_paths({"pull_request": PR}) is None and plan(paths=None)["suite"]
-    assert not plan()["affected"]
+def test_pr_and_nightly_require_identical_package_jobs_and_evidence():
+    pr = plan()
+    nightly = plan("schedule")
+    for field in ("jobs", "selections", "training_bindings", "seed_start", "torch_backend"):
+        assert pr[field] == nightly[field]
+    assert ci.evidence_names(pr) == ci.evidence_names(nightly)
+    assert all(pr["jobs"].values())
+    assert not {"cuda", "binding-full", "aml-benchmark", "streaming-25b"} & pr["jobs"].keys()
+    assert ci.account_jobs(pr, jobs(pr))[1] == []
+    assert pr["training_bindings"] == ["S02", "L01", "S01", "M04", "S04", "M03"]
+    rows = pr["selections"]
+    assert all(row["status"] == "required" for row in rows)
+    for mode in ("correctness", "training", "lifecycle"):
+        assert {r["binding"] for r in rows if r["mode"] == mode} == set(ci.BINDINGS)
+    assert [r["binding"] for r in rows if r["scope"] == "full_source"] == pr["training_bindings"]
+    assert all(pr["jobs"]["hm-lifecycle / " + name] for name in ci.CONFORMANCE)
+    for caller, size in (("hm-small", "S"), ("hm-lifecycle", "M")):
+        assert pr["jobs"][f"{caller} / End-to-end gnn seed 0 (size {size})"]
     fork = dict(PR, head={"sha": "head", "repo": {"full_name": "fork/project"}})
-    assert not plan(paths=moved, pull_request=fork)["private"]
-    for event in ("schedule", "pull_request", "push"):
-        assert all(
-            r["status"] != "required"
-            for r in ci.selection_rows(plan(event, paths=None))
-            if r["group"] in {"benchmark", "real 25B"} or r["mode"] == "full"
-        )
+    with pytest.raises(ValueError, match="private datasets and a same-repository PR"):
+        plan(pull_request=fork)
 
 
-def test_gate_checks_attempt_membership_and_explicit_exemption(tmp_path):
-    p = plan()
+def test_gate_checks_attempt_membership_and_requires_every_selected_row(tmp_path):
+    p = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "M03"})
     raw = jobs(p)
-    next(j for j in raw if j["name"] == "binding-train")["name"] = (
-        "matrix.binding && format('GPU training {0}', matrix.binding) || 'binding-train'"
-    )
     evidence = ci.results(p, raw, [], tmp_path)
-    ci.gate(p, evidence)
-    assert evidence["inventory"] == {"correctness": 12, "training": 11, "lifecycle": 6, "full": 11}
-    row = evidence["selections"].pop()
+    assert any("Missing current-attempt artifact" in error for error in evidence["errors"])
+    with pytest.raises(ValueError):
+        ci.gate(p, evidence)
+    evidence.update(errors=[], status="passed", selections=[])
     with pytest.raises(ValueError, match="selection set"):
         ci.gate(p, evidence)
-    evidence["selections"].append(row)
     del evidence["jobs"]["plan"]
     with pytest.raises(ValueError, match="job set"):
         ci.gate(p, evidence)
-    raw[0].update(run_attempt=1)
-    _, errors = ci.account_jobs(p, raw + [raw[0]])
+    _, errors = ci.account_jobs(p, raw + [dict(raw[0], run_attempt=1)])
     assert any("stale" in e for e in errors)
 
 
-def test_nightly_keeps_correctness_and_trains_only_the_six_full_bindings():
-    p = plan("schedule")
-    assert p["training_bindings"] == ["S02", "L01", "S01", "M04", "S04", "M03"]
-    required = [r for r in p["selections"] if r["status"] == "required"]
-    assert {r["binding"] for r in required if r["mode"] == "correctness"} == set(ci.BINDINGS)
-    assert [r["binding"] for r in required if r["scope"] == "full_source"] == p["training_bindings"]
-    assert not any(
-        r["mode"] in {"training", "lifecycle"} or r["binding"] == "T01" for r in required
-    )
-    assert not p["t2a"] and not p["jobs"]["hm-lifecycle / Nightly H&M training"]
-    raw = jobs(p)
-    next(j for j in raw if j["name"] == "hm-lifecycle / Nightly H&M training")["name"] = (
-        "hm-lifecycle / github.event_name == 'schedule' && 'Nightly H&M training' || "
-        "format('Nightly end-to-end {0} seed {1} (size M)', matrix.flow, matrix.seed)"
-    )
-    assert not ci.account_jobs(p, raw)[1]
-    assert all(p["jobs"]["hm-lifecycle / " + name] for name in ci.CONFORMANCE)
-    assert plan(paths=None)["training_bindings"] == []
+def test_manual_benchmarks_select_only_requested_work():
     manual = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "all"})
-    assert manual["training_bindings"] == p["training_bindings"]
-    assert [r["binding"] for r in manual["selections"] if r["status"] == "required"] == p[
-        "training_bindings"
-    ]
-    assert not manual["jobs"]["streaming-25b"]
+    assert manual["training_bindings"] == list(ci.NIGHTLY_TRAINING)
+    assert [r["binding"] for r in manual["selections"]] == manual["training_bindings"]
+    assert manual["jobs"]["binding-train / GPU training M03"]
+    assert manual["jobs"]["dataset-source"]
+    for job in ("kumo-pytorch-tests", "hm-small", "distribution"):
+        assert not any(name.startswith(job) for name in manual["jobs"])
     with pytest.raises(ValueError, match="Unknown training binding"):
         plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "E01"})
+    for mode in ("cuda", *ci.AML, *ci.STREAMING):
+        p = plan("workflow_dispatch", inputs={"mode": mode})
+        assert p["jobs"]["dataset-source"] and not p["jobs"]["binding-train"]
+        assert p["selections"] and all(row["status"] == "required" for row in p["selections"])
 
 
 def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
@@ -262,7 +241,9 @@ def test_scheduled_verification_distinguishes_firing_and_failing(tmp_path):
     p = plan("schedule")
     raw = jobs(p)
     raw[0]["conclusion"] = "failure"
-    next(j for j in raw if j["name"] == "GPU training S02")["completed_at"] = "2026-11-01T01:30:00Z"
+    next(j for j in raw if j["name"] == "binding-train / GPU training S02")["completed_at"] = (
+        "2026-11-01T01:30:00Z"
+    )
     report = ci.results(p, raw, [], tmp_path)
     assert report["training_wall_seconds"] == 5400
     for name, result in (("results", "success"), ("kumo-pytorch-gate", "failure")):
