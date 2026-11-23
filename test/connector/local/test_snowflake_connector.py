@@ -987,6 +987,8 @@ def test_check_table_write_denial_does_not_surface_provider_payload(caplog):
 
 def test_snowflake_output_write_does_not_surface_provider_payload(caplog):
     connector = _make_snowflake_connector_with_mock_context()
+    # A Mock paramstyle fails before the patched query is reached.
+    connector._context.cursor.return_value.connection._paramstyle = 'pyformat'
     secret = 'provider-payload-with-password'
 
     with patch.object(
@@ -996,7 +998,8 @@ def test_snowflake_output_write_does_not_surface_provider_payload(caplog):
     ):
         with pytest.raises(
                 ConnectorError,
-                match='configured Snowflake output table') as exc_info:
+                match='Failed to write .*predictions.*: RuntimeError'
+        ) as exc_info:
             connector.write_artifacts_to_table(
                 'predictions', 's3://internal-artifacts/predictions/')
 
@@ -1222,8 +1225,7 @@ def test_write_artifacts_to_table_partial_local_upload_is_removed(
     connector.context.cursor.return_value._upload.side_effect = RuntimeError(
         secret)
 
-    with pytest.raises(ConnectorError,
-                       match='configured Snowflake output table'):
+    with pytest.raises(ConnectorError, match='Failed to write .*PREDS'):
         connector.write_artifacts_to_table('PREDS', str(artifact_path))
 
     remove_sql = [sql for sql in sql_log if sql.startswith('REMOVE @~/')]
