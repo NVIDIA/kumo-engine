@@ -10,7 +10,6 @@ from dataclasses import replace
 import pytest
 
 from kumo.pytorch import api, assembly
-from tests.test_preview import _equal as assert_equal
 
 
 def _sample():
@@ -166,6 +165,70 @@ def history_data(tmp_path_factory):
     )
 
 
+def _assert_history(
+    history,
+    dataset,
+    requests,
+    layout,
+    keep,
+    limit,
+    order="ascending",
+    fields=("id", "kind", "amount"),
+):
+    from itertools import accumulate
+
+    orders = dataset.tables["orders"].rows
+    values = sorted(
+        {row["kind"] for row in orders if row["at"] <= max(r.as_of_time for r in requests)}
+    )
+    vocabulary = {value: i for i, value in enumerate(values, 2)}
+    selected = []
+    for request in requests:
+        rows = sorted(
+            (
+                row
+                for row in orders
+                if row["owner"] == request.entity_id and row["at"] <= request.as_of_time
+            ),
+            key=lambda row: (row["at"], row["id"]),
+        )
+        rows = rows[:limit] if keep == "first" else rows[-limit:]
+        selected.append(rows if order == "ascending" else rows[::-1])
+    lengths = [len(rows) for rows in selected]
+    width = max(lengths)
+    if isinstance(layout, api.Padded):
+        rows = [group + [None] * (width - len(group)) for group in selected]
+
+        def column(get):
+            return [[get(row) for row in group] for group in rows]
+    else:
+        offsets = list(accumulate(lengths, initial=0))
+        assert history["offsets"].tolist() == history["cu_seqlens"].tolist() == offsets
+        assert history["max_seqlen"] == width
+
+        def column(get):
+            return [get(row) for group in selected for row in group]
+
+    assert history["valid"].tolist() == column(lambda row: row is not None)
+    layout_keys = (
+        {"valid"}
+        if isinstance(layout, api.Padded)
+        else {"valid", "offsets", "cu_seqlens", "max_seqlen"}
+    )
+    assert set(history) == layout_keys.union(fields)
+    for field in fields:
+        assert history[field]["valid"].tolist() == column(
+            lambda row: row is not None and row[field] is not None
+        )
+
+        def value(row):
+            if row is None or row[field] is None:
+                return 0
+            return vocabulary[row[field]] if field == "kind" else row[field]
+
+        assert history[field]["values"].tolist() == column(value)
+
+
 class _Queries:
     def __init__(self, sampler):
         self.sampler, self.calls = sampler, []
@@ -186,7 +249,7 @@ class _Queries:
 def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
     history_data, keep, layout, aggregate, label, limit
 ):
-    schema, parquet, memory, index, requests = history_data
+    schema, parquet, rows, index, requests = history_data
     sample = _sample()
     inputs = {"history": _input(keep=keep, layout=layout, limit=limit)}
     if aggregate:
@@ -209,10 +272,6 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
         api.BatchSpec(inputs, {"future": api.LabelTarget("future", api.Raw())} if label else {}),
     )
     fingerprint = contract.fingerprint
-    with api.prepare(contract, memory, api.InMemoryEngine()) as reference:
-        expected = next(
-            reference.materialize(requests, fit_split="train").batches(requests, batch_size=4)
-        )
     with api.prepare(contract, parquet, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
         queries = _Queries(plan._source._sampler)
         plan._source._sampler = queries
@@ -225,12 +284,15 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
             assert queries.calls[0]["sequences"][0]["order"] == (
                 "descending" if pushed and keep == "last" else "ascending"
             )
-            assert_equal(actual.inputs, expected.inputs)
-            assert_equal(actual.targets, expected.targets)
+            _assert_history(actual.inputs["history"], rows, requests, layout, keep, limit)
+            assert set(actual.inputs) == ({"history", "entity"} if aggregate else {"history"})
+            assert set(actual.targets) == ({"future"} if label else set())
             if label:
+                assert actual.targets["future"]["valid"].all()
                 # (5,8]: 70; (3,6]: 50+60+70. Other owners have no future rows.
                 assert actual.targets["future"]["values"].tolist() == [70.0, 0.0, 180.0, 0.0]
             if aggregate:
+                assert actual.inputs["entity"]["count"]["valid"].tolist() == [True] * 4
                 assert actual.inputs["entity"]["count"]["values"].tolist() == [6, 0, 4, 1]
             queries.calls.clear()
             preview = task.preview(requests)

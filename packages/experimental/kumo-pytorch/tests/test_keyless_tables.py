@@ -14,6 +14,7 @@ import kumo.pytorch.api as r
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import build
+from tests.native_fixtures import prepare_rows, request_anchor_table
 
 
 def _case():
@@ -121,7 +122,7 @@ def test_keyless_entities_are_refused_before_opening(candidate, inferred, engine
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
+    (("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
 )
 def test_keyless_graph_history_targets_and_features(engine_name, output_format):
@@ -148,6 +149,7 @@ def test_keyless_graph_history_targets_and_features(engine_name, output_format):
 
 
 @pytest.mark.parametrize("arrow", (False, True))
+@pytest.mark.parametrize("engine_name", ["diskgraph"], indirect=True)
 def test_keyless_artifact_and_serving_keep_identical_rows(engine_name, arrow, tmp_path):
     case = _case()
     with bound_case(case, engine_name) as (dataset, engine):
@@ -216,7 +218,7 @@ def test_keyless_non_primary_key_relation_remains_valid_on_reference():
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
+    (("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
 )
 def test_keyless_constant_only_events(engine_name, output_format):
@@ -246,6 +248,7 @@ def test_keyless_constant_only_events(engine_name, output_format):
                 assert batch.inputs["history"]["marker"]["values"].tolist() == [1] * 5
 
 
+@pytest.mark.parametrize("engine_name", ["diskgraph"], indirect=True)
 def test_keyless_non_temporal_count_only_frame(engine_name):
     case = _case()
     tables = tuple(
@@ -309,6 +312,7 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset():
     assert served.inputs["history"]["amount"]["values"].tolist() == [11]
 
 
+@pytest.mark.parametrize("engine_name", ["diskgraph"], indirect=True)
 def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
     from tests.serving_fetch import fetch
 
@@ -369,9 +373,9 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     }
     requests = (r.SampleRequest("rounding", 1, 9),)
     dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
+    with prepare_rows(contract, dataset) as plan:
+        with plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task:
+            offline = next(iter(task.batches(batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
     served = server.assemble({**rows, "events": rows["events"][::-1]}, requests)[0]
     # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.

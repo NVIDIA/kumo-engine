@@ -9,7 +9,14 @@ from dataclasses import replace
 import pytest
 import torch
 
-from kumo.pytorch.api import AlignedEventTarget, Encode, Field, Fields, SampleRequest, Vocabulary
+from kumo.pytorch.api import (
+    AlignedEventTarget,
+    Encode,
+    Field,
+    Fields,
+    SampleRequest,
+    Vocabulary,
+)
 from kumo.pytorch.data.typed_vectors import AttributeSchema, TypedVectorBatch
 from kumo.pytorch.models.causal import CausalEncoderConfig
 from kumo.pytorch.models.model import MultiObjectiveModel
@@ -213,5 +220,5 @@ def test_treasure_current_signal_must_exist_in_the_sample_shape():
         },
     )
     with pytest.raises(ValueError, match="missing_signal"):
-        with model_task("treasure", batch=policy):
+        with model_task("treasure", batch=policy, native=True):
             pass

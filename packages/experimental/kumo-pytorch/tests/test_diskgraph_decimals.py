@@ -131,43 +131,36 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         tmp_path, precision, encoding
     )
     request = api.SampleRequest("one", 1, cutoff, split="train")
-    outputs = []
-    for engine in (
-        api.InMemoryEngine(),
+    with api.prepare(
+        contract,
+        api.Dataset(bindings),
         api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
-    ):
-        dataset = api.Dataset(
-            {name: api.InMemoryRows(table.to_pylist()) for name, table in tables.items()}
-            if isinstance(engine, api.InMemoryEngine)
-            else bindings
-        )
-        with api.prepare(contract, dataset, engine) as plan:
-            task = plan.materialize((request,), fit_split="train")
-            batch = next(
-                task.batches(
-                    batch_size=1,
-                    output_format="inspectable"
-                    if isinstance(engine, api.InMemoryEngine)
-                    else output_format,
-                )
+    ) as plan:
+        task = plan.materialize((request,), fit_split="train")
+        batch = next(task.batches(batch_size=1, output_format=output_format))
+        event = batch.inputs["history"]["amount"]
+        nodes = batch.inputs["graph"]["nodes"]["events"]
+        graph = nodes["features"]["amount"]
+        ids = nodes["ids"].tolist()
+        if encoding == "raw":
+            assert event["values"].type.value_type == money.to_arrow()
+            assert event["values"].to_pylist() == [amounts]
+            assert graph["values"].type == money.to_arrow()
+            assert dict(zip(ids, graph["values"].to_pylist())) == dict(enumerate(amounts, 1))
+        else:
+            values = [float(value) for value in amounts if value is not None]
+            mean = sum(values) / len(values)
+            scale = (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+            expected = [
+                (float(value) - mean) / scale if value is not None else 0 for value in amounts
+            ]
+            assert event["values"][0].tolist() == pytest.approx(expected)
+            assert dict(zip(ids, graph["values"].tolist())) == pytest.approx(
+                dict(enumerate(expected, 1))
             )
-            event = batch.inputs["history"]["amount"]
-            nodes = batch.inputs["graph"]["nodes"]["events"]
-            graph = nodes["features"]["amount"]
-            ids = nodes["ids"].tolist()
-            if encoding == "raw":
-                assert event["values"].type.value_type == money.to_arrow()
-                assert event["values"].to_pylist() == [amounts]
-                assert graph["values"].type == money.to_arrow()
-                assert dict(zip(ids, graph["values"].to_pylist())) == dict(enumerate(amounts, 1))
-            else:
-                outputs.append((event["values"], dict(zip(ids, graph["values"].tolist()))))
-                assert torch.isfinite(event["values"]).all()
-                assert event["valid"].tolist() == [[True, True, False, True]]
-            assert dict(zip(ids, graph["valid"].tolist())) == {1: True, 2: True, 3: False, 4: True}
-    if encoding == "zscore":
-        torch.testing.assert_close(outputs[0][0], outputs[1][0])
-        assert outputs[0][1] == pytest.approx(outputs[1][1])
+            assert torch.isfinite(event["values"]).all()
+            assert event["valid"].tolist() == [[True, True, False, True]]
+        assert dict(zip(ids, graph["valid"].tolist())) == {1: True, 2: True, 3: False, 4: True}
 
 
 @pytest.mark.parametrize(

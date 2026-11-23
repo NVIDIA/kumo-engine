@@ -41,14 +41,6 @@ def _check(history: dict) -> None:
         assert node[f"{prefix}max_seqlen"] == int((offsets[1:] - offsets[:-1]).max())
 
 
-def test_in_memory_two_level_packing_carries_cu_seqlens() -> None:
-    rows = _fixture_rows()
-    dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-    with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
-        task = plan.materialize(_requests(), fit_split="train")
-        _check(next(iter(task.batches(_requests(), batch_size=2))).inputs["history"])
-
-
 def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
     pytest.importorskip("diskgraph")
     parquet = _write_parquet(_fixture_rows(), tmp_path / "parquet")
@@ -59,8 +51,8 @@ def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
         _check(batch.inputs["history"])
 
 
-@pytest.mark.usefixtures("native_anchor_delivery")
-def test_native_two_level_packing_carries_cu_seqlens(tmp_path):
+@pytest.fixture
+def native_packed_batch(tmp_path, native_anchor_delivery):
     pytest.importorskip("diskgraph")
     parquet = _write_parquet(_fixture_rows(), tmp_path / "parquet")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
@@ -73,8 +65,11 @@ def test_native_two_level_packing_carries_cu_seqlens(tmp_path):
     fixed = replace(contract, batch=replace(contract.batch, batching=api.Batching(max_samples=2)))
     with api.prepare(fixed, parquet, engine) as plan:
         with plan.materialize(anchors) as native:
-            batch = next(native.batches(output_format="model"))
-            _check(batch.inputs["history"])
+            return next(native_anchor_delivery(native))
+
+
+def test_native_two_level_packing_carries_cu_seqlens(native_packed_batch):
+    _check(native_packed_batch.inputs["history"])
 
 
 @pytest.mark.skipif(
@@ -85,14 +80,10 @@ def test_native_two_level_packing_carries_cu_seqlens(tmp_path):
     not torch.cuda.is_available() or not torch.cuda.is_bf16_supported(),
     reason="varlen attention needs a BF16-capable CUDA device",
 )
-def test_varlen_attention_consumes_the_metadata_directly() -> None:
+def test_varlen_attention_consumes_the_metadata_directly(native_packed_batch) -> None:
     from torch.nn.attention.varlen import varlen_attn
 
-    rows = _fixture_rows()
-    dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-    with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
-        task = plan.materialize(_requests(), fit_split="train")
-        history = next(iter(task.batches(_requests(), batch_size=2))).to("cuda").inputs["history"]
+    history = native_packed_batch.to("cuda").inputs["history"]
     tokens = history["field_ids"].numel()
     q = torch.randn(tokens, 2, 64, device="cuda", dtype=torch.bfloat16)
     cu, longest = history["field_cu_seqlens"], history["field_max_seqlen"]

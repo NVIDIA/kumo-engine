@@ -21,7 +21,6 @@ from kumo.pytorch.api import (
     BatchSpec,
     DataLoaderSpec,
     DataSchema,
-    Dataset,
     DType,
     Encode,
     EntitySource,
@@ -33,8 +32,6 @@ from kumo.pytorch.api import (
     Graph,
     GraphLayer,
     GraphSample,
-    InMemoryEngine,
-    InMemoryRows,
     Input,
     NeighborhoodSource,
     NeighborhoodSpec,
@@ -49,10 +46,10 @@ from kumo.pytorch.api import (
     TimeWindow,
     ValidationError,
     Vocabulary,
-    prepare,
     preview,
 )
-from kumo.pytorch.engines.in_memory.source import InMemorySource
+from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from tests.native_fixtures import prepare_rows, preview_rows
 
 
 def _fixture() -> tuple[DataLoaderSpec, dict[str, list[dict[str, Any]]]]:
@@ -145,17 +142,13 @@ def _equal(left: Any, right: Any) -> None:
         assert left == right
 
 
-def _dataset(tables: dict[str, list[dict[str, Any]]]) -> Dataset:
-    return Dataset({name: InMemoryRows(rows) for name, rows in tables.items()})
-
-
 def test_prepared_preview_returns_the_exact_normal_batch_without_mutating_state() -> None:
     contract, tables = _fixture()
     request = (SampleRequest("s1", 1, 100),)
-    plan = prepare(contract, _dataset(tables), InMemoryEngine()).materialize(request)
+    plan = prepare_rows(contract, tables).materialize(request)
     before = plan.manifest["fitted_state_fingerprint"]
     result = preview(plan, request, seed=7)
-    normal = next(plan.batches(request, batch_size=1, seed=7))
+    normal = next(plan.batches(batch_size=1, seed=7))
     _equal(result.batch.inputs, normal.inputs)
     _equal(result.batch.targets, normal.targets)
     assert plan.manifest["fitted_state_fingerprint"] == before
@@ -166,7 +159,7 @@ def test_prepared_preview_returns_the_exact_normal_batch_without_mutating_state(
 def test_preview_shows_only_produced_raw_values_and_the_encoded_batch() -> None:
     contract, tables = _fixture()
     request = (SampleRequest("s1", 1, 100),)
-    with prepare(contract, _dataset(tables), InMemoryEngine()).materialize(request) as plan:
+    with prepare_rows(contract, tables).materialize(request) as plan:
         result = preview(plan, request)
     payload = result.to_dict()
     sample = payload["samples"][0]
@@ -187,10 +180,9 @@ def test_preview_shows_only_produced_raw_values_and_the_encoded_batch() -> None:
 def test_contract_preview_temporarily_fits_encodings_and_returns_one_batch() -> None:
     contract, tables = _fixture()
     request = (SampleRequest("s1", 1, 100),)
-    dataset = _dataset(tables)
-    result = preview(contract, dataset, InMemoryEngine(), request)
-    with prepare(contract, dataset, InMemoryEngine()).materialize(request) as expected:
-        normal = next(expected.batches(request, batch_size=1))
+    result = preview_rows(contract, tables, request)
+    with prepare_rows(contract, tables).materialize(request) as expected:
+        normal = next(expected.batches(batch_size=1))
     _equal(result.batch.inputs, normal.inputs)
     _equal(result.batch.targets, normal.targets)
     assert result.encoding_summary["history"]["summary"]["kind"]["entries"] == [
@@ -202,30 +194,29 @@ def test_contract_preview_temporarily_fits_encodings_and_returns_one_batch() -> 
 
 def test_contract_preview_rejects_a_dataset_for_a_different_schema() -> None:
     contract, _ = _fixture()
-    dataset = Dataset({"other": InMemoryRows(({"id": 1},))})
+    dataset = {"other": [{"id": 1}]}
     with pytest.raises(ValidationError, match="dataset"):
-        preview(contract, dataset, InMemoryEngine(), (SampleRequest("s1", 1, 100),))
+        preview_rows(contract, dataset, (SampleRequest("s1", 1, 100),))
 
 
 def test_preview_has_a_non_configurable_eight_request_limit() -> None:
     contract, tables = _fixture()
     accepted = tuple(SampleRequest(f"s{index}", 1, 100) for index in range(8))
     rejected = tuple(SampleRequest(f"s{index}", 1, 100) for index in range(9))
-    dataset = _dataset(tables)
-    result = preview(contract, dataset, InMemoryEngine(), accepted)
+    result = preview_rows(contract, tables, accepted)
     assert len(result.samples) == 8
     assert result.batch.metadata["entity_ids"].shape == (8,)
     assert "max_samples" not in signature(preview).parameters
     with pytest.raises(ValueError, match="limited to 8"):
-        preview(contract, dataset, InMemoryEngine(), rejected)
+        preview_rows(contract, tables, rejected)
 
 
 def test_preview_puts_every_request_in_one_batch_regardless_of_normal_policy() -> None:
     contract, tables = _fixture()
     contract = replace(contract, batch=replace(contract.batch, batching=Batching(max_samples=1)))
     requests = tuple(SampleRequest(f"s{index}", 1, 100) for index in range(3))
-    plan = prepare(contract, _dataset(tables), InMemoryEngine()).materialize(requests)
-    assert len(list(plan.batches(requests))) == 3
+    plan = prepare_rows(contract, tables).materialize(requests)
+    assert len(list(plan.batches())) == 3
     result = preview(plan, requests)
     assert len(result.samples) == 3
     assert result.batch.metadata["entity_ids"].shape == (3,)
@@ -234,13 +225,13 @@ def test_preview_puts_every_request_in_one_batch_regardless_of_normal_policy() -
 
 def test_contract_preview_closes_its_temporary_source(monkeypatch: pytest.MonkeyPatch) -> None:
     contract, tables = _fixture()
-    closed: list[InMemorySource] = []
-    original_close = InMemorySource.close
+    closed: list[DiskGraphSource] = []
+    original_close = DiskGraphSource.close
 
-    def track_close(source: InMemorySource) -> None:
+    def track_close(source: DiskGraphSource) -> None:
         closed.append(source)
         original_close(source)
 
-    monkeypatch.setattr(InMemorySource, "close", track_close)
-    preview(contract, _dataset(tables), InMemoryEngine(), (SampleRequest("s1", 1, 100),))
+    monkeypatch.setattr(DiskGraphSource, "close", track_close)
+    preview_rows(contract, tables, (SampleRequest("s1", 1, 100),))
     assert len(closed) == 1

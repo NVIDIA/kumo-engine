@@ -32,7 +32,7 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.dtypes import DType
-from tests.helpers import Plans, parquet_anchors
+from tests.helpers import NativePlans, parquet_anchors
 
 
 def _contract(unit: str = "s") -> tuple[DataLoaderSpec, dict[str, list[dict[str, object]]]]:
@@ -97,8 +97,8 @@ def _contract(unit: str = "s") -> tuple[DataLoaderSpec, dict[str, list[dict[str,
 def test_time_delta_is_anchor_minus_event_time_in_the_requested_unit() -> None:
     contract, tables = _contract()
     request = (SampleRequest("s1", 1, 100),)
-    with Plans(contract.schema, tables).prepare(contract, request) as plan:
-        batch = next(plan.batches(request, batch_size=1))
+    with NativePlans(contract.schema, tables).prepare(contract, request) as plan:
+        batch = next(plan.batches(batch_size=1))
     history = batch.inputs["history"]
     assert history["age_seconds"]["values"].tolist() == [[60.0, 10.0]]
     assert history["age_hours"]["values"][0].tolist() == pytest.approx([60 / 3600, 10 / 3600])

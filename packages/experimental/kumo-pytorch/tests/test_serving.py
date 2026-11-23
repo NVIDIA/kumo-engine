@@ -26,9 +26,10 @@ from conformance.sequence_cases import generate_sequence_case
 from kumo.pytorch import api
 from kumo.pytorch.serving import RowLimit, RowsJoin, ServingRowsSpec
 from tests import lifecycle_app
-from tests.serving_fetch import fetch
+from tests.native_fixtures import prepare_rows, request_anchor_table
+from tests.serving_fetch import assert_offline_batch, fetch, offline_batches
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _temporal_contract
-from tests.test_inference_lifecycle import _dataset, assert_same_batches
+from tests.test_inference_lifecycle import assert_same_batches
 
 ROOT = Path(__file__).parents[1]
 Row = dict[str, object]
@@ -43,25 +44,10 @@ def _example() -> ModuleType:
 def _artifact(
     contract: api.DataLoaderSpec, tables: Tables, requests: Sequence[api.SampleRequest]
 ) -> api.Artifact:
-    dataset = api.Dataset({name: api.InMemoryRows(rows) for name, rows in tables.items()})
-    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
-        anchors = [replace(request, split=None) for request in requests]
+    with prepare_rows(contract, tables) as plan:
+        anchors = request_anchor_table(requests, schema=plan.contract.schema)
         with plan.materialize(anchors) as task:
             return task.to_artifact()
-
-
-def _batch_inference(
-    artifact: api.Artifact,
-    dataset: api.Dataset,
-    engine: api.Engine,
-    requests: Sequence[api.SampleRequest],
-) -> dict[str, api.Batch]:
-    with api.prepare(artifact.contract, dataset, engine) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-            return {
-                batch.metadata["sample_ids"][0]: batch
-                for batch in task.batches(batch_size=1, seed=SEED)
-            }
 
 
 def _bounded_rows_contract() -> tuple[api.DataLoaderSpec, Tables, list[api.SampleRequest]]:
@@ -199,15 +185,12 @@ CASES: dict[str, Callable[[], tuple[api.DataLoaderSpec, Tables, list[api.SampleR
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
     contract, tables, requests = CASES[name]()
-    artifact = _artifact(contract, tables, requests)
-    dataset, engine = _dataset("in_memory", tables, Path())
-    expected = _batch_inference(artifact, dataset, engine, requests)
+    artifact, expected = offline_batches(contract, tables, requests, case_id=name)
     server = api.ServingAssembler(artifact)
     for request in requests:
         rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
-        assert_same_batches(
-            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
-        )
+        (served,) = server.assemble(rows, [request], seed=SEED)
+        assert_offline_batch(served, expected[request.sample_id], artifact, tables, request)
 
 
 def test_an_event_limit_alone_limits_the_rows_to_fetch() -> None:
@@ -229,11 +212,9 @@ def test_spec_fetch_of_a_graph_contract_equals_batch_inference(tmp_path: Path) -
     # columns, events, two-hop graph and future-row targets
     contract = _temporal_contract(_schema())
     rows = _fixture_rows()
-    dataset, engine = _dataset("in_memory", rows, tmp_path)
-    with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
-            artifact = task.to_artifact()
-    expected = _batch_inference(artifact, dataset, engine, _requests())
+    artifact, expected = offline_batches(
+        contract, rows, _requests(), case_id="train_split_graph", fit_split="train"
+    )
     server = api.ServingAssembler(artifact)
     spec = server.rows_spec
     assert spec.tables["card_transactions"].required
@@ -244,9 +225,8 @@ def test_spec_fetch_of_a_graph_contract_equals_batch_inference(tmp_path: Path) -
         fetched = fetch(spec, artifact.contract.schema, rows, request)
         assert "merchants" not in fetched
         assert all("description" not in row for row in fetched["card_transactions"])
-        assert_same_batches(
-            server.assemble(fetched, [request], seed=SEED), [expected[request.sample_id]]
-        )
+        (served,) = server.assemble(fetched, [request], seed=SEED)
+        assert_offline_batch(served, expected[request.sample_id], artifact, rows, request)
 
 
 EXAMPLE_SPEC = """\
@@ -402,9 +382,8 @@ def test_resolve_never_reads_supplied_rows(example_server: api.ServingAssembler)
         **tables,
         "users": [{**row, "segment": None} for row in tables["users"]],
     }
-    dataset, engine = _dataset("in_memory", blank, Path())
     request = _request(4)
-    expected = _batch_inference(artifact, dataset, engine, [request])[request.sample_id]
+    _, expected = offline_batches(contract, blank, [request], artifact=artifact)
     rows = _user_rows(4)
     rows["users"] = [{**row, "segment": None} for row in rows["users"]]
     arrow = {name: pa.Table.from_pylist(values) for name, values in rows.items()}
@@ -425,7 +404,8 @@ def test_resolve_never_reads_supplied_rows(example_server: api.ServingAssembler)
         ),
     )
     for supplied in (rows, arrow):
-        assert_same_batches(example_server.assemble(supplied, [request]), [expected])
+        (served,) = example_server.assemble(supplied, [request])
+        assert_offline_batch(served, expected[request.sample_id], artifact, blank, request)
 
 
 def test_the_plan_is_built_once_and_rows_are_never_fingerprinted(

@@ -162,7 +162,7 @@ def test_model_field_roles_must_exist_in_the_bound_sample_shape():
         },
     )
     with pytest.raises(ValueError, match="missing_amount"):
-        with model_task("nuformer", batch=policy):
+        with model_task("nuformer", batch=policy, native=True):
             pass
 
 
@@ -175,7 +175,7 @@ def test_model_field_roles_use_declared_raw_types():
     )
     schema = replace(SYNTHETIC_SCHEMA, tables=tables)
     with pytest.raises(ValueError, match="abs.*cannot produce"):
-        with model_task("nuformer", schema=schema):
+        with model_task("nuformer", schema=schema, native=True):
             pass
 
 
@@ -194,7 +194,7 @@ def test_profile_conditioning_roles_must_exist_in_the_bound_sample_shape():
     )
     policy = replace(policy, inputs={**policy.inputs, "entity": profile})
     with pytest.raises(ValueError, match="missing_profile_value"):
-        with model_task("panther", batch=policy):
+        with model_task("panther", batch=policy, native=True):
             pass
 
 

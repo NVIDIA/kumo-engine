@@ -28,6 +28,7 @@ from kumo.pytorch.contract.sample import (
 )
 from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples
 
 
 def _field(history, key: str):
@@ -38,7 +39,7 @@ def _event_field(event, key: str):
     return next((field for field in event.fields if field.key == key), None)
 
 
-def _sample_builder() -> InMemorySampleBuilder:
+def _sample_builder(builder=InMemorySampleBuilder):
     schema = DataSchema(
         tables=(
             TableSpec(
@@ -204,7 +205,7 @@ def _sample_builder() -> InMemorySampleBuilder:
         ],
         "transfers": [],
     }
-    return InMemorySampleBuilder(schema, tables)
+    return builder(schema, tables)
 
 
 def _recipe() -> SampleSpec:
@@ -325,8 +326,8 @@ def test_context_recipe_cannot_request_future_rows() -> None:
             )
         },
     )
-    with pytest.raises(ValueError, match="context.*after"):
-        _sample_builder().build(recipe, [SampleRequest("sample", 1, 100)])
+    with pytest.raises(ValueError, match="context window must end at or before the sample time"):
+        _sample_builder(NativeSamples).build(recipe, [SampleRequest("sample", 1, 100)])
 
 
 def test_filters_and_lookback_are_configuration_not_engine_code() -> None:

@@ -20,7 +20,7 @@ from kumo.pytorch import api
 from kumo.pytorch.data import cutoff_to_epoch
 from tests.helpers import parquet_anchors
 
-MODES = ("reference", "native_inspectable", "native_model")
+MODES = ("native_inspectable", "native_model")
 INT = api.DType("int64")
 TIME = api.DType("timestamp", unit="s", timezone="UTC")
 
@@ -61,30 +61,24 @@ def _root_contract(columns, values, selected, *, targets=None, batch_targets=Non
 
 @contextmanager
 def _prepared(tmp_path, contract, tables, mode):
-    if mode == "reference":
-        engine = api.InMemoryEngine()
-        dataset = api.Dataset(
-            tables={name: api.InMemoryRows(rows) for name, rows in tables.items()}
-        )
-    else:
-        pytest.importorskip("diskgraph")
-        directory = tmp_path / mode
-        directory.mkdir()
-        bindings = {}
-        for table in contract.schema.tables:
-            path = directory / f"{table.name}.parquet"
-            pq.write_table(
-                pa.Table.from_pylist(
-                    tables[table.name],
-                    schema=pa.schema(
-                        [(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
-                    ),
+    pytest.importorskip("diskgraph")
+    directory = tmp_path / mode
+    directory.mkdir()
+    bindings = {}
+    for table in contract.schema.tables:
+        path = directory / f"{table.name}.parquet"
+        pq.write_table(
+            pa.Table.from_pylist(
+                tables[table.name],
+                schema=pa.schema(
+                    [(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
                 ),
-                path,
-            )
-            bindings[table.name] = api.Parquet(str(path))
-        dataset = api.Dataset(tables=bindings)
-        engine = api.DiskGraphEngine(index=directory / "index")
+            ),
+            path,
+        )
+        bindings[table.name] = api.Parquet(str(path))
+    dataset = api.Dataset(tables=bindings)
+    engine = api.DiskGraphEngine(index=directory / "index")
     assert api.check(contract, dataset, engine) == ()
     with api.prepare(contract=contract, dataset=dataset, engine=engine) as plan:
         yield plan
@@ -164,7 +158,7 @@ def test_aggregate_comparison_normalizes_its_float32_literal(tmp_path, mode):
     assert _list(batch.inputs["x"]["same"]["values"]) == [True]
 
 
-@pytest.mark.parametrize("mode", ("reference", "native_inspectable"))
+@pytest.mark.parametrize("mode", ("native_inspectable",))
 @pytest.mark.parametrize("family,precision", (("decimal128", 38), ("decimal256", 76)))
 @pytest.mark.parametrize(
     "operation,expected",
@@ -323,7 +317,7 @@ def test_qualified_entity_selector_uses_the_resolved_source_name(tmp_path, mode)
     assert _list(batch.inputs["x"]["entity/v"]["values"]) == [3]
 
 
-@pytest.mark.parametrize("engine_name", ("reference", "native"))
+@pytest.mark.parametrize("engine_name", ("native",))
 def test_repeated_row_target_field_refuses_before_open(tmp_path, monkeypatch, engine_name):
     contract = api.DataLoaderSpec(
         _event_schema(),
@@ -348,17 +342,13 @@ def test_repeated_row_target_field_refuses_before_open(tmp_path, monkeypatch, en
             targets={"y": api.StructuredTarget("future", (api.Encode("v", api.Raw()),))},
         ),
     )
-    if engine_name == "reference":
-        engine = api.InMemoryEngine()
-        dataset = api.Dataset(tables={name: api.InMemoryRows(()) for name in ("users", "events")})
-    else:
-        engine = api.DiskGraphEngine(index=tmp_path / "index")
-        dataset = api.Dataset(
-            tables={
-                name: api.Parquet(str(tmp_path / f"nonexistent-{name}.parquet"))
-                for name in ("users", "events")
-            }
-        )
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    dataset = api.Dataset(
+        tables={
+            name: api.Parquet(str(tmp_path / f"nonexistent-{name}.parquet"))
+            for name in ("users", "events")
+        }
+    )
     monkeypatch.setattr(engine, "open", lambda *_: pytest.fail("refused source must not open"))
     issues = api.check(contract, dataset, engine)
     assert len(issues) == 1
@@ -556,27 +546,18 @@ def test_fractional_anchor_never_admits_a_later_event(tmp_path, mode, anchor, ev
         "users": [{"id": 1}],
         "events": [{"id": 1, "user_id": 1, "at": event, "v": 3}],
     }
-    if mode == "reference":
-        engine = api.InMemoryEngine()
-        dataset = api.Dataset(
-            tables={name: api.InMemoryRows(rows) for name, rows in tables.items()}
+    pytest.importorskip("diskgraph")
+    physical = {"at": pa.timestamp("us", tz="UTC")}
+    bindings = {}
+    for table in contract.schema.tables:
+        path = tmp_path / f"{table.name}.parquet"
+        schema = pa.schema(
+            [(name, physical.get(name, dtype.to_arrow())) for name, dtype in table.columns.items()]
         )
-    else:
-        pytest.importorskip("diskgraph")
-        physical = {"at": pa.timestamp("us", tz="UTC")}
-        bindings = {}
-        for table in contract.schema.tables:
-            path = tmp_path / f"{table.name}.parquet"
-            schema = pa.schema(
-                [
-                    (name, physical.get(name, dtype.to_arrow()))
-                    for name, dtype in table.columns.items()
-                ]
-            )
-            pq.write_table(pa.Table.from_pylist(tables[table.name], schema=schema), path)
-            bindings[table.name] = api.Parquet(str(path))
-        dataset = api.Dataset(tables=bindings)
-        engine = api.DiskGraphEngine(index=tmp_path / "index")
+        pq.write_table(pa.Table.from_pylist(tables[table.name], schema=schema), path)
+        bindings[table.name] = api.Parquet(str(path))
+    dataset = api.Dataset(tables=bindings)
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
     assert api.check(contract, dataset, engine) == ()
     with api.prepare(contract=contract, dataset=dataset, engine=engine) as plan:
         batch = _batch(plan, (api.SampleRequest("one", 1, anchor),), mode)

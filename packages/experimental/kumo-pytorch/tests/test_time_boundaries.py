@@ -15,14 +15,12 @@ from tests.helpers import parquet_anchors
 
 
 @pytest.mark.parametrize(
-    ("engine_name", "output_format"),
-    [("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")],
+    ("engine_name", "output_format"), [("diskgraph", "inspectable"), ("diskgraph", "model")]
 )
 @pytest.mark.parametrize("bounded", [False, True])
 @pytest.mark.parametrize("clock", ["at", "other_at"])
 def test_time_boundaries_across_outputs(engine_name, output_format, bounded, clock):
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     case = load_case(GUARANTEES / "G-ROWS-001/golden/C-ROWS-001.json")
     schema = replace(
         case.contract.schema,

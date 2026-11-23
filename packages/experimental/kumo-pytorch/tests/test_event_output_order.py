@@ -9,7 +9,8 @@ from dataclasses import replace
 import pytest
 
 from kumo.pytorch import api
-from tests.test_model_history_limits import _Queries, _sample
+from tests.native_fixtures import prepare_rows, request_anchor_table
+from tests.test_model_history_limits import _assert_history, _Queries, _sample
 from tests.test_model_history_limits import history_data as history_data
 from tests.test_preview import _equal as assert_equal
 
@@ -43,33 +44,18 @@ def test_declared_order_matches_both_engines_and_formats(history_data, order, ke
     restored = api.DataLoaderSpec.from_json(spec.to_json())
     assert restored == spec
     assert restored.fingerprint == spec.fingerprint
-    rows = [[40, 10], [], [40, 10], [80]] if keep == "first" else [[50, 60], [], [30, 20], [80]]
-    if order == "descending":
-        rows = [row[::-1] for row in rows]
-    with api.prepare(spec, memory, api.InMemoryEngine()) as plan:
-        with plan.materialize(requests, fit_split="train") as task:
-            reference = next(task.batches(requests, batch_size=4))
-            actual = reference.inputs["history"]
-            if isinstance(layout, api.Padded):
-                assert actual["id"]["values"].tolist() == [
-                    row + [0] * (2 - len(row)) for row in rows
-                ]
-                assert actual["valid"].tolist() == [
-                    [True, True],
-                    [False, False],
-                    [True, True],
-                    [True, False],
-                ]
-            else:
-                assert actual["id"]["values"].tolist() == [item for row in rows for item in row]
-                assert actual["offsets"].tolist() == [0, 2, 2, 4, 5]
     with api.prepare(spec, parquet, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
         queries = _Queries(plan._source._sampler)
         plan._source._sampler = queries
         with plan.materialize(requests, fit_split="train") as task:
             queries.calls.clear()
             actual = next(task.batches(requests, batch_size=4, output_format="model"))
-            assert_equal(actual.inputs, reference.inputs)
+            assert set(actual.inputs) == ({"history", "opposite"} if shared else {"history"})
+            for name, history in actual.inputs.items():
+                direction = spec.batch.inputs[name].source.order
+                _assert_history(
+                    history, memory, requests, layout, keep, 2, direction, fields=("id", "kind")
+                )
             requested = {
                 seq["output_order"]
                 for seq in queries.calls[-1]["sequences"]
@@ -78,7 +64,7 @@ def test_declared_order_matches_both_engines_and_formats(history_data, order, ke
             assert requested == ({"ascending", "descending"} if shared else {order})
             assert not hasattr(plan._source, "_ascending_indices")
             inspected = next(task.batches(requests, batch_size=4, output_format="inspectable"))
-            assert_equal(inspected.inputs, reference.inputs)
+            assert_equal(inspected.inputs, actual.inputs)
             preview = task.preview(requests)
             assert len(preview.samples[0]["events"]["orders"]) == 6
 
@@ -93,22 +79,16 @@ def test_event_direction_does_not_replace_explicit_sample_selection(history_data
             events={"orders": replace(spec.sample.events["orders"], order="descending", limit=3)},
         ),
     )
-    for dataset, engine in [
-        (memory, api.InMemoryEngine()),
-        (parquet, api.DiskGraphEngine(index=index)),
-    ]:
-        with api.prepare(spec, dataset, engine) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
-                batch = next(
-                    task.batches(
-                        requests,
-                        batch_size=4,
-                        output_format="model"
-                        if isinstance(engine, api.DiskGraphEngine)
-                        else "inspectable",
-                    )
+    with api.prepare(spec, parquet, api.DiskGraphEngine(index=index)) as plan:
+        with plan.materialize(requests, fit_split="train") as task:
+            batch = next(
+                task.batches(
+                    requests,
+                    batch_size=4,
+                    output_format="model",
                 )
-                assert batch.inputs["history"]["id"]["values"][0].tolist() == [20, 50]
+            )
+            assert batch.inputs["history"]["id"]["values"][0].tolist() == [20, 50]
 
 
 def test_invalid_direction_is_rejected():
@@ -254,13 +234,51 @@ def test_token_inputs_share_the_same_direction_on_both_paths(history_data, repre
                 },
             ),
         )
-        with api.prepare(spec, memory, api.InMemoryEngine()) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
-                reference = next(task.batches(requests, batch_size=4))
         with api.prepare(spec, parquet, api.DiskGraphEngine(index=index)) as plan:
             with plan.materialize(requests, fit_split="train") as task:
                 actual = next(task.batches(requests, batch_size=4, output_format="model"))
-                assert_equal(actual.inputs, reference.inputs)
+                inspected = next(task.batches(requests, batch_size=4, output_format="inspectable"))
+                assert_equal(actual.inputs, inspected.inputs)
+                # After three specials come cutoff, last, middle, old, other, tie-a and tie-b.
+                expected = [[4, 3], [], [9, 5], [7]]
+                if order == "descending":
+                    expected = [row[::-1] for row in expected]
+                history = actual.inputs["history"]
+                if isinstance(layout, api.Padded):
+                    assert [
+                        values[mask].tolist()
+                        for values, mask in zip(history["value_ids"], history["valid"], strict=True)
+                    ] == expected
+                    assert history["position_ids"][history["valid"]].tolist() == [0] * 5
+                    assert history["source_event_indices"][history["valid"]].tolist() == list(
+                        range(5)
+                    )
+                else:
+                    assert history["valid"].all()
+                    assert history["owner"].tolist() == [0, 0, 2, 2, 3]
+                    assert [
+                        history["value_ids"][history["owner"] == i].tolist()
+                        for i in range(len(requests))
+                    ] == expected
+                    assert history["history_position"].tolist() == [0, 1, 0, 1, 0]
+                    assert history["sequence"]["event_indices"].tolist() == [
+                        [0, 1],
+                        [-1, -1],
+                        [2, 3],
+                        [4, -1],
+                    ]
+                    assert history["sequence"]["valid"].tolist() == [
+                        [True, True],
+                        [False, False],
+                        [True, True],
+                        [True, False],
+                    ]
+                    assert (
+                        history["field_offsets"].tolist()
+                        == history["field_cu_seqlens"].tolist()
+                        == list(range(6))
+                    )
+                    assert history["field_max_seqlen"] == 1
 
 
 def test_fitting_is_independent_of_delivery_direction(history_data):
@@ -285,8 +303,10 @@ def test_fitting_is_independent_of_delivery_direction(history_data):
                 },
             ),
         )
-        with api.prepare(spec, memory, api.InMemoryEngine()) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
+        with prepare_rows(spec, memory) as plan:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+            ) as task:
                 states.append(task.bound_contract().batch.inputs["history"].representation)
     assert states[0] == states[1]
 
@@ -351,20 +371,22 @@ def test_aligned_target_fitting_keeps_canonical_reduction_order(built_samples):
             ),
         )
         if built_samples:
-            from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+            from tests.native_fixtures import NativeSamples
 
             with api.prepare_batch_spec(
                 sample,
                 spec.batch,
-                InMemorySampleBuilder(schema, rows).build(sample, request),
+                NativeSamples(schema, rows).build(sample, request),
                 contract=spec,
             ) as plan:
                 encoder = plan.target(name="labels").field(name="label").encoder
                 states.append((encoder.mean, encoder.scale))
         else:
             dataset = api.Dataset({name: api.InMemoryRows(value) for name, value in rows.items()})
-            with api.prepare(spec, dataset, api.InMemoryEngine()) as plan:
-                with plan.materialize(request) as task:
+            with prepare_rows(spec, dataset) as plan:
+                with plan.materialize(
+                    request_anchor_table(request, schema=plan.contract.schema)
+                ) as task:
                     encoder = task.target(name="labels").field(name="label").encoder
                     states.append((encoder.mean, encoder.scale))
     assert states[0][0] == 1 / 3

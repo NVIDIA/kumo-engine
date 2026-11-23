@@ -33,6 +33,7 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples
 
 USER = EntitySpec("users", entity_type="user")
 REQUEST = (SampleRequest("s1", 1, 100),)
@@ -64,9 +65,9 @@ def _event_schema(*, clock: str | NonTemporal = "occurred_at") -> DataSchema:
     )
 
 
-def _build(schema: DataSchema, sample: SampleSpec, tables=None):
+def _build(schema: DataSchema, sample: SampleSpec, tables=None, *, builder=NativeSamples):
     data = tables if tables is not None else {"users": USER_ROWS, "events": EVENT_ROWS}
-    return InMemorySampleBuilder(schema, data).build(sample, REQUEST)[0]
+    return builder(schema, data).build(sample, REQUEST)[0]
 
 
 def _value(sample, name: str):
@@ -151,7 +152,7 @@ def test_only_the_final_destination_table_is_automatically_filtered() -> None:
         "events": [{"event_id": 20, "account_id": 10, "occurred_at": 90}],
     }
     _contract(schema, sample, "event_count").validate()
-    assert _value(_build(schema, sample, tables), "event_count") == 1
+    assert _value(_build(schema, sample, tables, builder=InMemorySampleBuilder), "event_count") == 1
 
 
 def test_a_destination_declared_non_temporal_is_unfiltered_by_declaration() -> None:
@@ -247,7 +248,9 @@ def test_joined_fields_resolve_the_expected_clock(clock: str | None, expected: s
             },
         ],
     }
-    assert _value(_build(schema, sample, tables), "status") == expected
+    assert (
+        _value(_build(schema, sample, tables, builder=InMemorySampleBuilder), "status") == expected
+    )
 
 
 def test_event_rows_can_inherit_the_destination_clock() -> None:
@@ -262,5 +265,8 @@ def test_generated_targets_still_require_an_explicit_future_window() -> None:
     sample = SampleSpec(
         USER, targets={"future": Aggregate(Rows(("user_events",)), "count", dtype=DType("int64"))}
     )
-    with pytest.raises(ValueError, match="future time window"):
+    with pytest.raises(
+        ValueError,
+        match="generated target window must start at or after the sample time",
+    ):
         _build(_event_schema(), sample)

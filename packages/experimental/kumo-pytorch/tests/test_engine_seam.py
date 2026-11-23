@@ -45,6 +45,7 @@ from kumo.pytorch.assembly import fit_plan
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
+from tests.native_fixtures import native_engine, parquet_dataset, prepare_rows
 
 USERS = TableSpec(
     "users",
@@ -206,10 +207,10 @@ class TestSelection:
 
     def test_registering_a_second_class_under_one_name_is_refused(self) -> None:
         with pytest.raises(ValueError, match="already registered"):
-            register_engine("in_memory", DiskGraphEngine)
+            register_engine("diskgraph", _Stub)
 
     def test_re_registering_the_same_class_is_harmless(self) -> None:
-        register_engine("in_memory", InMemoryEngine)
+        register_engine("diskgraph", DiskGraphEngine)
 
     def test_engines_satisfy_the_engine_protocol(self) -> None:
         for engine in (InMemoryEngine(), DiskGraphEngine(index="/i"), _RefusesEverything()):
@@ -218,30 +219,33 @@ class TestSelection:
 
 ROWS = [{"user_id": index, "country": value} for index, value in enumerate(["US", "GB", "US"], 1)]
 IN_MEMORY = Dataset({"users": InMemoryRows(ROWS), "events": InMemoryRows([])})
+FIXTURE_ROWS = {"users": ROWS, "events": [{"event_id": 1, "user_id": 1, "occurred_at": 200}]}
 REQUESTS = tuple(SampleRequest(f"s{i}", entity_id=i, as_of_time=100) for i in (1, 2, 3))
 
 
 class TestTheInMemoryEngineRunsThroughTheSeam:
-    """The first engine behind the boundary, and the proof the boundary works."""
+    """Backend-neutral execution and source-format checks at the engine boundary."""
 
     def test_a_materialized_task_emits_batches(self) -> None:
-        task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
-        batch = next(iter(task.batches(REQUESTS)))
+        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
+        batch = next(iter(task.batches()))
         assert list(batch.inputs) == ["values"]
 
     def test_model_output_requires_an_engine_optimized_source(self) -> None:
-        task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
-        with pytest.raises(ValueError, match="does not implement"):
-            next(iter(task.batches(REQUESTS, output_format="model")))
+        engine = TestTheOpenedSourceIsOwned._Counting()
+        with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
+            task = plan.materialize(REQUESTS)
+            with pytest.raises(ValueError, match="does not implement"):
+                next(task.batches(output_format="model"))
 
     def test_output_format_is_explicit(self) -> None:
-        task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
+        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
         with pytest.raises(ValueError, match="inspectable.*model"):
-            next(iter(task.batches(REQUESTS, output_format="fast")))
+            next(iter(task.batches(output_format="fast")))
 
     def test_preparing_twice_is_deterministic(self) -> None:
-        first = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
-        second = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
+        first = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
+        second = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
         assert first.fitted_state == second.fitted_state
         assert first.manifest["artifact_fingerprint"] == second.manifest["artifact_fingerprint"]
         assert first.fingerprints == second.fingerprints
@@ -278,7 +282,7 @@ class TestTheOpenedSourceIsOwned:
 
             class _Source:
                 def __init__(self):
-                    self._inner = InMemoryEngine().open(dataset, schema)
+                    self._inner = native_engine().open(dataset, schema)
 
                 def build(self, spec, requests):
                     if engine._fail:
@@ -293,45 +297,46 @@ class TestTheOpenedSourceIsOwned:
 
                 def close(self):
                     engine.closed += 1
+                    self._inner.close()
 
             return _Source()
 
     def test_a_plan_closes_the_source_it_owns(self) -> None:
         engine = self._Counting()
-        plan = prepare(CONTRACT, IN_MEMORY, engine)
+        plan = prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine)
         assert engine.closed == 0
         plan.close()
         assert engine.closed == 1
 
     def test_closing_twice_is_harmless(self) -> None:
         engine = self._Counting()
-        plan = prepare(CONTRACT, IN_MEMORY, engine)
+        plan = prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine)
         plan.close()
         plan.close()
         assert engine.closed == 1
 
     def test_a_plan_is_a_context_manager(self) -> None:
         engine = self._Counting()
-        with prepare(CONTRACT, IN_MEMORY, engine) as plan:
-            assert next(iter(plan.materialize(REQUESTS).batches(REQUESTS))) is not None
+        with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
+            assert next(iter(plan.materialize(REQUESTS).batches())) is not None
         assert engine.closed == 1
 
     def test_a_failed_materialization_leaves_the_plan_to_its_owner(self) -> None:
         engine = self._Counting(fail=True)
-        with prepare(CONTRACT, IN_MEMORY, engine) as plan:
+        with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
             with pytest.raises(RuntimeError, match="fitting blew up"):
                 plan.materialize(REQUESTS)
             assert engine.closed == 0
         assert engine.closed == 1
 
     def test_a_closed_plan_refuses_to_materialize(self) -> None:
-        plan = prepare(CONTRACT, IN_MEMORY, InMemoryEngine())
+        plan = prepare_rows(CONTRACT, FIXTURE_ROWS)
         plan.close()
         with pytest.raises(ValueError, match="closed"):
             plan.materialize(REQUESTS)
 
     def test_a_plan_built_from_a_borrowed_source_does_not_close_it(self) -> None:
-        source = InMemoryEngine().open(IN_MEMORY, SCHEMA)
+        source = prepare_rows(CONTRACT, FIXTURE_ROWS)._source
         plan = fit_plan(CONTRACT.sample, CONTRACT.batch, REQUESTS, source, contract=CONTRACT)
         plan.close()
         assert next(iter(plan.batches(REQUESTS))) is not None

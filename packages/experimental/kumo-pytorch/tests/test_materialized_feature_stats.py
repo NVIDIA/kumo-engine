@@ -18,6 +18,12 @@ from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
+from tests.native_fixtures import (
+    native_anchor_table,
+    native_engine,
+    parquet_dataset,
+    prepare_rows,
+)
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, USERS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
@@ -96,7 +102,7 @@ def test_generated_bool_target_statistics(tmp_path):
         ),
         batch=replace(spec.batch, targets={"label": api.LabelTarget("label", api.Vocabulary())}),
     )
-    with api.prepare(spec, aggregate_dataset(), api.InMemoryEngine()) as plan:
+    with prepare_rows(spec, aggregate_dataset()) as plan:
         table = _table(source=api.InMemoryRows([dict(row, at=0) for row in ANCHORS]))
         values = plan._materialize_values(table, tmp_path / "values", stats_split="train")
         with plan.materialize(values.anchors, fit_split="train") as task:
@@ -134,7 +140,7 @@ def aggregate_dataset():
 
 
 def test_selected_stats_reuse_shared_fitter_without_sample_collection(tmp_path, monkeypatch):
-    with api.prepare(aggregate_contract(), aggregate_dataset(), api.InMemoryEngine()) as plan:
+    with prepare_rows(aggregate_contract(), aggregate_dataset()) as plan:
         values = plan._materialize_values(
             _table(), tmp_path / "values", batch_size=3, stats_split="train"
         )
@@ -168,7 +174,7 @@ def test_selection_is_train_membership_not_a_global_cutoff(tmp_path):
     selected = [
         dict(row, split="train" if i in (0, 11) else "valid") for i, row in enumerate(ANCHORS)
     ]
-    with api.prepare(aggregate_contract(), aggregate_dataset(), api.InMemoryEngine()) as plan:
+    with prepare_rows(aggregate_contract(), aggregate_dataset()) as plan:
         values = plan._materialize_values(
             _table(source=api.InMemoryRows(selected)),
             tmp_path / "values",
@@ -251,7 +257,7 @@ def test_native_aggregate_stats_across_source_and_fit_sizes(tmp_path, source_row
 
 def test_missing_split_publishes_nothing(tmp_path):
     path = tmp_path / "values"
-    with api.prepare(aggregate_contract(), aggregate_dataset(), api.InMemoryEngine()) as plan:
+    with prepare_rows(aggregate_contract(), aggregate_dataset()) as plan:
         with pytest.raises(ValueError, match="no anchors"):
             plan._materialize_values(_table(), path, stats_split="missing")
     assert not path.exists()
@@ -291,9 +297,7 @@ def test_generated_label_encoder_uses_selected_column_statistics(tmp_path, monke
     spec = aggregate_contract()
     sample = replace(spec.sample, targets={"label": api.ExternalTarget(api.DType("float64"))})
     batch = replace(spec.batch, targets={"label": api.LabelTarget("label", api.ZScore())})
-    with api.prepare(
-        replace(spec, sample=sample, batch=batch), aggregate_dataset(), api.InMemoryEngine()
-    ) as plan:
+    with prepare_rows(replace(spec, sample=sample, batch=batch), aggregate_dataset()) as plan:
         table = _table(
             source=api.InMemoryRows([dict(row, label=float(row["user_id"])) for row in ANCHORS]),
             targets={"label": "label"},
@@ -333,7 +337,7 @@ def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch)
             },
         )
         expected_values = [0.0] * 8
-    with api.prepare(replace(spec, batch=batch), dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(replace(spec, batch=batch), dataset) as plan:
         calls = []
         shared_stats = diskgraph.write_column_stats_for_parquet
 
@@ -356,6 +360,7 @@ def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch)
                 for cut, probability in zip(boundaries, (1 / 3, 2 / 3), strict=True):
                     rank = sum(value <= cut for value in expected_values) / len(expected_values)
                     assert rank == pytest.approx(probability, abs=1.5 / len(expected_values))
+        assert len(calls) == 1
         requests = [
             api.SampleRequest(row["sid"], row["user_id"], row["at"], split=row["split"])
             for row in ANCHORS
@@ -475,10 +480,10 @@ class _BuildOnlyEngine:
     name = "build-only"
 
     def open(self, dataset, schema):
-        return _BuildOnlySource(api.InMemoryEngine().open(dataset, schema))
+        return _BuildOnlySource(native_engine().open(dataset, schema))
 
     def materialize_anchors(self, table):
-        return api.InMemoryEngine().materialize_anchors(table)
+        return native_engine().materialize_anchors(table)
 
 
 def test_materialized_values_keep_optional_statistics_fallback(tmp_path):
@@ -498,7 +503,9 @@ def test_materialized_values_keep_optional_statistics_fallback(tmp_path):
         ),
         batch=replace(spec.batch, inputs=inputs),
     )
-    with api.prepare(spec, aggregate_dataset(), _BuildOnlyEngine()) as plan:
+    with api.prepare(
+        spec, parquet_dataset(spec.schema, aggregate_dataset()), _BuildOnlyEngine()
+    ) as plan:
         assert isinstance(plan._require_open(), SampleSource)
         assert not hasattr(plan._require_open(), "column_stats")
         with plan.materialize(_table(), fit_split="train") as task:
@@ -562,7 +569,7 @@ def test_selected_stats_preserve_skip_event_fit_population(tmp_path, shared):
             ),
         },
     )
-    anchors = api.AnchorTable(
+    anchors = native_anchor_table(
         api.InMemoryRows(
             [
                 {"user_id": 1, "at": 100, "split": "train"},
@@ -573,7 +580,7 @@ def test_selected_stats_preserve_skip_event_fit_population(tmp_path, shared):
         "at",
         split="split",
     )
-    with api.prepare(spec, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(spec, dataset) as plan:
         with plan.materialize(anchors, fit_split="train") as task:
             expected = task.output("entity").field(name="a").encoder.entries
         values = plan._materialize_values(anchors, tmp_path / "values", stats_split="train")
