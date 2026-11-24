@@ -34,6 +34,7 @@ guides for their interfaces and development workflows.
 | API schemas | [kumo-api](../packages/kumo-api/README.md) |
 | Service Python client | [kumo-sdk](../packages/kumo-sdk/README.md) |
 | In-process Python interface | [kumo-engine](../packages/kumo-engine/README.md) |
+| Experimental model batches and FM payloads | [kumo-pytorch](../packages/experimental/kumo-pytorch/README.md) and [kumo-fm](../packages/experimental/kumo-fm/README.md) |
 | Shared execution runtime | [kumo-core](../packages/kumo-core/README.md) |
 | Query language | [kumo-pql](../packages/kumo-pql/README.md) and [existing instructions](../packages/kumo-pql/AGENTS.md) |
 | UI component library | [catalog](../packages/kumo-ui-catalog/README.md) and [existing component guide](../packages/kumo-ui-catalog/CLAUDE.md) |

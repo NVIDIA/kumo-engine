@@ -57,6 +57,7 @@ members = [
     "kumo-core",
     "kumo-databricks",
     "kumo-engine",
+    "kumo-fm",
     "kumo-gcs",
     "kumo-glove-6b-50d",
     "kumo-pql",
@@ -3637,6 +3638,30 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.5.0" },
 ]
 provides-extras = ["plots", "cpu", "test", "snowflake", "databricks", "bigquery", "s3", "text", "adls", "gcs", "mlflow", "sagemaker", "pytorch"]
+
+[[package]]
+name = "kumo-fm"
+version = "0.1.0a1"
+source = { editable = "packages/experimental/kumo-fm" }
+dependencies = [
+    { name = "kumo-pytorch" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "kumo-pytorch", editable = "packages/experimental/kumo-pytorch" },
+    { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "pyarrow", specifier = "==24.0.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<10" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "kumo-gcs"

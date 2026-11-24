@@ -161,6 +161,7 @@ jobs:
             packages/kumo-snowflake
             packages/kumo-engine
             packages/experimental/kumo-pytorch
+            packages/experimental/kumo-fm
             tools/glove-6b-50d
           )
           for project in "${projects[@]}"; do
