@@ -68,12 +68,17 @@ stored graph. Supported plans use one neighborhood, bounded recent fanouts,
 scalar FM wire types, and `Aggregate(Rows(..., time=TimeWindow(start=0,
 stop=positive)))` or a `Compare` over that aggregate. Multiple graph layers run
 in one native sampling plan. Timeless destinations and uniform sampling fail
-explicitly. Classification needs a two-entry raw-label-to-name map; regression
-accepts a numeric aggregate. Labels and graphs use separate materializations
+explicitly. `prepare` accepts only `task="regression"` or
+`task="binary_classification"`; the ambiguous `"classification"` alias is refused.
+Binary classification needs a two-entry raw-label-to-name map; regression accepts
+a numeric aggregate. Labels and graphs use separate materializations
 against the same base. Request anchors are passed in memory; any task resources
 are managed by PyTorch under the engine's captured Kumo root.
 
-`loader.materialize(...).load()` and `loader.load(...)` return `PayloadBatch`.
+`prepare(...)` is the loader factory. `loader.materialize(...)` validates and
+retains bounded occurrences in a `PreparedRequest`; it does not sample or hold
+native task resources. `request.load()` samples the occurrences and returns a
+`PayloadBatch`; `loader.load(...)` combines those steps. Each load samples anew.
 Its Arrow tables and metadata survive request and loader closure. Label alignment,
 class mapping and related-row ordering use columnar kernels; labels remain Arrow
 arrays through instance-table assembly. Row, column
@@ -81,6 +86,31 @@ and decoded-byte budgets apply during assembly; HTTP byte budgets apply during
 encoding. Arrays encoding uses DiskGraph’s Rust extension with the GIL released; build
 DiskGraph from the same checkout. FM ships a pure Python wheel. Arrow IPC is
 an alternate wire format.
+
+## Budgets
+
+Pass a mapping such as `budgets={"max_instances": 500}` to `prepare` to override
+the defaults below. Keys must match exactly; unknown keys and values other than
+positive integers are refused. Booleans are not accepted as integers. Limits
+are captured during preparation, independently of later changes to the mapping.
+
+| Key | Default | Scope |
+| --- | --- | --- |
+| `max_instances` | 10,000 | Occurrences in each context/query split, checked before expansion |
+| `max_rows_per_table` | 1,000,000 | Rows in each final instance/related table per split; also checked during internal assembly |
+| `max_columns` | 500 | Columns in each payload table, including generated IDs and relationship columns |
+| `max_candidate_rows` | 1,000,000 | Sampled node-plus-edge rows in each internal graph batch; this scope follows `batch_size` |
+| `max_decoded_arrow_bytes` | 31,457,280 (30 MiB) | Sum of logical Arrow bytes across all retained tables and splits |
+| `max_payload_bytes` | 31,457,280 (30 MiB) | Complete encoded JSON body, including metadata and arrays or base64 IPC |
+
+## Wire output
+
+`PayloadBatch.encode("arrays" | "arrow_ipc")` produces an experimental request
+envelope with `model`, `task`, `schema` and `output` metadata. This package is a
+producer of that envelope; it supplies no HTTP client or response consumer.
+Tests compare arrays/IPC serialization with retained Arrow tables locally.
+Those checks do not establish parity with a live HTTP endpoint; no live endpoint
+or in-repository HTTP consumer is supplied or exercised by this PR.
 
 ## Source installation
 

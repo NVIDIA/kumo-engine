@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
 import pyarrow as pa
@@ -42,7 +42,7 @@ class PayloadBatch:
     def __init__(self, workload, splits):
         metadata = metadata_for(workload)
         self._metadata = deepcopy(metadata)
-        self._budgets = dict(workload.budgets)
+        self._budgets = asdict(workload.budgets)
         self._splits = {}
         logical_bytes = 0
         for split, data in splits.items():

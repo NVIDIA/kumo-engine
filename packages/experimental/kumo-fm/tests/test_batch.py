@@ -4,12 +4,13 @@
 
 import base64
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pyarrow as pa
 import pytest
 
+from kumo.fm._contract import _Budgets, _PayloadSpec, _SchemaView, _TargetSpec
 from kumo.fm.batch import PayloadBatch, _SplitPayload
 
 BIG_ID = 9007199254740993
@@ -24,14 +25,14 @@ def workload():
             "event_id": {"dtype": "int64", "nullable": False},
             "user_id": {"dtype": "int64", "nullable": True}}},
     }
-    bundle = SimpleNamespace(tables=tables, relations={
+    bundle = _SchemaView(tables=tables, relations={
         "event_user": {"child": "events", "foreign_key": "user_id", "parent": "users"}})
-    return SimpleNamespace(
-        bundle=bundle, entity="users", table_names=set(tables), relation_names={"event_user"},
+    return _PayloadSpec(
+        bundle=bundle, entity="users", table_names=frozenset(tables), relation_names=frozenset({"event_user"}),
         projections={"users": ["segment"], "events": ["event_id", "user_id"]},
-        target={"dtype": "int64", "classes": [0, 1]}, kind="classification",
-        budgets={"max_columns": 10, "max_rows_per_table": 10,
-                 "max_decoded_arrow_bytes": 100000, "max_payload_bytes": 100000})
+        target=_TargetSpec("string", ("0", "1")), kind="binary_classification",
+        budgets=_Budgets(max_columns=10, max_rows_per_table=10,
+                         max_decoded_arrow_bytes=100000, max_payload_bytes=100000))
 
 
 def request(work):
@@ -58,7 +59,7 @@ def test_retained_tables_encode_both_formats_without_mutation():
     before = batch.tables("context")["related_tables"]["events"]
     metadata = batch.metadata
     metadata["task"]["kind"] = "changed"
-    assert batch.metadata["task"]["kind"] == "classification"
+    assert batch.metadata["task"]["kind"] == "binary_classification"
     direct = batch.as_arrow_request()
     arrays = json.loads(batch.encode("arrays"))
     ipc = json.loads(batch.encode("arrow_ipc"))
@@ -81,11 +82,11 @@ def test_retained_tables_encode_both_formats_without_mutation():
 
 def test_logical_and_wire_budgets_are_independent():
     work = workload()
-    work.budgets["max_decoded_arrow_bytes"] = 1
+    work = replace(work, budgets=replace(work.budgets, max_decoded_arrow_bytes=1))
     with pytest.raises(ValueError, match="Decoded Arrow budget"):
         request(work)
     work = workload()
-    work.budgets["max_payload_bytes"] = 1
+    work = replace(work, budgets=replace(work.budgets, max_payload_bytes=1))
     batch = request(work)
     assert batch.tables("context")["instance_table"].num_rows == 1
     with pytest.raises(ValueError, match="byte budget"):

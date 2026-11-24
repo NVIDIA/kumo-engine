@@ -68,7 +68,7 @@ class GraphAssembler:
             owner = indices(ns['id_a'])
             if np.any(owner >= len(seeds)) or np.any(owner < 0):
                 raise ValueError('Native seed position out of bounds')
-            if len(fs) > workload.budgets['max_rows_per_table']:
+            if len(fs) > workload.budgets.max_rows_per_table:
                 raise ValueError('Expanded related table exceeds row budget')
             pk = fs[self.bundle.tables[name]['primary_key']]
             identity = pa.table({'i': owner, 'k': pk})

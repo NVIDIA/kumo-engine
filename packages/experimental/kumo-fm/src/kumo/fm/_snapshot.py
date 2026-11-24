@@ -5,9 +5,11 @@
 """FM orchestration over an already indexed public PyTorch engine."""
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import fields as dataclass_fields
+from datetime import date, datetime, timedelta
 from itertools import islice
 from numbers import Complex
 from types import SimpleNamespace
@@ -18,6 +20,7 @@ import pyarrow.compute as pc
 
 from ._assembly import GraphAssembler
 from ._columnar import adapt_columnar_batch
+from ._contract import _Budgets, _PayloadSpec, _SchemaView, _TargetSpec
 from ._types import TYPES, timestamp, validate_scalar
 from .batch import PayloadBatch, _SplitPayload
 
@@ -30,18 +33,18 @@ class Context:
     remain distinct; omitted IDs are their zero-based positions in the split.
     """
 
-    entities: object = ()
-    times: object = ()
-    pairs: object = ()
+    entities: Iterable[int | str] = ()
+    times: Iterable[date | datetime | str] = ()
+    pairs: Iterable[tuple[int | str, date | datetime | str] | tuple[int | str, date | datetime | str, int]] = ()
 
 
 @dataclass(frozen=True)
 class Query:
     """Prediction examples: entities at one time, or ordered explicit pairs."""
 
-    entities: object = ()
-    at: object = None
-    pairs: object = ()
+    entities: Iterable[int | str] = ()
+    at: date | datetime | str | None = None
+    pairs: Iterable[tuple[int | str, date | datetime | str] | tuple[int | str, date | datetime | str, int]] = ()
 
 
 def _rows(population, split, key_dtype, max_instances=10000):
@@ -151,7 +154,7 @@ def _schema_view(schema, sample, features):
             raise ValueError(f"FM requires one primary-key side: {relation.name}")
         relations[relation.name] = {"child": child, "parent": parent, "foreign_key": fk,
                                     "parent_is_source": parent_is_source}
-    return SimpleNamespace(tables=tables, relations=relations)
+    return _SchemaView(tables=tables, relations=relations)
 
 
 def _target_horizon(value):
@@ -259,23 +262,45 @@ def _class_labels(values, classes):
     return pc.take(pa.array(names, type=pa.string()), indices)
 
 
-class SnapshotFMLoader:
+class PreparedRequest:
+    """Resolved anchors; every load call samples exactly once per included split."""
+
+    def __init__(self, loader, splits):
+        self._loader = loader
+        self._splits = splits
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self):
+        self._closed = True
+
+    def load(self):
+        if self._closed or self._loader._closed:
+            raise RuntimeError("Prepared request or loader is closed")
+        return self._loader._load(self._splits)
+
+
+class _FMLoader:
     """Prepare FM labels and columnar graph plans over one adopted snapshot."""
 
     def __init__(self, *, engine, sample, target, task, features, classes=None,
                  batch_size=1024, budgets=None, schema=None):
         from kumo.pytorch import api
 
-        from .loader import PreparedRequest
-
         if not isinstance(engine, api.DiskGraphEngine) or not isinstance(sample, api.SampleSpec):
             raise TypeError("Provide an adopted DiskGraphEngine and SampleSpec")
         schema = engine.schema if schema is None else schema
         if not isinstance(schema, api.DataSchema):
             raise TypeError("schema must be a public DataSchema projection or alias")
-        if target not in sample.targets or task not in ("regression", "classification", "binary_classification"):
-            raise ValueError("Choose a declared target and supported FM task")
-        self._prepared_request_type = PreparedRequest
+        if target not in sample.targets:
+            raise ValueError(f"Unknown FM target: {target}")
+        if task not in ("regression", "binary_classification"):
+            raise ValueError("task must be 'regression' or 'binary_classification'")
         self._closed = False
         self._engine, self._target = engine, target
         features = {name: tuple(columns) for name, columns in features.items()}
@@ -284,32 +309,31 @@ class SnapshotFMLoader:
         self._key_type = self._bundle.tables[self._entity]["columns"][
             self._bundle.tables[self._entity]["primary_key"]]["dtype"]
         self._horizon = _target_horizon(sample.targets[target])
-        self._kind = "regression" if task == "regression" else "binary_classification"
+        self._kind = task
         if self._kind == "regression":
             if classes is not None:
                 raise ValueError("Regression has no classes")
             self._classes = None
-            target_spec = {"dtype": "float64"}
+            target_spec = _TargetSpec("float64")
         else:
             if not isinstance(classes, dict) or len(classes) != 2 or len(set(classes.values())) != 2:
                 raise ValueError("Binary classification requires a two-entry raw-value to class-name map")
             self._classes = dict(classes)
-            target_spec = {"dtype": "string", "classes": list(classes.values())}
+            target_spec = _TargetSpec("string", tuple(str(value) for value in classes.values()))
         graph_name, fields, tables, relations, projections = _selected_graph(
             schema, sample, features, self._bundle)
-        if not isinstance(batch_size, int) or batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        default_budgets = {"max_instances": 10000, "max_rows_per_table": 1000000,
-                           "max_payload_bytes": 30 * 1024**2,
-                           "max_decoded_arrow_bytes": 30 * 1024**2,
-                           "max_columns": 500, "max_candidate_rows": 1000000}
-        default_budgets.update(budgets or {})
-        if any(type(value) is not int or value < 1 for value in default_budgets.values()):
-            raise ValueError("FM budgets must be positive integers")
-        self._batch_size = min(batch_size, default_budgets["max_instances"])
-        self.workload = SimpleNamespace(bundle=self._bundle, entity=self._entity,
-                                        kind=self._kind, target=target_spec, table_names=tables,
-                                        relation_names=relations, projections=projections, budgets=default_budgets)
+        if type(batch_size) is not int or batch_size < 1:
+            raise ValueError("batch_size must be a positive integer")
+        if budgets is not None and not isinstance(budgets, Mapping):
+            raise TypeError("budgets must be a mapping of documented FM limits")
+        unknown = set(budgets or ()) - {field.name for field in dataclass_fields(_Budgets)}
+        if unknown:
+            raise ValueError(f"Unknown FM budget keys: {sorted(unknown, key=str)}")
+        limits = _Budgets(**(budgets or {}))
+        self._batch_size = min(batch_size, limits.max_instances)
+        self._payload = _PayloadSpec(bundle=self._bundle, entity=self._entity,
+                                     kind=self._kind, target=target_spec, table_names=frozenset(tables),
+                                     relation_names=frozenset(relations), projections=projections, budgets=limits)
         self._adapter = SimpleNamespace(bundle=self._bundle,
                                         node_types=list(self._bundle.tables), assembler=GraphAssembler(self._bundle),
                                         metrics={"native_candidate_rows": 0})
@@ -335,10 +359,6 @@ class SnapshotFMLoader:
             self.close()
             raise
 
-    @property
-    def preparation_mode(self):
-        return "existing_snapshot"
-
     def __enter__(self):
         return self
 
@@ -359,7 +379,7 @@ class SnapshotFMLoader:
         for split, population in (("context", context), ("predict", query)):
             if population is not None:
                 seeds = _rows(population, split, self._key_type,
-                              self.workload.budgets["max_instances"])
+                              self._payload.budgets.max_instances)
                 splits[split] = seeds
         if "context" in splits:
             if "predict" not in splits:
@@ -368,7 +388,7 @@ class SnapshotFMLoader:
             if any(row["anchor_time"] + timedelta(seconds=self._horizon) > cutoff
                    for row in splits["context"]):
                 raise ValueError("Context label window is not observable before the earliest query")
-        return self._prepared_request_type(self, splits)
+        return PreparedRequest(self, splits)
 
     def load(self, *, context=None, query=None):
         with self.materialize(context=context, query=query) as request:
@@ -424,7 +444,7 @@ class SnapshotFMLoader:
 
         expected = {s["instance_id"]: s for s in seeds}
         seen = set()
-        parts = {name: [] for name in schema_for(self.workload)["related_tables"]}
+        parts = {name: [] for name in schema_for(self._payload)["related_tables"]}
         with self._graphs.materialize(anchor) as task:
             for batch in task.batches(output_format="columnar", shuffle=False,
                                       batch_size=self._batch_size):
@@ -437,7 +457,7 @@ class SnapshotFMLoader:
                 local = SimpleNamespace(inputs=batch.inputs,
                                         metadata={"sample_ids": list(range(len(chunk)))})
                 related = adapt_columnar_batch(
-                    self._adapter, self.workload, chunk, local)
+                    self._adapter, self._payload, chunk, local)
                 for name, table in related.items():
                     parts[name].append(table)
         if seen != set(expected):
@@ -463,4 +483,4 @@ class SnapshotFMLoader:
             anchor = self._anchor(seeds)
             labels = self._labels_for(anchor, seeds) if split == "context" else None
             ready[split] = _SplitPayload(seeds, self._graphs_for(anchor, seeds), labels)
-        return PayloadBatch(self.workload, ready)
+        return PayloadBatch(self._payload, ready)

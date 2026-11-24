@@ -13,9 +13,10 @@ import pytest
 from kumo.fm import Context, Query
 from kumo.fm._assembly import GraphAssembler
 from kumo.fm._columnar import adapt_columnar_batch
+from kumo.fm._contract import _Budgets, _TargetSpec
 from kumo.fm._snapshot import (
-    SnapshotFMLoader,
     _class_labels,
+    _FMLoader,
     _rows,
     _schema_view,
     _selected_graph,
@@ -96,7 +97,7 @@ def test_context_labels_join_by_occurrence_id_across_batches():
                                       targets={"label": {"values": pa.array([value]),
                                                          "valid": pa.array([present])}})
 
-    loader = object.__new__(SnapshotFMLoader)
+    loader = object.__new__(_FMLoader)
     loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True), (11, 9, True)]))
     loader._batch_size = 1
     loader._classes = None
@@ -150,10 +151,10 @@ def test_population_budget_bounds_iterable_consumption():
 
 @pytest.mark.parametrize("split", ["context", "predict"])
 def test_materialize_passes_configured_population_budget(split):
-    loader = object.__new__(SnapshotFMLoader)
+    loader = object.__new__(_FMLoader)
     loader._closed = False
     loader._key_type = "int64"
-    loader.workload = SimpleNamespace(budgets={"max_instances": 2})
+    loader._payload = SimpleNamespace(budgets=_Budgets(max_instances=2))
     population = (Context(entities=range(2), times=[None, None]) if split == "context"
                   else Query(pairs=[(1, None)] * 3))
     with pytest.raises(ValueError, match="instance budget"):
@@ -181,8 +182,8 @@ def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_sou
     bundle = _schema_view(source, declaration, {"employees": ["id"]})
     work = SimpleNamespace(bundle=bundle, entity="employees", table_names={"employees"},
                            relation_names={"manager"}, projections={"employees": ["id"]},
-                           kind="regression", target={"dtype": "float64"},
-                           budgets={"max_candidate_rows": 10, "max_rows_per_table": 10})
+                           kind="regression", target=_TargetSpec("float64"),
+                           budgets=_Budgets(max_candidate_rows=10, max_rows_per_table=10))
     adapter = SimpleNamespace(bundle=bundle, node_types=["employees"],
                               assembler=GraphAssembler(bundle), metrics={"native_candidate_rows": 0})
     parent, child = [0, 0], [1, 2]

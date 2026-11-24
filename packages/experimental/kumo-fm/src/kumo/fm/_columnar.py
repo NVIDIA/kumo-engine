@@ -64,7 +64,7 @@ def adapt_columnar_batch(adapter, workload, seeds, batch):
         edges[rel_id] = index.to_batches() or [pa.RecordBatch.from_arrays(
             [index[c].combine_chunks() for c in index.column_names], schema=index.schema)]
     count = sum(len(b) for group in (*nodes.values(), *edges.values()) for b in group)
-    if count > workload.budgets["max_candidate_rows"]:
+    if count > workload.budgets.max_candidate_rows:
         raise ValueError("Native-multihop node-plus-edge budget exceeded")
     adapter.metrics["native_candidate_rows"] += count
     return adapter.assembler._adapt(workload, seeds, np.arange(len(seeds), dtype=np.uint64),
