@@ -2,7 +2,7 @@
 
 Reference for translating a confirmed relational schema into Kumo Predict SDK objects.
 
-Grounded **only** in the shipped Kumo package source. The published Kumo documentation is
+Grounded **only** in the shipped Kumo package source. The legacy Kumo documentation (it predates Kumo Engine) is
 stale for this version of the local SDK — do not cite it, fetch it, or reconcile against it.
 Where a claim is not verified against the shipped package it is flagged. Do not invent signatures.
 

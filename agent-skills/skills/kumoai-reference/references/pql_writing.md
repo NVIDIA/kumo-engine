@@ -1,6 +1,6 @@
 # PQL — Predictive Query Language
 
-Constructs marked ``Source: shipped package (`<python.module.path>`)`` are verified against the Kumo package source and are ground truth. The rest of this page is the PQL surface as previously compiled; it is **not** re-verifiable against the published Kumo documentation, which is stale for this version and is not a source here — do not cite it, fetch it, or reconcile against it. Anything explicitly not verified is marked with a `>` note.
+Constructs marked ``Source: shipped package (`<python.module.path>`)`` are verified against the Kumo package source and are ground truth. The rest of this page is the PQL surface as previously compiled; it is **not** re-verifiable against the legacy Kumo documentation (it predates Kumo Engine), which is stale for this version and is not a source here — do not cite it, fetch it, or reconcile against it. Anything explicitly not verified is marked with a `>` note.
 
 **Never emit a construct that is not on this page.** If the user's request needs one that is absent, say so rather than reaching for the docs or memory.
 

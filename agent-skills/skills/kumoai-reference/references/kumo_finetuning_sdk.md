@@ -28,7 +28,7 @@ Between `a5503fd` and `2e1eb12` it gained `PredictionResult.export(output_config
 returning a `ValidationResponse` (kumo-ai/kumo#31574), and nothing was removed.
 Anything else is marked **Not verified** — surface it to the user rather than guessing.
 
-**Published Kumo documentation is not a source.** It predates this SDK and contradicts it. Do not
+**The legacy Kumo documentation (it predates Kumo Engine) is not a source.** It predates this SDK and contradicts it. Do not
 cite, link, fetch, or reconcile against it, including from memory.
 
 **There is exactly one API.** Earlier material described two interchangeable "variants" — that was
@@ -513,13 +513,6 @@ Source: shipped package (`kumo_core.prediction.generate_prediction_table`,
 from kumoapi.model_plan import RunMode
 
 model_plan = pquery.suggest_model_plan(snapshot, run_mode=RunMode.FAST)
-
-# Smoke-test sizing — say so, and remove for a real run.
-model_plan.training_job.num_experiments = 1
-model_plan.training_job.refit_trainval = False
-model_plan.training_job.refit_full = False
-model_plan.optimization.max_epochs = 3
-
 trainer = kumo.Trainer(model_plan)
 training_result = trainer.fit(training_table, snapshot=snapshot)
 print(training_result.metrics)
@@ -537,8 +530,9 @@ Trainer.fit(train_table, *, snapshot, export_config=None, warm_start=None)
   materialized graph and query. `snapshot` is positional; `run_mode` is keyword-only.
 - **`fit` requires `snapshot=` as a keyword.** `fit(training_table)` alone is a `TypeError`. This
   is the single easiest signature to get wrong.
-- Mutate the returned plan in place for sizing. Always tell the user when numbers are smoke-test
-  values rather than a real run.
+- Train on the suggested plan as returned. Change it only for a setting the user asked for,
+  following `kumo-model-tuning/references/plans.md` (which also covers an explicitly requested
+  smoke test); never shrink epochs, experiments or refits on your own.
 - `TrainingResult` exposes `.metrics` (a `Dict[str, float]` **attribute**, not a call),
   `.artifact_paths`, `.bundle_dir`, `.published_model`.
 - `export_config=ModelOutputConfig(...)` publishes the bundle during `fit`.
@@ -742,7 +736,6 @@ prediction_table = pquery.generate_prediction_table(
 
 # 6. Train — snapshot= is required.
 model_plan = pquery.suggest_model_plan(snapshot, run_mode=RunMode.FAST)
-model_plan.optimization.max_epochs = 3               # smoke-test sizing
 trainer = kumo.Trainer(model_plan)
 training_result = trainer.fit(training_table, snapshot=snapshot)
 print(training_result.metrics)

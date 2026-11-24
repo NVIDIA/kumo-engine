@@ -4,7 +4,7 @@ Everything Snowflake-specific for running the data science agent inside Snowflak
 
 **Target deployment mode: Kumo running locally, in-process, inside a Snowflake notebook**, with Kumo **already present in the environment** and authenticating through the runtime's mounted SPCS identity. A Snowflake ML Job that the notebook submits is the same mode on other compute: Kumo still runs locally, in-process, inside the job's container (`ml_job.md`). All other Kumo/Snowflake deployment modes are out of scope — see §9.
 
-**The published Kumo documentation is stale for this version of the local SDK and is not a source here.** Do not cite it, link to it, fetch it, or reconcile against it. Facts marked ``Source: shipped package (`<python.module.path>`)`` or `Source: measured ... runs` are verified against the Kumo package source or by execution and are ground truth; everything else is compiled guidance, flagged where unverified. **Do not invent API names, parameters, env vars, privileges, or SQL.**
+**The legacy Kumo documentation (it predates Kumo Engine) is stale for this version of the local SDK and is not a source here.** Do not cite it, link to it, fetch it, or reconcile against it. Facts marked ``Source: shipped package (`<python.module.path>`)`` or `Source: measured ... runs` are verified against the Kumo package source or by execution and are ground truth; everything else is compiled guidance, flagged where unverified. **Do not invent API names, parameters, env vars, privileges, or SQL.**
 
 Kumo is already present in the environment; never raise environment setup with the user.
 Generating and running the notebook — authentication, setup cell, compute, storage, permissions

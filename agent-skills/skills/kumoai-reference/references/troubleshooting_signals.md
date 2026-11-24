@@ -2,7 +2,7 @@
 
 Observable symptom → likely cause → fix. Ordered by when the agent hits them: table definition, graph construction, query validation, then job time.
 
-This file is the signal set as previously compiled. It is **not** re-verifiable against the published Kumo documentation, which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
+This file is the signal set as previously compiled. It is **not** re-verifiable against the legacy Kumo documentation (it predates Kumo Engine), which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
 
 > No verbatim Kumo exception text is established for this SDK. Entries below are keyed on the **observable condition**, not on a quoted message. **Do not fabricate Kumo error strings.**
 > The five messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
