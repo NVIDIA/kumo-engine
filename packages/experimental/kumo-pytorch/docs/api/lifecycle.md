@@ -415,7 +415,12 @@ repeating one of its own anchors, and `Batch.metadata["is_padding"]`
 marks those rows so a loss can exclude them. `drop_last` applies to
 the final batch of each rank's pass, not to every chunk.
 
-Native DiskGraph graph batches keep complete
+Token-budgeted model batches over multiple DiskGraph anchor splits can span
+both splits and read chunks. A batch closed by the next anchor exceeding
+the budget is kept. At the end of the pass, the sample limit determines
+whether the last batch is short, even if it exactly fills the token budget.
+
+Fixed-size native DiskGraph graph batches keep complete
 split-stage batches for refit: shuffle, rank partitioning, padding and
 `drop_last` apply separately to each selected split, without mixing
 partial tails. A split smaller than one batch may be dropped completely
