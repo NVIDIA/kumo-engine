@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -69,12 +70,7 @@ class IndexBinding:
                 if name not in actual.columns:
                     raise ValueError(f"index has no column {table.name}.{name}")
                 expected = actual.columns[name]
-                # Ingest normalizes timestamp precision/timezone to the index clock.
-                if (
-                    dtype is not None
-                    and dtype != expected
-                    and not (dtype.name == expected.name == "timestamp")
-                ):
+                if dtype is not None and dtype != expected:
                     raise ValueError(
                         f"index stored type differs for {table.name}.{name}: {expected}"
                     )
@@ -157,6 +153,15 @@ def open_index(path: str | Path, *, snapshot_id: str | None = None) -> IndexBind
     clock = metadata.get("timestamp_unit", "seconds")
     if clock not in _CLOCKS or config.get("timestamp_unit", "seconds") != clock:
         raise ValueError(f"unsupported or inconsistent DiskGraph clock: {clock!r}")
+    manifest = (
+        _DiskGraphIndex.open(root).manifest if (root / "index_manifest.json").is_file() else None
+    )
+    if manifest is not None:
+        column_types = manifest.get("column_types")
+        if not isinstance(column_types, Mapping) or set(column_types) != {
+            table["name"] for table in config["tables"]
+        }:
+            raise ValueError("manifest column_types must match the stored tables")
     nodes = {node["name"]: node for node in metadata["node_types"]}
     tables = []
     for table in config["tables"]:
@@ -171,11 +176,29 @@ def open_index(path: str | Path, *, snapshot_id: str | None = None) -> IndexBind
             raise ValueError(f"inconsistent native primary key for {name!r}")
         if time != node.get("create_time_col") or table.get("end_time"):
             raise ValueError(f"inconsistent or unsupported native clock/end_time for {name!r}")
+        columns = {col["name"]: _dtype(col, clock, name) for col in table["columns"]}
+        if manifest is not None:
+            try:
+                recorded = {key: DType(**value) for key, value in column_types[name].items()}
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ValueError(f"invalid manifest column_types for {name!r}") from error
+            if set(recorded) != set(columns):
+                raise ValueError(
+                    f"manifest column_types must match the stored columns for {name!r}"
+                )
+            for column, dtype in recorded.items():
+                native = columns[column]
+                # The graph clock does not preserve individual timestamp field units.
+                if dtype != native and not (dtype.name == native.name == "timestamp"):
+                    raise ValueError(
+                        f"manifest column_types differs from native type for {name}.{column}"
+                    )
+            columns = recorded
         tables.append(
             TableSpec(
                 name,
                 key,
-                {col["name"]: _dtype(col, clock, name) for col in table["columns"]},
+                columns,
                 time_column=time or NON_TEMPORAL,
             )
         )
@@ -224,14 +247,11 @@ def open_index(path: str | Path, *, snapshot_id: str | None = None) -> IndexBind
                     },
                 )
             )
-    manifest = (
-        _DiskGraphIndex.open(root).manifest if (root / "index_manifest.json").is_file() else {}
-    )
     relations = []
     for physical_relation, mapping in physical:
         aliases = [
             (alias, entry)
-            for alias, entry in manifest.get("relation_mapping", {}).items()
+            for alias, entry in (manifest or {}).get("relation_mapping", {}).items()
             if entry["forward"] in (mapping["forward"], mapping["reverse"])
         ]
         if not aliases:

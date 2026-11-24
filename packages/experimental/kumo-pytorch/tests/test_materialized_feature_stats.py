@@ -347,9 +347,7 @@ def _target_free_diskgraph_case(history_data, tmp_path):
 
 def test_fitted_target_free_task_reuse_needs_no_fit_split(history_data, tmp_path, monkeypatch):
     spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split="train") as initial:
             fitted = initial.fitted_state.inputs
             expected = [

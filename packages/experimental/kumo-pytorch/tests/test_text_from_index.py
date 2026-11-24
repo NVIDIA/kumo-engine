@@ -246,9 +246,7 @@ def test_an_empty_string_counts_the_unknown_id_it_emits(tmp_path):
         with plan.materialize(_requests(), fit_split="train") as task:
             encoder = task.output("transactions").field(name="description").encoder
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
-    _, pieces = read_token_lengths(
-        engine.index, entry, cache_root=engine._paths.cache_dir
-    )
+    _, pieces = read_token_lengths(engine.index, entry, cache_root=engine._paths.cache_dir)
     descriptions = pa.array([row["description"] for row in rows])
     emitted = encoder.encode_arrow(descriptions)["piece_offsets"].diff().tolist()
     nodes = _nodes(engine.index, rows)
@@ -272,9 +270,7 @@ def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path, length_inp
         batching=replace(contract.batch.batching, length_input=length_input),
     )
     entry = _entry(replace(contract, batch=batch), dataset, engine)
-    _, counts = read_token_lengths(
-        engine.index, entry, cache_root=engine._paths.cache_dir
-    )
+    _, counts = read_token_lengths(engine.index, entry, cache_root=engine._paths.cache_dir)
     expected = [DROPPED if row["channel"] is None else 0 for row in rows]
     assert counts[_nodes(engine.index, rows)].tolist() == expected
 

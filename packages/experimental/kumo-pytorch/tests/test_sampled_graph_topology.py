@@ -117,9 +117,7 @@ def sampled_plan(tmp_path):
         tables={name: api.Parquet(str(paths[name])) for name in ("people", "events")}
     )
     anchors = api.AnchorTable(api.Parquet(str(paths["anchors"])), "entity", "cutoff", split="split")
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(num_threads=2)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         yield plan, anchors
 
 

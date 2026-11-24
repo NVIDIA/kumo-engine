@@ -268,16 +268,17 @@ with api.prepare(contract=contract, engine=engine) as plan:
             graph = batch.inputs["graph"]
 ```
 
-`SampleSpec` and `BatchSpec` describe sampling and output encoding. `engine.schema` derives stored types, keys, clocks and relationships from native config and metadata. PyTorch-produced indexes expose logical relation aliases; core snapshots use native FK names. A compatible schema projection may rename those relations: binding checks endpoints, FK columns and direction. `prepare` rejects a Dataset alongside an existing-index engine. Anchors select entity/time requests; neighborhoods are sampled during iteration.
+`SampleSpec` and `BatchSpec` describe sampling and output encoding. `engine.schema` restores recorded column types and derives keys, clocks and relationships from native config and metadata. PyTorch-produced indexes expose logical relation aliases; core snapshots use native FK names. A compatible schema projection may rename those relations: binding checks endpoints, FK columns and direction. `prepare` rejects a Dataset alongside an existing-index engine. Anchors select entity/time requests; neighborhoods are sampled during iteration.
 
 Use `DiskGraphEngine.from_snapshot(snapshot, random_seed=7)` to select a native
 uniform-neighbor sampling seed. The default is zero; `None` uses fresh randomness.
 This is independent of the seed used to shuffle anchors in `Task.batches`.
 
-When reopening with a source-declared contract, timestamp columns resolve to the
-stored index clock and UTC, including columns ingested from timezone-free Parquet.
-Source timestamp precision need not match that clock. Other declared scalar types
-must match their stored types.
+PyTorch-produced indexes restore every column's logical type from
+`index_manifest.json`, including each timestamp field's declared unit. Core
+snapshots without that manifest derive types from native metadata, so timestamps
+use the index clock and UTC. Declared types must match the recorded types; omit a
+column's type to resolve it from the index.
 
 The base may be read-only. Task extensions and scalar-materialization scratch are temporary; closing a task removes them. Derived caches remain for reuse. The loader writes no new base metadata. Native extension metadata records the parent build ID, so opening a task against a different base is refused. Statistics may contain diagnostic paths to reused base files; those paths are not needed to restore fitted encoders. Concurrent requests may duplicate computation but do not discard published keys. Install DiskGraph from the matching kumo-engine revision for managed build and external cache support.
 

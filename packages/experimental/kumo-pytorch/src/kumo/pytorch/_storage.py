@@ -56,6 +56,7 @@ def verify_task_manifest(
     Layout comes from the captured managed paths. DiskGraph owns the separate
     extension-to-parent build identity check.
     """
+
     def verify_path(value: str, expected: Path, field: str) -> None:
         path = Path(value)
         if not path.is_absolute() or ".." in path.parts:

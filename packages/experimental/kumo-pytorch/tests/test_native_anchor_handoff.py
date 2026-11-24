@@ -109,9 +109,7 @@ def native_task(tmp_path, request):
     dataset = api.Dataset(
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(num_threads=1)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         with plan.materialize(table, fit_split="train") as task:
             yield plan, task, table
 
@@ -449,9 +447,19 @@ Path(result).write_text(json.dumps([task._anchors._temporary.name, str(task._anc
 # Keep plan and task live until normal interpreter shutdown; never close either.
 """
     subprocess.run(
-        [sys.executable, "-c", script, str(source._paths.root), source._index_path,
-         str(contract), table.source.path, str(result)],
-        check=True, capture_output=True, text=True,
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(source._paths.root),
+            source._index_path,
+            str(contract),
+            table.source.path,
+            str(result),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     assert all(not Path(path).exists() for path in json.loads(result.read_text()))
     assert Path(source._index_path).is_dir()
@@ -786,11 +794,14 @@ def test_snapshot_manifest_preserves_producer_layout_after_reconfiguration(nativ
         with bound.materialize(table, fit_split="train") as task:
             manifest = task._anchors._manifest
             assert Path(manifest["graph"]["index_path"]) == base
-            assert {
-                Path(stage["index_path"]) for stage in manifest["stages"].values()
-            } == {engine._paths.task_dir(task._anchors._temporary.task_id)}
+            assert {Path(stage["index_path"]) for stage in manifest["stages"].values()} == {
+                engine._paths.task_dir(task._anchors._temporary.task_id)
+            }
             assert _by_sample(task.batches(split="train", output_format="model")) == {
-                "a": 1.0, "b": 2.0, "d": 4.0, "f": 6.0,
+                "a": 1.0,
+                "b": 2.0,
+                "d": 4.0,
+                "f": 6.0,
             }
     assert not new_root.exists()
 

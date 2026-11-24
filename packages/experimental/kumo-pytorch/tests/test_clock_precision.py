@@ -5,7 +5,9 @@
 """Independent fractional-time goldens through scalar and native history paths."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -247,9 +249,7 @@ def test_unpinned_graph_fitting_uses_the_source_clock(tmp_path, monkeypatch, uni
     )
     data = api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))})
     cutoff = dt.datetime.fromtimestamp(1700000000, tz=dt.UTC) + dt.timedelta(milliseconds=3)
-    with api.prepare(
-        contract, data, api.DiskGraphEngine()
-    ) as plan:
+    with api.prepare(contract, data, api.DiskGraphEngine()) as plan:
         # Exercise the supported fallback for an encoder that is not pinned by column stats.
         monkeypatch.setattr(plan._require_open(), "column_stats", None)
         with plan.materialize([api.SampleRequest("one", 1, cutoff)]) as task:
@@ -268,7 +268,8 @@ def test_native_request_reconstruction_preserves_ns_without_pandas():
     code = (
         "import sys, types\nk=types.ModuleType('kumo');k.__path__=["
         + repr(str(Path(api.__file__).parents[1]))
-        + ", " + repr(str(Path(kumo.settings.__file__).parent))
+        + ", "
+        + repr(str(Path(kumo.settings.__file__).parent))
         + "];sys.modules['kumo']=k\n"
     )
     code += textwrap.dedent("""
@@ -738,9 +739,7 @@ def _timestamp_lifecycle(directory, unit):
             .to_pylist()
         )
 
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors) as task:
             assert ticks(task.output("entity").field(name="joined").encoder) == [1]
             assert ticks(task.output("entity").field(name="latest").encoder) == [2]
@@ -856,9 +855,7 @@ def test_integer_timestamp_labels_use_target_units(
         ),
     )
     table = api.AnchorTable(api.Parquet(str(path)), "entity", "at", targets={"label": "label"})
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(num_threads=1)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         with plan.materialize(table, fit_split=api.ALL_ANCHORS) as task:
             for output in ("inspectable", "model"):
                 batch = next(iter(task.batches(shuffle=False, output_format=output)))
@@ -867,7 +864,8 @@ def test_integer_timestamp_labels_use_target_units(
 
 @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
 @pytest.mark.parametrize("native_anchors", [False, True])
-def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_anchors):
+@pytest.mark.parametrize("omit_type", [False, True])
+def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_anchors, omit_type):
     dtype = api.DType("timestamp", unit=unit, timezone="UTC")
     clock = api.DType("timestamp", unit="ns", timezone="UTC")
     users, events = tmp_path / "users.parquet", tmp_path / "events.parquet"
@@ -923,10 +921,24 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
         path = tmp_path / "anchors.parquet"
         pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
         anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    if omit_type and unit == "s":
+        contract = replace(
+            contract,
+            schema=replace(
+                schema,
+                tables=tuple(
+                    replace(table, columns={**table.columns, "time": None})
+                    if table.name == "events"
+                    else table
+                    for table in schema.tables
+                ),
+            ),
+        )
+    engine = api.DiskGraphEngine(num_threads=1)
     with api.prepare(
         contract,
         api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}),
-        api.DiskGraphEngine(num_threads=1),
+        engine,
     ) as plan:
         with plan.materialize(anchors) as task:
             batch = next(iter(task.batches(batch_size=1, output_format="model", shuffle=False)))
@@ -936,3 +948,52 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
                     nodes["ids"].tolist(), nodes["features"]["time"]["values"].tolist(), strict=True
                 )
             ) == {1: 7, 2: 9}
+            fitted = task.fitted_state
+            fingerprint = plan.contract.fingerprint
+    users.unlink()
+    events.unlink()
+    if omit_type:
+        contract = replace(
+            contract,
+            schema=replace(
+                schema,
+                tables=tuple(
+                    replace(table, columns={name: None for name in table.columns})
+                    for table in schema.tables
+                ),
+            ),
+        )
+    reopened = api.DiskGraphEngine.from_snapshot(
+        SimpleNamespace(index_path=engine.index, id=None), num_threads=1
+    )
+    with api.prepare(contract=contract, engine=reopened) as plan:
+        assert plan.contract.fingerprint == fingerprint
+        with plan.materialize(anchors, fitted=fitted) as task:
+            batch = next(task.batches(batch_size=1, output_format="model", shuffle=False))
+            nodes = batch.inputs["graph"]["nodes"]["events"]
+            assert dict(
+                zip(
+                    nodes["ids"].tolist(), nodes["features"]["time"]["values"].tolist(), strict=True
+                )
+            ) == {1: 7, 2: 9}
+    path = tmp_path / "raw-anchors.parquet"
+    pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    raw = replace(
+        plan.contract,
+        batch=api.BatchSpec(
+            {
+                "graph": api.Input(
+                    api.NeighborhoodSource("graph"),
+                    api.Graph(node_fields={"events": api.Fields((api.Encode("time", api.Raw()),))}),
+                    None,
+                )
+            }
+        ),
+    )
+    with api.prepare(contract=raw, engine=reopened) as plan:
+        with plan.materialize(anchors) as task:
+            graph = next(task.batches(batch_size=1, output_format="columnar")).inputs["graph"]
+            values = graph.nodes["events"].features["time"]
+            assert values.type == dtype.to_arrow()
+            assert sorted(values.cast(pa.int64()).to_pylist()) == [-1, 1]

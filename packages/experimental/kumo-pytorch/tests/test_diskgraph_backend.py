@@ -599,9 +599,7 @@ def test_diskgraph_flat_model_stream_matches_inspectable(tmp_path, monkeypatch, 
                 else api.Batching(),
             )
             contract = replace(base, batch=batch)
-            with api.prepare(
-                contract, parquet, api.DiskGraphEngine(num_threads=1)
-            ) as plan:
+            with api.prepare(contract, parquet, api.DiskGraphEngine(num_threads=1)) as plan:
                 task = plan.materialize(requests, fit_split="train")
                 expected = next(iter(task.batches(requests, batch_size=2)))
                 plan._source._adapt_temporal_result = lambda *_: pytest.fail(
@@ -634,9 +632,7 @@ def test_diskgraph_flat_model_stream_matches_inspectable(tmp_path, monkeypatch, 
                         ),
                     ),
                 )
-                with api.prepare(
-                    bound, parquet, api.DiskGraphEngine(num_threads=1)
-                ) as restored:
+                with api.prepare(bound, parquet, api.DiskGraphEngine(num_threads=1)) as restored:
                     restored_task = restored.materialize(requests, fit_split="train")
                     batches = list(restored_task.batches(requests, output_format="model"))
                     assert sum(len(batch.metadata["sample_ids"]) for batch in batches) == 2
@@ -796,9 +792,7 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
     )
     assert all((index / "index_manifest.json").is_file() for index in indexes)
     assert _train_one_pyg_step(batches[0]) >= 0.0
-    with api.prepare(
-        contract, parquet, engines[0]
-    ) as plan:
+    with api.prepare(contract, parquet, engines[0]) as plan:
         model_batch = next(
             iter(
                 plan.materialize(requests, fit_split="train").batches(
@@ -1276,9 +1270,7 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
                 else:
                     assert actual_value == expected_value
     assert_equal(actual_batch.targets, expected_batch.targets)
-    with api.prepare(
-        contract, parquet, api.DiskGraphEngine(num_threads=1)
-    ) as plan:
+    with api.prepare(contract, parquet, api.DiskGraphEngine(num_threads=1)) as plan:
         task = plan.materialize(requests, fit_split="train")
         inspectable_batch = next(
             iter(task.batches(requests, batch_size=2, output_format="inspectable", seed=7))
@@ -1333,9 +1325,7 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
 
     with (
         api.prepare(contract, memory_dataset, api.InMemoryEngine()) as reference_plan,
-        api.prepare(
-            contract, parquet, api.DiskGraphEngine(num_threads=1)
-        ) as diskgraph_plan,
+        api.prepare(contract, parquet, api.DiskGraphEngine(num_threads=1)) as diskgraph_plan,
     ):
         reference_task = reference_plan.materialize(requests, fit_split="train")
         diskgraph_task = diskgraph_plan.materialize(requests, fit_split="train")
@@ -1371,9 +1361,7 @@ def test_diskgraph_model_uses_shared_anchor_shuffle(tmp_path: Path) -> None:
         for index in range(6)
     )
     dataset = _write_parquet(_fixture_rows(), tmp_path / "parquet")
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(num_threads=1)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         task = plan.materialize(requests, fit_split="train")
         expected_ids = tuple(
             requests[index].sample_id

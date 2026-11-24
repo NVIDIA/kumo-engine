@@ -462,7 +462,7 @@ def test_native_clock_precision_preserves_cutoff(indexed, tmp_path, unit, clock)
 
 
 @pytest.mark.parametrize("producer", ["pytorch", "native"])
-def test_snapshot_resolves_mixed_source_timestamp_units_to_stored_clock(tmp_path, producer):
+def test_snapshot_restores_producer_timestamp_types(tmp_path, producer):
     tables = {
         "users": pa.table({"id": [-2, 7], "signup": pa.array([1, 2], pa.timestamp("s"))}),
         "events": pa.table(
@@ -529,19 +529,32 @@ def test_snapshot_resolves_mixed_source_timestamp_units_to_stored_clock(tmp_path
     )
     before = inventory(index)
     reopened = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
+    if producer == "native":
+        with pytest.raises(api.ValidationError, match="index stored type differs"):
+            api.prepare(contract=spec, engine=reopened)
+        spec = replace(
+            spec,
+            schema=replace(
+                schema,
+                tables=tuple(
+                    replace(table, columns={name: None for name in table.columns})
+                    for table in schema.tables
+                ),
+            ),
+        )
     with api.prepare(contract=spec, engine=reopened) as plan:
         resolved = {table.name: table for table in plan.contract.schema.tables}
         expected = api.DType("timestamp", unit="ms", timezone="UTC")
-        assert resolved["users"].columns["signup"] == expected
+        signup = api.DType("timestamp", unit="s" if producer == "pytorch" else "ms", timezone="UTC")
+        assert resolved["users"].columns["signup"] == signup
         assert resolved["events"].columns["at"] == expected
         anchors = api.AnchorTable(api.Parquet(str(anchor_path)), "user", "at")
         with plan.materialize(anchors) as task:
             graph = next(task.batches(output_format="columnar")).inputs["graph"]
-            assert graph.nodes["users"].features["signup"].type == expected.to_arrow()
-            assert set(graph.nodes["users"].features["signup"].cast(pa.int64()).to_pylist()) == {
-                1000,
-                2000,
-            }
+            assert graph.nodes["users"].features["signup"].type == signup.to_arrow()
+            assert set(graph.nodes["users"].features["signup"].cast(pa.int64()).to_pylist()) == (
+                {1, 2} if producer == "pytorch" else {1000, 2000}
+            )
             assert set(graph.nodes["events"].features["at"].cast(pa.int64()).to_pylist()) == {
                 1001,
                 2002,
@@ -553,6 +566,7 @@ def test_snapshot_resolves_mixed_source_timestamp_units_to_stored_clock(tmp_path
     "table,column,dtype",
     [
         ("events", "at", api.DType("date32")),
+        ("events", "at", api.DType("timestamp", unit="ms", timezone="UTC")),
         ("users", "name", api.DType("timestamp", unit="ms", timezone="UTC")),
         ("users", "id", api.DType("int32")),
     ],
@@ -924,3 +938,65 @@ def test_index_local_statistics_read_each_file_once(indexed, tmp_path, monkeypat
     monkeypatch.setattr(Path, "read_text", read)
     assert read_column_stats(index, request, 20, "seconds", cache_root=alias) == expected
     assert len(reads) == 1
+
+
+@pytest.mark.parametrize("damage", ["missing", "table", "column", "invalid", "mismatch"])
+def test_snapshot_rejects_incomplete_or_inconsistent_manifest_types(indexed, damage):
+    index, _, _, _, _ = indexed
+    path = index / "index_manifest.json"
+    manifest = json.loads(path.read_text())
+    types = manifest["column_types"]
+    if damage == "missing":
+        del manifest["column_types"]
+    elif damage == "table":
+        del types["users"]
+    elif damage == "column":
+        del types["users"]["name"]
+    elif damage == "invalid":
+        types["users"]["name"] = {"name": "timestamp", "unit": "invalid"}
+    else:
+        types["users"]["name"] = {"name": "int32"}
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="manifest column_types"):
+        api.DiskGraphEngine.from_snapshot(snapshot(index))
+
+
+def test_snapshot_preserves_all_supported_scalar_types(tmp_path):
+    dtypes = [
+        *(api.DType(f"{sign}int{width}") for sign in ("", "u") for width in (8, 16, 32, 64)),
+        *(api.DType(name) for name in ("bool", "float32", "float64", "string", "bytes", "date32")),
+        api.DType("decimal128", precision=30, scale=4),
+        api.DType("decimal256", precision=60, scale=8),
+    ]
+    columns = {dtype.name: dtype for dtype in dtypes}
+    columns["id"] = api.DType("int64")
+    path = tmp_path / "scalars.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                name: pa.array([1 if name == "id" else None], type=dtype.to_arrow())
+                for name, dtype in columns.items()
+            }
+        ),
+        path,
+    )
+    schema = api.DataSchema((api.TableSpec("users", "id", columns, time_column=api.NON_TEMPORAL),))
+    spec = api.DataLoaderSpec(
+        schema,
+        api.SampleSpec(api.EntitySpec("users"), entity_values={"int8": api.Field(column="int8")}),
+        api.BatchSpec(
+            {
+                "entity": api.Input(
+                    api.EntitySource(), api.Fields((api.Encode("int8", api.Raw()),)), api.Separate()
+                )
+            }
+        ),
+    )
+    engine = api.DiskGraphEngine(num_threads=1)
+    with api.prepare(spec, api.Dataset({"users": api.Parquet(str(path))}), engine):
+        pass
+    path.unlink()
+    reopened = api.DiskGraphEngine.from_snapshot(snapshot(engine.index), num_threads=1)
+    assert reopened.schema.tables[0].columns == columns
+    with api.prepare(contract=spec, engine=reopened) as plan:
+        assert plan.contract.schema == schema
