@@ -30,7 +30,9 @@ def _patch_diskgraph_success(monkeypatch, tmp_path):
     monkeypatch.setattr(Graph, '_graph_config', {'name': 'g'})
     monkeypatch.setattr(
         'kumo_core.diskgraph.snapshot.LocalSnapshotStore', lambda config:
-        SimpleNamespace(path=lambda handle: str(tmp_path / 'output')))
+        SimpleNamespace(path=lambda handle: str(tmp_path / 'output'),
+                        staging_path=lambda handle: str(tmp_path / 'output'),
+                        publish=lambda handle, result: result))
     monkeypatch.setattr('kumo_core.diskgraph.snapshot.DiskgraphSnapshotHandle',
                         lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr('kumo_core.diskgraph.snapshot.check_diskgraph_output',

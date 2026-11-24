@@ -118,6 +118,8 @@ def test_export_load_round_trip_relocates_and_is_reused(
     assert (loaded.id, loaded.graph_config) == (snapshot.id,
                                                 snapshot.graph_config)
     assert loaded.index_path.is_relative_to(tmp_path / 'gpu')
+    assert loaded.index_path == (tmp_path / 'gpu/indexes' /
+                                 snapshot.index_path.name)
     assert _index_files(loaded.index_path) == _index_files(
         _generation(exported) / 'index')
     assert (loaded.index_path /
@@ -135,20 +137,72 @@ def test_export_load_round_trip_relocates_and_is_reused(
     assert graph.snapshot() == loaded
 
 
-def test_damaged_index_is_reused_by_snapshot_but_reloaded_by_load(
-        tmp_path, scratch, graph, exports, monkeypatch):
+@pytest.mark.parametrize('operation', ['snapshot', 'import'])
+@pytest.mark.parametrize('damage', ['missing_metadata', 'malformed_metadata', 'artifact'])
+def test_damaged_index_is_rebuilt_or_reloaded(
+        tmp_path, scratch, graph, exports, operation, damage):
     snapshot = graph.snapshot()
     location, _ = _export(snapshot, exports, tmp_path)
     expected = _index_files(snapshot.index_path)
     stats = snapshot.index_path / 'col_stats.json'
-    stats.write_bytes(stats.read_bytes()[:-1])
-    with warnings.catch_warnings():
-        warnings.simplefilter('error')
-        assert graph.snapshot() == snapshot
+    if damage == 'missing_metadata':
+        (snapshot.index_path / 'index_metadata.json').unlink()
+    elif damage == 'malformed_metadata':
+        (snapshot.index_path / 'index_metadata.json').write_text('{')
+    else:
+        stats.write_bytes(stats.read_bytes()[:-1])
+    damaged = _index_files(snapshot.index_path)
+    from kumo.engine._monitoring import _local_index
+    assert _local_index(snapshot.id) is None
+    if operation == 'snapshot':
+        with pytest.warns(UserWarning, match='Reloading the damaged'):
+            rebuilt = graph.snapshot()
+        assert rebuilt.id == snapshot.id
+        assert rebuilt.index_path != snapshot.index_path
+        assert (rebuilt.index_path / 'col_stats.json').read_bytes() == expected['col_stats.json']
+        assert _index_files(snapshot.index_path) == damaged
+        assert _local_index(rebuilt.id) == rebuilt.index_path
+        return
 
     with pytest.warns(UserWarning, match='Reloading the damaged'):
         loaded = _load(exports, location)
+    assert loaded.index_path == snapshot.index_path
     assert _index_files(loaded.index_path) == expected
+    assert not list((tmp_path / 'cpu').rglob('.damaged'))
+    graph_dir = tmp_path / 'cpu/snapshots' / snapshot._graph_key
+    assert not [p for p in graph_dir.iterdir() if p.is_dir()]
+    assert [p.name for p in graph_dir.glob('*.index.json')] == [
+        f'{snapshot._data_version}.index.json']
+    assert list((tmp_path / 'cpu/indexes').iterdir()) == [snapshot.index_path]
+    from kumo.engine._monitoring import _local_index
+    assert _local_index(loaded.id) == loaded.index_path
+
+
+@pytest.mark.parametrize('failure', ['transfer', 'integrity'])
+def test_failed_import_keeps_a_damaged_build_until_replacement_is_verified(
+        tmp_path, scratch, graph, exports, monkeypatch, failure):
+    from diskgraph import DiskgraphCorruptionError
+
+    snapshot = graph.snapshot()
+    location, _ = _export(snapshot, exports, tmp_path)
+    (snapshot.index_path / 'index_metadata.json').unlink()
+    reference = (tmp_path / 'cpu/snapshots' / snapshot._graph_key /
+                 f'{snapshot._data_version}.index.json')
+    before = _index_files(snapshot.index_path), reference.read_bytes()
+    load_into = snapshot_io.load_into
+
+    def load(*args):
+        if failure == 'transfer':
+            raise OSError('interrupted download')
+        load_into(*args)
+        (Path(args[-1]) / 'col_stats.json').write_text('truncated')
+
+    monkeypatch.setattr(snapshot_io, 'load_into', load)
+    with pytest.warns(UserWarning, match='Reloading the damaged'):
+        with pytest.raises(OSError if failure == 'transfer' else DiskgraphCorruptionError):
+            _load(exports, location)
+    assert (_index_files(snapshot.index_path), reference.read_bytes()) == before
+    assert not list((tmp_path / 'cpu').rglob('.damaged'))
 
 
 def test_an_interrupted_reexport_leaves_the_last_export_loadable(
@@ -218,8 +272,10 @@ def test_concurrent_exports_of_one_snapshot_both_succeed(
     assert _load(exports, raced[0]).id == snapshot.id
 
 
-def _rebuilt(snapshot, tmp_path, name):
-    r"""Same id and sizes, other bytes."""
+def _rebuilt(snapshot, tmp_path, name, *, retain_build_id=False):
+    r"""Same logical id and sizes, other bytes and physical build identity."""
+    from diskgraph import new_index_build_id
+
     index = (tmp_path / name / snapshot.index_path.parent.name /
              snapshot.index_path.name)
     shutil.copytree(snapshot.index_path, index)
@@ -229,6 +285,11 @@ def _rebuilt(snapshot, tmp_path, name):
     position = re.search(rb'[0-9]([0-9])', data).start(1)
     digit = b'1' if data[position:position + 1] != b'1' else b'2'
     stats.write_bytes(data[:position] + digit + data[position + 1:])
+    if not retain_build_id:
+        metadata = index / 'index_metadata.json'
+        content = metadata.read_text()
+        previous = json.loads(content)['index_build_id']
+        metadata.write_text(content.replace(previous, new_index_build_id()))
     return replace(snapshot, index_path=index)
 
 
@@ -428,16 +489,16 @@ def test_failed_load_leaves_nothing_and_restarts_cleanly(
     scratch('gpu')
     with pytest.raises(ValueError, match='corrupt.*checksum'):
         _load(exports, location)
-    graph_dir = tmp_path / 'gpu/snapshots' / snapshot.index_path.parent.name
+    graph_dir = tmp_path / 'gpu/snapshots' / snapshot._graph_key
     assert not [path for path in graph_dir.iterdir() if path.suffix != '.lock']
 
     stats.write_bytes(original)
-    (graph_dir / f'{snapshot.index_path.name}.loading').mkdir()
+    (graph_dir / f'{snapshot._data_version}.loading').mkdir()
     loaded = _load(exports, location)
     assert _index_files(loaded.index_path) == _index_files(snapshot.index_path)
     assert [
         path.name for path in graph_dir.iterdir() if path.suffix != '.lock'
-    ] == [snapshot.index_path.name]
+    ] == [f'{snapshot._data_version}.index.json']
 
 
 def test_load_refuses_before_downloading_when_disk_is_too_small(
@@ -857,3 +918,455 @@ def test_a_failed_store_follows_on_error(tmp_path, scratch, graph,
     with outcome():
         graph.snapshot(mlops=kumo.MLOps(str(tmp_path / 'root'),
                                         on_error=on_error))
+
+
+def test_managed_snapshot_reuse_and_legacy_compatibility(
+        tmp_path, scratch, graph, exports):
+    snapshot = graph.snapshot()
+    build_id = json.loads(
+        (snapshot.index_path / 'index_metadata.json').read_text())['index_build_id']
+    assert snapshot.index_path == tmp_path / 'cpu/indexes' / build_id
+    assert graph.snapshot().index_path == snapshot.index_path
+    reference = (tmp_path / 'cpu/snapshots' / snapshot._graph_key /
+                 f'{snapshot._data_version}.index.json')
+    assert json.loads(reference.read_text()) == {'index_build_id': build_id}
+    # Simulate an existing snapshot from before the layout migration.
+    legacy = reference.with_name(snapshot._data_version)
+    snapshot.index_path.rename(legacy)
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        write_diskgraph_success_marker,
+    )
+    write_diskgraph_success_marker(str(legacy), DiskgraphIngestResult.for_index(legacy))
+    reference.unlink()
+    reused = graph.snapshot()
+    assert reused.id == snapshot.id
+    assert reused.index_path == legacy
+    location = _put(reused, exports)
+    scratch('restored')
+    restored = _load(exports, location)
+    assert restored.id == snapshot.id
+    assert restored._data_version == snapshot._data_version
+    assert _index_files(restored.index_path) == _index_files(legacy)
+
+
+def test_import_does_not_replace_a_managed_base(tmp_path, scratch, graph, exports):
+    first = graph.snapshot()
+    first_bytes = _index_files(first.index_path)
+    reference = (tmp_path / 'cpu/snapshots' / first._graph_key /
+                 f'{first._data_version}.index.json')
+    reference.unlink()
+    second = graph.snapshot()
+    assert second.id == first.id
+    assert second.index_path != first.index_path
+    second_bytes = _index_files(second.index_path)
+    location = _put(first, exports)
+    restored = _load(exports, location)
+    assert restored.index_path == first.index_path
+    assert _index_files(first.index_path) == first_bytes
+    assert _index_files(second.index_path) == second_bytes
+    assert _index_files(restored.index_path) == first_bytes
+    assert graph.snapshot() == restored
+    assert json.loads(reference.read_text()) == {
+        'index_build_id': first.index_path.name}
+    assert set((tmp_path / 'cpu/indexes').iterdir()) == {
+        first.index_path, second.index_path}
+    assert not reference.with_name(first._data_version).exists()
+
+
+def test_import_reuses_an_unselected_build_without_downloading(
+        tmp_path, scratch, graph, exports, monkeypatch):
+    first = graph.snapshot()
+    one = _put(first, exports)
+    second = _rebuilt(first, tmp_path, 'second')
+    two = _put(second, exports, 'two')
+    scratch('imported')
+    imported_first = _load(exports, one)
+    imported_second = _load(exports, two)
+    before = {p: _index_files(p) for p in
+              (imported_first.index_path, imported_second.index_path)}
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=AssertionError('downloaded again')))
+    assert _load(exports, one).index_path == imported_first.index_path
+    assert graph.snapshot().index_path == imported_first.index_path
+    assert set((tmp_path / 'imported/indexes').iterdir()) == set(before)
+    assert {p: _index_files(p) for p in before} == before
+    graph_dir = tmp_path / 'imported/snapshots' / first._graph_key
+    assert {p.name for p in graph_dir.iterdir()} == {
+        'source_tables.lock', f'{first._data_version}.index.json'}
+
+
+def test_import_rejects_conflicting_contents_for_an_existing_build(
+        tmp_path, scratch, graph, exports):
+    first = graph.snapshot()
+    before = _index_files(first.index_path)
+    reference = (tmp_path / 'cpu/snapshots' / first._graph_key /
+                 f'{first._data_version}.index.json')
+    selected = reference.read_bytes()
+    conflicting = _rebuilt(first, tmp_path, 'conflicting', retain_build_id=True)
+    location = _put(conflicting, exports)
+    with pytest.raises(ValueError, match='Conflicting contents for index build'):
+        _load(exports, location)
+    assert _index_files(first.index_path) == before
+    assert reference.read_bytes() == selected
+
+
+def test_failed_import_preserves_the_selected_managed_build(
+        tmp_path, scratch, graph, exports, monkeypatch):
+    first = graph.snapshot()
+    before = _index_files(first.index_path)
+    reference = (tmp_path / 'cpu/snapshots' / first._graph_key /
+                 f'{first._data_version}.index.json')
+    selected = reference.read_bytes()
+    other = _rebuilt(first, tmp_path, 'other')
+    location = _put(other, exports)
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=OSError('transfer failed')))
+    with pytest.raises(OSError, match='transfer failed'):
+        _load(exports, location)
+    assert reference.read_bytes() == selected
+    assert _index_files(first.index_path) == before
+    assert graph.snapshot() == first
+
+
+def test_idless_legacy_export_remains_importable(
+        tmp_path, scratch, graph, exports):
+    snapshot = graph.snapshot()
+    metadata_path = snapshot.index_path / 'index_metadata.json'
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop('index_build_id')
+    metadata_path.write_text(json.dumps(metadata))
+    manifest_path = snapshot.index_path / '_MANIFEST.json'
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest['files']:
+        if entry['rel_path'] == metadata_path.name:
+            entry['size_bytes'] = metadata_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest))
+    location = _put(snapshot, exports)
+    scratch('legacy-import')
+    loaded = _load(exports, location)
+    assert loaded.index_path == (tmp_path / 'legacy-import/snapshots' /
+                                 snapshot._graph_key / snapshot._data_version)
+    assert _index_files(loaded.index_path) == _index_files(snapshot.index_path)
+    assert not (tmp_path / 'legacy-import/indexes').exists()
+
+
+@pytest.mark.parametrize('operation', ['snapshot', 'import'])
+@pytest.mark.parametrize('damage', [
+    'reference_json', 'reference_shape', 'reference_id', 'reference_traversal',
+    'metadata_missing', 'metadata_json', 'metadata_directory', 'marker_missing',
+    'artifact_missing',
+    'legacy_metadata_missing',
+])
+def test_damaged_snapshot_state_is_a_cache_miss(
+        tmp_path, scratch, graph, exports, operation, damage):
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        write_diskgraph_success_marker,
+    )
+
+    from kumo.engine._monitoring import _local_index
+
+    snapshot = graph.snapshot()
+    location = _put(snapshot, exports)
+    original = snapshot.index_path
+    metadata = json.loads((original / 'index_metadata.json').read_text())
+    reference = (tmp_path / 'cpu/snapshots' / snapshot._graph_key /
+                 f'{snapshot._data_version}.index.json')
+    if damage.startswith('reference_'):
+        reference.write_text({
+            'reference_json': '{broken',
+            'reference_shape': '[]',
+            'reference_id': '{"index_build_id": 1}',
+            'reference_traversal': '{"index_build_id": "../outside"}',
+        }[damage])
+    else:
+        if damage.startswith('legacy_'):
+            legacy = reference.with_name(snapshot._data_version)
+            original.rename(legacy)
+            original = legacy
+            reference.unlink()
+            write_diskgraph_success_marker(
+                str(legacy), DiskgraphIngestResult.for_index(legacy))
+        if damage.endswith('metadata_missing'):
+            (original / 'index_metadata.json').unlink()
+        elif damage == 'metadata_json':
+            (original / 'index_metadata.json').write_text('{broken')
+        elif damage == 'metadata_directory':
+            (original / 'index_metadata.json').unlink()
+            (original / 'index_metadata.json').mkdir()
+        elif damage == 'marker_missing':
+            (original / '_SUCCESS').unlink()
+        elif damage == 'artifact_missing':
+            (original / 'col_stats.json').unlink()
+    assert _local_index(snapshot.id) is None
+    retained = _index_files(original)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        recovered = (graph.snapshot() if operation == 'snapshot' else
+                     _load(exports, location))
+    assert recovered.id == snapshot.id
+    build_id = json.loads(
+        (recovered.index_path / 'index_metadata.json').read_text())['index_build_id']
+    assert recovered.index_path == tmp_path / 'cpu/indexes' / build_id
+    assert json.loads(reference.read_text()) == {'index_build_id': build_id}
+    assert _local_index(recovered.id) == recovered.index_path
+    assert graph.snapshot() == recovered
+    if operation == 'snapshot':
+        assert build_id != metadata['index_build_id']
+        if not damage.startswith('legacy_'):
+            assert _index_files(original) == retained
+    else:
+        assert build_id == metadata['index_build_id']
+    assert not reference.with_name(snapshot._data_version).exists()
+
+
+@pytest.mark.parametrize('operation', ['snapshot', 'import', 'monitoring'])
+def test_snapshot_cache_io_errors_are_not_treated_as_damage(
+        scratch, graph, exports, monkeypatch, operation):
+    import kumo_core.diskgraph.snapshot as snapshots
+
+    from kumo.engine._monitoring import _local_index
+
+    snapshot = graph.snapshot()
+    location = _put(snapshot, exports)
+
+    def denied(*args):
+        raise PermissionError('snapshot permission denied')
+
+    monkeypatch.setattr(snapshots, '_read_json_object', denied)
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=AssertionError('must not restore')))
+    monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                        Mock(side_effect=AssertionError('must not ingest')))
+    with pytest.raises(PermissionError, match='snapshot permission denied'):
+        if operation == 'snapshot':
+            graph.snapshot()
+        elif operation == 'import':
+            _load(exports, location)
+        else:
+            _local_index(snapshot.id)
+
+
+@pytest.mark.parametrize('operation', ['snapshot', 'import', 'monitoring'])
+def test_native_verification_io_errors_are_not_treated_as_damage(
+        scratch, graph, exports, monkeypatch, operation):
+    from diskgraph import DiskgraphCorruptionError
+
+    from kumo.engine._monitoring import _local_index
+
+    snapshot = graph.snapshot()
+    location = _put(snapshot, exports)
+
+    def denied(path):
+        raise DiskgraphCorruptionError(f'io error verifying {path}: Permission denied')
+
+    monkeypatch.setattr('diskgraph.verify_snapshot_integrity', denied)
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=AssertionError('must not restore')))
+    monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                        Mock(side_effect=AssertionError('must not ingest')))
+    with pytest.raises(OSError, match='io error verifying'):
+        if operation == 'snapshot':
+            graph.snapshot()
+        elif operation == 'import':
+            _load(exports, location)
+        else:
+            _local_index(snapshot.id)
+
+
+@pytest.mark.parametrize('reference_state', [
+    'valid', 'absent', 'json', 'shape', 'id', 'traversal', 'target_missing',
+    'metadata_missing', 'metadata_json', 'metadata_directory', 'metadata_mismatch',
+    'marker_missing', 'artifact_missing',
+])
+@pytest.mark.parametrize('legacy_state', ['healthy', 'absent', 'metadata'])
+@pytest.mark.parametrize('operation', ['snapshot', 'import'])
+def test_completed_snapshot_fallback_and_recovery_combinations(
+        tmp_path, scratch, graph, exports, monkeypatch,
+        reference_state, legacy_state, operation):
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        DiskgraphSnapshotHandle,
+        write_diskgraph_success_marker,
+    )
+
+    from kumo.engine._monitoring import _local_index
+    from kumo.engine.graph import _store
+
+    snapshot = graph.snapshot()
+    location = _put(snapshot, exports)
+    store = _store()
+    handle = DiskgraphSnapshotHandle(snapshot._graph_key, snapshot._data_version)
+    managed = snapshot.index_path
+    legacy = Path(store.staging_path(handle))
+    if legacy_state != 'absent':
+        shutil.copytree(managed, legacy)
+        write_diskgraph_success_marker(str(legacy), DiskgraphIngestResult.for_index(legacy))
+        if legacy_state == 'metadata':
+            (legacy / 'index_metadata.json').write_text('{broken')
+    reference = store._reference(handle)
+    if reference_state == 'absent':
+        reference.unlink()
+    elif reference_state in {'json', 'shape', 'id', 'traversal'}:
+        reference.write_text({
+            'json': '{broken', 'shape': '[]', 'id': '{"index_build_id": 1}',
+            'traversal': '{"index_build_id": "../outside"}',
+        }[reference_state])
+    elif reference_state == 'target_missing':
+        shutil.rmtree(managed)
+    elif reference_state == 'metadata_missing':
+        (managed / 'index_metadata.json').unlink()
+    elif reference_state == 'metadata_json':
+        (managed / 'index_metadata.json').write_text('{broken')
+    elif reference_state == 'metadata_directory':
+        (managed / 'index_metadata.json').unlink()
+        (managed / 'index_metadata.json').mkdir()
+    elif reference_state == 'metadata_mismatch':
+        (managed / 'index_metadata.json').write_text('{"index_build_id":"other"}')
+    elif reference_state == 'marker_missing':
+        (managed / '_SUCCESS').unlink()
+    elif reference_state == 'artifact_missing':
+        (managed / 'col_stats.json').unlink()
+    expected = (managed if reference_state == 'valid' else
+                legacy if legacy_state == 'healthy' else None)
+    root = tmp_path / 'cpu'
+    before = _index_files(root)
+    inodes = {name: (root / name).stat().st_ino for name in before}
+    reference_before = reference.read_bytes() if reference.is_file() else None
+
+    assert _local_index(snapshot.id) == expected
+    assert store.list_ready() == ([handle] if expected is not None else [])
+    if expected is not None:
+        assert store.path(handle) == str(expected)
+        assert store.verify(handle).index_path == str(expected)
+        # Victsm's healthy-legacy/broken-reference case must reuse rather than
+        # deleting the retained copy or restoring/re-ingesting another one.
+        monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                            Mock(side_effect=AssertionError('must reuse completed snapshot')))
+        monkeypatch.setattr(snapshot_io, 'load_into',
+                            Mock(side_effect=AssertionError('must not restore completed snapshot')))
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        recovered = graph.snapshot() if operation == 'snapshot' else _load(exports, location)
+    assert recovered.id == snapshot.id
+    assert _local_index(snapshot.id) == recovered.index_path
+    assert graph.snapshot() == recovered
+    if expected is not None:
+        assert recovered.index_path == expected
+        assert _index_files(root) == before
+        assert {name: (root / name).stat().st_ino for name in before} == inodes
+        assert (reference.read_bytes() if reference.is_file() else None) == reference_before
+    else:
+        build = json.loads((recovered.index_path / 'index_metadata.json').read_text())[
+            'index_build_id']
+        assert recovered.index_path == root / 'indexes' / build
+        assert (build != managed.name) == (operation == 'snapshot')
+
+
+@pytest.mark.parametrize('requested_copy', ['existing', 'download', 'failed_download'])
+def test_importing_another_build_preserves_a_healthy_legacy_fallback(
+        tmp_path, scratch, graph, exports, monkeypatch, requested_copy):
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        DiskgraphSnapshotHandle,
+        write_diskgraph_success_marker,
+    )
+
+    from kumo.engine._monitoring import _local_index
+    from kumo.engine.graph import _store
+
+    requested = graph.snapshot()
+    location = _put(requested, exports)
+    store = _store()
+    handle = DiskgraphSnapshotHandle(requested._graph_key, requested._data_version)
+    reference = store._reference(handle)
+    reference.unlink()
+    other = graph.snapshot()
+    legacy = Path(store.staging_path(handle))
+    other.index_path.rename(legacy)
+    write_diskgraph_success_marker(str(legacy), DiskgraphIngestResult.for_index(legacy))
+    reference.write_text('{broken')
+    if requested_copy != 'existing':
+        shutil.rmtree(requested.index_path)
+    before = _index_files(legacy)
+    inodes = {name: (legacy / name).stat().st_ino for name in before}
+    retained_reference = reference.read_bytes()
+    real_load, copied = snapshot_io.load_into, []
+
+    def load(connector, path, root, manifest, target):
+        assert target.is_relative_to(tmp_path / 'cpu/snapshots/.imports')
+        assert target != legacy
+        copied.append(target)
+        if requested_copy == 'failed_download':
+            target.mkdir(parents=True)
+            (target / 'partial').write_bytes(b'partial transfer')
+            raise OSError('transfer failed')
+        return real_load(connector, path, root, manifest, target)
+
+    monkeypatch.setattr(snapshot_io, 'load_into', load)
+    monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                        Mock(side_effect=AssertionError('must not re-ingest')))
+    if requested_copy == 'failed_download':
+        with pytest.raises(OSError, match='transfer failed'):
+            _load(exports, location)
+        assert reference.read_bytes() == retained_reference
+        assert _local_index(requested.id) == legacy
+        assert graph.snapshot().index_path == legacy
+    else:
+        loaded = _load(exports, location)
+        assert loaded.index_path == requested.index_path
+        assert graph.snapshot() == loaded
+        assert _local_index(loaded.id) == loaded.index_path
+    assert bool(copied) == (requested_copy != 'existing')
+    assert _index_files(legacy) == before
+    assert {name: (legacy / name).stat().st_ino for name in before} == inodes
+    assert store.list_ready() == [handle]
+    assert not list((tmp_path / 'cpu/snapshots/.imports').rglob('_SUCCESS'))
+    assert all(not target.exists() for target in copied)
+
+
+def test_a_different_idless_export_cannot_replace_a_healthy_legacy_fallback(
+        tmp_path, scratch, graph, exports, monkeypatch):
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        DiskgraphSnapshotHandle,
+        write_diskgraph_success_marker,
+    )
+
+    from kumo.engine._monitoring import _local_index
+    from kumo.engine.graph import _store
+
+    retained = graph.snapshot()
+    other = _rebuilt(retained, tmp_path, 'idless')
+    metadata = other.index_path / 'index_metadata.json'
+    payload = json.loads(metadata.read_text())
+    payload.pop('index_build_id')
+    metadata.write_text(json.dumps(payload))
+    manifest = other.index_path / '_MANIFEST.json'
+    payload = json.loads(manifest.read_text())
+    for entry in payload['files']:
+        entry['size_bytes'] = (other.index_path / entry['rel_path']).stat().st_size
+    manifest.write_text(json.dumps(payload))
+    location = _put(other, exports)
+    store = _store()
+    handle = DiskgraphSnapshotHandle(retained._graph_key, retained._data_version)
+    legacy = Path(store.staging_path(handle))
+    retained.index_path.rename(legacy)
+    write_diskgraph_success_marker(str(legacy), DiskgraphIngestResult.for_index(legacy))
+    reference = store._reference(handle)
+    reference.write_text('{broken')
+    before = _index_files(legacy), reference.read_bytes()
+    inodes = {name: (legacy / name).stat().st_ino for name in before[0]}
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=AssertionError('must not overwrite legacy')))
+    monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                        Mock(side_effect=AssertionError('must reuse legacy')))
+
+    with pytest.raises(ValueError, match='ID-less export cannot replace'):
+        _load(exports, location)
+    assert (_index_files(legacy), reference.read_bytes()) == before
+    assert {name: (legacy / name).stat().st_ino for name in before[0]} == inodes
+    assert _local_index(retained.id) == legacy
+    assert graph.snapshot().index_path == legacy

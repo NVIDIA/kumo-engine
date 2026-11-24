@@ -43,29 +43,30 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
         data / 'events.parquet',
     )
     connector = kumo.FileConnector(root_dir=str(data))
-    graph = kumo.Graph(
-        tables={
-            'users':
-            kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='id'),
-            'events':
-            kumo.Table.from_source_table(connector['events.parquet'],
-                                         primary_key='id',
-                                         time_column='at').with_column(
-                                             'user', stype=Stype.ID),
-        },
-        edges=[Edge(src_table='events', fkey='user', dst_table='users')],
-    )
     previous = get_scratch_dir()
     try:
+        kumo.configure(scratch_dir=tmp_path / 'previous-root')
+        graph = kumo.Graph(
+            tables={
+                'users':
+                kumo.Table.from_source_table(connector['users.parquet'],
+                                             primary_key='id'),
+                'events':
+                kumo.Table.from_source_table(connector['events.parquet'],
+                                             primary_key='id',
+                                             time_column='at').with_column(
+                                                 'user', stype=Stype.ID),
+            },
+            edges=[Edge(src_table='events', fkey='user', dst_table='users')],
+        )
         kumo.configure(scratch_dir=tmp_path / 'producer')
         snapshot = graph.snapshot()
+        assert not (tmp_path / 'previous-root').exists()
         assert not (snapshot.index_path / 'index_manifest.json').exists()
         build_id = json.loads(
             (snapshot.index_path /
              'index_metadata.json').read_text())['index_build_id']
-        assert snapshot.index_path.resolve().is_relative_to(
-            (tmp_path / 'producer').resolve())
+        assert snapshot.index_path == tmp_path / 'producer' / 'indexes' / build_id
         anchor_path = tmp_path / 'anchors.parquet'
         pq.write_table(
             pa.table({

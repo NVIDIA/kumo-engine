@@ -8,15 +8,26 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import uuid
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from kumoapi.plugin import SnapshotStore, _Handle
 
+from kumo._managed_paths import _ManagedIndexPaths, _SnapshotPaths
+
 logger = logging.getLogger(__name__)
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    return payload
 
 
 class DiskgraphSnapshotError(RuntimeError):
@@ -25,7 +36,7 @@ class DiskgraphSnapshotError(RuntimeError):
 
 @dataclass(frozen=True)
 class DiskgraphLocalConfig:
-    data_root: str
+    root: str
 
 
 @dataclass(frozen=True)
@@ -96,16 +107,184 @@ def _to_diskgraph_object_store_path(path: str) -> str:
 
 
 class LocalSnapshotStore:
-    """Manage reconstructable DiskGraph snapshots under an explicit root."""
+    """Manage reconstructable DiskGraph snapshots under an explicit root.
+
+    New managed publications reserve ``.index.json`` for reference files.
+    Existing legacy directories with that suffix remain readable in place.
+    """
     def __init__(self, config: DiskgraphLocalConfig) -> None:
         self.config = config
+        self._paths = _SnapshotPaths.for_root(Path(config.root))
 
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
-        return os.path.join(
-            self.config.data_root,
-            handle.graph_key,
-            handle.graph_data_version,
-        )
+        legacy = self.staging_path(handle)
+        if (not self._reference(handle).is_file()
+                and not Path(legacy, "_SUCCESS").is_file()):
+            return legacy
+        return self._ready_path(handle) or self._selected_path(handle)
+
+    def _selected_path(self, handle: DiskgraphSnapshotHandle) -> str:
+        """Resolve the address even when it is not a completed snapshot yet."""
+        reference = self._reference(handle)
+        if reference.is_file():
+            build_id = _read_json_object(reference).get("index_build_id")
+            if not isinstance(build_id, str) or not build_id:
+                raise ValueError("snapshot reference must name an index_build_id")
+            paths = _ManagedIndexPaths(build_id, root=Path(self.config.root))
+            if paths.index_dir.exists():
+                metadata = _read_json_object(paths.index_dir / "index_metadata.json")
+                if metadata.get("index_build_id") != build_id:
+                    raise ValueError("managed index build ID mismatch")
+                return str(paths.index_dir)
+        return self.staging_path(handle)
+
+    def staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
+        """Legacy location, also used while the subprocess builds a new index."""
+        return str(self._paths.version_dir(handle.graph_key, handle.graph_data_version))
+
+    def has_resumable_staging(self, handle: DiskgraphSnapshotHandle) -> bool:
+        """Keep eligible checkpoints; ingest validates their state and identity."""
+        from diskgraph import DiskgraphCorruptionError, has_resumable_ingest
+
+        staging = self.staging_path(handle)
+        # Native eligibility uses Path::exists(), which hides access errors.
+        # Probe with raising filesystem operations before False can authorize
+        # cleanup that might delete readable files beside an unreadable _tmp.
+        try:
+            with os.scandir(Path(staging) / "_tmp") as entries:
+                for entry in entries:
+                    try:
+                        entry.stat()
+                    except FileNotFoundError:
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        try:
+            return has_resumable_ingest(staging)
+        except DiskgraphCorruptionError as error:
+            # An inconsistent phase chain cannot resume. Other native errors,
+            # including I/O failures, must not authorize deleting a checkpoint.
+            if str(error).startswith("invalid phase marker chain:"):
+                return False
+            raise
+
+    def import_staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
+        """Preserve completed snapshots and ingest checkpoints while importing."""
+        legacy = self.staging_path(handle)
+        if self._ready_candidate(legacy) or self.has_resumable_staging(handle):
+            return str(self._paths.import_dir(handle.graph_key, uuid.uuid4().hex))
+        return legacy
+
+    def _reference(self, handle: DiskgraphSnapshotHandle) -> Path:
+        return self._paths.reference(handle.graph_key, handle.graph_data_version)
+
+    def use_legacy(self, handle: DiskgraphSnapshotHandle) -> None:
+        """Select a verified restore at the legacy location, preserving old bases."""
+        self._verify_path(self.staging_path(handle))
+        reference = self._reference(handle)
+        if reference.is_file():
+            reference.unlink()
+
+    def existing_build(self, build_id: str) -> DiskgraphIngestResult | None:
+        """Find a verified physical build, independently of logical references."""
+        from diskgraph import DiskgraphCorruptionError
+
+        if not isinstance(build_id, str) or not build_id:
+            raise ValueError("imported snapshot has an invalid index_build_id")
+        path = _ManagedIndexPaths(build_id, root=Path(self.config.root)).index_dir
+        try:
+            if _read_json_object(path / "index_metadata.json").get("index_build_id") != build_id:
+                return None
+            self._verify_path(str(path))
+        except (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                ValueError, KeyError):
+            return None
+        return DiskgraphIngestResult.for_index(path)
+
+    def publish_import(self, handle: DiskgraphSnapshotHandle,
+                       result: DiskgraphIngestResult) -> DiskgraphIngestResult:
+        """Adopt a verified import without replacing a healthy physical build.
+
+        The caller holds the graph lock. Old exports without a native build ID
+        retain their legacy location. Damaged physical copies are deleted only
+        once their replacement is complete and verified.
+        """
+        from diskgraph import snapshot_range_checksums
+
+        source = Path(result.index_path)
+        self._verify_path(str(source))
+        build_id = _read_json_object(source / "index_metadata.json").get("index_build_id")
+        if build_id is None:
+            if source != Path(self.staging_path(handle)):
+                raise ValueError("Import cannot replace a completed legacy snapshot or an ingest checkpoint in place")
+            self.use_legacy(handle)
+            return DiskgraphIngestResult.for_index(source)
+        if not isinstance(build_id, str) or not build_id:
+            raise ValueError("imported snapshot has an invalid index_build_id")
+        self._publication_reference(handle)
+        target = _ManagedIndexPaths(build_id, root=Path(self.config.root)).index_dir
+        existing = self.existing_build(build_id)
+        if existing is not None:
+            if source != target:
+                span = 16 * 1024 * 1024
+                if (snapshot_range_checksums(str(source), span)
+                        != snapshot_range_checksums(str(target), span)):
+                    raise ValueError(f"Conflicting contents for index build {build_id}")
+                shutil.rmtree(source)
+            self._publish_reference(handle, build_id)
+            return existing
+        if target.exists():
+            shutil.rmtree(target)
+        return self.publish(handle, result)
+
+    def _publish_reference(self, handle: DiskgraphSnapshotHandle, build_id: str) -> None:
+        reference = self._publication_reference(handle)
+        temporary = reference.with_name(reference.name + f".{uuid.uuid4().hex}.tmp")
+        reference.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_text(json.dumps({"index_build_id": build_id}))
+            temporary.replace(reference)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _publication_reference(self, handle: DiskgraphSnapshotHandle) -> Path:
+        reference = self._paths.publication_reference(
+            handle.graph_key, handle.graph_data_version)
+        if reference.is_dir():
+            raise FileExistsError(f"Snapshot reference is a directory: {reference}")
+        return reference
+
+    def publish(self, handle: DiskgraphSnapshotHandle,
+                result: DiskgraphIngestResult) -> DiskgraphIngestResult:
+        """Publish a fresh build under its native ID without copying its files.
+
+        The caller holds the graph lock. Existing legacy snapshots need not
+        move. The reference is published last, so a failed ingest never changes
+        the cached build. A crash after rename can leave an unreferenced build,
+        but cannot redirect readers to an incomplete one.
+        """
+        self._publication_reference(handle)
+        source = Path(result.index_path)
+        metadata = _read_json_object(source / "index_metadata.json")
+        build_id = metadata.get("index_build_id")
+        if not isinstance(build_id, str) or not build_id:
+            raise DiskgraphSnapshotError("New snapshot has no index_build_id")
+        paths = _ManagedIndexPaths(build_id, root=Path(self.config.root))
+        if not (source / "_SUCCESS").is_file():
+            raise DiskgraphSnapshotError("Cannot publish an incomplete snapshot")
+        if result.missing_paths():
+            raise DiskgraphSnapshotError("Cannot publish a snapshot with missing files")
+        target = paths.index_dir
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            raise FileExistsError(f"Index build already exists: {target}")
+        source.rename(target)
+        published = replace(DiskgraphIngestResult.for_index(target),
+                            pkey_duplicate_counts=result.pkey_duplicate_counts)
+        write_diskgraph_success_marker(str(target), published)
+        self._publish_reference(handle, build_id)
+        return published
 
     @staticmethod
     def durable_path(handle: DiskgraphSnapshotHandle, durable_root: str) -> str:
@@ -126,39 +305,117 @@ class LocalSnapshotStore:
             self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
         return DiskgraphIngestResult.for_index(self.path(handle))
 
+    def _ready_paths(
+            self, graph_key: str, version_prefix: str = "",
+    ) -> Iterator[tuple[DiskgraphSnapshotHandle, str]]:
+        try:
+            graph_dir = self._paths.graph_dir(graph_key)
+            names = os.listdir(graph_dir)
+        except (FileNotFoundError, NotADirectoryError, ValueError):
+            return
+        versions: set[str] = set()
+        for name in names:
+            try:
+                path = self._paths.version_dir(graph_key, name)
+            except ValueError:
+                continue
+            if path.is_dir():
+                versions.add(name)
+            elif path.is_file():
+                version = self._paths.reference_version(name)
+                if version is not None:
+                    versions.add(version)
+
+        for version in sorted(versions):
+            if version.startswith(version_prefix):
+                handle = DiskgraphSnapshotHandle(graph_key, version)
+                path = self._ready_path(handle)
+                if path is not None:
+                    yield handle, path
+
+    def _ready_path(self, handle: DiskgraphSnapshotHandle) -> str | None:
+        """Select one healthy managed build, then a healthy legacy fallback."""
+        from diskgraph import DiskgraphCorruptionError
+
+        damage = (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                  FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                  ValueError, KeyError)
+        legacy = self.staging_path(handle)
+        candidates = [legacy]
+        try:
+            selected = self._selected_path(handle)
+        except damage:
+            logger.warning("Skipping invalid snapshot reference at %s",
+                           self._reference(handle))
+        else:
+            if selected != legacy:
+                candidates.insert(0, selected)
+        return next((path for path in candidates if self._ready_candidate(path)), None)
+
+    def _ready_candidate(self, path: str) -> bool:
+        from diskgraph import DiskgraphCorruptionError
+
+        try:
+            self._verify_path(path)
+            return check_diskgraph_output(path) is not None
+        except (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                ValueError, KeyError):
+            logger.warning("Skipping invalid snapshot at %s", path)
+            return False
+
     def list_ready(self) -> list[DiskgraphSnapshotHandle]:
         ready: list[DiskgraphSnapshotHandle] = []
+        seen: set[DiskgraphSnapshotHandle] = set()
         try:
-            graph_keys = os.listdir(self.config.data_root)
-        except OSError:
+            graph_keys = sorted(os.listdir(self._paths.data_root))
+        except (FileNotFoundError, NotADirectoryError):
             return ready
         for graph_key in graph_keys:
-            graph_dir = os.path.join(self.config.data_root, graph_key)
-            if not os.path.isdir(graph_dir):
-                continue
-            try:
-                versions = os.listdir(graph_dir)
-            except OSError:
-                continue
-            for version in versions:
-                snapshot_dir = os.path.join(graph_dir, version)
-                if not os.path.isdir(snapshot_dir):
-                    continue
-                try:
-                    result = check_diskgraph_output(snapshot_dir)
-                except DiskgraphSnapshotError:
-                    logger.warning("Skipping invalid snapshot at %s",
-                                   snapshot_dir)
-                    continue
-                if result is not None:
-                    ready.append(DiskgraphSnapshotHandle(graph_key, version))
+            for handle, _ in self._ready_paths(graph_key):
+                if handle not in seen:
+                    ready.append(handle)
+                    seen.add(handle)
         return ready
 
-    def verify(self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
-        from diskgraph import read_success_marker, verify_snapshot_integrity
+    def resolve_version_prefix(self, graph_key: str,
+                               version_prefix: str) -> str | None:
+        """Resolve a literal version prefix to one completed snapshot path.
 
-        path = self.path(handle)
-        verify_snapshot_integrity(path)
+        Managed references and legacy directories use the same readiness checks
+        as ``list_ready``. Incomplete snapshots, including statistics-only
+        directories, are excluded. Each version prefers a healthy managed
+        reference, then a healthy legacy directory. Successful reads best-effort
+        update marker LRU time, as listing does. Missing, invalid or ambiguous
+        lookups return ``None``; duplicate references to the same path count once.
+        """
+        for component in (graph_key, version_prefix):
+            if (not component.strip() or component in {".", ".."}
+                    or any(char in component for char in ("/", "\\", ":"))):
+                return None
+        found = {path for _, path in self._ready_paths(graph_key, version_prefix)}
+        return next(iter(found)) if len(found) == 1 else None
+
+    def verify(self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
+        return self._verify_path(self.path(handle))
+
+    @staticmethod
+    def _verify_path(path: str) -> DiskgraphIngestResult:
+        from diskgraph import (
+            DiskgraphCorruptionError,
+            read_success_marker,
+            verify_snapshot_integrity,
+        )
+
+        try:
+            verify_snapshot_integrity(path)
+        except DiskgraphCorruptionError as error:
+            # The native binding also wraps CorruptionError::Io in this class.
+            # Its exact variant prefix distinguishes I/O failures from damage;
+            # permission/resource errors must not trigger a rebuild or restore.
+            if str(error).startswith("io error verifying "):
+                raise OSError(str(error)) from error
+            raise
         marker = read_success_marker(path)
         if marker is None:
             raise DiskgraphSnapshotError(
@@ -174,11 +431,46 @@ class LocalSnapshotStore:
         exists: Callable[[str], bool],
         copy_tree: Callable[[str, str], None],
     ) -> DiskgraphIngestResult | None:
+        """Restore a durable copy without writing into a published build.
+
+        Managed callers hold the graph lock, as for ``publish_import``. Healthy
+        local snapshots are reused; replacements are verified in staging first.
+        """
         source = self.durable_path(handle, durable_root)
         if not exists(source + "/_SUCCESS"):
             return None
-        copy_tree(source, self.path(handle))
-        return self.verify(handle)
+        from diskgraph import DiskgraphCorruptionError
+
+        damage = (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                  FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                  ValueError, KeyError)
+        try:
+            self.verify(handle)
+            return rebased(self, handle)
+        except damage:
+            pass
+
+        staging = Path(self.import_staging_path(handle))
+        if staging.exists():
+            try:
+                self._verify_path(str(staging))
+            except damage:
+                shutil.rmtree(staging)
+            else:
+                raise FileExistsError(f"Restore staging contains a completed snapshot: {staging}")
+        try:
+            copy_tree(source, str(staging))
+            # Durable markers can name another machine's absolute paths. Parse
+            # the copied marker before replacing only its location fields.
+            DiskgraphIngestResult.from_json((staging / "_SUCCESS").read_text())
+            result = DiskgraphIngestResult.for_index(staging)
+            write_diskgraph_success_marker(str(staging), result)
+            self._verify_path(str(staging))
+            return self.publish_import(handle, result)
+        except BaseException:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
 
     def checkpoint(
         self,
@@ -250,20 +542,40 @@ def validate_cached_source_times(output_dir: str) -> None:
     """Reject cached required-time tables with no retained node rows.
 
     Parse failures describe discarded source rows, not invalid retained data.
+    Malformed shapes in the inspected metadata fields are invalid caches.
     No source data is rescanned or cached artifacts modified here.
     """
     metadata_path = Path(output_dir) / 'index_metadata.json'
     if not metadata_path.is_file():
         return  # Structural/missing-artifact validation is a separate check.
-    metadata = json.loads(metadata_path.read_text())
-    for table in metadata.get('node_types', []):
+    metadata = _read_json_object(metadata_path)
+    tables = metadata.get('node_types', [])
+    if not isinstance(tables, list):
+        raise ValueError("cached node_types must be an array")
+    for table in tables:
+        if not isinstance(table, dict):
+            raise ValueError("cached node_types entries must be objects")
         column = table.get('create_time_col')
+        if column is not None and not isinstance(column, str):
+            raise ValueError("cached create_time_col must be a string or null")
         if not column:
             continue
+        name = table.get('name')
+        if not isinstance(name, str):
+            raise ValueError("cached required-time table name must be a string")
         shards = table.get('shards', [])
-        if not any(s['max_id'] >= s['min_id'] for s in shards):
+        if not isinstance(shards, list):
+            raise ValueError("cached required-time shards must be an array")
+        has_rows = False
+        for shard in shards:
+            if (not isinstance(shard, dict)
+                    or type(shard.get('min_id')) is not int
+                    or type(shard.get('max_id')) is not int):
+                raise ValueError("cached shard bounds must be integer min_id/max_id")
+            has_rows = has_rows or shard['max_id'] >= shard['min_id']
+        if not has_rows:
             raise DiskgraphSnapshotError(
-                f"Cached graph table {table['name']!r} has no usable rows "
+                f"Cached graph table {name!r} has no usable rows "
                 f"for {column!r}; correct the source and rebuild the snapshot")
 
 

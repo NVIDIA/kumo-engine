@@ -5,7 +5,7 @@
 import pytest
 
 import kumo.settings
-from kumo._managed_paths import _ManagedIndexPaths
+from kumo._managed_paths import _ManagedIndexPaths, _SnapshotPaths
 
 
 def test_paths_use_explicit_root(tmp_path):
@@ -30,3 +30,48 @@ def test_ids_are_path_components(tmp_path, bad_id):
         _ManagedIndexPaths(bad_id, root=tmp_path)
     with pytest.raises(ValueError):
         _ManagedIndexPaths("build", root=tmp_path).task_dir(bad_id)
+
+
+def test_snapshot_paths_share_the_configured_root(tmp_path):
+    paths = _SnapshotPaths.for_root(tmp_path)
+    assert paths.data_root == tmp_path / "snapshots"
+    assert paths.graph_dir("graph") == tmp_path / "snapshots/graph"
+    assert paths.version_dir("graph", "version") == tmp_path / "snapshots/graph/version"
+    assert paths.import_dir("graph", "incoming") == tmp_path / "snapshots/.imports/graph/incoming"
+    reference = paths.publication_reference("graph", "version")
+    assert reference == tmp_path / "snapshots/graph/version.index.json"
+    assert paths.reference_version(reference.name) == "version"
+
+
+def test_legacy_snapshot_suffix_reads_use_the_same_root(tmp_path):
+    paths = _SnapshotPaths(root=tmp_path)
+    assert paths.version_dir("graph", "old") == tmp_path / "snapshots/graph/old"
+    assert paths.reference("graph", "old.index.json") == (
+        tmp_path / "snapshots/graph/old.index.json.index.json")
+    with pytest.raises(ValueError, match="must not end with"):
+        paths.publication_reference("graph", "old.index.json")
+
+
+@pytest.mark.parametrize("name, version", [
+    ("version.index.json", "version"),
+    ("version.index.json.index.json", "version.index.json"),
+    ("version", None), (".index.json", None),
+    ("../other.index.json", None), ("a:b.index.json", None),
+])
+def test_snapshot_reference_names(name, version):
+    assert _SnapshotPaths.reference_version(name) == version
+
+
+@pytest.mark.parametrize("bad_id", ["", " ", ".", "..", "../other", "nested/task", "a\\b", "D:task"])
+def test_snapshot_components_cannot_escape_the_root(tmp_path, bad_id):
+    paths = _SnapshotPaths.for_root(tmp_path)
+    with pytest.raises(ValueError):
+        paths.graph_dir(bad_id)
+    with pytest.raises(ValueError):
+        paths.version_dir("graph", bad_id)
+    with pytest.raises(ValueError):
+        paths.reference("graph", bad_id)
+    with pytest.raises(ValueError):
+        paths.import_dir("graph", bad_id)
+    with pytest.raises(ValueError):
+        paths.import_dir(bad_id, "incoming")
