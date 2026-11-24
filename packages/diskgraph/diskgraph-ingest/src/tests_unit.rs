@@ -693,16 +693,17 @@ fn pk_map_build_bytes(keys: u64) -> (u64, u64) {
 }
 
 #[test]
-fn pk_map_estimate_covers_a_real_int64_build() {
+fn pk_map_estimate_keeps_a_quarter_margin_over_a_real_int64_build() {
     for keys in [20_000, 300_000, 1_100_000] {
         let (real, estimate) = pk_map_build_bytes(keys);
+        let with_margin = real + real / 4;
         assert!(
-            estimate >= real,
+            estimate >= with_margin,
             "keys={keys} estimate={estimate} real={real}"
         );
         if keys > 1_000_000 {
             assert!(
-                estimate <= real + real / 4,
+                estimate <= with_margin + with_margin / 4,
                 "keys={keys} estimate={estimate} real={real}"
             );
         }

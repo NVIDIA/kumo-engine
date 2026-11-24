@@ -158,11 +158,12 @@ pub fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u
     let ptrhash_bytes = row_count.saturating_mul(
         (2 * std::mem::size_of::<PkPtrHashOutput>()) as u64 + PTRHASH_BUCKET_BYTES_PER_KEY,
     );
-    map_bytes
+    let base = map_bytes
         .saturating_add(key_bytes)
         .saturating_add(entries_bytes)
         .saturating_add(ptrhash_bytes)
-        .saturating_add(PK_MAP_TASK_FIXED_BYTES)
+        .saturating_add(PK_MAP_TASK_FIXED_BYTES);
+    base.saturating_mul(100 + PK_MAP_ESTIMATE_PAD_PCT) / 100
 }
 
 pub(crate) struct PkMapReservation {

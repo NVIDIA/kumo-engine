@@ -22,6 +22,7 @@ pub const PK_MAP_LOAD_FACTOR_NUM: u64 = 8;
 pub const PK_MAP_LOAD_FACTOR_DEN: u64 = 7;
 pub const PK_MAP_MPHF_FACTOR_NUM: u64 = 100;
 pub const PK_MAP_MPHF_FACTOR_DEN: u64 = 99;
+pub const PK_MAP_ESTIMATE_PAD_PCT: u64 = 25;
 pub const PTRHASH_BUCKET_BYTES_PER_KEY: u64 = 2;
 pub const PK_MAP_TASK_FIXED_BYTES: u64 = 8 << 20;
 pub const VAR_KEY_HEAP_HEADER_BYTES: u64 = 8;
