@@ -31,15 +31,19 @@ from kumo.pytorch.api import (
     DType,
     EntitySource,
     EntitySpec,
+    EventSource,
     EventSpec,
     Field,
+    Flatten,
     Graph,
     GraphLayer,
     GraphSample,
+    IdSpace,
     InMemoryRows,
     Input,
     NeighborhoodSource,
     NeighborhoodSpec,
+    Packed,
     Parquet,
     Raw,
     RelationSpec,
@@ -51,6 +55,8 @@ from kumo.pytorch.api import (
     Separate,
     TableSpec,
     TimeWindow,
+    Tokens,
+    UseEncoding,
     check,
     prepare,
 )
@@ -83,6 +89,7 @@ EVENTS = TableSpec(
         "synced_at": STAMP,
         "ends_at": STAMP,
         "amount": DType("float64"),
+        "kind": DType("string"),
         "price": DType("decimal128", precision=10, scale=2),
     },
     time_column="occurred_at",
@@ -125,8 +132,32 @@ def _graph(traversal: GraphSample) -> DataLoaderSpec:
     return _sample(neighborhoods={"g": NeighborhoodSpec((GraphLayer((traversal,)),))})
 
 
+def _aliased_tokens(copies=2, budget=12, bucket=False):
+    from tests.test_target_layouts import _text
+
+    fields = {"first": Field("kind"), "second": Field("kind")}
+    tokens = Fields(
+        tuple(Encode(name, UseEncoding("words"), "tokens") for name in tuple(fields)[:copies]),
+        row=Tokens(missing="emit"),
+        history=Flatten(6, before="bos", after="eos"),
+    )
+    roles = ("pad", "unknown", "missing", "mask", "bos", "eos")
+    return replace(
+        _sample(events={"history": EventSpec(HISTORY, fields)}),
+        batch=BatchSpec(
+            {"history": Input(EventSource(("history",)), tokens, Packed())},
+            encodings={"words": _text()},
+            id_spaces={"tokens": IdSpace({role: role for role in roles})},
+            batching=Batching(
+                max_samples=1, max_tokens=budget, bucket_by_length=bucket, length_input="history"
+            ),
+        ),
+    )
+
+
 #: One minimal contract (and dataset) per entry that check() refuses.
 CHECK_CASES: dict[str, Callable[[], tuple[DataLoaderSpec, Dataset]]] = {
+    "DG-TOKEN-LENGTH-ALIAS": lambda: (_aliased_tokens(), PARQUET),
     "DG-SOURCE-KIND": lambda: (
         BASE,
         Dataset({name: InMemoryRows([]) for name in ("users", "accounts", "events")}),
@@ -233,6 +264,7 @@ ROWS: dict[str, list[dict[str, object]]] = {
             "synced_at": index,
             "ends_at": index,
             "amount": 1.0,
+            "kind": "b",
             "price": None,
         }
         for index in (1, 2)
@@ -250,6 +282,35 @@ def _written(tmp_path: Path, types: dict[str, dict[str, str]] | None = None) -> 
             types=(types or {}).get(table.name),
         )
     return Dataset({t.name: Parquet(str(tmp_path / f"{t.name}.parquet")) for t in SCHEMA.tables})
+
+
+@pytest.mark.parametrize(
+    "copies,budget,bucket", [(1, 12, False), (2, 12, False), (2, None, True), (2, None, False)]
+)
+def test_text_source_aliases_are_checked_before_delivery_or_keep_both_fields(
+    tmp_path, monkeypatch, copies, budget, bucket
+):
+    from tests.test_native_length_planning import _review_anchors
+
+    contract = _aliased_tokens(copies, budget, bucket)
+    dataset = _written(tmp_path)
+    engine = DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    anchors = _review_anchors(tmp_path, (1,), cutoff=1)
+    issues = check(contract, dataset, engine, anchors=anchors)
+    if copies == 2 and (budget is not None or bucket):
+        (issue,) = issues
+        assert issue.code == "DG-TOKEN-LENGTH-ALIAS"
+        with pytest.raises(ValueError, match="fields 'first' and 'second' alias column 'kind'"):
+            prepare(contract, dataset, engine)
+        assert not (tmp_path / "index").exists()
+        return
+    assert not issues
+    with prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
+        monkeypatch.setattr(task._anchors, "_requests", lambda *_: pytest.fail("Python fallback"))
+        (batch,) = task.batches(output_format="model")
+    history = batch.inputs["history"]
+    assert history["value_ids"].tolist() == [4, *([7] * copies), 5]
+    assert history["valid"].all()
 
 
 def _int64_clock(tmp_path: Path) -> None:
