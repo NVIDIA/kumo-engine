@@ -73,7 +73,7 @@ def test_check_reports_column_names_for_every_table(tmp_path, declaration, upper
         )
         sources[table.name] = api.Parquet(path=str(path))
     dataset = api.Dataset(tables=sources)
-    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    engine = api.DiskGraphEngine()
     with (
         patch("pyarrow.parquet.read_table", side_effect=AssertionError("read source rows")),
         patch("pyarrow.parquet.read_schema", side_effect=AssertionError("read declared metadata"))
@@ -115,7 +115,7 @@ def test_check_suggests_stored_names_for_undeclared_feature_columns(tmp_path, st
     path = tmp_path / "users.parquet"
     pq.write_table(pa.table({"id": [1], stored: [1.5]}), path)
     dataset = api.Dataset(tables={"users": api.Parquet(path=str(path))})
-    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    engine = api.DiskGraphEngine()
     issues = api.check(_source_contract(), dataset, engine)
     assert len(issues) == 1
     assert issues[0].path == "sample.entity_values.value.column"
@@ -140,7 +140,7 @@ def test_check_reports_a_missing_column_in_a_later_shard(tmp_path, glob):
     source = str(tmp_path / "*.parquet") if glob else str(tmp_path)
     dataset = api.Dataset(tables={"users": api.Parquet(path=source)})
     contract = _source_contract({"id": api.DType("int64"), "value": None})
-    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    issues = api.check(contract, dataset, api.DiskGraphEngine())
     assert len(issues) == 1
     assert "b.parquet" in issues[0].message and "'value'" in issues[0].message
     assert "'VALUE'" in issues[0].message
@@ -179,7 +179,7 @@ def test_resolution_reports_schema_key_failures_across_tables(tmp_path):
     message = str(caught.value)
     for name, column in (("items", "id"), ("orders", "at"), ("users", "owner_id")):
         assert name in message and column in message and repr(column.upper()) in message
-    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    issues = api.check(contract, dataset, api.DiskGraphEngine())
     assert len(issues) == 1 and issues[0].message == message
 
 
@@ -312,7 +312,7 @@ def test_metadata_inference_honors_logical_column_renames(tmp_path):
             )
         }
     )
-    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    engine = api.DiskGraphEngine()
     assert api.check(_source_contract(), dataset, engine) == ()
     resolved = _source_contract().resolve(dataset=dataset)
     assert resolved.schema.tables[0].columns == {
