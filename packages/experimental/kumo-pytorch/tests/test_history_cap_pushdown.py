@@ -223,9 +223,14 @@ def test_budgeted_drop_last_across_splits(tmp_path, with_graph, splits, max_toke
         plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
     ):
         requests = task._anchors.fetch(api.ALL_ANCHORS, range(len(splits)))
-        reference = task.batches(requests, drop_last=True, output_format="model")
-        assert [list(batch.metadata["sample_ids"]) for batch in reference] == expected
-        actual = task.batches(
-            split=api.ALL_ANCHORS, drop_last=True, chunk_batches=1, output_format="model"
-        )
-        assert [list(batch.metadata["sample_ids"]) for batch in actual] == expected
+        for drop_last in (False, True):
+            reference = task.batches(requests, drop_last=drop_last, output_format="model")
+            reference_ids = [list(batch.metadata["sample_ids"]) for batch in reference]
+            if drop_last:
+                assert reference_ids == expected
+            else:
+                assert [i for batch in reference_ids for i in batch] == list(range(len(splits)))
+            actual = task.batches(
+                split=api.ALL_ANCHORS, drop_last=drop_last, chunk_batches=1, output_format="model"
+            )
+            assert [list(batch.metadata["sample_ids"]) for batch in actual] == reference_ids

@@ -1183,8 +1183,9 @@ class NativeAnchors:
         Fixed-size GNN batches reuse TT-NG topology/features directly. Boundary
         batches spanning two split stages use the normal sampler, since their
         topology cannot be concatenated without changing local node indices.
-        With a history token budget, sample neighborhoods after native length
-        planning selects the anchors for each model batch.
+        For a single split stage with a history token budget, sample neighborhoods
+        after native length planning selects the anchors for each model batch.
+        Multiple stages share a batching pass over the combined anchor stream.
         """
         from kumo.pytorch.contract.batch import EventSource, Graph
         from kumo.pytorch.contract.sample import Field
@@ -1401,7 +1402,8 @@ class NativeAnchors:
             else:
                 pending.extend(requests)
                 while len(pending) >= size:
-                    yield from assemble(pending[:size], None, emitted == target and len(pending) == size)
+                    final = emitted == target and len(pending) == size
+                    yield from assemble(pending[:size], None, final)
                     pending = pending[size:]
         if emitted < target:
             if first is None:
