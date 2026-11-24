@@ -1216,8 +1216,15 @@ class NativeAnchors:
         budgeted_history = policy.max_tokens is not None and isinstance(
             assembler.spec.inputs[policy.length_input].source, EventSource
         )
+        stages = self._selection(selection)
+        # A native length planner can only group anchors within one split stage.
+        # A multi-stage token budget needs the combined stream to fill boundary
+        # batches and apply drop_last once to the tail of the pass.
         native_lengths = (
-            output_format == "model" and world_size == 1 and (not neighborhoods or budgeted_history)
+            output_format == "model"
+            and world_size == 1
+            and (not neighborhoods or budgeted_history)
+            and (policy.max_tokens is None or len(stages) == 1)
         )
         native_schedule = assembler._source is source and (fixed or native_lengths)
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
@@ -1252,7 +1259,7 @@ class NativeAnchors:
                     yield _surface_padding(batch)
 
         named = {}
-        if len(neighborhoods) > 1 or (not fixed and native_schedule):
+        if (fixed and len(neighborhoods) > 1) or (not fixed and native_schedule):
             for name in sorted(neighborhoods):
                 fields = {table: [] for table in source._tables}
                 for prepared in assembler._prepared_inputs.values():
@@ -1279,7 +1286,6 @@ class NativeAnchors:
                     "plan": source._sampling_plan(self._sample.neighborhoods[name])[0],
                     "projections": fields,
                 }
-        stages = self._selection(selection)
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
         inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
             assembler
@@ -1341,7 +1347,7 @@ class NativeAnchors:
         pending: list[SampleRequest] = []
         first = None
         emitted = 0
-        stages = self._selection(selection)
+        target = -(-sum(stage["count"] for stage in stages) // world_size)
 
         def streams():
             if not shuffle and len(stages) > 1:
@@ -1383,13 +1389,12 @@ class NativeAnchors:
                 )
                 runtime["_anchor_neighborhood"] = name
             if not pending and len(requests) == size:
-                yield from assemble(requests, runtime, False)
+                yield from assemble(requests, runtime, emitted == target)
             else:
                 pending.extend(requests)
                 while len(pending) >= size:
-                    yield from assemble(pending[:size], None, False)
+                    yield from assemble(pending[:size], None, emitted == target and len(pending) == size)
                     pending = pending[size:]
-        target = -(-self.count(selection) // world_size)
         if emitted < target:
             if first is None:
                 first = self.fetch(selection, [0])[0]

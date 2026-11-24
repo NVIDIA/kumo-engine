@@ -5,6 +5,7 @@
 """Global history caps bound every native component before payload decoding."""
 
 import json
+from dataclasses import replace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -196,3 +197,37 @@ def test_graph_and_event_history_share_a_token_budget(tmp_path, monkeypatch):
             assert sorted(nodes["ids"].tolist()) == sorted(nodes["ids"][dst].tolist()) == neighbors
             assert roots["ids"][src].tolist() == [1] * 4
             assert nodes["batch"].tolist() == roots["batch"][src].tolist() == [0] * 4
+
+
+@pytest.mark.parametrize("with_graph", [False, True], ids=["history", "graph_and_history"])
+@pytest.mark.parametrize(
+    "splits, max_tokens, expected",
+    [
+        (["train", "val"], 6, [[0, 1]]),
+        (["train", "val", "val"], 6, [[0, 1]]),
+        (["train", "val"], 3, [[0]]),
+    ],
+    ids=["full_batch_across_splits", "incomplete_final_batch", "budget_closed_batch"],
+)
+def test_budgeted_drop_last_across_splits(tmp_path, with_graph, splits, max_tokens, expected):
+    contract, dataset = _history_case(
+        tmp_path, "last", "ascending", api.Packed(), False, budgeted_graph=with_graph
+    )
+    batching = api.Batching(max_samples=2, max_tokens=max_tokens, length_input="history")
+    contract = replace(contract, batch=replace(contract.batch, batching=batching))
+    path = tmp_path / "anchors.parquet"
+    cutoffs = [100, 61, 50][: len(splits)]  # Each anchor has three selected history events.
+    pq.write_table(pa.table({"user": [1] * len(splits), "at": cutoffs, "split": splits}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at", split="split")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with (
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
+    ):
+        requests = task._anchors.fetch(api.ALL_ANCHORS, range(len(splits)))
+        reference = task.batches(requests, drop_last=True, output_format="model")
+        assert [list(batch.metadata["sample_ids"]) for batch in reference] == expected
+        actual = task.batches(
+            split=api.ALL_ANCHORS, drop_last=True, chunk_batches=1, output_format="model"
+        )
+        assert [list(batch.metadata["sample_ids"]) for batch in actual] == expected
