@@ -130,9 +130,9 @@ def test_restore_does_not_overwrite_a_valid_legacy_copy_hidden_by_a_bad_referenc
     def copy_tree(*args):
         pytest.fail('A valid retained legacy snapshot must not be overwritten')
 
-    with pytest.raises(FileExistsError, match='completed snapshot'):
-        store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
-                      copy_tree=copy_tree)
+    restored = store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
+                             copy_tree=copy_tree)
+    assert restored.index_path == str(source)
     assert (_files(source), store._reference(handle).read_bytes()) == before
 
 
@@ -695,3 +695,137 @@ def test_custom_snapshot_root_is_preserved_with_managed_publication(tmp_path):
     assert store.path(handle) == published.index_path
     assert store.list_ready() == [handle]
     assert not (tmp_path / 'managed/snapshots').exists()
+
+
+_REFERENCE_STATES = [
+    'valid', 'absent', 'json', 'shape', 'id', 'traversal', 'target_missing',
+    'metadata_missing', 'metadata_json', 'metadata_directory', 'metadata_mismatch', 'marker_missing',
+    'artifact_missing',
+]
+
+
+def _damage_reference(store, handle, managed, state):
+    reference = store._reference(handle)
+    if state == 'absent':
+        reference.unlink()
+    elif state in {'json', 'shape', 'id', 'traversal'}:
+        reference.write_text({
+            'json': '{broken', 'shape': '[]', 'id': '{"index_build_id": 1}',
+            'traversal': '{"index_build_id": "../outside"}',
+        }[state])
+    elif state == 'target_missing':
+        shutil.rmtree(managed)
+    elif state == 'metadata_missing':
+        (managed / 'index_metadata.json').unlink()
+    elif state == 'metadata_json':
+        (managed / 'index_metadata.json').write_text('{broken')
+    elif state == 'metadata_directory':
+        (managed / 'index_metadata.json').unlink()
+        (managed / 'index_metadata.json').mkdir()
+    elif state == 'metadata_mismatch':
+        (managed / 'index_metadata.json').write_text('{"index_build_id":"other"}')
+    elif state == 'marker_missing':
+        (managed / '_SUCCESS').unlink()
+    elif state == 'artifact_missing':
+        (managed / 'col_stats.json').unlink()
+
+
+@pytest.mark.parametrize('reference_state', _REFERENCE_STATES)
+@pytest.mark.parametrize('legacy_state', [
+    'healthy', 'absent', 'metadata', 'metadata_directory', 'marker', 'artifact',
+])
+def test_completed_snapshot_resolution_agrees_for_all_layout_states(
+        staged, tmp_path, reference_state, legacy_state):
+    from diskgraph import DiskgraphCorruptionError
+
+    store, handle, result, _ = staged
+    managed = Path(store.publish(handle, result).index_path)
+    legacy = _completed_legacy(store, handle)
+    _damage_reference(store, handle, managed, reference_state)
+    if legacy_state == 'absent':
+        shutil.rmtree(legacy)
+    elif legacy_state == 'metadata':
+        (legacy / 'index_metadata.json').write_text('[]')
+    elif legacy_state == 'metadata_directory':
+        (legacy / 'index_metadata.json').unlink()
+        (legacy / 'index_metadata.json').mkdir()
+    elif legacy_state == 'marker':
+        (legacy / '_SUCCESS').unlink()
+    elif legacy_state == 'artifact':
+        (legacy / 'col_stats.json').unlink()
+    expected = (managed if reference_state == 'valid' else
+                legacy if legacy_state == 'healthy' else None)
+    before = _files(tmp_path)
+    inodes = {str(p.relative_to(tmp_path)): p.stat().st_ino
+              for p in tmp_path.rglob('*') if p.is_file()}
+
+    assert store.list_ready() == ([handle] if expected is not None else [])
+    for prefix in ('ver', 'version'):
+        assert store.resolve_version_prefix(handle.graph_key, prefix) == (
+            str(expected) if expected is not None else None)
+    if expected is not None:
+        assert store.path(handle) == str(expected)
+        assert store.predicted_result(handle).index_path == str(expected)
+        assert store.verify(handle).index_path == str(expected)
+        assert rebased(store, handle).index_path == str(expected)
+    else:
+        with pytest.raises((DiskgraphCorruptionError, DiskgraphSnapshotError,
+                            FileNotFoundError, IsADirectoryError,
+                            NotADirectoryError, ValueError, KeyError)):
+            store.verify(handle)
+    assert _files(tmp_path) == before
+    assert {str(p.relative_to(tmp_path)): p.stat().st_ino
+            for p in tmp_path.rglob('*') if p.is_file()} == inodes
+
+
+def test_unbuilt_snapshot_path_does_not_load_the_native_module(tmp_path, monkeypatch):
+    import sys
+
+    store = LocalSnapshotStore(DiskgraphLocalConfig(
+        str(tmp_path / 'snapshots'), managed_root=str(tmp_path)))
+    handle = DiskgraphSnapshotHandle('graph', 'new-version')
+    monkeypatch.setitem(sys.modules, 'diskgraph', None)
+    assert store.path(handle) == store.staging_path(handle)
+    assert store.predicted_result(handle).index_path == store.staging_path(handle)
+
+
+def test_idless_private_import_staging_cannot_select_a_retained_legacy_copy(staged):
+    store, handle, _, legacy = staged
+    source = Path(store.import_staging_path(handle))
+    assert source != legacy
+    shutil.copytree(legacy, source)
+    (source / 'index_metadata.json').write_text('{}')
+    (source / '_SUCCESS').write_text(DiskgraphIngestResult.for_index(source).to_json())
+    _manifest(source)
+    store._reference(handle).write_text('{broken')
+    before = _files(legacy), store._reference(handle).read_bytes()
+
+    with pytest.raises(ValueError, match='cannot replace a completed legacy snapshot'):
+        store.publish_import(handle, DiskgraphIngestResult.for_index(source))
+    assert (_files(legacy), store._reference(handle).read_bytes()) == before
+    assert store.path(handle) == str(legacy)
+    assert source.is_dir()
+
+
+@pytest.mark.parametrize('reference_state', ['valid', 'json', 'metadata_missing'])
+def test_checkpoint_uses_the_same_completed_snapshot_fallback(
+        staged, tmp_path, reference_state):
+    store, handle, result, _ = staged
+    managed = Path(store.publish(handle, result).index_path)
+    legacy = _completed_legacy(store, handle)
+    _damage_reference(store, handle, managed, reference_state)
+    expected = managed if reference_state == 'valid' else legacy
+    before = _files(expected), store._reference(handle).read_bytes()
+    copied = []
+
+    def copy_tree(source, destination):
+        copied.append(source)
+        shutil.copytree(source, destination)
+
+    destination = store.checkpoint(
+        handle, str(tmp_path / 'durable'), exists=lambda p: Path(p).exists(),
+        copy_tree=copy_tree, replace_tree=shutil.move)
+    assert copied == [str(expected)]
+    assert (Path(destination) / 'index_metadata.json').read_bytes() == (
+        expected / 'index_metadata.json').read_bytes()
+    assert (_files(expected), store._reference(handle).read_bytes()) == before

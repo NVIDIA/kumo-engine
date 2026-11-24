@@ -37,6 +37,7 @@ def test_snapshot_paths_share_the_configured_root(tmp_path):
     assert paths.data_root == tmp_path / "snapshots"
     assert paths.graph_dir("graph") == tmp_path / "snapshots/graph"
     assert paths.version_dir("graph", "version") == tmp_path / "snapshots/graph/version"
+    assert paths.import_dir("graph", "incoming") == tmp_path / "snapshots/.imports/graph/incoming"
     reference = paths.publication_reference("graph", "version")
     assert reference == tmp_path / "snapshots/graph/version.index.json"
     assert paths.reference_version(reference.name) == "version"
@@ -70,3 +71,7 @@ def test_snapshot_components_cannot_escape_the_root(tmp_path, bad_id):
         paths.version_dir("graph", bad_id)
     with pytest.raises(ValueError):
         paths.reference("graph", bad_id)
+    with pytest.raises(ValueError):
+        paths.import_dir("graph", bad_id)
+    with pytest.raises(ValueError):
+        paths.import_dir(bad_id, "incoming")

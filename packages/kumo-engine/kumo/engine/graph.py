@@ -349,6 +349,7 @@ def _load_local(connector: Any, path: str, root: str,
         DiskgraphIngestResult,
         DiskgraphSnapshotHandle,
     )
+    from kumo_core.sources.transfer import discard_destination
 
     from kumo.engine._snapshot_io import (
         exported_build_id,
@@ -366,23 +367,31 @@ def _load_local(connector: Any, path: str, root: str,
         if result is not None and holds_export(Path(result.index_path),
                                                manifest):
             return result
-        target = Path(store.staging_path(handle))
+        legacy = Path(store.staging_path(handle))
+        target = Path(store.import_staging_path(handle))
         try:
-            build_id = exported_build_id(connector, path, root)
-            if build_id is not None:
-                existing = store.existing_build(build_id)
-                if existing is not None:
-                    if not holds_export(Path(existing.index_path), manifest):
-                        raise ValueError(f'Conflicting contents for index build {build_id}')
-                    return store.publish_import(handle, existing)
-            load_into(connector, path, root, manifest, target)
-        except FileNotFoundError:
-            newer_root, newer = read(connector, path)
-            if (newer_root == root
-                    or newer['snapshot_id'] != manifest['snapshot_id']):
-                raise
-            load_into(connector, path, newer_root, newer, target)
-        result = store.publish_import(handle, DiskgraphIngestResult.for_index(target))
+            try:
+                build_id = exported_build_id(connector, path, root)
+                if build_id is not None:
+                    existing = store.existing_build(build_id)
+                    if existing is not None:
+                        if not holds_export(Path(existing.index_path), manifest):
+                            raise ValueError(f'Conflicting contents for index build {build_id}')
+                        return store.publish_import(handle, existing)
+                elif target != legacy:
+                    raise ValueError('An ID-less export cannot replace a completed legacy snapshot')
+                load_into(connector, path, root, manifest, target)
+            except FileNotFoundError:
+                newer_root, newer = read(connector, path)
+                if (newer_root == root
+                        or newer['snapshot_id'] != manifest['snapshot_id']):
+                    raise
+                load_into(connector, path, newer_root, newer, target)
+            result = store.publish_import(handle, DiskgraphIngestResult.for_index(target))
+        finally:
+            if target != legacy:
+                discard_destination(str(target))
+
     if result is None:
         raise RuntimeError(f'The snapshot loaded from {path} did not pass '
                            'its integrity check.')
