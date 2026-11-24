@@ -131,10 +131,25 @@ def predictions(task, model):
     return result
 
 
-def train(root, profile):
-    import mlflow
+def log_model(model, device, profile):
     import mlflow.pytorch
     import numpy as np
+    import torch
+
+    example = np.zeros((2, 1), dtype=np.float32)
+    example_tensor = torch.from_numpy(example).to(device)
+    with torch.no_grad():
+        output = model(example_tensor).cpu().numpy()
+    # SageMaker's MLflow PT2 exporter traces with the example as supplied.
+    trace_example = (example_tensor if device == 'cuda'
+                     and profile.config['platform'] == 'sagemaker' else example)
+    return mlflow.pytorch.log_model(
+        model, name='model', input_example=trace_example,
+        signature=mlflow.models.infer_signature(example, output))
+
+
+def train(root, profile):
+    import mlflow
     import torch
 
     from kumo.pytorch import api
@@ -191,16 +206,7 @@ def train(root, profile):
                         write(directory / 'expected.json', expected)
                         mlflow.log_artifacts(str(directory),
                                              artifact_path='customer')
-                        example = np.zeros((2, 1), dtype=np.float32)
-                        example_tensor = torch.from_numpy(example).to(device)
-                        with torch.no_grad():
-                            output = model(example_tensor).cpu().numpy()
-                        # SageMaker's MLflow PT2 exporter traces with the example as supplied.
-                        trace_example = (example_tensor if device == 'cuda'
-                                         and profile.config['platform'] == 'sagemaker' else example)
-                        logged = mlflow.pytorch.log_model(
-                            model, name='model', input_example=trace_example,
-                            signature=mlflow.models.infer_signature(example, output))
+                        logged = log_model(model, device, profile)
                         registered = mlflow.register_model(
                             logged.model_uri, name)
                         mlflow.set_tag('customer.preprocessing',

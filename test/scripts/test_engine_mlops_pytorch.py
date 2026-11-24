@@ -3,12 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Optional real customer-model lifecycle; needs kumo-pytorch and MLflow."""
 
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -41,3 +44,43 @@ def test_regression_model_recovers_after_producer_scratch_is_removed(tmp_path):
     state = json.loads((tmp_path / 'customer-state.json').read_text())
     assert len({version['version'] for version in state['versions']}) == 2
     assert len({version['run'] for version in state['versions']}) == 2
+
+
+@pytest.mark.parametrize(('platform', 'device', 'tensor_input'), [
+    ('sagemaker', 'cuda', True),
+    ('sagemaker', 'cpu', False),
+    ('databricks', 'cuda', False),
+    ('databricks', 'cpu', False),
+    (None, 'cpu', False),
+])
+def test_mlflow_receives_an_example_its_platform_can_serialize(
+        monkeypatch, platform, device, tensor_input):
+    mlflow_pytorch = pytest.importorskip('mlflow.pytorch')
+    np = pytest.importorskip('numpy')
+    torch = pytest.importorskip('torch')
+    spec = importlib.util.spec_from_file_location('customer', SCRIPT)
+    workload = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(workload)
+    # Simulate device transfer while exercising the exporter call on CPU CI.
+    input_tensor = Mock()
+    device_tensor = SimpleNamespace(device=SimpleNamespace(type=device))
+    input_tensor.to.return_value = device_tensor
+    monkeypatch.setattr(torch, 'from_numpy', lambda _: input_tensor)
+    model = Mock(return_value=torch.zeros((2, 1)))
+    export = Mock()
+    monkeypatch.setattr(mlflow_pytorch, 'log_model', export)
+    profile = SimpleNamespace(config={'platform': platform}) if platform else None
+
+    workload.log_model(model, device, profile)
+
+    input_tensor.to.assert_called_once_with(device)
+    model.assert_called_once_with(device_tensor)
+    args = export.call_args
+    assert args.args == (model,)
+    example = args.kwargs['input_example']
+    if tensor_input:
+        assert example is device_tensor
+        assert example.device.type == 'cuda'
+    else:
+        assert isinstance(example, np.ndarray) and example.dtype == np.float32
+    assert args.kwargs['signature'].inputs.inputs[0].shape == (-1, 1)
