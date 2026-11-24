@@ -20,8 +20,7 @@ Parquet:
    with early stopping on val. It also scores the test anchors in this process.
 3. ``infer``: load the fine-tuned artifact and weights in a fresh process and
    score the test anchors in inference mode.
-4. ``serve``: load them again and answer a few requests from caller-supplied
-   rows.
+4. ``serve``: load them again and score individual Parquet anchors against the index.
 
 The encoder is a scaled-down PRAGMA (width 64, one field layer, two history
 layers) so the flow runs on a CPU in minutes; the lifecycle is the point.
@@ -401,7 +400,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "infer":
         batch_inference(*load_model(args.work), args.data, args.out or args.work)
     elif args.stage == "serve":
-        serve(*load_model(args.work), args.data)
+        serve(*load_model(args.work), args.data, args.work)
     else:
         common = ["--data", str(args.data), "--work", str(args.work), "--seed", str(args.seed)]
         common += ["--pretrain-epochs", str(args.pretrain_epochs)]

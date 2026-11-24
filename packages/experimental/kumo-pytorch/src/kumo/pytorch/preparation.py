@@ -19,6 +19,7 @@ import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
+from threading import Lock
 from typing import Any, overload
 
 from kumo.pytorch.anchors import (
@@ -174,6 +175,8 @@ class Plan:
         self.engine = engine
         self.inference = inference
         self._source: SampleSource | None = source
+        # Native serving temporarily binds the plan's sampler to each anchor extension.
+        self._serving_lock = Lock()
         self._dataset_fingerprint = _fingerprint(dataset)
 
     def materialize(

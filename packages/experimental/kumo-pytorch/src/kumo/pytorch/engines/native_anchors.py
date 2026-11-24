@@ -72,6 +72,7 @@ class NativeAnchors:
         if issues := check_parquet_anchors(table):
             raise ValueError(issues[0].describe())
         self._source, self._sample, self._table = source, sample, table
+        self.allow_request_fallback = True
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
         parent = Path(source._index_path)
@@ -1202,6 +1203,8 @@ class NativeAnchors:
                 )
             return
 
+        if not self.allow_request_fallback:
+            raise NotImplementedError("native serving assembly is unsupported")
         pending: list[SampleRequest] = []
         first = None
         emitted = 0

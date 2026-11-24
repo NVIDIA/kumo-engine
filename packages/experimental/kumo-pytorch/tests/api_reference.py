@@ -219,7 +219,7 @@ API_PAGES: tuple[Page, ...] = (
         file="artifacts-and-serving.md",
         title="Artifacts and serving",
         intro=(
-            "Saving and loading fitted state, model weights, and serving from caller-supplied rows."
+            "Saving fitted state and model weights, and serving from a prepared DiskGraph index."
         ),
         module="kumo.pytorch.api",
         symbols=(

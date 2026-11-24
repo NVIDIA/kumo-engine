@@ -18,7 +18,7 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 | `baselines/kumo_engine_hm_plan.json` | The pinned kumo-engine `ModelPlan` (one trial; only the seed varies) |
 | `baselines/hm-s.json`, `baselines/hm-m.json` | The recorded baselines at S and M |
 | `flows/hm_gnn.py`, `flows/hm_pragma.py` | The two flows: a GNN, and a model in the style of the published PRAGMA paper, pre-trained and then fine-tuned with LoRA |
-| `flows/common.py` | What both flows share: the schema, the anchors, the caller's row lookup, the training loop |
+| `flows/common.py` | What both flows share: the schema, the anchors, the training loop and native serving |
 | `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
 
 ## The H&M-shaped dataset
@@ -154,9 +154,8 @@ python -m e2e.flows.hm_pragma --data /tmp/hm-s --work /tmp/hm-pragma
 Training materializes the anchor table with `fit_split="train"`, stops early on
 val AUROC and writes the artifact and the weights. It also scores the test
 anchors in that process. `infer` loads both in a fresh process and scores the
-test anchors in inference mode. `serve` builds one `ServingAssembler`, prints its
-`rows_spec`, and assembles single requests from the rows the flow looks up by
-following that spec. Fine-tuning starts from the
+test anchors in inference mode. `serve` builds one `ServingAssembler`, reuses the training index,
+and assembles a native batch from each Parquet request anchor. Fine-tuning starts from the
 pre-trained artifact's bound contract, so every token ID is the pre-trained one.
 
 The GNN's neighborhood has two hops, so T2a exercises multi-hop sampling end to
@@ -174,8 +173,8 @@ fresh directory after changing a flow.
 | Check | What it asserts |
 |---|---|
 | Fresh process | the test batches' digest and every prediction equal the training process's |
-| Serving | each of 16 requests, served from the rows the flow looks up by following `rows_spec`, gives exactly the reference (in-memory) batch-inference batch, built from every customer and article and the customer's purchases at any time |
-| Batch inference | the flow's DiskGraph test predictions equal the model's on those reference batches within 1e-6 (summation order only); for the GNN, only the 9 of 16 requests whose 16 most recent purchases do not end inside a session (the point lookups are heavy buyers) |
+| Serving | each of 16 requests served separately reproduces its offline DiskGraph batch on the same index |
+| Batch inference | the flow's DiskGraph test predictions agree with predictions from the in-memory reference within 1e-6 (summation order only); for the GNN, only the 9 of 16 requests whose 16 most recent purchases do not end inside a session (the point lookups are heavy buyers) |
 | Future rows | adding purchases (of newly listed articles) just after, inside and beyond each test cutoff's label window changes no prediction: exactly for PRAGMA, within 1e-6 for untied GNN anchors; for every GNN anchor, the customer columns and sampled purchase times stay the same and the sampled articles are exactly the sampled purchases' own, all dated at or before the cutoff; untied anchors also keep the same articles |
 | Late-listed article | every customer's newest purchase, one second before a test cutoff, is of an article listed after it: the purchase is sampled and the article is not, so the article hop filters on the article's own clock (on its own this hop has no other leak path here, since every generated article is listed before the data starts) |
 | Refusals | weights refuse another contract's or another fit's state; a fitted state refuses another contract |

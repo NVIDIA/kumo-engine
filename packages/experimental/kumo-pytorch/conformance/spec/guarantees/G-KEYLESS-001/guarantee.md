@@ -27,8 +27,8 @@ reordering, file repartitioning, shards, or index rebuilds. Equal-time rows in
 a keyless table use engine-defined internal identity for tie breaking; no
 cross-engine or cross-build order of tied rows is promised. Existing keyed
 identity, ordering, validation, and source-row cleanup behavior is unchanged.
-Serving subsets also have their own local identities and source order. Opaque
-graph IDs are compared under renaming. Equal-time ordering, tied limits,
+Serving uses the same index-local identities as offline DiskGraph inference.
+Across preparations, opaque graph IDs are compared under renaming. Equal-time ordering, tied limits,
 uniform draws, and floating reduction rounding can differ across preparations
 or engines. Counts and integer sums remain exact. A declared PK is needed for
 stable cross-preparation choices; see [G-SERVING-001](../G-SERVING-001/guarantee.md).
@@ -37,8 +37,7 @@ stable cross-preparation choices; see [G-SERVING-001](../G-SERVING-001/guarantee
 
 DiskGraph supports keyless tables within its existing operation limits. The
 in-memory test engine also executes these cases for differential comparison.
-Serving accepts separate identical keyless rows and only requires PK columns
-and key uniqueness for keyed tables. Existing limits on empty native tables,
+Serving preserves separate identical keyless rows in the prepared index. Existing limits on empty native tables,
 join shapes, intermediate clocks, and other operations remain in force.
 
 The goldens assert raw aggregates calculated below. Focused tests additionally

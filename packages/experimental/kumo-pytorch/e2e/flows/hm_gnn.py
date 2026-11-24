@@ -16,12 +16,7 @@ Parquet:
    lifecycle check that a fresh process scores them identically.
 2. ``infer``: load both in a fresh process and score the test anchors in
    inference mode; predictions are keyed by ``sample_id``.
-3. ``serve``: load both again; for a few requests, look up the customer's rows
-   (the caller's job), let kumo-pytorch assemble the batch, and answer with the same
-   forward pass.
-
-kumo-pytorch supplies the batches, the artifact and the request assembly; the model,
-the training loop, the checkpoint and the row lookup are this file's.
+3. ``serve``: load both again and score individual Parquet anchors against the index.
 """
 
 from __future__ import annotations
@@ -301,7 +296,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "infer":
         batch_inference(*load_model(args.work), args.data, args.out or args.work)
     elif args.stage == "serve":
-        serve(*load_model(args.work), args.data)
+        serve(*load_model(args.work), args.data, args.work)
     else:
         common = ["--data", str(args.data), "--work", str(args.work)]
         for stage in ("train", "infer", "serve"):

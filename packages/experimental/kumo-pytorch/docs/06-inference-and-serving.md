@@ -13,16 +13,13 @@ kumo-pytorch gives you three things for this:
 
 - An artifact, a directory that saves the contract and the fitted processing
   state (vocabularies, normalization), so another process builds the same
-  inputs. You supply the anchors and source rows, and you save model weights
+  inputs. You supply the dataset and anchors, and you save model weights
   separately with `api.save_weights`.
 - An inference mode that builds the same inputs without computing labels.
-- A serving assembler that tells you which rows to fetch for a request, and
-  turns the rows you pass in, together with your requests, into the same
-  batches. It doesn't look up any rows itself.
+- A serving assembler that uses a prepared DiskGraph index and Parquet anchors
+  to produce the same model-format inputs as offline inference.
 
-The model, the training loop, where you store checkpoints, fetching the rows
-each online request needs from your own data store, and how you deploy the
-service stay with you.
+You own the model, training loop, checkpoints, serving index and deployment.
 
 ```text
 TRAINING JOB                  SAVED TO DISK              BATCH SCORING JOB
@@ -31,9 +28,8 @@ train your model              run-001/model.pt    │      score many users at o
                                                   │
                                                   │      ONLINE SERVICE
                                                   └────► load artifact + weights, once
-                                                         per call: YOUR lookup fetches
-                                                         the rows; assemble(rows,
-                                                         requests); score
+                                                         prepare the DiskGraph index once
+                                                         per call: assemble(anchors); score
 ```
 
 Every code block on this page runs in order. The blocks marked "in a fresh
@@ -60,7 +56,7 @@ The example trains on anchors at day 20 and scores anchors at day 34.
 The training job, the scoring job and the service all import the same module.
 Save it as `shop.py`: the synthetic data, the contract (a `DataLoaderSpec`, see
 [Contracts](02-contracts.md)), a small PyTorch model sized from the fitted
-state, and the row lookup the service uses.
+state, and its example requests.
 
 <!-- test: file shop.py -->
 ```python
@@ -212,17 +208,6 @@ def anchors(at: int, *, split: str | None) -> list[api.SampleRequest]:
 
 def dataset(rows: Tables) -> api.Dataset:
     return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-
-
-def rows_for(user_id: int, as_of: int) -> Tables:
-    """The caller's lookup of what `rows_spec` lists: the user and purchases up to `as_of`."""
-    rows = tables()
-    return {
-        "users": [row for row in rows["users"] if row["user_id"] == user_id],
-        "purchases": [
-            row for row in rows["purchases"] if row["user_id"] == user_id and row["at"] <= as_of
-        ],
-    }
 ```
 
 `user` and `recent` are the input names you will see in every batch. `active`
@@ -521,224 +506,35 @@ To train, prepare without it.
 
 ## Online serving
 
-In online serving, you fetch the rows. `assemble` reads only the rows you pass
-it; it doesn't query DiskGraph, a database or any other data store.
+Prepare the artifact's contract against the DiskGraph dataset when the service
+starts. Keep that plan open while handling requests. Each call takes a Parquet
+anchor table identifying the samples, entities and cutoffs to score. The
+assembler uses the artifact's fitted state and returns model-format batches
+from that index. The caller owns the plan, the index and the anchor files.
 
-| You do | This package does |
-| --- | --- |
-| Fetch, look up or sample the rows your requests need, from your own data store | Tells you which rows to fetch: `server.rows_spec`, a `ServingRowsSpec` |
-| Pass those rows and your requests to `server.assemble(rows, requests)` | Checks the rows and turns them, with the requests, into batches, using the artifact's fitted state |
-| Keep the rows you fetch fresh and complete | Reads nothing but the rows you pass, and refits nothing |
-| Run the model, route requests, cache and deploy | Nothing |
+Here, the caller selects a single request from the scoring anchors written
+above and compares its prediction with batch scoring on the same index:
 
-Build a `ServingAssembler` once, when the service starts. It checks the
-contract and the fitted state and derives `rows_spec`; none of that depends on
-rows, so none of it repeats per call. In a fresh process:
-
-<!-- test: fresh-process -->
+<!-- test: diskgraph -->
 ```python
-import json
-import math
-from pathlib import Path
-
-import torch
-
-from kumo.pytorch import api
-from shop import SCORE_AT, ActivityModel, rows_for
-
-workdir = Path("run-001")
-artifact = api.Artifact.load(workdir / "artifact")
-model = ActivityModel(artifact.output_schema)
-model.load_state_dict(api.load_weights(workdir / "model.pt", artifact.fitted_state))
-model.eval()
-
-server = api.ServingAssembler(artifact)
-print(server.rows_spec)
-```
-
-`rows_spec` tells you exactly which rows to fetch for a request:
-
-<!-- test: output -->
-```text
-Rows to supply per request (entity: users, keyed by request.entity_id)
-
-users        required · 1 row per request
-  match      users.user_id = request.entity_id
-  columns    user_id  int64   primary key
-             segment  string  read by: user.segment
-
-purchases    required · 0..n rows per request
-  match      purchases.user_id = request.entity_id   (relation user_purchases)
-             purchases.at <= request.as_of_time
-  history    ALL matching rows: entity_values.purchases_so_far counts the full
-             history (events.purchases keeps only the newest 8, but the count
-             needs every row)
-  columns    purchase_id  int64              primary key
-             user_id      int64              join key
-             at           timestamp[s, UTC]  time column
-             amount       float64            read by: recent.amount
-             category     string             read by: recent.category
-
-Not needed for serving: rows after request.as_of_time (read only by target
-"active", which inference never computes)
-```
-
-Read it as a recipe: the user's row, and **all** of the user's purchases up to
-the cutoff, with these columns. Write your lookup from it; `rows_for` in
-`shop.py` is that lookup over Python lists. If your rows live in a database, it
-is two queries:
-
-```sql
-SELECT user_id, segment FROM users WHERE user_id = :entity_id;
-
-SELECT purchase_id, user_id, at, amount, category
-FROM purchases
-WHERE user_id = :entity_id AND at <= :as_of_time;   -- no LIMIT: the count needs every row
-```
-
-The same information is available as data, for serving code that drives or
-checks its own lookup: `server.rows_spec.tables["purchases"]` has the join, the
-time window, the row limit and each column's type and role (see
-[`ServingRowsSpec`](api/artifacts-and-serving.md#servingrowsspec)).
-
-Then pass the rows you fetched and the requests to `assemble`, and score the
-batch it returns:
-
-```python
-predictions = json.loads((workdir / "predictions.json").read_text())
-matches = []
-for user_id in (1, 2, 3):
-    request = api.SampleRequest(f"user-{user_id}-at-34", entity_id=user_id, as_of_time=SCORE_AT)
-    (batch,) = server.assemble(rows_for(user_id, SCORE_AT), [request])
+request_path = data / "request.parquet"
+pq.write_table(pq.read_table(data / "scoring-anchors.parquet").slice(2, 1), request_path)
+request = api.AnchorTable(api.Parquet(str(request_path)), "user_id", "as_of", sample_id="sample_id")
+with api.prepare(artifact.contract, parquet, engine, inference=True) as plan:
+    server = api.ServingAssembler(artifact, plan=plan)
+    (batch,) = server.assemble(request)
     with torch.no_grad():
         score = torch.sigmoid(model(batch)).item()
-    # A batch of one may differ from a batch of sixteen in the last bits.
-    matches.append(math.isclose(score, predictions[request.sample_id], abs_tol=1e-6))
-    print(f"{request.sample_id} scores {score:.3f}")
-print("serving equals batch inference:", all(matches))
+(sample_id,) = batch.metadata["sample_ids"]
+assert abs(score - disk_predictions[sample_id]) < 1e-6
 ```
 
-<!-- test: output -->
-```text
-user-1-at-34 scores 0.116
-user-2-at-34 scores 0.112
-user-3-at-34 scores 0.647
-serving equals batch inference: True
-```
-
-Because the rows are what `rows_spec` lists, taken from the same data batch
-scoring reads, each served batch is identical to the batch that batch scoring
-on the in-memory engine builds for the same anchor, so the scores match. Keeping what your lookup
-returns the same as the data you score offline, fresh and with no rows missing,
-is up to you. Each table's rows can be a list of dicts or a `pyarrow.Table`.
-
-`assemble` takes a sequence of requests, so one call can serve one request or
-several. For several, put the rows of all of them in one `rows` mapping, each
-row once (a repeated declared primary key is refused). Keyless tables require
-no PK column and preserve separate identical rows. Their IDs are local to each
-prepared dataset, so equal-time limits, uniform draws and floating reduction
-rounding may differ when rows are reordered or fetched as a subset. Use a
-declared PK when stable choices across preparations are required.
-Each request reads only the rows
-that match it, so its sample is the same as when it is assembled alone:
-
-```python
-requests = [api.SampleRequest(f"user-{u}-at-34", u, SCORE_AT) for u in (1, 2, 3)]
-rows = {"users": [], "purchases": []}
-for request in requests:
-    for table, found in rows_for(request.entity_id, SCORE_AT).items():
-        rows[table] += found
-(batch,) = server.assemble(rows, requests)
-print(len(batch.metadata["sample_ids"]))
-```
-
-<!-- test: output -->
-```text
-3
-```
-
-All requests go into one batch unless you pass `batch_size`, or a token budget
-in the contract splits them. If the contract samples a graph with a seed, pass
-the same `seed` you used for batch scoring.
-
-Served batches use the inspectable output format. If you train on
-`output_format="model"` batches, your model takes them unchanged: both formats
-emit the same `Batch`, with the same input keys, tensor dtypes and layout.
-
-### When `assemble` refuses the rows
-
-`assemble` checks the rows against the contract and names the table, row and
-column it rejects:
-
-```python
-user_3 = rows_for(3, SCORE_AT)
-request = api.SampleRequest("user-3-at-34", entity_id=3, as_of_time=SCORE_AT)
-misspelled = dict(user_3["purchases"][0])
-misspelled["amout"] = misspelled.pop("amount")
-mistakes = {
-    "misspelled column": {**user_3, "purchases": [misspelled]},
-    "wrong type": {**user_3, "purchases": [{**user_3["purchases"][0], "at": "yesterday"}]},
-    "missing entity": {**user_3, "users": []},
-    "missing table": {"users": user_3["users"]},
-}
-for mistake, rows in mistakes.items():
-    try:
-        server.assemble(rows, [request])
-    except ValueError as error:
-        print(f"{mistake}: {error}")
-```
-
-<!-- test: output -->
-```text
-misspelled column: rows['purchases'][0] has column 'amout', which table 'purchases' does not declare (did you mean 'amount'?); ServingAssembler.rows_spec lists what to supply
-wrong type: rows['purchases'][0]['at']: 'yesterday' is not a valid timestamp[s, UTC] value, the column's declared type; ServingAssembler.rows_spec lists what to supply
-missing entity: request 'user-3-at-34': entity_id 3 has no row in rows['users'] (user_id = 3); ServingAssembler.rows_spec lists what to supply
-missing table: no rows supplied for required tables ['purchases']; pass an empty list when a request has none; ServingAssembler.rows_spec lists what to supply
-```
-
-Fix the column name or the value's type in your lookup (for
-`timestamp[s, UTC]`, epoch seconds and timezone-aware `datetime` values both
-work). Every request needs its entity's row: if the user doesn't exist, don't
-send the request. A table the contract needs must always be present, even when
-a request has no rows in it: pass an empty list.
-
-Values are checked against the declared types the same way batch scoring checks
-in-memory rows; decimals stay exact, and nothing is inferred from the supplied
-rows. The complete list of checks is under
-[`ServingAssembler.assemble`](api/artifacts-and-serving.md#servingassemblerassemble).
+`ServingAssembler(artifact).rows_spec` is available for inspecting the tables,
+columns, windows and limits the contract reads. A row dictionary and a list of
+`SampleRequest` objects are refused by `assemble`. To change the source data,
+prepare a plan over the updated dataset and index.
 
 ## Pitfalls
-
-### Fetching only the newest 8 purchases
-
-If served scores don't match batch scores for active users and nothing raises
-an error, check how you fetch history. The contract keeps the last 8
-purchases, so a lookup with `LIMIT 8` looks right. But `purchases_so_far`
-counts *every* purchase up to the cutoff:
-
-```python
-user_3 = rows_for(3, SCORE_AT)
-newest_8 = {**user_3, "purchases": sorted(user_3["purchases"], key=lambda row: row["at"])[-8:]}
-for rows in (user_3, newest_8):
-    (batch,) = server.assemble(rows, [request])
-    with torch.no_grad():
-        print(len(rows["purchases"]), "purchases:", round(torch.sigmoid(model(batch)).item(), 3))
-```
-
-<!-- test: output -->
-```text
-12 purchases: 0.647
-8 purchases: 0.943
-```
-
-User 3 has 12 purchases. With only the newest 8 supplied, the model sees a count
-of 8 and the score moves from 0.647 to 0.943.
-
-`assemble` can't detect this. A row you leave out looks exactly like a row that
-doesn't exist, so the batch is built without it.
-
-Fetch what `rows_spec` lists instead. Its `history` line says when a table
-needs every matching row and which input needs them.
 
 ### Refitting at scoring time
 
@@ -813,15 +609,10 @@ Two things differ from passing the complete state:
 
 ### Scoring offline on the DiskGraph engine
 
-If your batch scoring runs on the DiskGraph engine, online scores for some
-requests can differ slightly from the batch scores. Serving builds each batch
-in Python from the rows you pass, following the in-memory engine's rules. The DiskGraph engine's batches can differ from
-those in a few known ways: the order of graph nodes within a layer, `std`, `var`
-and `mean` values within floating-point rounding, and which neighbor is kept
-when several tie at a `recent` fanout's boundary (rows dated after the cutoff
-can change which tied row such a sample keeps). Expect these small
-differences when you compare online scores with the DiskGraph engine's batch
-scores; [limitations](limitations.md#engine-support) lists them too.
+Use the same prepared index, anchors, batch settings, seed and artifact when
+comparing served batches with offline DiskGraph inference. Rebuilding the index
+can change which tied graph neighbor a fanout selects. See
+[engine support](limitations.md#engine-support).
 
 ## Next
 

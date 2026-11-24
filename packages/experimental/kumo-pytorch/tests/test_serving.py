@@ -2,30 +2,34 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Serving from caller-supplied rows (G-SERVING-001): the startup/per-call split,
-`ServingAssembler.rows_spec`, and the refusals of rows that don't fit the contract.
-"""
+"""Native serving, its row requirements and its agreement with offline inference."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from threading import Barrier, Lock
 from types import ModuleType
 
 import pyarrow as pa
 import pytest
 import torch
 
-import kumo.pytorch.preparation as preparation
-import kumo.pytorch.serving as serving
 from conformance.assertions import bound_tables
 from conformance.cases import discover_cases
 from conformance.graph_cases import generate_graph_case
 from conformance.sequence_cases import generate_sequence_case
 from kumo.pytorch import api
+from kumo.pytorch.assembly import _fingerprint, fit_plan
+from kumo.pytorch.preparation import reused_state
+from kumo.pytorch.rows import Clock, RowSource
 from kumo.pytorch.serving import RowLimit, RowsJoin, ServingRowsSpec
+from kumo.pytorch.task import request_batches
 from tests import lifecycle_app
+from tests.helpers import serving_anchors
 from tests.serving_fetch import fetch
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _temporal_contract
 from tests.test_inference_lifecycle import _dataset, assert_same_batches
@@ -62,6 +66,43 @@ def _batch_inference(
                 batch.metadata["sample_ids"][0]: batch
                 for batch in task.batches(batch_size=1, seed=SEED)
             }
+
+
+def _reference_batch(artifact: api.Artifact, rows: Tables, request: api.SampleRequest) -> api.Batch:
+    """Evaluate the fetched rows directly with the artifact's frozen encoders."""
+    contract = artifact.contract
+    schema = contract.schema
+    tables = {
+        t.name: [{column: row.get(column) for column in t.columns} for row in rows.get(t.name, [])]
+        for t in schema.tables
+    }
+    source = RowSource(schema, tables, Clock.of(schema))
+    inputs, targets = reused_state(contract, artifact.fitted_state, None)
+    plan = fit_plan(
+        contract.sample,
+        contract.batch,
+        (),
+        source,
+        schema_fingerprint=_fingerprint(schema),
+        contract_fingerprint=contract.fingerprint,
+        contract=contract,
+        input_state=inputs,
+        target_encoders=targets,
+        inference=True,
+    )
+    return next(
+        request_batches(
+            plan,
+            [request],
+            batch_size=1,
+            epoch=0,
+            seed=SEED,
+            shuffle=False,
+            rank=0,
+            world_size=1,
+            drop_last=False,
+        )
+    )
 
 
 def _bounded_rows_contract() -> tuple[api.DataLoaderSpec, Tables, list[api.SampleRequest]]:
@@ -203,11 +244,11 @@ def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
     artifact = _artifact(contract, tables, requests)
     dataset, engine = _dataset("in_memory", tables, Path())
     expected = _batch_inference(artifact, dataset, engine, requests)
-    server = api.ServingAssembler(artifact)
+    spec = ServingRowsSpec.from_contract(artifact.contract)
     for request in requests:
-        rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
+        rows = fetch(spec, artifact.contract.schema, tables, request)
         assert_same_batches(
-            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
+            [_reference_batch(artifact, rows, request)], [expected[request.sample_id]]
         )
 
 
@@ -235,8 +276,7 @@ def test_spec_fetch_of_a_graph_contract_equals_batch_inference(tmp_path: Path) -
         with plan.materialize(_requests(), fit_split="train") as task:
             artifact = task.to_artifact()
     expected = _batch_inference(artifact, dataset, engine, _requests())
-    server = api.ServingAssembler(artifact)
-    spec = server.rows_spec
+    spec = ServingRowsSpec.from_contract(artifact.contract)
     assert spec.tables["card_transactions"].required
     assert len(spec.tables["card_transactions"].routes) == 2
     assert not spec.tables["merchants"].required
@@ -246,7 +286,7 @@ def test_spec_fetch_of_a_graph_contract_equals_batch_inference(tmp_path: Path) -
         assert "merchants" not in fetched
         assert all("description" not in row for row in fetched["card_transactions"])
         assert_same_batches(
-            server.assemble(fetched, [request], seed=SEED), [expected[request.sample_id]]
+            [_reference_batch(artifact, fetched, request)], [expected[request.sample_id]]
         )
 
 
@@ -275,9 +315,17 @@ Not needed for serving: rows after request.as_of_time (read only by target
 
 
 @pytest.fixture(scope="module")
-def example_server() -> api.ServingAssembler:
+def example_artifact() -> api.Artifact:
     contract, tables, requests = _example_case()
-    return api.ServingAssembler(_artifact(contract, tables, requests))
+    with bound_tables(contract, tables, "diskgraph") as (dataset, engine):
+        anchors = serving_anchors(engine.index.parent / "example.parquet", requests)
+        with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
+            return task.to_artifact()
+
+
+@pytest.fixture(scope="module")
+def example_server(example_artifact) -> api.ServingAssembler:
+    return api.ServingAssembler(example_artifact)
 
 
 def test_rows_spec_renders_the_example_contract(example_server: api.ServingAssembler) -> None:
@@ -322,135 +370,31 @@ def test_rows_spec_limits_graph_hops_and_events() -> None:
     assert "hop 2 · shops.shop_id IN (events.shop_id from hop 1)" in str(spec)
 
 
-def _user_rows(user_id: int) -> Tables:
-    example = _example()
-    tables = example.tables()
-    return {
-        "users": [row for row in tables["users"] if row["user_id"] == user_id],
-        "purchases": [
-            row
-            for row in tables["purchases"]
-            if row["user_id"] == user_id and row["at"] <= example.SCORE_AT
-        ],
-    }
-
-
-def _request(user_id: int = 4) -> api.SampleRequest:
-    example = _example()
-    return api.SampleRequest(f"user-{user_id}", user_id, example.SCORE_AT)
-
-
-def _refused(server: api.ServingAssembler, rows: Mapping[str, object], pattern: str) -> None:
-    with pytest.raises(ValueError, match=pattern) as error:
-        server.assemble(rows, [_request()])  # type: ignore[arg-type]
-    assert "ServingAssembler.rows_spec" in str(error.value)
-
-
-def test_serving_refuses_rows_that_do_not_fit_the_contract(
-    example_server: api.ServingAssembler,
-) -> None:
-    rows = _user_rows(4)
-    purchases = rows["purchases"]
-    _refused(example_server, {**rows, "purchase": []}, r"\['purchase'\].*did you mean 'purchases'")
-    _refused(example_server, {"users": rows["users"]}, r"required tables \['purchases'\]")
-    _refused(
-        example_server,
-        {**rows, "purchases": [{**purchases[0], "amout": 1.0}, *purchases[1:]]},
-        r"rows\['purchases'\]\[0\] has column 'amout'.*did you mean 'amount'",
-    )
-    _refused(
-        example_server,
-        {**rows, "purchases": [{k: v for k, v in purchases[0].items() if k != "at"}]},
-        r"rows\['purchases'\]\[0\] lacks required columns \['at'\]",
-    )
-    _refused(
-        example_server,
-        {**rows, "purchases": [*purchases[:1], {**purchases[1], "at": "yesterday"}]},
-        r"rows\['purchases'\]\[1\]\['at'\]: 'yesterday' is not a valid timestamp\[s, UTC\]",
-    )
-    _refused(
-        example_server,
-        {**rows, "purchases": [{**purchases[0], "purchase_id": None}]},
-        r"rows\['purchases'\]\[0\] has a NULL primary key 'purchase_id'",
-    )
-    _refused(
-        example_server,
-        {**rows, "purchases": [purchases[0], purchases[0]]},
-        r"rows\['purchases'\]\[1\] repeats primary key purchase_id=.* of rows\['purchases'\]\[0\]",
-    )
-    _refused(
-        example_server,
-        {**rows, "users": []},
-        r"'user-4': entity_id 4 has no row in rows\['users'\]",
-    )
-    arrow = pa.Table.from_pylist([{**row, "amount": str(row["amount"])} for row in purchases])
-    _refused(
-        example_server,
-        {**rows, "purchases": arrow},
-        r"rows\['purchases'\] column 'amount' is Arrow string, not the declared float64",
-    )
-    with pytest.raises(ValueError, match="at least one request"):
-        example_server.assemble(rows, [])
-
-
-def test_resolve_never_reads_supplied_rows(example_server: api.ServingAssembler) -> None:
-    # artifact contracts pin every column type, so a request whose column is all
-    # None neither resolves differently nor is refused
+@pytest.mark.parametrize("arrow", [False, True], ids=["row-mappings", "arrow-tables"])
+def test_supplied_rows_require_native_serving(arrow, example_server):
     contract, tables, requests = _example_case()
-    artifact = _artifact(contract, tables, requests)
-    assert artifact.contract.resolve() is artifact.contract
-    blank = {
-        **tables,
-        "users": [{**row, "segment": None} for row in tables["users"]],
-    }
-    dataset, engine = _dataset("in_memory", blank, Path())
-    request = _request(4)
-    expected = _batch_inference(artifact, dataset, engine, [request])[request.sample_id]
-    rows = _user_rows(4)
-    rows["users"] = [{**row, "segment": None} for row in rows["users"]]
-    arrow = {name: pa.Table.from_pylist(values) for name, values in rows.items()}
-    assert pa.types.is_null(arrow["users"].schema.field("segment").type)
-    encoded = {
-        **arrow,
-        "users": pa.table(
-            {
-                "user_id": arrow["users"]["user_id"],
-                "segment": pa.array(["loyal"]).dictionary_encode(),
-            }
-        ),
-    }
-    assert_same_batches(
-        example_server.assemble(encoded, [request]),
-        example_server.assemble(
-            {**rows, "users": [{**rows["users"][0], "segment": "loyal"}]}, [request]
-        ),
-    )
-    for supplied in (rows, arrow):
-        assert_same_batches(example_server.assemble(supplied, [request]), [expected])
+    rows = fetch(example_server.rows_spec, contract.schema, tables, requests[0])
+    if arrow:
+        rows = {name: pa.Table.from_pylist(values) for name, values in rows.items()}
+    with pytest.raises(NotImplementedError, match="native serving assembly is unsupported"):
+        example_server.assemble(rows=rows, requests=requests[:1])
 
 
-def test_the_plan_is_built_once_and_rows_are_never_fingerprinted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    contract, tables, requests = _example_case()
-    artifact = _artifact(contract, tables, requests)
-    built = []
-    original = serving.fit_plan
+def test_anchors_require_a_prepared_diskgraph_plan(example_server, tmp_path):
+    _, _, requests = _example_case()
+    anchors = serving_anchors(tmp_path / "anchors.parquet", requests)
+    with pytest.raises(ValueError, match="prepared DiskGraph plan"):
+        example_server.assemble(anchors)
+    with pytest.raises(ValueError, match="Parquet AnchorTable"):
+        example_server.assemble(api.AnchorTable(api.InMemoryRows([]), "entity", "at"))
 
-    def counting(*args, **kwargs):
-        built.append(1)
-        return original(*args, **kwargs)
 
-    monkeypatch.setattr(serving, "fit_plan", counting)
-    server = api.ServingAssembler(artifact)
-
-    def refuse(value: object) -> str:
-        raise AssertionError("serving fingerprinted per call")
-
-    monkeypatch.setattr(preparation, "_fingerprint", refuse)
-    for user_id in (1, 2, 3, 4, 5):
-        server.assemble(_user_rows(user_id), [_request(user_id)])
-    assert built == [1]
+def test_serving_plan_must_match_the_artifact(example_artifact):
+    contract, tables, _ = _bounded_rows_contract()
+    with bound_tables(contract, tables, "diskgraph") as (dataset, engine):
+        with api.prepare(contract, dataset, engine) as plan:
+            with pytest.raises(ValueError, match="different contracts"):
+                api.ServingAssembler(example_artifact, plan=plan)
 
 
 def _layout(value: object, path: str = "inputs") -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
@@ -500,46 +444,111 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
     served_model.load_state_dict(model.state_dict())
     served_model.eval()
 
-    server = api.ServingAssembler(artifact)
     requests = [api.SampleRequest(f"user-{u}", u, example.SCORE_AT) for u in (1, 2, 3)]
-    with api.prepare(artifact.contract, dataset, engine) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-            model_format = {
-                request.sample_id: next(iter(task.batches([request], output_format="model")))
-                for request in requests
-            }
-    for request in requests:
-        rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
-        (served,) = server.assemble(rows, [request])
-        assert _layout(served.inputs) == _layout(model_format[request.sample_id].inputs)
-        with torch.no_grad():
-            assert served_model(served).shape == (1,)
+    anchors = serving_anchors(tmp_path / "score.parquet", requests)
+    with api.prepare(artifact.contract, dataset, engine, inference=True) as plan:
+        with plan.materialize(anchors, fitted=artifact.fitted_state) as task:
+            expected = list(task.batches(batch_size=1, output_format="model"))
+        server = api.ServingAssembler(artifact, plan=plan)
+        for batch, reference in zip(server.assemble(anchors, batch_size=1), expected, strict=True):
+            assert _layout(batch.inputs) == _layout(reference.inputs)
+            with torch.no_grad():
+                assert served_model(batch).shape == (1,)
 
 
-def _diskgraph_inference(
-    contract: api.DataLoaderSpec, tables: Tables, requests: Sequence[api.SampleRequest]
-) -> tuple[api.Artifact, dict[str, api.Batch]]:
-    """An artifact fitted on the DiskGraph engine, and its batch inference, one batch each."""
-
-    pytest.importorskip("diskgraph")
+@contextmanager
+def _diskgraph_inference(contract, tables, requests):
     with bound_tables(contract, tables, "diskgraph") as (dataset, engine):
-        with api.prepare(contract, dataset, engine) as plan:
-            anchors = [replace(request, split=None) for request in requests]
-            with plan.materialize(anchors) as task:
+        anchors = serving_anchors(engine.index.parent / "anchors.parquet", requests)
+        with api.prepare(contract, dataset, engine) as train:
+            with train.materialize(anchors) as task:
                 artifact = task.to_artifact()
-        return artifact, _batch_inference(artifact, dataset, engine, requests)
+        with api.prepare(artifact.contract, dataset, engine, inference=True) as plan:
+            with plan.materialize(anchors, fitted=artifact.fitted_state) as task:
+                expected = list(task.batches(batch_size=1, seed=SEED, output_format="model"))
+            yield artifact, plan, anchors, expected
 
 
 @pytest.mark.parametrize("name", ["example", "bounded_window", "event_limit"])
-def test_serving_equals_diskgraph_batch_inference(name: str) -> None:
+def test_serving_equals_diskgraph_batch_inference(name: str, monkeypatch) -> None:
+    from kumo.pytorch.assembly import PreparedBatchPlan
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    def fallback(*args, **kwargs):
+        pytest.fail("expected native DiskGraph delivery from Parquet anchors")
+
+    monkeypatch.setattr(api.InMemoryEngine, "open", fallback)
     contract, tables, requests = CASES[name]()
-    artifact, expected = _diskgraph_inference(contract, tables, requests)
-    server = api.ServingAssembler(artifact)
-    for request in requests:
-        rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
-        assert_same_batches(
-            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
-        )
+    with _diskgraph_inference(contract, tables, requests) as (artifact, plan, anchors, expected):
+        server = api.ServingAssembler(artifact, plan=plan)
+        # Serving must reuse the caller's open index and emit native iterator batches.
+        monkeypatch.setattr(api.DiskGraphEngine, "open", fallback)
+        monkeypatch.setattr(PreparedBatchPlan, "batches", fallback)
+        monkeypatch.setattr(NativeAnchors, "_requests", fallback)
+        native_batches = NativeAnchors._typed_batches
+        served_ids = []
+
+        def tracked(*args, **kwargs):
+            for batch in native_batches(*args, **kwargs):
+                served_ids.extend(batch.metadata["sample_ids"])
+                yield batch
+
+        monkeypatch.setattr(NativeAnchors, "_typed_batches", tracked)
+        assert_same_batches(server.assemble(anchors, batch_size=1, seed=SEED), expected)
+        assert served_ids == [r.sample_id for r in requests]
+
+
+def test_concurrent_servers_share_a_plan(tmp_path, monkeypatch):
+    contract, tables, requests = _bounded_rows_contract()
+    with _diskgraph_inference(contract, tables, requests) as (artifact, plan, _, expected):
+        start = Barrier(2)
+        active = Lock()
+        materialize = plan.materialize
+
+        @contextmanager
+        def one_task_at_a_time(*args, **kwargs):
+            assert active.acquire(blocking=False), "native tasks overlapped on a shared plan"
+            try:
+                with materialize(*args, **kwargs) as task:
+                    yield task
+            finally:
+                active.release()
+
+        monkeypatch.setattr(plan, "materialize", one_task_at_a_time)
+
+        def serve(i):
+            server = api.ServingAssembler(artifact, plan=plan)
+            anchors = serving_anchors(tmp_path / f"{i}.parquet", requests[i::2])
+            start.wait(timeout=10)
+            return server.assemble(anchors, batch_size=1, seed=SEED)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            for i, batches in enumerate(pool.map(serve, range(2))):
+                assert_same_batches(batches, expected[i::2])
+
+
+def test_serving_refuses_mixed_graph_and_token_budget_before_python_batching(monkeypatch):
+    from kumo.pytorch.assembly import PreparedBatchPlan
+
+    contract, tables, requests = _limited_events_case("distinct")
+    layer = api.GraphLayer((api.GraphSample("user_clicks", 1),))
+    sample = replace(contract.sample, neighborhoods={"g": api.NeighborhoodSpec((layer,))})
+    graph = api.Input(api.NeighborhoodSource("g"), api.Graph(), None)
+    batch = replace(
+        contract.batch,
+        inputs={**contract.batch.inputs, "graph": graph},
+        batching=api.Batching(max_samples=2, max_tokens=64, length_input="merged"),
+    )
+    with bound_tables(contract, tables, "diskgraph") as (dataset, engine):
+        anchors = serving_anchors(engine.index.parent / "anchors.parquet", requests)
+        with api.prepare(replace(contract, sample=sample, batch=batch), dataset, engine) as plan:
+            with plan.materialize(anchors) as task:
+                server = api.ServingAssembler(task.to_artifact(), plan=plan)
+            monkeypatch.setattr(
+                PreparedBatchPlan, "batches", lambda *a, **kw: pytest.fail("fallback")
+            )
+            with pytest.raises(NotImplementedError, match="native serving assembly is unsupported"):
+                server.assemble(anchors)
 
 
 def _clock_case(unit: str) -> tuple[api.DataLoaderSpec, Tables, list[api.SampleRequest]]:
@@ -607,16 +616,11 @@ def _clock_case(unit: str) -> tuple[api.DataLoaderSpec, Tables, list[api.SampleR
 @pytest.mark.parametrize("unit", ["us", "ns"])
 def test_sub_second_clocks_are_served_as_diskgraph_batch_inference(unit: str) -> None:
     contract, tables, requests = _clock_case(unit)
-    artifact, expected = _diskgraph_inference(contract, tables, requests)
-    server = api.ServingAssembler(artifact)
-    for request in requests:
-        rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
-        assert_same_batches(
-            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
-        )
-    (served,) = server.assemble(
-        fetch(server.rows_spec, artifact.contract.schema, tables, requests[0]), requests[:1]
-    )
+    with _diskgraph_inference(contract, tables, requests) as (artifact, plan, anchors, expected):
+        server = api.ServingAssembler(artifact, plan=plan)
+        batches = server.assemble(anchors, batch_size=1, seed=SEED)
+        assert_same_batches(batches, expected)
+        served = batches[0]
     # Ticks 2 to 7 are within the second before the cutoff at tick 8; tick 9 is after it.
     assert served.inputs["user"]["last_second"]["values"].tolist() == [3]
     tick = {"us": 1e-6, "ns": 1e-9}[unit]

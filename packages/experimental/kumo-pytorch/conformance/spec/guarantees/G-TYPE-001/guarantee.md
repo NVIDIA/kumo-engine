@@ -5,9 +5,8 @@
 Every resolved table column has one scalar DType. During authoring, omitted
 column types are inferred from Parquet metadata. Explicit types must match
 that metadata. A table may mix explicit types and inferred entries; omitting
-its columns discovers all source columns. `InMemoryRows`, the Python rows that
-serving and small in-process examples supply, requires explicit types because
-Python rows provide no authoritative type metadata. Field reads retain that
+its columns discovers all source columns. `InMemoryRows` requires explicit
+types because Python rows provide no authoritative type metadata. Field reads retain that
 resolved type; Raw preserves it rather than converting values to fit a model.
 Vocabulary accepts any supported scalar type, Text accepts string only, and
 ZScore/Buckets accept signed or unsigned integers, floats, and decimals only.

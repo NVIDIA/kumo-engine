@@ -14,6 +14,7 @@ import kumo.pytorch.api as r
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import build
+from tests.helpers import serving_anchors
 
 
 def _case():
@@ -147,24 +148,20 @@ def test_keyless_graph_history_targets_and_features(engine_name, output_format):
                 assert preview["samples"][1]["targets"]["next"]["fields"][0]["value"] == 100
 
 
-@pytest.mark.parametrize("arrow", (False, True))
-def test_keyless_artifact_and_serving_keep_identical_rows(engine_name, arrow, tmp_path):
+def test_keyless_artifact_and_serving_keep_identical_rows(tmp_path):
     case = _case()
-    with bound_case(case, engine_name) as (dataset, engine):
+    with bound_case(case, "diskgraph") as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            anchors = serving_anchors(tmp_path / "anchors.parquet", case.requests)
+            with plan.materialize(anchors) as task:
                 task.to_artifact().save(tmp_path / "artifact")
-    artifact = r.Artifact.load(tmp_path / "artifact")
-    server = r.ServingAssembler(artifact)
-    assert all(
-        column.role != "primary key"
-        for column in server.rows_spec.tables["events"].columns.values()
-    )
-    rows = {
-        name: pa.Table.from_pylist(values) if arrow else values
-        for name, values in case.tables.items()
-    }
-    batch = server.assemble(rows, case.requests)[0]
+            artifact = r.Artifact.load(tmp_path / "artifact")
+            server = r.ServingAssembler(artifact, plan=plan)
+            assert all(
+                column.role != "primary key"
+                for column in server.rows_spec.tables["events"].columns.values()
+            )
+            (batch,) = server.assemble(anchors, batch_size=len(case.requests))
     assert batch.inputs["values"]["count"]["values"].tolist() == [2, 3, 0]
     assert batch.inputs["values"]["sum"]["values"].tolist() == [4, 7, 0]
     assert artifact.contract.to_dict() == case.contract.to_dict()
@@ -272,7 +269,7 @@ def test_keyless_non_temporal_count_only_frame(engine_name):
         assert batch.inputs["values"]["count"]["values"].tolist() == [4, 4, 0]
 
 
-def test_keyless_tie_order_survives_an_ordered_serving_subset():
+def test_keyless_serving_uses_the_index_order_for_ties(tmp_path):
     case = _case()
     event = r.EventSpec(
         r.Rows(("activity",)), {"amount": r.Field(column="amount")}, order="descending", limit=1
@@ -290,7 +287,6 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset():
             }
         ),
     )
-    # Removing an unrelated row must not change numeric source-order ties.
     tables = {
         **case.tables,
         "events": [
@@ -299,19 +295,22 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset():
         ],
     }
     requests = (r.SampleRequest("tied", 1, 9),)
-    dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
-            server = r.ServingAssembler(task.to_artifact())
-    served = server.assemble({**tables, "events": tables["events"][1:]}, requests)[0]
-    assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
-    assert served.inputs["history"]["amount"]["values"].tolist() == [11]
+    anchors = serving_anchors(tmp_path / "anchors.parquet", requests)
+    case = replace(case, contract=contract, tables=tables)
+    for events in (tables["events"], tables["events"][1:]):
+        subset = replace(case, tables={**tables, "events": events})
+        with bound_case(subset, "diskgraph") as (dataset, engine):
+            with r.prepare(contract, dataset, engine) as plan:
+                with plan.materialize(anchors) as task:
+                    (offline,) = task.batches(batch_size=1, output_format="model")
+                    artifact = task.to_artifact()
+                (served,) = r.ServingAssembler(artifact, plan=plan).assemble(anchors)
+        (picked,) = offline.inputs["history"]["amount"]["values"].tolist()
+        assert picked in range(12)
+        assert served.inputs["history"]["amount"]["values"].tolist() == [picked]
 
 
-def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
-    from tests.serving_fetch import fetch
-
+def test_keyless_serving_graphs_keep_occurrences(tmp_path):
     case = _graph_case()
     case = replace(
         case,
@@ -321,13 +320,13 @@ def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
         },
         requests=(case.requests[1],),
     )
-    with bound_case(case, engine_name) as (dataset, engine):
+    with bound_case(case, "diskgraph") as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
-                offline = next(iter(task.batches(case.requests, batch_size=1))).inputs["graph"]
-                server = r.ServingAssembler(task.to_artifact())
-    rows = fetch(server.rows_spec, server.contract.schema, case.tables, case.requests[0])
-    served = server.assemble(rows, case.requests)[0].inputs["graph"]
+            anchors = serving_anchors(tmp_path / "anchors.parquet", case.requests)
+            with plan.materialize(anchors) as task:
+                offline = next(task.batches(batch_size=1, output_format="model")).inputs["graph"]
+                server = r.ServingAssembler(task.to_artifact(), plan=plan)
+            served = server.assemble(anchors)[0].inputs["graph"]
     # Opaque IDs are local; compare features and connectivity instead of their values.
     for graph in (offline, served):
         nodes = graph["nodes"]["events"]
@@ -336,7 +335,7 @@ def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
         assert graph["edges"]["activity"]["index"].shape == (2, 3)
 
 
-def test_keyless_serving_reduction_retains_local_floating_rounding():
+def test_keyless_serving_reduction_retains_diskgraph_floating_rounding(tmp_path):
     case = _case()
     tables = tuple(
         replace(table, columns={**table.columns, "amount": r.DType("float64")})
@@ -368,12 +367,15 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
         ],
     }
     requests = (r.SampleRequest("rounding", 1, 9),)
-    dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
-            server = r.ServingAssembler(task.to_artifact())
-    served = server.assemble({**rows, "events": rows["events"][::-1]}, requests)[0]
-    # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.
-    assert offline.inputs["values"]["sum"]["values"].tolist() == [1.0]
-    assert served.inputs["values"]["sum"]["values"].tolist() == [0.0]
+    anchors = serving_anchors(tmp_path / "anchors.parquet", requests)
+    for events in (rows["events"], rows["events"][::-1]):
+        ordered = replace(case, tables={**rows, "events": events}, contract=contract)
+        with bound_case(ordered, "diskgraph") as (dataset, engine):
+            with r.prepare(contract, dataset, engine) as plan:
+                with plan.materialize(anchors) as task:
+                    offline = next(task.batches(batch_size=1, output_format="model"))
+                    server = r.ServingAssembler(task.to_artifact(), plan=plan)
+                (served,) = server.assemble(anchors)
+        assert served.inputs["values"]["sum"]["values"].tolist() == (
+            offline.inputs["values"]["sum"]["values"].tolist()
+        )

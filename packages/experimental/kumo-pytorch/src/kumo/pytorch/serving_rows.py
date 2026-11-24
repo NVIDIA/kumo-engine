@@ -4,17 +4,15 @@
 
 """Which rows a request needs, derived from the contract alone.
 
-`ServingRowsSpec` describes, per table, the rows serving must be given for one
-request: how they join to the request or to a previous hop, the time window, how
-many the contract keeps, and which columns it reads. It never fetches anything.
+`ServingRowsSpec` describes the indexed rows a request depends on, including
+joins, time windows, row limits, and columns. It never fetches anything.
 
 The description is exact where the contract fixes the rows and conservative
 where it does not: a reader that needs every matching row (a count, a uniform
 graph sample, a lookup that must see every candidate) widens its table to ALL
 matching rows, and the history line names that reader. A filter, an active
-interval or `Rows.distinct` never narrows what is described; serving applies
-them to the rows supplied. Columns only a target reads, and rows only a target
-reads, are listed as not needed.
+interval or `Rows.distinct` never narrows what is described. Tables and columns
+only a target reads are listed as not needed.
 
 Import these types from `kumo.pytorch.serving`.
 """
@@ -153,8 +151,7 @@ class ColumnRows:
 
     :param role: ``"primary key"``, ``"join key"``, ``"time column"`` or ``"read"``;
         ``None`` for a column inference never reads.
-    :param required: every supplied row must carry it; an optional column may be
-        left out and reads as ``None``.
+    :param required: whether inference needs this column.
     :param read_by: the batch inputs (or, where no input encodes them, the sample
         components) whose values read it.
     """
@@ -170,8 +167,7 @@ class ColumnRows:
 class TableRows:
     """The rows of one table a request needs.
 
-    :param required: the table must be supplied, even as an empty list. An optional
-        table is never read under inference and may be left out.
+    :param required: whether inference reads this table.
     :param routes: each way the table is reached, usually one; fetch their union.
     :param columns: every declared column, by name.
     """
@@ -215,7 +211,7 @@ class TableRows:
 
 @dataclass(frozen=True)
 class ServingRowsSpec:
-    """What to fetch per request for one contract; ``str(spec)`` renders it for reading.
+    """The rows a request depends on. Use ``str(spec)`` to inspect the description.
 
     Derived from the contract alone; it fetches nothing. Per table it gives how
     rows match the request (a key equal to ``entity_id``, or ``IN`` the keys of
