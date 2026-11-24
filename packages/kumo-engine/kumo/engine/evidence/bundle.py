@@ -151,12 +151,32 @@ def _identifier(value):
     return value
 
 
-def _validate_graph(graph):
+def _validate_graph(graph, source_identity_kinds=None):
     if graph.get('origin') != 'original_forward':
         raise EvidenceValidationError(
             'Scoring graph is not original-forward evidence')
+    if source_identity_kinds is not None and (
+            not isinstance(source_identity_kinds, dict) or any(
+                value not in ('snapshot_row', 'source_primary_key')
+                for value in source_identity_kinds.values())):
+        raise EvidenceValidationError('Invalid source identity kinds')
     nodes = graph['nodes']
-    for node in nodes.values():
+    for table, node in nodes.items():
+        kind = node.get('identity_kind')
+        if source_identity_kinds is not None:
+            expected = ('task_row' if table == graph['train_table_name']
+                        else source_identity_kinds.get(table, 'source_primary_key'))
+            if kind != expected:
+                raise EvidenceValidationError('Graph identity kind mismatch')
+        if kind == 'snapshot_row':
+            ids = node.get('node_ids')
+            if (source_identity_kinds is None or not isinstance(ids, list)
+                    or ids != node.get('pkeys') or any(
+                        type(i) is not int or i < 0
+                        for values in (ids, node['pkeys']) for i in values)):
+                raise EvidenceValidationError('Invalid snapshot row identities')
+        elif kind not in (None, 'task_row', 'source_primary_key'):
+            raise EvidenceValidationError('Unknown graph identity kind')
         if len(node.get('pkeys', [])) != node['num_nodes']:
             raise EvidenceValidationError('Graph primary-key coverage mismatch')
     for edge in graph['edges']:
@@ -314,7 +334,8 @@ class PredictionEvidenceBundle:
         if not path.exists():
             raise EvidenceValidationError('Original scoring graph not retained')
         graph = _read(path)
-        _validate_graph(graph)
+        _validate_graph(graph, self.manifest['native_provenance'].get(
+            'source_identity_kinds'))
         return graph
 
     def availability(self, prediction_id):

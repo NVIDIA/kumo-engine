@@ -3004,6 +3004,15 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             return cached
         return self._finish_explain_selection_capture(stage)
 
+    @property
+    def source_identity_kinds(self) -> dict[str, str]:
+        """Row identity declared by each table in the scoring snapshot."""
+        return {
+            entry['name']: ('source_primary_key' if entry.get('primary_key_map')
+                            else 'snapshot_row')
+            for entry in self._load_index_node_types() if entry.get('name')
+        }
+
     def _load_index_node_types(self) -> list[dict[str, Any]]:
         index_path = (self.task_manifest.graph_runtime_metadata
                       or {}).get('graph_index_path')

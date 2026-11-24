@@ -80,6 +80,10 @@ def bind_walk_result(result, sample):
     return result
 
 
+class RetainedIdentityError(ValueError):
+    """A sampled table has inconsistent row identities."""
+
+
 class LocalSensitivity:
     """One seed, one model forward, one autograd call, incremental artifacts."""
 
@@ -165,6 +169,8 @@ class LocalSensitivity:
         else:
             self._regression_provenance(module, datamodule)
         # Precision of the original forward, applied again by offline replay.
+        self.provenance['source_identity_kinds'] = getattr(
+            datamodule, 'source_identity_kinds', {})
         self.provenance['numerics'] = capture_numerics()
         try:
             self.root.mkdir(parents=True, exist_ok=True)
@@ -324,23 +330,31 @@ class LocalSensitivity:
             block = batch[table]
             pkeys = block.get('pkey')
             count = int(block.num_nodes or 0)
-            if pkeys is None and count:
-                # The synthetic task table has no source primary key.
-                if table == module.train_table_name:
+            kind = self.provenance.get('source_identity_kinds', {}).get(
+                table, 'source_primary_key')
+            if table == module.train_table_name:
+                kind = 'task_row'
+                if pkeys is None and count:
                     pkeys = batch[batch.input_type].get('input_id')
-                if pkeys is None:
-                    raise ValueError(f'Missing source primary keys for {table}')
+            elif kind == 'snapshot_row':
+                if pkeys is not None:
+                    raise RetainedIdentityError(f'Unexpected source primary keys for {table}')
+                pkeys = block.get('n_id')
+            identities = [] if pkeys is None else _plain(pkeys)
+            if (not isinstance(identities, list) or len(identities) != count
+                    or (kind == 'snapshot_row' and any(
+                        type(i) is not int or i < 0 for i in identities))):
+                raise RetainedIdentityError(f'Invalid {kind} identities for {table}')
             nodes[table] = {
                 'pkeys':
-                _plain(pkeys) if pkeys is not None else [],
+                identities,
                 'times_ns':
                 _plain(block.get('time')),
                 'node_ids':
-                _plain(block.get('n_id')),
+                identities if kind == 'snapshot_row' else _plain(block.get('n_id')),
                 'num_nodes':
                 count,
-                'identity_kind': ('task_row' if table == module.train_table_name
-                                  else 'source_primary_key'),
+                'identity_kind': kind,
                 'num_sampled_nodes':
                 _plain(block.get('num_sampled_nodes')),
                 'batch':
@@ -664,7 +678,9 @@ class LocalSensitivity:
             record['graph_status'] = 'available'
             record['temporal_validation'] = self._temporal_validation(
                 sample, identity)
-        except Exception:
+        except Exception as error:
+            if isinstance(error, RetainedIdentityError):
+                record['identity_error'] = str(error)
             self.graph_failures += 1
             record['graph_reason'] = 'original_graph_capture_failed'
             record['temporal_validation'] = {

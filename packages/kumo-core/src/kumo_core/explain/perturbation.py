@@ -186,7 +186,8 @@ def reconstruct_batch(sample: dict) -> HeteroData:
             if node.get(source) is not None:
                 batch[table][target] = torch.tensor(node[source],
                                                     dtype=torch.long)
-        batch[table].pkey = node['pkeys']
+        if node.get('identity_kind') != 'snapshot_row':
+            batch[table].pkey = node['pkeys']
         if node.get('batch_size') is not None:
             batch[table].batch_size = node['batch_size']
         batch[table].num_sampled_nodes = node['num_sampled_nodes']

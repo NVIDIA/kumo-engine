@@ -244,3 +244,8 @@ Incremental capture keeps one prediction batch in memory, and sink failures leav
 ## Durable original prediction evidence
 
 These families have their own support boundaries and retained statuses; training or replay diagnostics never substitute for missing original-pass evidence.
+
+Walk evidence identifies each sampled occurrence by its table and position in the retained graph.
+For a table without a declared primary key, the block has `identity_kind="snapshot_row"` and its `pkeys` contain DiskGraph row IDs scoped to that table and graph snapshot.
+Repeated occurrences of one row share its ID.
+Use `numerical_sensitivity=None` for walk-only evidence, since numerical cell sensitivity requires source primary keys.
