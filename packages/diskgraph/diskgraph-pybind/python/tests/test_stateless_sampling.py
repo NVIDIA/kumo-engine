@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import pyarrow as pa
@@ -18,8 +19,10 @@ from diskgraph import (
     SamplerEngine,
     SeedScheduleConfig,
 )
+from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
 from diskgraph._c import SeedSchedule
 from diskgraph._c import SeedScheduleConfig as NativeSeedScheduleConfig
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from test_runtime_batch_iterator_e2e import (
     _sampling_plan,
@@ -75,18 +78,18 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
             for _ in sampling_plan.layers
         ]
     )
-    options = {
-        "stage": "train",
-        "sampling_plan": sampling_plan,
-        "entity_node_type": "users",
-        "num_workers": 1,
-        "worker_id": 0,
-        "shuffle": False,
-        "epoch": 0,
-        "batch_size": 2,
-    }
-    iterator, _ = index.iter(**options)
-    reference, _ = index.iter(**options)
+    options = SamplingOptions(
+        stage="train",
+        sampling_plan=sampling_plan,
+        entity_node_type="users",
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        epoch=0,
+        batch_size=2,
+    )
+    iterator, _ = index.iter(options)
+    reference, _ = index.iter(options)
     for current in (iterator, reference):
         if extras == "neighborhood":
             current.with_neighborhoods(
@@ -143,7 +146,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
             }
             current.with_history(sampler, "users", json.dumps(plan), "[]")
     first = next(iterator)
-    full_iterator, _ = index.iter(**{**options, "sampling_plan": _sampling_plan()})
+    full_iterator, _ = index.iter(replace(options, sampling_plan=_sampling_plan()))
     full = next(full_iterator)
     assert len(first["graphs"]["main"]["node_ids"]["orders"]) < len(
         full["graphs"]["main"]["node_ids"]["orders"]
@@ -209,7 +212,7 @@ def test_seed_only_schedule_matches_native_iterator(
     )
     schedule = SeedSchedule(config)
     count = schedule.num_samples()
-    iterator, expected_count = index.iter(**options)
+    iterator, expected_count = index.iter(SamplingOptions(**options))
     assert count == expected_count
     for batch in iterator:
         field = "seed_node_ids" if mode == "rhs" else "tt_stage_node_ids"
@@ -300,15 +303,17 @@ def test_local_and_standalone_validate_all_selected_ids(
     index = RuntimeIndex(seed_table_fixture["manifest_path"], rnd_seed=42)
     with pytest.raises(DiskgraphDataError, match="selected_stage_node_ids"):
         index.iter(
-            stage="train",
-            sampling_plan=_sampling_plan(),
-            entity_node_type="users",
-            batch_size=config.batch_size,
-            num_workers=config.num_workers,
-            worker_id=worker_id,
-            shuffle=False,
-            epoch=config.epoch,
-            selected_stage_node_ids=config.selected_stage_node_ids,
+            SamplingOptions(
+                stage="train",
+                sampling_plan=_sampling_plan(),
+                entity_node_type="users",
+                batch_size=config.batch_size,
+                num_workers=config.num_workers,
+                worker_id=worker_id,
+                shuffle=False,
+                epoch=config.epoch,
+                selected_stage_node_ids=config.selected_stage_node_ids,
+            )
         )
 
 
@@ -369,18 +374,18 @@ def test_named_neighborhoods_accept_native_plans_without_json(
     index = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
-    options = {
-        "stage": "train",
-        "sampling_plan": SamplingPlan(),
-        "entity_node_type": "users",
-        "num_workers": 1,
-        "worker_id": 0,
-        "shuffle": False,
-        "epoch": 0,
-        "batch_size": 2,
-    }
-    native, _ = index.iter(**options)
-    legacy, _ = index.iter(**options)
+    options = SamplingOptions(
+        stage="train",
+        sampling_plan=SamplingPlan(),
+        entity_node_type="users",
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        epoch=0,
+        batch_size=2,
+    )
+    native, _ = index.iter(options)
+    legacy, _ = index.iter(options)
     native.with_neighborhoods(
         {"context": {"plan": _sampling_plan(), "projections": {}}}
     )
@@ -401,3 +406,59 @@ def test_named_neighborhoods_accept_native_plans_without_json(
         native.with_neighborhoods(
             {"invalid": {"plan": {"layers": []}, "projections": {}}}
         )
+
+
+@pytest.mark.parametrize("with_neighbors", [False, True])
+@pytest.mark.parametrize("entity_node_type", [None, "users"])
+def test_options_defaults_match_legacy_native_batches(
+    seed_table_fixture: dict[str, object],  # noqa: F811 -- imported pytest fixture
+    with_neighbors: bool,
+    entity_node_type: str | None,
+) -> None:
+    """Compare default options with the native defaults used by the old wrapper.
+
+    Args:
+        seed_table_fixture: Ingested parent graph and six seed rows.
+        with_neighbors: Whether to supply a two-layer traversal plan.
+        entity_node_type: Missing entity type or an explicit valid entity type.
+    """
+    plan = _sampling_plan() if with_neighbors else SamplingPlan()
+    index = RuntimeIndex(
+        str(seed_table_fixture["manifest_path"]), rnd_seed=17, num_threads=1
+    )
+    native = NativeRuntimeIndex(
+        str(seed_table_fixture["parent_root"]),
+        f"train_tables/{seed_table_fixture['tt_id']}",
+        17,
+        1,
+    )
+
+    iterator, count = index.iter(
+        SamplingOptions(
+            stage="train",
+            batch_size=2,
+            sampling_plan=plan,
+            entity_node_type=entity_node_type,
+        )
+    )
+    legacy = native.iter(
+        "train_seeds",
+        plan,
+        1,
+        0,
+        False,
+        17,
+        0,
+        2,
+        entity_node_type=entity_node_type,
+    )
+
+    assert count == seed_table_fixture["n_seeds"]
+    if entity_node_type is None:
+        with pytest.raises(DiskgraphConfigError, match="entity_node_type") as current:
+            list(iterator)
+        with pytest.raises(DiskgraphConfigError, match="entity_node_type") as previous:
+            list(legacy)
+        assert str(current.value) == str(previous.value)
+        return
+    _assert_equal(list(iterator), list(legacy))

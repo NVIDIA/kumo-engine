@@ -19,14 +19,16 @@ import threading
 import time
 import warnings
 import weakref
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import queues as mp_queues
 from multiprocessing.reduction import ForkingPickler
-from typing import TYPE_CHECKING, Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any
 
 import pytorch_lightning as pl
+from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from diskgraph.sampling_plan import SamplingPlan
 from torch._utils import ExceptionWrapper
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
@@ -1573,18 +1575,27 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         ):
             stage_options = self.stage_runtime_options.get(stage, {})
             options = {**iter_options, **stage_options}
+            weights = options.get("weighted_seed_sampling")
+            if weights is not None:
+                options["weighted_seed_sampling"] = WeightedSeedSampling(**weights)
             iterator, num_samples = index.iter(
-                stage=stage,
-                sampling_plan=self.sampling_plan,
-                projections=({} if options.get("fused") is True else self.projections),
-                num_workers=(stage_num_workers or num_workers),
-                worker_id=(worker_id if stage_worker_id is None else stage_worker_id),
-                shuffle=self.shuffle,
-                epoch=base_epoch + epoch_offset,
-                batch_size=self.batch_size,
-                drop_last=self.drop_last,
-                group_by_timestamp=self.group_by_timestamp,
-                **options,
+                SamplingOptions(
+                    stage=stage,
+                    sampling_plan=self.sampling_plan,
+                    projections=(
+                        {} if options.get("fused") is True else self.projections
+                    ),
+                    num_workers=(stage_num_workers or num_workers),
+                    worker_id=(
+                        worker_id if stage_worker_id is None else stage_worker_id
+                    ),
+                    shuffle=self.shuffle,
+                    epoch=base_epoch + epoch_offset,
+                    batch_size=self.batch_size,
+                    drop_last=self.drop_last,
+                    group_by_timestamp=self.group_by_timestamp,
+                    **options,
+                )
             )
             return iterator, int(num_samples)
 
@@ -2190,6 +2201,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         """RHS node IDs passing the target filter's candidate-table
         conditions; ``None`` admits all."""
         import torch
+
         from kumo_core.diskgraph.stores import rhs_catalog
         from kumo_core.errors import TrainingValidationError
         row_filter = self.task_manifest.predict_candidate_filter
@@ -2206,8 +2218,10 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return torch.from_numpy(node_ids)
 
     def require_single_predict_anchor(self) -> None:
-        from kumo_core.training.validation import require_single_anchor
         from kumoapi.train import TrainingStage
+
+        from kumo_core.training.validation import require_single_anchor
+
         anchors = self._stage_time_dict.get(TrainingStage.PRED)
         if anchors is not None:
             require_single_anchor(*anchors)
@@ -2965,6 +2979,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         ``RHSTime.get_valid_nodes`` (all-ns RHS validity)."""
         import pandas as pd
         import torch
+
         from kumo_core.diskgraph.stores import read_node_column
 
         ser = pd.to_datetime(
