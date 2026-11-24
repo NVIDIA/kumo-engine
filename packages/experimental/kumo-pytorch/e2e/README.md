@@ -159,6 +159,16 @@ test anchors in inference mode. `serve` builds one `ServingAssembler`, prints it
 following that spec. Fine-tuning starts from the
 pre-trained artifact's bound contract, so every token ID is the pre-trained one.
 
+`pretrain`, `finetune` and `batch_inference` each create a fresh dataset engine.
+Each stage ingests its own `indexes/<index_build_id>/` under its configured
+work/output root, even when the data and root are unchanged. A PRAGMA lifecycle
+therefore performs three base ingests; the GNN's training and inference perform
+two. Include that repeated ingestion time and disk usage when comparing runs.
+Base indexes and derived `cache/<index_build_id>/` directories remain after
+plan/task cleanup and accumulate across reruns; no automatic garbage collection
+removes them. See [storage lifetime and cleanup](../docs/04-engines-and-data.md#storage-lifetime-and-cleanup)
+for manual cleanup guidance and the preceding index section for snapshot reuse.
+
 The GNN's neighborhood has two hops, so T2a exercises multi-hop sampling end to
 end, including the future-row and serving checks. The second hop works only
 because the generator gives `articles` a clock: DiskGraph samples only clocked

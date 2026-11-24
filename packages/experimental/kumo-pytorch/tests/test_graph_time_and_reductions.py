@@ -212,7 +212,7 @@ class TestGraphSampling:
             GraphSample("user_events", fanout=2, temporal="static")
 
     def test_diskgraph_accepts_uniform_before_reading_data(self):
-        assert not DiskGraphEngine(index="/i").check_contract(
+        assert not DiskGraphEngine().check_contract(
             _contract(_neighborhood(strategy="uniform")).resolve()
         )
 

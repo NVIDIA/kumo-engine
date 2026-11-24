@@ -13,7 +13,13 @@ name: kumo-pytorch DiskGraph
 on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
+      - 'pyproject.toml'
       - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/kumo-engine/**'
+      - 'packages/kumo-core/**'
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-pql/**'
+      - 'packages/kumo-settings/**'
       - 'packages/diskgraph/**'
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -22,7 +28,13 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
     paths:
+      - 'pyproject.toml'
       - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/kumo-engine/**'
+      - 'packages/kumo-core/**'
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-pql/**'
+      - 'packages/kumo-settings/**'
       - 'packages/diskgraph/**'
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'

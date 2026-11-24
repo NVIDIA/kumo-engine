@@ -109,9 +109,7 @@ def native_task(tmp_path, request):
     dataset = api.Dataset(
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         with plan.materialize(table, fit_split="train") as task:
             yield plan, task, table
 
@@ -363,6 +361,110 @@ def test_empty_native_anchors_and_cleanup(native_task, tmp_path):
     assert plan._source._sampler is not None
 
 
+@pytest.mark.parametrize("lifetime", ["del", "cycle", "plan-close"])
+def test_unclosed_native_tasks_release_readers_and_owned_files(native_task, monkeypatch, lifetime):
+    import gc
+    import weakref
+    from pathlib import Path
+
+    plan, previous, table = native_task
+    source = plan._require_open()
+    base = Path(source._index_path)
+    before = {p.relative_to(base): p.read_bytes() for p in base.rglob("*") if p.is_file()}
+    cache = source._paths.cache_dir / "retained"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("keep")
+    task = plan.materialize(table, fitted=previous.fitted_state)
+    anchors = task._anchors
+    extension, scratch = Path(anchors._temporary.name), anchors.path
+    reference = weakref.ref(task)
+    cleanup = anchors._temporary.cleanup
+    cleaned = []
+
+    def cleanup_after_reader_release():
+        assert anchors._runtime is None
+        assert anchors._history_engine is None
+        assert source._sampler_context is None
+        cleaned.append(True)
+        cleanup()
+
+    monkeypatch.setattr(anchors._temporary, "cleanup", cleanup_after_reader_release)
+    if lifetime == "plan-close":
+        close_source = source.close
+
+        def close_source_after_tasks():
+            assert not extension.exists()
+            assert not scratch.exists()
+            close_source()
+
+        monkeypatch.setattr(source, "close", close_source_after_tasks)
+        # Keep both Tasks alive: plan.close must release their resources itself.
+        plan.close()
+        plan.close()
+        task.close()
+        assert reference() is task
+    else:
+        if lifetime == "cycle":
+            task.cycle = task
+        del task
+        gc.collect()
+        assert reference() is None
+        # Cleanup detached its finalizer; another close remains harmless.
+        anchors.close()
+        assert plan._source is source
+    assert cleaned == [True]
+    assert not extension.exists()
+    assert not scratch.exists()
+    assert cache.read_text() == "keep"
+    assert {p.relative_to(base): p.read_bytes() for p in base.rglob("*") if p.is_file()} == before
+
+
+def test_unclosed_native_task_is_cleaned_at_interpreter_exit(native_task, tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    plan, _, table = native_task
+    source = plan._require_open()
+    contract = tmp_path / "exit-contract.json"
+    contract.write_text(plan.contract.to_json())
+    result = tmp_path / "exit-task.json"
+    script = """
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+import kumo.settings
+from kumo.pytorch import api
+root, base, contract, anchors, result = sys.argv[1:]
+kumo.settings.configure(scratch_dir=root)
+engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=base, id="exit-test"))
+plan = api.prepare(contract=api.DataLoaderSpec.from_json(Path(contract).read_text()), engine=engine)
+table = api.AnchorTable(api.Parquet(anchors), "entity", "cutoff", sample_id="sid", split="split",
+                        targets={"label": "label"}, metadata=("details",))
+task = plan.materialize(table, fit_split="train")
+Path(result).write_text(json.dumps([task._anchors._temporary.name, str(task._anchors.path)]))
+# Keep plan and task live until normal interpreter shutdown; never close either.
+"""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(source._paths.root),
+            source._index_path,
+            str(contract),
+            table.source.path,
+            str(result),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert all(not Path(path).exists() for path in json.loads(result.read_text()))
+    assert Path(source._index_path).is_dir()
+
+
 @pytest.mark.parametrize(
     "column,value,match",
     [
@@ -546,7 +648,7 @@ def test_native_anchor_history_share_one_combined_reader(native_task):
     source = plan._source
     assert task._anchors._history_engine is source._sampler
     assert any(
-        name.startswith(Path(task._anchors._extension.name).name + "/")
+        name.startswith(Path(task._anchors._temporary.name).name + "/")
         for name in source._node_types
     )
     assert set(_base_index_mappings(source._index_path).values()) == {1}
@@ -606,7 +708,7 @@ def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, mon
                     assert torch.isfinite(values).all()
 
 
-def test_native_extension_uses_existing_base_directory_without_symlinks(native_task, monkeypatch):
+def test_native_extension_uses_managed_task_directory_without_symlinks(native_task, monkeypatch):
     from pathlib import Path
 
     plan, previous, table = native_task
@@ -616,8 +718,8 @@ def test_native_extension_uses_existing_base_directory_without_symlinks(native_t
 
     monkeypatch.setattr(Path, "symlink_to", forbidden)
     with plan.materialize(table, fitted=previous.fitted_state) as task:
-        extension = Path(task._anchors._extension.name)
-        assert extension.parent == Path(plan._require_open()._index_path) / "train_tables"
+        extension = Path(task._anchors._temporary.name)
+        assert extension.parent == plan._require_open()._paths.task_dir("probe").parent
         assert (extension / "index_metadata.json").is_file()
         assert not any(path.is_symlink() for path in extension.iterdir())
         assert _by_sample(task.batches(split="train", output_format="model")) == {
@@ -627,6 +729,81 @@ def test_native_extension_uses_existing_base_directory_without_symlinks(native_t
             "f": 6.0,
         }
     assert not extension.exists()
+
+
+@pytest.mark.parametrize("boundary", ["ingest", "runtime"])
+@pytest.mark.parametrize("field", ["graph", "stage"])
+def test_manifest_placement_is_checked_before_native_calls(
+    native_task, monkeypatch, boundary, field
+):
+    import kumo.pytorch.engines.native_anchors as module
+
+    plan, previous, table = native_task
+    source = plan._require_open()
+    verify = module.verify_task_manifest
+    ingest = source._diskgraph.ingest
+    manifests = []
+    ingested = []
+
+    def corrupt(manifest):
+        entry = manifest["graph"] if field == "graph" else next(iter(manifest["stages"].values()))
+        entry["index_path"] = str(source._paths.root.parent / "outside")
+
+    def check(manifest, **options):
+        manifests.append(manifest)
+        if boundary == "ingest":
+            corrupt(manifest)
+        verify(manifest, **options)
+
+    def ingest_then_corrupt(*args, **kwargs):
+        ingested.append(True)
+        result = ingest(*args, **kwargs)
+        # Simulate a manifest changed between the pre-ingest check and handoff.
+        corrupt(manifests[-1])
+        return result
+
+    def forbidden_runtime(*args, **kwargs):
+        pytest.fail("invalid manifest reached the native runtime")
+
+    monkeypatch.setattr(module, "verify_task_manifest", check)
+    monkeypatch.setattr(source._diskgraph, "ingest", ingest_then_corrupt)
+    monkeypatch.setattr(source._diskgraph, "RuntimeIndex", forbidden_runtime)
+    with pytest.raises(ValueError, match="index_path"):
+        plan.materialize(table, fitted=previous.fitted_state)
+    assert len(ingested) == (0 if boundary == "ingest" else 1)
+    assert len(manifests) == (1 if boundary == "ingest" else 2)
+
+
+def test_snapshot_manifest_preserves_producer_layout_after_reconfiguration(native_task):
+    import shutil
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import kumo.settings
+
+    plan, _, table = native_task
+    source = plan._require_open()
+    base = source._paths.root / "producer-snapshots" / "graph-version"
+    shutil.copytree(source._index_path, base)
+    engine = api.DiskGraphEngine.from_snapshot(
+        SimpleNamespace(index_path=base, id="graph@version"), num_threads=1
+    )
+    new_root = source._paths.root / "reconfigured"
+    kumo.settings.configure(scratch_dir=new_root)
+    with api.prepare(contract=plan.contract, engine=engine) as bound:
+        with bound.materialize(table, fit_split="train") as task:
+            manifest = task._anchors._manifest
+            assert Path(manifest["graph"]["index_path"]) == base
+            assert {Path(stage["index_path"]) for stage in manifest["stages"].values()} == {
+                engine._paths.task_dir(task._anchors._temporary.task_id)
+            }
+            assert _by_sample(task.batches(split="train", output_format="model")) == {
+                "a": 1.0,
+                "b": 2.0,
+                "d": 4.0,
+                "f": 6.0,
+            }
+    assert not new_root.exists()
 
 
 @pytest.mark.parametrize("neighborhood_count", [1, 2])
@@ -690,7 +867,7 @@ def _scored_graph_plan(native_task, tmp_path):
         batch=replace(plan.contract.batch, inputs={**plan.contract.batch.inputs, "entity": entity}),
     )
     dataset = api.Dataset(tables={**plan.dataset.tables, "users": api.Parquet(str(path))})
-    engine = api.DiskGraphEngine(index=tmp_path / "scored-index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     return api.prepare(contract, dataset, engine)
 
 

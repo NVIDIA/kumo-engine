@@ -4,8 +4,8 @@
 
 """Task-owned seeds served by the same native iterator as Engine GNN tasks.
 
-Only anchor rows are ingested. Task extensions live under the base index;
-cleanup removes task data, never base graph files.
+Only anchor rows are ingested. Managed task extensions live under the Kumo
+root; cleanup removes task data, never base graph files.
 Python keeps bindings and stage counts, not a second full anchor column store.
 """
 
@@ -24,6 +24,7 @@ from typing import Any
 
 from diskgraph import SamplingPlan
 
+from kumo.pytorch._storage import verify_task_manifest
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
@@ -77,16 +78,14 @@ class NativeAnchors:
         self._source, self._sample, self._table = source, sample, table
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
-        parent = Path(source._index_path)
-        (parent / "tasks").mkdir(exist_ok=True)
-        (parent / "train_tables").mkdir(exist_ok=True)
-        self._temporary = directory or tempfile.TemporaryDirectory(
-            prefix="task-", dir=parent / "tasks"
+        self._temporary = directory or source.new_task_directory()
+        # Native ingest clears its output directory before reading inputs.
+        # Keep scratch beside that output, within the same task build root.
+        self._scratch = tempfile.TemporaryDirectory(
+            prefix=f"scratch-{self._temporary.task_id}-",
+            dir=Path(self._temporary.name).parent,
         )
-        self._extension = tempfile.TemporaryDirectory(
-            prefix=Path(self._temporary.name).name + "-", dir=parent / "train_tables"
-        )
-        self.path = Path(self._temporary.name)
+        self.path = Path(self._scratch.name)
         self._closed = False
         self._length_caches = {}
         self._last_length_planning_stats = (0, 0)
@@ -119,7 +118,7 @@ class NativeAnchors:
         writers = {}
         position = 0
         view = Path(self._source._index_path)
-        extension = Path(self._extension.name)
+        extension = Path(self._temporary.name)
         try:
             for file in files:
                 for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
@@ -253,6 +252,9 @@ class NativeAnchors:
                     key: threads for key in ("context_threads", "encode_threads", "index_threads")
                 }
             )
+            verify_task_manifest(
+                manifest, paths=self._source._paths, index=view, task_id=self._temporary.task_id
+            )
             self._source._diskgraph.ingest(
                 json.dumps(
                     {
@@ -267,6 +269,9 @@ class NativeAnchors:
                 col_stats=False,
                 **options,
             )
+        verify_task_manifest(
+            manifest, paths=self._source._paths, index=view, task_id=self._temporary.task_id
+        )
         self._manifest = manifest
         path = self.path / "runtime.json"
         path.write_text(json.dumps(manifest))
@@ -500,7 +505,9 @@ class NativeAnchors:
                 raise ValueError(
                     "event token costs do not match the designated input's fitted recipe"
                 )
-            fixed, values = read_token_lengths(self._source._index_path, entry)
+            fixed, values = read_token_lengths(
+                self._source._index_path, entry, cache_root=self._source._cache_root
+            )
             if values is not None:
                 self._token_maps.append(values)
             self._event_costs[table] = dict(
@@ -1102,12 +1109,12 @@ class NativeAnchors:
             self._runtime = None
             self._history_engine = None
             del sampler
-            self._extension.cleanup()
             self._length_caches.clear()
             getattr(self, "_token_length_arrays", {}).clear()
             self._token_maps = []
             self._event_costs = {}
             self._temporary.cleanup()
+            self._scratch.cleanup()
 
     def validate_columnar(self, assembler, selection):
         """Refuse unsupported contracts before constructing a native iterator."""

@@ -58,12 +58,15 @@ def _window(batches, model, optimizer, device, count):
 
 
 def measure(workload, root, index, device):
+    import kumo.settings
+
     from tests.e2e.throughput_models import make_model
 
+    kumo.settings.configure(scratch_dir=index)
     start = perf_counter()
     contract, dataset, anchors, cutoff = load_fixture(workload, root)
     opened = perf_counter()
-    with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=4)) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=4)) as plan:
         indexed = perf_counter()
         with plan.materialize(anchors, fit_split="train", encoder_cutoff=cutoff) as task:
             fitted = perf_counter()
@@ -108,7 +111,7 @@ def main():
     parser.add_argument("workload", choices=("M04", "S02", "L01"))
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument(
-        "--index", type=Path, required=True, help="Scratch directory for a fresh index"
+        "--index", type=Path, required=True, help="Scratch root for a fresh managed index"
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

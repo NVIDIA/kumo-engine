@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+import weakref
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
@@ -52,7 +53,13 @@ from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import Aggregate, Compare, SampleRequest
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import FittedEncoder
-from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
+from kumo.pytorch.engine import (
+    AnchorTask,
+    ArtifactIdentitySource,
+    Engine,
+    ExistingIndexEngine,
+    SampleSource,
+)
 from kumo.pytorch.spec import (
     DataLoaderSpec,
     ValidationError,
@@ -67,10 +74,42 @@ __all__ = ["Plan", "check", "prepare", "preview"]
 logger = logging.getLogger(__name__)
 
 
+@overload
 def check(
     contract: DataLoaderSpec,
     dataset: Dataset,
     engine: Engine,
+    *,
+    anchors: AnchorTable | None = None,
+    inference: bool = False,
+) -> tuple[ValidationIssue, ...]: ...
+
+
+@overload
+def check(
+    contract: DataLoaderSpec,
+    dataset: None,
+    engine: Engine,
+    *,
+    anchors: AnchorTable | None = None,
+    inference: bool = False,
+) -> tuple[ValidationIssue, ...]: ...
+
+
+@overload
+def check(
+    contract: DataLoaderSpec,
+    *,
+    engine: Engine,
+    anchors: AnchorTable | None = None,
+    inference: bool = False,
+) -> tuple[ValidationIssue, ...]: ...
+
+
+def check(
+    contract: DataLoaderSpec,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
@@ -91,12 +130,14 @@ def check(
 
 def _check(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
 ) -> tuple[DataLoaderSpec, tuple[ValidationIssue, ...]]:
+    if engine is None:
+        raise TypeError("engine is required")
     entity_issues = _entity_key_issues(contract)
     if entity_issues:
         return contract, entity_issues
@@ -105,6 +146,9 @@ def _check(
     try:
         # Keep reporting declaration issues for a bad binding when types are
         # already known, but never read metadata through a missing binding.
+        if dataset is None and not issues:
+            assert isinstance(engine, ExistingIndexEngine)
+            contract = replace(contract, schema=engine._resolve_index_schema(contract.schema))
         contract = contract.resolve(dataset=None if issues else dataset)
     except (ValueError, KeyError, OSError) as error:
         if not issues:
@@ -154,6 +198,7 @@ class Plan:
 
     Owns the opened binding: close it with ``plan.close()`` or use the plan as a
     context manager. Tasks read through it and are usable while it is open.
+    Closing the plan also closes its live tasks before releasing the binding.
 
     ``inference`` is true for a plan prepared with ``prepare(..., inference=True)``:
     its targets were not checked against the engine, so it only materializes
@@ -163,7 +208,7 @@ class Plan:
     def __init__(
         self,
         contract: DataLoaderSpec,
-        dataset: Dataset,
+        dataset: Dataset | None,
         engine: Engine,
         source: SampleSource,
         *,
@@ -174,7 +219,12 @@ class Plan:
         self.engine = engine
         self.inference = inference
         self._source: SampleSource | None = source
-        self._dataset_fingerprint = _fingerprint(dataset)
+        self._tasks: weakref.WeakSet[Task] = weakref.WeakSet()
+        self._dataset_fingerprint = (
+            source.artifact_identity
+            if isinstance(source, ArtifactIdentitySource) and source.artifact_identity
+            else _fingerprint(dataset)
+        )
 
     def materialize(
         self,
@@ -268,14 +318,11 @@ class Plan:
                 )
             )
         ):
-            import tempfile
             from pathlib import Path
 
             from kumo.pytorch.aggregate_materialization import materialize_values
 
-            parent = Path(source._index_path) / "tasks"
-            parent.mkdir(exist_ok=True)
-            directory = tempfile.TemporaryDirectory(prefix="task-", dir=parent)
+            directory = source.new_task_directory()
             try:
                 values = materialize_values(
                     self,
@@ -411,7 +458,7 @@ class Plan:
         except BaseException:
             task_anchors.close()
             raise
-        return Task(
+        task = Task(
             contract=self.contract,
             assembler=assembler,
             anchors=task_anchors,
@@ -420,6 +467,8 @@ class Plan:
             fit=fit,
             has_targets=not input_only,
         )
+        self._tasks.add(task)
+        return task
 
     def _pinned_from_stats(
         self,
@@ -535,11 +584,16 @@ class Plan:
         return self._source
 
     def close(self) -> None:
-        """Release the engine binding. Idempotent."""
+        """Close live tasks, then release the engine binding. Idempotent."""
 
         source, self._source = self._source, None
         if source is not None:
-            source.close()
+            try:
+                for task in tuple(self._tasks):
+                    task.close()
+            finally:
+                self._tasks.clear()
+                source.close()
 
     def __enter__(self) -> Plan:
         return self
@@ -582,14 +636,47 @@ def reused_state(
     return fitted._input_state, fitted._target_encoders
 
 
+@overload
 def prepare(
     contract: DataLoaderSpec,
     dataset: Dataset,
     engine: Engine,
     *,
     inference: bool = False,
+) -> Plan: ...
+
+
+@overload
+def prepare(
+    contract: DataLoaderSpec,
+    dataset: None,
+    engine: Engine,
+    *,
+    inference: bool = False,
+) -> Plan: ...
+
+
+@overload
+def prepare(
+    contract: DataLoaderSpec,
+    *,
+    engine: Engine,
+    inference: bool = False,
+) -> Plan: ...
+
+
+def prepare(
+    contract: DataLoaderSpec,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
+    *,
+    inference: bool = False,
 ) -> Plan:
-    """Validate, then bind the dataset through the engine.
+    """Validate, then bind sources or an existing index through the engine.
+
+    Omit ``dataset`` only for a DiskGraphEngine created with
+    ``from_snapshot``. Its stored schema supplies omitted types; it never reads
+    the original sources or rebuilds the base. ``engine`` is always required.
 
     Every check that does not need data happens first, so an unexecutable
     combination is refused before a row is read. Anchors, and everything fitted
@@ -670,10 +757,17 @@ def preview(
 
 def _binding_issues(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    existing_index = isinstance(engine, ExistingIndexEngine)
+    if existing_index:
+        issues.extend(engine._check_binding(dataset, contract.schema))
+    if dataset is None:
+        if not existing_index:
+            issues.append(ValidationIssue("dataset", "this engine requires a Dataset"))
+        return issues
     declared = [table.name for table in contract.schema.tables]
     missing = dataset.missing_for(declared)
     if missing:
