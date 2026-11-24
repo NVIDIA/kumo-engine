@@ -496,9 +496,9 @@ def test_buckets_cut_values_near_the_float_limits():
     "values,reads",
     [
         pytest.param([0.0, 2.0**-499], 0, id="tiny-pair"),
-        pytest.param([0.0, 2.0**-599], 0, id="underflow-pair"),
+        pytest.param([0.0, 2.0**-599], 1, id="underflow-pair"),
         pytest.param([2.0**600] * 2, 0, id="large-constant"),
-        pytest.param([0.0, 2.0**600], 0, id="overflow-pair"),
+        pytest.param([0.0, 2.0**600], 1, id="overflow-pair"),
         pytest.param([0.0, 1.0, 2.0, 4.0], 0, id="ordinary"),
         pytest.param([0.0, 2.0**-599, 2.0**-598, 2.0**-597], 1, id="variance-underflows"),
         pytest.param([0.0, 2.0**600, 2.0**601, 2.0**602], 1, id="variance-overflows"),

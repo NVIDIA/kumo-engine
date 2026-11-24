@@ -326,13 +326,8 @@ def read_column_stats(
             return low, 1.0
         # A smaller deviation can come from a variance rounded into the subnormal range.
         mean, std = data["mean"], data["std"]
-        if n > 2 and mean is not None and std is not None and std >= 2.0**-511:
+        if mean is not None and std is not None and std >= 2.0**-511:
             return mean, std / math.sqrt(n / (n - 1))
-        _, exponent = math.frexp(max(abs(low), abs(high)))
-        magnitude = math.ldexp(1.0, exponent - 1)
-        if n == 2:
-            a, b = low / magnitude, high / magnitude
-            return (a + b) * 0.5 * magnitude, (b - a) * 0.5 * magnitude
 
         table, column, _ = request
         key = hashlib.sha256(json.dumps([table, column]).encode()).hexdigest()
@@ -342,6 +337,8 @@ def read_column_stats(
         from diskgraph._c import _scaled_column_moments
 
         # Center tightly clustered values before accumulating their scaled deviations.
+        _, exponent = math.frexp(max(abs(low), abs(high)))
+        magnitude = math.ldexp(1.0, exponent - 1)
         origin = max(low, min(0.0, high))
         count, mean, scale = _scaled_column_moments(
             str(index), table, column, ticks, magnitude, origin, num_threads
