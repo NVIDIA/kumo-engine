@@ -243,10 +243,8 @@ async function shortage(event, instance, io) {
   };
   for (const [zone, error] of Object.entries(state?.last_errors || {})) if (matches(zone, ZONE)) add(String(error).split(':')[0], zone);
   for (const [region, code] of Object.entries(state?.unread || {})) if (matches(region, REGION)) add(code, region);
-  for (const {region} of state?.regions || []) {
-    const marker = matches(region, REGION) && await io.aws('s3', 'get-object', closedRegion(event, instance, region));
-    if (marker) shut.push([region, [NO_RUNNER, ENDED].includes(marker.reason) || matches(marker.reason, BOOT_ERROR) ? ' (' + marker.reason + ')' : '']);
-  }
+  for (const [region, reason] of await closed(event, instance, (state?.regions || []).map(r => r.region).filter(r => matches(r, REGION)), io))
+    shut.push([region, [NO_RUNNER, ENDED].includes(reason) || matches(reason, BOOT_ERROR) ? ' (' + reason + ')' : '']);
   if (!codes.size && !shut.length) return undefined;
   const zoneText = codes.size ? 'Last zone errors: ' + [...codes].map(([code, zones]) => code + ' in ' + zones.join(', ')).join('; ') + '.' : '';
   const shutText = reasons => shut.length ? 'Closed regions: ' + shut.map(([region, reason]) => region + (reasons ? reason : '')).join(', ') + '.' : '';
@@ -470,8 +468,7 @@ async function sweep(event, io) {
         cases: waiting.map(r => ({case: r.case, scale: r.scale, instance: event.instance, label: event.label})), error}, io);
       state.dispatched = true;
     }
-    return {filled, waiting: waiting.length, booting, missing: wanted, launched: answers.flatMap(a => a.instances || []),
-      terminated: terminated.map(t => t.instance), closed: closing, blind, position: state.position, answers};
+    return {...record, launched: answers.flatMap(a => a.instances || []), terminated: terminated.map(t => t.instance), position: state.position};
   } finally {
     const release = () => write({...state, lease_until: 0}, {IfMatch: etag});
     try {
