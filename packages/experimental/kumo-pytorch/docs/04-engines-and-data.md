@@ -149,6 +149,8 @@ For a declared `int64` column, DiskGraph also accepts Parquet `int8`,
 The contract and batches use `int64`. Ingest fails if any decimal value
 falls outside the signed 64-bit range.
 
+Column names are case-sensitive; when column names or types are omitted, resolution reports every table whose stored columns do not match, with close-match suggestions. Fully declared tables are checked when DiskGraph prepares the data.
+
 ## The DiskGraph engine
 
 The DiskGraph engine is built on kumo-engine's DiskGraph, which the
