@@ -128,6 +128,15 @@ class PublicRunnerTest(unittest.TestCase):
                         target = context / manifest
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text('# workspace metadata fixture\n')
+                component_files = [
+                    Path('packages/experimental/kumo-pytorch/src/kumo/pytorch/__init__.py'),
+                    Path('packages/experimental/kumo-fm/setup.py'),
+                    Path('packages/experimental/kumo-fm/src/kumo/fm/_native_json.cpp'),
+                ] if profile == 'public_setup' else []
+                for component in component_files:
+                    target = context / component
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text('# bundled component fixture\n')
                 (context / 'Dockerfile').write_text('FROM scratch\nCOPY . /\n')
                 shutil.copyfile(
                     runner.ROOT / 'tests' / profile / 'Dockerfile.dockerignore',
@@ -147,6 +156,9 @@ class PublicRunnerTest(unittest.TestCase):
                 for manifest in manifests:
                     self.assertTrue((root / 'output' / manifest).is_file(),
                                     str(manifest))
+                for component in component_files:
+                    self.assertTrue((root / 'output' / component).is_file(),
+                                    str(component))
 
     @unittest.skipUnless(shutil.which('docker'), 'Docker is required')
     def test_wheel_rebuild_replaces_previous_output(self):
