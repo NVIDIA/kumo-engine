@@ -3,6 +3,9 @@
 
 """Column-wise reads of a pragmatiq `events.parquet`, in blocks of whole users.
 
+`events.parquet` is one file, or a directory of parquet files read in string
+order of their paths, as `pyarrow.dataset` lists them: `part-10` before `part-9`.
+
 `load_pragmatiq_dataset` builds one `TransactionEvent` per row, which is exact
 but needs about 6 KB of memory per event. These reads keep Arrow and NumPy
 columns instead and reproduce what the object path would build:
@@ -14,13 +17,16 @@ columns instead and reproduce what the object path would build:
   categorical otherwise, and `source` as one more categorical field.
 
 The book must be sorted by `user_id`, as pragmatiq writes it, so a block of
-rows holds whole users and blocks follow entity order.
+rows holds whole users and blocks follow entity order. It should also be
+sorted by `ts` within each user; a block that is not is sorted in memory,
+with a warning.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Collection
+import warnings
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -29,74 +35,118 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from numpy.typing import NDArray
 
-from tfm.contracts.errors import SchemaError
+from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
+from tfm.contracts.tokenizers import (
+    FIELD_CATEGORICAL,
+    FIELD_NUMERIC,
+    FIELD_TEXT,
+    EventBlock,
+)
 from tfm.data.adapters.pragmatiq import parse_float
 
-FIELD_CATEGORICAL, FIELD_NUMERIC, FIELD_TEXT = 0, 1, 2
-"""Field views, in the order `event_fields` lists them."""
 SOURCE_MAP_POSITION = 127
 """`source` is added after an event's own categorical fields."""
 
 
 @dataclass(frozen=True)
-class BlockPlan:
-    """Row ranges of whole users, in entity order."""
+class RowGroup:
+    """One row group of an event file, as the planner saw it."""
 
-    starts: tuple[int, ...]
-    stops: tuple[int, ...]
-    n_users: int
+    path: str
+    size: int
+    """The file's size in bytes when the blocks were planned."""
+    mtime_ns: int
+    """The file's modification time when the blocks were planned."""
+    index: int
+    first_row: int
+    """Its first row's number in the whole book."""
     n_rows: int
-
-    def __len__(self) -> int:
-        return len(self.starts)
 
 
 @dataclass(frozen=True)
-class EventBlock:
-    """One block of users, events in `order_events` order.
+class PlannedBlock:
+    """Book rows `[start, stop)` of whole users, and the row groups that hold them."""
 
-    Pair arrays list every field of every event (map fields and `source`),
-    in no particular order; `pair_event` says whose they are.
-    """
-
-    user_ids: tuple[str, ...]
-    user_offsets: NDArray[np.int64]
-    ts_us: NDArray[np.int64]
-    """True microseconds since the epoch."""
-    id_us: NDArray[np.int64]
-    """The microsecond value in `event_id`, `int(ts.timestamp() * 1_000_000)`."""
-    loader_index: NDArray[np.int64]
-    """The per-user index in `event_id`."""
-    pair_event: NDArray[np.int64]
-    pair_key: NDArray[np.int64]
-    """Index into `keys`."""
-    pair_value: NDArray[np.int64]
-    """Index into `values`."""
-    pair_kind: NDArray[np.int8]
-    pair_map_position: NDArray[np.int64]
-    keys: tuple[str, ...]
-    values: tuple[str, ...]
-    """Each field's string as `event_fields` would give it."""
-    numbers: NDArray[np.float64]
-    """`values` parsed as floats, NaN where a value is not numeric."""
+    index: int
+    start: int
+    stop: int
+    groups: tuple[RowGroup, ...]
 
     @property
-    def n_events(self) -> int:
-        return len(self.ts_us)
+    def n_rows(self) -> int:
+        return self.stop - self.start
+
+
+@dataclass(frozen=True)
+class BlockPlan:
+    """Blocks of whole users, in entity order."""
+
+    blocks: tuple[PlannedBlock, ...]
+    n_users: int
+    n_rows: int
+    longest_user_id: int
+    """The longest planned user id, in UTF-8 bytes."""
+
+    def __len__(self) -> int:
+        return len(self.blocks)
+
+
+def _event_files(root: Path) -> list[str]:
+    """The book's event files, in read order."""
+    path = root / "events.parquet"
+    if not path.is_dir():
+        return [str(path)]
+    files = list(ds.dataset(str(path), format="parquet").files)
+    if not files:
+        raise SchemaError(f"{path} holds no parquet files.")
+    return files
+
+
+def _row_group_index(root: Path) -> tuple[list[RowGroup], dict[str, int]]:
+    """Every row group of the book's event files in read order, and each file's size.
+
+    Files must share a schema.
+    """
+    groups: list[RowGroup] = []
+    sizes: dict[str, int] = {}
+    first_row = 0
+    schema = None
+    files = _event_files(root)
+    for path in files:
+        stat = Path(path).stat()
+        sizes[path] = stat.st_size
+        meta = pq.ParquetFile(path).metadata
+        if schema is None:
+            schema = meta.schema
+        elif not meta.schema.equals(schema):
+            raise SchemaError(
+                f"{path} has another schema than {files[0]}; write every event file with the "
+                "same schema."
+            )
+        for g in range(meta.num_row_groups):
+            n_rows = meta.row_group(g).num_rows
+            groups.append(RowGroup(path, stat.st_size, stat.st_mtime_ns, g, first_row, n_rows))
+            first_row += n_rows
+    return groups, sizes
 
 
 def book_fingerprint(root: Path) -> dict[str, Any]:
-    """Enough to tell a cache it was built from another book."""
-    events = pq.ParquetFile(root / "events.parquet")
+    """Enough to tell a cache it was built from another book: file names, sizes, row
+    counts and the manifest's hash. Not the events' content: an edit that keeps every
+    file's size and row count keeps the fingerprint; rebuild the cache after one."""
+    groups, sizes = _row_group_index(root)
     manifest = root / "manifest.json"
     out: dict[str, Any] = {
-        "events_rows": events.metadata.num_rows,
-        "events_bytes": (root / "events.parquet").stat().st_size,
-        "events_row_groups": events.num_row_groups,
+        "events_rows": sum(g.n_rows for g in groups),
+        "events_bytes": sum(sizes.values()),
+        "events_row_groups": len(groups),
     }
+    if (root / "events.parquet").is_dir():
+        out["events_files"] = [[Path(p).name, size] for p, size in sizes.items()]
     if manifest.exists():
         out["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
     for name in ("profiles.parquet",):
@@ -106,69 +156,154 @@ def book_fingerprint(root: Path) -> dict[str, Any]:
     return out
 
 
+def _user_runs(
+    groups: list[RowGroup],
+) -> Iterator[tuple[pa.Array, NDArray[np.int64], NDArray[np.int64]]]:
+    """Runs of equal `user_id` in read order, `(users, starts, stops)` per row group.
+
+    Reads one row group of `user_id` at a time; a run that continues into the next
+    row group or file is yielded once, whole.
+    """
+    offset = 0
+    held: tuple[str, int, int] | None = None
+    opened: tuple[str, pq.ParquetFile] | None = None
+    for group in groups:
+        path, g = group.path, group.index
+        if opened is None or opened[0] != path:
+            opened = (path, pq.ParquetFile(path))
+        ids = opened[1].read_row_group(g, columns=["user_id"]).column("user_id")
+        names = pc.run_end_encode(ids.combine_chunks().cast(pa.string()))  # type: ignore[attr-defined]
+        if not len(names.values):
+            continue
+        users = names.values
+        stops = offset + names.run_ends.to_numpy().astype(np.int64)
+        starts = np.concatenate([[offset], stops[:-1]])
+        offset = int(stops[-1])
+        first = users[0].as_py()
+        if (
+            len(users) > 1 and not pc.all(pc.less(users[:-1], users[1:])).as_py()  # type: ignore[attr-defined]
+        ) or (held is not None and first < held[0]):
+            raise SchemaError(
+                f"{path} row group {g} is not sorted by user_id. The column-wise reader "
+                "needs each user's rows together and users ascending across row groups "
+                "and files, which are read in string order of their paths (zero-pad "
+                "numbered names). In Spark, write the book with "
+                '`repartitionByRange("user_id").sortWithinPartitions("user_id", "ts")`.'
+            )
+        if held is not None and first == held[0]:
+            starts[0] = held[1]
+        elif held is not None:
+            yield pa.array([held[0]], pa.string()), np.array([held[1]]), np.array([held[2]])
+        held = (users[-1].as_py(), int(starts[-1]), int(stops[-1]))
+        if len(users) > 1:
+            yield users[:-1], starts[:-1], stops[:-1]
+    if held is not None:
+        yield pa.array([held[0]], pa.string()), np.array([held[1]]), np.array([held[2]])
+
+
 def plan_blocks(
     root: Path, *, rows_per_block: int, users: Collection[str] | None = None
 ) -> BlockPlan:
-    """Row ranges of about `rows_per_block` rows that never split a user.
+    """Row ranges of at most `rows_per_block` rows that never split a user.
 
-    With `users`, a range may span rows of other users; `read_block` drops them.
+    Memory grows with the number of row groups and blocks, not rows. With `users`, a range may span
+    rows of other users; `read_block` drops them.
     """
     if rows_per_block < 1:
         raise ValueError(f"rows_per_block must be positive, got {rows_per_block}.")
-    ids = pq.read_table(root / "events.parquet", columns=["user_id"]).column("user_id")
-    runs = pc.run_end_encode(ids.combine_chunks().cast(pa.string()))  # type: ignore[attr-defined]
-    run_users = runs.values
-    run_ends = runs.run_ends.to_numpy().astype(np.int64)
-    if (
-        len(run_users) > 1
-        and not pc.all(  # type: ignore[attr-defined]
-            pc.less(run_users[:-1], run_users[1:])  # type: ignore[attr-defined]
-        ).as_py()
-    ):
-        raise SchemaError(
-            f"{root / 'events.parquet'} is not sorted by user_id; the column-wise reader needs "
-            "each user's rows together and users in order, as pragmatiq writes them."
-        )
-    run_starts = np.concatenate([[0], run_ends[:-1]])
-    if users is not None:
-        keep = pc.is_in(run_users, value_set=pa.array(sorted(users), pa.string()))  # type: ignore[attr-defined]
-        keep_np = keep.to_numpy(zero_copy_only=False)
-        missing = len(set(users)) - int(keep_np.sum())
-        if missing:
-            raise SchemaError(f"{missing} requested users have no events in the book.")
-        run_starts, run_ends = run_starts[keep_np], run_ends[keep_np]
+    wanted = None if users is None else pa.array(sorted(set(users)), pa.string())
     starts: list[int] = []
     stops: list[int] = []
-    block_start = block_stop = None
-    for start, stop in zip(run_starts.tolist(), run_ends.tolist(), strict=True):
-        if block_start is not None and stop - block_start > rows_per_block:
-            starts.append(block_start)
-            stops.append(int(block_stop))  # type: ignore[arg-type]
-            block_start = None
-        if block_start is None:
-            block_start = start
-        block_stop = stop
+    block_start: int | None = None
+    block_stop = 0
+    n_users = n_rows = matched = longest = 0
+    groups, _ = _row_group_index(root)
+    for names, run_starts, run_stops in _user_runs(groups):
+        if wanted is not None:
+            keep = pc.is_in(names, value_set=wanted)  # type: ignore[attr-defined]
+            names = names.filter(keep)
+            keep_np = keep.to_numpy(zero_copy_only=False)
+            run_starts, run_stops = run_starts[keep_np], run_stops[keep_np]
+            matched += len(run_starts)
+        sizes = run_stops - run_starts
+        big = np.flatnonzero(sizes > rows_per_block)
+        if len(big):
+            user, n = names[int(big[0])].as_py(), int(sizes[big[0]])
+            raise UnsupportedCombinationError(
+                f"User {user!r} has {n} events, more than rows_per_block={rows_per_block}, "
+                f"and a block holds whole users. Raise rows_per_block to at least {n}."
+            )
+        n_users += len(run_starts)
+        n_rows += int(sizes.sum())
+        if len(names):
+            longest = max(longest, pc.max(pc.binary_length(names)).as_py())  # type: ignore[attr-defined]
+        i = 0
+        while i < len(run_starts):
+            if block_start is None:
+                block_start = int(run_starts[i])
+            fit = int(np.searchsorted(run_stops[i:], block_start + rows_per_block, side="right"))
+            if not fit:
+                starts.append(block_start)
+                stops.append(block_stop)
+                block_start = None
+                continue
+            block_stop = int(run_stops[i + fit - 1])
+            i += fit
     if block_start is not None:
         starts.append(block_start)
-        stops.append(int(block_stop))  # type: ignore[arg-type]
-    return BlockPlan(
-        starts=tuple(starts),
-        stops=tuple(stops),
-        n_users=len(run_starts),
-        n_rows=int((run_ends - run_starts).sum()),
+        stops.append(block_stop)
+    if wanted is not None and matched < len(wanted):
+        raise SchemaError(f"{len(wanted) - matched} requested users have no events in the book.")
+    first_rows = np.asarray([g.first_row for g in groups], np.int64)
+    blocks = []
+    for i, (start, stop) in enumerate(zip(starts, stops, strict=True)):
+        a = int(np.searchsorted(first_rows, start, side="right")) - 1
+        b = int(np.searchsorted(first_rows, stop, side="left"))
+        blocks.append(PlannedBlock(i, start, stop, tuple(groups[a:b])))
+    return BlockPlan(blocks=tuple(blocks), n_users=n_users, n_rows=n_rows, longest_user_id=longest)
+
+
+def _changed(path: str, what: str) -> SchemaError:
+    return SchemaError(
+        f"{path} {what} than when the blocks were planned. An event file changed during the "
+        "build; rebuild once the book is final."
     )
 
 
-def _read_rows(path: Path, start: int, stop: int) -> pa.Table:
-    """Rows `[start, stop)`; a block may still be several non-adjacent user runs."""
-    file = pq.ParquetFile(path)
-    bounds = np.cumsum(
-        [0] + [file.metadata.row_group(i).num_rows for i in range(file.num_row_groups)]
-    )
-    first = int(np.searchsorted(bounds, start, side="right") - 1)
-    last = int(np.searchsorted(bounds, stop, side="left"))
-    table = file.read_row_groups(list(range(first, last)))
-    return table.slice(start - int(bounds[first]), stop - start)
+def _read_rows(block: PlannedBlock) -> pa.Table:
+    """The block's rows; refuses a file that changed since the blocks were planned."""
+    files: dict[str, pq.ParquetFile] = {}
+    tables = []
+    for group in block.groups:
+        if group.path not in files:
+            stat = Path(group.path).stat()
+            if (stat.st_size, stat.st_mtime_ns) != (group.size, group.mtime_ns):
+                raise _changed(group.path, "has another size or modification time")
+            files[group.path] = pq.ParquetFile(
+                group.path, read_dictionary=list(_DICTIONARY_COLUMNS)
+            )
+        meta = files[group.path].metadata
+        if (
+            group.index >= meta.num_row_groups
+            or meta.row_group(group.index).num_rows != group.n_rows
+        ):
+            raise _changed(group.path, f"has another row count in row group {group.index}")
+        # Arrow cannot read a dictionary-encoded map across row groups in one call.
+        tables.append(files[group.path].read_row_group(group.index))
+    first = block.groups[0].first_row
+    return pa.concat_tables(tables).slice(block.start - first, block.stop - block.start)
+
+
+_DICTIONARY_COLUMNS = ("source", "fields.key_value.key", "fields.key_value.value")
+
+
+def _distinct(strings: pa.Array) -> tuple[list[str], NDArray[np.int64]]:
+    """The dictionary entries a non-null dictionary array uses, and each element's index."""
+    entry = strings.indices.to_numpy(zero_copy_only=False).astype(np.int64)
+    used = np.flatnonzero(np.bincount(entry, minlength=len(strings.dictionary)))
+    lookup = np.zeros(len(strings.dictionary), np.int64)
+    lookup[used] = np.arange(len(used))
+    return [str(s) for s in strings.dictionary.take(pa.array(used)).to_pylist()], lookup[entry]
 
 
 @lru_cache(maxsize=4)
@@ -189,11 +324,9 @@ def _classify(raw: str) -> tuple[int, str, float]:
     return FIELD_CATEGORICAL, raw, float("nan")
 
 
-def read_block(
-    root: Path, start: int, stop: int, *, users: Collection[str] | None = None
-) -> EventBlock:
-    """Rows `[start, stop)` from `plan_blocks`, as column-wise events and fields."""
-    table = _read_rows(root / "events.parquet", start, stop)
+def read_block(block: PlannedBlock, *, users: Collection[str] | None = None) -> EventBlock:
+    """A block from `plan_blocks`, as column-wise events and fields."""
+    table = _read_rows(block)
     if users is not None:
         keep = pc.is_in(table.column("user_id"), value_set=pa.array(sorted(users), pa.string()))  # type: ignore[attr-defined]
         table = table.filter(keep)
@@ -210,13 +343,30 @@ def read_block(
     ts_us = table.column("ts").combine_chunks().cast(pa.int64()).to_numpy().astype(np.int64)
 
     # The loader sorts rows by (user, ts), stably; its per-user rank is the event_id index.
-    loader_order = np.lexsort((ts_us, user_code))
-    loader_index = np.empty(n, np.int64)
-    loader_index[loader_order] = np.arange(n) - user_offsets[user_code[loader_order]]
+    position = np.arange(n, dtype=np.int64) - user_offsets[user_code]
+    same_user = user_code[1:] == user_code[:-1]
+    step = np.diff(ts_us)
+    if (step[same_user] < 0).any():
+        warnings.warn(
+            f"Book rows {block.start}..{block.stop} ({block.groups[0].path}) are not sorted by "
+            "(user_id, ts); "
+            "sorting them in memory. Sort the book by (user_id, ts) to skip this.",
+            stacklevel=2,
+        )
+        loader_index = np.empty(n, np.int64)
+        loader_index[np.lexsort((ts_us, user_code))] = position
+        rows = np.arange(n, dtype=np.int64)
+    else:
+        loader_index = position
+        tie = np.zeros(n, bool)
+        tied = np.flatnonzero(same_user & (step == 0))
+        tie[tied] = tie[tied + 1] = True
+        rows = np.flatnonzero(tie)
     # order_events sorts by (ts, event_id); equal timestamps compare the index as a string.
     most = int(np.diff(user_offsets).max()) if len(user_ids) else 0
     tie_rank = _string_order_rank(max(most, 1))[loader_index]
-    final = np.lexsort((tie_rank, ts_us, user_code))
+    final = np.arange(n, dtype=np.int64)
+    final[rows] = rows[np.lexsort((tie_rank[rows], ts_us[rows], user_code[rows]))]
     final_of_row = np.empty(n, np.int64)
     final_of_row[final] = np.arange(n)
 
@@ -237,26 +387,33 @@ def read_block(
     keys_arr = fields.keys.slice(offsets[0], offsets[-1] - offsets[0])
     items_arr = fields.items.slice(offsets[0], offsets[-1] - offsets[0])
     present = items_arr.is_valid().to_numpy(zero_copy_only=False)
-    key_dict = keys_arr.dictionary_encode()
-    key_names = [str(k) for k in key_dict.dictionary.to_pylist()]
+    key_names, pair_key = _distinct(keys_arr)
+    if len(set(key_names)) != len(key_names):
+        raise UnsupportedCombinationError(
+            f"pyarrow {pa.__version__} left duplicate entries in a combined dictionary; "
+            "the column-wise reader needs unified dictionaries. Install pyarrow 25.0.1, "
+            "the version the SDK is tested with."
+        )
     if "source" in key_names:
         raise SchemaError(
             "An event's fields map has a `source` key; it would collide with the event source."
         )
-    pair_key = key_dict.indices.to_numpy(zero_copy_only=False).astype(np.int64)[present]
+    pair_key = pair_key[present]
     row_of_pair, map_position = row_of_pair[present], map_position[present]
-    if len(pair_key):
-        check = np.unique(row_of_pair * (len(key_names) + 1) + pair_key)
-        if len(check) != len(pair_key):
-            raise SchemaError("An event's fields map repeats a key.")
-    value_dict = items_arr.filter(pa.array(present)).dictionary_encode()
-    raw_values = value_dict.dictionary.to_pylist()
-    classified = [_classify(str(v)) for v in raw_values]
-    raw_code = value_dict.indices.to_numpy(zero_copy_only=False).astype(np.int64)
+    code = np.sort(row_of_pair * (len(key_names) + 1) + pair_key, kind="stable")
+    if (code[1:] == code[:-1]).any():
+        raise SchemaError("An event's fields map repeats a key.")
+    raw_values, raw_code = _distinct(items_arr.filter(pa.array(present)))
+    classified = [_classify(v) for v in raw_values]
 
+    # `source` is one more categorical field of every event.
+    source_names, source_code = _distinct(table.column("source").combine_chunks())
     # Canonical strings can coincide (`10.1` and `10.10`), so re-index on them.
     canonical = [c[1] for c in classified]
-    uniq_values, value_of_raw = np.unique(np.asarray(canonical, dtype=object), return_inverse=True)
+    uniq_values, inverse = np.unique(
+        np.asarray(canonical + source_names, dtype=object), return_inverse=True
+    )
+    value_of_raw, value_of_source = inverse[: len(canonical)], inverse[len(canonical) :]
     kinds_raw = np.asarray([c[0] for c in classified], np.int8)
     numbers_raw = np.asarray([c[2] for c in classified], np.float64)
     pair_value = value_of_raw.astype(np.int64)[raw_code]
@@ -266,23 +423,12 @@ def read_block(
     numbers[pair_value[pair_kind == FIELD_NUMERIC]] = numbers_raw[raw_code][
         pair_kind == FIELD_NUMERIC
     ]
-
-    # `source` is one more categorical field of every event.
-    source_dict = table.column("source").combine_chunks().cast(pa.string()).dictionary_encode()
-    source_names = [str(s) for s in source_dict.dictionary.to_pylist()]
-    value_index = {v: i for i, v in enumerate(values)}
-    for name in source_names:
-        if name not in value_index:
-            value_index[name] = len(values)
-            values.append(name)
-            numbers = np.append(numbers, np.nan)
-    source_value = np.asarray([value_index[s] for s in source_names], np.int64)[
-        source_dict.indices.to_numpy(zero_copy_only=False).astype(np.int64)
-    ]
+    source_value = value_of_source.astype(np.int64)[source_code]
     key_names.append("source")
     source_key = len(key_names) - 1
 
     return EventBlock(
+        index=block.index,
         user_ids=user_ids,
         user_offsets=user_offsets,
         ts_us=ts_us[final],
@@ -299,6 +445,62 @@ def read_block(
     )
 
 
+def copy_profiles(path: Path, users: Collection[str] | None, out: Path) -> None:
+    """`path`'s rows for `users` (all when None), in row groups of 4,096 rows.
+
+    Reads one record batch at a time and refuses rows not sorted by `user_id`, so each
+    fit block reads only the few row groups that hold its users.
+    """
+    wanted = None if users is None else pa.array(sorted(users), pa.string())
+    file = pq.ParquetFile(path)
+    last: str | None = None
+    with pq.ParquetWriter(out, file.schema_arrow) as writer:
+        for batch in file.iter_batches(batch_size=4096):
+            ids = batch.column("user_id")
+            if len(ids) and (
+                (last is not None and ids[0].as_py() < last)
+                or not pc.all(pc.less_equal(ids[:-1], ids[1:])).as_py()  # type: ignore[attr-defined]
+            ):
+                raise SchemaError(
+                    f"{path} is not sorted by user_id. Sort it, for example in Spark with "
+                    '`df.sort("user_id")`, so each build block reads only its own users\' '
+                    "profiles."
+                )
+            last = ids[-1].as_py() if len(ids) else last
+            if wanted is not None:
+                batch = batch.filter(pc.is_in(ids, value_set=wanted))  # type: ignore[attr-defined]
+            if batch.num_rows:
+                writer.write_batch(batch)
+
+
+@dataclass(frozen=True)
+class PragmatiqColumns:
+    """The `ColumnarSource` of the pragmatiq book at `root`."""
+
+    root: Path
+
+    def __str__(self) -> str:
+        return str(self.root)
+
+    def fingerprint(self) -> dict[str, Any]:
+        return {"root": str(self.root), **book_fingerprint(self.root)}
+
+    def plan(self, *, rows_per_block: int, users: Collection[str] | None = None) -> BlockPlan:
+        return plan_blocks(self.root, rows_per_block=rows_per_block, users=users)
+
+    def read_block(
+        self, block: PlannedBlock, *, users: Collection[str] | None = None
+    ) -> EventBlock:
+        return read_block(block, users=users)
+
+    def write_profiles(self, users: Collection[str] | None, out: Path) -> bool:
+        path = self.root / "profiles.parquet"
+        if not path.exists():
+            return False
+        copy_profiles(path, users, out)
+        return True
+
+
 def legacy_microseconds(ts_us: NDArray[np.int64]) -> NDArray[np.int64]:
     """`int(ts.timestamp() * 1_000_000)` for true microseconds `ts_us`.
 
@@ -313,8 +515,12 @@ __all__ = [
     "FIELD_NUMERIC",
     "FIELD_TEXT",
     "BlockPlan",
+    "PlannedBlock",
+    "RowGroup",
     "EventBlock",
+    "PragmatiqColumns",
     "book_fingerprint",
+    "copy_profiles",
     "legacy_microseconds",
     "plan_blocks",
     "read_block",

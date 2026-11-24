@@ -30,6 +30,7 @@ from torch import nn
 
 from tfm.adaptation.batching import minibatches
 from tfm.contracts.errors import IncompatibleCompositionError
+from tfm.contracts.tokenizers import FieldNamedTokenizer
 from tfm.objectives.next_event_fields import NextEventTargets, next_event_targets
 
 SURPRISE_WINDOWS: tuple[int, ...] = (1, 8)
@@ -38,6 +39,23 @@ SURPRISE_WINDOWS: tuple[int, ...] = (1, 8)
 CE_SLICE = 8192
 """Target tokens scored at once. Full-vocabulary logits for every token of a
 minibatch do not fit beside a prepared 100k-user book in unified memory."""
+
+
+def _field_names(tokenizer: object) -> dict[int, str]:
+    """Field names by `key_ids` label; empty for a tokenizer that names none."""
+    if isinstance(tokenizer, FieldNamedTokenizer):
+        names = tokenizer.field_names()
+        if "all" in names.values():
+            raise IncompatibleCompositionError(
+                "field_names() reserves 'all' for aggregate surprise"
+            )
+        if len(set(names.values())) < len(names):
+            raise IncompatibleCompositionError(
+                f"{type(tokenizer).__name__}.field_names() gives several labels one name; "
+                "give each label its own name."
+            )
+        return names
+    return {}
 
 
 @dataclass(frozen=True)
@@ -148,21 +166,22 @@ def extract_surprise(
     windows: Sequence[int] = SURPRISE_WINDOWS,
     minibatch_size: int = 64,
 ) -> SurpriseTable:
-    """Surprise features for every row of `batch`, over every key the tokenizer knows.
+    """Surprise features for every row of `batch`, over every field the tokenizer names
+    (`FieldNamedTokenizer.field_names`).
 
-    Columns are named `last{window}/{key}` and `last{window}/all`, in the
-    tokenizer's key order. Raises `IncompatibleCompositionError` for a model
-    without a next-event head.
+    Columns are named `last{window}/{field}` and `last{window}/all`, fields in label
+    order. Raises `IncompatibleCompositionError` for a model without a next-event head,
+    or a tokenizer that names no fields.
     """
     decoder = _decoder(model)
-    key_vocab: dict[str, int] = dict(getattr(tokenizer, "key_vocab", {}))
-    if not key_vocab:
+    fields = _field_names(tokenizer)
+    if not fields:
         raise IncompatibleCompositionError(
-            f"{type(tokenizer).__name__} has no key vocabulary to name surprise columns by."
+            f"{type(tokenizer).__name__} names no fields to name surprise columns by; "
+            "implement tfm.contracts.tokenizers.FieldNamedTokenizer."
         )
-    ordered = sorted(key_vocab.items(), key=lambda item: item[1])
-    key_ids = [key_id for _name, key_id in ordered]
-    keys = [name.removeprefix("KEY_") for name, _id in ordered]
+    key_ids = sorted(fields)
+    keys = [fields[key_id] for key_id in key_ids]
     names = tuple(f"last{window}/{key}" for window in windows for key in (*keys, "all"))
     _prepare(decoder, device)
     parts: list[np.ndarray] = []
@@ -192,10 +211,7 @@ def next_event_ce_by_key(
     are omitted.
     """
     decoder = _decoder(model)
-    names = {
-        key_id: name.removeprefix("KEY_")
-        for name, key_id in dict(getattr(tokenizer, "key_vocab", {})).items()
-    }
+    names = _field_names(tokenizer)
     sums: dict[int, float] = {}
     counts: dict[int, int] = {}
     _prepare(decoder, device)

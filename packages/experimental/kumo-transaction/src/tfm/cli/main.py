@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+from typing import Any
 
 from tfm.cli.recipe import COMMANDS, resolve_config, run_command
 
@@ -29,19 +31,64 @@ def _prepare_tabformer(root: Path, archive: Path | None) -> int:
     return 0
 
 
-def _cache_tokens(config_path: Path, workers: int, rows_per_block: int) -> int:
+def _cache_tokens(
+    config_path: Path, workers: int, rows_per_block: int, profile: bool, scratch: Path | None
+) -> int:
     import json
 
     from tfm.config import load_recipe_config
+    from tfm.data.token_cache.formats import cache_path
+    from tfm.data.token_cache.profile import format_profile
     from tfm.runtime.data import tokenizer_for
-    from tfm.runtime.token_cache import build_recipe_cache
+    from tfm.runtime.token_cache import build_recipe_cache, profile_recipe_cache
 
     config = load_recipe_config(config_path)
-    manifest = build_recipe_cache(
-        config, tokenizer_for(config), workers=workers, rows_per_block=rows_per_block
-    )
+    tokenizer = tokenizer_for(config)
+    report_path = cache_path(config).with_name(cache_path(config).name + ".profile.json")
+    if profile:
+        report = profile_recipe_cache(
+            config, tokenizer, workers=workers, rows_per_block=rows_per_block, scratch=scratch
+        )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        # Written aside, then renamed: an interrupted run leaves no truncated report.
+        tmp = report_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        os.replace(tmp, report_path)
+        print(format_profile(report))
+        print(f"written to {report_path}")
+        return 0
+    manifest = build_recipe_cache(config, tokenizer, workers=workers, rows_per_block=rows_per_block)
     print(json.dumps({k: v for k, v in manifest.items() if k != "field_kind"}, indent=2))
+    line = _projection(report_path, manifest, workers, rows_per_block)
+    if line is not None:
+        print(line)
     return 0
+
+
+def _projection(
+    report_path: Path, manifest: dict[str, Any], workers: int, rows_per_block: int
+) -> str | None:
+    """The build time beside a matching `--profile` report's projection, if one exists."""
+    import json
+    import sys
+
+    try:
+        if not report_path.exists():
+            return None
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (report["workers"], report["rows_per_block"]) != (workers, rows_per_block) or any(
+            json.loads(json.dumps(manifest.get(k))) != v for k, v in report["identity"].items()
+        ):
+            return None
+        p = report["seconds"]["read_twice"]
+        projected, low, high = p["projected"], p["low"], p["high"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        print(f"ignoring unreadable profile report {report_path}", file=sys.stderr)
+        return None
+    return (
+        f"build took {manifest['build']['seconds']} s; --profile projected "
+        f"{projected} s (range {low}-{high} s)"
+    )
 
 
 def _migrate_config(source: Path, out: Path | None) -> int:
@@ -117,8 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     cache = sub.add_parser(
         "cache-tokens",
-        help="Tokenize a book once into data.token_cache: a pragmatiq book (key_value_time) "
-        "or TabFormer's train split (transaction_field_tokenizer) (ADR 0016).",
+        help="Tokenize a book once into data.token_cache: the adapter's columnar source "
+        "through a ColumnarTokenizer, or TabFormer's train split "
+        "(transaction_field_tokenizer).",
     )
     cache.add_argument("--recipe", default=None, help="Recipe slug, e.g. blueprint_v2.")
     cache.add_argument("--config", default=None, help="A config path, or a variant of --recipe.")
@@ -128,6 +176,18 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=1_000_000,
         help="Book rows per worker task; each worker's peak memory grows with it.",
+    )
+    cache.add_argument(
+        "--profile",
+        action="store_true",
+        help="Build a sample of blocks, one per worker, and project the whole build's time, "
+        "memory, cache size and scratch needs on this node, instead of building.",
+    )
+    cache.add_argument(
+        "--scratch",
+        type=Path,
+        default=None,
+        help="With --profile, where to write its temporary files; defaults to the system's.",
     )
     migrate = sub.add_parser(
         "migrate-config",
@@ -147,7 +207,9 @@ def main(argv: list[str] | None = None) -> int:
         config_path = resolve_config(args.recipe, args.config, command="train")
         if config_path is None:
             parser.error("cache-tokens needs --recipe or --config")
-        return _cache_tokens(config_path, args.workers, args.rows_per_block)
+        return _cache_tokens(
+            config_path, args.workers, args.rows_per_block, args.profile, args.scratch
+        )
     run_command(
         args.command,
         config_path=resolve_config(args.recipe, args.config, command=args.command),

@@ -85,14 +85,14 @@ def _umap(
     from tfm.extras.capability import require_extra
 
     require_extra("umap", "umap")
-    import umap  # type: ignore[import-not-found]
+    from umap.umap_ import UMAP  # type: ignore[import-not-found]
 
     if array.shape[0] < 3:
         raise UnsupportedCombinationError(
             f"UMAP needs at least 3 rows to build a neighbor graph, got {array.shape[0]}. "
             "Use method='pca' on tiny smoke batches."
         )
-    reducer: Any = umap.UMAP(
+    reducer: Any = UMAP(
         n_components=dims,
         n_neighbors=min(n_neighbors, array.shape[0] - 1),
         min_dist=min_dist,

@@ -28,14 +28,17 @@ from tfm.api.model import TrxFM
 from tfm.api.validation import validate_tokenizer_layout
 from tfm.config import RecipeConfig, load_recipe_config
 from tfm.contracts.errors import IncompatibleCompositionError, UnsupportedCombinationError
-from tfm.contracts.tokenizers import FieldVocabulary, SequenceTokenizer
+from tfm.contracts.kvt import EventArrayReader
+from tfm.contracts.tokenizers import (
+    FieldVocabulary,
+    FieldVocabularyTokenizer,
+    SequenceTokenizer,
+)
 from tfm.data.collate import collate_batch, minibatches, shuffled_rows
 from tfm.data.packing import pack_sequences
-from tfm.data.token_cache import CachedBatches, CacheRows, TokenCache
-from tfm.data.token_cache.flat import CachedFlatBatches, FlatRows, FlatTokenCache
+from tfm.data.token_cache.formats import cache_format_of
 from tfm.evaluation.reporting.report import metrics_markdown, model_card_markdown, write_json
-from tfm.features.tokenizers.financial import TransactionFieldTokenizer
-from tfm.features.tokenizers.key_value_time import KeyValueTimeTokenizer
+from tfm.features.tokenizers.registry import tokenizer_class
 from tfm.inference.embedding import EmbeddingTable, extract_embeddings
 from tfm.objectives.supervised import SupervisedHead
 from tfm.runtime.common import (
@@ -124,8 +127,11 @@ def default_config_path(recipe: str = DEFAULT_RECIPE, variant: str | None = "smo
     return path
 
 
-def build_model(config: RecipeConfig, vocab_size: int) -> nn.Module:
-    """The model every `model.composition` slot names."""
+def build_model(
+    config: RecipeConfig, vocab_size: int, *, tokenizer: SequenceTokenizer | None = None
+) -> nn.Module:
+    """The model every `model.composition` slot names. `flat_encoder` masks by the
+    field layout of `tokenizer` (the fitted one), else of a tokenizer built from `config`."""
     head_objectives = [
         SupervisedHead(
             head=name,
@@ -140,21 +146,25 @@ def build_model(config: RecipeConfig, vocab_size: int) -> nn.Module:
         vocab_size=vocab_size,
         backbone=build_backbone(config, vocab_size),
         head_objectives=head_objectives,
-        vocabulary=_field_vocabulary(config),
+        vocabulary=_field_vocabulary(config, tokenizer),
     )
 
 
-def _field_vocabulary(config: RecipeConfig) -> FieldVocabulary | None:
-    """The field layout `flat_encoder` masks by. The field tokenizer's vocabulary
-    does not depend on data, so it is rebuilt from the config."""
+def _field_vocabulary(
+    config: RecipeConfig, tokenizer: SequenceTokenizer | None
+) -> FieldVocabulary | None:
+    """The field layout `flat_encoder` masks by."""
     if config.model.composition.granularity.type != "flat_encoder":
         return None
-    tokenizer = tokenizer_for(config)
-    if not isinstance(tokenizer, TransactionFieldTokenizer):
+    if tokenizer is None:
+        tokenizer = tokenizer_for(config)
+    if not isinstance(tokenizer, FieldVocabularyTokenizer):
         raise IncompatibleCompositionError(
-            f"flat_encoder needs transaction_field_tokenizer, not {tokenizer.name!r}."
+            f"flat_encoder masks by field, which {tokenizer.name!r} does not declare: it "
+            "needs a tokenizer with field_vocabulary() "
+            "(tfm.contracts.tokenizers.FieldVocabularyTokenizer)."
         )
-    return cast(TransactionFieldTokenizer, tokenizer).field_vocabulary()
+    return tokenizer.field_vocabulary()
 
 
 def _granularity(model: nn.Module) -> Any:
@@ -195,15 +205,20 @@ def setup_run(
     check_backend_for_run(config, resolved_device)
     out_dir = run_dir or default_run_dir(recipe=recipe_name)
     data: PreparedData | PretrainingData
-    if pretraining_only and _flat_cache_configured(config):
+    if pretraining_only and _cache_trains_without_book(config):
         stage(f"setup: pretraining windows from the token cache {config.data.token_cache}")
         data = prepare_pretraining(config)
     else:
         stage(f"setup: loading and tokenizing the {config.data.adapter} data")
         data = prepare_data(config, fixture_dir=out_dir / "pragmatiq_book")
     stage("setup: building the model")
-    model = build_model(config, data.tokenizer.vocab_size)
+    model = build_model(config, data.tokenizer.vocab_size, tokenizer=data.tokenizer)
     validate_tokenizer_layout(data.tokenizer, _granularity(model))
+    if isinstance(model, EventArrayReader):
+        if data.cache_format is not None:
+            data.cache_format.check_event_arrays(data.token_cache, model.event_arrays)
+        elif isinstance(data, PreparedData):
+            data.batches[0].check_event_arrays(model.event_arrays)
     check_backend_for_run(config, resolved_device, layout=data.tokenizer.layout)
     artifacts = RunArtifacts(
         run_dir=out_dir,
@@ -218,10 +233,10 @@ def setup_run(
     return artifacts
 
 
-def _flat_cache_configured(config: RecipeConfig) -> bool:
+def _cache_trains_without_book(config: RecipeConfig) -> bool:
     return (
         config.data.token_cache is not None
-        and config.features.tokenizer == "transaction_field_tokenizer"
+        and cache_format_of(tokenizer_class(config.features.tokenizer)).trains_without_book
     )
 
 
@@ -312,32 +327,17 @@ def training_batches(artifacts: RunArtifacts) -> tuple[Sequence[Any], dict[str, 
     config, data = artifacts.config, artifacts.data
     windows = config.data.pretrain_windows
     row_tokens = windows.max_tokens or config.data.max_tokens if windows else config.data.max_tokens
-    if isinstance(data.token_cache, FlatTokenCache) and isinstance(data.pretrain_rows, FlatRows):
-        flat_batches = CachedFlatBatches(
+    if data.cache_format is not None and data.pretrain_rows is not None:
+        model = artifacts.model
+        event_arrays = model.event_arrays if isinstance(model, EventArrayReader) else ()
+        batches, recorded = data.cache_format.batches(
             data.token_cache,
             data.pretrain_rows,
-            cast(TransactionFieldTokenizer, data.tokenizer),
-            batch_size=config.training.batch_size,
+            data.tokenizer,
+            config,
             max_length=row_tokens,
-            shuffle_seed=config.seed if config.training.shuffle else None,
-        )
-        return flat_batches, {
-            "packing": False,
-            "shuffle": config.training.shuffle,
-            "pretrain_windows": len(data.pretrain_rows),
-            "pretrain_row_tokens": row_tokens,
-            "pretrain_entities": len(set(data.pretrain_rows.user.tolist())),
-            "token_cache": str(data.token_cache.path),
-        }
-    data = artifacts.prepared
-    if isinstance(data.token_cache, TokenCache) and isinstance(data.pretrain_rows, CacheRows):
-        batches = CachedBatches(
-            data.token_cache,
-            data.pretrain_rows,
-            cast(KeyValueTimeTokenizer, data.tokenizer),
-            batch_size=config.training.batch_size,
-            max_length=row_tokens,
-            shuffle_seed=config.seed if config.training.shuffle else None,
+            device=artifacts.device,
+            event_arrays=event_arrays,
         )
         return batches, {
             "packing": False,
@@ -346,10 +346,18 @@ def training_batches(artifacts: RunArtifacts) -> tuple[Sequence[Any], dict[str, 
             "pretrain_row_tokens": row_tokens,
             "pretrain_entities": len(set(data.pretrain_rows.user.tolist())),
             "token_cache": str(data.token_cache.path),
+            "event_arrays": list(event_arrays),
+            **recorded,
         }
+    data = artifacts.prepared
     if not config.training.packing:
         if windows is not None:
-            batch = collate_batch(data.pretrain_sequences, data.tokenizer, max_tokens=row_tokens)
+            batch = collate_batch(
+                data.pretrain_sequences,
+                data.tokenizer,
+                max_tokens=row_tokens,
+                amount_key=config.data.amount_field,
+            )
         else:
             batch = artifacts.train_batch
         if config.training.shuffle:

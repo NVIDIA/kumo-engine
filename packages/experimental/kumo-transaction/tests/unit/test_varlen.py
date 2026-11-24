@@ -14,10 +14,12 @@ from datetime import UTC, datetime
 import pytest
 import torch
 
+from tfm.attention import EagerAttention
 from tfm.compositions.profile_history import ProfileHistory
 from tfm.data.adapters.pragmatiq import generate_pragmatiq_fixture, load_pragmatiq_dataset
 from tfm.data.sequence_builders.entity_sequences import build_entity_sequences
 from tfm.features.tokenizers.key_value_time import KeyValueTimeTokenizer
+from tfm.layers.kvt_encoders import KVTEventEncoder
 from tfm.layers.profile_history import ProfileHistoryModel
 from tfm.layers.varlen import compress_rows, scatter_rows
 
@@ -123,3 +125,33 @@ def test_varlen_trains_and_reports_what_it_skipped(tmp_path) -> None:
     assert torch.isfinite(output.loss)
     assert 0.0 < model.last_padding_fraction < 1.0
     assert any(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+
+
+@pytest.mark.parametrize("varlen", [False, True], ids=["padded", "varlen"])
+def test_event_encoder_matches_encoding_each_event_alone(varlen: bool) -> None:
+    """Events share attention sequences; none may see another event's tokens."""
+    torch.manual_seed(0)
+    encoder = KVTEventEncoder(
+        ProfileHistory(hidden_size=32, num_heads=4, dropout=0.0, varlen=varlen), EagerAttention()
+    ).eval()
+    batch, n_events, n_tok = 3, 5, 7  # 8 rows of 8 tokens share a sequence; 15 rows pad to 16
+    tokens = torch.randn(batch, n_events, n_tok, 32)
+    lengths = torch.randint(1, n_tok + 1, (batch, n_events))
+    token_mask = (torch.arange(n_tok) < lengths[..., None]).long()
+    event_mask = torch.ones(batch, n_events, dtype=torch.long)
+
+    with torch.no_grad():
+        summaries, states = encoder(tokens, token_mask, event_mask)
+        for b in range(batch):
+            for n in range(n_events):
+                assert encoder.evt is not None
+                row = torch.cat([encoder.evt.view(1, 32), tokens[b, n]])[None]
+                mask = torch.cat([event_mask[b, n, None], token_mask[b, n]])[None]
+                for block in encoder.blocks:
+                    row = block(row, mask)
+                want = encoder.norm(row)[0]
+                seen = int(lengths[b, n])
+                torch.testing.assert_close(summaries[b, n], want[0], atol=1e-5, rtol=1e-4)
+                torch.testing.assert_close(
+                    states[b, n, :seen], want[1 : seen + 1], atol=1e-5, rtol=1e-4
+                )

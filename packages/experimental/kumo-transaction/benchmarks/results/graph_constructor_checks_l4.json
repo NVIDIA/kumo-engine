@@ -1,0 +1,1479 @@
+{
+  "recorded_at": "2026-11-20T14:27:37.509307+00:00",
+  "scope": "Three-stage synthetic L4 constructor/execution comparison. Preflight equality checked before nine timed runs. Native/raw-loader adaptation, sampling and initial model transfer excluded. Compilation is a measured subset of constructor time. No quality or full-book throughput claim.",
+  "command": "PYTHONPATH=<source>/src:<driver-checkout> OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONHASHSEED=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 <prepared-environment>/bin/python <driver-checkout>/benchmarks/ablations/graph_backends/conversion.py --deterministic --warmup 5 --steps 20 --output /tmp/construction.json",
+  "preflight_command": "Same command with --warmup 0 --steps 1, completed for all sources before timing.",
+  "order": [
+    "baseline",
+    "edges",
+    "both",
+    "both",
+    "edges",
+    "baseline",
+    "edges",
+    "baseline",
+    "both"
+  ],
+  "sources": {
+    "baseline": {
+      "revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+      "source_dirty": false,
+      "source_sha256": {
+        "src/tfm/contracts/graph.py": "7c78bfba21a69149d959d742407329808f20ce411527969e264b9ab7e1b7aa02",
+        "src/tfm/contracts/_validated.py": "f2e491d4ed808b6d6b72352089b24e769596932fd1b596dcc42166cfdd51c8e7",
+        "src/tfm/layers/gnn.py": "87c06bf988dfd3d2fbf70423d7805ed0f3ce09862215b2e6e6064eea67bda89c",
+        "src/tfm/layers/profile_event_decoder.py": "ff104f1e9de283de78299d1682f88682b47e4c93d79caffebb4059b635606fb4"
+      }
+    },
+    "edges": {
+      "revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+      "source_dirty": false,
+      "source_sha256": {
+        "src/tfm/contracts/graph.py": "16cb574107a0a15d41ec692f27a257a6074cf352726c635edf4788d1148551f9",
+        "src/tfm/contracts/_validated.py": "f2e491d4ed808b6d6b72352089b24e769596932fd1b596dcc42166cfdd51c8e7",
+        "src/tfm/layers/gnn.py": "87c06bf988dfd3d2fbf70423d7805ed0f3ce09862215b2e6e6064eea67bda89c",
+        "src/tfm/layers/profile_event_decoder.py": "ff104f1e9de283de78299d1682f88682b47e4c93d79caffebb4059b635606fb4"
+      }
+    },
+    "both": {
+      "revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+      "source_dirty": false,
+      "source_sha256": {
+        "src/tfm/contracts/graph.py": "16cb574107a0a15d41ec692f27a257a6074cf352726c635edf4788d1148551f9",
+        "src/tfm/contracts/_validated.py": "8336395fb22c81f6d75d0326e360c83beb3d1b0bb043a6e79e7b77b73a70fd68",
+        "src/tfm/layers/gnn.py": "87c06bf988dfd3d2fbf70423d7805ed0f3ce09862215b2e6e6064eea67bda89c",
+        "src/tfm/layers/profile_event_decoder.py": "ff104f1e9de283de78299d1682f88682b47e4c93d79caffebb4059b635606fb4"
+      }
+    }
+  },
+  "parity": {
+    "preflight_and_timing_groups": "Each group separately has exact matching input/initial-state/final-state/gradient hashes, loss lists and embedding values across all sources. Preflight training uses one update; timed training uses 25, so training final states differ between groups. Validation uses no updates in either group.",
+    "outputs": true,
+    "model_state_including_buffers": true,
+    "gradients": true,
+    "loss_histories": true
+  },
+  "storage": "Compact summaries/conditions only; full raw payload is referenced by URL and SHA256. Separate resource profiles are not historical run peaks.",
+  "summary": [
+    {
+      "arm": "gnn_training",
+      "effective_settings": {
+        "root_count": 29,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "nodes": 832,
+      "edges": 1964,
+      "stages": {
+        "baseline": {
+          "construction_ms": {
+            "median_of_run_medians": 3.198083024471998,
+            "run_medians": [
+              3.198083024471998,
+              3.258289536461234,
+              3.173616947606206
+            ],
+            "range_of_run_medians": [
+              3.173616947606206,
+              3.258289536461234
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 0.6722034886479378,
+            "run_medians": [
+              0.6744780112057924,
+              0.6722034886479378,
+              0.6672830786556005
+            ],
+            "range_of_run_medians": [
+              0.6672830786556005,
+              0.6744780112057924
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 26.453952072188258,
+            "run_medians": [
+              26.309989392757416,
+              26.550382375717163,
+              26.453952072188258
+            ],
+            "range_of_run_medians": [
+              26.309989392757416,
+              26.550382375717163
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 30.36032384261489,
+            "run_medians": [
+              30.217480845749378,
+              30.548671493306756,
+              30.36032384261489
+            ],
+            "range_of_run_medians": [
+              30.217480845749378,
+              30.548671493306756
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.6433676462620497,
+            "run_medians": [
+              0.6433676462620497,
+              0.6454023532569408,
+              0.6279577501118183
+            ],
+            "range_of_run_medians": [
+              0.6279577501118183,
+              0.6454023532569408
+            ]
+          },
+          "throughput": {
+            "value": 955.1940272552202,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward+backward+clipping+AdamW",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 66.52294921875,
+            "reserved_mib": 68.0,
+            "allocated_range_mib": [
+              66.52294921875,
+              66.52294921875
+            ],
+            "reserved_range_mib": [
+              68.0,
+              68.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+            "resource_summary_key": "0602c5c83361b49f550f9544e4b5f243eaae1e02/gnn_training"
+          }
+        },
+        "edges": {
+          "construction_ms": {
+            "median_of_run_medians": 3.0935911927372217,
+            "run_medians": [
+              3.188478061929345,
+              3.0935911927372217,
+              3.0781810637563467
+            ],
+            "range_of_run_medians": [
+              3.0781810637563467,
+              3.188478061929345
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 0.6701131351292133,
+            "run_medians": [
+              0.6845139432698488,
+              0.6701131351292133,
+              0.6606378592550755
+            ],
+            "range_of_run_medians": [
+              0.6606378592550755,
+              0.6845139432698488
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 26.712143095210195,
+            "run_medians": [
+              26.712143095210195,
+              26.750244898721576,
+              26.376394322142005
+            ],
+            "range_of_run_medians": [
+              26.376394322142005,
+              26.750244898721576
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 30.73619306087494,
+            "run_medians": [
+              30.74008598923683,
+              30.73619306087494,
+              30.124397948384285
+            ],
+            "range_of_run_medians": [
+              30.124397948384285,
+              30.74008598923683
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.6394174415618181,
+            "run_medians": [
+              0.6446670740842819,
+              0.638492638245225,
+              0.6394174415618181
+            ],
+            "range_of_run_medians": [
+              0.638492638245225,
+              0.6446670740842819
+            ]
+          },
+          "throughput": {
+            "value": 943.5130740675561,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward+backward+clipping+AdamW",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 66.52294921875,
+            "reserved_mib": 68.0,
+            "allocated_range_mib": [
+              66.52294921875,
+              66.52294921875
+            ],
+            "reserved_range_mib": [
+              68.0,
+              68.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+            "resource_summary_key": "dafe31f458618f3dfc3010426683a834fe3f2f06/gnn_training"
+          }
+        },
+        "both": {
+          "construction_ms": {
+            "median_of_run_medians": 3.041190095245838,
+            "run_medians": [
+              2.9949184972792864,
+              3.080320544540882,
+              3.041190095245838
+            ],
+            "range_of_run_medians": [
+              2.9949184972792864,
+              3.080320544540882
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 0.6508475635200739,
+            "run_medians": [
+              0.6672278977930546,
+              0.6492519751191139,
+              0.6508475635200739
+            ],
+            "range_of_run_medians": [
+              0.6492519751191139,
+              0.6672278977930546
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 26.395326014608145,
+            "run_medians": [
+              26.395326014608145,
+              26.581701589748263,
+              26.237522484734654
+            ],
+            "range_of_run_medians": [
+              26.237522484734654,
+              26.581701589748263
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 30.1027640234679,
+            "run_medians": [
+              30.1027640234679,
+              30.300389509648085,
+              29.983986169099808
+            ],
+            "range_of_run_medians": [
+              29.983986169099808,
+              30.300389509648085
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.6035161204636097,
+            "run_medians": [
+              0.6002220325171947,
+              0.615081051364541,
+              0.6035161204636097
+            ],
+            "range_of_run_medians": [
+              0.6002220325171947,
+              0.615081051364541
+            ]
+          },
+          "throughput": {
+            "value": 963.3666854442937,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward+backward+clipping+AdamW",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 66.52294921875,
+            "reserved_mib": 68.0,
+            "allocated_range_mib": [
+              66.52294921875,
+              66.52294921875
+            ],
+            "reserved_range_mib": [
+              68.0,
+              68.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+            "resource_summary_key": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a/gnn_training"
+          }
+        }
+      }
+    },
+    {
+      "arm": "sequence_training",
+      "effective_settings": {
+        "root_count": 32,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "nodes": 1163,
+      "edges": 3208,
+      "stages": {
+        "baseline": {
+          "construction_ms": {
+            "median_of_run_medians": 3.360461210832,
+            "run_medians": [
+              3.360461210832,
+              3.3511111978441477,
+              3.3711870200932026
+            ],
+            "range_of_run_medians": [
+              3.3511111978441477,
+              3.3711870200932026
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 1.080675981938839,
+            "run_medians": [
+              1.0823407210409641,
+              1.0722558945417404,
+              1.080675981938839
+            ],
+            "range_of_run_medians": [
+              1.0722558945417404,
+              1.0823407210409641
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 21.36072749271989,
+            "run_medians": [
+              21.36072749271989,
+              21.505423123016953,
+              21.352280862629414
+            ],
+            "range_of_run_medians": [
+              21.352280862629414,
+              21.505423123016953
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 25.850705103948712,
+            "run_medians": [
+              25.842460803687572,
+              25.94179566949606,
+              25.850705103948712
+            ],
+            "range_of_run_medians": [
+              25.842460803687572,
+              25.94179566949606
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.7875203154981136,
+            "run_medians": [
+              0.7875203154981136,
+              0.7822357583791018,
+              0.7990950252860785
+            ],
+            "range_of_run_medians": [
+              0.7822357583791018,
+              0.7990950252860785
+            ]
+          },
+          "throughput": {
+            "value": 1237.8772598783767,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward+backward+clipping+AdamW",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 84.10205078125,
+            "reserved_mib": 92.0,
+            "allocated_range_mib": [
+              84.10205078125,
+              84.10205078125
+            ],
+            "reserved_range_mib": [
+              92.0,
+              92.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+            "resource_summary_key": "0602c5c83361b49f550f9544e4b5f243eaae1e02/sequence_training"
+          }
+        },
+        "edges": {
+          "construction_ms": {
+            "median_of_run_medians": 3.2392735593020916,
+            "run_medians": [
+              3.2789893448352814,
+              3.165917005389929,
+              3.2392735593020916
+            ],
+            "range_of_run_medians": [
+              3.165917005389929,
+              3.2789893448352814
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 1.0759560391306877,
+            "run_medians": [
+              1.085831318050623,
+              1.056345645338297,
+              1.0759560391306877
+            ],
+            "range_of_run_medians": [
+              1.056345645338297,
+              1.085831318050623
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 21.251653553918004,
+            "run_medians": [
+              21.553311962634325,
+              21.21016592718661,
+              21.251653553918004
+            ],
+            "range_of_run_medians": [
+              21.21016592718661,
+              21.553311962634325
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 25.742821861058474,
+            "run_medians": [
+              25.89614223688841,
+              25.46443953178823,
+              25.742821861058474
+            ],
+            "range_of_run_medians": [
+              25.46443953178823,
+              25.89614223688841
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.7879405748099089,
+            "run_medians": [
+              0.7879405748099089,
+              0.7812040857970715,
+              0.7957504130899906
+            ],
+            "range_of_run_medians": [
+              0.7812040857970715,
+              0.7957504130899906
+            ]
+          },
+          "throughput": {
+            "value": 1243.0649667201733,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward+backward+clipping+AdamW",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 84.10205078125,
+            "reserved_mib": 92.0,
+            "allocated_range_mib": [
+              84.10205078125,
+              84.10205078125
+            ],
+            "reserved_range_mib": [
+              92.0,
+              92.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+            "resource_summary_key": "dafe31f458618f3dfc3010426683a834fe3f2f06/sequence_training"
+          }
+        },
+        "both": {
+          "construction_ms": {
+            "median_of_run_medians": 3.10597219504416,
+            "run_medians": [
+              3.1149210408329964,
+              3.0922710429877043,
+              3.10597219504416
+            ],
+            "range_of_run_medians": [
+              3.0922710429877043,
+              3.1149210408329964
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 1.050471095368266,
+            "run_medians": [
+              1.0606162250041962,
+              1.0270951315760612,
+              1.050471095368266
+            ],
+            "range_of_run_medians": [
+              1.0270951315760612,
+              1.0606162250041962
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 21.265659481287003,
+            "run_medians": [
+              21.301531931385398,
+              21.034907549619675,
+              21.265659481287003
+            ],
+            "range_of_run_medians": [
+              21.034907549619675,
+              21.301531931385398
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 25.459727039560676,
+            "run_medians": [
+              25.5618947558105,
+              25.104512693360448,
+              25.459727039560676
+            ],
+            "range_of_run_medians": [
+              25.104512693360448,
+              25.5618947558105
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.7030144333839417,
+            "run_medians": [
+              0.7089294958859682,
+              0.6970742251724005,
+              0.7030144333839417
+            ],
+            "range_of_run_medians": [
+              0.6970742251724005,
+              0.7089294958859682
+            ]
+          },
+          "throughput": {
+            "value": 1256.8870023734623,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward+backward+clipping+AdamW",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 84.10205078125,
+            "reserved_mib": 92.0,
+            "allocated_range_mib": [
+              84.10205078125,
+              84.10205078125
+            ],
+            "reserved_range_mib": [
+              92.0,
+              92.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+            "resource_summary_key": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a/sequence_training"
+          }
+        }
+      }
+    },
+    {
+      "arm": "validation",
+      "effective_settings": {
+        "root_count": 12,
+        "model_mode": "eval",
+        "optimizer": null,
+        "max_grad_norm": null,
+        "optimizer_steps": 0
+      },
+      "nodes": 852,
+      "edges": 2232,
+      "stages": {
+        "baseline": {
+          "construction_ms": {
+            "median_of_run_medians": 2.8551353607326746,
+            "run_medians": [
+              2.8551353607326746,
+              2.8819465078413486,
+              2.8085950762033463
+            ],
+            "range_of_run_medians": [
+              2.8085950762033463,
+              2.8819465078413486
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 1.0088200215250254,
+            "run_medians": [
+              1.0300548747181892,
+              1.0088200215250254,
+              0.996654387563467
+            ],
+            "range_of_run_medians": [
+              0.996654387563467,
+              1.0300548747181892
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 14.71102749928832,
+            "run_medians": [
+              14.71102749928832,
+              14.75396566092968,
+              14.485310763120651
+            ],
+            "range_of_run_medians": [
+              14.485310763120651,
+              14.75396566092968
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 18.629109021276236,
+            "run_medians": [
+              18.629109021276236,
+              18.71039322577417,
+              18.519030418246984
+            ],
+            "range_of_run_medians": [
+              18.519030418246984,
+              18.71039322577417
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.5933602806180716,
+            "run_medians": [
+              0.584661029279232,
+              0.5933602806180716,
+              0.5981875583529472
+            ],
+            "range_of_run_medians": [
+              0.584661029279232,
+              0.5981875583529472
+            ]
+          },
+          "throughput": {
+            "value": 644.1531898436391,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 65.96484375,
+            "reserved_mib": 68.0,
+            "allocated_range_mib": [
+              65.96484375,
+              65.96484375
+            ],
+            "reserved_range_mib": [
+              68.0,
+              68.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+            "resource_summary_key": "0602c5c83361b49f550f9544e4b5f243eaae1e02/validation"
+          }
+        },
+        "edges": {
+          "construction_ms": {
+            "median_of_run_medians": 2.7580689638853073,
+            "run_medians": [
+              2.7585583738982677,
+              2.741843694821,
+              2.7580689638853073
+            ],
+            "range_of_run_medians": [
+              2.741843694821,
+              2.7585583738982677
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 1.012624939903617,
+            "run_medians": [
+              1.039360649883747,
+              0.9999650064855814,
+              1.012624939903617
+            ],
+            "range_of_run_medians": [
+              0.9999650064855814,
+              1.039360649883747
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 14.668517047539353,
+            "run_medians": [
+              14.668517047539353,
+              14.955923426896334,
+              14.56000143662095
+            ],
+            "range_of_run_medians": [
+              14.56000143662095,
+              14.955923426896334
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 18.51416169665754,
+            "run_medians": [
+              18.51416169665754,
+              18.77860352396965,
+              18.479117890819907
+            ],
+            "range_of_run_medians": [
+              18.479117890819907,
+              18.77860352396965
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.5957009270787239,
+            "run_medians": [
+              0.5890217144042253,
+              0.5957009270787239,
+              0.6000061985105276
+            ],
+            "range_of_run_medians": [
+              0.5890217144042253,
+              0.6000061985105276
+            ]
+          },
+          "throughput": {
+            "value": 648.1524897865845,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 65.96484375,
+            "reserved_mib": 68.0,
+            "allocated_range_mib": [
+              65.96484375,
+              65.96484375
+            ],
+            "reserved_range_mib": [
+              68.0,
+              68.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+            "resource_summary_key": "dafe31f458618f3dfc3010426683a834fe3f2f06/validation"
+          }
+        },
+        "both": {
+          "construction_ms": {
+            "median_of_run_medians": 2.6527419686317444,
+            "run_medians": [
+              2.6636768598109484,
+              2.6527419686317444,
+              2.649621805176139
+            ],
+            "range_of_run_medians": [
+              2.649621805176139,
+              2.6636768598109484
+            ]
+          },
+          "transfer_ms": {
+            "median_of_run_medians": 0.9677738416939974,
+            "run_medians": [
+              0.9894990362226963,
+              0.960168894380331,
+              0.9677738416939974
+            ],
+            "range_of_run_medians": [
+              0.960168894380331,
+              0.9894990362226963
+            ]
+          },
+          "model_ms": {
+            "median_of_run_medians": 14.62706201709807,
+            "run_medians": [
+              14.73614783026278,
+              14.62706201709807,
+              14.583587180823088
+            ],
+            "range_of_run_medians": [
+              14.583587180823088,
+              14.73614783026278
+            ]
+          },
+          "cycle_ms": {
+            "median_of_run_medians": 18.323544645681977,
+            "run_medians": [
+              18.442356027662754,
+              18.323544645681977,
+              18.19783844985068
+            ],
+            "range_of_run_medians": [
+              18.19783844985068,
+              18.442356027662754
+            ]
+          },
+          "compilation_ms": {
+            "median_of_run_medians": 0.531485304236412,
+            "run_medians": [
+              0.520459609106183,
+              0.5403461400419474,
+              0.531485304236412
+            ],
+            "range_of_run_medians": [
+              0.520459609106183,
+              0.5403461400419474
+            ]
+          },
+          "throughput": {
+            "value": 654.8951216612912,
+            "unit": "roots/s",
+            "scope": "CPU constructor+blocking transfer+forward",
+            "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+            "provenance": "derived from historical latency; not a new timing measurement"
+          },
+          "peak_memory": {
+            "allocated_mib": 65.96484375,
+            "reserved_mib": 68.0,
+            "allocated_range_mib": [
+              65.96484375,
+              65.96484375
+            ],
+            "reserved_range_mib": [
+              68.0,
+              68.0
+            ],
+            "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+            "statistic": "median of three post-warmup run peaks",
+            "status": "measured in separate resource supplement; not historical run peaks",
+            "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+            "resource_summary_key": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a/validation"
+          }
+        }
+      }
+    }
+  ],
+  "cpu_model": "AMD EPYC 7R13 Processor",
+  "torch_geometric": "2.8.1",
+  "optional_torch_scatter": false,
+  "manifest_schema": "tfm.graph-benchmark-manifest.v1",
+  "raw_artifact": {
+    "url": null,
+    "sha256": "8a35d034cba5c851d71cce0a236d70b7c3e4d91dbff98f0665703e237ce6345f",
+    "bytes": 235994,
+    "media_type": "application/json"
+  },
+  "resource_artifact": {
+    "url": null,
+    "sha256": "78a7574f3cd5144d34124c31f35bb6e0549c5b6550589f6a2163361970008a2c",
+    "bytes": 1437749,
+    "media_type": "application/json"
+  },
+  "conditions": [
+    {
+      "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "73321c299448b083c5a854a979862861f8ba619523660fa4c9129a9994ae5711",
+      "contract_sha256": "7c78bfba21a69149d959d742407329808f20ce411527969e264b9ab7e1b7aa02",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    },
+    {
+      "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "73321c299448b083c5a854a979862861f8ba619523660fa4c9129a9994ae5711",
+      "contract_sha256": "16cb574107a0a15d41ec692f27a257a6074cf352726c635edf4788d1148551f9",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    },
+    {
+      "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "73321c299448b083c5a854a979862861f8ba619523660fa4c9129a9994ae5711",
+      "contract_sha256": "16cb574107a0a15d41ec692f27a257a6074cf352726c635edf4788d1148551f9",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    }
+  ],
+  "run_count": 9,
+  "preflight_run_count": 3
+}

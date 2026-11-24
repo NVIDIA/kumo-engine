@@ -199,6 +199,10 @@ uv run tfm report --recipe blueprint_v1 --config cached --reuse-checkpoint \
   --device cuda --run-dir outputs/blueprint_v1/cached
 ```
 
+The full-size configs set `training.log_every: 50`: every 50 steps the first
+process prints step, epoch, loss, learning rate, gradient norm, throughput, and
+time left. Each job also prints its stages with the time since it started.
+
 The cache holds the sample's train split, checked by its users, the TabFormer
 files, `label_delay`, and the tokenizer's fields; a run refuses a cache built
 for anything else. `tfm report` without `--reuse-checkpoint` also works on N
@@ -235,7 +239,11 @@ Written under the run directory (or the smoke temp dir):
 - `split_manifest.json`
 - `tokenizer_manifest.json`
 - `checkpoint_manifest.json` and `hf_checkpoint/`
-- `embeddings_manifest.json`
+- `train_log.json`: every training step's loss, learning rate, gradient norm,
+  and token count, for plotting the loss curve
+- `embeddings.npz` and `embeddings_manifest.json`: one embedding per customer
+  history at each cutoff, with its label and its customer, row, and event ids
+  (`<side>_entity_ids` and so on, row for row with `<side>`)
 - `metrics.json` / `metrics.md`
 - `model_card.md`
 - `environment.json`

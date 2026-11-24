@@ -13,7 +13,7 @@ from tfm import Decoder, Flat, TrxFM
 from tfm.config import MuonConfig, OptimizerConfig
 from tfm.contracts.batch import TransactionBatch
 from tfm.contracts.errors import UnsupportedCombinationError
-from tfm.training.optim import build_optimizers, muon_parameter_split
+from tfm.training.optim import GroupedMuon, build_optimizers, muon_parameter_split
 from tfm.training.trainer import train_model
 
 
@@ -65,7 +65,7 @@ def test_muon_groups_carry_their_own_base_rate() -> None:
         learning_rate=1e-3,
         settings=OptimizerConfig(name="muon", muon=MuonConfig(learning_rate=0.02)),
     )
-    assert [type(o).__name__ for o in opts] == ["Muon", "AdamW"]
+    assert [type(o).__name__ for o in opts] == ["GroupedMuon", "AdamW"]
     assert opts[0].param_groups[0]["base_lr"] == 0.02
     assert opts[1].param_groups[0]["base_lr"] == 1e-3
 
@@ -119,3 +119,60 @@ def test_fsdp2_rejects_muon_before_training() -> None:
             optimizer=OptimizerConfig(name="muon"),
             precision="bf16",
         )
+
+
+SHAPES = [(16, 16), (16, 16), (48, 16), (48, 16), (16, 48), (16, 6), (32, 16)]
+"""Repeated, tall, wide and single shapes."""
+
+
+def _muon_runs(device: str, **kwargs: object) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    """Five steps of `torch.optim.Muon` and `GroupedMuon` from the same weights and grads."""
+    torch.manual_seed(0)
+    start = [torch.randn(shape, device=device) for shape in SHAPES]
+    oracle = [nn.Parameter(w.clone()) for w in start]
+    grouped = [nn.Parameter(w.clone()) for w in start]
+    optimizers = (
+        torch.optim.Muon(oracle, lr=0.02, weight_decay=0.01, **kwargs),  # type: ignore[arg-type]
+        GroupedMuon(grouped, lr=0.02, weight_decay=0.01, **kwargs),  # type: ignore[arg-type]
+    )
+    generator = torch.Generator(device=device).manual_seed(1)
+    for _ in range(5):
+        for a, b in zip(oracle, grouped, strict=True):
+            grad = torch.randn(a.shape, generator=generator, device=device)
+            a.grad, b.grad = grad.clone(), grad.clone()
+        for optimizer in optimizers:
+            optimizer.step()
+    return oracle, grouped
+
+
+@pytest.mark.parametrize("nesterov", [True, False])
+@pytest.mark.parametrize("adjust_lr_fn", ["original", "match_rms_adamw"])
+def test_grouped_muon_updates_as_torch_muon_does(nesterov: bool, adjust_lr_fn: str) -> None:
+    oracle, grouped = _muon_runs("cpu", nesterov=nesterov, adjust_lr_fn=adjust_lr_fn)
+    assert all(torch.equal(a, b) for a, b in zip(oracle, grouped, strict=True))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_grouped_muon_updates_as_torch_muon_does_on_cuda() -> None:
+    oracle, grouped = _muon_runs("cuda")
+    for a, b in zip(oracle, grouped, strict=True):
+        torch.testing.assert_close(b, a, rtol=0, atol=1e-6)
+
+
+def test_grouped_muon_state_loads_into_torch_muon_and_back() -> None:
+    oracle, grouped = _muon_runs("cpu")
+    del oracle
+    saved = GroupedMuon(grouped, lr=0.02)
+    for p in grouped:
+        p.grad = torch.ones_like(p)
+    saved.step()
+    state = saved.state_dict()
+    plain = torch.optim.Muon(grouped, lr=0.02)
+    plain.load_state_dict(state)
+    again = GroupedMuon(grouped, lr=0.02)
+    again.load_state_dict(plain.state_dict())
+    assert again.state_dict()["state"].keys() == state["state"].keys()
+    assert all(
+        torch.equal(again.state[p]["momentum_buffer"], saved.state[p]["momentum_buffer"])
+        for p in grouped
+    )

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import numpy as np
 import pyarrow as pa
@@ -39,15 +39,30 @@ import torch
 from numpy.typing import NDArray
 
 from tfm.contracts.batch import TransactionBatch
-from tfm.contracts.errors import SchemaError
+from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.schema import ensure_utc
+from tfm.contracts.tokenizers import SequenceTokenizer
+from tfm.data.adapters.paths import entity_cap, resolve_data_path, sample_seed
 from tfm.data.adapters.tabformer import (
+    precomputed_sample,
     precomputed_split_paths,
     precomputed_train_table,
+    tabformer_label_delay,
     tabformer_row_event,
+)
+from tfm.data.splits.temporal import parse_duration
+from tfm.data.token_cache.builders import DEFAULT_BATCH_BUILDER
+from tfm.data.token_cache.formats import (
+    DEFAULT_TOKEN_CACHE_FORMAT,
+    PretrainRows,
+    cache_path,
+    register_token_cache_format,
 )
 from tfm.data.validation.schema import validate_event
 from tfm.features.tokenizers.financial import TransactionFieldTokenizer
+
+if TYPE_CHECKING:
+    from tfm.config import RecipeConfig
 
 FLAT_FORMAT = "flat_fields"
 FLAT_FORMAT_VERSION = 1
@@ -63,6 +78,8 @@ class FlatCacheRequest:
     """The sampled users as `train.parquet` stores them (`precomputed_sample`)."""
     label_delay: timedelta
     tokenizer: TransactionFieldTokenizer
+    amount_field: str
+    """The numeric field stored as each event's `amount` (`data.amount_field`)."""
 
     def identity(self) -> dict[str, Any]:
         """What a run checks before reading the cache.
@@ -72,7 +89,7 @@ class FlatCacheRequest:
         config that samples the same users reads the same cache.
         """
         train_path = precomputed_split_paths(self.root)[0]
-        names = sorted(str(user) for user in self.users)
+        names = sorted({str(user) for user in self.users})
         return {
             "format": FLAT_FORMAT,
             "format_version": FLAT_FORMAT_VERSION,
@@ -85,15 +102,23 @@ class FlatCacheRequest:
                 "adapter": "tabformer",
                 "split_protocol": "precomputed",
                 "n_users": len(names),
-                "users_sha256": hashlib.sha256("\n".join(names).encode()).hexdigest(),
+                "users_sha256": hashlib.sha256(
+                    json.dumps(names, ensure_ascii=False, separators=(",", ":")).encode()
+                ).hexdigest(),
                 "label_delay": str(self.label_delay),
             },
             "tokenizer": dict(self.tokenizer.manifest()),
+            "amount_field": self.amount_field,
         }
 
 
 def _encode_block(
-    rows_path: str, start: int, stop: int, label_delay: timedelta, fields: tuple[str, ...]
+    rows_path: str,
+    start: int,
+    stop: int,
+    label_delay: timedelta,
+    fields: tuple[str, ...],
+    amount_field: str,
 ) -> dict[str, np.ndarray]:
     """Rows `[start, stop)` of the staged train table, as the object path maps them."""
     tokenizer = TransactionFieldTokenizer(fields=fields)
@@ -104,6 +129,7 @@ def _encode_block(
     tokens = np.empty((n, len(fields)), np.uint16)
     ts_us = np.empty(n, np.int64)
     amount = np.empty(n, np.float64)
+    has_amount = np.empty(n, bool)
     fraud = np.empty(n, np.float32)
     fraud_available_us = np.empty(n, np.int64)
     entity: list[str] = []
@@ -112,7 +138,8 @@ def _encode_block(
         event = validate_event(tabformer_row_event(row, index=start + i, label_delay=label_delay))
         tokens[i] = [tokenizer.lookup(token) for token in tokenizer.event_tokens(event)]
         ts_us[i] = _us(event.event_timestamp)
-        amount[i] = float(event.numeric.get("amount", 0.0))
+        amount[i] = float(event.numeric.get(amount_field, 0.0))
+        has_amount[i] = amount_field in event.numeric
         label = event.labels["fraud"]
         fraud[i] = label.value
         fraud_available_us[i] = _us(label.available_at)
@@ -122,6 +149,7 @@ def _encode_block(
         "tokens": tokens,
         "ts_us": ts_us,
         "amount": amount,
+        "has_amount": has_amount,
         "fraud": fraud,
         "fraud_available_us": fraud_available_us,
         "entity": np.asarray([e.encode("ascii") for e in entity], dtype=np.bytes_),
@@ -169,7 +197,9 @@ def build_flat_cache(
     bounds = [(s, min(s + rows_per_block, n_rows)) for s in range(0, n_rows, rows_per_block)]
     log(f"{len(users)} users, {n_rows} train events, {len(bounds)} blocks, {workers} workers")
     fields = tuple(request.tokenizer.fields)
-    jobs = [(str(rows_path), s, e, request.label_delay, fields) for s, e in bounds]
+    jobs = [
+        (str(rows_path), s, e, request.label_delay, fields, request.amount_field) for s, e in bounds
+    ]
     if workers == 1:
         parts = [_encode_block(*job) for job in jobs]
     else:
@@ -177,6 +207,12 @@ def build_flat_cache(
             parts = list(pool.map(_encode_block, *zip(*jobs, strict=True)))
     log("events encoded")
     merged = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
+    if not merged.pop("has_amount").any():
+        raise SchemaError(
+            f"No train event in {request.root} has a numeric field {request.amount_field!r}, "
+            "which the raw features read as the amount; set data.amount_field to the book's "
+            "money field."
+        )
     # build_entity_windows groups by sorted entity id, then order_events sorts
     # each history by (timestamp, event_id).
     order = np.lexsort((merged["event_id"], merged["ts_us"], merged["entity"]))
@@ -349,7 +385,10 @@ class FlatTokenCache:
             fraud.append(
                 1.0 if bool((np.asarray(self.fraud[lo:hi])[available] >= 0.5).any()) else 0.0
             )
-            amounts = np.asarray(self.amount[lo:hi]).tolist()
+            amounts = [
+                value if math.isfinite(value) else 0.0
+                for value in np.asarray(self.amount[lo:hi]).tolist()
+            ]
             last = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
                 microseconds=int(self.ts_us[hi - 1])
             )
@@ -429,12 +468,172 @@ class CachedFlatBatches(Sequence[TransactionBatch]):
         )
 
 
+def flat_cache_request(config: RecipeConfig, tokenizer: SequenceTokenizer) -> FlatCacheRequest:
+    """The train split of the TabFormer sample `prepare_data` loads, in this tokenizer's fields."""
+    if type(tokenizer) is not TransactionFieldTokenizer:
+        raise UnsupportedCombinationError(
+            f"A {FLAT_FORMAT} token cache holds transaction_field_tokenizer tokens; "
+            f"{tokenizer.name!r} encodes differently."
+        )
+    root = resolve_data_path(config.data)
+    users = precomputed_sample(
+        root, cap=entity_cap(config.data), seed=sample_seed(config.data, config.seed)
+    )
+    return FlatCacheRequest(
+        root=root,
+        users=tuple(users),
+        label_delay=tabformer_label_delay(config.data),
+        tokenizer=tokenizer,
+        amount_field=config.data.amount_field,
+    )
+
+
+class FlatFieldsCacheFormat:
+    """TabFormer's precomputed train split; pretraining windows read without the book."""
+
+    trains_without_book = True
+
+    def config_problems(self, config: RecipeConfig) -> list[str]:
+        data = config.data
+        problems: list[str] = []
+        if data.adapter != "tabformer":
+            problems.append(
+                f"a {FLAT_FORMAT} token cache reads TabFormer; data.adapter is {data.adapter!r}"
+            )
+        if data.split_protocol != "precomputed":
+            problems.append(
+                f"a {FLAT_FORMAT} token cache holds TabFormer's precomputed train split; "
+                f"split_protocol is {data.split_protocol!r}"
+            )
+        if data.pretrain_windows is None:
+            problems.append(
+                f"a {FLAT_FORMAT} token cache serves pretraining windows; set data.pretrain_windows"
+            )
+        if config.training.packing:
+            problems.append("a token cache serves padded windows; training.packing must be false")
+        if data.batch_builder != DEFAULT_BATCH_BUILDER:
+            problems.append(
+                f"data.batch_builder reads {DEFAULT_TOKEN_CACHE_FORMAT} token caches; a "
+                f"{FLAT_FORMAT} cache has its own reader, so leave it unset"
+            )
+        return problems
+
+    def build(
+        self,
+        config: RecipeConfig,
+        tokenizer: SequenceTokenizer,
+        *,
+        workers: int,
+        rows_per_block: int,
+    ) -> dict[str, Any]:
+        return build_flat_cache(
+            flat_cache_request(config, tokenizer),
+            cache_path(config),
+            workers=workers,
+            rows_per_block=rows_per_block,
+        )
+
+    def profile(
+        self,
+        config: RecipeConfig,
+        tokenizer: SequenceTokenizer,
+        *,
+        workers: int,
+        rows_per_block: int,
+        scratch: Path | None,
+    ) -> dict[str, Any]:
+        raise UnsupportedCombinationError(
+            f"`tfm cache-tokens --profile` projects {DEFAULT_TOKEN_CACHE_FORMAT} builds; a "
+            f"{FLAT_FORMAT} cache has no profile."
+        )
+
+    def open(self, config: RecipeConfig, tokenizer: SequenceTokenizer) -> FlatTokenCache:
+        cache = FlatTokenCache(cache_path(config))
+        cache.check_identity(flat_cache_request(config, tokenizer).identity())
+        return cache
+
+    def check_event_arrays(self, cache: FlatTokenCache, names: Sequence[str]) -> None:
+        if names:
+            raise SchemaError(
+                f"Token cache {cache.path} is a {FLAT_FORMAT} cache, which holds no "
+                f"per-event arrays; the model reads {list(names)}."
+            )
+
+    def run_tokenizer(
+        self,
+        cache: FlatTokenCache,
+        tokenizer: SequenceTokenizer,
+        config: RecipeConfig,
+        *,
+        users: Sequence[str],
+        aliases: Mapping[str, str] | None,
+    ) -> None:
+        """None: the field tokenizer's vocabulary is fixed, so the run fits its own."""
+        return None
+
+    def train_cutoff(self, cache: FlatTokenCache) -> datetime:
+        return cache.train_cutoff()
+
+    def pretrain_rows(
+        self, cache: FlatTokenCache, config: RecipeConfig, *, train_cutoff: datetime
+    ) -> FlatRows:
+        """The `data.pretrain_windows` windows of every cached user, cut at `train_cutoff`,
+        which must be the cache's own."""
+        windows = config.data.pretrain_windows
+        if windows is None:
+            raise UnsupportedCombinationError(
+                f"A {FLAT_FORMAT} token cache serves pretraining windows; "
+                "set data.pretrain_windows."
+            )
+        cached_cutoff = cache.train_cutoff()
+        if cached_cutoff != train_cutoff:
+            raise SchemaError(
+                f"Token cache {cache.path} ends at {cached_cutoff.isoformat()}, but this run's "
+                f"train cutoff is {train_cutoff.isoformat()}. Rebuild it with `tfm cache-tokens`."
+            )
+        return cache.train_windows(
+            cutoff=train_cutoff,
+            lookback=parse_duration(config.data.observation_window),
+            window_events=windows.events,
+        )
+
+    def batches(
+        self,
+        cache: FlatTokenCache,
+        rows: PretrainRows,
+        tokenizer: SequenceTokenizer,
+        config: RecipeConfig,
+        *,
+        max_length: int,
+        device: torch.device,
+        event_arrays: Sequence[str],
+    ) -> tuple[Sequence[Any], dict[str, Any]]:
+        """`CachedFlatBatches`, collated on the host; a flat cache holds no per-event
+        arrays, so `event_arrays` must be empty."""
+        self.check_event_arrays(cache, event_arrays)
+        batches = CachedFlatBatches(
+            cache,
+            cast(FlatRows, rows),
+            cast(TransactionFieldTokenizer, tokenizer),
+            batch_size=config.training.batch_size,
+            max_length=max_length,
+            shuffle_seed=config.seed if config.training.shuffle else None,
+        )
+        return batches, {}
+
+
+FLAT_FIELDS = register_token_cache_format(FLAT_FORMAT)(FlatFieldsCacheFormat())
+
+
 __all__ = [
+    "FLAT_FIELDS",
     "FLAT_FORMAT",
     "FLAT_FORMAT_VERSION",
     "CachedFlatBatches",
     "FlatCacheRequest",
+    "FlatFieldsCacheFormat",
     "FlatRows",
     "FlatTokenCache",
     "build_flat_cache",
+    "flat_cache_request",
 ]

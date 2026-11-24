@@ -12,11 +12,13 @@ sample smaller than the book.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import timedelta
 from pathlib import Path
 from random import Random
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -26,7 +28,7 @@ import tfm.runtime.data as runtime_data
 from tfm.config import DataConfig, RecipeConfig
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.data.adapters.tabformer import load_tabformer_adapter, precomputed_sample
-from tfm.data.collate import collate_batch, minibatches, shuffled_rows
+from tfm.data.collate import collate_batch, minibatches, raw_feature_vector, shuffled_rows
 from tfm.data.sequence_builders.entity_sequences import build_entity_windows
 from tfm.data.token_cache.flat import (
     CachedFlatBatches,
@@ -129,6 +131,7 @@ def _request(root: Path, data: DataConfig, seed: int = 3) -> FlatCacheRequest:
         users=tuple(users),
         label_delay=timedelta(days=30),
         tokenizer=TransactionFieldTokenizer(fields=FIELDS),
+        amount_field="amount",
     )
 
 
@@ -228,6 +231,7 @@ def test_a_cache_for_another_sample_or_tokenizer_is_refused(
         users=_request(root, _data_config(root)).users,
         label_delay=timedelta(days=30),
         tokenizer=TransactionFieldTokenizer(fields=FIELDS[:-1]),
+        amount_field="amount",
     )
     with pytest.raises(SchemaError, match="tokenizer"):
         cache.check_identity(other.identity())
@@ -259,6 +263,15 @@ def test_workers_build_the_same_cache(book: tuple[Path, FlatTokenCache], tmp_pat
 
 
 # The recipe lifecycle with `data.token_cache` --------------------------------
+
+
+def test_a_book_without_the_amount_field_is_refused(
+    book: tuple[Path, FlatTokenCache], tmp_path: Path
+) -> None:
+    root, _ = book
+    request = dataclasses.replace(_request(root, _data_config(root)), amount_field="balance")
+    with pytest.raises(SchemaError, match="data.amount_field"):
+        build_flat_cache(request, tmp_path / "cache", workers=1, progress=False)
 
 
 def _recipe_config(root: Path, *, token_cache: Path | None, **training: object) -> RecipeConfig:
@@ -314,6 +327,10 @@ def test_the_config_names_what_a_flat_cache_cannot_serve(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="precomputed") as error:
         RecipeConfig.model_validate(raw)
     assert "set data.pretrain_windows" in str(error.value)
+    raw = _recipe_config(tmp_path, token_cache=tmp_path / "cache").model_dump(mode="json")
+    raw["data"]["batch_builder"] = "tests.fixtures.user_tokenizer:placement_batches"
+    with pytest.raises(ValueError, match="data.batch_builder reads columnar token caches"):
+        RecipeConfig.model_validate(raw)
 
 
 def _all_batches(artifacts: RunArtifacts) -> list[object]:
@@ -373,3 +390,51 @@ def test_a_run_refuses_a_cache_built_for_another_sample(
     raw["data"]["max_entities"] = raw["data"]["n_entities"] = 5
     with pytest.raises(SchemaError, match="population"):
         setup_run(config=RecipeConfig.model_validate(raw), run_dir=tmp_path, pretraining_only=True)
+
+
+def test_flat_cache_population_identity_preserves_delimiters_and_set_semantics(book):
+    root, _ = book
+    request = _request(root, _data_config(root))
+    a = dataclasses.replace(request, users=("a", "b\nc"))
+    b = dataclasses.replace(request, users=("a\nb", "c"))
+    assert a.identity()["population"] != b.identity()["population"]
+    assert a.identity() == dataclasses.replace(a, users=("b\nc", "a", "a")).identity()
+
+
+def test_cached_raw_features_mask_nonfinite_values_without_mutating_arrays(book, monkeypatch):
+    root, cache = book
+    train = load_tabformer_adapter(root, _data_config(root), seed=3).splits
+    assert train is not None
+    amounts = np.array(cache.amount, copy=True)
+    amounts[::5], amounts[1::5], amounts[2::5] = np.nan, np.inf, -np.inf
+    before = amounts.copy()
+    amounts.setflags(write=False)
+    monkeypatch.setattr(cache, "amount", amounts)
+    by_id = {
+        bytes(key).decode("ascii"): value
+        for key, value in zip(cache.event_id, amounts.tolist(), strict=True)
+    }
+    events = [
+        dataclasses.replace(event, numeric={**event.numeric, "amount": by_id[event.event_id]})
+        for event in train.train
+    ]
+    cutoff = max(event.event_timestamp for event in events)
+    lookback = timedelta(days=300)
+    windows = build_entity_windows(
+        events, cutoff, window_events=5, stride=3, observation_window=lookback
+    )
+    rows = cache.train_windows(cutoff=cutoff, lookback=lookback, window_events=5, stride=3)
+    batches = CachedFlatBatches(
+        cache,
+        rows,
+        TransactionFieldTokenizer(fields=FIELDS),
+        batch_size=4,
+        max_length=65,
+        shuffle_seed=None,
+    )
+    actual = torch.cat([batch.numeric_features for batch in batches])
+    expected = torch.tensor([raw_feature_vector(window) for window in windows])
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert torch.isfinite(actual).all()
+    np.testing.assert_array_equal(amounts, before)
+    assert not amounts.flags.writeable

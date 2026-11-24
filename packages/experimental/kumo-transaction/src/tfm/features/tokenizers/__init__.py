@@ -9,16 +9,22 @@ from tfm.features.tokenizers.registry import (
     advertised_tokenizers,
     build_tokenizer,
     register_tokenizer,
+    tokenizer_class,
 )
+from tfm.features.tokenizers.vocabulary import KeyValuePairs, ValueVocabulary, VocabularyConfig
 
 __all__ = [
     "FIELD_ORDER",
     "EventFieldsTokenizer",
     "FlatKeyValueTokenizer",
+    "KeyValuePairs",
     "KeyValueTimeConfig",
     "KeyValueTimeTokenizer",
     "TransactionFieldTokenizer",
+    "ValueVocabulary",
+    "VocabularyConfig",
     "advertised_tokenizers",
     "build_tokenizer",
     "register_tokenizer",
+    "tokenizer_class",
 ]

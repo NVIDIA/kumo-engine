@@ -46,3 +46,9 @@ TabFormer users when `TFM_TABFORMER_ROOT` is set.
 2.0.0a1 is the SDK the GTC Berlin lab ships. 2.0.0a2 renames its recipes and
 groups its config keys; [the 2.0.0a1 to 2.0.0a2 guide](2.0.0a1-to-2.0.0a2.md)
 maps each change, and `tfm migrate-config` rewrites a 2.0.0a1 config.
+
+## From 2.0.0a2 to 2.0.0a3
+
+2.0.0a2 configs load unchanged in 2.0.0a3. Code that calls the token-cache, tokenizer
+and masking APIs changes, every token cache is rebuilt, and torch 2.9 or newer is
+required; [the 2.0.0a2 to 2.0.0a3 guide](2.0.0a2-to-2.0.0a3.md) lists each change.

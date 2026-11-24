@@ -9,15 +9,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import torch
 
-from tfm.config import load_recipe_config
+from tfm.config import RecipeConfig, load_recipe_config
+from tfm.contracts.errors import SchemaError
 from tfm.contracts.schema import EventLabel, TransactionEvent, TransactionSequence
 from tfm.data.collate import sequence_label
 from tfm.data.labels.horizon import available_label_value
 from tfm.data.labels.windows import LabelWindow
 from tfm.data.sequence_builders.event_rows import build_event_history_rows
 from tfm.runtime.data import PreparedData, prepare_data
-from tfm.runtime.evaluate import fraud_entity_split, fraud_task
+from tfm.runtime.evaluate import (
+    event_entity_split,
+    fraud_entity_split,
+    fraud_task,
+    history_window_tasks,
+)
 
 CONFIGS = (
     Path("recipes/blueprint_v2/config.smoke.yaml"),
@@ -185,7 +192,7 @@ def test_chunked_probe_collation_matches_one_call(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(evaluate, "COLLATE_ROWS", 3)
 
     whole = collate_batch(histories, tokenizer, max_tokens=40)
-    chunked = evaluate._collate_rows(histories, tokenizer, max_tokens=40)
+    chunked = evaluate._collate_rows(histories, tokenizer, max_tokens=40, amount_key="amount")
     width = chunked.input_ids.shape[1]
     assert chunked.labels is None
     assert chunked.input_ids.tolist() == whole.input_ids[:, :width].tolist()
@@ -193,7 +200,7 @@ def test_chunked_probe_collation_matches_one_call(monkeypatch: pytest.MonkeyPatc
     assert chunked.fraud_labels.tolist() == whole.fraud_labels.tolist()
     assert chunked.entity_ids == whole.entity_ids
 
-    narrow = evaluate._collate_rows(singles, tokenizer, max_tokens=40)
+    narrow = evaluate._collate_rows(singles, tokenizer, max_tokens=40, amount_key="amount")
     assert narrow.input_ids.shape[1] == 1 + 3 + 1 < 40
     assert (
         narrow.input_ids.tolist()
@@ -310,3 +317,74 @@ def test_collate_reads_the_named_label_and_amount_field() -> None:
     assert sequence_label(sequence, label="chargeback") == 1.0
     assert raw_feature_vector(sequence)[:2] == [1.0, 1.0]
     assert raw_feature_vector(sequence, amount_key="balance")[:2] == [15.0, 20.0]
+
+
+def test_every_raw_feature_reads_data_amount_field() -> None:
+    def prepared(amount_field: str) -> tuple[RecipeConfig, PreparedData]:
+        config = load_recipe_config(Path("tests/fixtures/configs/flat_decoder.yaml"))
+        data = config.data.model_copy(update={"amount_field": amount_field})
+        config = config.model_copy(update={"data": data})
+        return config, prepare_data(config)
+
+    # `zip` is constant per entity, so its mean equals its maximum; `amount` varies.
+    config, data = prepared("zip")
+    probes = history_window_tasks(data, config, event_entity_split(data, config.seed))
+    batches = (*data.batches, *(p.train_batch for p in probes.values()))
+    assert len(batches) == 5
+    for batch in batches:
+        features = batch.numeric_features
+        assert torch.equal(features[:, 0], features[:, 1])
+    _, default = prepared("amount")
+    features = default.batches[0].numeric_features
+    assert not torch.equal(features[:, 0], features[:, 1])
+    with pytest.raises(SchemaError, match="data.amount_field"):
+        prepared("balance")
+
+
+def test_concat_rows_joins_named_arrays_in_any_order() -> None:
+    import dataclasses
+
+    from tfm.adaptation.batching import concat_rows
+
+    @dataclasses.dataclass
+    class Rows:
+        x: torch.Tensor
+        events: dict[str, torch.Tensor]
+
+        @property
+        def batch_size(self) -> int:
+            return len(self.x)
+
+    a = Rows(torch.zeros(2), {"hour": torch.zeros(2), "dow": torch.ones(2)})
+    b = Rows(torch.zeros(1), {"dow": torch.ones(1), "hour": torch.zeros(1)})
+    joined = concat_rows([a, b]).events
+    assert joined["hour"].tolist() == [0, 0, 0] and joined["dow"].tolist() == [1, 1, 1]
+    with pytest.raises(ValueError, match="differs"):
+        concat_rows([a, Rows(torch.zeros(1), {"hour": torch.zeros(1)})])
+    # 3 + 1 named rows add up to the 4 batch rows, but neither batch has one row per row.
+    with pytest.raises(ValueError, match="differs"):
+        concat_rows(
+            [
+                Rows(torch.zeros(2), {"hour": torch.zeros(3), "dow": torch.ones(3)}),
+                Rows(torch.zeros(2), {"hour": torch.zeros(1), "dow": torch.ones(1)}),
+            ]
+        )
+
+
+def test_batching_keeps_a_dict_that_is_not_per_row_arrays() -> None:
+    import dataclasses
+
+    from tfm.adaptation.batching import concat_rows, select_rows
+
+    @dataclasses.dataclass
+    class Rows:
+        x: torch.Tensor
+        metadata: dict[str, str]
+
+        @property
+        def batch_size(self) -> int:
+            return len(self.x)
+
+    batch = Rows(torch.arange(3.0), {"split": "train"})
+    assert select_rows(batch, [2, 0]).metadata == {"split": "train"}
+    assert concat_rows([batch, batch]).metadata == {"split": "train"}

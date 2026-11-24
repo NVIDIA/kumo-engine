@@ -44,8 +44,10 @@ from tfm.contracts.errors import (
     IncompatibleCompositionError,
     InsufficientLabelSupportError,
     SchemaError,
+    UnsupportedCombinationError,
 )
-from tfm.features.tokenizers import KeyValueTimeTokenizer
+from tfm.contracts.tokenizers import ColumnarTokenizer
+from tfm.features.tokenizers import tokenizer_class
 from tfm.runtime.common import repo_root
 from tfm.runtime.data import PreparedData, prepare_data
 from tfm.runtime.evaluate import (
@@ -282,7 +284,13 @@ def prepare_lab_data(assets: LabAssets) -> PreparedData:
     tokenizer = None
     if assets.checkpoint_dir is not None:
         state = json.loads((assets.checkpoint_dir / "tokenizer.json").read_text(encoding="utf-8"))
-        tokenizer = KeyValueTimeTokenizer.from_state(state)
+        name = assets.config.features.tokenizer
+        if not isinstance(tokenizer_class(name), ColumnarTokenizer):
+            raise UnsupportedCombinationError(
+                f"{name!r} does not load saved state; a lab checkpoint needs a tokenizer "
+                "the token cache builds (key_value_time or a ColumnarTokenizer)."
+            )
+        tokenizer = tokenizer_class(name).from_state(state)
     return prepare_data(assets.config, fixture_dir=assets.run_dir / "fixture", tokenizer=tokenizer)
 
 
@@ -290,7 +298,7 @@ def load_lab_model(assets: LabAssets, data: PreparedData, *, pretrained: bool = 
     """The lab model: the checkpoint's weights, or (with `pretrained=False`, and always in
     smoke mode) the same architecture at its seeded random initialization."""
     seed_everything(assets.config.seed)
-    model = build_model(assets.config, data.tokenizer.vocab_size)
+    model = build_model(assets.config, data.tokenizer.vocab_size, tokenizer=data.tokenizer)
     if pretrained and assets.checkpoint_dir is not None:
         manifest = json.loads(
             (assets.checkpoint_dir / "checkpoint_manifest.json").read_text(encoding="utf-8")

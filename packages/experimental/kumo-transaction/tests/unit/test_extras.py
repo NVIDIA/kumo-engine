@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tfm.contracts.batch import TransactionBatch
-from tfm.contracts.errors import ExtraUnavailableError, UnsupportedCombinationError
+from tfm.contracts.errors import ExtraUnavailableError, SchemaError, UnsupportedCombinationError
 from tfm.extras.capability import extra_available, require_extra
 from tfm.training.trainer import build_trainer
 
@@ -259,6 +259,74 @@ def test_huggingface_tiny_backbone_and_train() -> None:
     assert out.embeddings is not None
     assert out.embeddings.shape == (2, 32)
     assert out.logits is not None and out.logits.shape[-1] == 64
+
+
+@pytest.mark.skipif(not extra_available("transformers"), reason="transformers extra not installed")
+def test_huggingface_to_config_describes_the_llama_not_the_decoder_spec() -> None:
+    from tfm import Decoder, Flat, TrxFM
+    from tfm.config import RecipeConfig
+    from tfm.diagnose.cost import cost_from_composition
+    from tfm.extras.huggingface import build_huggingface_backbone
+    from tfm.position.rope import RoPE
+
+    config = RecipeConfig.model_validate(
+        {
+            "seed": 0,
+            "data": {
+                "adapter": "synthetic",
+                "max_tokens": 16,
+                "temporal_split": {
+                    "train_end": "2024-01-04T00:00:00Z",
+                    "validation_end": "2024-01-07T00:00:00Z",
+                },
+            },
+            "model": {
+                "backbone": "huggingface",
+                "huggingface": {"num_key_value_heads": 2, "tie_word_embeddings": False},
+                "composition": {
+                    "position": "rope",
+                    "granularity": {
+                        "decoder": {
+                            "depth": 3,
+                            "hidden_size": 32,
+                            "num_heads": 4,
+                            "max_seq_len": 24,
+                            "ffn_size": 48,
+                            "dropout": 0.0,
+                            "mask": "causal",
+                        }
+                    },
+                },
+            },
+        }
+    )
+    backbone = build_huggingface_backbone(config, vocab_size=64)
+    # The Decoder spec differs from the Llama on purpose: with a backbone it is never built.
+    model = TrxFM(
+        granularity=Flat(Decoder(depth=1, hidden_size=8, num_heads=2, vocab_size=64)),
+        position=RoPE(),
+        backbone=backbone,
+    )
+    composition = model.to_config()
+    assert composition["position"] == "rope"
+    assert composition["backbone"] == "HuggingFaceCausalBackbone"
+    assert composition["granularity"] == {
+        "type": "flat",
+        "decoder": {
+            "depth": 3,
+            "mask": "causal",
+            "hidden_size": 32,
+            "num_heads": 4,
+            "num_key_value_heads": 2,
+            "dropout": 0.0,
+            "vocab_size": 64,
+            "max_seq_len": 24,
+            "ffn_size": 48,
+            "tie_word_embeddings": False,
+        },
+    }
+    with pytest.raises(SchemaError, match="HuggingFaceCausalBackbone"):
+        cost_from_composition(composition)
 
 
 @pytest.mark.skipif(not extra_available("transformers"), reason="transformers extra not installed")

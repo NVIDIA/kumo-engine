@@ -13,27 +13,11 @@ the token at the same position, which a copying model predicts instead.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-
-@dataclass(frozen=True)
-class AlignmentLosses:
-    next_token: float
-    """Mean cross-entropy of position *i*'s logits against token *i + 1*."""
-    same_token: float
-    """Mean cross-entropy of position *i*'s logits against token *i*."""
-    next_token_accuracy: float
-    same_token_accuracy: float
-    positions: int
-    """Scored positions: valid at both *i* and *i + 1*."""
-
-    @property
-    def learned_to_copy(self) -> bool:
-        return self.same_token <= self.next_token
+from tfm.contracts.outputs import AlignmentLosses
 
 
 def label_alignment_losses(

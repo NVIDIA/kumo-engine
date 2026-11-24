@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -9,9 +10,9 @@ from tests.conftest import make_event
 from tfm.contracts.errors import IncompatibleCompositionError, MissingLabelError, SchemaError
 from tfm.contracts.registry import advertised_capabilities, get_capability
 from tfm.data.labels.horizon import event_label_at_cutoff
-from tfm.data.sequence_builders.entity_sequences import events_at_or_before
+from tfm.data.sequence_builders.entity_sequences import build_entity_sequences, events_at_or_before
 from tfm.data.transforms.ordering import order_events
-from tfm.data.validation.schema import validate_event
+from tfm.data.validation.schema import PROHIBITED_INPUT_KEYS, validate_event
 
 
 def test_invalid_schema_rejected() -> None:
@@ -86,3 +87,22 @@ def test_incompatible_tokenizer_layout_fails_loudly() -> None:
 
     with pytest.raises(IncompatibleCompositionError):
         validate_tokenizer_layout(_KvtStub(), Flat(Decoder(mask="causal", vocab_size=32)))
+
+
+@pytest.mark.parametrize("field", sorted(PROHIBITED_INPUT_KEYS))
+@pytest.mark.parametrize("padding", ["", " "])
+def test_sequence_builder_rejects_label_like_text_inputs(field: str, padding: str) -> None:
+    cutoff = datetime(2024, 1, 1, tzinfo=UTC)
+    event = replace(
+        make_event("ent", "e1", cutoff), text={f"{padding}{field.upper()}{padding}": "yes"}
+    )
+    with pytest.raises(SchemaError, match="Text field.*cannot be a model input"):
+        build_entity_sequences([event], cutoff, max_events=4)
+
+
+def test_shared_validator_accepts_observed_text_and_separate_labels() -> None:
+    cutoff = datetime(2024, 1, 1, tzinfo=UTC)
+    event = replace(make_event("ent", "e1", cutoff, fraud=1.0), text={"memo": "synthetic purchase"})
+    assert validate_event(event) is event
+    sequences = build_entity_sequences([event], cutoff, max_events=4)
+    assert sequences[0].events[0].text == {"memo": "synthetic purchase"}

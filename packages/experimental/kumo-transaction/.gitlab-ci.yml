@@ -5,6 +5,8 @@
 # CPU-only merge gate. No GPU, network downloads, RAPIDS, or LFS weights.
 default:
   image: python:3.12-bookworm
+  # The shared Linux Docker pool rejects untagged jobs.
+  tags: [perflab, os/linux, type/docker]
   # A job that hangs fails in 30 minutes, not at the project's limit; a newer
   # pipeline on the same branch cancels this one.
   timeout: 30m
@@ -15,6 +17,11 @@ default:
 variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   UV_LINK_MODE: copy
+  # Small CPU fixtures should not oversubscribe a shared runner's CPUs.
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  # Distributed contract tests use ranks in the same container.
+  GLOO_SOCKET_IFNAME: lo
   # uv's default cache is ~/.cache/uv, outside the project, so GitLab never
   # saved it and every job downloaded torch again.
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
@@ -34,7 +41,7 @@ stages:
   - test
 
 .uv_setup: &uv_setup
-  - python -m pip install --quiet uv
+  - python -m pip install --quiet uv==0.13.8
   - uv sync --frozen --extra dev
 
 lint:
@@ -61,6 +68,15 @@ contract:
     - *uv_setup
     - uv run pytest tests/contract -q
 
+# The other jobs run the locked torch; this one runs the lowest that pyproject.toml allows.
+torch-floor:
+  stage: test
+  needs: []
+  script:
+    - *uv_setup
+    - uv pip install "torch==2.9.*"
+    - uv run --no-sync pytest tests/contract/test_optimizers.py -q
+
 recipe-smoke:
   stage: test
   needs: []
@@ -68,23 +84,39 @@ recipe-smoke:
     - *uv_setup
     - uv run pytest tests/recipe_smoke -q
 
+# The actual Engine GNN runs on CPU. Core CI retains optional-dependency isolation.
+engine-graph:
+  stage: test
+  needs: []
+  script:
+    - python -m pip install --quiet uv==0.13.8
+    - uv sync --frozen --extra dev --extra kumo
+    - uv run python -c 'from kumo_core.modeling.gnn.hetero import HeteroGNN; print(HeteroGNN.__module__)'
+    - >-
+      uv run pytest tests/contract/test_graph*.py tests/recipe_smoke/*graph*.py
+      tests/unit/test_graph_benchmark.py -q
+
 # The Blueprint v2 lab notebooks read a downloaded book and checkpoint on a
 # GPU; TFM_NOTEBOOK_SMOKE=1 runs them on a generated book on CPU instead.
 notebooks:
   stage: test
   needs: []
+  # These smokes retain the lab model's dimensions, unlike tiny unit fixtures.
+  tags: [perflab, os/linux, type/docker, size/large]
   variables:
     TFM_NOTEBOOK_SMOKE: "1"
+    OMP_NUM_THREADS: "2"
+    MKL_NUM_THREADS: "2"
   script:
-    - python -m pip install --quiet uv
+    - python -m pip install --quiet uv==0.13.8
     - uv sync --frozen --extra dev --extra notebooks --extra baselines --extra umap
-    - env -u TFM_PRAGMATIQ_ROOT -u TFM_TABFORMER_ROOT -u TFM_V2_CHECKPOINT uv run pytest --nbmake notebooks -q
+    - env -u TFM_PRAGMATIQ_ROOT -u TFM_TABFORMER_ROOT -u TFM_V2_CHECKPOINT uv run pytest --nbmake --nbmake-timeout=600 notebooks -x -v
 
 docs:
   stage: test
   needs: []
   script:
-    - python -m pip install --quiet uv
+    - python -m pip install --quiet uv==0.13.8
     - uv sync --frozen --extra docs
     - uv run mkdocs build --strict
   artifacts:
@@ -98,7 +130,7 @@ pages:
   stage: test
   needs: []
   script:
-    - python -m pip install --quiet uv
+    - python -m pip install --quiet uv==0.13.8
     - uv sync --frozen --extra docs
     - uv run mkdocs build --strict --site-dir public
   artifacts:

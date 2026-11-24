@@ -21,6 +21,9 @@ re-evaluate a trained run.
 | [`pragma_like`](pragma_like) | Revolut PRAGMA: bidirectional profile, event, and history encoders, masked modelling | pragmatiq | [`pragmatiq`](../notebooks/pragmatiq) |
 | [`blueprint_v2`](blueprint_v2) | NVIDIA TFM Blueprint v2: PRAGMA's profile and event encoders under a causal history decoder | pragmatiq | [`pragmatiq`](../notebooks/pragmatiq) |
 
+| [`gnn_encoder`](gnn_encoder) | Heterogeneous GNN, binary supervision or future-subgraph pretraining | generated relational fixture; optional local pragmatiq | — |
+| [`gnn_sequence`](gnn_sequence) | Frozen GNN conditions Blueprint v2 through its profile encoder | generated relational fixture; optional local pragmatiq | — |
+
 Start with **blueprint_v1** for the end-to-end flow on public data. Use
 **pragma_like** for a PRAGMA-style encoder, and **blueprint_v2** for the
 hybrid, which also generates future events. `pragma_like/config.yaml` and
@@ -38,3 +41,14 @@ What each dataset is for, and why results from different datasets are never
 combined, is in [docs/reference/datasets.md](../docs/reference/datasets.md).
 To add a recipe, follow
 [docs/recipes/recipe-template.md](../docs/recipes/recipe-template.md).
+
+
+Graph recipes default to direct binary supervision (`training.objective: binary`),
+including supervised GNN warm-up for the hybrid. Both offer `--config pretrain`
+and `--config pretrain_smoke` for optional FutureSubgraph training. Their Engine
+GNN uses hop trimming and their sequence stack uses SDPA by default.
+
+
+The graph recipe track includes `pretrain_only_smoke` and `downstream_smoke`
+variants for separating label-free encoder training from supervised use. The
+recipe READMEs describe the stage commands and artifact paths.

@@ -66,3 +66,14 @@ condition = "AND"
 regexTarget = "secret"
 regexes = ['''^max_length=self\.max_length$''']
 paths = ['''^packages/(?:experimental/)?kumo-transaction/src/tfm/data/token_cache/flat\.py$''']
+
+[[allowlists]]
+description = "Graph benchmark lookup keys combine a source commit SHA with a validation suffix."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{40}/validation$''']
+paths = [
+  '''^packages/(?:experimental/)?kumo-transaction/benchmarks/results/graph_constructor_checks_l4\.json$''',
+  '''^packages/(?:experimental/)?kumo-transaction/benchmarks/results/graph_execution_views_l4\.json$''',
+]

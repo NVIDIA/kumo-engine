@@ -12,7 +12,9 @@ rule it breaks instead of silently training something else.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from torch import nn
 
 from tfm.api.model import TrxFM
 from tfm.attention.registry import build_attention
@@ -20,8 +22,9 @@ from tfm.compositions.flat import Flat
 from tfm.compositions.flat_encoder import FlatEncoder
 from tfm.compositions.profile_event_decoder import ProfileEventDecoder
 from tfm.compositions.profile_history import ProfileHistory
-from tfm.config import RecipeConfig
+from tfm.config import CyclicPeriodConfig, GranularityConfig, RecipeConfig
 from tfm.contracts.errors import IncompatibleCompositionError
+from tfm.contracts.kvt import CALENDAR, CyclicTime
 from tfm.contracts.tokenizers import FieldVocabulary
 from tfm.experimental import compose_blueprint_v2, compose_flat_encoder, compose_profile_history
 from tfm.heads.binary import Binary
@@ -40,6 +43,9 @@ from tfm.pooling.registry import build_readout
 from tfm.position.none import NoPE
 from tfm.position.rope import RoPE
 from tfm.position.time_rope import TimeRoPE
+
+if TYPE_CHECKING:
+    from tfm.api.graph import GraphBuildContext
 
 Objective = (
     NextEvent
@@ -125,6 +131,22 @@ def trxfm_from_config(
     )
 
 
+def _time_features(gran: GranularityConfig) -> tuple[CyclicTime, ...]:
+    """`CALENDAR`'s arrays first, in its order, then the others by name, so the order the
+    keys are written in never changes which weights read which array."""
+    calendar = [f.array for f in CALENDAR]
+
+    def rank(name: str) -> tuple[int, str]:
+        return (calendar.index(name), "") if name in calendar else (len(calendar), name)
+
+    return tuple(
+        CyclicTime(name, c.period, c.origin)
+        if isinstance(c, CyclicPeriodConfig)
+        else CyclicTime(name, float(c))
+        for name, c in sorted(gran.time_features.items(), key=lambda item: rank(item[0]))
+    )
+
+
 def profile_history_from_config(config: RecipeConfig, *, vocab_size: int) -> ProfileHistoryModel:
     """The PRAGMA-style bidirectional profile / event / history stack."""
     composition = config.model.composition
@@ -138,6 +160,7 @@ def profile_history_from_config(config: RecipeConfig, *, vocab_size: int) -> Pro
         vocab_size=vocab_size,
         dropout=gran.decoder.dropout,
         varlen=gran.varlen,
+        time_features=_time_features(gran),
     )
     position: Any = build_position(composition.position)
     objectives: Any = build_objectives(config)
@@ -192,10 +215,8 @@ def flat_encoder_from_config(
     )
 
 
-def profile_event_decoder_from_config(
-    config: RecipeConfig, *, vocab_size: int
-) -> ProfileEventDecoderModel:
-    """The Blueprint v2 stack (ADR 0012): profile and event encoders, causal decoder."""
+def profile_event_spec_from_config(config: RecipeConfig, *, vocab_size: int) -> ProfileEventDecoder:
+    """Public sequence specification shared by token and graph model builders."""
     composition = config.model.composition
     gran = composition.granularity
     spec = ProfileEventDecoder(
@@ -207,7 +228,17 @@ def profile_event_decoder_from_config(
         vocab_size=vocab_size,
         dropout=gran.decoder.dropout,
         varlen=gran.varlen,
+        time_features=_time_features(gran),
     )
+    return spec
+
+
+def profile_event_decoder_from_config(
+    config: RecipeConfig, *, vocab_size: int
+) -> ProfileEventDecoderModel:
+    """The Blueprint v2 stack: profile and event encoders, causal decoder."""
+    composition = config.model.composition
+    spec = profile_event_spec_from_config(config, vocab_size=vocab_size)
     position: Any = build_position(composition.position)
     readout: Any = build_readout(composition.readout)
     objectives: Any = build_objectives(config)
@@ -227,12 +258,17 @@ def model_from_config(
     backbone: Any | None = None,
     head_objectives: Sequence[SupervisedHead] = (),
     vocabulary: FieldVocabulary | None = None,
-) -> TrxFM | FlatEncoderModel | ProfileHistoryModel | ProfileEventDecoderModel:
+    graph_context: GraphBuildContext | None = None,
+) -> nn.Module:
     """Dispatch on `model.composition.granularity.type`.
 
     `vocabulary` is the tokenizer's field layout, which only `flat_encoder` reads.
     """
     kind = config.model.composition.granularity.type
+    if graph_context is not None:
+        from tfm.api.graph import build_graph_architecture
+
+        return build_graph_architecture(kind, config, graph_context)
     if kind == "flat":
         return trxfm_from_config(
             config, vocab_size=vocab_size, backbone=backbone, head_objectives=head_objectives
@@ -243,6 +279,10 @@ def model_from_config(
         )
     if kind == "flat_encoder":
         return flat_encoder_from_config(config, vocab_size=vocab_size, vocabulary=vocabulary)
+    if kind not in _HIERARCHICAL:
+        raise IncompatibleCompositionError(
+            f"Unknown architecture {kind!r}; graph models require a GraphBuildContext"
+        )
     return _HIERARCHICAL[kind](config, vocab_size=vocab_size)
 
 

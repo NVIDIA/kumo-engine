@@ -102,6 +102,7 @@ probes sample `max_entities` users. `config.yaml` pretrains on every
 uv run tfm smoke --recipe blueprint_v2                     # CPU, generated data
 
 export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+uv run tfm cache-tokens --recipe blueprint_v2 --workers 6 --profile  # optional: project it
 uv run tfm cache-tokens --recipe blueprint_v2 --workers 6  # once, about 4 min
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   uv run tfm report --recipe blueprint_v2 --device cuda

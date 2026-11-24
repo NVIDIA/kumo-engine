@@ -11,24 +11,28 @@ from pathlib import Path
 from typing import Protocol
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from tfm.config import OptimizerConfig
 from tfm.contracts.capabilities import BackendCapabilities
 from tfm.contracts.errors import UnsupportedCombinationError
+from tfm.contracts.training import TrainableBatch as TrainableBatch
 from tfm.training.optim import build_optimizers, set_schedule_factor
 from tfm.training.progress import TrainingProgress
 from tfm.training.reproducibility import seed_everything
 
 
-class TrainableBatch(Protocol):
-    """A collated batch that can be moved to a device.
+def move_batch_for_execution(batch: TrainableBatch, device: torch.device) -> TrainableBatch:
+    """Use the batch's declared execution transfer capability."""
+    return batch.for_execution(device)
 
-    Both `TransactionBatch` (flat decoder) and `KeyValueTimeBatch` (profile /
-    history) satisfy this, so one loop serves both stacks.
-    """
 
-    def to(self, device: torch.device) -> TrainableBatch: ...
+class BatchSource[BatchT: TrainableBatch](Protocol):
+    """A sized, re-iterable loader; iterable loaders own their batch order."""
+
+    def __len__(self) -> int: ...
+
+    def __iter__(self) -> Iterator[BatchT]: ...
 
 
 def epoch_order(n: int, *, seed: int, epoch: int, shuffle: bool) -> list[int]:
@@ -44,12 +48,24 @@ def epoch_order(n: int, *, seed: int, epoch: int, shuffle: bool) -> list[int]:
 
 
 def iterate_batches[BatchT: TrainableBatch](
-    batches: Sequence[BatchT], *, seed: int = 0, shuffle: bool = False
+    batches: BatchSource[BatchT], *, seed: int = 0, shuffle: bool = False
 ) -> Iterator[BatchT]:
+    if not len(batches):
+        raise ValueError("Training requires at least one batch")
+    if shuffle and not isinstance(batches, Sequence):
+        raise ValueError("Iterable loaders own shuffling; pass shuffle=False to the trainer")
     epoch = 0
     while True:
-        for index in epoch_order(len(batches), seed=seed, epoch=epoch, shuffle=shuffle):
-            yield batches[index]
+        if isinstance(batches, Sequence):
+            for index in epoch_order(len(batches), seed=seed, epoch=epoch, shuffle=shuffle):
+                yield batches[index]
+        else:
+            emitted = False
+            for batch in batches:
+                emitted = True
+                yield batch
+            if not emitted:
+                raise ValueError("Training loaders must return a fresh iterator each epoch")
         epoch += 1
 
 
@@ -86,12 +102,13 @@ def lr_at_step(
     return floor + 0.5 * (learning_rate - floor) * (1.0 + math.cos(math.pi * progress))
 
 
-def real_tokens(batch: TrainableBatch) -> float:
-    """Tokens a batch trains on: unpadded positions of a flat or key-value-time batch."""
+def real_tokens(batch: TrainableBatch) -> Tensor | float:
+    """Tokens a batch trains on: unpadded positions of a flat or key-value-time batch, as a
+    0-d tensor on the batch's device (0.0 for a batch without a mask)."""
     mask = getattr(batch, "attention_mask", None)
     if mask is None:
         mask = getattr(batch, "token_mask", None)
-    return float(mask.sum()) if isinstance(mask, torch.Tensor) else 0.0
+    return mask.sum() if isinstance(mask, torch.Tensor) else 0.0
 
 
 AUTOCAST_DTYPES: dict[str, torch.dtype | None] = {"fp32": None, "bf16": torch.bfloat16}
@@ -100,7 +117,7 @@ AUTOCAST_DTYPES: dict[str, torch.dtype | None] = {"fp32": None, "bf16": torch.bf
 
 def train_model[BatchT: TrainableBatch](
     model: nn.Module,
-    batches: Sequence[BatchT],
+    batches: BatchSource[BatchT],
     *,
     max_steps: int,
     learning_rate: float,
@@ -130,8 +147,8 @@ def train_model[BatchT: TrainableBatch](
     model.train()
     optimizers = build_optimizers(model, learning_rate=learning_rate, settings=settings)
     clip = settings.max_grad_norm if settings.max_grad_norm is not None else math.inf
-    losses: list[float] = []
-    grad_norms: list[float] = []
+    # Per-step loss and gradient norm stay on the device; read once, after the last step.
+    record = torch.zeros(max_steps, 2, device=device)
     stepper = iterate_batches(batches, seed=seed, shuffle=shuffle)
     if progress is not None:
         progress.start(max_steps=max_steps, batches_per_epoch=len(batches), world_size=world_size)
@@ -140,28 +157,44 @@ def train_model[BatchT: TrainableBatch](
             step, max_steps=max_steps, learning_rate=learning_rate, optimizer=settings
         )
         set_schedule_factor(optimizers, rate / learning_rate if learning_rate else 0.0)
-        batch = next(stepper).to(device)
+        batch = move_batch_for_execution(next(stepper), device)
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
-        with torch.autocast(
-            device_type=device.type, dtype=compute_dtype, enabled=compute_dtype is not None
-        ):
-            output = model(batch, compute_loss=True)
+        masked_only = not batch.has_supervision
+        training_mode = model.training
+        if masked_only:
+            # No state update includes BatchNorm running statistics, not only
+            # optimizer parameters. Keep a differentiable zero loss in eval mode.
+            model.eval()
+        try:
+            with torch.autocast(
+                device_type=device.type, dtype=compute_dtype, enabled=compute_dtype is not None
+            ):
+                output = model(batch, compute_loss=True)
+        finally:
+            if masked_only:
+                model.train(training_mode)
         assert output.loss is not None
         output.loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-        for opt in optimizers:
-            opt.step()
-        losses.append(float(output.loss.detach().float().cpu()))
-        grad_norms.append(float(norm.detach().float().cpu()))
+        if batch.has_supervision:
+            for opt in optimizers:
+                opt.step()
+        record[step, 0] = output.loss.detach()
+        record[step, 1] = norm.detach()
         if progress is not None:
             progress.step(
                 step + 1,
-                loss=losses[-1],
+                loss=record[step, 0],
                 lr=rate,
-                grad_norm=grad_norms[-1],
+                grad_norm=record[step, 1],
                 tokens=real_tokens(batch),
             )
+    if progress is not None:
+        progress.finish()
+    values = record.tolist()
+    losses = [row[0] for row in values]
+    grad_norms = [row[1] for row in values]
     if loss_log is not None:
         loss_log.extend(losses)
     return {
@@ -219,7 +252,9 @@ class EagerTrainer:
         name="eager",
         support_tier="reference",
         backbones=frozenset({"eager", "huggingface", "gru"}),
-        batch_layouts=frozenset({"flat_fields", "flat_key_value", "key_value_time"}),
+        batch_layouts=frozenset(
+            {"flat_fields", "flat_key_value", "key_value_time", "graph", "graph_history"}
+        ),
         requires_cuda=False,
         multi_process=False,
         segment_masks=True,
@@ -233,7 +268,7 @@ class EagerTrainer:
     def fit(
         self,
         model: nn.Module,
-        batches: Sequence[TrainableBatch],
+        batches: BatchSource[TrainableBatch],
         *,
         max_steps: int,
         learning_rate: float,

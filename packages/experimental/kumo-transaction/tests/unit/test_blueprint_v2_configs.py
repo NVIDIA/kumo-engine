@@ -5,13 +5,19 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import torch
 from pydantic import ValidationError
 
 from tfm.api.builders import profile_event_decoder_from_config
 from tfm.config import RecipeConfig, load_recipe_config
+from tfm.contracts.errors import IncompatibleCompositionError
+from tfm.contracts.kvt import CyclicTime
+from tfm.layers.kvt_encoders import CalendarEmbedding
 
 RECIPE = Path("recipes/blueprint_v2")
 ABLATIONS = Path("benchmarks/ablations")
@@ -180,3 +186,76 @@ def test_an_ambiguous_or_unscorable_evaluation_is_refused(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         RecipeConfig.model_validate(_with_evaluation(**changes))
+
+
+def _with_time_features(time_features: dict, granularity: str = "profile_event_decoder"):
+    raw = load_recipe_config(RECIPE / "config.smoke.yaml").model_dump(mode="json")
+    raw["model"]["composition"]["granularity"].update(type=granularity)
+    raw["model"]["composition"]["granularity"]["time_features"] = time_features
+    return RecipeConfig.model_validate(raw)
+
+
+def test_time_features_set_the_arrays_the_calendar_reads() -> None:
+    features = {"minute": 60, "dom": {"period": 31, "origin": 1}, "dow": 7, "hour": 24}
+    model = profile_event_decoder_from_config(_with_time_features(features), vocab_size=64)
+    assert model.event_arrays == ("hour", "dow", "dom", "minute")
+    arrays = {name: torch.ones(2, 3, dtype=torch.long) for name in model.event_arrays}
+    before = model.calendar(SimpleNamespace(event_array=arrays.__getitem__))
+    arrays["minute"] = torch.full((2, 3), 30)
+    after = model.calendar(SimpleNamespace(event_array=arrays.__getitem__))
+    assert not torch.equal(before, after)
+
+
+def test_the_default_calendar_reads_hour_weekday_and_day_of_month_as_before() -> None:
+    torch.manual_seed(0)
+    calendar = CalendarEmbedding(16)
+    arrays = {
+        "hour": torch.randint(0, 24, (3, 5)),
+        "dow": torch.randint(0, 7, (3, 5)),
+        "dom": torch.randint(1, 32, (3, 5)),
+    }
+    h = 2.0 * math.pi * arrays["hour"].float() / 24.0
+    w = 2.0 * math.pi * arrays["dow"].float() / 7.0
+    d = 2.0 * math.pi * (arrays["dom"].float() - 1.0) / 31.0
+    feats = torch.stack([h.sin(), h.cos(), w.sin(), w.cos(), d.sin(), d.cos()], dim=-1)
+    got = calendar(SimpleNamespace(event_array=arrays.__getitem__))
+    assert calendar.arrays == ("hour", "dow", "dom")
+    assert torch.equal(got, calendar.net(feats))
+
+
+def test_a_time_feature_keeps_its_phase_far_from_zero() -> None:
+    # float32 spacing at 2**50 is 2**27: a cast before the subtraction loses the phase.
+    calendar = CalendarEmbedding(8, (CyclicTime("t", 2_000_000.0, 2.0**50),))
+    t = torch.tensor([[2**50, 2**50 + 1_000_000]])
+    got = calendar(SimpleNamespace(event_array={"t": t}.__getitem__))
+    want = calendar.net(torch.tensor([[0.0, 1.0], [0.0, -1.0]]))
+    assert torch.allclose(got[0], want, atol=1e-5)
+
+
+def test_a_dumped_config_with_the_default_time_features_reloads_for_any_granularity() -> None:
+    config = load_recipe_config(Path("recipes/blueprint_v1/config.small.yaml"))
+    RecipeConfig.model_validate(config.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize(
+    ("time_features", "granularity", "match"),
+    [
+        ({"minute": 60}, "flat", "does not use \\['time_features'\\]"),
+        ({"minute": 0}, "profile_event_decoder", "positive period"),
+        ({"minute": {"period": -1}}, "profile_history", "greater than 0"),
+        ({}, "profile_event_decoder", "at least one array"),
+    ],
+)
+def test_time_features_are_refused_where_they_cannot_apply(
+    time_features: dict, granularity: str, match: str
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        _with_time_features(time_features, granularity)
+
+
+def test_a_time_feature_the_tokenizer_does_not_emit_is_refused_at_setup(tmp_path: Path) -> None:
+    from tfm.runtime.pipeline import setup_run
+
+    config = _with_time_features({"hour": 24, "minute": 60})
+    with pytest.raises(IncompatibleCompositionError, match=r"\['minute'\], which this tokenizer"):
+        setup_run(config=config, run_dir=tmp_path / "run", device="cpu")

@@ -2,7 +2,12 @@
 
 This directory imports the tracked source tree identified in [UPSTREAM.json](UPSTREAM.json).
 The branch name `transaction_foundation_2_2` identifies this sync; the imported
-Python distribution's version remains `2.0.0a2`.
+Python distribution's version is `2.0.0a4`.
+
+PR #507 consolidates the initial import and the later sync previously proposed
+in #508. It advances from `8a67f98d5a7cfb4c1feeee06c0ce6383f5520671` to
+`6331312c3e85d6ce1fc868c99b1ffffc03bc50c5` while retaining the experimental
+location and Engine integration checks. There is no separate prerequisite PR.
 
 ## Local adaptations
 
@@ -16,19 +21,24 @@ Python distribution's version remains `2.0.0a2`.
 - `docs/_site/api/*.md`: use relative links that resolve within this source
   snapshot. The documentation generator adapts them in its virtual API-page
   copies to preserve links on the rendered site.
-- `benchmarks/results/README.md`: repair the stale config-migration link.
+- `benchmarks/results/README.md`: repair the migration link and explain that
+  upstream raw graph artifacts are not available from this public snapshot.
+- `benchmarks/results/graph_*.json`: replace private artifact URLs with JSON
+  `null` while preserving source revisions, hashes, sizes and measurements.
+  This import-time transformation is applied to the pinned upstream manifests;
+  reapply it if those manifests are regenerated upstream.
 - `scripts/gen_doc_pages.py`: include sync/provenance files in the site and
   adapt source-relative API links for its rendered layout.
 
 Engine's `docs/maintenance/agent-contract.json` registers the imported
 instruction scopes.
 
-`UPSTREAM.json` also lists 42 files under `header_added_files`. These authored
+`UPSTREAM.json` also lists 54 files under `header_added_files`. These authored
 configuration/build/example files had no file-level attribution; their pinned
 source tree declares NVIDIA copyright and Apache-2.0 in its own `LICENSE`.
 Engine adds canonical SPDX headers without changing executable content. No
-provenance exclusions are needed. The 224 existing Blueprint two-line SPDX
-headers stay byte-for-byte intact; Engine recognizes that exact form only here.
+provenance exclusions are needed. Existing Blueprint two-line SPDX headers
+stay byte-for-byte intact; Engine recognizes that exact form only here.
 
 The always-reporting `transaction-blueprint` CI check detects package and policy
 changes before running frozen CPU checks and wheel-license verification. Root
@@ -58,4 +68,5 @@ they do not configure Kumo Engine CI, ownership, releases, or contributions.
 5. Open a PR against Engine `main` recording the old and new source commits,
    local adaptations, validation results, and any skipped checks.
 
-A source sync does not publish a release or establish Engine API integration.
+A source sync does not publish a release or change upstream support tiers.
+The a4 graph recipes use the optional Kumo Engine backend described upstream.

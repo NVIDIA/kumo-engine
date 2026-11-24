@@ -608,6 +608,7 @@ def load_pragmatiq_dataset(
     max_entities: int | None = None,
     sample_seed: int = 0,
     attach_fraud_labels: bool = True,
+    load_labels: bool = True,
     stratify_by_fraud: bool = True,
 ) -> PragmatiqDataset:
     """Read a pragmatiq directory into TFM domain objects.
@@ -626,7 +627,10 @@ def load_pragmatiq_dataset(
     profiles_path = root / "profiles.parquet"
     if max_entities is not None:
         selected = _sample_pragmatiq_users(
-            root, cap=int(max_entities), seed=int(sample_seed), stratify=stratify_by_fraud
+            root,
+            cap=int(max_entities),
+            seed=int(sample_seed),
+            stratify=stratify_by_fraud and load_labels,
         )
     events_table = _read_events_table(events_path, selected)
     events, dropped = _load_events(events_table)
@@ -643,7 +647,7 @@ def load_pragmatiq_dataset(
     )
     labels: dict[str, tuple[LabelRow, ...]] = {}
     label_dir = root / "labels"
-    if label_dir.is_dir():
+    if load_labels and label_dir.is_dir():
         for parquet in sorted(label_dir.glob("*.parquet")):
             task = parquet.stem
             if task not in LOAD_LABEL_TASKS:

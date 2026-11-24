@@ -58,7 +58,14 @@ make check
 ```
 
 This mirrors the lint, type-check, unit, contract, and recipe-smoke jobs in
-GitLab CI. Run narrower checks while developing when appropriate, but include
+GitLab CI. CI jobs target the shared Linux Docker runner pool using the tags in
+`.gitlab-ci.yml`; shared runners must be enabled for the project. Untagged jobs
+remain queued because those runners do not accept them.
+Notebook CI uses the large runner class and two OpenMP/MKL threads because its
+smokes retain the lab model's dimensions. Its per-cell limit is ten minutes;
+the overall job limit remains thirty minutes.
+
+Run narrower checks while developing when appropriate, but include
 the commands and results in the merge request. State any skipped validation and
 why, especially for optional GPU or external-backend paths.
 

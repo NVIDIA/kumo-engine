@@ -118,8 +118,10 @@ def test_event_fields_values_are_the_flat_tokens() -> None:
         )
     )
     flat = TransactionFieldTokenizer().event_tokens(event)
-    assert [tok.id_to_token[v] for v in record.value_ids] == flat
-    assert [tok.id_to_token[k] for k in record.key_ids] == [f"KEY_{f}" for f in FIELD_ORDER]
+    assert [tok.vocabulary.id_to_token[v] for v in record.value_ids] == flat
+    assert [tok.vocabulary.id_to_token[k] for k in record.key_ids] == [
+        f"KEY_{f}" for f in FIELD_ORDER
+    ]
 
 
 def test_flat_stream_into_a_hierarchy_is_refused_by_rule_4(tmp_path: Path) -> None:

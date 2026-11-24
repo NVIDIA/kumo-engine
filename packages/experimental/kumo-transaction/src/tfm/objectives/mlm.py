@@ -14,6 +14,21 @@ from tfm.contracts.kvt import KeyValueTimeBatch
 from tfm.contracts.outputs import ModelOutput
 from tfm.features.tokenizers.key_value_time import MASK, UNK
 
+# splitmix64's constants as signed int64.
+_GOLDEN, _MIX1, _MIX2 = -0x61C8864680B583EB, -0x40A7B892E31B1A47, -0x6B2FB644ECCEEE15
+
+
+def _shr(h: Tensor, s: int) -> Tensor:
+    """Logical right shift of int64 `h` by `s` bits."""
+    return (h >> s) & ((1 << (64 - s)) - 1)
+
+
+def _uniform(h: Tensor) -> Tensor:
+    """Each int64 of `h`, mixed by splitmix64's finaliser, as a uniform float in [0, 1)."""
+    h = (h ^ _shr(h, 30)) * _MIX1
+    h = (h ^ _shr(h, 27)) * _MIX2
+    return _shr(h ^ _shr(h, 31), 40).float() * 2.0**-24
+
 
 @dataclass(frozen=True)
 class TokenEventKeyMLM:
@@ -56,28 +71,32 @@ def apply_mlm_mask(
     *,
     generator: torch.Generator | None = None,
 ) -> KeyValueTimeBatch:
-    """Mask value ids; keep key ids. Unk-dropout positions are excluded from loss."""
+    """Mask value ids; keep key ids. Unk-dropout positions are excluded from loss.
+
+    A token is selected with `p_token`, every token of an event with `p_event`, and every
+    token of a row whose key id draws under `p_key`: one draw per row and key id, a hash
+    of the key id and a per-row seed, so no tensor scales with the vocabulary. Runs on
+    the batch's device without a host sync.
+    """
     token_mask = batch.token_mask.bool()
-    selected = torch.zeros_like(token_mask)
-    rnd = torch.rand(token_mask.shape, generator=generator, device=token_mask.device)
-    selected |= token_mask & (rnd < spec.p_token)
-    ev_rnd = torch.rand(batch.event_mask.shape, generator=generator, device=token_mask.device)
+    device = token_mask.device
+    rnd = torch.rand(token_mask.shape, generator=generator, device=device)
+    selected = token_mask & (rnd < spec.p_token)
+    ev_rnd = torch.rand(batch.event_mask.shape, generator=generator, device=device)
     selected |= token_mask & (ev_rnd < spec.p_event).unsqueeze(-1)
-    batch_size, n_events, _n_tok = batch.key_ids.shape
-    for b in range(batch_size):
-        valid_keys = batch.key_ids[b][token_mask[b]]
-        if valid_keys.numel() == 0:
-            continue
-        for key in valid_keys.unique():
-            draw = torch.rand((), generator=generator, device=token_mask.device)
-            if float(draw) < spec.p_key:
-                selected[b] |= token_mask[b] & (batch.key_ids[b] == key)
-    if not bool(selected.any()) and bool(token_mask.any()):
-        # Tiny batches can sample zero masks; force one valid token so CE is defined.
-        idx = token_mask.view(-1).nonzero(as_tuple=False)[0]
-        selected.view(-1)[idx] = True
-    unk_draw = torch.rand(token_mask.shape, generator=generator, device=token_mask.device)
+    batch_size = batch.key_ids.shape[0]
+    seed = torch.randint(0, 2**62, (batch_size, 1), generator=generator, device=device)
+    keys = batch.key_ids.reshape(batch_size, -1).long()
+    key_hit = _uniform(keys * _GOLDEN + seed).view_as(token_mask)
+    selected |= token_mask & (key_hit < spec.p_key)
+    unk_draw = torch.rand(token_mask.shape, generator=generator, device=device)
     unk_sel = selected & (unk_draw < spec.p_unk)
+    # Tiny batches can end with no supervised token; mask the first valid one so CE is defined.
+    force = (token_mask.any() & ~(selected & ~unk_sel).any()).view(1)
+    first = token_mask.view(-1).int().argmax().view(1)
+    pin = torch.zeros_like(token_mask).view(-1).scatter_(0, first, force).view_as(token_mask)
+    selected |= pin
+    unk_sel &= ~pin
     mask_sel = selected & ~unk_sel
     labels = batch.value_ids.clone()
     labels[~selected] = spec.ignore_index
@@ -92,9 +111,7 @@ def apply_mlm_mask(
         token_mask=batch.token_mask,
         event_mask=batch.event_mask,
         time_log=batch.time_log,
-        hour=batch.hour,
-        dow=batch.dow,
-        dom=batch.dom,
+        events=batch.events,
         prof_key_ids=batch.prof_key_ids,
         prof_value_ids=batch.prof_value_ids,
         prof_positions=batch.prof_positions,

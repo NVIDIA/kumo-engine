@@ -5,26 +5,36 @@
 
 from tfm.data.token_cache.build import (
     FORMAT_VERSION,
+    BlockStatistics,
     CacheRequest,
     FitSpec,
     build_token_cache,
+    fit_statistics_block,
     train_ranges,
 )
+from tfm.data.token_cache.device import DeviceBatches
 from tfm.data.token_cache.store import (
     CachedBatches,
-    CachedKeyValueTimeTokenizer,
+    CachedTokenizer,
+    CacheFiles,
     CacheRows,
+    ShardedArray,
     TokenCache,
 )
 
 __all__ = [
     "FORMAT_VERSION",
+    "BlockStatistics",
+    "CacheFiles",
     "CacheRequest",
     "CacheRows",
     "CachedBatches",
-    "CachedKeyValueTimeTokenizer",
+    "CachedTokenizer",
+    "DeviceBatches",
     "FitSpec",
+    "ShardedArray",
     "TokenCache",
     "build_token_cache",
+    "fit_statistics_block",
     "train_ranges",
 ]
