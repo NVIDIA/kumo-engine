@@ -59,6 +59,10 @@ class _SnapshotPaths:
     def version_dir(self, graph_key: str, version: str) -> Path:
         return self.graph_dir(graph_key) / _component(version, "snapshot version")
 
+    def import_dir(self, graph_key: str, import_id: str) -> Path:
+        return (self.data_root / ".imports" / _component(graph_key, "graph_key")
+                / _component(import_id, "import_id"))
+
     def reference(self, graph_key: str, version: str) -> Path:
         path = self.version_dir(graph_key, version)
         return path.with_name(path.name + self._reference_suffix)

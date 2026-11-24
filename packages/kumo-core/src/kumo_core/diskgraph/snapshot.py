@@ -118,6 +118,14 @@ class LocalSnapshotStore:
         self._paths = _SnapshotPaths(Path(config.data_root))
 
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
+        legacy = self.staging_path(handle)
+        if (not self._reference(handle).is_file()
+                and not Path(legacy, "_SUCCESS").is_file()):
+            return legacy
+        return self._ready_path(handle) or self._selected_path(handle)
+
+    def _selected_path(self, handle: DiskgraphSnapshotHandle) -> str:
+        """Resolve the address even when it is not a completed snapshot yet."""
         reference = self._reference(handle)
         if self.config.managed_root is not None and reference.is_file():
             build_id = _read_json_object(reference).get("index_build_id")
@@ -134,6 +142,13 @@ class LocalSnapshotStore:
     def staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
         """Legacy location, also used while the subprocess builds a new index."""
         return str(self._paths.version_dir(handle.graph_key, handle.graph_data_version))
+
+    def import_staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
+        """Keep completed legacy snapshots in place while another build loads."""
+        legacy = self.staging_path(handle)
+        if self._ready_candidate(legacy):
+            return str(self._paths.import_dir(handle.graph_key, uuid.uuid4().hex))
+        return legacy
 
     def _reference(self, handle: DiskgraphSnapshotHandle) -> Path:
         return self._paths.reference(handle.graph_key, handle.graph_data_version)
@@ -178,6 +193,8 @@ class LocalSnapshotStore:
         self._verify_path(str(source))
         build_id = _read_json_object(source / "index_metadata.json").get("index_build_id")
         if self.config.managed_root is None or build_id is None:
+            if source != Path(self.staging_path(handle)):
+                raise ValueError("Import cannot replace a completed legacy snapshot in place")
             self.use_legacy(handle)
             return DiskgraphIngestResult.for_index(source)
         if not isinstance(build_id, str) or not build_id:
@@ -273,8 +290,6 @@ class LocalSnapshotStore:
     def _ready_paths(
             self, graph_key: str, version_prefix: str = "",
     ) -> Iterator[tuple[DiskgraphSnapshotHandle, str]]:
-        from diskgraph import DiskgraphCorruptionError
-
         try:
             graph_dir = self._paths.graph_dir(graph_key)
             names = os.listdir(graph_dir)
@@ -293,35 +308,43 @@ class LocalSnapshotStore:
                 if version is not None:
                     versions.add(version)
 
+        for version in sorted(versions):
+            if version.startswith(version_prefix):
+                handle = DiskgraphSnapshotHandle(graph_key, version)
+                path = self._ready_path(handle)
+                if path is not None:
+                    yield handle, path
+
+    def _ready_path(self, handle: DiskgraphSnapshotHandle) -> str | None:
+        """Select one healthy managed build, then a healthy legacy fallback."""
+        from diskgraph import DiskgraphCorruptionError
+
         damage = (DiskgraphCorruptionError, DiskgraphSnapshotError,
                   FileNotFoundError, IsADirectoryError, NotADirectoryError,
                   ValueError, KeyError)
-        for version in sorted(versions):
-            if not version.startswith(version_prefix):
-                continue
-            handle = DiskgraphSnapshotHandle(graph_key, version)
-            legacy = self.staging_path(handle)
-            candidates = [legacy]
-            try:
-                selected = self.path(handle)
-            except damage:
-                logger.warning("Skipping invalid snapshot reference at %s",
-                               self._reference(handle))
-            else:
-                if selected != legacy:
-                    candidates.insert(0, selected)
-            # One logical version selects one completed physical build. Prefer
-            # its managed reference, falling back to legacy only if necessary.
-            for snapshot_dir in candidates:
-                try:
-                    self._verify_path(snapshot_dir)
-                    result = check_diskgraph_output(snapshot_dir)
-                except damage:
-                    logger.warning("Skipping invalid snapshot at %s", snapshot_dir)
-                    continue
-                if result is not None:
-                    yield handle, snapshot_dir
-                    break
+        legacy = self.staging_path(handle)
+        candidates = [legacy]
+        try:
+            selected = self._selected_path(handle)
+        except damage:
+            logger.warning("Skipping invalid snapshot reference at %s",
+                           self._reference(handle))
+        else:
+            if selected != legacy:
+                candidates.insert(0, selected)
+        return next((path for path in candidates if self._ready_candidate(path)), None)
+
+    def _ready_candidate(self, path: str) -> bool:
+        from diskgraph import DiskgraphCorruptionError
+
+        try:
+            self._verify_path(path)
+            return check_diskgraph_output(path) is not None
+        except (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                ValueError, KeyError):
+            logger.warning("Skipping invalid snapshot at %s", path)
+            return False
 
     def list_ready(self) -> list[DiskgraphSnapshotHandle]:
         ready: list[DiskgraphSnapshotHandle] = []
