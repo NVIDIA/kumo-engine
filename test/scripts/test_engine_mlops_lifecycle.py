@@ -411,7 +411,7 @@ def test_customer_workload_owns_phases_and_does_not_use_kumo_helpers(
         (scratch / 'temporary').touch()
         if name == 'recover':
             assert not (cwd / 'scratch-train').exists()
-        runner.write(cwd / (name + '.json'), dict(status='passed'))
+        runner.write(cwd / (name + '.json'), dict(status='passed', workload={'sha256': runner.digest(path)}))
         return 0
 
     monkeypatch.setattr(runner, 'execute', completed)
@@ -456,7 +456,8 @@ def test_custom_platform_workload_preserves_permission_gate(
         assert '--execute-platform' in command
         phases.append(name)
         runner.write(cwd / (name + '.json'),
-                     dict(status='passed' if ready else 'blocked'))
+                     dict(status='passed' if ready else 'blocked',
+                          workload={'sha256': runner.digest(path)}))
         return 0 if ready else 1
 
     monkeypatch.setattr(runner, 'execute', completed)
@@ -527,3 +528,33 @@ def test_invalid_customer_workload_has_no_default_phases(tmp_path, source, statu
     assert report['status'] == status
     assert report['phases'] == {}
     assert error in report['error']
+
+
+def test_customer_run_fails_if_workload_changes_between_phases(tmp_path, monkeypatch):
+    path = customer_module(tmp_path)
+    root = tmp_path / 'attempt'
+    original = runner.digest(path)
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *a, **kw: None)
+
+    def completed(command, cwd, log, timeout):
+        name = command[command.index('--phase') + 1]
+        if name == 'recover':
+            path.write_text(path.read_text().replace('rows=3', 'rows=4'))
+        args = SimpleNamespace(output_dir=cwd, wheel=tmp_path / 'x',
+                               expected_version='1', phase=name, workload=path)
+        return runner.phase(args)
+
+    monkeypatch.setattr(runner, 'execute', completed)
+    args = SimpleNamespace(output_dir=root, wheel=tmp_path / 'x',
+                           expected_version='1', phase_timeout=1, workload=path)
+    assert runner.run(args) == 1
+    report = runner.read(root / 'summary.json')
+    assert report['status'] == 'failed'
+    assert report['workload']['sha256'] == original
+    assert report['phases']['train']['status'] == 'passed'
+    recovered = report['phases']['recover']
+    assert recovered['workload']['sha256'] == runner.digest(path)
+    assert recovered['result'] == {'rows': 4}
+    assert recovered['status'] == 'failed'
+    assert 'different workload revision' in recovered['error']

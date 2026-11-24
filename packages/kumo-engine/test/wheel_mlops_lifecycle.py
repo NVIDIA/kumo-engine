@@ -838,14 +838,15 @@ def workload(args):
     """Load explicitly supplied customer code without changing isolated sys.path."""
     path = getattr(args, 'workload', None)
     if path is None:
-        return None
+        return None, None
     spec = importlib.util.spec_from_file_location('mlops_customer_workload', path)
     if spec is None or spec.loader is None:
         raise ValueError(f'Cannot load workload at {path}')
     module = importlib.util.module_from_spec(spec)
     # Dataclasses and native model serializers resolve classes by module name.
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    source = path.read_bytes()
+    exec(compile(source, str(path), 'exec', dont_inherit=True), module.__dict__)
     phases = getattr(module, 'PHASES', ())
     require(isinstance(phases, (tuple, list)) and phases,
             'Workload must declare a nonempty PHASES sequence')
@@ -856,7 +857,8 @@ def workload(args):
             'summary, platform and platform-prerequisite are reserved for the harness')
     require(callable(getattr(module, 'run_phase', None)),
             'Workload must implement run_phase(name, root, profile)')
-    return module
+    return module, dict(path=str(path), sha256=hashlib.sha256(source).hexdigest(),
+                        phases=list(phases))
 
 
 def phase_names(custom, profile):
@@ -885,13 +887,11 @@ def phase(args):
                                       experiment=profile.experiment,
                                       artifact_root=profile.artifact_root,
                                       placement=profile.placement())
-        custom = workload(args)
+        custom, workload_evidence = workload(args)
         require(args.phase in phase_names(custom, profile),
                 f'Unknown workload phase: {args.phase}')
         if custom is not None:
-            report['workload'] = dict(path=str(args.workload),
-                                      sha256=digest(args.workload),
-                                      phases=list(custom.PHASES))
+            report['workload'] = workload_evidence
             if args.phase == 'platform-prerequisite':
                 report['result'] = profile.negative()
             else:
@@ -945,7 +945,7 @@ def run(args):
                 Path(__file__).with_name('wheel_mlops_platform.py'))
         profile = platform_backend(root)
         try:
-            custom = workload(args)
+            custom, workload_evidence = workload(args)
         except Exception as error:
             report['phases'] = {}
             prerequisite = isinstance(error, (ImportError, PermissionError, PrerequisiteError))
@@ -960,9 +960,7 @@ def run(args):
             for name in phases
         }
         if custom is not None:
-            report['workload'] = dict(path=str(args.workload),
-                                      sha256=digest(args.workload),
-                                      phases=list(custom.PHASES))
+            report['workload'] = workload_evidence
         if profile is not None:
             report['required_gaps'] = {}
             if custom is None:
@@ -1021,11 +1019,14 @@ def run(args):
             report['phases'][name] = (read(receipt) if receipt.is_file() else
                                       dict(status='failed',
                                            error='Worker produced no receipt'))
-            report['phases'][name]['returncode'] = returncode
-            if returncode or report['phases'][name]['status'] != 'passed':
-                status = ('blocked' if report['phases'][name]['status']
-                          == 'blocked' else 'failed')
-                report['phases'][name]['status'] = status
+            phase_report = report['phases'][name]
+            phase_report['returncode'] = returncode
+            if (workload_evidence is not None and phase_report['status'] == 'passed'
+                    and phase_report.get('workload', {}).get('sha256') != workload_evidence['sha256']):
+                phase_report.update(status='failed', error='Worker ran a different workload revision')
+            if returncode or phase_report['status'] != 'passed':
+                status = 'blocked' if phase_report['status'] == 'blocked' else 'failed'
+                phase_report['status'] = status
                 report['status'] = status
                 break
             # Recovery must not use the producer's objects, source files or caches.

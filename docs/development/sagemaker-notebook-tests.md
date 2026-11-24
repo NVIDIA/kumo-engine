@@ -124,8 +124,9 @@ passes between browser contexts in memory and is never saved to disk.
 Full qualification also requires nonzero drift sensitivity, active remote-writer interruption, and
 full epoch-history exports; the harness records these as outstanding. Successful
 selected checks can pass while `full_qualification` remains `incomplete`.
-`--engine-checks-only` selects execution and saved-export checks without native
-MLflow or native Studio UI verification.
+With `--scenario engine`, `--engine-checks-only` selects notebook execution
+and receipt verification. Notebook export, native MLflow UI, and native Studio
+UI verification are outside that mode.
 
 UI replay requires both private local evidence and the corresponding cloud
 state. Normal completed attempts clean that state; a replay after cleanup cannot
