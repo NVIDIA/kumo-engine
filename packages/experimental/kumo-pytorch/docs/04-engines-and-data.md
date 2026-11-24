@@ -132,6 +132,13 @@ request = api.SampleRequest(
 )
 ```
 
+For a small request built in code, `plan.materialize` also accepts
+`AnchorTable(InMemoryRows(rows), ...)` with nonempty, consistently typed rows.
+This supports native columnar graph batches without writing a caller-owned anchor
+Parquet file. The native seed extension and its scratch files remain task-owned
+under the engine's captured Kumo root; base datasets still require local Parquet.
+Empty in-memory anchors have no declared Arrow schema and are refused.
+
 Each table in the schema is bound to one Parquet source, which can be a single
 file, a directory or a glob. A dataset binds exactly the contract's tables, and
 it doesn't name an engine. The DiskGraph engine reads `Parquet` sources, and the

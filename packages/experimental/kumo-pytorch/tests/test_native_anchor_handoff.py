@@ -10,7 +10,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
-
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
 
@@ -975,3 +974,119 @@ def test_native_cursor_rejects_replaced_sample_id_dictionary(native_task):
     with plan.materialize(table, fitted=original.fitted_state) as task:
         with pytest.raises(ValueError, match="this state was saved for a different task"):
             stream(task).load_state_dict(cursor)
+
+
+def test_in_memory_columnar_anchors_match_parquet_and_cleanup(native_task):
+    from tests.test_inspectable_graph_batches import _equal
+
+    plan, _, table = native_task
+    contract = replace(
+        plan.contract,
+        sample=replace(plan.contract.sample, targets={}),
+        batch=replace(plan.contract.batch, targets={}),
+    )
+    parquet = replace(table, targets={})
+    rows = pq.read_table(table.source.path).to_pylist()
+    memory = replace(parquet, source=api.InMemoryRows(rows))
+    outputs, digests, directories = [], [], []
+    with api.prepare(contract, plan.dataset, plan.engine) as graph_plan:
+        for anchors in (parquet, memory):
+            with graph_plan.materialize(anchors, fit_split="train") as task:
+                directories.append(task._anchors.path)
+                digests.append(task._anchors.snapshot_digest)
+                outputs.append(list(task.batches(output_format="columnar", shuffle=False)))
+            assert not directories[-1].exists()
+    with api.prepare(contract, plan.dataset, plan.engine) as graph_plan:
+        with graph_plan.materialize(memory, fit_split="train") as repeated:
+            assert repeated._anchors.snapshot_digest == digests[1]
+        changed_rows = [dict(row) for row in rows]
+        changed_rows[0]["sid"] = "changed"
+        with graph_plan.materialize(
+            replace(memory, source=api.InMemoryRows(changed_rows)), fit_split="train"
+        ) as changed:
+            assert changed._anchors.snapshot_digest != digests[1]
+    for expected, actual in zip(outputs[0], outputs[1], strict=True):
+        _equal(actual.metadata, expected.metadata)
+        left, right = actual.inputs["graph"], expected.inputs["graph"]
+        assert left.root_type == right.root_type
+        assert left.nodes.keys() == right.nodes.keys()
+        assert left.edges.keys() == right.edges.keys()
+        for name in left.nodes:
+            assert left.nodes[name].ids.equals(right.nodes[name].ids)
+            assert left.nodes[name].owners.equals(right.nodes[name].owners)
+            assert left.nodes[name].features.equals(right.nodes[name].features)
+        for name in left.edges:
+            assert left.edges[name].source_type == right.edges[name].source_type
+            assert left.edges[name].destination_type == right.edges[name].destination_type
+            assert left.edges[name].index.equals(right.edges[name].index)
+
+
+@pytest.mark.parametrize(
+    "rows,match",
+    [
+        ([], "at least one row"),
+        ([{"entity": "u1", "cutoff": 25}], "lacks columns"),
+        (
+            [{"entity": "u1", "cutoff": 25, "sid": "one"}, {"entity": "u2", "cutoff": 25}],
+            "row 1 lacks columns",
+        ),
+        ([1], "must be a mapping"),
+    ],
+)
+def test_in_memory_anchor_preflight_rejects_invalid_rows_without_allocating(
+    native_task, rows, match
+):
+    plan, active_task, _ = native_task
+    task_root = active_task._anchors.path.parent
+    before = set(task_root.iterdir())
+    invalid = api.AnchorTable(
+        api.InMemoryRows(rows), entity_id="entity", as_of_time="cutoff", sample_id="sid"
+    )
+    issues = api.check(plan.contract, plan.dataset, plan.engine, anchors=invalid)
+    assert any(issue.path == "anchors.source.rows" and match in issue.message for issue in issues)
+    with pytest.raises(api.ValidationError, match=match):
+        plan.materialize(invalid)
+    assert set(task_root.iterdir()) == before
+
+
+def test_in_memory_anchor_support_does_not_allow_in_memory_base_datasets(native_task):
+    plan, _, _ = native_task
+    dataset = api.Dataset({name: api.InMemoryRows([]) for name in plan.dataset.tables})
+    assert any(
+        issue.code == "DG-SOURCE-KIND" for issue in api.check(plan.contract, dataset, plan.engine)
+    )
+
+
+def test_in_memory_anchor_candidates_stay_unsupported(native_task):
+    plan, _, _ = native_task
+    anchors = api.AnchorTable(
+        api.InMemoryRows([{"entity": "u1", "cutoff": 25, "candidates": []}]),
+        entity_id="entity",
+        as_of_time="cutoff",
+        candidates={"unknown": api.CandidateColumn("candidates", "entity")},
+    )
+    assert any(
+        issue.code == "DG-CANDIDATE-SETS"
+        for issue in api.check(plan.contract, plan.dataset, plan.engine, anchors=anchors)
+    )
+
+
+def test_in_memory_anchor_type_conversion_failure_allocates_no_task(native_task):
+    plan, active_task, _ = native_task
+    task_root = active_task._anchors.path.parent
+    before = set(task_root.iterdir())
+    anchors = api.AnchorTable(
+        api.InMemoryRows(
+            [
+                {"entity": "u1", "cutoff": 25, "sid": "one"},
+                {"entity": "u2", "cutoff": 25, "sid": ["inconsistent"]},
+            ]
+        ),
+        entity_id="entity",
+        as_of_time="cutoff",
+        sample_id="sid",
+    )
+    assert not api.check(plan.contract, plan.dataset, plan.engine, anchors=anchors)
+    with pytest.raises(ValueError, match="consistent Arrow-compatible column types"):
+        plan.materialize(anchors)
+    assert set(task_root.iterdir()) == before

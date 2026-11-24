@@ -47,8 +47,9 @@ class Unsupported:
 _ENTRIES = (
     Unsupported(
         "DG-SOURCE-KIND",
-        "Tables and anchor tables must be bound to Parquet files; other sources, "
-        "such as `InMemoryRows`, are refused.",
+        "Base tables require local Parquet sources. Anchor tables additionally accept nonempty "
+        "`InMemoryRows` with consistent column types; task resources remain under "
+        "the captured managed root.",
         "write the rows to a local Parquet file and bind it with `Parquet(path)`",
     ),
     Unsupported(

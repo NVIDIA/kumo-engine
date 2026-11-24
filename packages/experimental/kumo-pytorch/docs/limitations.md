@@ -60,7 +60,7 @@ both `check` and `prepare` before any data is read; the others are refused while
 <!-- generated from DiskGraphEngine.unsupported by tests/limitations_reference.py -->
 | Code | Refused | Refused at | Instead |
 |---|---|---|---|
-| `DG-SOURCE-KIND` | Tables and anchor tables must be bound to Parquet files; other sources, such as `InMemoryRows`, are refused. | `check()` | Write the rows to a local Parquet file and bind it with `Parquet(path)`. |
+| `DG-SOURCE-KIND` | Base tables require local Parquet sources. Anchor tables additionally accept nonempty `InMemoryRows` with consistent column types; task resources remain under the captured managed root. | `check()` | Write the rows to a local Parquet file and bind it with `Parquet(path)`. |
 | `DG-REMOTE-PARQUET` | The DiskGraph engine doesn't support remote Parquet paths, such as `s3://`, yet, for tables or anchor tables. | `check()` | Copy the files to a local disk and bind the local path. |
 | `DG-RELATION-KEYS` | A relation must have exactly one side that is its own table's primary key; joins of two foreign keys, and of two primary keys, are refused. | `check()` | For two foreign keys, relate each to a key table whose primary key is the shared key; for two primary keys, add a copy of the key as an ordinary column of one table and relate through that column. |
 | `DG-TIMED-INTERMEDIATE` | A `Rows` path can't pass through an intermediate table that has a clock, because the cutoff can't be applied at an intermediate hop. | `check()` | Use a direct relation if it gives the same rows, or precompute the joined rows into one table before writing the Parquet files. |

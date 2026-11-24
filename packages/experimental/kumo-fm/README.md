@@ -70,7 +70,8 @@ stop=positive)))` or a `Compare` over that aggregate. Multiple graph layers run
 in one native sampling plan. Timeless destinations and uniform sampling fail
 explicitly. Classification needs a two-entry raw-label-to-name map; regression
 accepts a numeric aggregate. Labels and graphs use separate materializations
-against the same base.
+against the same base. Request anchors are passed in memory; any task resources
+are managed by PyTorch under the engine's captured Kumo root.
 
 `loader.materialize(...).load()` and `loader.load(...)` return `PayloadBatch`.
 Its Arrow tables and metadata survive request and loader closure. Row, column

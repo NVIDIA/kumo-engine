@@ -16,20 +16,23 @@ import heapq
 import json
 import tempfile
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
 from diskgraph import SamplingPlan
-
 from kumo.pytorch._storage import verify_task_manifest
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
+from kumo.pytorch.dataset import InMemoryRows
 from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
+from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.materialization import _diskgraph_dtype
+from kumo.pytorch.spec import ValidationIssue
 
 
 def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
@@ -60,6 +63,60 @@ def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
     ]
 
 
+def _check_memory_rows(table: AnchorTable) -> None:
+    rows = table.source.rows
+    if not rows:
+        raise ValueError("in-memory anchors require at least one row")
+    columns = set(table.columns)
+    for position, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise TypeError(f"in-memory anchor row {position} must be a mapping")
+        missing = columns - row.keys()
+        if missing:
+            raise ValueError(f"in-memory anchor row {position} lacks columns {sorted(missing)}")
+
+
+def _memory_arrow_table(table: AnchorTable) -> Any:
+    import pyarrow as pa
+
+    # Explicitly project every row so later-only, unbound keys cannot change inference.
+    columns = tuple(table.columns)
+    try:
+        return pa.Table.from_pylist(
+            [{name: row[name] for name in columns} for row in table.source.rows]
+        )
+    except (ValueError, TypeError) as error:
+        raise ValueError(
+            f"in-memory anchors require consistent Arrow-compatible column types: {error}"
+        ) from error
+
+
+def check_native_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
+    if not isinstance(table.source, InMemoryRows):
+        return check_parquet_anchors(table)
+    if table.candidates:
+        entry = DISKGRAPH_UNSUPPORTED["DG-CANDIDATE-SETS"]
+        return (
+            ValidationIssue(
+                "anchors.candidates",
+                "native anchor materialization does not serve candidate sets yet",
+                entry.next_step,
+                entry.code,
+            ),
+        )
+    try:
+        _check_memory_rows(table)
+    except (ValueError, TypeError) as error:
+        return (
+            ValidationIssue(
+                "anchors.source.rows",
+                str(error),
+                "supply nonempty anchor rows containing every bound column",
+            ),
+        )
+    return ()
+
+
 class NativeAnchors:
     """An AnchorTask backed by a TT-NG seed extension, with bounded reads.
 
@@ -73,8 +130,9 @@ class NativeAnchors:
         import pyarrow.compute as pc
         import pyarrow.parquet as pq
 
-        if issues := check_parquet_anchors(table):
+        if issues := check_native_anchors(table):
             raise ValueError(issues[0].describe())
+        memory_data = _memory_arrow_table(table) if isinstance(table.source, InMemoryRows) else None
         self._source, self._sample, self._table = source, sample, table
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
@@ -90,18 +148,27 @@ class NativeAnchors:
         self._length_caches = {}
         self._last_length_planning_stats = (0, 0)
         try:
-            self._materialize(pq)
+            self._materialize(pq, memory_data)
         except BaseException:
             self.close()
             raise
 
-    def _materialize(self, pq: Any) -> None:
+    def _materialize(self, pq: Any, memory_data: Any = None) -> None:
         pa, pc = self._pa, self._pc
         table = self._table
         physical = _physical(table)
-        files = _files(table.source.path)
-        schema = pq.read_schema(files[0])
         projected = sorted(set(physical.values()))
+        if isinstance(table.source, InMemoryRows):
+            data = memory_data.select(projected)
+            schema = data.schema
+            batches = data.to_batches(max_chunksize=32768)
+        else:
+            files = _files(table.source.path)
+            schema = pq.read_schema(files[0])
+            batches = chain.from_iterable(
+                pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768)
+                for file in files
+            )
         snapshot = hashlib.sha256(pa.schema([schema.field(name) for name in projected]).serialize())
         self._types = {name: schema.field(column).type for name, column in physical.items()}
         self._aliases = {name: f"anchor_col_{i}" for i, name in enumerate(table.columns)}
@@ -120,96 +187,91 @@ class NativeAnchors:
         view = Path(self._source._index_path)
         extension = Path(self._temporary.name)
         try:
-            for file in files:
-                for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
-                    # A record-batch message alone omits dictionary values.
-                    sink = pa.BufferOutputStream()
-                    with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
-                        writer.write_batch(batch)
-                    snapshot.update(sink.getvalue())
-                    columns = {name: batch.column(column) for name, column in physical.items()}
-                    entity = self._source._tables[self._sample.entity.table]
-                    dtype = entity.columns[entity.primary_key]
-                    entities = pa.array(
-                        [
-                            dtype.normalize(value, path="anchors.entity_id")
-                            for value in columns[table.entity_id].to_pylist()
-                        ],
-                        type=dtype.to_arrow(),
+            for batch in batches:
+                # A record-batch message alone omits dictionary values.
+                sink = pa.BufferOutputStream()
+                with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
+                    writer.write_batch(batch)
+                snapshot.update(sink.getvalue())
+                columns = {name: batch.column(column) for name, column in physical.items()}
+                entity = self._source._tables[self._sample.entity.table]
+                dtype = entity.columns[entity.primary_key]
+                entities = pa.array(
+                    [
+                        dtype.normalize(value, path="anchors.entity_id")
+                        for value in columns[table.entity_id].to_pylist()
+                    ],
+                    type=dtype.to_arrow(),
+                )
+                dense = self._source._sampler.lookup_node_ids(self._sample.entity.table, entities)
+                if any(value is None for value in dense):
+                    raise ValueError("anchor table contains an unknown graph entity")
+                split = (
+                    columns[table.split]
+                    if table.split is not None
+                    else pa.nulls(batch.num_rows, type=pa.string())
+                )
+                if split.type != pa.string():
+                    split = pc.cast(split, pa.string(), safe=True)
+                payload = {}
+                for name, values in columns.items():
+                    if name in self._ipc:
+                        encoded = []
+                        for i in range(batch.num_rows):
+                            sink = pa.BufferOutputStream()
+                            with pa.ipc.new_stream(
+                                sink, pa.schema([("value", values.type)])
+                            ) as writer:
+                                writer.write_batch(
+                                    pa.record_batch([values.slice(i, 1)], names=["value"])
+                                )
+                            encoded.append(sink.getvalue().to_pybytes())
+                        values = pa.array(encoded, type=pa.binary())
+                    elif pa.types.is_timestamp(values.type):
+                        # The payload is not an index clock. Keep subsecond
+                        # precision here; only the reserved cutoff is seconds.
+                        values = pc.cast(values, pa.int64())
+                    payload[self._aliases[name]] = values
+                payload["anchor_position"] = pa.array(
+                    range(position, position + batch.num_rows), type=pa.int64()
+                )
+                payload["ENTITY1"] = entities
+                payload["entity_node_id"] = pa.array(dense, type=pa.uint64())
+                for index, column in enumerate(table.targets.values(), 1):
+                    # Named RDL labels also occupy the existing native TT target slots.
+                    target = columns[column]
+                    if target.type in (pa.float32(), pa.float64(), pa.int64(), pa.bool_()):
+                        payload[f"TARGET{index}"] = target
+                if table.as_of_time is not None:
+                    times = columns[table.as_of_time]
+                    if times.null_count:
+                        raise ValueError("anchor prediction times cannot be NULL")
+                    payload["TIMESTAMP"] = self._source._clock_array(
+                        self._source._cutoff_array(times)
                     )
-                    dense = self._source._sampler.lookup_node_ids(
-                        self._sample.entity.table, entities
-                    )
-                    if any(value is None for value in dense):
-                        raise ValueError("anchor table contains an unknown graph entity")
-                    split = (
-                        columns[table.split]
-                        if table.split is not None
-                        else pa.nulls(batch.num_rows, type=pa.string())
-                    )
-                    if split.type != pa.string():
-                        split = pc.cast(split, pa.string(), safe=True)
-                    payload = {}
-                    for name, values in columns.items():
-                        if name in self._ipc:
-                            encoded = []
-                            for i in range(batch.num_rows):
-                                sink = pa.BufferOutputStream()
-                                with pa.ipc.new_stream(
-                                    sink, pa.schema([("value", values.type)])
-                                ) as writer:
-                                    writer.write_batch(
-                                        pa.record_batch([values.slice(i, 1)], names=["value"])
-                                    )
-                                encoded.append(sink.getvalue().to_pybytes())
-                            values = pa.array(encoded, type=pa.binary())
-                        elif pa.types.is_timestamp(values.type):
-                            # The payload is not an index clock. Keep subsecond
-                            # precision here; only the reserved cutoff is seconds.
-                            values = pc.cast(values, pa.int64())
-                        payload[self._aliases[name]] = values
-                    payload["anchor_position"] = pa.array(
-                        range(position, position + batch.num_rows), type=pa.int64()
-                    )
-                    payload["ENTITY1"] = entities
-                    payload["entity_node_id"] = pa.array(dense, type=pa.uint64())
-                    for index, column in enumerate(table.targets.values(), 1):
-                        # Named RDL labels also occupy the existing native TT target slots.
-                        target = columns[column]
-                        if target.type in (pa.float32(), pa.float64(), pa.int64(), pa.bool_()):
-                            payload[f"TARGET{index}"] = target
+                data = pa.table(payload)
+                for split_name in pc.unique(split).to_pylist():
+                    if split_name not in by_split:
+                        stage = {
+                            "split": split_name,
+                            "name": f"stage_{len(by_split)}",
+                            "count": 0,
+                        }
+                        stage["path"] = self.path / f"{stage['name']}.parquet"
+                        self._stages.append(stage)
+                        by_split[split_name] = stage
+                        writers[split_name] = self._source._diskgraph.TaskParquetWriter(
+                            str(stage["path"])
+                        )
+                    stage = by_split[split_name]
+                    mask = pc.is_null(split) if split_name is None else pc.equal(split, split_name)
+                    selected = data.filter(mask)
+                    writers[split_name].write_batch(selected.to_batches()[0])
+                    stage["count"] += len(selected)
                     if table.as_of_time is not None:
-                        times = columns[table.as_of_time]
-                        if times.null_count:
-                            raise ValueError("anchor prediction times cannot be NULL")
-                        payload["TIMESTAMP"] = self._source._clock_array(
-                            self._source._cutoff_array(times)
-                        )
-                    data = pa.table(payload)
-                    for split_name in pc.unique(split).to_pylist():
-                        if split_name not in by_split:
-                            stage = {
-                                "split": split_name,
-                                "name": f"stage_{len(by_split)}",
-                                "count": 0,
-                            }
-                            stage["path"] = self.path / f"{stage['name']}.parquet"
-                            self._stages.append(stage)
-                            by_split[split_name] = stage
-                            writers[split_name] = self._source._diskgraph.TaskParquetWriter(
-                                str(stage["path"])
-                            )
-                        stage = by_split[split_name]
-                        mask = (
-                            pc.is_null(split) if split_name is None else pc.equal(split, split_name)
-                        )
-                        selected = data.filter(mask)
-                        writers[split_name].write_batch(selected.to_batches()[0])
-                        stage["count"] += len(selected)
-                        if table.as_of_time is not None:
-                            # One scalar per Parquet batch, so `latest_time` never reads anchors.
-                            stage.setdefault("latest", []).append(pc.max(times.filter(mask)))
-                    position += batch.num_rows
+                        # One scalar per Parquet batch, so `latest_time` never reads anchors.
+                        stage.setdefault("latest", []).append(pc.max(times.filter(mask)))
+                position += batch.num_rows
         finally:
             for writer in writers.values():
                 writer.close()

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -203,5 +204,53 @@ def test_snapshot_projects_fm_columns_and_widens_numeric_features(tmp_path):
                 assert users["score"].to_pylist() == [1.25]
             else:
                 assert users.column_names == ["instance_id", "id"]
+    finally:
+        kumo.configure(scratch_dir=previous)
+
+
+@pytest.mark.parametrize("entity", [9007199254740993, "客户/7"])
+def test_repeated_loads_keep_anchors_in_memory_and_tasks_in_captured_root(tmp_path, monkeypatch, entity):
+    source = tmp_path / "source"
+    source.mkdir()
+    pq.write_table(pa.table({"id": [entity]}), source / "users.parquet")
+    pq.write_table(pa.table({"id": [1, 2], "user": [entity, entity],
+                             "at": pa.array([10, 20], pa.timestamp("s"))}), source / "events.parquet")
+    connector = kumo.FileConnector(root_dir=str(source))
+    previous = get_scratch_dir()
+    root = tmp_path / "captured"
+    kumo.configure(scratch_dir=root)
+    try:
+        graph = kumo.Graph(tables={
+            "users": kumo.Table.from_source_table(connector["users.parquet"], primary_key="id"),
+            "events": kumo.Table.from_source_table(connector["events.parquet"], primary_key="id",
+                                                   time_column="at").with_column("user", stype=Stype.ID),
+        }, edges=[kumo.Edge(src_table="events", fkey="user", dst_table="users")])
+        engine = api.DiskGraphEngine.from_snapshot(graph.snapshot(), num_threads=2)
+        relation = engine.schema.relations[0].name
+        layer = api.GraphLayer((api.GraphSample(relation, direction="reverse", fanout=2,
+                                                strategy="recent"),))
+        sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": api.Aggregate(
+            api.Rows(path=(relation,), time=api.TimeWindow("at", start=0, stop=10)), "count")},
+            neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+        system_temp = tmp_path / "system-temp"
+        system_temp.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
+        kumo.configure(scratch_dir=tmp_path / "other")
+        context_ids, query_ids = [9007199254740993, -11], [-9007199254740993, 0]
+        context = fm.Context(pairs=[(entity, at(15), identifier) for identifier in context_ids])
+        query = fm.Query(pairs=[(entity, at(40), identifier) for identifier in query_ids])
+        with fm.prepare(engine=engine, sample=sample, target="next", task="regression",
+                        features={"users": [], "events": []}, batch_size=1) as loader:
+            for _ in range(3):
+                batch = loader.load(context=context, query=query)
+                assert not list(system_temp.iterdir())
+                assert not (tmp_path / "other").exists()
+                instances = batch.tables("context")["instance_table"]
+                assert instances["instance_id"].to_pylist() == context_ids
+                assert instances["__fm_entity_key"].to_pylist() == [entity, entity]
+                assert instances["__fm_anchor"].to_pylist() == [at(15), at(15)]
+                assert instances["__fm_target"].to_pylist() == [1.0, 1.0]
+                assert batch.tables("predict")["instance_table"]["instance_id"].to_pylist() == query_ids
+        assert not list(system_temp.iterdir())
     finally:
         kumo.configure(scratch_dir=previous)

@@ -22,7 +22,6 @@ import numpy as np
 import torch
 from diskgraph import SamplingPlan
 from kumo._managed_paths import _ManagedIndexPaths
-
 from kumo.pytorch._storage import (
     ColumnCache,
     TaskDirectory,
@@ -87,7 +86,7 @@ from kumo.pytorch.data.records import (
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
-from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
+from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
 from kumo.pytorch.index_binding import IndexBinding, open_index
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
@@ -456,12 +455,13 @@ class DiskGraphEngine:
 
     @staticmethod
     def check_sources(sources: Mapping[str, TableSource], path: str) -> tuple[ValidationIssue, ...]:
-        """Refuse sources other than local Parquet, before any data is read.
+        """Require local Parquet data; additionally accept in-memory anchor rows.
 
         ``sources`` maps table names to their sources; an empty name means the
         source at ``path`` itself, such as an anchor table's.
         """
-        unreadable = sorted({source.kind for source in sources.values()} - {"parquet"})
+        allowed = {"parquet", "in_memory"} if path == "anchors.source" else {"parquet"}
+        unreadable = sorted({source.kind for source in sources.values()} - allowed)
         issues = []
         if unreadable:
             message = f"engine 'diskgraph' does not read {unreadable} sources"
@@ -479,8 +479,10 @@ class DiskGraphEngine:
 
     @staticmethod
     def check_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
-        """Issues with a Parquet anchor table's binding, without reading its rows."""
-        return check_parquet_anchors(table)
+        """Check local Parquet or in-memory anchors before task allocation."""
+        from kumo.pytorch.engines.native_anchors import check_native_anchors
+
+        return check_native_anchors(table)
 
     def open(
         self,

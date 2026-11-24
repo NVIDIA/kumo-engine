@@ -5,18 +5,14 @@
 """FM orchestration over an already indexed public PyTorch engine."""
 from __future__ import annotations
 
-import tempfile
-import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import timedelta
 from itertools import islice
-from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 
 from ._assembly import GraphAssembler
 from ._columnar import adapt_columnar_batch
@@ -278,7 +274,6 @@ class SnapshotFMLoader:
                                         node_types=list(self._bundle.tables), assembler=GraphAssembler(self._bundle),
                                         metrics={"native_candidate_rows": 0})
         self._stack = ExitStack()
-        self._temporary = tempfile.TemporaryDirectory(prefix="kumo-fm-anchors-")
         pk = self._bundle.tables[self._entity]["primary_key"]
         label_sample = api.SampleSpec(entity=sample.entity,
                                       entity_values={pk: api.Field(pk)}, targets={target: sample.targets[target]})
@@ -314,7 +309,6 @@ class SnapshotFMLoader:
         if not self._closed:
             self._closed = True
             self._stack.close()
-            self._temporary.cleanup()
 
     def materialize(self, *, context=None, query=None):
         if self._closed:
@@ -343,14 +337,10 @@ class SnapshotFMLoader:
     def _anchor(self, seeds):
         from kumo.pytorch import api
 
-        path = Path(self._temporary.name) / f"{uuid.uuid4().hex}.parquet"
-        pq.write_table(pa.table({
-            "entity": pa.array([s["entity_key"] for s in seeds], TYPES[self._key_type]),
-            "sample": pa.array([s["instance_id"] for s in seeds], pa.int64()),
-            "at": pa.array([s["anchor_time"] for s in seeds], pa.timestamp("us", tz="UTC")),
-        }), path)
-        return api.AnchorTable(api.Parquet(path=str(path)), entity_id="entity",
-                               sample_id="sample", as_of_time="at")
+        return api.AnchorTable(api.InMemoryRows([
+            {"entity": seed["entity_key"], "sample": seed["instance_id"], "at": seed["anchor_time"]}
+            for seed in seeds
+        ]), entity_id="entity", sample_id="sample", as_of_time="at")
 
     def _labels_for(self, anchor, seeds):
         result = {}
