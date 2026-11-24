@@ -353,12 +353,12 @@ class LocalSnapshotStore:
         return next((path for path in candidates if self._ready_candidate(path)), None)
 
     def _ready_candidate(self, path: str) -> bool:
-        from diskgraph import DiskgraphCorruptionError
+        from diskgraph import DiskgraphCorruptionError, DiskgraphSystemError
 
         try:
             self._verify_path(path)
             return check_diskgraph_output(path) is not None
-        except (DiskgraphCorruptionError, DiskgraphSnapshotError,
+        except (DiskgraphCorruptionError, DiskgraphSnapshotError, DiskgraphSystemError,
                 FileNotFoundError, IsADirectoryError, NotADirectoryError,
                 ValueError, KeyError):
             logger.warning("Skipping invalid snapshot at %s", path)

@@ -590,6 +590,21 @@ def test_version_prefix_resolves_completed_snapshot(staged, managed):
     assert store.resolve_version_prefix('missing', 'ver') is None
 
 
+@pytest.mark.parametrize(('managed', 'legacy_fallback'), [
+    (False, False), (True, False), (True, True),
+])
+def test_version_prefix_skips_non_utf8_success_marker(
+        staged, managed, legacy_fallback):
+    store, handle, result, source = staged
+    index = Path(store.publish(handle, result).index_path) if managed else source
+    expected = str(_completed_legacy(store, handle)) if legacy_fallback else None
+    (index / '_SUCCESS').write_bytes(bytes([255, 254]))
+
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') == expected
+    assert store.list_ready() == ([handle] if legacy_fallback else [])
+    assert (index / '_SUCCESS').read_bytes() == bytes([255, 254])
+
+
 @pytest.mark.parametrize('managed_ready', [False, True])
 @pytest.mark.parametrize('legacy_ready', [False, True])
 def test_version_prefix_selects_one_ready_build_per_version(
