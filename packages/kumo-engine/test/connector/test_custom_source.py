@@ -4,6 +4,7 @@
 
 import errno
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -132,6 +133,32 @@ def test_stage_source_table_casts_to_what_the_table_reader_reads(tmp_path):
                                                       ("TARGET1", pa.string())])
 
 
+@pytest.mark.parametrize("element_type", [pa.float32(), pa.float64()])
+def test_stage_source_table_preserves_floating_list_precision(
+    tmp_path: Path, element_type: pa.DataType
+) -> None:
+    """Retain list types and values even when logical metadata loses precision."""
+    root = tmp_path / "connector"
+    root.mkdir()
+    table = pa.table(
+        {
+            "ENTITY1": [1, 2, 3],
+            "autoregression_labels": pa.array(
+                [[1.0000000000000002, None], [], None], pa.list_(element_type)
+            ),
+        }
+    )
+    source = root / "forecast.parquet"
+    pq.write_table(table, source)
+
+    output, _ = stage_source_table(
+        FileConnector(root_dir=str(root))["forecast"], tmp_path / "staged"
+    )
+
+    assert pq.read_table(output).equals(table)
+    assert next(output.glob("*.parquet")).read_bytes() == source.read_bytes()
+
+
 def test_stage_source_table_retains_single_file_in_parts_directory(tmp_path):
     root = tmp_path / "connector"
     root.mkdir()
@@ -167,7 +194,10 @@ def test_stage_source_table_retains_reencoded_float64_weight_parts(
         "TARGET1":
         pa.array([[1, 2]] * 9, pa.list_(pa.int64())),
         "weight":
-        pa.array([[0.25, 0.75]] * 9, pa.list_(pa.float64())),
+        pa.array([[1.0000000000000002, 0.123456789012345]] * 9,
+                 pa.list_(pa.float64())),
+        "category":
+        pa.array(["a"] * 9).dictionary_encode(),
     })
     pq.write_table(table, root / "weighted.parquet")
     connector = FileConnector(root_dir=str(root))
@@ -178,8 +208,7 @@ def test_stage_source_table_retains_reencoded_float64_weight_parts(
     assert output == tmp_path / "staged" / "parts"
     assert len(list((tmp_path / "staged" / "source").rglob("*.parquet"))) > 1
     assert len(list(output.glob("*.parquet"))) == 5
-    expected_schema = table.schema.set(
-        2, pa.field("weight", pa.list_(pa.float32())))
+    expected_schema = table.schema.set(3, pa.field("category", pa.string()))
     assert pq.read_table(output).equals(table.cast(expected_schema))
 
 

@@ -145,13 +145,17 @@ class ObjectStoreSourceBackend(ABC):
         r"""Every local object-store read copies rather than pointing ingest at
         the bucket: the hosted no-copy manifest needs a per-object ``e_tag``,
         and ``pyarrow.fs.FileInfo`` does not expose one.
+
+        Without declared dtypes, retain Float64 list precision that the inferred
+        ``floatlist`` dtype cannot express.
         """
         require_no_sql(sql)
         del project_id
         from kumo_core.sources.prepare import read_table
 
         reader, name = self._reader(connector, table_name)
-        reader = replace(reader, ingest_converts=dtypes is not None)
+        reader = replace(reader, ingest_converts=dtypes is not None,
+                         preserve_float_lists=dtypes is None)
         # One directory per table: a read empties what it is handed.
         destination = staging_dir(dest_dir, name)
         columns = select_columns(name, reader.dtypes(name), dtypes)
