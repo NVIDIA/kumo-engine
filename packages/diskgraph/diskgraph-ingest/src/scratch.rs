@@ -4,12 +4,14 @@
 
 use crate::consts::*;
 use crate::mapping::{KeyType, PkPtrHashOutput};
+use diskgraph_index::builder::{MemoryBudget, MemoryBudgetGuard};
 use gxhash::GxHasher;
 use memmap2::Mmap;
 use ptr_hash::PtrHashScratch;
 use std::fs;
 use std::hash::BuildHasherDefault;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct EdgeMapScratch {
@@ -161,6 +163,78 @@ pub fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u
         .saturating_add(entries_bytes)
         .saturating_add(ptrhash_bytes)
         .saturating_add(PK_MAP_TASK_FIXED_BYTES)
+}
+
+pub(crate) struct PkMapReservation {
+    guard: Option<MemoryBudgetGuard>,
+    budget_total: u64,
+    key_type: KeyType,
+    avg_var_bytes: u64,
+    rows: u64,
+    bytes: u64,
+}
+
+impl PkMapReservation {
+    pub(crate) fn acquire(
+        budget: Option<&Arc<MemoryBudget>>,
+        rows: u64,
+        key_type: KeyType,
+        avg_var_bytes: u64,
+    ) -> anyhow::Result<Self> {
+        let budget = budget.filter(|budget| budget.snapshot().total > 0);
+        let mut reservation = Self {
+            guard: None,
+            budget_total: budget.map_or(0, |budget| budget.snapshot().total),
+            key_type,
+            avg_var_bytes,
+            rows,
+            bytes: 0,
+        };
+        let bytes = reservation.bytes_for(rows)?;
+        if let Some(budget) = budget {
+            reservation.guard = Some(budget.acquire(bytes)?);
+        }
+        reservation.bytes = bytes;
+        Ok(reservation)
+    }
+
+    pub(crate) fn cover(&mut self, rows: u64) -> anyhow::Result<()> {
+        if rows <= self.rows {
+            return Ok(());
+        }
+        let mut target = self.rows.max(1);
+        while target < rows {
+            target = target.saturating_mul(2);
+        }
+        self.fit(target)
+    }
+
+    pub(crate) fn fit(&mut self, rows: u64) -> anyhow::Result<()> {
+        let bytes = self.bytes_for(rows)?;
+        if let Some(guard) = self.guard.as_mut() {
+            guard.resize(bytes);
+        }
+        self.rows = rows;
+        self.bytes = bytes;
+        Ok(())
+    }
+
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn bytes_for(&self, rows: u64) -> anyhow::Result<u64> {
+        let bytes = estimate_pk_map_bytes(rows, self.key_type, self.avg_var_bytes);
+        if self.budget_total > 0 && bytes > self.budget_total {
+            anyhow::bail!(
+                "single-shard PK-map estimate {bytes} B exceeds memory budget {} B; \
+                 increase num_shards (re-run infer or raise num_shards) — halving threads \
+                 cannot reduce a single shard",
+                self.budget_total
+            );
+        }
+        Ok(bytes)
+    }
 }
 
 pub fn estimate_varbytes_avg_len_multi(row_count: u64, max_row_len: u32, paths: &[PathBuf]) -> u64 {

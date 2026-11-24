@@ -709,6 +709,72 @@ fn pk_map_estimate_covers_a_real_int64_build() {
     }
 }
 
+fn int64_estimate(rows: u64) -> u64 {
+    crate::scratch::estimate_pk_map_bytes(rows, crate::mapping::KeyType::Int64, 0)
+}
+
+#[test]
+fn pk_map_reservation_grows_in_doubling_steps_and_fits_the_final_rows() {
+    use crate::mapping::KeyType;
+    use crate::scratch::PkMapReservation;
+    let budget = Arc::new(super::MemoryBudget::new(1 << 30));
+    let mut reservation =
+        PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
+    reservation.cover(1_100).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
+    reservation.cover(1_101).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(2_200));
+    reservation.fit(1_500).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_500));
+    assert_eq!(reservation.bytes(), int64_estimate(1_500));
+    drop(reservation);
+    assert_eq!(budget.snapshot().in_use, 0);
+}
+
+#[test]
+fn pk_map_reservation_takes_budget_for_missing_keys_of_an_empty_shard() {
+    use crate::mapping::KeyType;
+    use crate::scratch::PkMapReservation;
+    let budget = Arc::new(super::MemoryBudget::new(1 << 30));
+    let mut reservation = PkMapReservation::acquire(Some(&budget), 0, KeyType::Int64, 0).unwrap();
+    assert_eq!(budget.snapshot().in_use, 0);
+    reservation.cover(3).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(4));
+}
+
+#[test]
+fn pk_map_reservation_rejects_own_rows_above_the_budget() {
+    use crate::mapping::KeyType;
+    use crate::scratch::PkMapReservation;
+    let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_100) - 1));
+    let err = PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0)
+        .err()
+        .expect("own rows above the budget must fail");
+    assert!(
+        err.to_string().contains("single-shard PK-map estimate"),
+        "{err}"
+    );
+    assert_eq!(budget.snapshot().in_use, 0);
+}
+
+#[test]
+fn pk_map_reservation_rejects_growth_above_the_budget() {
+    use crate::mapping::KeyType;
+    use crate::scratch::PkMapReservation;
+    let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_100)));
+    let mut reservation =
+        PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
+    let err = reservation
+        .cover(1_101)
+        .expect_err("growth above the budget must fail");
+    assert!(
+        err.to_string().contains("single-shard PK-map estimate"),
+        "{err}"
+    );
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
+}
+
 #[test]
 fn shard_assignment_consistent_for_same_pk() {
     // Verifies that same PK bytes always produce the same shard, enabling per-shard deduplication.

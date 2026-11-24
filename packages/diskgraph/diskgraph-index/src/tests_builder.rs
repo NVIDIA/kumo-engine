@@ -204,3 +204,85 @@ fn delta_encode_offsets_into_correctness() {
     delta_encode_offsets_into(&[], &mut buf, 2).unwrap();
     assert!(buf.is_empty());
 }
+
+fn wait_for_waiters(budget: &MemoryBudget, count: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while budget.snapshot().waiters < count {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no budget waiter after 10 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn finish<T>(rx: &std::sync::mpsc::Receiver<T>) -> T {
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("budget call did not return within 10 s")
+}
+
+#[test]
+fn guard_resize_waits_until_the_budget_frees() {
+    let budget = Arc::new(MemoryBudget::new(100));
+    let other = budget.acquire(40).unwrap();
+    let mut guard = budget.acquire(60).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        guard.resize(80);
+        tx.send(guard).unwrap();
+    });
+    wait_for_waiters(&budget, 1);
+    assert_eq!(budget.snapshot().in_use, 100);
+    drop(other);
+    let _guard = finish(&rx);
+    assert_eq!(budget.snapshot().in_use, 80);
+}
+
+#[test]
+fn guard_resize_goes_over_budget_when_every_holder_waits_to_grow() {
+    let budget = Arc::new(MemoryBudget::new(100));
+    let mut first = budget.acquire(60).unwrap();
+    let mut second = budget.acquire(40).unwrap();
+    let (first_tx, first_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        first.resize(80);
+        first_tx.send(first).unwrap();
+    });
+    wait_for_waiters(&budget, 1);
+    let (second_tx, second_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        second.resize(70);
+        second_tx.send(second).unwrap();
+    });
+    let second = finish(&second_rx);
+    assert_eq!(budget.snapshot().in_use, 130);
+    drop(second);
+    let first = finish(&first_rx);
+    assert_eq!(budget.snapshot().in_use, 80);
+    drop(first);
+    assert_eq!(budget.snapshot().in_use, 0);
+}
+
+#[test]
+fn guard_resize_down_wakes_a_waiting_acquire() {
+    let budget = Arc::new(MemoryBudget::new(100));
+    let mut guard = budget.acquire(80).unwrap();
+    let waiting = Arc::clone(&budget);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(waiting.acquire(50).unwrap()).unwrap();
+    });
+    wait_for_waiters(&budget, 1);
+    guard.resize(30);
+    let _other = finish(&rx);
+    assert_eq!(budget.snapshot().in_use, 80);
+}
+
+#[test]
+fn release_after_overdraft_frees_only_the_real_room() {
+    let budget = Arc::new(MemoryBudget::new(100));
+    let _held = budget.acquire(60).unwrap();
+    drop(budget.force_acquire(60));
+    assert!(budget.try_acquire(41).is_none());
+    assert!(budget.try_acquire(40).is_some());
+}
