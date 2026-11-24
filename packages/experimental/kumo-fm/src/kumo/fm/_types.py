@@ -39,4 +39,3 @@ def validate_scalar(value, dtype: str, *, nullable: bool = False):
         return
     if not valid:
         raise ValueError(f"Value does not match {dtype}: {value!r}")
-

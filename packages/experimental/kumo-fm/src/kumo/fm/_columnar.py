@@ -67,5 +67,4 @@ def adapt_columnar_batch(adapter, workload, seeds, batch):
         raise ValueError("Native-multihop node-plus-edge budget exceeded")
     adapter.metrics["native_candidate_rows"] += count
     return adapter.assembler._adapt(workload, seeds, np.arange(len(seeds), dtype=np.uint64),
-                                 nodes, features, edges, directions)
-
+                                    nodes, features, edges, directions)

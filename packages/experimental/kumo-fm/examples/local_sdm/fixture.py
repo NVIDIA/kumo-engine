@@ -19,7 +19,7 @@ def write_fixture(directory, *, users=32):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     _write_table(pa.table({"user_id": pa.array(range(users), pa.int64())}),
-                   directory / "users.parquet")
+                 directory / "users.parquet")
     rows = []
     for user in range(users):
         months = (5, 6, 9) if user % 2 == 0 else (5, 9)
