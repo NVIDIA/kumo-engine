@@ -43,11 +43,11 @@ def test_snapshot_paths_share_the_configured_root(tmp_path):
     assert paths.reference_version(reference.name) == "version"
 
 
-def test_snapshot_paths_preserve_a_custom_legacy_root(tmp_path):
-    paths = _SnapshotPaths(tmp_path / "legacy-location")
-    assert paths.version_dir("graph", "old") == tmp_path / "legacy-location/graph/old"
+def test_legacy_snapshot_suffix_reads_use_the_same_root(tmp_path):
+    paths = _SnapshotPaths(root=tmp_path)
+    assert paths.version_dir("graph", "old") == tmp_path / "snapshots/graph/old"
     assert paths.reference("graph", "old.index.json") == (
-        tmp_path / "legacy-location/graph/old.index.json.index.json")
+        tmp_path / "snapshots/graph/old.index.json.index.json")
     with pytest.raises(ValueError, match="must not end with"):
         paths.publication_reference("graph", "old.index.json")
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -657,45 +658,44 @@ def test_typed_no_space_diagnostic_names_output_path(
     assert "private path canary" not in str(caught.value)
 
 
-def test_local_snapshot_paths_listing_verify_and_restore(
-        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_local_snapshot_paths_listing_verify_and_restore(tmp_path: Path) -> None:
     local_root = tmp_path / "local"
     durable_root = tmp_path / "durable"
     handle = DiskgraphSnapshotHandle("graph", "v1")
-    store = LocalSnapshotStore(DiskgraphLocalConfig(str(local_root)))
-    result = DiskgraphIngestResult.for_index(store.path(handle))
-    marker = result.to_json()
-    markers: dict[str, str] = {}
+    store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(local_root)))
+    local = local_root / "snapshots/graph/v1"
+    assert store.path(handle) == str(local)
+    result = DiskgraphIngestResult.for_index(local)
+    source = Path(store.durable_path(handle, str(durable_root)))
+    source.mkdir(parents=True)
+    (source / "_SUCCESS").write_text(result.to_json())
+    (source / "index_metadata.json").write_text('{}')  # Old ID-less export.
+    (source / "col_stats.json").write_text('{}')
+    (source / "ingest_stats.json").write_text('{}')
+    (source / "kumo_col_stats").mkdir()
+    (source / "_MANIFEST.json").write_text(json.dumps({
+        "schema_version": 1,
+        "files": [{"rel_path": name, "size_bytes": (source / name).stat().st_size}
+                  for name in ("index_metadata.json", "col_stats.json", "ingest_stats.json")],
+    }))
 
-    def verify(path):
-        assert path == store.path(handle)
-
-    fake_diskgraph = SimpleNamespace(
-        DiskgraphCorruptionError=DiskgraphCorruptionError,
-        verify_snapshot_integrity=verify,
-        read_success_marker=lambda path: markers.get(path),
-        touch_success_marker=lambda path: None,
-        write_success_marker=lambda path, value: markers.__setitem__(
-            path, value),
-    )
-    monkeypatch.setitem(sys.modules, "diskgraph", fake_diskgraph)
-
-    source = store.durable_path(handle, str(durable_root))
-
-    def copy_tree(_source, destination):
-        assert _source == source
-        Path(destination).mkdir(parents=True)
-        markers[destination] = marker
+    def copy_tree(origin, destination):
+        assert origin == str(source)
+        assert destination == str(local)
+        shutil.copytree(origin, destination)
 
     restored = store.restore(
         handle,
         str(durable_root),
-        exists=lambda path: path == source + "/_SUCCESS",
+        exists=lambda path: Path(path).exists(),
         copy_tree=copy_tree,
     )
 
     assert restored == result
+    assert store.verify(handle) == result
     assert store.list_ready() == [handle]
+    assert store.resolve_version_prefix("graph", "v") == str(local)
+    assert not (local_root / "indexes").exists()
     assert store.diskgraph_durable_path(
         handle, "abfss://container@account.dfs.core.windows.net/root"
     ) == "az://account/container/root/diskgraph_snapshots/graph/v1"
@@ -811,8 +811,6 @@ def test_cached_discarded_time_parse_failures_remain_allowed(tmp_path):
 @pytest.mark.parametrize("operation", ["restore", "checkpoint"])
 def test_snapshot_store_rejects_empty_required_time_table(
         monkeypatch, tmp_path, operation):
-    import shutil
-
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path / "local")))
     handle = DiskgraphSnapshotHandle("graph", "v1")
     durable_root = str(tmp_path / "durable")
@@ -831,6 +829,8 @@ def test_snapshot_store_rejects_empty_required_time_table(
         DiskgraphCorruptionError=DiskgraphCorruptionError,
         verify_snapshot_integrity=lambda path: None,
         read_success_marker=lambda path: (Path(path) / "_SUCCESS").read_text(),
+        has_resumable_ingest=lambda path: False,
+        write_success_marker=lambda path, value: (Path(path) / "_SUCCESS").write_text(value),
     ))
     with pytest.raises(DiskgraphSnapshotError, match="no usable rows"):
         if operation == "restore":
