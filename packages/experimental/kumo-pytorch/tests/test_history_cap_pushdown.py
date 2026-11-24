@@ -267,7 +267,10 @@ def test_budgeted_drop_last_across_splits(tmp_path, with_graph, splits, max_toke
         (("events",), [1, 0, 1, 0, 1, 0], 3, 3, 4, True, [[1, 3, 5], [0, 2], [4]]),
     ],
     ids=[
-        "seven_anchors_span_default_chunk", "short_final_batch", "full_final_batch", "stable_ties"
+        "seven_anchors_span_default_chunk",
+        "short_final_batch",
+        "full_final_batch",
+        "stable_ties",
     ],
 )
 def test_budgeted_batches_cross_read_chunks(
