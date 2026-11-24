@@ -150,6 +150,9 @@ pub struct ResolveColumnSpec {
 
 #[derive(Clone)]
 pub struct IngestOptions {
+    /// Preallocated physical build ID, for callers that choose the output path
+    /// before ingest. Defaults to a fresh UUID for each ingest.
+    pub index_build_id: Option<String>,
     pub profile_dir: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
@@ -188,6 +191,7 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
+            index_build_id: None,
             profile_dir: None,
             progress: None,
             parallel: true,

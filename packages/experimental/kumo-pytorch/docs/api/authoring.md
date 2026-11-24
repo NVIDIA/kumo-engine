@@ -25,6 +25,10 @@ class Batch(
 
 Named inputs and the same shared resources as BatchSpec.
 
+The iteration order of `inputs` and `targets` is not specified and may differ
+between a built contract and one read by `Artifact.load`. Look entries up by name;
+do not depend on order, e.g. `torch.cat(list(batch.inputs.values()), -1)`.
+
 #### `Batch.lower`
 
 ```python
@@ -132,17 +136,16 @@ The equivalent `EventSpec`, starting from `table`.
 class Hop(
     link: Link,
     fanout: int,
-    strategy: Literal['recent', 'uniform'] = 'recent',
+    strategy: Literal['recent', 'uniform'] | None = None,
     direction: Literal['forward', 'reverse'] = 'forward',
     time: str | None = None,
-    temporal: Literal['inherit', 'static'] = 'inherit',
 )
 ```
 
 One explicitly configured graph traversal.
 
-Inherits the destination clock unless `time` overrides it or
-`temporal="static"` disables filtering; see `GraphSample`.
+Defaults to recent for a destination with a clock, otherwise uniform;
+see `GraphSample`.
 
 #### `Hop.lower`
 

@@ -6,6 +6,7 @@ import argparse
 import ast
 import io
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -17,7 +18,13 @@ from pathlib import Path
 from candidate import candidate_path
 from client import Client
 from config import configuration
-from evidence import collect, digest, save, save_probe_cell
+from evidence import (
+    collect,
+    digest,
+    save,
+    save_probe_cell,
+    validate_explanations,
+)
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
@@ -29,6 +36,7 @@ SOURCES = {
     'sagemaker_runtime.py': HERE / 'runtime.py',
     'sagemaker_budget.py': HERE / 'budget.py',
     'graph_fixture.py': SHARED / 'graph_fixture.py',
+    'explanation.py': SHARED / 'explanation.py',
     'kernel-requirements.txt': HERE / 'kernel-requirements.txt',
 }
 
@@ -41,8 +49,9 @@ def committed_sources():
         | set(HERE.glob('*.txt')) | set(HERE.glob('*.cjs'))
         | {
             HERE / 'browser.cjs', HERE / 'requirements.txt', SHARED /
-            'graph_ui.cjs', SHARED / 'verification.cjs', HERE.parent /
-            'platform_candidate.py', SHARED / 'browser/package.json', SHARED /
+            'graph_ui.cjs', SHARED / 'explanation_ui.cjs', SHARED /
+            'verification.cjs', HERE.parent / 'platform_candidate.py', SHARED /
+            'browser/package.json', SHARED /
             'browser/package-lock.json', HERE.parent / 'pr172/inputs.json'
         })
     contents, hashes = {}, {}
@@ -231,6 +240,8 @@ def execute(args, root):
         report = collect(client.s3, cfg['bucket'], executed, submitted, spec, root)
         report['verdict'] = verdict(
             report, spec, job, json.loads((root / 'pipeline-execution.json').read_text()))
+        validate_explanations(
+            report, spec, root, json.loads((root / 'receipt.json').read_text()))
         return verify_browser(args, root, client, spec, report)
 
 
@@ -310,6 +321,7 @@ def verify_existing(args, root):
     job = json.loads((previous / 'job.json').read_text())
     pipeline = json.loads((previous / 'pipeline-execution.json').read_text())
     report['verdict'] = verdict(report, spec, job, pipeline)
+    validate_explanations(report, spec, previous, record)
     (root / 'outputs').mkdir()
     for name in record['files']:
         shutil.copyfile(outputs / name, root / 'outputs' / name)
@@ -329,7 +341,7 @@ def browser_diagnostics(root):
         HERE / name
         for name in ('browser.cjs', 'studio_browser.cjs', 'assertions.cjs')
     ]
-    sources += [SHARED / 'graph_ui.cjs']
+    sources += [SHARED / 'graph_ui.cjs', SHARED / 'explanation_ui.cjs']
     literals = set()
     for source in sources:
         # Never interpolate browser/provider data into a diagnostic message.
@@ -362,6 +374,34 @@ def browser_diagnostics(root):
                     continue
                 if value in literals and len(value) <= 180:
                     safe[key] = value
+                elif key == 'error' and re.fullmatch(
+                        r'Missing distinct explicit-class (?:multiclass|multilabel) cohort verification'
+                        r'|Expected exactly one visible native (?:gradient(?:-layout|-zero)?'
+                        r'|cohort(?:-class-[01]|-multilabel-[01]|-regression|-layout)?)'
+                        r' explanation matching the generated plot', value):
+                    safe[key] = value
+                elif key == 'error' and value.startswith(
+                        'Explanation image is distorted or too small: '):
+                    detail = value.removeprefix(
+                        'Explanation image is distorted or too small: ')
+                    plot, _, encoded = detail.partition(' ')
+                    try:
+                        geometry = json.loads(encoded)
+                    except ValueError:
+                        continue
+                    if (re.fullmatch(
+                            r'gradient(?:-layout|-zero)?|cohort(?:-class-[01]|'
+                            r'-multilabel-[01]|-regression|-layout)?', plot)
+                            and isinstance(geometry, dict)
+                            and set(geometry) == {
+                                'width', 'height', 'naturalWidth',
+                                'naturalHeight', 'aspect'}
+                            and all(type(number) in (int, float)
+                                    and 0 <= number <= 10000000
+                                    and math.isfinite(number)
+                                    for number in geometry.values())):
+                        safe['explanation_geometry'] = dict(
+                            plot=plot, **geometry)
                 elif key == 'stage' and re.fullmatch(
                         r'mlflow-(?:fit|score(?:-drift-evaluate)?)-[0-5]|mlflow-version-[12]',
                         value):
@@ -377,6 +417,14 @@ def browser_diagnostics(root):
                         nested,
                         dict) and nested.get('status') in ('passed', 'failed'):
                     safe[key] = nested['status']
+            for key in ('initial_graph', 'reopened_graph'):
+                if report.get(key) in ('passed', 'failed'):
+                    safe[key] = report[key]
+            for key in ('initial_explanations', 'reopened_explanations'):
+                check = report.get(key)
+                if isinstance(check, dict) and check.get('status') in (
+                        'passed', 'failed', 'running'):
+                    safe[key] = check['status']
             errors = report.get('browser_errors')
             if isinstance(errors, list):
                 safe['browser_error_count'] = len(errors)

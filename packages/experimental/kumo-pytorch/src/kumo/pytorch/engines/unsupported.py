@@ -113,21 +113,10 @@ _ENTRIES = (
         "candidate table, anchored at the same times, and pair them in your own code",
     ),
     Unsupported(
-        "DG-UNIFORM-GRAPH",
-        "Uniform graph sampling isn't supported yet: DiskGraph's native uniform mode "
-        "doesn't yet keep each example to rows at or before its own prediction time.",
-        'use `strategy="recent"`',
-    ),
-    Unsupported(
         "DG-GRAPH-CLOCK-OVERRIDE",
         "The DiskGraph engine doesn't support a graph traversal `time_column` other "
         "than the destination table's clock yet.",
         "use the destination table's declared clock",
-    ),
-    Unsupported(
-        "DG-STATIC-TIMED-TRAVERSAL",
-        'A graph traversal into a table with a clock can\'t be `temporal="static"`.',
-        'use `temporal="inherit"`',
     ),
     Unsupported(
         "DG-REDUCTION-OPERAND",

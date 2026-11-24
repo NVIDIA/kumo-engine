@@ -171,12 +171,13 @@ def _predict_with_stubbed_scorer(bundle: Path, root: Path,
             patch.object(ResolvedNumericalTask, 'from_manifest',
                          return_value=None))
         stack.enter_context(
-            patch('kumo_core.train.trainer.load_encoders', return_value=None))
+            patch('kumo_core.train.diskgraph_nested_trainer.load_encoders', return_value=None))
         stack.enter_context(
             patch.object(
                 DiskgraphNestedTrainer,
                 'load',
-                return_value=SimpleNamespace(predict=fake_predict),
+                side_effect=lambda task, *a, **k: SimpleNamespace(
+                    task=task, predict=fake_predict),
             ))
         result = trainer.predict(
             table,

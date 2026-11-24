@@ -8,6 +8,7 @@ import os.path as osp
 import pathlib
 import re
 import shutil
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -115,19 +116,25 @@ def test_explain_starts_and_clears_ttng_selection_capture() -> None:
 
     class _Trainer:
         _explain_runtime = Trainer._explain_runtime
-        reset_explain = Trainer.reset_explain
+        _run_explain = Trainer._run_explain
+        _explain_prediction = Trainer._explain_prediction
+        _samples_requested = Trainer._samples_requested
+        _collect_subgraphs = Trainer._collect_subgraphs
 
         def __init__(self) -> None:
             self.refit_cfg = SimpleNamespace(refitted_trainval=False,
                                              refitted_full=False)
-            self.pl_model = SimpleNamespace(explainers=[], outputs=None)
+            self.pl_model = SimpleNamespace(explainers=[], outputs=None,
+                                            disable_eval_metrics=False)
             self._fully_initialized = True
+            self.fit_mode = FitMode.fit
             self.task = SimpleNamespace(
                 task_type=TaskType.BINARY_CLASSIFICATION)
             self.datamodule = _Datamodule()
             self.pl_trainer = _PLTrainer()
             self.best_ckpt = '/tmp/fake.ckpt'
-            self.explain_runtime = SimpleNamespace(max_batches=1)
+            self.explain_runtime = SimpleNamespace(
+                max_batches=1, prediction_selection_nodes=1000, max_facts=16)
 
         def _check_readiness_for_prediction(self, fit_mode_to_use):
             pass
@@ -135,7 +142,8 @@ def test_explain_starts_and_clears_ttng_selection_capture() -> None:
         def init(self):
             pass
 
-        def set_explainers(self, stage, explain_methods, root_dir=None):
+        def set_explainers(self, stage, explain_methods, root_dir=None,
+                           collector_formats=None):
             self.pl_model.explainers = []
 
     trainer = _Trainer()
@@ -152,10 +160,16 @@ def test_explain_starts_and_clears_ttng_selection_capture() -> None:
     assert trainer.pl_trainer.limit_test_batches == 1.0
 
 
-def test_explain_pred_ttng_uses_capped_predict_replay(
+def test_explain_pred_ttng_replays_selected_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    class _Keys:
+        entity_table_names = ['users']
+
+        def __getitem__(self, key):
+            return key[2] + 1000
+
     class _Datamodule:
         def __init__(self) -> None:
             self.eval_loader_kwargs = {'batch_size': 8}
@@ -190,7 +204,10 @@ def test_explain_pred_ttng_uses_capped_predict_replay(
 
     class _Trainer:
         _explain_runtime = Trainer._explain_runtime
-        reset_explain = Trainer.reset_explain
+        _run_explain = Trainer._run_explain
+        _explain_prediction = Trainer._explain_prediction
+        _samples_requested = Trainer._samples_requested
+        _collect_subgraphs = Trainer._collect_subgraphs
         subgraph_collector_dir = Trainer.subgraph_collector_dir
 
         def __init__(self) -> None:
@@ -199,16 +216,21 @@ def test_explain_pred_ttng_uses_capped_predict_replay(
             self.pl_model = SimpleNamespace(explainers=[], outputs=None,
                                             disable_eval_metrics=False)
             self._fully_initialized = True
+            self.fit_mode = FitMode.fit
             self.task = SimpleNamespace(
                 task_type=TaskType.BINARY_CLASSIFICATION)
             self.datamodule = _Datamodule()
             self.pl_trainer = _PLTrainer()
             self.best_ckpt = '/tmp/fake.ckpt'
-            self.feature_store = object()
+            self.feature_store = _Keys()
             self.log_dir = str(tmp_path)
             self.explain_runtime = SimpleNamespace(
                 max_batches=500,
+                max_facts=16,
                 prediction_selection_nodes=1000,
+                get_prediction_inputs=lambda dm, limit: (
+                    fake_get_explain_node_inputs(dm, TrainingStage.PRED)),
+                prediction_rows=fake_prediction_rows,
                 get_explain_node_inputs=fake_get_explain_node_inputs,
                 select_input_nodes=fake_select_input_nodes,
                 get_eval_dataloader=fake_get_eval_dataloader,
@@ -221,13 +243,14 @@ def test_explain_pred_ttng_uses_capped_predict_replay(
         def init(self):
             pass
 
-        def set_explainers(self, stage, explain_methods, root_dir=None):
+        def set_explainers(self, stage, explain_methods, root_dir=None,
+                           collector_formats=None):
             from kumo_core.types import ExplainMethod
             self.pl_model.explainers = ([
                 object()
             ] if ExplainMethod.SUBGRAPH_COLLECTOR in explain_methods else [])
 
-    selected_stage_ids = torch.tensor([100, 101])
+    selected_stage_ids = torch.tensor([100, 103])
     replay_calls = []
 
     def fake_get_explain_node_inputs(datamodule, stage):
@@ -248,6 +271,11 @@ def test_explain_pred_ttng_uses_capped_predict_replay(
         replay_calls.append((stage, seed_nodes))
         return 'selected-predict-loader'
 
+    @contextmanager
+    def fake_prediction_rows(datamodule, seed_nodes):
+        replay_calls.append((TrainingStage.PRED, seed_nodes))
+        yield
+
     trainer = _Trainer()
 
     Trainer.explain(
@@ -258,15 +286,14 @@ def test_explain_pred_ttng_uses_capped_predict_replay(
     )
 
     assert trainer.datamodule.events == [
-        ('begin', 'pred'),
-        ('predict_dataloader', None),
+        ('clear', None),
     ]
-    assert len(trainer.pl_trainer.calls) == 2
-    assert trainer.pl_trainer.calls[0][0] == 500
-    assert 'datamodule' in trainer.pl_trainer.calls[0][1]
-    assert trainer.pl_trainer.calls[1][0] == 500
-    assert trainer.pl_trainer.calls[1][1]['dataloaders'] == 'predict-loader'
-    assert replay_calls == []
+    assert len(trainer.pl_trainer.calls) == 1
+    assert trainer.pl_trainer.calls[0][0] == 1.0
+    assert trainer.pl_trainer.calls[0][1]['datamodule'] is trainer.datamodule
+    assert len(replay_calls) == 1
+    assert replay_calls[0][0] == TrainingStage.PRED
+    assert torch.equal(replay_calls[0][1], selected_stage_ids)
     assert trainer.datamodule.eval_loader_kwargs['batch_size'] == 8
     assert trainer.pl_trainer.limit_predict_batches == 1.0
 

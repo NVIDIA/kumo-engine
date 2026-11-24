@@ -19,6 +19,7 @@ several tasks, or a resume, checks against.
 from __future__ import annotations
 
 import json
+import weakref
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from typing import Any, Literal
@@ -101,7 +102,11 @@ class TaskBatches(Iterator[Batch]):
             raise ValueError(f"unsupported batch state version {state.get('version')!r}")
         if state.get("task") != self._task_fingerprint:
             raise ValueError("this state was saved for a different task")
-        if dict(state.get("config", {})) != self._config:
+        config = dict(state.get("config", {}))
+        if self._config.get("requests") is not None:
+            # The old explicit-request path accepted chunk_batches but never used it.
+            config.pop("chunk_batches", None)
+        if config != self._config:
             raise ValueError(
                 "this state was saved under a different batch configuration "
                 "(split, seed, epoch, shuffle, rank, world size or batch size)"
@@ -114,6 +119,9 @@ class Task:
 
     Produced by `Plan.materialize`. Reads through the plan's open binding, so it
     is usable while that plan is open.
+    Close the task explicitly or use it as a context manager to release resources
+    promptly. Unclosed tasks are also cleaned up on collection or normal Python
+    exit, and when their plan closes.
 
     Attributes: ``fitted_state`` (a `FittedState`), ``output_schema``, and
     ``fingerprints``, covering the contract, inputs, dataset, anchors, input
@@ -161,6 +169,8 @@ class Task:
         }
         fingerprints["task"] = _fingerprint(fingerprints)
         self.fingerprints: Mapping[str, str] = fingerprints
+        # Keep readers alive until cleanup, without retaining the Task itself.
+        self._finalizer = weakref.finalize(self, anchors.close)
 
     @property
     def manifest(self) -> Mapping[str, Any]:
@@ -225,6 +235,17 @@ class Task:
         marks those rows so a loss can exclude them. ``drop_last`` applies to
         the final batch of each rank's pass, not to every chunk.
 
+        Native DiskGraph graph batches keep complete
+        split-stage batches for refit: shuffle, rank partitioning, padding and
+        ``drop_last`` apply separately to each selected split, without mixing
+        partial tails. A split smaller than one batch may be dropped completely
+        with ``drop_last=True``, independently of graph topology.
+        An empty stage shard pads from
+        an anchor the rank owns in another selected split; only a rank owning
+        no selected anchors borrows marked padding from another rank.
+        Relations-inspectable contracts using Python fallback (for example,
+        those with targets) retain their existing scheduling instead.
+
         Order is a pure function of ``seed``, ``epoch``, ``shuffle``, ``rank``
         and ``world_size``; ranks are disjoint before padding. A token budget
         (`Batching.max_tokens`) with ``world_size > 1`` is refused.
@@ -235,7 +256,7 @@ class Task:
         ``"columnar"`` emits `ColumnarGraph` inputs with Arrow feature tables
         and selected edge indexes, without tensor encoding. It requires
         materialized DiskGraph anchors, one graph input with explicit Raw
-        fields, fixed sample counts, and a selection contained in one split.
+        fields and fixed sample counts. Both topologies support refit stages.
         Other sample values, targets, entity filters and availability checks
         are refused before iteration. Shuffle, sharding, padding, drop-last
         and resume retain their normal semantics. By default, selected edge pairs
@@ -349,7 +370,6 @@ class Task:
             "rank": rank,
             "world_size": world_size,
             "drop_last": drop_last,
-            "chunk_batches": 8,  # Preserve the saved configuration for explicit-request callers.
             "output_format": output_format,
         }
 
@@ -489,7 +509,7 @@ class Task:
     def close(self) -> None:
         """Release the materialized anchors. The plan's binding stays open."""
 
-        self._anchors.close()
+        self._finalizer()
 
     def __enter__(self) -> Task:
         return self

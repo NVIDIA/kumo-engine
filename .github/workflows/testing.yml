@@ -209,6 +209,10 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
           install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
 
+      - name: Set up Temporal CLI
+        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        uses: ./.github/actions/temporal-cli
+
       - name: Log in to Azure with GitHub OIDC
         if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
@@ -363,34 +367,88 @@ jobs:
       contents: read
     env:
       CARGO_BUILD_JOBS: '2'
-      RUSTFLAGS: '-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only'
+      RUSTFLAGS: ${{ matrix.rustflags }}
       GITHUB_TOKEN: ''
       GITHUB_REF: ${{ github.ref }}
       GITHUB_API_URL: ${{ github.api_url }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
       GITHUB_RUN_ID: ${{ github.run_id }}
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            rustflags: '-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only'
+          - runner: windows-2022
+            rustflags: '-C target-feature=+aes,+sse2 -C debuginfo=line-tables-only'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
       run:
+        shell: bash
         working-directory: packages/diskgraph
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - uses: ./.github/actions/apt-install
+        if: runner.os == 'Linux'
         timeout-minutes: 12
         with:
           packages: lld
+      - name: Activate installed MSVC build tools
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        working-directory: .
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) {
+            throw 'Runner image needs Visual Studio x64 C++ tools and the Windows SDK.'
+          }
+          & "$installation\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('cl', 'link', 'cmake')) {
+            Get-Command $name -ErrorAction Stop | Select-Object Name, Source
+          }
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          # Git Bash also has link.exe; Rust must use Microsoft's linker.
+          $linker = (Get-Command link.exe -ErrorAction Stop).Source
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - uses: ./.github/actions/rust-toolchain
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
           enable-cache: false
-      - id: python
-        run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+      - name: Configure Python embedding
+        id: python
+        run: |
+          python - <<'PY'
+          import os
+          import platform
+          import sys
+          from pathlib import Path
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={platform.python_version()}\n')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              env.write(f'PYO3_PYTHON={sys.executable}\n')
+          print(f'Python executable: {sys.executable}')
+          print(f'Python base: {sys.base_prefix} ({platform.python_version()})')
+          if sys.platform == 'win32':
+              # Embedded Rust tests must load the same Python DLL they link.
+              with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as path:
+                  path.write(f'{sys.base_prefix}\n')
+              dll = Path(sys.base_prefix) / 'python3.dll'
+              if not dll.is_file():
+                  raise FileNotFoundError(f'Stable-ABI Python DLL missing: {dll}')
+              print(f'Stable-ABI Python DLL directory: {dll.parent}')
+          PY
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: packages/diskgraph -> target
@@ -689,12 +747,17 @@ jobs:
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           uv build --wheel packages/kumo-settings \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
+          # For the kumo.engine.integrations.pytorch tests.
+          uv build --wheel packages/experimental/kumo-pytorch \
+            --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           wheel=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_engine-*.whl' -print -quit)
           settings=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_settings-*.whl' -print -quit)
-          test -n "$wheel" && test -n "$settings"
-          uv pip install --no-deps "$wheel" "$settings"
+          pytorch=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
+            -name 'kumo_pytorch-*.whl' -print -quit)
+          test -n "$wheel" && test -n "$settings" && test -n "$pytorch"
+          uv pip install --no-deps "$wheel" "$settings" "$pytorch"
           python - <<'PY'
           from pathlib import Path
 
@@ -741,7 +804,7 @@ jobs:
               -c "$KUMO_ENGINE_SOURCE_ROOT/pyproject.toml" -rs \
               "$KUMO_ENGINE_SOURCE_ROOT/test"
           ) || status=$?
-          uv pip uninstall kumo-engine kumo-settings
+          uv pip uninstall kumo-engine kumo-settings kumo-pytorch
           python - <<'PY'
           import importlib.util
 

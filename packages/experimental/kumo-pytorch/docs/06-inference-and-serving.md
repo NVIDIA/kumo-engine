@@ -440,7 +440,10 @@ scoring_table = api.AnchorTable(
     as_of_time="as_of",
     sample_id="sample_id",
 )
-engine = api.DiskGraphEngine(index=data / "index")
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=data / "scratch")
+engine = api.DiskGraphEngine()
 disk_predictions = {}
 with api.prepare(artifact.contract, parquet, engine) as plan:
     with plan.materialize(scoring_table, fitted=artifact.fitted_state, inference=True) as task:
@@ -458,10 +461,15 @@ print(f"user-3-at-34 scores {disk_predictions['user-3-at-34']:.3f}")
 user-3-at-34 scores 0.647
 ```
 
-The first `prepare` builds the index under `shop-data/index`. A scheduled
-scoring job usually passes `ingest="never"`, so that it fails if the index it
-expects is missing instead of building a new one. See
-[building and reusing the index](04-engines-and-data.md#building-and-reusing-the-index).
+The first `prepare` builds the index under the configured scratch root's
+`indexes/<index_build_id>/`. Reuse the same engine for later preparations in
+this process. For a scheduled scoring job, reopen a core snapshot through
+`DiskGraphEngine.from_snapshot(snapshot)` and omit the Dataset from `prepare`.
+This validates an existing completed base without rebuilding it or reading its
+original source tables. It replaces the removed `ingest="never"` guard, which
+refused a missing base. Constructing a fresh dataset engine in each scoring job
+instead triggers a new ingest. See [opening an existing snapshot](04-engines-and-data.md#open-an-existing-snapshot)
+for the scoring workflow that requires an existing base.
 
 ### What inference mode changes
 
@@ -470,8 +478,8 @@ computed, so the rows only a label would read are never read. In the example,
 the data runs to day 40. A training task anchored at day 34 would read the
 purchases of the following 7 days to compute its label; the inference task
 never reads them. You can score anchors whose future hasn't happened yet, and
-rows dated after the cutoff can't change a score, except that on the DiskGraph
-engine they can change which tied neighbor a graph sample keeps (see [scoring
+rows dated after the cutoff can affect a graph score only through explicit
+uniform sampling or DiskGraph's choice among equally recent neighbors (see [scoring
 offline on the DiskGraph engine](#scoring-offline-on-the-diskgraph-engine)). Anchors need no labels;
 labels an anchor table supplies are ignored.
 
@@ -659,8 +667,11 @@ print(len(batch.metadata["sample_ids"]))
 ```
 
 All requests go into one batch unless you pass `batch_size`, or a token budget
-in the contract splits them. If the contract samples a graph with a seed, pass
-the same `seed` you used for batch scoring.
+in the contract splits them. The serving `seed` controls the in-memory sampler.
+Native DiskGraph uniform sampling uses the engine sampling seed and physical
+index identities, so its
+selected neighbors can differ from serving even with equal seeds. Recent
+sampling retains the existing offline/serving guarantees.
 
 Served batches use the inspectable output format. If you train on
 `output_format="model"` batches, your model takes them unchanged: both formats

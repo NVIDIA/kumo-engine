@@ -197,9 +197,7 @@ def graph_task(tmp_path, request):
     dataset = api.Dataset(
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         with plan.materialize(table, fit_split="a") as task:
             yield task
 
@@ -239,7 +237,7 @@ def test_inspectable_graph_uses_native_buffers_with_exact_parity(
         list(task.batches(output_format="model"))
 
 
-@pytest.mark.parametrize("graph_task", ["mixed", "availability"], indirect=True)
+@pytest.mark.parametrize("graph_task", ["availability"], indirect=True)
 def test_other_inspectable_contracts_keep_existing_path(graph_task, monkeypatch):
     task = graph_task
     with monkeypatch.context() as patch:

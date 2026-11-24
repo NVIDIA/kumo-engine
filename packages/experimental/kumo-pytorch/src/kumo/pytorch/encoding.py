@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import importlib.util
 import json
 import math
 from collections import Counter
@@ -29,7 +30,7 @@ from kumo.pytorch.contract.batch.encodings import (
     Vocabulary,
     ZScore,
 )
-from kumo.pytorch.contract.dtypes import DType, arrow_float64
+from kumo.pytorch.contract.dtypes import DType, _strip_utc_timezone, arrow_float64
 
 
 def typed_key(dtype: DType, value: Any) -> tuple[str, Any]:
@@ -72,7 +73,10 @@ def json_value(value: Any) -> Any:
         import pyarrow.compute as pc
 
         if isinstance(value, pa.TimestampScalar):
-            return {"$timestamp": pc.cast(value, pa.string()).as_py()}
+            text = pc.cast(_strip_utc_timezone(value), pa.string()).as_py()
+            if text is not None and value.type.tz == "UTC":
+                text += "Z"
+            return {"$timestamp": text}
     if isinstance(value, dt.date):
         return {"$date": value.isoformat()}
     if isinstance(value, float):
@@ -88,9 +92,12 @@ def _finite(values: Sequence[Any], dtype: DType, identity: str) -> np.ndarray:
     import pyarrow as pa
 
     try:
-        result = arrow_float64(pa.array(values, type=dtype.to_arrow())).to_numpy(
-            zero_copy_only=False
+        column = (
+            values
+            if isinstance(values, (pa.Array, pa.ChunkedArray))
+            else pa.array(values, type=dtype.to_arrow())
         )
+        result = arrow_float64(column).to_numpy(zero_copy_only=False)
     except (OverflowError, ValueError) as exc:
         raise ValueError(f"encoder {identity}: numeric conversion overflow") from exc
     if not np.isfinite(result).all():
@@ -183,6 +190,7 @@ class FittedEncoder:
 
     @cached_property
     def tokenizer(self):
+        _require_tokenizers()
         from tokenizers import Tokenizer
 
         tokenizer = Tokenizer.from_str(self.tokenizer_json)
@@ -414,7 +422,18 @@ TEXT_SPECIAL_TOKENS = ["[MISSING]", "[UNK]"]
 TEXT_UNKNOWN = "[UNK]"
 
 
+def _require_tokenizers() -> None:
+    """Text encodings need tokenizers, which kumo-engine installs with its `pytorch` extra."""
+
+    if importlib.util.find_spec("tokenizers") is None:
+        raise ModuleNotFoundError(
+            'Text encodings need the tokenizers package: pip install "kumo-engine[pytorch]"',
+            name="tokenizers",
+        )
+
+
 def train_text(config: Text, batches: Iterable[Sequence[str]]) -> str:
+    _require_tokenizers()
     from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 
     tokenizer = Tokenizer(models.BPE(unk_token=TEXT_UNKNOWN))
@@ -460,17 +479,30 @@ def fit_encoder(
 ) -> FittedEncoder:
     """Fit once from permitted observations, excluding NULLs and padding."""
 
-    if hasattr(values, "to_pylist"):
-        values = values.to_pylist()
-    observed = (
-        ()
-        if isinstance(config, Text) and config.state is None
-        else [
-            dtype.normalize(value, path=f"encoder {identity}")
-            for value in values
-            if value is not None
-        ]
-    )
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if (
+        isinstance(config, (ZScore, Buckets))
+        and dtype.numeric
+        and isinstance(values, (pa.Array, pa.ChunkedArray))
+        and values.type == dtype.to_arrow()
+    ):
+        # Typed columns already validate the scalar domain. Keep every selected
+        # occurrence, in order, for the existing exact NumPy fitting reductions.
+        observed = pc.drop_null(values)
+    else:
+        if hasattr(values, "to_pylist"):
+            values = values.to_pylist()
+        observed = (
+            ()
+            if isinstance(config, Text) and config.state is None
+            else [
+                dtype.normalize(value, path=f"encoder {identity}")
+                for value in values
+                if value is not None
+            ]
+        )
     if isinstance(config, (ZScore, Buckets)) and not dtype.numeric:
         raise ValueError(f"encoder {identity}: {type(config).__name__} requires a numeric dtype")
     if isinstance(config, Text) and dtype.name != "string":
@@ -528,6 +560,7 @@ def fit_encoder(
             boundaries=tuple(float(value) for value in boundaries),
         )
     if isinstance(config, Text):
+        _require_tokenizers()
         from tokenizers import Tokenizer
 
         if config.state is not None:

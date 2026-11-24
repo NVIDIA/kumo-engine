@@ -120,6 +120,10 @@ jobs:
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
+      - name: Set up Temporal CLI
+        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        uses: ./.github/actions/temporal-cli
+
       - name: Set up coverage artifact name
         run: |
           echo "ARTIFACT_NAME_SAFE=.coverage-dbx-${{ github.run_id }}-$(echo -n ${{ matrix.test_dir }} | sha256sum | awk '{print $1}')" >> $GITHUB_ENV

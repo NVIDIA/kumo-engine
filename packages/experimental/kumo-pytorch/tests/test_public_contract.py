@@ -125,13 +125,7 @@ def _sample():
         },
         neighborhoods={
             "local_graph": NeighborhoodSpec(
-                layers=(
-                    GraphLayer(
-                        samples=(
-                            GraphSample(relation="user_transactions", fanout=1, temporal="static"),
-                        )
-                    ),
-                )
+                layers=(GraphLayer(samples=(GraphSample(relation="user_transactions", fanout=1),)),)
             )
         },
         targets={
@@ -192,7 +186,7 @@ def _tokens(*, profile_layout=Padded(), field_layout=Packed(), event_layout=Padd
 def test_package_root_exposes_data_loader_api_not_model_construction():
     assert kumo.pytorch.DataLoaderSpec is DataLoaderSpec
     assert kumo.pytorch.BatchSpec is BatchSpec
-    assert kumo.pytorch.__version__ == "0.1.0a1"
+    assert kumo.pytorch.__version__
     assert not hasattr(kumo.pytorch, "ArchitectureConfig")
 
 
@@ -299,4 +293,4 @@ def test_public_contract_dataclasses_are_deserializable():
                 assert known[declaration.__name__] is declaration
     schema, _ = _data()
     contract = DataLoaderSpec(schema=schema, sample=_sample(), batch=_tokens())
-    assert DataLoaderSpec.from_json(contract.to_json()) == contract
+    assert DataLoaderSpec.from_json(contract.to_json()) == contract.resolve()

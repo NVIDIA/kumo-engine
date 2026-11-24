@@ -6,6 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { chromium } = require('../snowflake_notebook/browser/node_modules/playwright');
 const graph = require('../snowflake_notebook/graph_ui.cjs');
+const explanations = require('../snowflake_notebook/explanation_ui.cjs');
 const { historyPoint, renderedGeometry, targetPosition, observedCoordinates,
   historyCsv, VerificationError, verificationMessage, captureAllowed, frontendFailure, safeSnapshot, apiFailure } = require('./assertions.cjs');
 
@@ -181,6 +182,11 @@ async function main(input) {
       const page = await pageIn(context);
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       const first = await graph.checkSaved(page, receipt, output);
+      report.notebook_export = { status: 'running', initial: first };
+      report.stage = 'notebook-explanations';
+      await explanations.record(first,
+        () => explanations.check(page, receipt, output, 'sagemaker-export'),
+        () => fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2)));
       noErrors();
       await context.close();
       report.stage = 'notebook-export-reopened';
@@ -188,6 +194,11 @@ async function main(input) {
       const reopened = await pageIn(freshContext);
       await reopened.goto(url, { waitUntil: 'domcontentloaded' });
       const second = await graph.checkSaved(reopened, receipt, output);
+      report.notebook_export.reopened = second;
+      report.stage = 'notebook-explanations-reopened';
+      await explanations.record(second,
+        () => explanations.check(reopened, receipt, output, 'sagemaker-export-reopened'),
+        () => fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2)));
       noErrors();
       await freshContext.close();
       report.notebook_export = { status: 'passed', scope: 'saved-export', initial: first, reopened: second };
@@ -263,6 +274,7 @@ async function main(input) {
   } catch (error) {
     // Browser errors can contain a presigned URL. Retain no raw error or trace.
     report.error = verificationMessage(error);
+    if (report.notebook_export?.status === 'running') report.notebook_export.status = 'failed';
     if (safeFailure && (!safeFailure.identity ||
         await safeFailure.identity.isVisible().catch(() => false)) &&
         captureAllowed(safeFailure.page.url(), safeFailure.expectedUrl, true)) {

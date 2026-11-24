@@ -16,11 +16,20 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 import torch
+from diskgraph import SamplingPlan
+from kumo._managed_paths import _ManagedIndexPaths
 
+from kumo.pytorch._storage import (
+    ColumnCache,
+    TaskDirectory,
+    managed_paths,
+    managed_root,
+    verify_managed_roots,
+)
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
@@ -32,7 +41,13 @@ from kumo.pytorch.column_stats import (
     token_lengths_file,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
-from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values, arrow_float64
+from kumo.pytorch.contract.dtypes import (
+    DType,
+    _arrow_scalar_value,
+    _arrow_values,
+    _strip_utc_timezone,
+    arrow_float64,
+)
 from kumo.pytorch.contract.sample import (
     Aggregate,
     BuiltSample,
@@ -46,6 +61,7 @@ from kumo.pytorch.contract.sample import (
     Field,
     GroupBy,
     MapValues,
+    NeighborhoodSpec,
     Rows,
     RowTarget,
     SampleRequest,
@@ -73,6 +89,7 @@ from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
+from kumo.pytorch.index_binding import IndexBinding, open_index
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
 
@@ -168,20 +185,6 @@ def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationI
         else:
             rows(target.rows, f"{location}.rows")
             fields(target.fields, f"{location}.fields", f"row target {name!r}")
-    for name, neighborhood in spec.neighborhoods.items():
-        for layer_index, layer in enumerate(neighborhood.layers):
-            for sample_index, traversal in enumerate(layer.samples):
-                # Native uniform sampling ignores each seed's own timestamp (one coarse
-                # NodeCutoff per request, diskgraph-engine engine.rs); only recent is exact.
-                if traversal.strategy == "uniform":
-                    issues.append(
-                        _refusal(
-                            "DG-UNIFORM-GRAPH",
-                            f"{path}.neighborhoods.{name}.layers[{layer_index}]"
-                            f".samples[{sample_index}].strategy",
-                            "DiskGraph does not sample graph neighbors uniformly",
-                        )
-                    )
     return issues
 
 
@@ -194,25 +197,41 @@ class DiskGraphEngine:
     the full index in RAM.
 
     The base index is built from local Parquet files and is independent of
-    anchors, fitted encoders and output layout, so several contracts can reuse
-    it. Its manifest binds the schema, physical file metadata (not a content
-    snapshot) and resolved types; every file's declared columns and physical
-    types are checked before ingestion. Native ingestion rules apply: rows with
+    anchors, fitted encoders and output layout. Several contracts can reuse it
+    through the same engine instance or a snapshot binding. Its manifest binds
+    the schema, physical file metadata (not a content snapshot) and resolved
+    types; every file's declared columns and physical types are checked before
+    ingestion. Native ingestion rules apply: rows with
     NULL clocks and other rejected rows are dropped and counted.
 
     Supported: direct entity fields, historical event fields, typed scalar
     calculations, aggregates and comparisons, nested grouping, generated scalar
-    and row labels, recent graph neighborhoods with node fields, and columnar
+    and row labels, recent or uniform graph neighborhoods with node fields, and columnar
     ``output_format="model"`` batches. What it doesn't support yet is listed in
     `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
     step, before any data is read.
 
-    :param index: directory of the base index.
+    Configure storage once with ``kumo.settings.configure(scratch_dir=...)``.
+    Each engine keeps the root configured at its construction. Kumo allocates
+    build IDs and paths internally. Reuse this engine with its dataset, or
+    consume a completed snapshot with ``from_snapshot(snapshot)``.
+    Fresh dataset engines ingest independently, even for identical data. Base
+    indexes and derived caches persist after task cleanup; no automatic garbage
+    collection removes unused builds.
+
+    Kumo populates ``index`` with the resolved ``Path`` of the base; for a fresh
+    dataset engine, that directory may not exist until ``prepare()`` builds it.
+    ``index_build_id`` is the physical build identity as a ``str``, allocated
+    internally for a dataset engine or read from its snapshot. These attributes
+    describe the engine's storage; they are not constructor selectors.
+
     :param num_threads: native sampling threads.
+    :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
+        ``None`` uses fresh randomness. A fixed seed repeats selections for the
+        same index and sampling plan across epochs. This is independent of the
+        seed used by ``Task.batches`` for anchor shuffling. Rebuilding an index
+        can change selections because native sampling uses physical node IDs.
     :param num_shards: index shards.
-    :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
-        requires an existing one. A mismatching manifest is an error, never
-        permission to reuse.
     :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
     """
 
@@ -223,23 +242,102 @@ class DiskGraphEngine:
     def __init__(
         self,
         *,
-        index: str | Path,
         num_threads: int | None = None,
+        random_seed: int | None = 0,
         num_shards: int = 1,
-        ingest: Literal["if_missing", "never"] = "if_missing",
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
     ):
-        if ingest not in {"if_missing", "never"}:
-            raise ValueError("ingest must be 'if_missing' or 'never'")
+        self._initialize(
+            managed_paths(),
+            num_threads=num_threads,
+            random_seed=random_seed,
+            num_shards=num_shards,
+            encoder_cutoffs=encoder_cutoffs,
+        )
+
+    def _initialize(
+        self,
+        paths: _ManagedIndexPaths,
+        *,
+        num_threads: int | None = None,
+        random_seed: int | None = 0,
+        num_shards: int = 1,
+        encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
+        binding: IndexBinding | None = None,
+    ) -> None:
         if isinstance(encoder_cutoffs, str):
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
-        self.index = Path(index)
+        self._paths = paths
+        self.index = paths.index_dir if binding is None else Path(binding.artifact.path)
+        self.index_build_id = paths.index_build_id
+        self._binding = binding
         self.num_threads = num_threads
+        if random_seed is not None and (
+            type(random_seed) is not int or not 0 <= random_seed < 2**64
+        ):
+            raise ValueError("random_seed must be None or an unsigned 64-bit integer")
+        self.random_seed = random_seed
         self.num_shards = num_shards
-        self.ingest = ingest
         self.encoder_cutoffs = tuple(
             dict.fromkeys(cutoff_nanos(value) for value in encoder_cutoffs)
         )
+
+    @classmethod
+    def from_snapshot(
+        cls, snapshot: Any, *, num_threads: int | None = None, random_seed: int | None = 0
+    ) -> DiskGraphEngine:
+        """Attach to an existing same-root Kumo snapshot by physical build identity.
+
+        The original base stays in place. Tasks and caches use sibling managed paths
+        under kumo.settings.scratch_dir(); no public work/output directories are needed.
+        Cross-root imports and snapshots without a build ID are refused.
+        ``random_seed`` controls native uniform-neighbor sampling, as on the
+        dataset constructor: zero by default, or ``None`` for fresh randomness.
+        """
+        base = Path(snapshot.index_path).resolve()
+        root = managed_root()
+        if not base.is_relative_to(root):
+            raise ValueError(
+                "snapshot must belong to the configured Kumo root; cross-root import is unsupported"
+            )
+        binding = open_index(base, snapshot_id=snapshot.id)
+        result = cls.__new__(cls)
+        result._initialize(
+            managed_paths(binding.identity, root=root),
+            num_threads=num_threads,
+            random_seed=random_seed,
+            binding=binding,
+        )
+        verify_managed_roots(result._paths, base)
+        return result
+
+    @property
+    def schema(self) -> DataSchema:
+        """Resolved stored schema for a from_snapshot engine."""
+        if self._binding is None:
+            raise AttributeError("schema is available on from_snapshot engines")
+        return self._binding.schema
+
+    def _resolve_index_schema(self, schema: DataSchema) -> DataSchema:
+        if self._binding is None:
+            raise ValueError("dataset is required unless the engine binds an existing index")
+        return self._binding.resolve(schema)[0]
+
+    def _check_binding(self, dataset: Dataset | None, schema: DataSchema):
+        if self._binding is not None and dataset is not None:
+            return (
+                ValidationIssue(
+                    "dataset",
+                    "an existing-index engine does not accept Dataset",
+                    "omit dataset; the index supplies the table binding",
+                ),
+            )
+        if dataset is None:
+            try:
+                self._resolve_index_schema(schema)
+            except ValueError as error:
+                return (ValidationIssue("schema", str(error)),)
+        return ()
 
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
@@ -354,14 +452,6 @@ class DiskGraphEngine:
                                 "DiskGraph cannot override the destination table clock",
                             )
                         )
-                    if traversal.temporal == "static" and clock is not None:
-                        issues.append(
-                            _refusal(
-                                "DG-STATIC-TIMED-TRAVERSAL",
-                                path + ".temporal",
-                                "DiskGraph cannot disable filtering of a timed table",
-                            )
-                        )
         return tuple(issues)
 
     @staticmethod
@@ -394,11 +484,27 @@ class DiskGraphEngine:
 
     def open(
         self,
-        dataset: Dataset,
+        dataset: Dataset | None,
         schema: DataSchema,
         *,
         column_stats: Sequence[StatRequest] = (),
     ) -> SampleSource:
+        verify_managed_roots(self._paths, self.index)
+        if self._binding is not None:
+            if dataset is not None:
+                raise ValueError("an existing-index engine does not accept Dataset")
+            self._binding.validate_files()
+            schema, artifact = self._binding.resolve(schema)
+            return DiskGraphSource(
+                artifact,
+                schema,
+                num_threads=self.num_threads,
+                paths=self._paths,
+                identity=self._binding.identity,
+                random_seed=self.random_seed,
+            )
+        if dataset is None:
+            raise ValueError("dataset is required for source ingestion")
         ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
@@ -406,13 +512,16 @@ class DiskGraphEngine:
             self.index,
             num_shards=self.num_shards,
             num_threads=self.num_threads,
-            if_missing=self.ingest == "if_missing",
             column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
+            index_build_id=self.index_build_id,
         )
         return DiskGraphSource(
             artifact,
             schema,
             num_threads=self.num_threads,
+            paths=self._paths,
+            identity=self.index_build_id,
+            random_seed=self.random_seed,
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
@@ -430,6 +539,9 @@ class DiskGraphSource:
         schema: DataSchema,
         *,
         num_threads: int | None,
+        paths: _ManagedIndexPaths,
+        identity: str | None = None,
+        random_seed: int | None = 0,
     ) -> None:
         try:
             import diskgraph
@@ -445,9 +557,14 @@ class DiskGraphSource:
 
         self.schema = schema
         self._index_path = artifact.path
+        self.artifact_identity = identity
+        self._paths = paths
+        self._column_cache = ColumnCache(artifact.path, paths.cache_dir)
+        self._cache_root = self._column_cache.root
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
+        self._random_seed = random_seed
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
@@ -459,6 +576,7 @@ class DiskGraphSource:
         self._bind_sampler(
             diskgraph.SamplerEngine(
                 artifact.path,
+                random_seed=random_seed,
                 num_threads=num_threads,
             )
         )
@@ -466,13 +584,21 @@ class DiskGraphSource:
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
 
+    def new_task_directory(self, task_id: str | None = None):
+        verify_managed_roots(self._paths, self._index_path)
+        return TaskDirectory(self._paths, task_id)
+
     @property
     def _sampler(self):
         # A closed task releases its extension before Windows removes its files.
         # Reopen the base context only if a later preparation call needs it.
         if self._sampler_context is None:
             self._bind_sampler(
-                self._diskgraph.SamplerEngine(self._index_path, num_threads=self._num_threads)
+                self._diskgraph.SamplerEngine(
+                    self._index_path,
+                    random_seed=self._random_seed,
+                    num_threads=self._num_threads,
+                )
             )
         return self._sampler_context
 
@@ -510,6 +636,8 @@ class DiskGraphSource:
 
         from diskgraph import convert_ticks
 
+        if value is None:
+            return 0  # Clockless contracts have no anchor timestamp.
         if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
             value = dt.datetime.combine(value, dt.time(), tzinfo=dt.UTC)
         if isinstance(value, dt.datetime) or isinstance(value, self._pa.TimestampScalar):
@@ -547,10 +675,8 @@ class DiskGraphSource:
             "nanoseconds": "ns",
         }.get(self._clock)
         if self._pa.types.is_integer(values.type):
-            values = self._pc.cast(
-                self._pc.cast(values, self._pa.int64()), self._pa.timestamp("s", tz="UTC")
-            )
-        values = self._pc.floor_temporal(values, unit=self._clock[:-1])
+            values = self._pc.cast(self._pc.cast(values, self._pa.int64()), self._pa.timestamp("s"))
+        values = self._pc.floor_temporal(_strip_utc_timezone(values), unit=self._clock[:-1])
         if unit is not None:
             aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=True)
             return self._pc.cast(aligned, self._pa.int64())
@@ -1123,7 +1249,14 @@ class DiskGraphSource:
             if cutoff is None
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
-        return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
+        return read_column_stats(
+            self._index_path,
+            requests,
+            ticks,
+            self._clock,
+            self._num_threads,
+            cache_root=self._cache_root,
+        )
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
         ticks = (
@@ -1132,7 +1265,7 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = encoder.tokenizer_file(ticks, self._clock)
-        path = Path(self._index_path, "col_stats", name)
+        path = self._column_cache.resolve(name)
         if path.is_file():
             try:
                 document = json.loads(path.read_text())
@@ -1181,17 +1314,19 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = token_lengths_file(table, columns, required, ticks, self._clock)
-        path = Path(self._index_path, "col_stats", name)
+        path = self._column_cache.resolve(name)
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
             self._diskgraph.token_lengths(
                 self._index_path,
                 table,
                 list(columns),
-                str(path),
+                str(temporary),
                 required=list(required),
                 num_threads=self._num_threads,
             )
+            temporary.replace(path)
         return name
 
     def fit_graph_fields(
@@ -1231,6 +1366,10 @@ class DiskGraphSource:
         seed: int,
         epoch: int,
     ) -> dict[str, Any]:
+        if getattr(spec, "topology", "relations") == "sampled":
+            raise ValueError(
+                "sampled graph topology requires fixed-size native AnchorTable batches"
+            )
         del seed, epoch
         if self._sampler is None:
             raise RuntimeError("DiskGraph source is closed")
@@ -1275,6 +1414,48 @@ class DiskGraphSource:
             }
         else:
             selected = runtime
+        if spec.topology == "sampled":
+            graph = self.columnar_graph_batch(sample, spec, selected)
+            return {
+                "nodes": {
+                    table: {
+                        "ids": _graph_node_ids(
+                            node.ids.combine_chunks()
+                            if isinstance(node.ids, self._pa.ChunkedArray)
+                            else node.ids
+                        ),
+                        "batch": torch.from_numpy(
+                            node.owners.to_numpy(zero_copy_only=False)
+                        ).long(),
+                        "features": {
+                            name: encoder.encode_arrow(node.features[name])
+                            for name, encoder in state.get(table, {}).items()
+                        },
+                    }
+                    for table, node in graph.nodes.items()
+                },
+                "edges": {
+                    key: {
+                        "index": torch.stack(
+                            tuple(
+                                torch.from_numpy(column.to_numpy(zero_copy_only=False)).long()
+                                for column in edge.index.columns
+                            )
+                        ),
+                        "source_type": edge.source_type,
+                        "destination_type": edge.destination_type,
+                        "relation": edge.relation,
+                        "direction": edge.direction,
+                    }
+                    for key, edge in graph.edges.items()
+                },
+                "num_sampled_nodes": {
+                    key: list(counts) for key, counts in graph.num_sampled_nodes.items()
+                },
+                "num_sampled_edges": {
+                    key: list(counts) for key, counts in graph.num_sampled_edges.items()
+                },
+            }
         previous = getattr(self, "_runtime_batch", None)
         self._runtime_batch = selected
         try:
@@ -1337,6 +1518,59 @@ class DiskGraphSource:
                 owners=owners,
                 features=pa.table({name: columns[name] for name in names}),
             )
+        if spec.topology == "sampled":
+            if deduplicate_edges:
+                raise ValueError("sampled graph topology preserves edge occurrences")
+
+            counts = {
+                entry["edge_type"]["rel"]: tuple(entry["counts"].to_pylist())
+                for entry in graph["num_sampled_edges_dict"]
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            edge_types = {
+                entry["edge_type"]["rel"]: entry["edge_type"]
+                for entry in (*graph["edge_index_dict"], *graph["num_sampled_edges_dict"])
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            buffers = {
+                entry["edge_type"]["rel"]: pa.table(
+                    {"source": entry["src"], "destination": entry["dst"]}
+                )
+                for entry in graph["edge_index_dict"]
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            edges = {}
+            for physical, kind in edge_types.items():
+                logical = physical_relations[physical]
+                index = buffers.get(physical)
+                if index is None:
+                    index = pa.table(
+                        {
+                            "source": pa.array([], type=pa.uint64()),
+                            "destination": pa.array([], type=pa.uint64()),
+                        }
+                    )
+                edges[physical] = ColumnarEdges(
+                    kind["src"],
+                    kind["dst"],
+                    index,
+                    logical,
+                    "forward"
+                    if physical == self._relation_mapping[logical]["forward"]
+                    else "reverse",
+                )
+            return ColumnarGraph(
+                sample.entity.table,
+                nodes,
+                edges,
+                {
+                    table: tuple(graph["num_sampled_nodes_dict"][table].to_pylist())
+                    if table in graph["num_sampled_nodes_dict"]
+                    else (0,)
+                    for table in nodes
+                },
+                counts,
+            )
         parts = defaultdict(list)
         for edge in graph["edge_index_dict"]:
             physical = edge["edge_type"]["rel"]
@@ -1396,7 +1630,7 @@ class DiskGraphSource:
 
     def _runtime_graph_events(self, sample, source, runtime):
         neighborhood = sample.neighborhoods[source]
-        graph = runtime["graphs"]["main"]
+        graph = runtime["graphs"].get(source, runtime["graphs"]["main"])
         events = []
         for table, ids in graph["node_ids"].items():
             if table in self._node_types:
@@ -1439,7 +1673,7 @@ class DiskGraphSource:
         runtime = getattr(self, "_runtime_batch", None)
         if (
             runtime is not None
-            and runtime["_anchor_neighborhood"] == source
+            and (source in runtime["graphs"] or runtime["_anchor_neighborhood"] == source)
             and runtime["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
@@ -1450,7 +1684,7 @@ class DiskGraphSource:
         events = list(
             self._sampler.sample(
                 {sample.entity.table: root_ids},
-                json.dumps(plan),
+                plan,
                 fused=False,
                 seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
                 swap_edge_direction=False,
@@ -1486,14 +1720,23 @@ class DiskGraphSource:
     ) -> None:
         if not requests or spec.entity.available_from is None:
             return
+        self._validate_root_ids_availability(
+            spec,
+            self._root_ids(spec.entity.table, requests),
+            [self._cutoff(request.as_of_time) for request in requests],
+        )
+
+    def _validate_root_ids_availability(self, spec, node_ids, cutoffs) -> None:
+        """Use the same availability rule with already resolved native seeds."""
+        if not node_ids or spec.entity.available_from is None:
+            return
         table = spec.entity.table
         column = spec.entity.available_from
-        node_ids = self._root_ids(table, requests)
         times = self._feature_values(table, node_ids, column)
-        for request, value in zip(requests, times, strict=True):
+        for cutoff, value in zip(cutoffs, times, strict=True):
             if value is None:
                 raise ValueError(f"{table!r} row has no timestamp in {column!r}")
-            if self._cutoff(value) >= self._cutoff(request.as_of_time):
+            if self._cutoff(value) >= cutoff:
                 raise ValueError("entity did not exist before the requested sample time")
 
     def _root_ids(
@@ -1834,7 +2077,7 @@ class DiskGraphSource:
             unit = {"s": "second", "ms": "millisecond", "us": "microsecond", "ns": "nanosecond"}[
                 dtype.unit
             ]
-            values = self._pc.ceil_temporal(values, unit=unit)
+            values = self._pc.ceil_temporal(_strip_utc_timezone(values), unit=unit)
         return self._pc.cast(values, dtype.to_arrow(), safe=True)
 
     def _entity_arrays(
@@ -1894,7 +2137,7 @@ class DiskGraphSource:
             )
         if isinstance(operation, CalendarPart):
             function = {"weekday": "day_of_week"}.get(operation.part, operation.part)
-            result = getattr(self._pc, function)(operands[0])
+            result = getattr(self._pc, function)(_strip_utc_timezone(operands[0]))
         elif isinstance(operation, MapValues):
             fallback = operation.fallback if operation.unknown == "fallback" else None
             result = self._pa.repeat(
@@ -2014,14 +2257,18 @@ class DiskGraphSource:
             raise RuntimeError(f"DiskGraph result has no projected column {name!r}")
         return columns[name]
 
-    def _sampling_plan(self, neighborhood: Any) -> tuple[dict[str, Any], dict[str, str]]:
+    def _sampling_plan(
+        self,
+        neighborhood: NeighborhoodSpec,
+    ) -> tuple[SamplingPlan, dict[str, str]]:
         layers = []
         physical_relations = {}
         for layer in neighborhood.layers:
             fanouts = {}
             for traversal in layer.samples:
-                if traversal.strategy != "recent":
-                    raise ValueError("DiskGraph does not support uniform graph sampling")
+                strategy = traversal.strategy
+                if strategy is None:
+                    raise ValueError("resolve GraphSample.strategy before compiling the plan")
                 relation = self._relations[traversal.relation]
                 target_table = (
                     relation.right_table
@@ -2034,11 +2281,6 @@ class DiskGraphSource:
                         "the DiskGraph backend cannot override a destination "
                         f"table clock; {target_table!r} is indexed by {clock!r}, but the "
                         f"traversal requests {traversal.time_column!r}"
-                    )
-                if traversal.temporal == "static" and clock is not None:
-                    raise ValueError(
-                        "the DiskGraph backend cannot disable temporal filtering "
-                        f"for timestamped destination table {target_table!r}"
                     )
                 mapping = self._relation_mapping[traversal.relation]
                 physical = mapping[traversal.direction]
@@ -2055,13 +2297,13 @@ class DiskGraphSource:
                         f"{traversal.relation!r} resolve to the same physical relation {physical!r}"
                     )
                 physical_relations[physical] = traversal.relation
-                fanouts[physical] = {
-                    "fanout": traversal.fanout,
-                    "mode": "temporal_most_recent",
-                    "absent_key_policy": "reject_plan",
-                }
-            layers.append({"fanouts": fanouts, "default_fanout": None})
-        return {"layers": layers}, physical_relations
+                fanouts[physical] = self._diskgraph.FanoutSpec(
+                    traversal.fanout,
+                    "temporal_most_recent" if strategy == "recent" else "uniform",
+                    "reject_plan",
+                )
+            layers.append(self._diskgraph.LayerSpec(fanouts=fanouts))
+        return self._diskgraph.SamplingPlan(layers), physical_relations
 
     def _graph_output(
         self,
@@ -2557,7 +2799,12 @@ def _first_occurrences(pairs: np.ndarray) -> np.ndarray:
 
     if pairs.shape[1] < 2:
         return pairs
-    _, first = np.unique(pairs, axis=1, return_index=True)
+    lowest, source_max, width = int(pairs.min()), int(pairs[0].max()), int(pairs[1].max()) + 1
+    if lowest >= 0 and (source_max + 1) * width < 2**63:
+        source, destination = pairs.astype(np.int64, copy=False)
+        _, first = np.unique(source * width + destination, return_index=True)
+    else:
+        _, first = np.unique(pairs, axis=1, return_index=True)
     if first.size == pairs.shape[1]:
         return pairs
     return np.ascontiguousarray(pairs[:, np.sort(first)])

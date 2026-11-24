@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+seed: 42
+
+# A flat BERT-style encoder on Blueprint v1's TabFormer rows (ADR 0019): v1's
+# tokens, data, schedule, and probe, with only the attention mask, objective,
+# and readout changed, so a difference from v1 is the encoder's.
+#
+# From recipes/blueprint_v1/config.yaml, unchanged: the data section (v1's
+# precomputed 80/10/10 date split, all 2,000 users, 128-event probe histories,
+# 341-event pretraining windows), v1's 11 field tokens per event, the training
+# schedule (3,000 steps of 16 windows, AdamW, cosine), the history-window probe
+# (every training fraud with 5 negatives each), and the fixed XGBoost setting.
+#
+# Changed: 8 bidirectional blocks (d=512, 8 heads, GELU 2048, rotary positions
+# by token index with v1's base 5e5; about 28M parameters against v1's 25.9M),
+# pretrained by masked field modelling (15% of field tokens and 10% of whole
+# events, BERT's 80 / 10 / 10 replacement), and read out as the mean of the
+# last event's field tokens: the scored transaction, read with its history.
+#
+#   export TFM_TABFORMER_ROOT=~/data/TabFormer
+#   uv run python benchmarks/seed_range.py \
+#     --config benchmarks/ablations/flat_encoder_tabformer.yaml --seeds 42 \
+#     --run-root outputs/ablations/flat_encoder_tabformer \
+#     --summary outputs/ablations/flat_encoder_tabformer/summary.json --device cuda
+
+data:
+  adapter: tabformer
+  path: null
+  split_protocol: precomputed
+  observation_window: 36500d
+  n_entities: 2000
+  max_entities: 2000
+  # 11 fields and a <sep> per event, plus <bos> and <eos>: 12 * 128 + 1.
+  sequence_length: 128
+  max_tokens: 1537
+  events_per_entity: 128
+  pretrain_windows:
+    events: 341
+    max_tokens: 4096
+  temporal_split:
+    train_end: "2016-01-01T00:00:00Z"
+    validation_end: "2018-01-01T00:00:00Z"
+    label_delay: 0h
+
+features:
+  tokenizer: transaction_field_tokenizer
+  fields: [AMT, MERCH, CAT, MCC, HOUR, DOW, MONTH, CARD, CHIP, ZIP3, STATE]
+
+model:
+  backbone: eager
+  composition:
+    granularity:
+      type: flat_encoder
+      decoder:
+        depth: 8
+        hidden_size: 512
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 4096
+    position: rope
+    attention: sdpa
+    objective: masked_fields
+    readout: last_event_mean
+    heads: {}
+
+objective:
+  masked_fields:
+    p_field: 0.15
+    p_event: 0.10
+    p_mask_token: 0.8
+    p_random_token: 0.1
+
+training:
+  max_steps: 3000
+  log_every: 50
+  batch_size: 16
+  learning_rate: 0.0002
+  precision: bf16
+  # As config.yaml: the eager loop on one GPU. The seed-42 record ran
+  # `backend: eager`, which trains identically in one process.
+  backend: ddp
+  packing: false
+  shuffle: true
+  optimizer:
+    betas: [0.9, 0.95]
+    weight_decay: 0.077
+    lr_schedule: cosine
+    warmup_steps: 500
+    min_learning_rate: 0.0000065
+    schedule_steps: 10000
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    max_rows: null
+    train_negatives_per_positive: 5
+  inference_batch_size: 32
+  inference_precision: bf16
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 0
+    xgboost_params:
+      max_depth: 7
+      learning_rate: 0.02
+      min_child_weight: 2.8
+      subsample: 0.87
+      colsample_bytree: 0.76
+      reg_lambda: 0.43
+      reg_alpha: 0.09
+      scale_pos_weight: 1.0
+    n_jobs: 16
+    device: cuda
+    exclude_keys: [user]
+
+runtime:
+  device: auto

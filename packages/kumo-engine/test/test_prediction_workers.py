@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from diskgraph.sampling_plan import SamplingPlan
 from kumo_core import prediction
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.task_dataset import DiskgraphTaskManifest
@@ -148,12 +149,12 @@ def test_partition_counts_devices_and_runtime_allocation(
             task_type='regression', stage_counts={'predict': population}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
 
-    def load(*args, **kwargs):
+    def load(task, *args, **kwargs):
         loads.append(kwargs)
-        return SimpleNamespace(predict=lambda **options: calls.append(options))
+        return SimpleNamespace(task=task, predict=lambda **options: calls.append(options))
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load)
     monkeypatch.setattr(prediction, '_prediction_worker_devices',
@@ -254,9 +255,10 @@ def test_task_options_reach_every_scorer_before_output(
         return task
 
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest', resolve)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
     trainer = SimpleNamespace(
+        task=task,
         year_over_year_encoder=object() if mismatch else None,
         encoders=SimpleNamespace(
             encoders={'train_table': {
@@ -354,7 +356,7 @@ def test_shards_with_different_loader_workers_cover_seeds_once(
     seeds = []
     for shard, workers in enumerate(local_workers):
         dataset = DiskgraphLightningDataModule(
-            predict_manifest, {}, sampling_plan={'layers': []},
+            predict_manifest, {}, sampling_plan=SamplingPlan(),
             train_batch_size=4, eval_batch_size=4,
             runtime_num_workers=len(local_workers), runtime_worker_id=shard,
             num_workers=workers,

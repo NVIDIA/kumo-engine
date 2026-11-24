@@ -15,7 +15,7 @@ from kumoapi.train import TrainingStage
 from torch import Tensor
 
 if TYPE_CHECKING:
-    from kumo_core.features.stores import FeatureStore
+    from kumo_core.features.stores.feature import FeatureStore
 
 EVAL_NUM_SELECTION_NODES = 50
 PRED_NUM_SELECTION_NODES = 1000
@@ -344,6 +344,30 @@ def select_link_prediction(
     return nodes[index], index
 
 
+def select_prediction_inputs(
+    feature_store: FeatureStore,
+    input_nodes: Tensor,
+    input_ids: Tensor,
+    limit: int,
+) -> tuple[Tensor, EntityMappings]:
+    """Map the first prediction rows without computing predictions.
+
+    Distinct task rows can name the same entity at different timestamps. Sort
+    task-row IDs for replay while retaining the original FIRST inventory order.
+    """
+    if input_nodes.numel() != input_ids.numel():
+        raise ValueError('Prediction entity and task-row IDs must align')
+    nodes = input_nodes[:limit].cpu()
+    row_ids = input_ids[:limit].cpu()
+    selected = row_ids.unique(sorted=True)
+    ordinals = {int(row): str(index) for index, row in enumerate(selected)}
+    table = feature_store.entity_table_names[0]
+    mappings = EntityMappings(
+        mappings={'first': [ordinals[int(row)] for row in row_ids]},
+        orig_mappings={'first': feature_store[table, 'pkey', nodes].tolist()})
+    return selected, mappings
+
+
 def select_input_nodes(
     task_type: TaskType,
     feature_store: FeatureStore,
@@ -376,6 +400,12 @@ def select_input_nodes(
             selected nodes, either from :obj:`input_id` or :obj:`input_nodes`,
             to the orders fed into the explainer.
     """
+    if stage == TrainingStage.PRED:
+        if input_id is None:
+            raise ValueError('Prediction selection requires task-row IDs')
+        return select_prediction_inputs(feature_store, input_nodes, input_id,
+                                        PRED_NUM_SELECTION_NODES)
+
     nodes = []
     n_ids = []
     strategies = []

@@ -144,8 +144,8 @@ A readable multi-line summary of the contract.
 ```python
 def check(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
@@ -169,14 +169,18 @@ The whole contract must still be well formed.
 ```python
 def prepare(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     inference: bool = False,
 ) -> Plan
 ```
 
-Validate, then bind the dataset through the engine.
+Validate, then bind sources or an existing index through the engine.
+
+Omit `dataset` only for a DiskGraphEngine created with
+`from_snapshot`. Its stored schema supplies omitted types; it never reads
+the original sources or rebuilds the base. `engine` is always required.
 
 Every check that does not need data happens first, so an unexecutable
 combination is refused before a row is read. Anchors, and everything fitted
@@ -221,7 +225,7 @@ Called as `preview(task, requests)` or
 ```python
 class Plan(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
     source: SampleSource,
     *,
@@ -237,6 +241,7 @@ score. `materialize` binds anchors and returns the `Task` that is iterated.
 
 Owns the opened binding: close it with `plan.close()` or use the plan as a
 context manager. Tasks read through it and are usable while it is open.
+Closing the plan also closes its live tasks before releasing the binding.
 
 `inference` is true for a plan prepared with `prepare(..., inference=True)`:
 its targets were not checked against the engine, so it only materializes
@@ -298,7 +303,7 @@ and new targets cannot add members to a reused final ID space.
 Plan.close() -> None
 ```
 
-Release the engine binding. Idempotent.
+Close live tasks, then release the engine binding. Idempotent.
 
 ### `Task`
 
@@ -321,6 +326,9 @@ Anchors bound to a plan: what is iterated, served from, and written out.
 
 Produced by `Plan.materialize`. Reads through the plan's open binding, so it
 is usable while that plan is open.
+Close the task explicitly or use it as a context manager to release resources
+promptly. Unclosed tasks are also cleaned up on collection or normal Python
+exit, and when their plan closes.
 
 Attributes: `fitted_state` (a `FittedState`), `output_schema`, and
 `fingerprints`, covering the contract, inputs, dataset, anchors, input
@@ -407,6 +415,17 @@ repeating one of its own anchors, and `Batch.metadata["is_padding"]`
 marks those rows so a loss can exclude them. `drop_last` applies to
 the final batch of each rank's pass, not to every chunk.
 
+Native DiskGraph graph batches keep complete
+split-stage batches for refit: shuffle, rank partitioning, padding and
+`drop_last` apply separately to each selected split, without mixing
+partial tails. A split smaller than one batch may be dropped completely
+with `drop_last=True`, independently of graph topology.
+An empty stage shard pads from
+an anchor the rank owns in another selected split; only a rank owning
+no selected anchors borrows marked padding from another rank.
+Relations-inspectable contracts using Python fallback (for example,
+those with targets) retain their existing scheduling instead.
+
 Order is a pure function of `seed`, `epoch`, `shuffle`, `rank`
 and `world_size`; ranks are disjoint before padding. A token budget
 (`Batching.max_tokens`) with `world_size > 1` is refused.
@@ -417,7 +436,7 @@ as Arrow arrays. Both emit the same `Batch` structure.
 `"columnar"` emits `ColumnarGraph` inputs with Arrow feature tables
 and selected edge indexes, without tensor encoding. It requires
 materialized DiskGraph anchors, one graph input with explicit Raw
-fields, fixed sample counts, and a selection contained in one split.
+fields and fixed sample counts. Both topologies support refit stages.
 Other sample values, targets, entity filters and availability checks
 are refused before iteration. Shuffle, sharding, padding, drop-last
 and resume retain their normal semantics. By default, selected edge pairs

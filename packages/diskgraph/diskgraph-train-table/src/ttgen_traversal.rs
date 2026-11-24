@@ -204,7 +204,7 @@ pub fn node_row(table: &TableReader, node_id: u64) -> Option<&[u8]> {
 /// [`read_column_value`] on a row already fetched with [`node_row`].
 pub fn row_column_value(table: &TableReader, row: Option<&[u8]>, col_idx: usize) -> Option<Value> {
     let decoder = table.node_data_decoder()?;
-    let raw_data = row?;
+    let raw_data = decoder.row_or_null(row?);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -215,6 +215,24 @@ pub fn row_column_value(table: &TableReader, row: Option<&[u8]>, col_idx: usize)
         ValueRef::Null => None,
         _ => Some(value_ref_to_value(&value_ref, decoder.clock())),
     }
+}
+
+/// [`read_column_value`] for computing with and comparing values: a decimal
+/// reads as its number instead of its text. Keys keep [`read_column_value`].
+pub fn read_column_number(table: &TableReader, node_id: u64, col_idx: usize) -> Option<Value> {
+    row_column_number(table, node_row(table, node_id), col_idx)
+}
+
+/// [`read_column_number`] on a row already fetched with [`node_row`].
+pub fn row_column_number(table: &TableReader, row: Option<&[u8]>, col_idx: usize) -> Option<Value> {
+    let value = row_column_value(table, row, col_idx)?;
+    let kind = table.node_data_decoder()?.context().columns[col_idx].logical_type;
+    Some(match (kind, value) {
+        (IngestedType::Decimal128 | IngestedType::Decimal256, Value::Str(text)) => {
+            Value::Float(text.parse().ok()?)
+        }
+        (_, value) => value,
+    })
 }
 
 /// Read a column value, distinguishing explicit NULL from missing data.
@@ -230,7 +248,7 @@ pub fn read_column_value_nullable(
 ) -> Option<Option<Value>> {
     let view = table.edges_for_node(node_id).ok()?;
     let decoder = table.node_data_decoder()?;
-    let raw_data = view.node_data().ok()??;
+    let raw_data = decoder.row_or_null(view.node_data().ok()??);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -251,8 +269,7 @@ pub fn read_column_f64(
     node_id: u64,
     col_idx: usize,
 ) -> Option<f64> {
-    read_column_value_nullable(table, node_id, col_idx)
-        .flatten()
+    read_column_number(table, node_id, col_idx)
         .and_then(|v| match v {
             Value::Int(i) => Some(i as f64),
             Value::Float(f) => Some(f),
@@ -397,6 +414,7 @@ where
     let Some(raw) = row else {
         return SourceNull;
     };
+    let raw = decoder.row_or_null(raw);
 
     let logical_type = decoder.context().columns[col_idx].logical_type;
 

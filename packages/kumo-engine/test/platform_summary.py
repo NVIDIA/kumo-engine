@@ -34,6 +34,9 @@ DIAGNOSTICS = {
         'notebook_install_run_requested', 'notebook_install_started',
         'kernel_reset_completed', 'notebook_graph_run_requested',
         'notebook_graph_started', 'live_graph_verified',
+        'live_explanations_started', 'live_explanations_verified',
+        'saved_graph_verified', 'saved_explanations_started',
+        'saved_explanations_verified',
         'test_notebook_kernel_stopped', 'saved_output_verified',
         'saved_output_rechecked', 'attempt_notebook_deleted', 'checking_run',
         'run_verified', 'ui_verified'
@@ -55,6 +58,11 @@ def exported_graph(value):
             status(check.get('status'))
             if isinstance(check, dict) else 'not_run'
         }
+        if isinstance(check, dict) and 'graph_status' in check:
+            result[name]['graph'] = status(check['graph_status'])
+        if isinstance(check, dict) and isinstance(check.get('explanations'), dict):
+            result[name]['explanations'] = status(check['explanations'].get('status'))
+            failed = failed or result[name]['explanations'] == 'failed'
         failed = failed or result[name]['status'] == 'failed' or (isinstance(
             check, dict) and 'error' in check)
     errors = value.get('browser_errors')
@@ -81,6 +89,15 @@ def aggregate(value, depth=0, *, graph_export=False):
         diagnostic = value.get(key)
         if isinstance(diagnostic, str) and diagnostic in allowed:
             result[key] = diagnostic
+    notebook_checks = value.get('notebook_checks')
+    if isinstance(notebook_checks, dict):
+        result['notebook_checks'] = {
+            phase: dict(graph=status(check.get('graph_status')),
+                        explanations=status(check.get('explanations', {}).get('status'))
+                        if isinstance(check.get('explanations'), dict) else 'not_run')
+            for phase in ('live', 'saved')
+            if isinstance(check := notebook_checks.get(phase), dict)
+        }
     elapsed = value.get('elapsed_seconds')
     if type(elapsed) in (int,
                          float) and math.isfinite(elapsed) and elapsed >= 0:
@@ -99,7 +116,7 @@ def aggregate(value, depth=0, *, graph_export=False):
     for key in ('engine_checks', 'verdict', 'positive_lifecycle',
                 'full_qualification', 'cleanup', 'notebook_cleanup',
                 'stage_cleanup', 'cleanup_retry', 'browser_cleanup',
-                'verification_status'):
+                'verification_status', 'explanations'):
         nested = value.get(key)
         if isinstance(nested, dict):
             selected = aggregate(nested, depth + 1)

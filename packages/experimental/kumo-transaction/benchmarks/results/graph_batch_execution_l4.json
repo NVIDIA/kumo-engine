@@ -1,0 +1,232 @@
+{
+  "comparison": "CPU validation and validation-preserving transfer; architecture, recipe and graph-v3 weights unchanged",
+  "before_revision": "e27be76a556a8c9714ddb5c76a1082c3d1ecbf28",
+  "after_revision": "b4195a59d2a7c52d140eceb5b3d216e891d0ed25",
+  "statistic": "Median of three run medians per source for the verified cycle comparison; resident baseline comparison withdrawn.",
+  "hardware": "NVIDIA L4, 23034 MiB, driver 595.71.05",
+  "cpu_threads": {
+    "OMP_NUM_THREADS": 1,
+    "MKL_NUM_THREADS": 1
+  },
+  "environment": "Python 3.14.6; Torch 2.13.0+cu130; PyG 2.8.1; Kumo Engine 1.0.1; TF32 disabled; torch-scatter absent",
+  "commands": {
+    "short": "PYTHONPATH=<checkout>/src:<checkout> OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 <prepared-venv>/bin/python -m benchmarks.ablations.graph_backends.benchmark --output <result>.json",
+    "resident": "same command, with --warmup 20 --steps 20",
+    "cycle": "PYTHONPATH=<checkout>/src:<checkout> OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 <prepared-venv>/bin/python <after-checkout>/benchmarks/ablations/graph_backends/execution.py --warmup 5 --steps 20 --output <result>.json"
+  },
+  "summary": {
+    "shared": {
+      "batch_transfer_ms_median": {
+        "before": 33.126151422038674,
+        "after": 0.782310264185071,
+        "speedup": 42.34400715238734
+      },
+      "transfer_and_train_ms_median": {
+        "before": 70.465880446136,
+        "after": 36.92446043714881,
+        "speedup": 1.9083794214428649
+      },
+      "throughput": {
+        "before": {
+          "value": 454.1204877793409,
+          "unit": "roots/s",
+          "scope": "blocking batch transfer+forward+backward+clipping+AdamW; construction and sampling excluded",
+          "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+          "provenance": "derived from historical latency; not a new timing measurement"
+        },
+        "after": {
+          "value": 866.6341937336902,
+          "unit": "roots/s",
+          "scope": "blocking batch transfer+forward+backward+clipping+AdamW; construction and sampling excluded",
+          "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+          "provenance": "derived from historical latency; not a new timing measurement"
+        }
+      }
+    },
+    "disjoint": {
+      "batch_transfer_ms_median": {
+        "before": 41.77426849491894,
+        "after": 1.1191212106496096,
+        "speedup": 37.32774260499494
+      },
+      "transfer_and_train_ms_median": {
+        "before": 91.39204840175807,
+        "after": 50.918381894007325,
+        "speedup": 1.7948733836829596
+      },
+      "throughput": {
+        "before": {
+          "value": 350.1398705862077,
+          "unit": "roots/s",
+          "scope": "blocking batch transfer+forward+backward+clipping+AdamW; construction and sampling excluded",
+          "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+          "provenance": "derived from historical latency; not a new timing measurement"
+        },
+        "after": {
+          "value": 628.4567342813801,
+          "unit": "roots/s",
+          "scope": "blocking batch transfer+forward+backward+clipping+AdamW; construction and sampling excluded",
+          "statistic": "actual roots divided by historical median-of-run-median cycle seconds",
+          "provenance": "derived from historical latency; not a new timing measurement"
+        }
+      }
+    }
+  },
+  "deterministic_cuda_parity": {
+    "settings": {
+      "entities": 16,
+      "events_per_entity": 8,
+      "transfers_per_entity": 4,
+      "batch_size": 8,
+      "width": 32,
+      "depth": 3,
+      "device": "cuda"
+    },
+    "environment": {
+      "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+      "OMP_NUM_THREADS": 1,
+      "MKL_NUM_THREADS": 1
+    },
+    "command": "PYTHONPATH=<checkout>/src:<checkout> <prepared-venv>/bin/python <materialized_driver.py> --device cuda --output <tensors.pt>",
+    "driver_sha256": "f09d4ba0d3b15da281d1fc057891d6e9ea4bdfd281328378c26be04e7ead6c1c",
+    "results": {
+      "shared": {
+        "batch_sha256": "921b93f9bf6464e573b0c42aeae77a55b2c5b8ddb1e65340e014c9c02fff27f7",
+        "initial_state_sha256": "93906b463fb0946d29d873d3f678342b447f688acda9093109264d666d6e921f",
+        "output_max_abs_diff": 0.0,
+        "gradients_max_abs_diff": 0.0,
+        "buffers_max_abs_diff": 0.0
+      },
+      "disjoint": {
+        "batch_sha256": "c4f9b0d808d6b28010d3d25bd4bb4b78eb9171853fc77306d122ceda8b74978c",
+        "initial_state_sha256": "93906b463fb0946d29d873d3f678342b447f688acda9093109264d666d6e921f",
+        "output_max_abs_diff": 0.0,
+        "gradients_max_abs_diff": 0.0,
+        "buffers_max_abs_diff": 0.0
+      }
+    },
+    "comparison": "torch.testing.assert_close for output, every parameter gradient and every buffer; max absolute differences all zero; batch and initial model hashes equal",
+    "driver_source_sha256": "f09d4ba0d3b15da281d1fc057891d6e9ea4bdfd281328378c26be04e7ead6c1c"
+  },
+  "validation": {
+    "pytest": "646 passed, 25 skipped, 7 warnings in 98.07s",
+    "ruff": "passed, 272 files",
+    "pyright": "0 errors, 0 warnings",
+    "docs": "strict build passed",
+    "cuda_smoke_supervised": "/tmp/transaction-execution-b4195a5-cuda-supervised",
+    "cuda_smoke_future_subgraph": "/tmp/transaction-execution-b4195a5-cuda-future"
+  },
+  "limits": "Fixed synthetic graphs, 3 repeats per condition, no locked GPU clocks, no full-job or quality claim. Performance CUDA reductions are nondeterministic; bitwise parity is a separate deterministic check. CPU constructors and read-only ownership rules are required.",
+  "manifest_schema": "tfm.graph-benchmark-manifest.v1",
+  "storage": "Compact summaries/conditions only; full raw payload is referenced by URL and SHA256. Separate resource profiles are not historical run peaks.",
+  "raw_artifact": {
+    "url": null,
+    "sha256": "f7875328d6c89360fd76542d16ac9a1b621c415db6d8fc8f665c9018e7b8f8ae",
+    "bytes": 130849,
+    "media_type": "application/json"
+  },
+  "resource_artifact": {
+    "url": null,
+    "sha256": "78a7574f3cd5144d34124c31f35bb6e0549c5b6550589f6a2163361970008a2c",
+    "bytes": 1437749,
+    "media_type": "application/json"
+  },
+  "conditions": [
+    {
+      "source_revision": "e27be76a556a8c9714ddb5c76a1082c3d1ecbf28",
+      "source_dirty": false,
+      "driver_sha256": "828ed62cd0dc7fd39da6b621bbaa5a61019296aacd7f920733d2a79f10a8b926",
+      "contract_source_sha256": "7ed20fe9861b6fe9e85989230cb3232878a5c2e766934232c66de74fd65a3dd1",
+      "settings": {
+        "seed": 0,
+        "entities": 64,
+        "events_per_entity": 12,
+        "transfers_per_entity": 4,
+        "batch_size": 32,
+        "width": 512,
+        "depth": 6,
+        "fanout": 10,
+        "warmup": 5,
+        "steps": 20,
+        "device": "cuda"
+      },
+      "precision": "fp32",
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "sharing": "shared",
+          "nodes": 960,
+          "edges": 2304,
+          "initial_state_sha256": "216a46b69d52800004ae1533d9d27c8e6afe32db563730b0361ff19383bbf5a3",
+          "root_count": 32
+        },
+        {
+          "sharing": "disjoint",
+          "nodes": 22449,
+          "edges": 51776,
+          "initial_state_sha256": "216a46b69d52800004ae1533d9d27c8e6afe32db563730b0361ff19383bbf5a3",
+          "root_count": 32
+        }
+      ]
+    },
+    {
+      "source_revision": "b4195a59d2a7c52d140eceb5b3d216e891d0ed25",
+      "source_dirty": false,
+      "driver_sha256": "828ed62cd0dc7fd39da6b621bbaa5a61019296aacd7f920733d2a79f10a8b926",
+      "contract_source_sha256": "3c51075528ceeef72035fb18d52929ff851763bec6a231a6fa13c88f2bb2bf39",
+      "settings": {
+        "seed": 0,
+        "entities": 64,
+        "events_per_entity": 12,
+        "transfers_per_entity": 4,
+        "batch_size": 32,
+        "width": 512,
+        "depth": 6,
+        "fanout": 10,
+        "warmup": 5,
+        "steps": 20,
+        "device": "cuda"
+      },
+      "precision": "fp32",
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "sharing": "shared",
+          "nodes": 960,
+          "edges": 2304,
+          "initial_state_sha256": "216a46b69d52800004ae1533d9d27c8e6afe32db563730b0361ff19383bbf5a3",
+          "root_count": 32
+        },
+        {
+          "sharing": "disjoint",
+          "nodes": 22449,
+          "edges": 51776,
+          "initial_state_sha256": "216a46b69d52800004ae1533d9d27c8e6afe32db563730b0361ff19383bbf5a3",
+          "root_count": 32
+        }
+      ]
+    }
+  ],
+  "excluded_comparisons": {
+    "resident_before_vs_after": "Withdrawn: all resident_before records identify the candidate revision and have no baseline source hash. Original logs do not establish a baseline. Candidate records and original payload remain archived unchanged."
+  },
+  "candidate_resident_only": {
+    "source_revision": "b4195a59d2a7c52d140eceb5b3d216e891d0ed25",
+    "statistic": "median of candidate run medians; no baseline comparison",
+    "arms": {
+      "engine_shared": 36.17893764749169,
+      "engine_disjoint": 50.240969052538276,
+      "legacy_disjoint": 107.29345446452498
+    }
+  }
+}

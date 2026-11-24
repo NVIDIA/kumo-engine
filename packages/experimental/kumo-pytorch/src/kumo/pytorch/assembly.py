@@ -730,6 +730,34 @@ def _fit_inputs(
                     {tuple(item[0]): 0 for item in declarations[name][use.field]}
                 )
     observed = {slot: [] for slot in slots}
+    columnar = {
+        identity
+        for identity, (config, dtype) in definitions.items()
+        if isinstance(config, (Buckets, ZScore)) and dtype.numeric
+    }
+
+    def observe(slot, values):
+        identity = slots[slot]
+        if identity in columnar:
+            dtype = definitions[identity][1]
+            if (
+                not isinstance(values, (pa.Array, pa.ChunkedArray))
+                or values.type != dtype.to_arrow()
+            ):
+                if isinstance(values, (pa.Array, pa.ChunkedArray)):
+                    values = _arrow_values(values)
+                values = pa.array(
+                    [dtype.normalize(value, path=f"encoder {identity}") for value in values],
+                    type=dtype.to_arrow(),
+                )
+            observed[slot].extend(
+                values.chunks if isinstance(values, pa.ChunkedArray) else (values,)
+            )
+        else:
+            observed[slot].extend(
+                _arrow_values(values) if isinstance(values, (pa.Array, pa.ChunkedArray)) else values
+            )
+
     composites = {
         name: Counter()
         for name, value in spec.inputs.items()
@@ -751,7 +779,7 @@ def _fit_inputs(
             ]
             found = source.fit_graph_fields(sample, graph, roots)
             for slot in graph_slots:
-                observed[slot].extend(found[slot[1:]])
+                observe(slot, found[slot[1:]])
     builds = composites or any(
         isinstance(spec.inputs[slot[0]].representation, Fields) for slot in observed
     )
@@ -772,7 +800,7 @@ def _fit_inputs(
                     column = fitting_rows.columns[use.field]
                     if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
                         column = column.flatten()
-                    observed[(name, use.field)].extend(_arrow_values(column))
+                    observe((name, use.field), column)
             if name in composites:
                 columns = (rows[name].columns[use.field] for use in value.representation.fields)
                 composites[name].update(
@@ -785,7 +813,12 @@ def _fit_inputs(
         name: pinned[name]
         if name in pinned
         else fit_encoder(
-            identity=name, config=config, dtype=dtype, values=contributions.get(name, ())
+            identity=name,
+            config=config,
+            dtype=dtype,
+            values=pa.chunked_array(contributions.get(name, ()), type=dtype.to_arrow())
+            if name in columnar
+            else contributions.get(name, ()),
         )
         for name, (config, dtype) in sorted(definitions.items())
     }
@@ -2195,7 +2228,11 @@ class PreparedBatchPlan:
         requests=(),
         columnar=False,
         deduplicate_edges=False,
+        encoding_model=None,
     ) -> Batch:
+        # Native buffers and the requested encoding surface are independent:
+        # inspectable output still permits Raw values without tensor encodings.
+        encoding_model = model if encoding_model is None else encoding_model
         declarations = {
             name: value.declarations
             for name, value in self._prepared_inputs.items()
@@ -2214,6 +2251,7 @@ class PreparedBatchPlan:
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
+                    topology=prepared.spec.representation.topology,
                 )
                 if columnar:
                     result[name] = self._source.columnar_graph_batch(
@@ -2252,7 +2290,7 @@ class PreparedBatchPlan:
                 )
             elif isinstance(prepared.spec.representation.row, Columns):
                 result[name] = _column_output(
-                    prepared, rows[name], model=model, state=self._input_state
+                    prepared, rows[name], model=encoding_model, state=self._input_state
                 )
             else:
                 result[name], produced = _token_output(
@@ -2262,7 +2300,7 @@ class PreparedBatchPlan:
                     self._input_state,
                     self._emitted,
                     entity_ids,
-                    model=model,
+                    model=encoding_model,
                     packer=getattr(self._source, "pack_token_stream", None) if model else None,
                     seed=seed,
                     epoch=epoch,
@@ -2276,7 +2314,7 @@ class PreparedBatchPlan:
                     self._prepared_inputs,
                     rows,
                     values,
-                    model=model,
+                    model=encoding_model,
                 )
             )
         if model:

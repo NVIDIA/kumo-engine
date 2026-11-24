@@ -30,7 +30,7 @@ def test_native_planning_without_event_primary_key(
 
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     schema = replace(
         schema,
         tables=tuple(
@@ -84,7 +84,7 @@ def test_native_planning_without_event_primary_key(
     owners = [1, 3, 2, 1] * 32
     pq.write_table(pa.table({"entity": owners, "cutoff": [5] * len(owners)}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    engine = api.DiskGraphEngine(num_threads=2)
     assert not api.check(contract, dataset, engine, anchors=anchors)
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
@@ -139,7 +139,7 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
 
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     # Both users have seven events, but their encoded histories have 21/28 tokens.
     events = pa.table(
         {
@@ -188,9 +188,7 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"entity": [2, 1] * 3, "cutoff": [10] * 6}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
             task._anchors = ParquetAnchors(anchors)
@@ -223,7 +221,7 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
 def test_native_planning_matches_python_and_caches_lengths(
     history_data, tmp_path, monkeypatch, tokens, packed, keep
 ):
-    schema, dataset, _, index, _ = history_data
+    schema, dataset, _, _ = history_data
     rows = api.Rows(("orders",), api.TimeWindow("at", stop=0))
     sample = api.SampleSpec(
         api.EntitySpec("users"),
@@ -283,7 +281,7 @@ def test_native_planning_matches_python_and_caches_lengths(
     table = api.AnchorTable(
         api.Parquet(str(path)), "entity", "cutoff", sample_id="sid", split="split"
     )
-    with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(table, fit_split="train") as task:
             expected = {}
             requests = task._anchors.fetch(frozenset({"train"}), range(n))
@@ -361,7 +359,7 @@ def test_precomputed_text_lengths_drive_native_budget_without_planning_encoding(
 
     from kumo.pytorch.encoding import fit_encoder
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     order_path = dataset.tables["orders"].path
     rows = pq.read_table(order_path)
     text = ["a", "hello world", None, "", "longer repeated phrase here", "x y z", "future", "other"]
@@ -412,7 +410,7 @@ def test_precomputed_text_lengths_drive_native_budget_without_planning_encoding(
     with api.prepare(
         api.DataLoaderSpec(schema, sample, batch),
         dataset,
-        api.DiskGraphEngine(index=tmp_path / "text-index", num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             # Both token-aware bucketing and budgeting consume #307 metadata.
@@ -455,7 +453,7 @@ def test_nested_native_composition_matches_existing_length_policy(
 ):
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
-    schema, dataset, _, index, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
@@ -487,7 +485,7 @@ def test_nested_native_composition_matches_existing_length_policy(
     path = tmp_path / "nested-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 2, 1, 3] * 7, "cutoff": [2, 5, 6, 5] * 7}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
-    with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
             task._anchors = ParquetAnchors(anchors)
@@ -507,7 +505,7 @@ def test_nested_native_composition_matches_existing_length_policy(
 def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_path):
     from dataclasses import replace
 
-    schema, dataset, _, index, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
@@ -534,7 +532,7 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
     with api.prepare(
         api.DataLoaderSpec(schema, sample, spec),
         dataset,
-        api.DiskGraphEngine(index=index, num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             first = list(task.batches(output_format="model", chunk_batches=2))
@@ -551,7 +549,7 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
     with api.prepare(
         api.DataLoaderSpec(schema, sample, budget),
         dataset,
-        api.DiskGraphEngine(index=index, num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         # Fit on a legal empty history, then refuse a longer unseen input.
         with plan.materialize(
@@ -569,7 +567,7 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
 
 @pytest.mark.parametrize("missing", ["omit", "emit", "skip_event"])
 def test_native_costs_include_derived_hour_and_missing_fields(history_data, tmp_path, missing):
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
@@ -609,7 +607,7 @@ def test_native_costs_include_derived_hour_and_missing_fields(history_data, tmp_
     with api.prepare(
         api.DataLoaderSpec(schema, sample, batch),
         dataset,
-        api.DiskGraphEngine(index=tmp_path / "hour-index", num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         with plan.materialize(
             api.AnchorTable(api.Parquet(str(path)), "entity", "at"), fit_split=api.ALL_ANCHORS
@@ -640,7 +638,7 @@ def test_native_costs_include_derived_hour_and_missing_fields(history_data, tmp_
 def test_fixed_width_costs_never_scan_or_allocate_per_row_lengths(
     history_data, tmp_path, monkeypatch, planning
 ):
-    schema, dataset, _, index, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
@@ -675,7 +673,7 @@ def test_fixed_width_costs_never_scan_or_allocate_per_row_lengths(
     with api.prepare(
         api.DataLoaderSpec(schema, sample, batch),
         dataset,
-        api.DiskGraphEngine(index=index, num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         monkeypatch.setattr(
             plan._require_open(),
@@ -714,7 +712,7 @@ def test_counting_policies_are_used_by_native_budget_planning(
 
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     kinds = ["a", None, "a", "a", "a"] if composite else ["a", "", "", "", "", ""]
     path = tmp_path / "counted-events.parquet"
     pq.write_table(
@@ -777,9 +775,7 @@ def test_counting_policies_are_used_by_native_budget_planning(
     anchors_path = tmp_path / "counted-anchors.parquet"
     pq.write_table(pa.table({"entity": [1], "cutoff": [10]}), anchors_path)
     anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "entity", "cutoff")
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             if not composite:
                 with pytest.raises(
@@ -816,7 +812,7 @@ def test_native_row_bucketing_without_budget_reuses_history_only_cache(
 ):
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
@@ -842,9 +838,7 @@ def test_native_row_bucketing_without_budget_reuses_history_only_cache(
     path = tmp_path / "row-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 3] * 3, "at": [5] * 6}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
             task._anchors = ParquetAnchors(anchors)
@@ -875,7 +869,7 @@ def test_native_row_bucketing_without_budget_reuses_history_only_cache(
 
 @pytest.mark.parametrize("budget", [None, 4])
 def test_native_entity_length_input_is_explicitly_refused(history_data, tmp_path, budget):
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(api.EntitySpec("users"), entity_values={"id": api.Field("id")})
     spec = api.DataLoaderSpec(
         schema,
@@ -894,9 +888,7 @@ def test_native_entity_length_input_is_explicitly_refused(history_data, tmp_path
     path = tmp_path / "entity-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 3], "at": [5, 5]}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             with pytest.raises(
                 ValueError, match="native length planning currently requires an EventSource"
@@ -909,7 +901,7 @@ def test_native_entity_length_input_is_explicitly_refused(history_data, tmp_path
 def test_current_event_length_input_is_refused_before_native_iteration(
     history_data, tmp_path, budget, name
 ):
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     event = api.EventSpec(
         api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"amount": api.Field("amount")}
     )
@@ -932,18 +924,65 @@ def test_current_event_length_input_is_refused_before_native_iteration(
             ),
         ),
     )
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     issues = api.check(contract, dataset, engine)
     assert "DG-CURRENT-EVENTS" in {issue.code for issue in issues}
     with pytest.raises(ValueError, match=r"\[DG-CURRENT-EVENTS\]"):
         api.prepare(contract, dataset, engine)
-    assert not (tmp_path / "index").exists()
+    assert not (tmp_path / "indexes").exists()
 
 
 def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
     path = tmp_path / "review-anchors.parquet"
     pq.write_table(pa.table({"entity": list(entities), "at": [cutoff] * len(entities)}), path)
     return api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+
+
+@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()], ids=["packed", "padded"])
+def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, layout):
+    from tests.test_target_layouts import _text
+
+    schema, dataset, _, _ = history_data
+    orders = pq.read_table(dataset.tables["orders"].path).slice(0, 1)
+    path = tmp_path / "words.parquet"
+    orders = orders.set_column(orders.schema.get_field_index("kind"), "kind", pa.array(["abab"]))
+    pq.write_table(orders, path)
+    dataset = api.Dataset({**dataset.tables, "orders": api.Parquet(str(path))})
+    rows = api.Rows(("orders",), api.TimeWindow("at"))
+    sample = api.SampleSpec(
+        api.EntitySpec("users"), events={"orders": api.EventSpec(rows, {"text": api.Field("kind")})}
+    )
+    history = api.Input(
+        api.EventSource(("orders",)),
+        api.Fields(
+            (api.Encode("text", _text(), "tokens"),),
+            row=api.Tokens(),
+            history=api.Flatten(6, before="bos", after="eos"),
+        ),
+        layout,
+    )
+    roles = ("pad", "unknown", "missing", "mask", "bos", "eos")
+    batch = api.BatchSpec(
+        {"history": history},
+        targets={"answer": api.NextTokenTarget("history")},
+        id_spaces={"tokens": api.IdSpace({role: role for role in roles})},
+        batching=api.Batching(max_samples=1, max_tokens=5, length_input="history"),
+    )
+    engine = api.DiskGraphEngine(num_threads=1)
+    anchors = _review_anchors(tmp_path, entities=(1,))
+    with api.prepare(api.DataLoaderSpec(schema, sample, batch), dataset, engine) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            (result,) = task.batches(output_format="model")
+            assert task._anchors._last_length_planning_stats == (1, 0)
+            inputs, labels = result.inputs["history"], result.targets["answer"]
+            # The six source tokens are BOS, a, b, a, b, EOS.
+            assert inputs["value_ids"].flatten().tolist() == [4, 6, 7, 6, 7]
+            assert labels["values"].flatten().tolist() == [6, 7, 6, 7, 5]
+            assert inputs["valid"].all() and labels["valid"].all()
+            fitted = task.fitted_state
+        with plan.materialize(anchors, fitted=fitted, inference=True) as task:
+            with pytest.raises(diskgraph.DiskgraphConfigError, match="one sample exceeds"):
+                next(task.batches(output_format="model"))
 
 
 def _reference_batches(task):
@@ -959,7 +998,7 @@ def _reference_batches(task):
 
 
 def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     events = {
         name: api.EventSpec(
             api.Rows(("orders",), api.TimeWindow("at", start=start, stop=0)),
@@ -982,9 +1021,7 @@ def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
             batching=api.Batching(max_samples=2, length_input="a", bucket_by_length=True),
         ),
     )
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(_review_anchors(tmp_path), fit_split=api.ALL_ANCHORS) as task:
             expected = _reference_batches(task)
             actual = list(task.batches(shuffle=False, chunk_batches=2, output_format="model"))
@@ -997,7 +1034,7 @@ def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
 def test_length_planning_accepts_absent_input_fit_metadata(history_data, tmp_path):
     from dataclasses import replace
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
@@ -1020,9 +1057,7 @@ def test_length_planning_accepts_absent_input_fit_metadata(history_data, tmp_pat
             batching=api.Batching(max_samples=2, length_input="history", bucket_by_length=True),
         ),
     )
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         anchors = _review_anchors(tmp_path)
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             expected = list(task.batches(shuffle=False, output_format="model"))
@@ -1042,7 +1077,7 @@ def test_same_table_constant_component_has_its_own_cost(history_data, tmp_path, 
     from tokenizers import Tokenizer
     from tokenizers.models import BPE
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     rows = api.Rows(("orders",), api.TimeWindow("at", stop=0))
     sample = api.SampleSpec(
         api.EntitySpec("users"),
@@ -1083,9 +1118,7 @@ def test_same_table_constant_component_has_its_own_cost(history_data, tmp_path, 
             ),
         ),
     )
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(_review_anchors(tmp_path), fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
             expected = _reference_batches(task)
@@ -1108,7 +1141,7 @@ def test_nested_padding_budget_and_token_map_lifetime(history_data, tmp_path):
     from tokenizers import Tokenizer
     from tokenizers.models import BPE
 
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     path = tmp_path / "text-events.parquet"
     pq.write_table(
         pa.table(
@@ -1155,9 +1188,7 @@ def test_nested_padding_budget_and_token_map_lifetime(history_data, tmp_path):
             ),
         ),
     )
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(
             _review_anchors(tmp_path, (1, 2), 10), fit_split=api.ALL_ANCHORS
         ) as task:

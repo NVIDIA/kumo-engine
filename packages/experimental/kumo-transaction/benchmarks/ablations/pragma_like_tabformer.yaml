@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+seed: 42
+
+# PRAGMA-like on Blueprint v1's TabFormer rows: an encoder-only model against
+# v1's causal decoder on the same users, split, probe rows, and XGBoost setting.
+#
+# From recipes/blueprint_v1/config.yaml: the data section (v1's precomputed
+# 80/10/10 date split, all 2,000 users, 128-event probe histories), the
+# history-window probe (every training fraud with 5 negatives each; every
+# test-period row of the evaluation users), and the fixed XGBoost setting, so
+# the raw and hand-built arms score exactly as in blueprint_v1_seeds.
+#
+# From recipes/pragma_like/config.yaml: bidirectional profile / event / history
+# encoders (depths 2 / 4 / 4, d=256, 8 heads), the token / event / key MLM, the
+# `[USR]` readout, and Muon with AdamW. TabFormer has no profiles, so the
+# profile encoder reads only its `[USR]` token. Pretraining reads every
+# 128-event train-side window. LoRA is off, as in the v1 record.
+#
+# Tokens are key-value-time: `mcc` and `merchant_state` are categories; the
+# merchant name (a numeric id), city, and zip are hashed; `user` is excluded,
+# as v1 drops CUST. The calendar and TimeRoPE carry time, so there are no
+# hour / weekday / month tokens.
+#
+#   export TFM_TABFORMER_ROOT=~/data/TabFormer
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+#   uv run python benchmarks/seed_range.py \
+#     --config benchmarks/ablations/pragma_like_tabformer.yaml --seeds 42 \
+#     --run-root outputs/ablations/pragma_like_tabformer \
+#     --summary outputs/ablations/pragma_like_tabformer/summary.json --device cuda
+
+data:
+  adapter: tabformer
+  path: null
+  split_protocol: precomputed
+  observation_window: 36500d
+  n_entities: 2000
+  max_entities: 2000
+  sequence_length: 128
+  # Tokens per event: source and eight fields.
+  max_tokens: 12
+  events_per_entity: 128
+  pretrain_windows:
+    events: 128
+  temporal_split:
+    train_end: "2016-01-01T00:00:00Z"
+    validation_end: "2018-01-01T00:00:00Z"
+    label_delay: 0h
+
+features:
+  tokenizer: key_value_time
+  categorical_keys: [mcc, merchant_state]
+  hashed_keys: [merchant_name, merchant_city, zip]
+  hash_buckets: 4096
+  exclude_keys: [user]
+
+model:
+  composition:
+    granularity:
+      type: profile_history
+      profile_depth: 2
+      event_depth: 4
+      history_depth: 4
+      varlen: true
+      decoder:
+        depth: 4
+        mask: causal
+        hidden_size: 256
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 12
+    position: time_rope
+    attention: sdpa
+    objective: token_event_key_mlm
+    readout: usr_token
+    heads:
+      fraud: binary
+
+objective:
+  mlm:
+    p_token: 0.15
+    p_event: 0.10
+    p_key: 0.10
+    p_unk: 0.10
+    label_smoothing: 0.1
+
+training:
+  max_steps: 1500
+  batch_size: 128
+  learning_rate: 0.001
+  precision: bf16
+  backend: eager
+  shuffle: true
+  optimizer:
+    name: muon
+    muon:
+      learning_rate: 0.01
+    max_grad_norm: 1.0
+    betas: [0.9, 0.95]
+    weight_decay: 0.01
+    lr_schedule: cosine
+    warmup_steps: 75
+    min_learning_rate: 0.00002
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    max_rows: null
+    train_negatives_per_positive: 5
+  inference_batch_size: 128
+  inference_precision: bf16
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 0
+    xgboost_params:
+      max_depth: 7
+      learning_rate: 0.02
+      min_child_weight: 2.8
+      subsample: 0.87
+      colsample_bytree: 0.76
+      reg_lambda: 0.43
+      reg_alpha: 0.09
+      scale_pos_weight: 1.0
+    n_jobs: 16
+    device: cuda
+    exclude_keys: [user]
+
+runtime:
+  device: auto

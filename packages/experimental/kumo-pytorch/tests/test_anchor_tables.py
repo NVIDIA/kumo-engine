@@ -250,6 +250,21 @@ class TestMaterialize:
             resumed.load_state_dict(first.state_dict())
             assert [b.metadata["sample_ids"] for b in resumed] == [(fit[1].sample_id,)]
 
+    def test_resume_legacy_explicit_requests_with_custom_chunk_batches(self) -> None:
+        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+            task = plan.materialize(_table(), fit_split="train")
+            requests = _requests_for("train")
+            batches = task.request_batches(requests, batch_size=1)
+            next(batches)
+            legacy_state = batches.state_dict()
+            legacy_state["config"]["chunk_batches"] = 2
+
+            resumed = task.request_batches(requests, batch_size=1)
+            resumed.load_state_dict(legacy_state)
+            assert [batch.metadata["sample_ids"] for batch in resumed] == [
+                (request.sample_id,) for request in requests[1:]
+            ]
+
     def test_empty_explicit_selection_yields_no_batches(self) -> None:
         with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
             task = plan.materialize(_table(), fit_split="train")

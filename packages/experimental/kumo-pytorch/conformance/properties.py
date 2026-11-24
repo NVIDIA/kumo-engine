@@ -300,9 +300,7 @@ REFUSAL_CONSTRUCTS: Mapping[str, tuple[str, tuple[str, ...]]] = {
     "non_direct_field": ("sample", ("'owner'",)),
     "object_store": ("dataset.users.path", ("local parquet",)),
     "row_filter": ("sample.entity_values.filtered.source.filters", ("filter",)),
-    "static_traversal": (f"{_DEVICE_GRAPH}.temporal", ("temporal",)),
     "timed_intermediate": ("sample.entity_values.count.source.path[0]", ("intermediate",)),
-    "uniform_graph": (f"{_DEVICE_GRAPH}.strategy", ("uniform",)),
     "window_on_value_column": ("sample.entity_values.broken.source.time.column", ("amount",)),
 }
 
@@ -1332,9 +1330,8 @@ def index_layout(case: GeneratedCase, engine: str, position: int) -> None:
         engine_object.open(dataset, schema)
         manifest = engine_object.index / "index_manifest.json"
         before = manifest.read_text()
-        again = DiskGraphEngine(
-            index=engine_object.index, num_threads=engine_object.num_threads, num_shards=shards
-        )
+        again = engine_object
+        again.num_shards = shards
         try:
             again.open(dataset, schema)
         except ValueError as error:
