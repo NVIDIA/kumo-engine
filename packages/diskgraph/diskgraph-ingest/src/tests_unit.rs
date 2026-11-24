@@ -676,15 +676,17 @@ fn pk_map_reservation_grows_by_doubling_and_fits_the_final_rows() {
 }
 
 #[test]
-fn pk_map_reservation_rejects_own_rows_and_growth_above_the_budget() {
-    let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_100)));
-    assert!(PkMapReservation::acquire(Some(&budget), 1_101, KeyType::Int64, 0).is_err());
+fn pk_map_reservation_fails_only_when_the_rows_exceed_the_budget() {
+    let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_500)));
+    assert!(PkMapReservation::acquire(Some(&budget), 1_501, KeyType::Int64, 0).is_err());
     assert_eq!(budget.snapshot().in_use, 0);
     let mut reservation =
         PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
-    let err = reservation.cover(1_101).unwrap_err().to_string();
+    reservation.cover(1_101).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_101));
+    let err = reservation.cover(1_501).unwrap_err().to_string();
     assert!(err.contains("single-shard PK-map estimate"), "{err}");
-    assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_101));
 }
 
 #[test]

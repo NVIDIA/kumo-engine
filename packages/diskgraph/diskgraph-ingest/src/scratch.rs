@@ -197,7 +197,8 @@ impl PkMapReservation {
     #[inline]
     pub(crate) fn cover(&mut self, rows: u64) -> anyhow::Result<()> {
         if rows > self.rows {
-            self.fit(rows.max(self.rows.saturating_mul(2)))?;
+            let doubled = rows.max(self.rows.saturating_mul(2));
+            self.fit(if self.fits(doubled) { doubled } else { rows })?;
         }
         Ok(())
     }
@@ -226,6 +227,11 @@ impl PkMapReservation {
             );
         }
         Ok(bytes)
+    }
+
+    fn fits(&self, rows: u64) -> bool {
+        self.budget_total == 0
+            || estimate_pk_map_bytes(rows, self.key_type, self.avg_var_bytes) <= self.budget_total
     }
 }
 
