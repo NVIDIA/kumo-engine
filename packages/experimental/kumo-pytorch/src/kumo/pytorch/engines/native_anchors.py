@@ -987,6 +987,50 @@ class NativeAnchors:
                 )
             yield batch
 
+    def _bucketed_request_chunks(self, stages, assembler, selection, *, size, seed, epoch, shuffle):
+        """Stably sort the selected pass by length while retaining only a chunk of requests."""
+        import sqlite3
+        from contextlib import closing
+        from itertools import islice
+
+        def request_chunks():
+            if shuffle:
+                order = self.order(
+                    selection, seed=seed, epoch=epoch, shuffle=True, rank=0, world_size=1
+                )
+                while positions := list(islice(order, size)):
+                    yield positions, self.fetch(selection, positions)
+            else:
+                rows = self._merged_rows(stages)
+                while chunk := list(islice(rows, size)):
+                    yield (
+                        [position for _, position, _ in chunk],
+                        [request for _, _, request in chunk],
+                    )
+
+        # The primary key keeps equal-length anchors in pass order, including for shuffles.
+        with tempfile.TemporaryDirectory(dir=self.path) as directory:
+            with closing(sqlite3.connect(Path(directory) / "order.sqlite")) as db:
+                db.execute(
+                    "CREATE TABLE anchors (length INTEGER, ordinal INTEGER, position INTEGER, "
+                    "PRIMARY KEY (length, ordinal)) WITHOUT ROWID"
+                )
+                ordinal = 0
+                for positions, requests in request_chunks():
+                    lengths = assembler._model_batch_lengths(requests)
+                    db.executemany(
+                        "INSERT INTO anchors VALUES (?, ?, ?)",
+                        (
+                            (int(lengths[i]), ordinal + i, position)
+                            for i, position in enumerate(positions)
+                        ),
+                    )
+                    ordinal += len(positions)
+                db.commit()
+                ordered = db.execute("SELECT position FROM anchors ORDER BY length, ordinal")
+                while chunk := ordered.fetchmany(size):
+                    yield self.fetch(selection, [position for (position,) in chunk])
+
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
         pa = self._pa
         key = next(name for name in runtime["raw_features"] if name.endswith("/" + stage["name"]))
@@ -1386,6 +1430,24 @@ class NativeAnchors:
                 ):
                     yield runtime, self._requests(stage, runtime)
                 offset += stage["count"]
+
+        if output_format == "model" and policy.max_tokens is not None and len(stages) > 1:
+            chunks = (
+                self._bucketed_request_chunks(
+                    stages, assembler, selection, size=size, seed=seed, epoch=epoch, shuffle=shuffle
+                )
+                if policy.bucket_by_length
+                else (requests for _, requests in streams())
+            )
+            for batch in assembler._budgeted_model_batches(
+                chunks,
+                maximum=maximum,
+                epoch=epoch,
+                seed=seed,
+                drop_last=policy.drop_last if drop_last is None else drop_last,
+            ):
+                yield _surface_padding(batch)
+            return
 
         for runtime, requests in streams():
             emitted += len(requests)

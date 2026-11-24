@@ -17,7 +17,16 @@ from kumo.pytorch.engines.native_anchors import NativeAnchors
 pytest.importorskip("diskgraph")
 
 
-def _history_case(tmp_path, keep, order, layout, same_rows, *, budgeted_graph=False):
+def _history_case(
+    tmp_path,
+    keep,
+    order,
+    layout,
+    same_rows,
+    *,
+    budgeted_graph=False,
+    history_events=("events", "web"),
+):
     sources = {}
     users = tmp_path / "users.parquet"
     pq.write_table(pa.table({"id": [1, 2]}), users)
@@ -63,7 +72,7 @@ def _history_case(tmp_path, keep, order, layout, same_rows, *, budgeted_graph=Fa
     fields = {"value": api.Field("value")}
     inputs = {
         "history": api.Input(
-            api.EventSource(("events", "web"), max_events=3, keep=keep, order=order),
+            api.EventSource(history_events, max_events=3, keep=keep, order=order),
             api.Fields((api.Encode("value", api.Raw()),)),
             layout,
         )
@@ -234,3 +243,85 @@ def test_budgeted_drop_last_across_splits(tmp_path, with_graph, splits, max_toke
                 split=api.ALL_ANCHORS, drop_last=drop_last, chunk_batches=1, output_format="model"
             )
             assert [list(batch.metadata["sample_ids"]) for batch in actual] == reference_ids
+
+
+@pytest.mark.parametrize("with_graph", [False, True], ids=["history", "graph_and_history"])
+@pytest.mark.parametrize(
+    "history_events, cutoffs, train_count, max_samples, max_tokens, bucket, expected",
+    [
+        # Two components give 3 slots at cutoff 100 and 2 slots at cutoff 0.
+        # The 56-row default read chunk ends inside the final seven-sample batch.
+        (
+            ("events", "web"),
+            [100] * 56 + [0] * 6,
+            30,
+            7,
+            15,
+            False,
+            [list(range(i, i + 5)) for i in range(0, 55, 5)] + [list(range(55, 62))],
+        ),
+        # One component gives 2 slots at cutoff 1 and 1 slot at cutoff 0.
+        (("events",), [1, 1, 0, 0], 2, 2, 3, False, [[0], [1, 2], [3]]),
+        (("events",), [1, 1, 0], 2, 2, 3, False, [[0], [1, 2]]),
+        # Equal lengths stay in pass order, including ties across read chunks.
+        (("events",), [1, 0, 1, 0, 1, 0], 3, 3, 4, True, [[1, 3, 5], [0, 2], [4]]),
+    ],
+    ids=[
+        "seven_anchors_span_default_chunk", "short_final_batch", "full_final_batch", "stable_ties"
+    ],
+)
+def test_budgeted_batches_cross_read_chunks(
+    tmp_path,
+    with_graph,
+    history_events,
+    cutoffs,
+    train_count,
+    max_samples,
+    max_tokens,
+    bucket,
+    expected,
+):
+    contract, dataset = _history_case(
+        tmp_path,
+        "last",
+        "ascending",
+        api.Packed(),
+        False,
+        budgeted_graph=with_graph,
+        history_events=history_events,
+    )
+    batching = api.Batching(
+        max_samples=max_samples,
+        max_tokens=max_tokens,
+        length_input="history",
+        bucket_by_length=bucket,
+    )
+    contract = replace(contract, batch=replace(contract.batch, batching=batching))
+    path = tmp_path / "anchors.parquet"
+    splits = ["train"] * train_count + ["val"] * (len(cutoffs) - train_count)
+    pq.write_table(pa.table({"user": [1] * len(splits), "at": cutoffs, "split": splits}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at", split="split")
+    with (
+        api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan,
+        plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
+    ):
+        requests = task._anchors.fetch(api.ALL_ANCHORS, range(len(splits)))
+        for drop_last in (False, True):
+            kept = expected[:-1] if drop_last and len(expected[-1]) < max_samples else expected
+            reference = list(task.batches(requests, drop_last=drop_last, output_format="model"))
+            assert [list(batch.metadata["sample_ids"]) for batch in reference] == kept
+            for chunk_batches in (8, 1, 16):
+                actual = task.batches(
+                    split=api.ALL_ANCHORS,
+                    drop_last=drop_last,
+                    chunk_batches=chunk_batches,
+                    output_format="model",
+                )
+                for batch, expected_batch in zip(actual, reference, strict=True):
+                    expected_ids = list(expected_batch.metadata["sample_ids"])
+                    assert list(batch.metadata["sample_ids"]) == expected_ids
+                    if with_graph:
+                        nodes = batch.inputs["graph"]["nodes"]["events"]
+                        expected_nodes = expected_batch.inputs["graph"]["nodes"]["events"]
+                        assert nodes["ids"].equal(expected_nodes["ids"])
+                        assert nodes["batch"].equal(expected_nodes["batch"])
