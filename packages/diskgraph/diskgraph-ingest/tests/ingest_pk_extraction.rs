@@ -290,6 +290,65 @@ fn test_varbytes_pk_extraction() -> Result<()> {
     Ok(())
 }
 
+/// The PK map picks its hash from the longest sampled PK, which must be read by
+/// name: the file's column order need not match the config's. `pkhash128` has
+/// no fallback hash.
+#[test]
+#[cfg(all(target_arch = "x86_64", not(feature = "pkhash128")))]
+fn test_long_string_pk_sampled_by_name() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+    fs::create_dir_all(&input_root)?;
+
+    // gxhash cannot separate these, so the PK map must choose the fallback hash.
+    let (left, right) = ptr_hash::hash::gxhash_twins();
+    let path = input_root.join("accounts.parquet");
+    write_parquet(
+        &path,
+        Schema::new(vec![
+            Field::new("label", DataType::Utf8, false),
+            Field::new("id", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            Arc::new(StringArray::from(vec![left.as_str(), right.as_str()])) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "pk_sample_by_name_test",
+        "num_shards": 1,
+        "tables": [{
+            "name": "Accounts",
+            "source": {"type": "parquet", "paths": [path.to_string_lossy()]},
+            "primary_key": "id",
+            "columns": [
+                {"name": "id", "ingested_dtype": "string"},
+                {"name": "label", "ingested_dtype": "string"}
+            ]
+        }]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    let metadata_path = output_root.join("index_metadata.json");
+    let reader = GraphIndexReader::open(&metadata_path, &output_root)?;
+    let table = reader.table("Accounts").unwrap();
+    let left_id = table.node_id_from_pk(&Key::Bytes(left.into_bytes()))?;
+    let right_id = table.node_id_from_pk(&Key::Bytes(right.into_bytes()))?;
+    assert!(left_id.is_some() && right_id.is_some());
+    assert_ne!(left_id, right_id);
+    Ok(())
+}
+
 #[test]
 fn test_uuid_pk_extraction() -> Result<()> {
     let dir = tempdir()?;

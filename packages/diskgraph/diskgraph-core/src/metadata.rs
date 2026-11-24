@@ -160,10 +160,21 @@ pub enum EdgeSortKeyWeightKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetMetadata {
     pub dataset_name: String,
+    /// Exact physical build identity; independent ingests have different IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_build_id: Option<String>,
+    /// Exact base build used to create an extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_index_build_id: Option<String>,
     #[serde(default)]
     pub timestamp_unit: TimeUnit,
     pub node_types: Vec<NodeTypeMetadata>,
     pub edge_relations: Vec<EdgeRelationMetadata>,
+}
+
+/// Allocate an identity for one physical index build before choosing its path.
+pub fn new_index_build_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 impl DatasetMetadata {

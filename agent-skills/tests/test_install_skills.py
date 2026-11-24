@@ -10,9 +10,11 @@ import ast
 import importlib.util
 import io
 import re
+import runpy
 import sys
 import threading
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -137,9 +139,10 @@ def test_bad_arguments(home: Path) -> None:
         skills.install_skills('genie', scope='project')
 
 
-def test_an_install_leaves_no_lock_file(home: Path) -> None:
+def test_an_install_leaves_only_its_hidden_lock_file(home: Path) -> None:
     skills.install_skills('claude', scope='project')
-    assert [p.name for p in Path('.claude/skills').iterdir()] == ['kumo-data-science']
+    assert sorted(p.name for p in Path('.claude/skills').iterdir()) == [
+        '.kumo-data-science.lock', 'kumo-data-science']
 
 
 def test_coco_beside_claude_code_warns(home: Path) -> None:
@@ -205,6 +208,31 @@ def test_an_install_waits_for_the_lock(home: Path, tmp_path: Path) -> None:
     assert done.is_set() and hosts(root / 'kumo-data-science') == ['generic']
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX permissions')
+def test_the_lock_is_shared_by_every_user(home: Path, tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lock outlives the install, so another user installing into the same destination
+    # must find it at the same path, whatever their TMPDIR, and be able to open it, despite
+    # the umask.
+    import os
+    import tempfile
+    root = (tmp_path / 'shared').resolve()
+    for tmp in ['tmp-a', 'tmp-b']:
+        (tmp_path / tmp).mkdir()
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'tmp-a'))
+    lock = skills._lock_path(root)
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'tmp-b'))
+    assert skills._lock_path(root) == lock == root / '.kumo-data-science.lock'
+    umask = os.umask(0o022)
+    try:
+        [target] = skills.install_skills(path=root)
+    finally:
+        os.umask(umask)
+    assert lock.stat().st_mode & 0o777 == 0o666
+    assert sorted(p.name for p in root.iterdir()) == ['.kumo-data-science.lock',
+                                                      'kumo-data-science']
+
+
 def test_kumo_engine_imports_install_skills_on_first_use(
         monkeypatch: pytest.MonkeyPatch) -> None:
     # `python -m kumo.engine.skills` warns if importing `kumo.engine` already
@@ -248,6 +276,45 @@ def test_the_import_check_skips_the_skills_command(
     monkeypatch.setitem(sys.modules, 'kumo.engine.skills', stand_in)
     namespace['_warn_if_skill_stale']()
     assert calls == ([1] if checked else [])
+
+
+def test_only_a_wheel_or_sdist_build_bundles_the_skills(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An editable install (`uv sync`, `pip install -e`) reads the skill from the checkout, so a
+    # broken skill must not block it. setup.py is run against stand-in setuptools modules.
+    class Command:
+        editable_mode = False
+        build_lib = str(tmp_path)
+
+        def run(self) -> None:
+            pass
+
+    captured: dict = {}
+    for name, module in {
+        'setuptools': types.SimpleNamespace(setup=lambda **kw: captured.update(kw)),
+        'setuptools.command': types.ModuleType('setuptools.command'),
+        'setuptools.command.build_py': types.SimpleNamespace(build_py=Command),
+        'setuptools.command.sdist': types.SimpleNamespace(sdist=Command),
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    spec_from_file_location = importlib.util.spec_from_file_location
+
+    def no_bundling(name, *args, **kwargs):
+        assert name != 'package_skill', 'running setup.py bundled the skills'
+        return spec_from_file_location(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, 'spec_from_file_location', no_bundling)
+    runpy.run_path(str(ROOT / 'packages' / 'kumo-engine' / 'setup.py'))
+    build_py, sdist = captured['cmdclass']['build_py'], captured['cmdclass']['sdist']
+    calls: list = []
+    monkeypatch.setitem(build_py.run.__globals__, '_bundle_skills', lambda: calls.append(1))
+    editable = build_py()
+    editable.editable_mode = True
+    editable.run()
+    assert calls == []
+    build_py().run()
+    sdist().run()
+    assert calls == [1, 1]
 
 
 def test_the_bundled_copy_is_used_outside_a_checkout(
@@ -369,6 +436,23 @@ def test_genie_on_databricks(home: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert sorted(ws.deleted) == [f'{GENIE}/kumo-data-science/hosts/generic',
                                   f'{GENIE}/kumo-data-science/old-notes.md']
     assert ws.files[f'{GENIE}/tabular/SKILL.md'] == b'another skill'
+
+
+@pytest.mark.parametrize('argv', [['genie'], ['genie', '--profile', 'DEFAULT']])
+def test_genie_without_the_databricks_sdk_names_the_extra(
+        home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        argv: list) -> None:
+    monkeypatch.setitem(sys.modules, 'kumo.engine.connector._extras', extras)
+    monkeypatch.setitem(sys.modules, 'databricks', None)
+    built: list = []
+    monkeypatch.setattr(skills, 'skill_package', lambda host: built.append(host))
+    with pytest.raises(ImportError, match=re.escape('kumo-engine[databricks]')):
+        skills.install_skills('genie')
+    with pytest.raises(SystemExit) as exc:
+        skills.main(argv)
+    assert exc.value.code == 1
+    assert 'kumo-engine[databricks]' in capsys.readouterr().err
+    assert built == []
 
 
 def test_genie_removes_nested_and_empty_stale_folders(
@@ -592,6 +676,23 @@ def test_the_extension_install_waits_for_the_scan(home: Path,
                               session=FakeExtension(status='SCAN_FAILED'))
 
 
+def test_an_unchanged_extension_still_waits_for_its_scan(
+        home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    # A retry after the scan-timeout warning finds the same package as the default version.
+    monkeypatch.setattr(skills, 'SCAN_TIMEOUT', 0)
+    session = FakeExtension(scans=99)
+    with pytest.warns(UserWarning, match='still being scanned'):
+        skills.install_skills('coco', scope='extension', session=session)
+    with pytest.warns(UserWarning, match='still being scanned'):
+        skills.install_skills('coco', scope='extension', session=session)
+    assert '(unchanged, VERSION$1, scanning)' in capsys.readouterr().out
+    session.scans, session.status = 0, 'SCAN_FAILED'
+    with pytest.raises(RuntimeError, match='rejected .* SCAN_FAILED'):
+        skills.install_skills('coco', scope='extension', session=session)
+    assert len(session.versions['KUMO_DATA_SCIENCE']) == 1
+
+
 def test_concurrent_extension_installs_use_their_own_folders(home: Path) -> None:
     first, second = FakeExtension(), FakeExtension()
     skills.install_skills('coco', scope='extension', session=first)
@@ -780,7 +881,7 @@ def test_a_failed_copy_keeps_the_previous_install(home: Path,
     assert (Path(target) / 'SKILL.md').read_text() == before
     root = Path(target).parent
     names = sorted(p.name for p in root.iterdir())
-    assert names == ['kumo-data-science']
+    assert names == ['.kumo-data-science.lock', 'kumo-data-science']
 
 
 def test_a_checkout_install_checks_references_first(home: Path, tmp_path: Path,
@@ -943,6 +1044,21 @@ def test_stale_installs_are_found(home: Path, tmp_path: Path, monkeypatch: pytes
         skills.main(['--check'])
     assert exc.value.code == 1
     assert f'{codex}: older (stale; run' in capsys.readouterr().out
+
+
+def test_a_stale_install_never_fails_the_import(
+        home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `import kumo.engine` runs the check; with warnings as errors it must still import.
+    package_skill.bundle(tmp_path / '_skills')
+    monkeypatch.setattr(skills, '_PACKAGER', tmp_path / 'missing.py')
+    monkeypatch.setattr(skills, '_BUNDLED', tmp_path / '_skills')
+    [target] = skills.install_skills('claude')
+    build(Path(target), 'older')
+    with pytest.warns(skills.SkillStaleWarning):
+        skills.warn_if_stale()
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        skills.warn_if_stale()
 
 
 def test_a_source_checkout_is_never_stale(home: Path) -> None:

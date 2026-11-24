@@ -513,6 +513,8 @@ class _Foreign(TrackingBase):
         self._tracker = tracker
 
     def __getattribute__(self, name: str) -> Any:
+        if name in ('_snapshot_ref_before_finish', '_finish_on_owner_thread'):
+            return getattr(type(self._tracker), name, False) is True
         if name.startswith('_'):
             return object.__getattribute__(self, name)
         if name in ('start', 'on_trial', 'finish'):
@@ -591,6 +593,7 @@ class TrackingSession:
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
+        self._abandoned: Optional[TrackingBase] = None
         self._worker: Optional[threading.Thread] = None
         self._behind = False
         self._started = threading.Event()
@@ -721,7 +724,15 @@ class TrackingSession:
                 RuntimeError('the tracking thread stopped'))
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
-                _abandon(tracker)
+                if getattr(tracker, '_finish_on_owner_thread', False) is True:
+                    # Release SDK context tokens on their creating worker.
+                    self._abandoned = tracker
+                    try:
+                        self._jobs.put_nowait(lambda: None)
+                    except queue.Full:
+                        pass
+                else:
+                    _abandon(tracker)
             break
         if failed:
             error = failed[0]
@@ -740,40 +751,52 @@ class TrackingSession:
                error: Optional[BaseException]) -> None:
         r"""Ends the run, failed if error."""
         worker = self._worker
-        if self.spec is None or worker is None:
+        initial_spec = self.spec
+        if initial_spec is None or worker is None:
             return
-        try:
-            final = self.spec if spec is None else spec()
-            selected = None if self._search is None else self._search.best
-            if error is None and selected is not None:
-                final = dataclasses.replace(
-                    final, steps=trial_spec(self._trials[selected[1]]).steps,
-                    parents={**final.parents, 'best_trial': selected[1]})
-            search = self._search
-            if error is None and search is not None and (
-                    selected or len(self._trials) == 1):
-                kept = selected[1] if selected else next(iter(self._trials))
-                epoch = search.best_epoch(self._trials[kept])
-                if epoch is not None:
+
+        def build_record() -> Optional[RunRecord]:
+            try:
+                final = initial_spec if spec is None else spec()
+                selected = (None if self._search is None else
+                            self._search.best)
+                if error is None and selected is not None:
                     final = dataclasses.replace(
-                        final, parents={**final.parents, 'best_epoch': epoch})
-            held = self._first_epoch.get(None)
-            final = _one_epoch_note(final, None if held is None else held[0])
-            if error is not None and final.error is None:
-                final = dataclasses.replace(final, error=format_error(error))
-            record: Optional[RunRecord] = run_record(final)
-        except Exception as failure:
-            logger.warning('Could not build the tracking record: %s',
-                           full_error(failure), exc_info=_debug())
-            self._fail(failure)
-            record = None
+                        final,
+                        steps=trial_spec(self._trials[selected[1]]).steps,
+                        parents={**final.parents, 'best_trial': selected[1]})
+                search = self._search
+                if error is None and search is not None and (
+                        selected or len(self._trials) == 1):
+                    kept = (selected[1] if selected else
+                            next(iter(self._trials)))
+                    epoch = search.best_epoch(self._trials[kept])
+                    if epoch is not None:
+                        final = dataclasses.replace(
+                            final,
+                            parents={**final.parents, 'best_epoch': epoch})
+                held = self._first_epoch.get(None)
+                final = _one_epoch_note(final,
+                                        None if held is None else held[0])
+                if error is not None and final.error is None:
+                    final = dataclasses.replace(
+                        final, error=format_error(error))
+                return run_record(final)
+            except Exception as failure:
+                logger.warning('Could not build the tracking record: %s',
+                               full_error(failure), exc_info=_debug())
+                self._fail(failure)
+                return None
 
         def finish_tracker() -> None:
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
                 try:
+                    record = build_record()
+                    snapshot = (tracking_ref(tracker) if getattr(
+                        tracker, '_snapshot_ref_before_finish', False) is True else None)
                     tracker.finish(record, error)
-                    self.final = tracking_ref(tracker)
+                    self.final = snapshot or tracking_ref(tracker)
                 except Exception as failure:
                     self._fail(failure)
                     raise
@@ -813,6 +836,10 @@ class TrackingSession:
             except Exception as error:
                 logger.warning('Experiment tracking failed: %s',
                                full_error(error), exc_info=_debug())
+            finally:
+                tracker, self._abandoned = self._abandoned, None
+                if tracker is not None:
+                    _abandon(tracker)
 
     def _call(self, call: Callable[[TrackingBase], Any]) -> None:
         tracker = self._tracker

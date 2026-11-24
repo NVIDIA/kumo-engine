@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Stage 3: objective. The causal hybrid (next-event fields plus MLM, read at
+# the last event) against PRAGMA's bidirectional MLM-only stack read at
+# [USR] (`profile_history`), at the same width, depth, budget, and optimizer.
+# Both have about 10.4M parameters.
+#
+# From here on each hashed key has its own bucket range (stage 2 found the
+# shared range hurt device and counterparty), so this stage re-runs the
+# random-init control and the causal model on that cache. At 8,192 buckets per
+# key the vocabulary is 25k and the full-vocabulary next-event softmax over
+# every token of a 128 x 128-event batch took about 70 GB, which with the
+# prepared book exhausts the GB10's 121 GB of unified memory. 4,096 per key
+# (vocabulary 12.9k) fits; a user with 128 merchants then has about a 3% chance
+# that a new merchant shares a bucket with one of theirs.
+#
+#   uv run --all-extras tfm cache-tokens --config <base with the set below> --workers 4
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run --all-extras python benchmarks/proxy_sweep.py \
+#     --spec benchmarks/sweeps/blueprint_v2_stage3_objective.yaml \
+#     --run-root outputs/proxy/stage3 --summary outputs/proxy/stage3.json
+base: benchmarks/ablations/blueprint_v2_lab.yaml
+set:
+  data.token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab_hkey
+  features.categorical_keys: [mcc, app_version]
+  features.hashed_keys: [merchant, device_id, counterparty]
+  features.hash_buckets: 4096
+  data.pretrain_windows.events: 128
+  training.batch_size: 128
+  training.max_steps: 1500
+  training.learning_rate: 0.001
+  training.optimizer.warmup_steps: 75
+  training.optimizer.max_grad_norm: 1.0
+  training.optimizer.name: muon
+  training.optimizer.muon.learning_rate: 0.01
+tasks: [history_window, fraud, churn_6m]
+xgboost_trials: 8
+variants:
+  - name: random_init
+    train: false
+  - name: causal
+  - name: bidirectional_mlm
+    set:
+      model.composition.granularity:
+        type: profile_history
+        profile_depth: 2
+        event_depth: 4
+        history_depth: 4
+        varlen: true
+        decoder:
+          depth: 4
+          mask: causal
+          hidden_size: 256
+          num_heads: 8
+          dropout: 0.0
+          max_seq_len: 40
+      model.composition.objective: token_event_key_mlm
+      model.composition.readout: usr_token
+      objective.auxiliary: []

@@ -7,6 +7,7 @@ import os.path as osp
 from typing import Any, Optional, Tuple
 
 from kumo_core.job_config import PredictionConfig
+from kumo_core.link_candidates import candidate_row_filter
 from kumo_core.prediction import link_prediction_anchor
 from kumo_core.prediction_options import resolve_prediction_time_options
 from kumo_core.resolved_task import (
@@ -436,6 +437,9 @@ def _materialize_ttng_prediction_task_dataset(
             pred_time = bp_gen.generate_pred_timestamp()
             predict_seed_time_ns = int(pred_time.value) if pred_time else 0
 
+    predict_candidate_filter = (_link_prediction_candidate_filter(
+        pquery, task.task_type, diskgraph_index_path) if is_link_pred else None)
+
     handle = DiskgraphHandle(
         graph_key=job_input.graph_data_compute_input.graph_key,
         graph_data_version=job_input.graph_version_info.graph_data_version,
@@ -463,10 +467,22 @@ def _materialize_ttng_prediction_task_dataset(
         spec,
         predict_staging_dir=predict_staging_dir,
         predict_seed_time_ns=predict_seed_time_ns,
+        predict_candidate_filter=predict_candidate_filter,
     )
     log.info('[TT-NG] BP materialized task dataset at %s', result.bundle_dir)
     prediction_config.diskgraph_task_dataset_bundle_dir = result.bundle_dir
     return int(result.predict_row_count or 0)
+
+
+def _link_prediction_candidate_filter(pquery: Any, task_type: TaskType,
+                                      index_path: str) -> Optional[str]:
+    import diskgraph
+
+    from kumo.graph.utils import map_to_api_graph_definition
+    return candidate_row_filter(pquery.validated_predictive_query,
+                                map_to_api_graph_definition(pquery.graph),
+                                task_type=task_type, index_path=index_path,
+                                runtime=diskgraph)
 
 
 def _custom_link_prediction_anchor(staging_dir: str) -> int:

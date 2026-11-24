@@ -483,3 +483,65 @@ def test_each_monitoring_call_is_a_run_named_like_its_prediction(fake):
         '| orders | 100 | 104 |', '', '**Notes**', '',
         '- Labels mature 2026-11-05.', '',
         'Full lineage: `_provenance.json`. Tables: `drift/inputs/orders.json`.'])
+
+
+def test_model_timeout_releases_native_context_on_its_worker(
+        fake, monkeypatch, tmp_path):
+    from contextvars import ContextVar
+
+    import kumo.engine._tracking as module
+
+    entered, release = threading.Event(), threading.Event()
+    context = ContextVar('snowflake-test-run', default=None)
+    owner, completed = [], []
+    enter = _snowflake_experiment_fake.FakeRun.__enter__
+    exit_ = _snowflake_experiment_fake.FakeRun.__exit__
+
+    def start(run):
+        run.token = context.set(run.name)
+        owner.append(threading.get_ident())
+        return enter(run)
+
+    def finish(run, *args):
+        context.reset(run.token)
+        completed.append(threading.get_ident())
+        return exit_(run, *args)
+
+    def log_model(*args):
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(_snowflake_experiment_fake.FakeRun, '__enter__', start)
+    monkeypatch.setattr(_snowflake_experiment_fake.FakeRun, '__exit__', finish)
+    monkeypatch.setattr(module, 'MODEL_SECONDS', 0.01)
+    tracking = _tracking(native_model_lineage=True)
+    monkeypatch.setattr(tracking, 'log_model', log_model)
+    session = TrackingSession(tracking, warn=False)
+    session.start(lambda: fit_spec(CONTEXT))
+    try:
+        _, error = session.log_model(tmp_path, None, None)
+        assert entered.is_set()
+        assert isinstance(error, TimeoutError)
+        assert completed == []
+    finally:
+        release.set()
+        session.finish(None, None)
+    assert completed == owner
+    assert completed != [threading.get_ident()]
+    assert fake._instance.lineage_stack == []
+    assert next(iter(fake._instance.runs.values()))['status'] == 'FAILED'
+
+
+def test_completed_run_reference_is_captured_before_tracker_reuse(
+        fake, monkeypatch):
+    tracking = _tracking()
+    original = tracking.finish
+
+    def finish(record, error):
+        original(record, error)
+        tracking.run_id = 'later-run'
+
+    monkeypatch.setattr(tracking, 'finish', finish)
+    session = _replay(tracking)
+    assert session.final.run_id != 'later-run'
+    assert fake._instance.runs[session.final.run_id]['status'] == 'FINISHED'

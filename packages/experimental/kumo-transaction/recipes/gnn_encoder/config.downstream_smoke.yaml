@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+recipe_family: graph
+seed: 42
+data:
+  adapter: synthetic
+  training_graphs: shared
+  n_entities: 24
+  events_per_entity: 100
+  pretrain_end: '2024-03-01T00:00:00Z'
+  probe_cutoff: '2024-03-10T00:00:00Z'
+  observed_through: '2024-04-01T00:00:00Z'
+  horizon_days: 7
+  label_delay_days: 0
+  sequence_length: 8
+  max_tokens: 16
+model:
+  composition:
+    granularity:
+      type: gnn_encoder
+      hidden_size: 16
+      depth: 2
+      fanout: 4
+      target_depth: 2
+      decoder:
+        hidden_size: 16
+        num_heads: 2
+        depth: 1
+        dropout: 0.0
+        max_seq_len: 64
+      profile_depth: 1
+      event_depth: 1
+      trim: true
+    objective: binary
+    attention: sdpa
+    position: time_rope
+training:
+  backend: eager
+  batch_size: 4
+  max_steps: 3
+  learning_rate: 0.003
+  shuffle: true
+  precision: fp32
+  objective: binary
+sequence_training:
+  backend: eager
+  batch_size: 4
+  max_steps: 3
+  learning_rate: 0.001
+  shuffle: true
+  precision: fp32
+runtime:
+  device: cpu
+  stage: downstream
+  encoder_checkpoint: outputs/gnn_encoder/pretrain_only/encoder.pt

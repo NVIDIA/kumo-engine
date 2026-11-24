@@ -90,7 +90,7 @@ def postgres_dsn() -> Generator[str, None, None]:
         asyncio.run(_wait_for_postgres(dsn))
         yield dsn
     finally:
-        subprocess.run(["docker", "rm", "--force", container_name],
+        subprocess.run(["docker", "rm", "--force", "--volumes", container_name],
                        stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL)
 

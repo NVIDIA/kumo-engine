@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Read existing training artifacts without initializing training machinery."""
+"""Read retained explanation artifacts without initializing training machinery."""
 
 import csv
 import math
@@ -237,6 +237,20 @@ def sample_paths(root: str) -> dict[str, str]:
         if name.endswith('.json') and name[:-5].isascii() and name[:-5].isdigit():
             paths[name[:-5]] = posixpath.join(root, name)
     return paths
+
+
+def mapped_sample_ids(root: str) -> frozenset[str]:
+    """Read graph membership from saved selection metadata, without listing files."""
+    path = posixpath.join(root, 'strategy_mappings.json')
+    if not filesystem.exists(path):
+        return frozenset()
+    mappings = read_typed(path, EntityMappings)
+    try:
+        return frozenset(_artifact_id(item)
+                         for group in mappings.mappings.values() for item in group)
+    except ValueError as error:
+        raise InvalidExplanationError(
+            f'Invalid selection metadata {path}: {error}') from error
 
 
 def list_samples(root: str) -> tuple[SampleReference, ...]:

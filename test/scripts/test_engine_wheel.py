@@ -8,7 +8,6 @@ import runpy
 import subprocess
 import sys
 import tomllib
-import types
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
@@ -37,11 +36,12 @@ def test_wheel_builds_all_first_party_packages_from_monorepo(
         package = repo / 'packages' / name
         package.mkdir(parents=True)
         (package / 'pyproject.toml').touch()
-    # Experimental packages are workspace members but are not bundled, even
-    # if packages/experimental/ itself had a pyproject.toml.
-    experimental = repo / 'packages/experimental/kumo-pytorch'
-    experimental.mkdir(parents=True)
-    (experimental / 'pyproject.toml').touch()
+    # kumo-pytorch is the only bundled experimental package, even if
+    # packages/experimental/ itself had a pyproject.toml.
+    for name in ['kumo-pytorch', 'unreleased']:
+        experimental = repo / 'packages/experimental' / name
+        experimental.mkdir(parents=True)
+        (experimental / 'pyproject.toml').touch()
     (repo / 'packages/experimental/pyproject.toml').touch()
     diskgraph = repo / 'packages/diskgraph'
     (diskgraph / 'diskgraph-pybind').mkdir()
@@ -87,8 +87,8 @@ wheel_dir = Path(args[args.index('-w') + 1])
         'kumo-snowflake'
     ]
     assert [Path(source) for source in sources] == [
-        repo / 'packages' / name for name in sorted(expected) + ['diskgraph']
-    ]
+        repo / 'packages' / name for name in sorted(expected)
+    ] + [repo / 'packages/experimental/kumo-pytorch', repo / 'packages/diskgraph']
 
 
 def test_removed_component_selection_flag_is_rejected(tmp_path):
@@ -275,17 +275,18 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
     ('linux', 'aarch64', set()),
     ('darwin', 'arm64', {'faiss-cpu'}),
     ('darwin', 'x86_64', {'faiss-cpu'}),
-    ('win32', 'AMD64', set()),
-    ('win32', 'ARM64', set()),
+    ('win32', 'AMD64', {'faiss-cpu'}),
+    ('win32', 'ARM64', {'faiss-cpu'}),
 ])
 @pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
         tmp_path, monkeypatch, platform, machine, expected, extra):
+    import setuptools
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
-    monkeypatch.setitem(sys.modules, 'setuptools', types.SimpleNamespace(
-        setup=lambda **kwargs: setup_kwargs.update(kwargs)))
+    monkeypatch.setattr(setuptools, 'setup',
+                        lambda **kwargs: setup_kwargs.update(kwargs))
     runpy.run_path(str(REPO_ROOT / 'packages/kumo-engine/setup.py'))
     engine = COMPONENTS['kumo-engine']
     provider_requirements = [
@@ -459,6 +460,42 @@ def test_plots_extra_survives_merge(tmp_path, monkeypatch):
     assert 'matplotlib>=3.10.0' in manifest['requires']
     assert ('matplotlib>=3.10.0; extra == "plots"'
             in metadata.get_all('Requires-Dist'))
+
+
+def test_pytorch_extra_relies_on_the_bundled_diskgraph(tmp_path, monkeypatch):
+    from packaging.requirements import Requirement
+
+    def project(path):
+        return tomllib.loads(read_text(str(REPO_ROOT / path)))['project']
+
+    extra = project('packages/kumo-engine/pyproject.toml')[
+        'optional-dependencies']['pytorch']
+    requires = project(
+        'packages/experimental/kumo-pytorch/pyproject.toml')['dependencies']
+    # The merge drops kumo-pytorch's DiskGraph requirement; the bundled copy
+    # has to satisfy it.
+    diskgraph = next(Requirement(r) for r in requires
+                     if Requirement(r).name == 'diskgraph')
+    assert diskgraph.specifier.contains(
+        project('packages/diskgraph/pyproject.toml')['version'])
+    engine = COMPONENTS['kumo-engine']
+    monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
+        **engine,
+        'extras': [*engine['extras'], 'pytorch'],
+        'requires': [*engine['requires'],
+                     *(f'{r}; extra == "pytorch"' for r in extra)],
+    })
+    monkeypatch.setitem(COMPONENTS, 'kumo-pytorch', {'requires': requires})
+
+    result = _merge(tmp_path, [*CORE_COMPONENTS, 'kumo-pytorch'])
+
+    assert result.returncode == 0, result.stderr
+    metadata, _, names = _read_wheel(tmp_path)
+    assert 'kumo_pytorch/__init__.py' in names
+    assert {r for r in metadata.get_all('Requires-Dist')
+            if r.endswith('extra == "pytorch"')} == {
+                f'{r}; extra == "pytorch"' for r in requires
+                if Requirement(r).name != 'diskgraph'}
 
 
 @pytest.mark.parametrize('name', ['kumo-glove-6b-50d'])

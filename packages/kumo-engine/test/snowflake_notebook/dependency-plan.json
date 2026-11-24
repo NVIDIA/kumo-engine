@@ -1,0 +1,13 @@
+{
+  "target": {
+    "python": "3.12",
+    "system": "Linux",
+    "architecture": "x86_64",
+    "maximum_manylinux": "2.35"
+  },
+  "resolution": "pip download candidate[snowflake]; no manual dependency list or version pins",
+  "source_index": "https://pypi.org/simple",
+  "local_wheels": [
+    "antlr4_python3_runtime-4.9.3-py3-none-any.whl"
+  ]
+}

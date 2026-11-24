@@ -4,22 +4,27 @@
 
 """Task-owned seeds served by the same native iterator as Engine GNN tasks.
 
-Only anchor rows are ingested. Task extensions live under the base index;
-cleanup removes task data, never base graph files.
+Only anchor rows are ingested. Managed task extensions live under the Kumo
+root; cleanup removes task data, never base graph files.
 Python keeps bindings and stage counts, not a second full anchor column store.
 """
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
+from diskgraph import SamplingPlan
+
+from kumo.pytorch._storage import verify_task_manifest
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
@@ -27,11 +32,39 @@ from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parque
 from kumo.pytorch.materialization import _diskgraph_dtype
 
 
+def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
+    """Decode a timestamp timezone once, rather than once per Arrow scalar."""
+    if values.null_count == len(values):
+        return [None] * len(values)
+    if pa.types.is_timestamp(dtype) and dtype.unit == "ns":
+        # Preserve main's lossless Arrow scalars for sub-microsecond values.
+        # Resolve timezones column-wise for the aligned Python datetime values.
+        typed = values.cast(dtype)
+        converted = _column_values(
+            pa,
+            typed.cast(pa.timestamp("us", tz=dtype.tz), safe=False),
+            pa.timestamp("us", tz=dtype.tz),
+        )
+        return [
+            value if value.is_valid and value.value % 1000 else decoded
+            for value, decoded in zip(typed, converted, strict=True)
+        ]
+    if not pa.types.is_timestamp(dtype) or dtype.tz is None:
+        return _arrow_values(values.cast(dtype))
+    # Let Arrow resolve its supported named/fixed-offset timezones. A scalar in
+    # seconds avoids an optional pandas conversion just to obtain the timezone.
+    tz = pa.scalar(0, type=pa.timestamp("s", tz=dtype.tz)).as_py().tzinfo
+    return [
+        value.replace(tzinfo=UTC).astimezone(tz) if value is not None else None
+        for value in values.cast(pa.timestamp(dtype.unit)).to_pylist()
+    ]
+
+
 class NativeAnchors:
     """An AnchorTask backed by a TT-NG seed extension, with bounded reads.
 
     Stage order is fixed at materialization. The native stage permutation owns
-    epoch shuffling; ranks partition that concatenation before marked padding.
+    epoch shuffling; each stage is partitioned between ranks before marked padding.
     Original row ordinals, rather than entity/time pairs, supply default IDs.
     """
 
@@ -45,16 +78,14 @@ class NativeAnchors:
         self._source, self._sample, self._table = source, sample, table
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
-        parent = Path(source._index_path)
-        (parent / "tasks").mkdir(exist_ok=True)
-        (parent / "train_tables").mkdir(exist_ok=True)
-        self._temporary = directory or tempfile.TemporaryDirectory(
-            prefix="task-", dir=parent / "tasks"
+        self._temporary = directory or source.new_task_directory()
+        # Native ingest clears its output directory before reading inputs.
+        # Keep scratch beside that output, within the same task build root.
+        self._scratch = tempfile.TemporaryDirectory(
+            prefix=f"scratch-{self._temporary.task_id}-",
+            dir=Path(self._temporary.name).parent,
         )
-        self._extension = tempfile.TemporaryDirectory(
-            prefix=Path(self._temporary.name).name + "-", dir=parent / "train_tables"
-        )
-        self.path = Path(self._temporary.name)
+        self.path = Path(self._scratch.name)
         self._closed = False
         self._length_caches = {}
         self._last_length_planning_stats = (0, 0)
@@ -70,6 +101,8 @@ class NativeAnchors:
         physical = _physical(table)
         files = _files(table.source.path)
         schema = pq.read_schema(files[0])
+        projected = sorted(set(physical.values()))
+        snapshot = hashlib.sha256(pa.schema([schema.field(name) for name in projected]).serialize())
         self._types = {name: schema.field(column).type for name, column in physical.items()}
         self._aliases = {name: f"anchor_col_{i}" for i, name in enumerate(table.columns)}
         # RowPack has no struct/map/list scalar. Carry those metadata values in
@@ -85,12 +118,15 @@ class NativeAnchors:
         writers = {}
         position = 0
         view = Path(self._source._index_path)
-        extension = Path(self._extension.name)
+        extension = Path(self._temporary.name)
         try:
             for file in files:
-                for batch in pq.ParquetFile(file).iter_batches(
-                    columns=sorted(set(physical.values())), batch_size=32768
-                ):
+                for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
+                    # A record-batch message alone omits dictionary values.
+                    sink = pa.BufferOutputStream()
+                    with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
+                        writer.write_batch(batch)
+                    snapshot.update(sink.getvalue())
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     entity = self._source._tables[self._sample.entity.table]
                     dtype = entity.columns[entity.primary_key]
@@ -164,15 +200,20 @@ class NativeAnchors:
                                 str(stage["path"])
                             )
                         stage = by_split[split_name]
-                        selected = data.filter(
+                        mask = (
                             pc.is_null(split) if split_name is None else pc.equal(split, split_name)
                         )
+                        selected = data.filter(mask)
                         writers[split_name].write_batch(selected.to_batches()[0])
                         stage["count"] += len(selected)
+                        if table.as_of_time is not None:
+                            # One scalar per Parquet batch, so `latest_time` never reads anchors.
+                            stage.setdefault("latest", []).append(pc.max(times.filter(mask)))
                     position += batch.num_rows
         finally:
             for writer in writers.values():
                 writer.close()
+        self.snapshot_digest = snapshot.hexdigest()
         manifest = {
             "kind": "diskgraph_task_dataset",
             "graph": {"index_path": str(view)},
@@ -211,6 +252,9 @@ class NativeAnchors:
                     key: threads for key in ("context_threads", "encode_threads", "index_threads")
                 }
             )
+            verify_task_manifest(
+                manifest, paths=self._source._paths, index=view, task_id=self._temporary.task_id
+            )
             self._source._diskgraph.ingest(
                 json.dumps(
                     {
@@ -225,11 +269,16 @@ class NativeAnchors:
                 col_stats=False,
                 **options,
             )
+        verify_task_manifest(
+            manifest, paths=self._source._paths, index=view, task_id=self._temporary.task_id
+        )
         self._manifest = manifest
         path = self.path / "runtime.json"
         path.write_text(json.dumps(manifest))
         self._runtime = self._source._diskgraph.RuntimeIndex(
-            str(path), rnd_seed=0, num_threads=self._source._num_threads
+            str(path),
+            rnd_seed=self._source._random_seed,
+            num_threads=self._source._num_threads,
         )
         if self._stages:
             # Preparation may use a base reader. The loading loop uses only the
@@ -258,6 +307,21 @@ class NativeAnchors:
     def count(self, selection: Any = ALL_ANCHORS) -> int:
         return sum(stage["count"] for stage in self._selection(selection))
 
+    def latest_time(self, selection: Any = ALL_ANCHORS) -> Any:
+        """The latest ``as_of_time`` of the selected anchors, as `fetch` returns it."""
+        stages = self._selection(selection)
+        if not stages:
+            raise ValueError("no anchors selected")
+        if self._table.as_of_time is None:
+            return 0
+        pa, dtype = self._pa, self._types[self._table.as_of_time]
+        # Files may use equivalent timezone aliases. Normalize to the decoding
+        # dtype before combining their maxima, just as `_requests` does.
+        maxima = pa.array(
+            [value.cast(dtype) for stage in stages for value in stage["latest"]], type=dtype
+        )
+        return _arrow_scalar_value(self._pc.max(maxima))
+
     def _iter(
         self,
         stage: Any,
@@ -269,30 +333,32 @@ class NativeAnchors:
         shuffle=False,
         rank=0,
         world_size=1,
-        plan=None,
+        plan: SamplingPlan | None = None,
         projections=None,
         history=None,
         neighborhoods=None,
         length_planning=None,
     ):
         iterator, _ = self._runtime.iter(
-            stage["name"],
-            plan or {"layers": []},
-            world_size,
-            rank,
-            shuffle,
-            epoch,
-            batch_size,
-            rnd_seed=seed,
-            entity_node_type=self._sample.entity.table,
-            fused=False,
-            swap_edge_direction=False,
-            selected_stage_node_ids=ids,
-            projections=projections,
-            disable_pseudo_time=True,
+            self._source._diskgraph.SamplingOptions(
+                stage=stage["name"],
+                sampling_plan=SamplingPlan() if plan is None else plan,
+                num_workers=world_size,
+                worker_id=rank,
+                shuffle=shuffle,
+                epoch=epoch,
+                batch_size=batch_size,
+                rnd_seed=seed,
+                entity_node_type=self._sample.entity.table,
+                fused=False,
+                swap_edge_direction=False,
+                selected_stage_node_ids=ids,
+                projections=projections,
+                disable_pseudo_time=True,
+            )
         )
         if neighborhoods:
-            iterator.with_neighborhoods(json.dumps(neighborhoods))
+            iterator.with_neighborhoods(neighborhoods)
         if history is not None:
             plan_json, merges_json = history
             iterator.with_history(
@@ -316,8 +382,6 @@ class NativeAnchors:
             }
             key = (stage["name"], json.dumps(costs, sort_keys=True))
             if key not in self._length_caches:
-                import hashlib
-
                 filename = hashlib.sha256(key[1].encode()).hexdigest()[:24]
                 fields = (
                     1
@@ -361,7 +425,9 @@ class NativeAnchors:
             *getattr(bound, "targets", {}).values(),
         }
         metadata = {
-            name: _arrow_values(columns[name]) for name in table.metadata if name not in internal
+            name: _column_values(pa, columns[name], columns[name].type)
+            for name in table.metadata
+            if name not in internal
         }
         targets = {}
         for name, column in {**table.targets, **getattr(bound, "targets", {})}.items():
@@ -439,7 +505,9 @@ class NativeAnchors:
                 raise ValueError(
                     "event token costs do not match the designated input's fitted recipe"
                 )
-            fixed, values = read_token_lengths(self._source._index_path, entry)
+            fixed, values = read_token_lengths(
+                self._source._index_path, entry, cache_root=self._source._cache_root
+            )
             if values is not None:
                 self._token_maps.append(values)
             self._event_costs[table] = dict(
@@ -466,6 +534,7 @@ class NativeAnchors:
             EventSource,
             Flatten,
             Nested,
+            NextTokenTarget,
             Packed,
             Tokens,
         )
@@ -695,6 +764,22 @@ class NativeAnchors:
             )
         row = spec.representation.row
         flatten = spec.representation.history
+        flatten_lengths = None
+        if isinstance(flatten, Flatten):
+            flatten_lengths = dict(
+                maximum=flatten.max_tokens,
+                keep_last=flatten.keep == "last",
+                event_boundary=flatten.prefer_event_boundary,
+                separator=flatten.separator is not None,
+                between=flatten.separator_placement == "between",
+                before=flatten.before is not None,
+                after=flatten.after is not None,
+            )
+            if any(
+                isinstance(target, NextTokenTarget) and target.input == policy.length_input
+                for target in assembler._emitted.targets.values()
+            ):
+                flatten_lengths["next_token"] = True
         contract = json.dumps(
             dict(
                 query=json.dumps(query),
@@ -703,17 +788,7 @@ class NativeAnchors:
                 fixed=fixed,
                 history_only=isinstance(row, (Columns, Composite)),
                 row_maximum=row.max_tokens if isinstance(row, Tokens) else None,
-                flatten=dict(
-                    maximum=flatten.max_tokens,
-                    keep_last=flatten.keep == "last",
-                    event_boundary=flatten.prefer_event_boundary,
-                    separator=flatten.separator is not None,
-                    between=flatten.separator_placement == "between",
-                    before=flatten.before is not None,
-                    after=flatten.after is not None,
-                )
-                if isinstance(flatten, Flatten)
-                else None,
+                flatten=flatten_lengths,
                 max_samples=maximum,
                 max_tokens=policy.max_tokens,
                 packed=isinstance(spec.layout, Packed)
@@ -728,7 +803,7 @@ class NativeAnchors:
         )
         return contract, token_lengths
 
-    def _model_batches(
+    def _typed_batches(
         self,
         assembler,
         stage,
@@ -744,6 +819,9 @@ class NativeAnchors:
         rank,
         world_size,
         drop_last,
+        output_format,
+        deduplicate_edges=False,
+        padding_anchor=None,
     ):
         """One native iterator call per batch; no request objects or re-batching."""
         from dataclasses import replace
@@ -753,7 +831,8 @@ class NativeAnchors:
         from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
         from kumo.pytorch.task import _padding_sample_ids, _surface_padding
 
-        assembler._validate_model_contract()
+        if output_format == "model":
+            assembler._validate_model_contract()
         source = self._source
         sample = assembler._model_sample
         orders = {}
@@ -838,26 +917,34 @@ class NativeAnchors:
                     # batch, including repeated padding seeds and their histories.
                     chosen = ids.to_pylist() + [first] * remaining
                     runtime = next(self._iter(stage, **options, ids=chosen))
-                    yield runtime, remaining
+                    yield runtime, remaining, stage
                     remaining = 0
                 else:
-                    yield runtime, 0
+                    yield runtime, 0, stage
             if length_planning is not None:
                 self._last_length_planning_stats = iterator.length_planning_stats()
             if remaining:
+                padding_stage, padding_id = (
+                    padding_anchor()
+                    if first is None and padding_anchor is not None
+                    else (stage, 0 if first is None else first)
+                )
                 yield (
-                    next(
-                        self._iter(
-                            stage, **options, ids=[0 if first is None else first] * remaining
-                        )
-                    ),
+                    next(self._iter(padding_stage, **options, ids=[padding_id] * remaining)),
                     remaining,
+                    padding_stage,
                 )
 
-        for runtime, padded in runtime_batches():
-            anchors = self._batch_values(stage, runtime)
+        for runtime, padded, runtime_stage in runtime_batches():
+            anchors = self._batch_values(runtime_stage, runtime)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
+            if sample.entity.available_from is not None:
+                source._validate_root_ids_availability(
+                    sample,
+                    runtime["task"]["seed_node_ids"].to_pylist(),
+                    anchors.evaluation_times,
+                )
             if padded:
                 flags = [False] * (anchors.batch_size - padded) + [True] * padded
                 anchors = replace(
@@ -868,6 +955,18 @@ class NativeAnchors:
                         for meta, flag in zip(anchors.request_metadata, flags, strict=True)
                     ),
                 )
+            if output_format == "columnar":
+                yield _surface_padding(
+                    assembler._collate(
+                        replace(anchors, runtime_batch=runtime),
+                        epoch=epoch,
+                        seed=seed,
+                        model=True,
+                        columnar=True,
+                        deduplicate_edges=deduplicate_edges,
+                    )
+                )
+                continue
             with runtime_features(source, runtime):
                 values = source.build_model_batch(sample, runtime, anchors, compiled)
                 values = replace(
@@ -876,9 +975,18 @@ class NativeAnchors:
                         key: runtime["history_merges"][str(i)] for i, key in enumerate(merge_keys)
                     },
                 )
-                yield _surface_padding(
-                    assembler._collate(values, epoch=epoch, seed=seed, model=True)
+                batch = _surface_padding(
+                    # For graphs, model=True selects typed source buffers; Raw
+                    # fields keep the same Arrow representation as inspection.
+                    assembler._collate(
+                        values,
+                        epoch=epoch,
+                        seed=seed,
+                        model=True,
+                        encoding_model=output_format == "model",
+                    )
                 )
+            yield batch
 
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
         pa = self._pa
@@ -893,8 +1001,7 @@ class NativeAnchors:
                     for value in values
                 ]
             else:
-                typed = values.cast(self._types[name])
-                columns[name] = _arrow_values(typed)
+                columns[name] = _column_values(pa, values, self._types[name])
         original_positions = data["anchor_position"].to_pylist()
         table = self._table
         return [
@@ -1002,12 +1109,59 @@ class NativeAnchors:
             self._runtime = None
             self._history_engine = None
             del sampler
-            self._extension.cleanup()
             self._length_caches.clear()
             getattr(self, "_token_length_arrays", {}).clear()
             self._token_maps = []
             self._event_costs = {}
             self._temporary.cleanup()
+            self._scratch.cleanup()
+
+    def validate_columnar(self, assembler, selection):
+        """Refuse unsupported contracts before constructing a native iterator."""
+        from kumo.pytorch.contract.batch import Raw
+
+        policy = assembler.spec.batching
+        if (
+            not self._can_batch_inspectable_graph(assembler)
+            or policy.max_tokens is not None
+            or policy.bucket_by_length
+            or assembler._source is not self._source
+        ):
+            raise ValueError(
+                "columnar output requires one graph-only input, fixed-size batching, "
+                "and no targets, entity filters or availability"
+            )
+        for prepared in assembler._prepared_inputs.values():
+            for fields in prepared.spec.representation.node_fields.values():
+                if any(not isinstance(use.encoding, Raw) for use in fields.fields):
+                    raise ValueError("columnar graph fields require explicit Raw encodings")
+
+    def _can_batch_inspectable_graph(self, assembler):
+        """Use typed buffers only when no other inspectable contract is needed."""
+        from kumo.pytorch.contract.batch import Graph
+
+        sample = assembler.sample
+        return (
+            len(assembler._prepared_inputs) == 1
+            and all(
+                isinstance(prepared.spec.representation, Graph)
+                for prepared in assembler._prepared_inputs.values()
+            )
+            and "split" not in self._table.metadata
+            and not any(
+                (
+                    sample.entity_values,
+                    sample.dated_entity_values,
+                    sample.events,
+                    sample.current_events,
+                    sample.targets,
+                    sample.candidate_sets,
+                    sample.entity.filters,
+                    sample.entity.available_from,
+                    assembler.spec.targets,
+                )
+            )
+        )
 
     def batches(
         self,
@@ -1023,6 +1177,7 @@ class NativeAnchors:
         world_size: int,
         drop_last: bool | None,
         output_format: str,
+        deduplicate_edges: bool = False,
     ):
         """Read native anchor batches and retain the existing fitted assembler.
 
@@ -1036,9 +1191,30 @@ class NativeAnchors:
         from kumo.pytorch.contract.sample import Field
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
+        if output_format == "columnar":
+            self.validate_columnar(assembler, selection)
         source = self._source
+        materialized = getattr(getattr(source, "_materialized_values", None), "features", {})
+        entity_columns = [
+            value.column
+            for key, value in self._sample.entity_values.items()
+            if isinstance(value, Field) and not value.path and key not in materialized
+        ]
         policy = assembler.spec.batching
         fixed = policy.max_tokens is None and not policy.bucket_by_length
+        sampled = any(
+            isinstance(prepared.spec.representation, Graph)
+            and prepared.spec.representation.topology == "sampled"
+            for prepared in assembler._prepared_inputs.values()
+        )
+        if sampled and (not fixed or assembler._source is not self._source):
+            raise ValueError(
+                "sampled graph topology requires fixed-size native AnchorTable batches"
+            )
+        if sampled and deduplicate_edges:
+            raise ValueError(
+                "sampled graph topology preserves edge occurrences; do not deduplicate"
+            )
         maximum = batch_size if batch_size is not None else policy.max_samples
         size = maximum if fixed else chunk
         neighborhoods = {
@@ -1060,9 +1236,7 @@ class NativeAnchors:
             for table, definition in source._tables.items():
                 if definition.primary_key is not None:
                     projections[table].insert(0, definition.primary_key)
-            for value in self._sample.entity_values.values():
-                if isinstance(value, Field) and not value.path:
-                    projections[self._sample.entity.table].append(value.column)
+            projections[self._sample.entity.table].extend(entity_columns)
             projections = {
                 table: list(dict.fromkeys(fields)) for table, fields in projections.items()
             }
@@ -1108,16 +1282,47 @@ class NativeAnchors:
                     "projections": fields,
                 }
         stages = self._selection(selection)
+        # Preserve mixed-stage ordering and validation outside graph-only contracts.
+        inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
+            assembler
+        )
         if (
-            output_format == "model"
-            and (fixed or world_size == 1 and not neighborhoods)
+            (output_format in {"model", "columnar"} or inspectable_graph or sampled)
+            and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
             and assembler._source is self._source
         ):
-            for value in self._sample.entity_values.values():
-                if isinstance(value, Field) and not value.path:
-                    projections[self._sample.entity.table].append(value.column)
+            first_owned = None
+
+            def padding_anchor():
+                nonlocal first_owned
+                if first_owned is None:
+                    for candidate in stages:
+                        if candidate["count"] > rank:
+                            runtime = next(
+                                self._iter(
+                                    candidate,
+                                    batch_size=1,
+                                    seed=seed,
+                                    epoch=epoch,
+                                    shuffle=shuffle,
+                                    rank=rank,
+                                    world_size=world_size,
+                                )
+                            )
+                            first_owned = (
+                                candidate,
+                                runtime["task"]["tt_stage_node_ids"][0].as_py(),
+                            )
+                            break
+                    else:
+                        # No owned anchor anywhere: equal steps require marked
+                        # padding from another rank, as for a short single split.
+                        first_owned = (next(stage for stage in stages if stage["count"]), 0)
+                return first_owned
+
+            projections[self._sample.entity.table].extend(entity_columns)
             for stage in stages:
-                yield from self._model_batches(
+                yield from self._typed_batches(
                     assembler,
                     stage,
                     plan=plan,
@@ -1131,6 +1336,9 @@ class NativeAnchors:
                     rank=rank,
                     world_size=world_size,
                     drop_last=policy.drop_last if drop_last is None else drop_last,
+                    output_format=output_format,
+                    deduplicate_edges=deduplicate_edges,
+                    padding_anchor=padding_anchor,
                 )
             return
 
@@ -1163,6 +1371,7 @@ class NativeAnchors:
                     world_size=world_size,
                     plan=plan,
                     projections=projections,
+                    neighborhoods=named,
                 ):
                     yield runtime, self._requests(stage, runtime)
                 offset += stage["count"]

@@ -1,10 +1,6 @@
 # kumo-pytorch
 
-kumo-pytorch is an experimental PyTorch library for building model inputs from
-relational tables, for both training and inference. Expect the API to change
-between releases, and see [limitations](docs/limitations.md) for what isn't
-supported yet. Please report problems and questions as
-[kumo-engine issues](https://github.com/NVIDIA/kumo-engine/issues).
+kumo-pytorch is an experimental PyTorch library for building model inputs from relational tables, for both training and inference. Expect the API to change between releases, without deprecation warnings, and see [limitations](docs/limitations.md) for what isn't supported yet. Please report problems and questions as [kumo-engine issues](https://github.com/NVIDIA/kumo-engine/issues).
 
 kumo-pytorch prepares the data for PyTorch models that learn from relational
 data: the users, accounts, transactions and products tables a business keeps in
@@ -31,7 +27,8 @@ In a bit more detail:
 
 - Each example only sees rows from at or before its
   prediction time, including rows it reaches through other tables, so your model
-  can't learn from the future by accident.
+  can't learn from the future by accident. Explicit uniform graph sampling
+  deliberately ignores the prediction time.
 - Counts and sums over time windows, the time since a user's last
   purchase, calendar parts and similar values are declared next to the raw
   columns.
@@ -82,30 +79,36 @@ another process.
 
 ## Install
 
-kumo-pytorch isn't on PyPI. You build it, together with the DiskGraph engine it
-depends on, from a checkout of
-[NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine). You'll need Python
-3.11 or newer, [uv](https://docs.astral.sh/uv/), a Rust toolchain and C/C++
-build tools:
+kumo-pytorch ships inside the [kumo-engine](https://pypi.org/project/kumo-engine/) package, together with the DiskGraph engine it runs on, and is imported as `kumo.pytorch`. Install it with the `pytorch` extra.
+
+With pip, first choose a compatible PyTorch build from the
+[PyTorch installation selector](https://pytorch.org/get-started/locally/),
+then install the engine. For example, for CPU-only use:
 
 ```bash
-git clone https://github.com/NVIDIA/kumo-engine.git
-cd kumo-engine
-uv build --wheel --out-dir dist packages/diskgraph
-uv build --wheel --package kumo-pytorch --out-dir dist
-uv venv --python 3.12 .venv-kumo-pytorch
-uv pip install --python .venv-kumo-pytorch/bin/python --torch-backend cpu \
-    dist/diskgraph-*.whl dist/kumo_pytorch-*.whl
+pip install "torch>=2.9,<2.13" --index-url https://download.pytorch.org/whl/cpu
+pip install "kumo-engine[pytorch]"
 ```
 
-Use `--torch-backend cu130` for the CUDA 13.0 build of PyTorch. The
-[installation](docs/installation.md) page covers pip, the notebook
-dependencies, and running the tests.
+For CUDA 13.0, use the `https://download.pytorch.org/whl/cu130` index instead.
+A compatible PyTorch already installed satisfies the engine's requirement.
+With uv, select the build directly:
+
+```bash
+uv pip install --torch-backend cpu "kumo-engine[pytorch]"
+```
+
+Replace `cpu` with `cu130`, or use `auto` to select according to the installed
+GPU driver. Apple silicon uses PyTorch's MPS device without a separate CUDA build.
+
+See kumo-engine's [installation requirements](https://github.com/NVIDIA/kumo-engine/tree/main/packages/kumo-engine#installation) for the supported Python versions, platforms and hardware.
 
 ## Quick start
 
-Here are two small tables, users and purchases, saved as Parquet files. We
-build one batch for two users, each as of January 10.
+Here are two small tables, users and purchases, saved as Parquet files. A
+separate Parquet anchor file selects two users to score as of January 10. Use
+this `AnchorTable` pattern for training, evaluation, offline scoring, and
+loader benchmarks.
 
 <!-- test: diskgraph -->
 ```python
@@ -185,9 +188,21 @@ batch = api.BatchSpec(
 
 # Two examples to build: users 1 and 2, both as of January 10.
 now = datetime(2024, 1, 10, tzinfo=timezone.utc)
-requests = (
-    api.SampleRequest(sample_id="user-1", entity_id=1, as_of_time=now),
-    api.SampleRequest(sample_id="user-2", entity_id=2, as_of_time=now),
+pq.write_table(
+    pa.Table.from_pylist(
+        [
+            {"sample_id": f"user-{user_id}", "user_id": user_id, "as_of": now, "split": "train"}
+            for user_id in (1, 2)
+        ]
+    ),
+    data / "anchors.parquet",
+)
+anchors = api.AnchorTable(
+    source=api.Parquet(path=str(data / "anchors.parquet")),
+    entity_id="user_id",
+    as_of_time="as_of",
+    sample_id="sample_id",
+    split="split",
 )
 
 # Put it together. The DiskGraph engine indexes the files the first time, then builds the batch.
@@ -198,12 +213,15 @@ dataset = api.Dataset(
         "purchases": api.Parquet(path=str(data / "purchases.parquet")),
     }
 )
-engine = api.DiskGraphEngine(index=data / "index", ingest="if_missing")
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=data / "scratch")
+engine = api.DiskGraphEngine()
 with (
     api.prepare(contract=contract, dataset=dataset, engine=engine) as plan,
-    plan.materialize(anchors=requests) as task,
+    plan.materialize(anchors=anchors, fit_split="train") as task,
 ):
-    result = next(task.batches(requests=requests))
+    result = next(task.batches(split="train", output_format="model"))
 
 print("inputs:", tuple(result.inputs))
 print("history amount shape:", tuple(result.inputs["history"]["amount"]["values"].shape))
@@ -220,6 +238,11 @@ User 1 also bought something on January 12, but that's after the prediction
 time, so only their two earlier purchases show up. User 2 has just one purchase,
 so the second slot in their history is padding and is marked as not valid.
 
+Use Python `SampleRequest` objects for quick checks, tests, and small sets of
+requests supplied at runtime. They bypass native AnchorTable iteration even
+when the engine is DiskGraph. See [choosing how to supply
+anchors](docs/04-engines-and-data.md#anchor-tables).
+
 ## Learn more
 
 - The [guide](docs/README.md) walks through the concepts, engines and data,
@@ -231,3 +254,18 @@ so the second slot in their history is padding and is marked as not valid.
 - The [behavior guarantees](conformance/README.md) are the rules the DiskGraph
   engine is tested against, each backed by tested examples. Where it doesn't
   meet one yet, the [limitations](docs/limitations.md) page says so.
+
+## Development
+
+To work on kumo-pytorch itself, use the [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) workspace the way its CI does. You'll need [uv](https://docs.astral.sh/uv/getting-started/installation/), a Rust toolchain and C/C++ build tools; [rustup](https://rustup.rs/) picks the Rust version from `packages/diskgraph/rust-toolchain.toml`. From the root of a checkout, install the CPU build of PyTorch, then kumo-pytorch with its `dev` and `examples` extras, which builds DiskGraph from `packages/diskgraph`:
+
+```bash
+uv sync --locked --extra cpu
+uv sync --locked --inexact --no-install-package torch --package kumo-pytorch --extra dev --extra examples
+uv pip install jupyter
+source .venv/bin/activate
+cd packages/experimental/kumo-pytorch
+python -m pytest -q
+```
+
+Tests that need DiskGraph skip if it can't be imported, and tests that need a GPU skip without one. Pass `--require-imports` to make a skip caused by a missing dependency fail instead. `python -m conformance --engine all` checks the [behavior guarantees](conformance/README.md) on both engines, `python -m pytest -m notebook` runs the example notebooks, and [e2e/README.md](e2e/README.md) explains the opt-in end-to-end runs.

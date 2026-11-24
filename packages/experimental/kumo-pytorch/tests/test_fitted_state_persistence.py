@@ -162,6 +162,9 @@ class _ShardedInference(IterableDataset[api.Batch]):
         requests: list[api.SampleRequest],
         output_format: str,
     ) -> None:
+        import kumo.settings
+
+        self.scratch_dir = kumo.settings.scratch_dir()
         self.artifact = artifact
         self.dataset = dataset
         self.engine = engine
@@ -169,6 +172,9 @@ class _ShardedInference(IterableDataset[api.Batch]):
         self.output_format = output_format
 
     def __iter__(self) -> Iterator[api.Batch]:
+        import kumo.settings
+
+        kumo.settings.configure(scratch_dir=self.scratch_dir)
         worker = get_worker_info()
         assert worker is not None, "built for DataLoader workers"
         yield from _batches(
@@ -297,7 +303,7 @@ def test_an_artifact_with_inconsistent_fitted_state_is_refused(tmp_path: Path) -
             task.to_artifact().save(tmp_path / "artifact")
 
     def changed(name: str, text: str) -> Path:
-        directory = tmp_path / "changed"
+        directory = tmp_path / "indexes" / "changed"
         shutil.rmtree(directory, ignore_errors=True)
         shutil.copytree(tmp_path / "artifact", directory)
         (directory / name).write_text(text)

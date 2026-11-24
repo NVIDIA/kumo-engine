@@ -22,10 +22,15 @@ from kumo_core.embedding_models import (
     GloVeVectors,
     TokenEmbeddingModel,
 )
+from kumo_core.prediction_explanation_result import (
+    PredictionExplanationCoverage,
+    PredictionExplanationOptions,
+)
 from kumo_core.utils.nofile import ensure_nofile
 from kumoapi.encoder import TextEmbedding
 from kumoapi.graph import Edge
 from kumoapi.jobs import WriteMode
+from kumoapi.model_plan import TrainingTableGenerationPlan
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
@@ -64,7 +69,10 @@ from kumo.engine.explain.errors import (
     InvalidExplanationError,
     InvalidRunError,
 )
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
 from kumo.engine.table import Table
@@ -121,10 +129,14 @@ __all__ = [
     "PredictionManifest",
     "PredictiveQuery",
     "TrainingTable",
+    "TrainingTableGenerationPlan",
     "PredictionTable",
     "Trainer",
     "TrainingResult",
     "TrainingExplanations",
+    "PredictionExplanations",
+    "PredictionExplanationOptions",
+    "PredictionExplanationCoverage",
     "ExplanationUnavailableError",
     "InvalidExplanationError",
     "InvalidRunError",

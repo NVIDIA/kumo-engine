@@ -31,6 +31,8 @@ def sparse_overrides(scale):
 
     overrides = {
         **metric('auroc'), 'optimization.batch_size': [64],
+        'optimization.majority_sampling_ratio': [1.0],
+        'optimization.weight_mode': [WeightMode.SAMPLE],
         'neighbor_sampling.num_neighbors': [
             NumNeighborsConfig(
                 **{f'hop{i}': {
@@ -43,8 +45,6 @@ def sparse_overrides(scale):
         overrides.update({
             'training_job.num_experiments': 1,
             'optimization.max_epochs': 1,
-            'optimization.majority_sampling_ratio': [1.0],
-            'optimization.weight_mode': [WeightMode.SAMPLE],
         })
     return overrides
 
@@ -369,10 +369,10 @@ def compare_reference(result, expected, tolerance):
             raise ValueError(f"Reference {key} differs")
     if "metrics" not in result:
         return
-    if result["metrics"].keys() != expected["metrics"].keys():
-        raise ValueError("Reference metric names differ")
-    for name, value in result["metrics"].items():
-        baseline = expected["metrics"][name]
+    for name in result["required_metrics"]:
+        value, baseline = result["metrics"][name], expected["metrics"].get(name)
+        if baseline is None:
+            raise ValueError(f"Reference metric is missing: {name}")
         metric = re.sub(r"^(train|val|test)_", "", name).split("_", 1)[0]
         difference = abs(value - baseline)
         band = .03 if metric in ("auroc", "ap") else abs(baseline) * tolerance

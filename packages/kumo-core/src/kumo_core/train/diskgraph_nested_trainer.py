@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import torch
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingMode, SamplingPlan
+
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     suppress_batch_indices_warning,
@@ -28,9 +30,14 @@ from kumo_core.diskgraph.lightning_data import (
     suppress_lightning_leafspec_warning,
 )
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
-from kumo_core.diskgraph.stores import iter_primary_key_batches
+from kumo_core.diskgraph.stores import iter_primary_key_batches, rhs_catalog
+from kumo_core.embedding_models import EmbeddingModelStore
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.explain import ExplainRuntime
+from kumo_core.explain.base import Explainer
 from kumo_core.io.csv import save_csv
 from kumo_core.io.filesystem import fsspec_mangle
+from kumo_core.resolved_task import ResolvedNumericalTask
 from kumo_core.score_counts import Counts
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
@@ -46,6 +53,7 @@ from kumo_core.train.trainer import (
     create_multilabel_classification_prediction_output,
     create_multilabel_ranking_prediction_output,
     generate_majority_sampling_weight,
+    load_encoders,
 )
 from kumo_core.training.config import (
     DiskgraphNestedTrainerConfig,
@@ -55,7 +63,10 @@ from kumo_core.training.config import (
     _normalize_edge_type_key,
 )
 from kumo_core.training.options import allow_array_targets
-from kumo_core.training.runtime import DiskgraphTrainingRuntime
+from kumo_core.training.runtime import (
+    DiskgraphTrainingRuntime,
+    LocalDiskgraphTrainingRuntime,
+)
 from kumo_core.types import TaskType
 from kumo_core.utils.names import get_table_name
 from kumo_core.utils.registry import register
@@ -323,7 +334,7 @@ def _runtime_options_from_sampler(sampler_kwargs: Any) -> dict[str, bool]:
 
 
 def _ttng_estimated_edges(
-    sampling_plan: Mapping[str, Any],
+    sampling_plan: SamplingPlan,
     batch_size: int,
 ) -> int:
     """Estimate TT-NG per-batch edge volume for DiskGraph auto-config.
@@ -333,22 +344,22 @@ def _ttng_estimated_edges(
     size rather than legacy ``NumNeighbors`` and its 1024-item default.
     """
     per_seed_fanout = 1
-    for layer in sampling_plan.get("layers") or ():
-        candidates = []
-        for config in (layer.get("fanouts") or {}).values():
-            if config is not None:
-                candidates.append(int(config.get("fanout", 0)))
-        default = layer.get("default_fanout")
-        if default is not None:
-            candidates.append(int(default.get("fanout", 0)))
-        per_seed_fanout *= max(candidates, default=1)
+    for layer in sampling_plan.layers:
+        candidates = (spec.fanout for spec in layer.fanouts.values())
+        if layer.default_fanout is None:
+            per_seed_fanout *= max(candidates, default=1)
+        else:
+            per_seed_fanout *= max(
+                max(candidates, default=layer.default_fanout.fanout),
+                layer.default_fanout.fanout,
+            )
     return int(batch_size * per_seed_fanout * 0.25)
 
 
 def _ttng_diskgraph_runtime_config(
     runtime: DiskgraphTrainingRuntime | None,
     graph_runtime_metadata: Mapping[str, Any] | None,
-    sampling_plan: Mapping[str, Any],
+    sampling_plan: SamplingPlan,
     batch_size: int,
 ) -> dict[str, Any] | None:
     """Return the existing DiskGraph policy for the TT-NG wheel path.
@@ -363,8 +374,7 @@ def _ttng_diskgraph_runtime_config(
     if not index_path:
         return None
     if runtime is None:
-        raise RuntimeError(
-            "diskgraph_runtime is required for DiskGraph training")
+        raise RuntimeError("diskgraph_runtime is required for DiskGraph training")
 
     estimated_edges = _ttng_estimated_edges(sampling_plan, batch_size)
     config = runtime.auto_config(
@@ -546,32 +556,11 @@ def _rhs_canonical_node_ids(
     index_path: str,
     rhs_node_type: str,
     expected_count: int,
-    batch_size: int = 50_000,
 ) -> np.ndarray:
-    """Materialize canonical physical IDs without retaining raw PK values."""
-    node_ids = np.empty(expected_count, dtype=np.int64)
-    offset = 0
-    for raw_node_ids, raw_batch in iter_primary_key_batches(
-            index_path, rhs_node_type, stop=expected_count,
-            batch_size=batch_size):
-        batch_node_ids = np.asarray(raw_node_ids)
-        batch = np.asarray(raw_batch)
-        if (batch_node_ids.ndim != 1
-                or batch_node_ids.dtype.kind not in {'i', 'u'}):
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned invalid IDs')
-        if batch.ndim != 1 or len(batch_node_ids) != len(batch):
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned misaligned IDs')
-        if offset + len(batch_node_ids) > expected_count:
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned more canonical '
-                f'rows than the DiskGraph node count ({expected_count})')
-        node_ids[offset:offset + len(batch_node_ids)] = batch_node_ids
-        offset += len(batch_node_ids)
-
-    node_ids = node_ids[:offset]
-    _validate_rhs_node_ids(node_ids, expected_count)
+    """Canonical physical IDs, sorted and unique, read by DiskGraph."""
+    node_ids = rhs_catalog(index_path, rhs_node_type)
+    if len(node_ids) and node_ids[-1] >= expected_count:
+        raise RuntimeError('[TT-NG LP] RHS node-ID catalog is out of range')
     return node_ids
 
 
@@ -720,29 +709,6 @@ def _edge_types_from_index_metadata(
     return edge_types
 
 
-# Used for test only.
-_DEFAULT_TTNG_SAMPLING_PLAN: dict[str, Any] = {
-    'layers': [
-        {
-            'fanouts': {},
-            'default_fanout': {
-                'fanout': 10,
-                'mode': 'temporal_most_recent',
-                'absent_key_policy': 'uniform_fallback',
-            },
-        },
-        {
-            'fanouts': {},
-            'default_fanout': {
-                'fanout': 10,
-                'mode': 'temporal_most_recent',
-                'absent_key_policy': 'uniform_fallback',
-            },
-        },
-    ],
-}
-
-
 # @register required: ConfigMixin.config() needs data_cls when AutoTrainer
 # serializes at a trial boundary, else the first checkpoint raises ValueError.
 @register(data_cls=DiskgraphNestedTrainerConfig)
@@ -785,12 +751,14 @@ class DiskgraphNestedTrainer(Trainer):
             datamodule.runtime_worker_id = runtime_worker_id
 
     def _build_ttng_sampling_plan(self,
-                                  tm: DiskgraphTaskManifest) -> dict[str, Any]:
+                                  tm: DiskgraphTaskManifest) -> SamplingPlan:
         """Compile ``num_neighbors`` into a DiskGraph sampling plan."""
         raw_values = self.sampler_kwargs.num_neighbors.get_values()
         temporal_strategy = getattr(self.sampler_kwargs, "temporal_strategy",
                                     "last")
-        mode = "temporal_most_recent" if temporal_strategy == "last" else "uniform"
+        mode: SamplingMode = (
+            "temporal_most_recent" if temporal_strategy == "last" else "uniform"
+        )
 
         idx_meta = _load_index_metadata(tm.graph_runtime_metadata)
         relations = idx_meta.get("edge_relations") or []
@@ -818,22 +786,17 @@ class DiskgraphNestedTrainer(Trainer):
             if counterpart in all_rel_names:
                 rel_name_to_csc_counterpart[name] = counterpart
 
-        def _hop(fanout: int) -> dict[str, Any]:
-            return {
-                # -1 means all neighbors.
-                "fanout": 1_000_000_000 if fanout < 0 else fanout,
-                "mode": mode,
-                "absent_key_policy": "uniform_fallback",
-            }
+        def _hop(fanout: int) -> FanoutSpec:
+            return FanoutSpec(
+                fanout=1_000_000_000 if fanout < 0 else fanout,
+                mode=mode,
+                absent_key_policy="uniform_fallback",
+            )
 
-        # Case A: Simple list-based num_neighbors (e.g. [10, 5])
         if isinstance(raw_values, list):
-            return {
-                "layers": [{
-                    "fanouts": {},
-                    "default_fanout": _hop(fanout),
-                } for fanout in raw_values]
-            }
+            return SamplingPlan([
+                LayerSpec(default_fanout=_hop(fanout)) for fanout in raw_values
+            ])
 
         # Case B: Dictionary-based per-relation num_neighbors
         per_type_values = raw_values or {}
@@ -843,7 +806,7 @@ class DiskgraphNestedTrainer(Trainer):
         if default_values:
             num_hops = max(num_hops, len(default_values))
 
-        layers = []
+        layers: list[LayerSpec] = []
         unresolved = set()
         resolved_positive_fanout = False
         for hop in range(num_hops):
@@ -866,14 +829,13 @@ class DiskgraphNestedTrainer(Trainer):
 
             default_fanout = (_hop(default_fanout_val)
                               if default_fanout_val != 0 else None)
-            layers.append({
-                "fanouts": fanouts,
-                "default_fanout": default_fanout,
-            })
+            layers.append(LayerSpec(
+                fanouts=fanouts, default_fanout=default_fanout,
+            ))
 
         if unresolved:
             if not resolved_positive_fanout and not any(
-                    layer["default_fanout"] is not None for layer in layers):
+                    layer.default_fanout is not None for layer in layers):
                 raise RuntimeError(
                     "[TT-NG] Per-relation num_neighbors did not resolve any "
                     "DiskGraph edge relations; refusing to train with an "
@@ -882,7 +844,7 @@ class DiskgraphNestedTrainer(Trainer):
                 "[TT-NG] num_neighbors entries do not match any DiskGraph "
                 "edge relation and are not sampled: %s", sorted(unresolved))
 
-        return {"layers": layers}
+        return SamplingPlan(layers)
 
     def init(
         self,
@@ -1154,7 +1116,7 @@ class DiskgraphNestedTrainer(Trainer):
         self._fully_initialized = True
         return self
 
-    def explain(self, *args: Any, **kwargs: Any) -> None:
+    def explain(self, *args: Any, **kwargs: Any) -> tuple[Explainer, ...]:
         """Attach feature access and schema metadata for ``Trainer.explain``."""
         # Idempotent across repeat ``explain()`` calls on the same
         # trainer instance.
@@ -1474,10 +1436,9 @@ class DiskgraphNestedTrainer(Trainer):
                 link_prediction_kwargs["prediction_counts"] = prediction_counts
             return self._predict_lp(**link_prediction_kwargs)
 
-        self._prediction_mode = True
         if emit_predictions:
             top_k = self._preprocess_top_k(top_k)
-        self.init(task_manifest=task_manifest)
+        self.predict_setup(task_manifest=task_manifest)
         self.pl_model.eval_top_k = None
         output_partition_ids = output_partition_ids or [partition_id]
 
@@ -1835,8 +1796,7 @@ class DiskgraphNestedTrainer(Trainer):
             raise ValueError(
                 'Batch prediction must request predictions or embeddings.')
 
-        self._prediction_mode = True
-        self.init(task_manifest=task_manifest)
+        self.predict_setup(task_manifest=task_manifest)
         output_partition_ids = output_partition_ids or [partition_id]
 
         has_emb_hook_fn = (self.pl_model._get_register_embedding_hook_fn()
@@ -2304,6 +2264,59 @@ class DiskgraphNestedTrainer(Trainer):
                 else:
                     self.head.param_keys = []
             self.head.validate()
+
+    @classmethod
+    def load_prediction(
+        cls,
+        *,
+        manifest: DiskgraphTaskManifest,
+        model_dir: str,
+        bundle_dir: str,
+        run_id: str,
+        encoders: EncodersConfig | None = None,
+        task_options: Mapping[str, int | None] | None = None,
+        binary_threshold: float | None = None,
+        embedding_models: EmbeddingModelStore | None = None,
+        accelerator: str = 'auto',
+        device: int | None = None,
+        explain_runtime: ExplainRuntime | None = None,
+    ) -> DiskgraphNestedTrainer:
+        """Load scoring and replay from the same published model settings."""
+        task = ResolvedNumericalTask.from_manifest(
+            manifest, name=run_id, **(task_options or {}))
+        load_options: dict[str, float | list[int]] = {}
+        if binary_threshold is not None:
+            load_options['binary_threshold'] = binary_threshold
+        if device is not None:
+            load_options['devices'] = [device]
+        return cls.load(
+            task,
+            model_dir,
+            diskgraph_task_dataset_bundle_dir=bundle_dir,
+            encoders=encoders if encoders is not None else load_encoders(model_dir),
+            infer_config_path=False,
+            diskgraph_runtime=LocalDiskgraphTrainingRuntime(),
+            explain_runtime=explain_runtime,
+            embedding_models=embedding_models,
+            accelerator=accelerator,
+            **load_options,
+        )
+
+    def predict_setup(
+        self,
+        fit_mode_to_use: FitMode | None = None,
+        *,
+        task_manifest: DiskgraphTaskManifest | None = None,
+    ) -> None:
+        """Prepare DiskGraph inputs, preserving the current fit unless selected.
+
+        A published model directory already identifies the selected fit/refit;
+        callers loading that flat directory explicitly select ``FitMode.fit``.
+        """
+        self._prediction_mode = True
+        if fit_mode_to_use is not None:
+            self._set_fit_mode_to_use(fit_mode_to_use)
+        self.init(task_manifest=task_manifest)
 
     @classmethod
     def load(

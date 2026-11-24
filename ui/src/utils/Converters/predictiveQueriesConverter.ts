@@ -137,6 +137,7 @@ export function generateProgressStatsforChart(
         return null;
     }
     const xAxisLabels = [];
+    const trialIds: string[] = [];
     const points: ChartPlotPoints = {
         color: "#ff6666",
         value: [],
@@ -154,6 +155,7 @@ export function generateProgressStatsforChart(
         if (isValid(data[i]?.best_validation_metric?.val)) {
             const validation = data[i]?.best_validation_metric?.val;
             points.value.push(validation as number);
+            trialIds.push(data[i].trial_id);
             xAxisLabels.push(xAxisLabels.length + 1);
         }
     }
@@ -166,6 +168,7 @@ export function generateProgressStatsforChart(
     const pqStatus: QueryProgressStats = {
         xAxisLabels: xAxisLabels,
         datasets: [points],
+        trialIds: trialIds,
         xLabel: xLabel,
         yLabel: yLabel,
         mode: mode

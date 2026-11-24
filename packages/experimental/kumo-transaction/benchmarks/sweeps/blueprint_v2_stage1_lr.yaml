@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Stage 1: learning rate at batch 128, on the hashed-identity tokenizer.
+#
+# Stage 0 showed the byte-level merchant was not learned (next-event
+# cross-entropy at its unigram floor), and trained embeddings barely beat a
+# random initialization. From here on, merchant, device, and counterparty are
+# one hash-bucket token each, and app_version is a category, not a number.
+# Pretraining reads every 128-event train-side window of the 100k users.
+#
+# Ran with one hash-bucket range shared by the three keys. Stage 2 found that
+# layout hurt the rarer keys; hashed keys now have a range each, and caches
+# built with the shared range no longer load. Stage 3 onward uses the new cache.
+#
+#   uv run --all-extras tfm cache-tokens --config <this base with the set below> --workers 8
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run --all-extras python benchmarks/proxy_sweep.py \
+#     --spec benchmarks/sweeps/blueprint_v2_stage1_lr.yaml \
+#     --run-root outputs/proxy/stage1 --summary outputs/proxy/stage1.json
+base: benchmarks/ablations/blueprint_v2_lab.yaml
+set:
+  data.token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab_hashed
+  features.categorical_keys: [mcc, app_version]
+  features.hashed_keys: [merchant, device_id, counterparty]
+  data.pretrain_windows.events: 128
+  training.batch_size: 128
+  training.max_steps: 1500
+  training.optimizer.warmup_steps: 75
+  training.optimizer.max_grad_norm: 1.0
+tasks: [history_window, fraud, churn_6m]
+xgboost_trials: 8
+variants:
+  - name: random_init
+    train: false
+  - name: adamw_lr5e-4
+    set: {training.learning_rate: 0.0005}
+  - name: adamw_lr1e-3
+    set: {training.learning_rate: 0.001}
+  - name: adamw_lr2e-3
+    set: {training.learning_rate: 0.002}

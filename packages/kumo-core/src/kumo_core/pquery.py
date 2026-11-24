@@ -1155,6 +1155,14 @@ def _temporal_timestamps(
     return tuple(timestamp.value for timestamp in timestamps), fixed_boundaries
 
 
+def _absolute_start_time(options: TrainingTableGenerationPlan) -> int | None:
+    start = inferred_or_missing_type_to_none(options.start_time)
+    if start is None or isinstance(start, Integral):
+        return None
+    start_time = parse_time_bound(start, 'start_time')
+    return start_time.value if isinstance(start_time, Timestamp) else None
+
+
 def _column_encoder_stats(
     stats: Mapping[str, Any],
     column_name: str,
@@ -1484,6 +1492,7 @@ def build_native_pquery_task_plan(
     split, split_family = _split_options(query, graph, options)
     lag_timesteps, compiler_options = _forecast_options(query, options)
     resolved_timestamps: tuple[int, ...] = ()
+    start_time: int | None = None
     if not supplied_rows:
         if query.query_type == "static":
             if timestamps:
@@ -1501,6 +1510,8 @@ def build_native_pquery_task_plan(
                 timestamps,
                 purpose=purpose,
             )
+            if purpose is TaskPlanPurpose.TRAINING:
+                start_time = _absolute_start_time(options)
             if fixed_boundaries:
                 split = {**split, "flexible_boundaries": False}
     entity_table = graph.table(query.entity_table)
@@ -1528,6 +1539,7 @@ def build_native_pquery_task_plan(
         rhs_is_temporal=query.rhs_is_temporal,
         compiler_options=compiler_options,
         index_path_verified=True,
+        start_time=start_time,
     )
     extension_path = os.path.join(graph_index_path, "train_tables", tt_id)
     task_dataset = TaskDatasetMaterializeSpec(

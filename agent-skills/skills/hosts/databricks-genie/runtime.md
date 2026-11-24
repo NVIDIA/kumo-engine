@@ -172,6 +172,8 @@ without it, even for a static query, whatever the §7.1 Snowflake example shows,
 anchor as null. Without a time column, select `ENTITY1` alone.
 
 ```python
+if f'{POP_CATALOG}.{POP_SCHEMA}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
+    raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
 run_sql(f'CREATE OR REPLACE TABLE {q(POP_CATALOG, POP_SCHEMA, POP_TABLE)} AS '
         f'SELECT {q(ENTITY_KEY)} AS ENTITY1, CAST({q(ENTITY_TIME)} AS TIMESTAMP) AS TIMESTAMP '
         f'FROM {q(CATALOG, SCHEMA, ENTITY_TABLE)}')
@@ -182,7 +184,9 @@ prediction_table = kumo.PredictionTable.from_source_table(
 ```
 
 `ENTITY_TIME` is the entity `Table`'s `time_column`; `POP_CATALOG` and `POP_SCHEMA` are the
-population's confirmed location, which need not be the source's.
+population's confirmed location, which need not be the source's. `POPULATION_CONFIRMED` is the
+population exactly as Node 1d confirmed it (`kumoai-reference/references/kumo_finetuning_sdk.md`
+§7.1).
 
 **A population the user supplies** — a table of exact scoring rows, or curated labels, weights and
 splits (`kumo-custom-populations/SKILL.md`) — is read through a `DatabricksConnector` on that

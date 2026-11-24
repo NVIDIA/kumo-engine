@@ -71,6 +71,9 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`Fields`](batches.md#fields) | `kumo.pytorch.api` | Select ordered fields with explicit encoders, grouping, and field IDs. |
 | [`Encode`](batches.md#encode) | `kumo.pytorch.api` | Encode one sampled field, optionally translating IDs into a final space. |
 | [`Graph`](batches.md#graph) | `kumo.pytorch.api` | Node attributes use the same explicit field encodings as ordinary columns. |
+| [`ColumnarGraph`](batches.md#columnargraph) | `kumo.pytorch.api` | CPU Arrow graph buffers emitted by `Task.batches(output_format="columnar")`. |
+| [`ColumnarNodes`](batches.md#columnarnodes) | `kumo.pytorch.api` | Aligned columns for node occurrences, isolated per example. |
+| [`ColumnarEdges`](batches.md#columnaredges) | `kumo.pytorch.api` | Selected edges in the graph topology's declared orientation. |
 | [`Columns`](batches.md#columns) | `kumo.pytorch.api` | Keep selected encoded fields as separate typed columns. |
 | [`Tokens`](batches.md#tokens) | `kumo.pytorch.api` | Concatenate one row's encoded IDs in the declared field order. |
 | [`Composite`](batches.md#composite) | `kumo.pytorch.api` | One category ID for the ordered tuple of scalar component results. |
@@ -105,7 +108,7 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`InputExposureWarning`](targets.md#inputexposurewarning) | `kumo.pytorch.api` | A masked value is also selected by an unmasked named input. |
 | [`DataLoaderSpec`](lifecycle.md#dataloaderspec) | `kumo.pytorch.api` | Schema, sampled values, and explicitly encoded model outputs. |
 | [`check`](lifecycle.md#check) | `kumo.pytorch.api` | Return everything wrong with this combination, without raising. |
-| [`prepare`](lifecycle.md#prepare) | `kumo.pytorch.api` | Validate, then bind the dataset through the engine. |
+| [`prepare`](lifecycle.md#prepare) | `kumo.pytorch.api` | Validate, then bind sources or an existing index through the engine. |
 | [`preview`](lifecycle.md#preview) | `kumo.pytorch.api` | Build up to eight raw samples and one model-facing batch. |
 | [`Plan`](lifecycle.md#plan) | `kumo.pytorch.api` | A contract bound to a dataset through an engine, before any anchors. |
 | [`Task`](lifecycle.md#task) | `kumo.pytorch.api` | Anchors bound to a plan: what is iterated, served from, and written out. |

@@ -6,12 +6,13 @@
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.encoding import OutputBinding, fit_encoder
-from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from kumo.pytorch.engines.diskgraph import DiskGraphSource, _first_occurrences
 
 pa = pytest.importorskip("pyarrow")
 
@@ -188,3 +189,22 @@ def _identity_graph(column):
         ),
     }
     return source._graph_output("users", SimpleNamespace(layers=()), [event], {}, {}, {})
+
+
+@pytest.mark.parametrize(
+    "pairs",
+    [
+        np.random.default_rng(0).integers(0, 40, (2, 2000)),
+        np.random.default_rng(1).integers(0, 2**20, (2, 50)).repeat(3, axis=1).astype(np.uint64),
+        np.array([[-1, 2, -1], [3, 4, 3]]),
+        np.array([[2**62, 0, 2**62], [1, 1, 1]]),
+        np.array([[1, 2**63, 1], [0, 0, 0]], dtype=np.uint64),
+        np.empty((2, 0), dtype=np.int64),
+    ],
+)
+def test_first_occurrences_keeps_first_unique_columns_in_order(pairs):
+    keys = [tuple(column) for column in pairs.T]
+    expected = [keys.index(key) for key in dict.fromkeys(keys)]
+    result = _first_occurrences(pairs)
+    assert result.dtype == pairs.dtype
+    np.testing.assert_array_equal(result, pairs[:, expected])

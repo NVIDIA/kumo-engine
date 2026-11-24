@@ -178,7 +178,7 @@ def construct_gpu_oom_message(
         num_experiments=num_experiments,
         num_failed_experiments=len(failed_trials),
     )
-    msg += batch_reduction_failure_message
+    msg += ' ' + batch_reduction_failure_message
 
     if trial.module_size is not None:
         msg += '\n\n'

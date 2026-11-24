@@ -24,7 +24,7 @@ use diskgraph_index::pkmap::{Key, KeyType};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList, PyString, PyTuple};
+use pyo3::types::{PyAny, PyByteArray, PyDict, PyList, PyString, PyTuple};
 
 create_exception!(diskgraph, DiskgraphDataError, PyException);
 create_exception!(
@@ -178,7 +178,7 @@ pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
 
 
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
-use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags, SamplingPlan};
+use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags};
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
@@ -193,6 +193,7 @@ mod custom_tt_entry;
 mod exact_quantiles;
 mod index_metadata;
 mod runtime_batch_iterator;
+mod sampling_plan;
 mod string_lookup;
 mod success_marker;
 mod temporal;
@@ -994,13 +995,50 @@ impl SamplerEngine {
         py.detach(move || canonical_node_mask_from_arrow(&table, primary_keys.as_ref(), node_ids))
     }
 
+    /// Sorted int64 IDs of `node_type`'s canonical rows (one per primary
+    /// key), keeping only rows that pass `row_filter`: a compiled ``RowFilter``
+    /// JSON on the table's own columns.
+    #[pyo3(signature = (node_type, row_filter=None))]
+    pub fn rhs_catalog<'py>(
+        &self,
+        py: Python<'py>,
+        node_type: String,
+        row_filter: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let row_filter: Option<diskgraph_core::tt_builder::RowFilter> = row_filter
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|error| DiskgraphConfigError::new_err(format!("invalid row filter: {error}")))?;
+        let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
+        let catalog = py
+            .detach(move || {
+                diskgraph_train_table::rhs_catalog::rhs_catalog(
+                    &reader,
+                    &node_type,
+                    row_filter.as_ref(),
+                    &engine.thread_pool,
+                )
+            })
+            .map_err(map_ttgen_err)?;
+        let width = size_of::<i64>();
+        let buffer = PyByteArray::new_with(py, catalog.len() * width, |bytes| {
+            for (out, node_id) in bytes.chunks_exact_mut(width).zip(catalog.node_ids()) {
+                out.copy_from_slice(&(node_id as i64).to_ne_bytes());
+            }
+            Ok(())
+        })?;
+        py.import("numpy")?
+            .call_method1("frombuffer", (buffer, "int64"))
+    }
+
     #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
     #[tracing::instrument(level = "debug", skip(self, py, seed_nodes, plan_json))]
     pub fn sample(
         &self,
         py: Python<'_>,
         seed_nodes: Bound<'_, PyDict>,
-        plan_json: String,
+        plan_json: &Bound<'_, PyAny>,
         fused: bool,
         seed_timestamps: Option<Bound<'_, PyDict>>,
         swap_edge_direction: Option<bool>,
@@ -1024,8 +1062,13 @@ impl SamplerEngine {
             timestamps = Some(ts_map);
         }
 
-        let plan: SamplingPlan = serde_json::from_str(&plan_json)
-            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
+        let plan = if let Ok(plan) = plan_json.extract::<PyRef<'_, sampling_plan::PySamplingPlan>>() {
+            plan.inner.clone()
+        } else {
+            let plan_json: String = plan_json.extract()?;
+            serde_json::from_str(&plan_json)
+                .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {e}")))?
+        };
 
         let flags = SamplingFlags {
             replace: false,
@@ -1483,6 +1526,7 @@ pub fn convert_kumo_config(
     index_threads=None,
     parent_index_path=None,
     cutoff_col_stats=None,
+    index_build_id=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -1509,6 +1553,7 @@ pub fn ingest(
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
     cutoff_col_stats: Option<&str>,
+    index_build_id: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1545,6 +1590,7 @@ pub fn ingest(
         .transpose()?;
 
     let options = diskgraph_ingest::IngestOptions {
+        index_build_id: index_build_id.map(str::to_owned),
         profile_dir: None,
         progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
@@ -1604,6 +1650,11 @@ pub fn ingest(
             s
         })
         .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize stats: {e}")))
+}
+
+#[pyfunction]
+fn new_index_build_id() -> String {
+    diskgraph_core::metadata::new_index_build_id()
 }
 
 // ---------------------------------------------------------------------------
@@ -1971,6 +2022,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
+    m.add_function(wrap_pyfunction!(new_index_build_id, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;
@@ -1991,6 +2043,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PreparedAggregateQuery>()?;
     runtime_batch_iterator::register(m)?;
+    sampling_plan::register(m)?;
     m.add_class::<PySampleIterator>()?;
     m.add_function(wrap_pyfunction!(tt_builder::build_split_spec_json, m)?)?;
     m.add_function(wrap_pyfunction!(tt_builder::convert_ticks, m)?)?;

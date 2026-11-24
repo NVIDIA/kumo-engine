@@ -31,6 +31,7 @@ from kumo.engine import (
     Table,
 )
 from kumo.engine._manifest import SourceTableEntry
+from kumo.engine.connector.file import _FileSourceBackend
 from kumo.engine.connector.identity import (
     DatabricksIdentity,
     SnowflakeIdentity,
@@ -132,6 +133,41 @@ def test_index_without_manifest_is_reused_and_backfilled(
     assert reused.manifest == replace(original, created_at=None,
                                       environment=None,
                                       reconstructed=True)
+
+
+@pytest.mark.parametrize('ents, events, unknown', [
+    (SourceVersion('v1', 'exact'), SourceVersion('v1', 'timestamp'), None),
+    (SourceVersion('v1', 'listing'), SourceVersion('v1', 'hour_bucket'), None),
+    ('v1', 'v1', 'ents, events'),
+    (SourceVersion('-1'), SourceVersion('-1'), 'ents, events'),
+    (SourceVersion('v1', 'exact'), SourceVersion('-1'), 'events'),
+])
+def test_snapshot_reuses_an_index_only_over_known_versions(
+        make_snapshot, monkeypatch, caplog, ents, events, unknown):
+    prepare = _FileSourceBackend.prepare_ingest
+    versions = {'ents': ents, 'events.parquet': events}
+
+    def prepare_ingest(self, connector, name, *args, **kwargs):
+        prepared = prepare(self, connector, name, *args, **kwargs)
+        return replace(prepared, version=versions[name])
+
+    monkeypatch.setattr(_FileSourceBackend, 'prepare_ingest', prepare_ingest)
+    before = make_snapshot(30)
+    ended = []
+    caplog.clear()
+    with caplog.at_level('INFO', logger='kumo.engine.graph'):
+        after = make_snapshot(callbacks=[ended.append])
+
+    reused = unknown is None
+    assert ended[-1].params['reused'] is reused
+    assert (after.id == before.id) is reused
+    assert (after.index_path == before.index_path) is reused
+    assert (before.index_path / '_SUCCESS').is_file()
+    notes = [note for note in caplog.messages if 'kind unknown' in note]
+    assert notes == ([] if reused else [
+        f'Graph.snapshot: building a new index; data versions of kind '
+        f'unknown: {unknown}'
+    ])
 
 
 def test_manifest_write_failure_leaves_snapshot_unchanged(

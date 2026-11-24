@@ -1,0 +1,12 @@
+{
+  "candidate": {
+    "wheel_file": "kumo_engine-1.0.0.dev0+789018b-cp311-abi3-manylinux_2_34_x86_64.whl",
+    "wheel_sha256": "8bba986da7cf86cf9f164eeabb78eedf163b5de3e5d8ff34c96d63d2fb3db709",
+    "expected_version": "1.0.0.dev0+789018b"
+  },
+  "build": {
+    "source_commit": "789018b3e5f46c1ee51c61e5e93991b97279954b",
+    "github_run": 42903008412,
+    "artifact_id": 13803059744
+  }
+}

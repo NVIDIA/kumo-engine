@@ -87,7 +87,7 @@ def main():
 
     run(build_graph(sources(args)), QUERY,
         TrainingTableGenerationPlan(split=SPLIT), 'static_link',
-        metric('recall@5'), args=args,
+        {**metric('recall@5'), 'optimization.overlap_ratio': [0.5]}, args=args,
         prediction_kwargs={'num_classes_to_return': 5})
 
 

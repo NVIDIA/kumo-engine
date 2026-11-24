@@ -335,16 +335,15 @@ class Events:
 class Hop:
     """One explicitly configured graph traversal.
 
-    Inherits the destination clock unless ``time`` overrides it or
-    ``temporal="static"`` disables filtering; see `GraphSample`.
+    Defaults to recent for a destination with a clock, otherwise uniform;
+    see `GraphSample`.
     """
 
     link: Link
     fanout: int
-    strategy: Literal["recent", "uniform"] = "recent"
+    strategy: Literal["recent", "uniform"] | None = None
     direction: Literal["forward", "reverse"] = "forward"
     time: str | None = None
-    temporal: Literal["inherit", "static"] = "inherit"
 
     def lower(self) -> GraphSample:
         """The equivalent `GraphSample`."""
@@ -354,7 +353,6 @@ class Hop:
             direction=self.direction,
             strategy=self.strategy,
             time_column=self.time,
-            temporal=self.temporal,
         )
 
 
