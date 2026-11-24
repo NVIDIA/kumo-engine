@@ -153,7 +153,6 @@ falls outside the signed 64-bit range.
 
 The DiskGraph engine is built on kumo-engine's DiskGraph, which the
 [kumo-engine README](https://github.com/NVIDIA/kumo-engine#readme) describes.
-[Installation](installation.md) explains how to install it.
 
 ### Building and reusing the index
 

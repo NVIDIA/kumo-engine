@@ -39,6 +39,7 @@ def test_repository_is_stamped_from_version():
 
 @pytest.mark.parametrize(('path', 'quote'), [
     ('packages/kumo-engine/kumo/engine/_version.py', '"'),
+    ('packages/experimental/kumo-pytorch/src/kumo/pytorch/__about__.py', '"'),
     ('packages/kumo-sdk/kumoai_studio/_version.py', "'"),
 ])
 def test_python_consumers_carry_the_version(path, quote):
@@ -55,6 +56,7 @@ def test_every_consumer_is_a_stamp_site():
     paths = {site.path for site in stamp.SITES}
     assert {
         'packages/kumo-engine/kumo/engine/_version.py',
+        'packages/experimental/kumo-pytorch/src/kumo/pytorch/__about__.py',
         'packages/kumo-sdk/kumoai_studio/_version.py',
         'common_utils/version_file.py',
         'helm/kumo-stack/Chart.yaml',

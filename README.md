@@ -73,6 +73,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `text` | Encoding for free-text columns, such as descriptions or reviews, with GloVe 6B 50d word vectors |
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
+| `pytorch` | (Experimental) `kumo.pytorch`, for training your own PyTorch models on your tables |
 
 Choose your hardware and runtime environment:
 
@@ -148,6 +149,7 @@ See the [benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/be
 | Configure sampling and training | [Model Plan Guide](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/train-a-model/model-plan-guide) |
 | Run batch predictions in production | [Production Workflow](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/deploy-a-model/overview) |
 | Use the in-process Python API | [Local Python interface](packages/kumo-engine/README.md), imported as `kumo.engine` |
+| Build batches for your own PyTorch model (experimental) | [kumo-pytorch](packages/experimental/kumo-pytorch/README.md), imported as `kumo.pytorch` |
 | Version, promote, and monitor models | [MLOps guide](packages/kumo-engine/docs/mlops.md) |
 | Check compatibility before upgrading | [Release notes](https://docs.nvidia.com/sdgm/kumo-engine/resources/release-notes) |
 | Explore the source code | [Architecture](ARCHITECTURE.md) and [engineering docs](docs/README.md) |
