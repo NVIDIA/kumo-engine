@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 from dataclasses import FrozenInstanceError, replace
 from unittest.mock import Mock
@@ -18,6 +19,7 @@ from diskgraph import (
     SamplingPlan,
     WeightedSeedSampling,
 )
+from diskgraph.runtime_batch_iterator import _weighted_seed_sampling_json
 
 
 def test_sampling_options_defaults_and_pickle() -> None:
@@ -53,10 +55,19 @@ def test_untyped_options_rejected_before_opening_manifest(invalid: object) -> No
 
 
 @pytest.mark.parametrize("seed", [InheritEngineSeed.DEFAULT, None, 0, 91])
-def test_native_iterator_seed_inheritance(
-    monkeypatch: pytest.MonkeyPatch, seed: int | None | InheritEngineSeed
+@pytest.mark.parametrize("is_temporal", [False, True])
+def test_native_iterator_legacy_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    seed: int | None | InheritEngineSeed,
+    is_temporal: bool,
 ) -> None:
-    """Omitted seed inherits the index seed; explicit None and zero are retained."""
+    """Match the pre-options native call, including every optional default.
+
+    Args:
+        monkeypatch: Fixture replacing manifest access and the native index.
+        seed: Inherited, explicitly disabled, zero, or nonzero shuffle seed.
+        is_temporal: Whether the manifest enables seed timestamp anchoring.
+    """
     index = RuntimeIndex("metadata.json", rnd_seed=17)
     monkeypatch.setattr(index, "_resolve", Mock())
     monkeypatch.setattr(index, "stage_size", Mock(return_value=3))
@@ -64,7 +75,7 @@ def test_native_iterator_seed_inheritance(
         "train": {"table_name": "seeds", "index_path": "/graph/train_tables/task"}
     }
     index._parent_root = "/graph"
-    index._manifest = {"task": {"is_temporal": False}}
+    index._manifest = {"task": {"is_temporal": is_temporal}}
     native_index = Mock()
     iterator = native_index.iter.return_value
     iterator.num_samples.return_value = 3
@@ -72,10 +83,38 @@ def test_native_iterator_seed_inheritance(
     options = SamplingOptions(stage="train", batch_size=2, rnd_seed=seed)
     result, count = index.iter(options)
     assert result is iterator and count == 3
-    assert native_index.iter.call_args.args[5] == (
-        17 if seed is InheritEngineSeed.DEFAULT else seed
+    # Positional contract of RuntimeIndex.iter before SamplingOptions, using
+    # an explicit empty plan and the single-worker, unshuffled epoch-zero case.
+    native_index.iter.assert_called_once_with(
+        "seeds",
+        SamplingPlan(),
+        1,
+        0,
+        False,
+        17 if seed is InheritEngineSeed.DEFAULT else seed,
+        0,
+        2,
+        False,
+        None,
+        True,
+        None,
+        None,
+        None,
+        False,
+        True,
+        False,
+        None,
+        None,
+        None,
+        None,
+        False,
+        None,
+        None,
+        is_temporal,
+        None,
+        False,
+        None,
     )
-    assert native_index.iter.call_args.args[1] is options.sampling_plan
 
 
 def test_explicit_null_seed_cannot_shuffle() -> None:
@@ -85,3 +124,71 @@ def test_explicit_null_seed_cannot_shuffle() -> None:
         index.iter(
             SamplingOptions(stage="train", batch_size=2, shuffle=True, rnd_seed=None)
         )
+
+
+@pytest.mark.parametrize("use_sample_weights", [False, True])
+@pytest.mark.parametrize("class_weight", [None, 1.0])
+def test_weighted_seed_defaults_preserve_legacy_buckets(
+    use_sample_weights: bool,
+    class_weight: float | None,
+) -> None:
+    """Preserve unit class multipliers and the omitted-class sidecar choice.
+
+    Args:
+        use_sample_weights: Whether per-row weighted sidecars are requested.
+        class_weight: An omitted or explicitly unit false-class multiplier.
+    """
+    ref = {
+        "index_path": "/graph/train_tables/task",
+        "binary_label_index": {
+            "false_node_ids": "false.ids",
+            "false_count": 3,
+            "true_node_ids": "true.ids",
+            "true_count": 2,
+        },
+        "sample_weight_index": {
+            "all": {
+                "node_ids": "all.ids",
+                "cdf": "all.cdf",
+                "count": 5,
+                "total_weight": 9.0,
+            },
+            "false_bucket": {
+                "node_ids": "false.ids",
+                "cdf": "false.cdf",
+                "count": 3,
+                "total_weight": 7.0,
+            },
+            "true_bucket": {
+                "node_ids": "true.ids",
+                "cdf": "true.cdf",
+                "count": 2,
+                "total_weight": 2.0,
+            },
+        },
+    }
+    weights = WeightedSeedSampling(
+        num_samples=5,
+        false_weight=class_weight,
+        use_sample_weights=use_sample_weights,
+    )
+
+    encoded = _weighted_seed_sampling_json(ref, "train", weights)
+
+    assert encoded is not None
+    payload = json.loads(encoded)
+    assert payload["num_samples"] == 5
+    buckets = payload["buckets"]
+    if use_sample_weights:
+        expected = (
+            [("all", 5, 9.0)]
+            if class_weight is None
+            else [("false_bucket", 3, 7.0), ("true_bucket", 2, 2.0)]
+        )
+        assert all("cdf_path" in bucket for bucket in buckets)
+    else:
+        expected = [("false", 3, 3.0), ("true", 2, 2.0)]
+        assert all("cdf_path" not in bucket for bucket in buckets)
+    assert [
+        (bucket["name"], bucket["count"], bucket["mass"]) for bucket in buckets
+    ] == expected

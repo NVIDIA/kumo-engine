@@ -18,6 +18,7 @@ from diskgraph import (
     SamplerEngine,
     SeedScheduleConfig,
 )
+from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
 from diskgraph._c import SeedSchedule
 from diskgraph._c import SeedScheduleConfig as NativeSeedScheduleConfig
 from diskgraph.sampling_options import SamplingOptions
@@ -406,3 +407,59 @@ def test_named_neighborhoods_accept_native_plans_without_json(
         native.with_neighborhoods(
             {"invalid": {"plan": {"layers": []}, "projections": {}}}
         )
+
+
+@pytest.mark.parametrize("with_neighbors", [False, True])
+@pytest.mark.parametrize("entity_node_type", [None, "users"])
+def test_options_defaults_match_legacy_native_batches(
+    seed_table_fixture: dict[str, object],  # noqa: F811 -- imported pytest fixture
+    with_neighbors: bool,
+    entity_node_type: str | None,
+) -> None:
+    """Compare default options with the native defaults used by the old wrapper.
+
+    Args:
+        seed_table_fixture: Ingested parent graph and six seed rows.
+        with_neighbors: Whether to supply a two-layer traversal plan.
+        entity_node_type: Missing entity type or an explicit valid entity type.
+    """
+    plan = _sampling_plan() if with_neighbors else SamplingPlan()
+    index = RuntimeIndex(
+        str(seed_table_fixture["manifest_path"]), rnd_seed=17, num_threads=1
+    )
+    native = NativeRuntimeIndex(
+        str(seed_table_fixture["parent_root"]),
+        f"train_tables/{seed_table_fixture['tt_id']}",
+        17,
+        1,
+    )
+
+    iterator, count = index.iter(
+        SamplingOptions(
+            stage="train",
+            batch_size=2,
+            sampling_plan=plan,
+            entity_node_type=entity_node_type,
+        )
+    )
+    legacy = native.iter(
+        "train_seeds",
+        plan,
+        1,
+        0,
+        False,
+        17,
+        0,
+        2,
+        entity_node_type=entity_node_type,
+    )
+
+    assert count == seed_table_fixture["n_seeds"]
+    if entity_node_type is None:
+        with pytest.raises(DiskgraphConfigError, match="entity_node_type") as current:
+            list(iterator)
+        with pytest.raises(DiskgraphConfigError, match="entity_node_type") as previous:
+            list(legacy)
+        assert str(current.value) == str(previous.value)
+        return
+    _assert_equal(list(iterator), list(legacy))

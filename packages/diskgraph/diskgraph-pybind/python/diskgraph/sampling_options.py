@@ -20,10 +20,16 @@ class WeightedSeedSampling:
     """Weighted seed draws, with optional class and per-row sample weights.
 
     Args:
-        num_samples: Number of draws, with replacement.
-        false_weight: Optional multiplier for the false class.
-        true_weight: Optional multiplier for the true class.
-        use_sample_weights: Whether to use per-row sample-weight sidecars.
+        num_samples: Required number of seed draws, with replacement.
+        false_weight: Defaults to None: no explicit false-class weighting;
+            its effective multiplier is 1.0.
+        true_weight: Defaults to None: no explicit true-class weighting;
+            its effective multiplier is 1.0.
+        use_sample_weights: Defaults to False: draw uniformly within each
+            binary-class bucket. True uses per-row sample-weight sidecars.
+            With both class weights None, use the all-rows weight sidecar;
+            setting either class weight selects binary-class weight sidecars.
+            Thus explicit 1.0 and None can require different sidecars.
     """
 
     num_samples: int
@@ -40,35 +46,56 @@ class SamplingOptions:
     dictionary/list formats; callers must not mutate them during iteration.
 
     Args:
-        stage: Task manifest stage to sample.
-        batch_size: Maximum number of seeds in each batch.
-        sampling_plan: Native graph traversal plan.
-        num_workers: Number of logical shards.
-        worker_id: Zero-based logical shard ordinal.
-        shuffle: Whether to shuffle seed rows deterministically.
-        epoch: Logical epoch used for seed ordering.
-        rnd_seed: Shuffle seed; omitted inherits the opened index seed. An explicit
-            None disables the seed and cannot be combined with shuffle.
-        drop_last: Whether to omit the final incomplete seed batch.
-        fused: Whether to fuse traversal and feature materialization.
-        swap_edge_direction: Whether output edges point toward sampled seeds.
-        neg_rhs_node_type: Optional negative-sampling destination type.
-        neg_amount_m: Number of negatives per positive seed.
-        neg_rnd_seed: Optional negative-sampling seed.
-        replace: Whether graph neighbors are sampled with replacement.
-        disjoint: Whether seed neighborhoods are kept separate.
-        adaptive: Whether to use adaptive graph sampling.
-        entity_node_type: Optional entity node type override.
-        target_node_type: Optional target node type override.
-        rhs_seed_node_type: Optional RHS candidate-domain seed type.
-        rhs_seed_time: Optional RHS cutoff timestamp.
-        group_by_timestamp: Whether to group seeds into timestamp buckets.
-        weighted_seed_sampling: Optional weighted seed draw configuration.
-        selected_stage_node_ids: Optional ordered seed IDs, retaining duplicates.
-        pseudo_seed_time: Optional static-link pseudo-time cutoff.
-        disable_pseudo_time: Whether to disable static-link pseudo-time filtering.
-        projections: Feature columns by node type. None selects all features;
-            an empty column sequence skips that type's features, not its edges.
+        stage: Required task manifest stage to sample.
+        batch_size: Required positive maximum number of seeds per batch.
+        sampling_plan: Defaults to a fresh SamplingPlan(): zero traversal
+            layers, so only seeds are sampled. Pass layers to sample neighbors.
+        num_workers: Defaults to 1 logical shard: process the entire stage.
+        worker_id: Defaults to 0: the first and, by default, only shard.
+        shuffle: Defaults to False: do not shuffle seed ordering.
+        epoch: Defaults to 0: the initial seed-schedule epoch.
+        rnd_seed: Defaults to InheritEngineSeed.DEFAULT: inherit the opened
+            index's seed. Explicit None disables the shuffle seed and is invalid
+            with shuffle=True. Zero is an explicit seed, not inheritance.
+        drop_last: Defaults to False: retain the final incomplete seed batch.
+        fused: Defaults to None: let the engine choose fused feature fetching;
+            non-empty projections select non-fused mode. Explicit True ignores
+            non-empty projections with a warning.
+        swap_edge_direction: Defaults to True: output edges point toward seeds.
+        neg_rhs_node_type: Defaults to None: disable global negative sampling.
+        neg_amount_m: Defaults to None: no negative count. Required when
+            neg_rhs_node_type is set; specifies negatives per positive seed.
+        neg_rnd_seed: Defaults to None: negative draws use thread-local random
+            state, independently of rnd_seed. Set a seed for reproducible draws.
+        replace: Defaults to False: sample graph neighbors without replacement.
+            This does not control weighted seed draws, which use replacement.
+        disjoint: Defaults to True: keep seed neighborhoods separate.
+        adaptive: Defaults to False: do not enable adaptive graph sampling.
+        entity_node_type: Defaults to None: no entity type is supplied.
+            Normal stage graph sampling requires an explicit type to resolve
+            the entity_node_id rowpack column; None raises a native config
+            error on batch consumption. RHS catalog mode uses its own type.
+        target_node_type: Defaults to None: pass through raw targets instead
+            of resolving ragged link-prediction labels for this node type.
+        rhs_seed_node_type: Defaults to None: seed from the stage table.
+            Setting a type instead seeds its full RHS catalog (NodeRange mode).
+        rhs_seed_time: Defaults to None: no fixed RHS anchor timestamp.
+            Required when rhs_seed_node_type is set.
+        group_by_timestamp: Defaults to False: batch by seed count rather
+            than timestamp buckets.
+        weighted_seed_sampling: Defaults to None: visit stage seeds without
+            weighted replacement draws. Set WeightedSeedSampling to enable them.
+        selected_stage_node_ids: Defaults to None: select all stage rows.
+            A list restricts selection and retains duplicates; its order is
+            preserved when shuffle=False.
+        pseudo_seed_time: Defaults to None: infer static-link pseudo-time from
+            the stage when sidecars exist (train/val=1, test=2, predict=none).
+        disable_pseudo_time: Defaults to False: retain automatic pseudo-time
+            filtering when present. True disables it and cannot be combined
+            with an explicit pseudo_seed_time.
+        projections: Defaults to None: select all feature columns for all types.
+            Missing types also select all columns; an empty column list skips
+            that type's features but preserves its edges and graph traversal.
     """
 
     stage: str
