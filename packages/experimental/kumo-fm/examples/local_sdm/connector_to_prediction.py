@@ -18,7 +18,11 @@ from kumo import fm
 from kumo.pytorch import api
 
 
-def load_batch(root="scratch/connector-to-prediction"):
+def build_index_and_load_batch(root="scratch/connector-to-prediction"):
+    """Write example Parquet files, build or reuse the index, and load an FM batch.
+
+    Configures engine storage under root/producer and retains files for reuse.
+    """
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     kumo.configure(scratch_dir=root / "producer")
@@ -68,7 +72,7 @@ def main():
     from adapter import arrow_to_sdm
     from sdm.models import KumoRelational
 
-    batch = load_batch()
+    batch = build_index_and_load_batch()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     inputs = {name: value.to(device) for name, value in arrow_to_sdm(batch).items()}
     model = KumoRelational(task="classification", device=device).eval()

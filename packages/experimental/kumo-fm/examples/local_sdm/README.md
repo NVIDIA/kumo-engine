@@ -5,7 +5,7 @@ writes Parquet source files with `fixture.py`, builds a connector graph snapshot
 and prepares an FM payload through public PyTorch plans.
 
 Install matching engine, DiskGraph, settings, PyTorch and FM wheels. Calling
-`load_batch()` uses only those packages. For model inference, additionally install
+`build_index_and_load_batch()` uses only those packages. For model inference, additionally install
 the pinned SDM environment documented at the top of
 [`walkthrough.ipynb`](walkthrough.ipynb) and run:
 
@@ -14,7 +14,8 @@ cd packages/experimental/kumo-fm/examples/local_sdm
 python connector_to_prediction.py
 ```
 
-`walkthrough.ipynb` uses the same `load_batch()` helper. Run it from this folder;
+`walkthrough.ipynb` uses the same `build_index_and_load_batch()` helper to write
+source files, build or reuse the graph index, and load an FM batch. Run it from this folder;
 it writes under `scratch/notebook/`, while the script uses
 `scratch/connector-to-prediction/`. `source/` holds regenerable Parquet files;
 `producer/` holds managed base indexes and derived tasks/caches. Repeated runs

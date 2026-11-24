@@ -135,20 +135,20 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path, monkeypatch):
         kumo.configure(scratch_dir=previous)
 
 
-def test_example_load_batch_without_sdm(tmp_path, monkeypatch):
+def test_example_build_index_and_load_batch_without_sdm(tmp_path, monkeypatch):
     import sys
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples/local_sdm"))
     monkeypatch.setitem(sys.modules, "sdm", None)
-    from connector_to_prediction import load_batch
+    from connector_to_prediction import build_index_and_load_batch
 
-    batch = load_batch(tmp_path / "example")
+    batch = build_index_and_load_batch(tmp_path / "example")
     context = batch.tables("context")["instance_table"]
     assert context.num_rows == 32
     assert context["__fm_target"].to_pylist() == ["yes", "no"] * 16
     assert batch.tables("predict")["instance_table"].num_rows == 8
     assert batch.encode("arrays") and batch.encode("arrow_ipc")
     indexes = sorted((tmp_path / "example/producer/indexes").iterdir())
-    second = load_batch(tmp_path / "example")
+    second = build_index_and_load_batch(tmp_path / "example")
     assert sorted((tmp_path / "example/producer/indexes").iterdir()) == indexes
     assert second.encode("arrays") == batch.encode("arrays")
