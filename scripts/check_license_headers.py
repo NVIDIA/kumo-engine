@@ -285,7 +285,7 @@ def validate_text(path: str, text: str, policy: dict[str, Any]) -> str | None:
         "# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
         "# SPDX-License-Identifier: Apache-2.0",
     ]
-    if (path.startswith("packages/kumo-transaction/")
+    if (path.startswith("packages/experimental/kumo-transaction/")
             and ".." not in PurePosixPath(path).parts
             and lines[start:start + 2] == blueprint_header):
         lines = lines[:start] + [

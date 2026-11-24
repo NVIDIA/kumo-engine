@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -34,7 +35,8 @@ def commit(root: Path, path: str, text: str) -> str:
 @pytest.fixture
 def repository(tmp_path: Path) -> tuple[Path, str]:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    base = commit(tmp_path, "packages/kumo-transaction/old.py", "value = 1\n")
+    base = commit(tmp_path, "packages/experimental/kumo-transaction/old.py",
+                  "value = 1\n")
     return tmp_path, base
 
 
@@ -45,7 +47,7 @@ def test_unrelated_diff_does_not_run_package(repository) -> None:
 
 
 @pytest.mark.parametrize("path", [
-    "packages/kumo-transaction/new.py",
+    "packages/experimental/kumo-transaction/new.py",
     ".github/workflows/transaction-blueprint.yml",
     "scripts/check_license_headers.py",
     "setup.cfg",
@@ -59,7 +61,8 @@ def test_package_and_integration_policy_changes_run_checks(
 
 def test_moving_a_file_out_of_the_package_still_runs_checks(repository) -> None:
     root, base = repository
-    (root / "packages/kumo-transaction/old.py").rename(root / "moved.py")
+    (root / "packages/experimental/kumo-transaction/old.py").rename(root /
+                                                                    "moved.py")
     head = commit(root, "README.md", "moved\n")
     assert package_changed(root, base, head)
 
@@ -89,3 +92,10 @@ def test_required_status_is_not_hidden_by_event_path_filters() -> None:
     assert "uv sync --frozen --extra dev" in commands
     assert "pytest tests/unit tests/contract tests/recipe_smoke" in commands
     assert "check_python_license_metadata.py" in commands
+    wheel_step = next(
+        step for step in job["steps"]
+        if step.get("name") == "Build and verify wheel legal metadata")
+    command = shlex.split(wheel_step["run"].splitlines()[-1])
+    checker = command[command.index("python") + 1]
+    resolved = (root / wheel_step["working-directory"] / checker).resolve()
+    assert resolved == root / "scripts/check_python_license_metadata.py"

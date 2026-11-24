@@ -45,26 +45,26 @@ jobs:
           version: '0.13.8'
       - name: Install locked package dependencies
         if: steps.paths.outputs.changed == 'true'
-        working-directory: packages/kumo-transaction
+        working-directory: packages/experimental/kumo-transaction
         run: uv sync --frozen --extra dev
       - name: Check package style
         if: steps.paths.outputs.changed == 'true'
-        working-directory: packages/kumo-transaction
+        working-directory: packages/experimental/kumo-transaction
         run: |
           uv run --frozen --extra dev ruff check src tests recipes benchmarks scripts
           uv run --frozen --extra dev ruff format --check src tests recipes benchmarks scripts
       - name: Run CPU unit, contract and recipe-smoke tests
         if: steps.paths.outputs.changed == 'true'
-        working-directory: packages/kumo-transaction
+        working-directory: packages/experimental/kumo-transaction
         env:
           PYTHONPATH: src
         run: uv run --frozen --extra dev pytest tests/unit tests/contract tests/recipe_smoke -q
       - name: Build and verify wheel legal metadata
         if: steps.paths.outputs.changed == 'true'
-        working-directory: packages/kumo-transaction
+        working-directory: packages/experimental/kumo-transaction
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/transaction-wheel" .
-          uv run --frozen --extra dev python ../../scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/transaction-wheel"
+          uv run --frozen --extra dev python ../../../scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/transaction-wheel"
       - name: Unrelated change
         if: steps.paths.outputs.changed == 'false'
         run: echo "No Transaction Blueprint or integration-policy changes."

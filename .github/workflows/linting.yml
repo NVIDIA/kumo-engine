@@ -162,7 +162,7 @@ jobs:
             packages/kumo-engine
             packages/experimental/kumo-pytorch
             tools/glove-6b-50d
-            packages/kumo-transaction
+            packages/experimental/kumo-transaction
           )
           for project in "${projects[@]}"; do
             uv build --wheel --no-build-logs --out-dir "$RUNNER_TEMP/license-wheels" "$project"

@@ -7,7 +7,7 @@ imports, and CLI; it does not add an Engine runtime integration.
 Run the commands below from this directory:
 
 ```bash
-cd packages/kumo-transaction
+cd packages/experimental/kumo-transaction
 ```
 
 The imported baseline and rules for later sync PRs are in [SYNC.md](SYNC.md).

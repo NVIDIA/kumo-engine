@@ -42,8 +42,8 @@ def package_changed(root: Path, base: str, head: str) -> bool:
         "--",
     ], cwd=root).decode().split("\0")
     return any(
-        path.startswith("packages/kumo-transaction/") or path in POLICY_PATHS
-        for path in paths)
+        path.startswith("packages/experimental/kumo-transaction/")
+        or path in POLICY_PATHS for path in paths)
 
 
 def main() -> None:

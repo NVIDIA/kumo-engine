@@ -62,7 +62,7 @@ rapids = []
 tfm = "tfm.cli.main:main"
 
 [project.urls]
-Repository = "https://github.com/NVIDIA/kumo-engine/tree/main/packages/kumo-transaction"
+Repository = "https://github.com/NVIDIA/kumo-engine"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -24,7 +24,7 @@ SHADCN_HEADER = """// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
 
 
 def test_blueprint_header_normalization_is_exact_and_scoped() -> None:
-    path = "packages/kumo-transaction/src/tfm/example.py"
+    path = "packages/experimental/kumo-transaction/src/tfm/example.py"
     header = """# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """
@@ -32,8 +32,9 @@ def test_blueprint_header_normalization_is_exact_and_scoped() -> None:
                                                POLICY) is None
     assert check_license_headers.validate_text(
         path, "#!/usr/bin/env python\n" + header, POLICY) is None
-    for other in ("example.py", "packages/kumo-transaction-other/a.py",
-                  "packages/kumo-transaction/../other.py"):
+    for other in ("example.py", "packages/kumo-transaction/src/tfm/example.py",
+                  "packages/experimental/kumo-transaction-other/a.py",
+                  "packages/experimental/kumo-transaction/../other.py"):
         assert check_license_headers.validate_text(other, header,
                                                    POLICY) is not None
     for invalid in (
@@ -50,10 +51,10 @@ def test_blueprint_header_normalization_is_exact_and_scoped() -> None:
 
 
 def test_all_pinned_blueprint_headers_pass_without_changing_source() -> None:
-    root = REPOSITORY_ROOT / "packages/kumo-transaction"
+    root = REPOSITORY_ROOT / "packages/experimental/kumo-transaction"
     paths = check_license_headers.tracked_files(REPOSITORY_ROOT)
     for path in paths:
-        if not path.startswith("packages/kumo-transaction/"):
+        if not path.startswith("packages/experimental/kumo-transaction/"):
             continue
         try:
             text = (REPOSITORY_ROOT / path).read_text()
