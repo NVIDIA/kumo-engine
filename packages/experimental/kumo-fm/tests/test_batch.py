@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pytest
 
-from kumo.fm.batch import PayloadBatch
+from kumo.fm.batch import PayloadBatch, _SplitPayload
 
 BIG_ID = 9007199254740993
 
@@ -36,7 +36,7 @@ def workload():
 
 def request(work):
     anchor = datetime(2026, 2, 1, tzinfo=timezone.utc)
-    context = [{"instance_id": 7, "entity_key": BIG_ID, "anchor_time": anchor, "target": 1}]
+    context = [{"instance_id": 7, "entity_key": BIG_ID, "anchor_time": anchor}]
     predict = [{"instance_id": 8, "entity_key": BIG_ID, "anchor_time": anchor}]
 
     def related(instance_id):
@@ -49,8 +49,8 @@ def request(work):
                                 "user_id": pa.array([BIG_ID], pa.int64()),
                                 "__fm_edge_event_user": pa.array([BIG_ID], pa.int64())}),
         }
-    return PayloadBatch(work, {"context": (context, related(7)),
-                               "predict": (predict, related(8))})
+    return PayloadBatch(work, {"context": _SplitPayload(context, related(7), pa.array(["1"])),
+                               "predict": _SplitPayload(predict, related(8))})
 
 
 def test_retained_tables_encode_both_formats_without_mutation():

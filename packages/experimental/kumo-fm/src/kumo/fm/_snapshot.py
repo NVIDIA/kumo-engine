@@ -9,15 +9,17 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import timedelta
 from itertools import islice
+from numbers import Complex
 from types import SimpleNamespace
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
 from ._assembly import GraphAssembler
 from ._columnar import adapt_columnar_batch
 from ._types import TYPES, timestamp, validate_scalar
-from .batch import PayloadBatch
+from .batch import PayloadBatch, _SplitPayload
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,44 @@ def _selected_graph(schema, sample, features, bundle):
     return graph_name, fields, tables, relations, projections
 
 
+def _label_array(values):
+    return values if isinstance(values, (pa.Array, pa.ChunkedArray)) else pa.array(np.asarray(values))
+
+
+def _class_labels(values, classes):
+    # Only the two declared class keys/names cross Python; labels stay columnar.
+    keys, names = [], []
+    dtype = values.type
+    for key in classes:
+        if pa.types.is_string(dtype):
+            if not isinstance(key, str):
+                continue
+            normalized = key
+        else:
+            try:
+                numeric = key.real if isinstance(key, Complex) and key.imag == 0 else key
+                if pa.types.is_boolean(dtype):
+                    if key not in (0, 1):
+                        continue
+                    normalized = bool(key)
+                elif pa.types.is_integer(dtype):
+                    normalized = int(numeric)
+                elif pa.types.is_floating(dtype):
+                    normalized = float(numeric)
+                else:
+                    continue
+                normalized = pa.scalar(normalized, type=dtype).as_py()
+            except (ValueError, TypeError, OverflowError):
+                continue
+        if normalized in classes:
+            keys.append(normalized)
+            names.append(str(classes[normalized]))
+    indices = pc.index_in(values, value_set=pa.array(keys, type=dtype))
+    if indices.null_count:
+        raise ValueError("Context label is outside declared classes")
+    return pc.take(pa.array(names, type=pa.string()), indices)
+
+
 class SnapshotFMLoader:
     """Prepare FM labels and columnar graph plans over one adopted snapshot."""
 
@@ -343,42 +383,41 @@ class SnapshotFMLoader:
         ]), entity_id="entity", sample_id="sample", as_of_time="at")
 
     def _labels_for(self, anchor, seeds):
-        result = {}
-        expected = {s["instance_id"] for s in seeds}
-        seen, null_ids = set(), set()
+        expected = pa.array([seed["instance_id"] for seed in seeds], pa.int64())
+        parts = []
         with self._labels.materialize(anchor) as task:
             for batch in task.batches(output_format="inspectable", shuffle=False,
                                       batch_size=self._batch_size):
                 label = batch.targets["label"]
-                sample_ids = list(batch.metadata["sample_ids"])
-                values, valid = label["values"].tolist(), label["valid"].tolist()
-                if len(sample_ids) != len(values) or len(values) != len(valid):
+                identifiers = pa.array(batch.metadata["sample_ids"], pa.int64())
+                values, valid = _label_array(label["values"]), _label_array(label["valid"])
+                if len(identifiers) != len(values) or len(values) != len(valid):
                     raise ValueError("FM label batch is misaligned")
-                for identifier, value, present in zip(sample_ids, values, valid, strict=True):
-                    identifier = int(identifier)
-                    if identifier not in expected:
-                        raise ValueError(f"Unexpected FM context label for occurrence ID {identifier}")
-                    if identifier in seen:
-                        raise ValueError(f"FM context label duplicated for occurrence ID {identifier}")
-                    seen.add(identifier)
-                    if not present:
-                        null_ids.add(identifier)
-                        continue
-                    if self._classes is not None:
-                        if value not in self._classes:
-                            raise ValueError("Context label is outside declared classes")
-                        value = self._classes[value]
-                    else:
-                        value = float(value)
-                    result[identifier] = value
-        if seen != expected:
-            missing = [s["instance_id"] for s in seeds if s["instance_id"] not in seen]
+                parts.append(pa.table({"id": identifiers, "value": values, "valid": valid}))
+        if not parts:
+            raise ValueError(f"Missing FM context labels for occurrence IDs {expected.to_pylist()}")
+        labels = pa.concat_tables(parts)
+        identifiers = labels["id"]
+        unexpected = pc.is_null(pc.index_in(identifiers, value_set=expected))
+        if pc.any(unexpected).as_py():
+            raise ValueError(f"Unexpected FM context label for occurrence IDs {identifiers.filter(unexpected).to_pylist()}")
+        counts = pc.value_counts(identifiers)
+        duplicated = pc.greater(counts.field("counts"), 1)
+        if pc.any(duplicated).as_py():
+            repeated = counts.field("values").filter(duplicated).to_pylist()
+            raise ValueError(f"FM context label duplicated for occurrence IDs {repeated}")
+        positions = pc.index_in(expected, value_set=identifiers)
+        if positions.null_count:
+            missing = expected.filter(pc.is_null(positions)).to_pylist()
             raise ValueError(f"Missing FM context labels for occurrence IDs {missing}")
-        if null_ids:
-            missing = [s["instance_id"] for s in seeds if s["instance_id"] in null_ids]
+        valid = pc.take(labels["valid"], positions)
+        nulls = pc.invert(pc.fill_null(valid, False))
+        if pc.any(nulls).as_py():
+            missing = expected.filter(nulls).to_pylist()
             raise ValueError(f"FM context target {self._target!r} is null for occurrence IDs {missing}; "
                              "context targets must be non-null for every occurrence")
-        return result
+        values = pc.take(labels["value"], positions)
+        return pc.cast(values, pa.float64()) if self._classes is None else _class_labels(values, self._classes)
 
     def _graphs_for(self, anchor, seeds):
         from ._contract import schema_for
@@ -403,12 +442,12 @@ class SnapshotFMLoader:
                     parts[name].append(table)
         if seen != set(expected):
             raise ValueError("Missing FM graph occurrences")
-        order = {seed["instance_id"]: i for i, seed in enumerate(seeds)}
+        order = pa.array([seed["instance_id"] for seed in seeds], pa.int64())
         result = {}
         for name, chunks in parts.items():
             table = pa.concat_tables(chunks) if chunks else pa.table({})
             if len(table):
-                rank = pa.array([order[int(value)] for value in table["instance_id"].to_pylist()])
+                rank = pc.index_in(table["instance_id"], value_set=order)
                 index = pc.sort_indices(pa.table({"rank": rank,
                                                   "key": table[self._bundle.tables[name]["primary_key"]]}),
                                         sort_keys=[("rank", "ascending"), ("key", "ascending")])
@@ -422,8 +461,6 @@ class SnapshotFMLoader:
         ready = {}
         for split, seeds in splits.items():
             anchor = self._anchor(seeds)
-            if split == "context":
-                labels = self._labels_for(anchor, seeds)
-                seeds = [dict(seed, target=labels[seed["instance_id"]]) for seed in seeds]
-            ready[split] = seeds, self._graphs_for(anchor, seeds)
+            labels = self._labels_for(anchor, seeds) if split == "context" else None
+            ready[split] = _SplitPayload(seeds, self._graphs_for(anchor, seeds), labels)
         return PayloadBatch(self.workload, ready)

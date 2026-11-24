@@ -74,7 +74,9 @@ against the same base. Request anchors are passed in memory; any task resources
 are managed by PyTorch under the engine's captured Kumo root.
 
 `loader.materialize(...).load()` and `loader.load(...)` return `PayloadBatch`.
-Its Arrow tables and metadata survive request and loader closure. Row, column
+Its Arrow tables and metadata survive request and loader closure. Label alignment,
+class mapping and related-row ordering use columnar kernels; labels remain Arrow
+arrays through instance-table assembly. Row, column
 and decoded-byte budgets apply during assembly; HTTP byte budgets apply during
 encoding. Arrays encoding uses DiskGraph’s Rust extension with the GIL released; build
 DiskGraph from the same checkout. FM ships a pure Python wheel. Arrow IPC is

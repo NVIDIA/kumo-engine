@@ -65,3 +65,28 @@ def test_context_targets_report_null_occurrences_without_dropping_rows(tmp_path,
             instance = batch.tables("context")["instance_table"]
             assert instance["instance_id"].to_pylist() == [202, 101]
             assert instance["__fm_target"].to_pylist() == [0.0, 1.0]
+
+
+def test_binary_labels_stay_aligned_and_map_numeric_keys_across_batches(tmp_path):
+    index, _ = build_index(tmp_path)
+    engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=index, id="fixture"))
+    target = api.Compare(api.Aggregate(api.Rows(path=("order_user",),
+                                                time=api.TimeWindow("at", start=0, stop=7 * 86400)),
+                                       "count"), "greater_than", 0)
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": target},
+                            neighborhoods={"history": api.NeighborhoodSpec((api.GraphLayer((
+                                api.GraphSample("order_user", direction="reverse", strategy="recent", fanout=1),
+                            )),))})
+    ids = [-9007199254740993, 9007199254740993, -9]
+    context = fm.Context(pairs=[(-5, when(10), ids[0]), (LARGE, when(10), ids[1]), (-5, when(10), ids[2])])
+    query = fm.Query(pairs=[(LARGE, when(25), 0)])
+    with fm.prepare(engine=engine, sample=sample, target="next", task="binary_classification",
+                    classes={0: False, 1: True}, features={"users": [], "orders": []},
+                    batch_size=1) as loader:
+        batch = loader.load(context=context, query=query)
+    instance = batch.tables("context")["instance_table"]
+    assert instance["instance_id"].to_pylist() == ids
+    assert instance["__fm_target"].to_pylist() == ["False", "True", "False"]
+    orders = batch.tables("context")["related_tables"]["orders"]
+    assert orders["instance_id"].to_pylist() == ids
+    assert orders["order_id"].to_pylist() == [13, 12, 13]

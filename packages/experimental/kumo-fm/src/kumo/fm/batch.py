@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from types import MappingProxyType
 
 import pyarrow as pa
@@ -28,6 +29,13 @@ def _typed_table(table, columns, max_columns):
     return table
 
 
+@dataclass(frozen=True)
+class _SplitPayload:
+    seeds: list[dict]
+    related: dict[str, pa.Table]
+    labels: pa.Array | pa.ChunkedArray | None = None
+
+
 class PayloadBatch:
     """One sampled request; Arrow tables stay valid after loader closure."""
 
@@ -37,20 +45,22 @@ class PayloadBatch:
         self._budgets = dict(workload.budgets)
         self._splits = {}
         logical_bytes = 0
-        for split, (seeds, related) in splits.items():
+        for split, data in splits.items():
+            seeds, related = data.seeds, data.related
             columns = dict(metadata["schema"]["instance_table"]["columns"])
             if split == "predict":
                 columns.pop("__fm_target")
-            instance = pa.table({
-                name: pa.array([str(seed["target"]) if name == "__fm_target"
-                                and workload.kind != "regression" else seed[{
-                                    "instance_id": "instance_id",
-                                    "__fm_entity_key": "entity_key",
-                                    "__fm_anchor": "anchor_time",
-                                    "__fm_target": "target",
-                                }[name]] for seed in seeds], type=TYPES[spec["dtype"]])
-                for name, spec in columns.items()
-            })
+            instance_values = {
+                "instance_id": pa.array([seed["instance_id"] for seed in seeds], pa.int64()),
+                "__fm_entity_key": pa.array([seed["entity_key"] for seed in seeds],
+                                            TYPES[columns["__fm_entity_key"]["dtype"]]),
+                "__fm_anchor": pa.array([seed["anchor_time"] for seed in seeds], TYPES["timestamp[us]"]),
+            }
+            if split != "predict":
+                if data.labels is None or len(data.labels) != len(seeds):
+                    raise ValueError("FM context labels are misaligned")
+                instance_values["__fm_target"] = data.labels
+            instance = pa.table(instance_values)
             instance = _typed_table(instance, columns, self._budgets["max_columns"])
             if len(instance) > self._budgets["max_rows_per_table"]:
                 raise ValueError("Instance table exceeds row budget")

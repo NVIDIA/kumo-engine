@@ -6,6 +6,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import numpy as np
 import pyarrow as pa
 import pytest
 
@@ -14,6 +15,7 @@ from kumo.fm._assembly import GraphAssembler
 from kumo.fm._columnar import adapt_columnar_batch
 from kumo.fm._snapshot import (
     SnapshotFMLoader,
+    _class_labels,
     _rows,
     _schema_view,
     _selected_graph,
@@ -89,23 +91,33 @@ def test_context_labels_join_by_occurrence_id_across_batches():
             pass
 
         def batches(self, **_):
-            for identifier, value in self.values:
+            for identifier, value, present in self.values:
                 yield SimpleNamespace(metadata={"sample_ids": [identifier]},
-                                      targets={"label": {"values": SimpleNamespace(tolist=lambda: [value]),
-                                                         "valid": SimpleNamespace(tolist=lambda: [True])}})
+                                      targets={"label": {"values": pa.array([value]),
+                                                         "valid": pa.array([present])}})
 
     loader = object.__new__(SnapshotFMLoader)
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3), (11, 9)]))
+    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True), (11, 9, True)]))
     loader._batch_size = 1
     loader._classes = None
-    assert loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}]) == {
-        22: 3.0, 11: 9.0}
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3)]))
+    loader._target = "future"
+    assert loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}]).to_pylist() == [9.0, 3.0]
+    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True)]))
     with pytest.raises(ValueError, match="Missing FM context labels"):
         loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3), (22, 9)]))
+    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True), (22, 9, True)]))
     with pytest.raises(ValueError, match="duplicated"):
         loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
+
+    loader._labels = SimpleNamespace(materialize=lambda _: Task([(99, 3, True)]))
+    with pytest.raises(ValueError, match="Unexpected FM context label.*99"):
+        loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
+    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 0, False), (11, 0, False)]))
+    with pytest.raises(ValueError) as error:
+        loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
+    assert str(error.value) == (
+        "FM context target 'future' is null for occurrence IDs [11, 22]; "
+        "context targets must be non-null for every occurrence")
 
 
 @pytest.mark.parametrize("population,split", [
@@ -251,3 +263,31 @@ def test_schema_view_ignores_unrequested_types_and_unrelated_tables():
     assert set(view.tables["orders"]["columns"]) == {"order_id", "user_id", "at"}
     with pytest.raises(ValueError, match="FM cannot encode users.opaque"):
         _schema_view(source, sample, {"users": ["opaque"], "orders": []})
+
+
+@pytest.mark.parametrize("values,classes,expected", [
+    ([False, True, False], {0: False, 1: True}, ["False", "True", "False"]),
+    ([0, 1, 0], {False: "no", True: "yes"}, ["no", "yes", "no"]),
+    ([False, True], {np.bool_(False): "no", np.bool_(True): "yes"}, ["no", "yes"]),
+    ([0, 1], {np.bool_(False): "no", np.bool_(True): "yes"}, ["no", "yes"]),
+    ([0, 1], {0j: "no", 1+0j: "yes"}, ["no", "yes"]),
+    ([9007199254740992.0], {np.int64(9007199254740992): "exact", -1: "other"}, ["exact"]),
+    ([-9007199254740992.0], {np.int64(-9007199254740992): "exact", 1: "other"}, ["exact"]),
+    ([0.0, 1.0], {False: 10, True: 20}, ["10", "20"]),
+    ([9007199254740993, -9007199254740993],
+     {9007199254740993: "large", -9007199254740993: "negative"}, ["large", "negative"]),
+])
+def test_class_mapping_preserves_numeric_equality_and_python_class_names(values, classes, expected):
+    assert _class_labels(pa.array(values), classes).to_pylist() == expected
+
+
+@pytest.mark.parametrize("values,classes", [
+    ([False], {"false": "no", "true": "yes"}),
+    ([1.25], {1: "one", 2: "two"}),
+    ([9007199254740993], {float(9007199254740992): "rounded", -1: "other"}),
+    ([9007199254740992.0], {np.int64(9007199254740993): "wrong", -1: "other"}),
+    ([-9007199254740992.0], {np.int64(-9007199254740993): "wrong", 1: "other"}),
+])
+def test_class_mapping_rejects_values_outside_exact_declared_classes(values, classes):
+    with pytest.raises(ValueError, match="outside declared classes"):
+        _class_labels(pa.array(values), classes)
