@@ -2,8 +2,7 @@
 
 `connector_to_prediction.py` creates deterministic PyArrow user/order tables,
 writes Parquet source files with `fixture.py`, builds a connector graph snapshot,
-and prepares an FM payload through public PyTorch plans. It needs no bundle
-manifest, SQL engine, fixture download or query reference implementation.
+and prepares an FM payload through public PyTorch plans.
 
 Install matching engine, DiskGraph, settings, PyTorch and FM wheels. Calling
 `load_batch()` uses only those packages. For model inference, additionally install

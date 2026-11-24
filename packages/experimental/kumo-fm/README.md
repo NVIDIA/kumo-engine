@@ -3,7 +3,7 @@
 Experimental `kumo.fm` prepares retained Arrow payloads from completed engine
 snapshots, using the public PyTorch sampling API. Arrays and Arrow IPC encode
 the same retained tables without sampling again. SDM is needed only to run the
-optional local model example; the loader has no DuckDB dependency.
+optional local model example.
 
 ## Snapshot workflow
 
@@ -33,9 +33,7 @@ ipc_body = batch.encode("arrow_ipc")
 See [the runnable example](examples/local_sdm/connector_to_prediction.py) for a
 complete `Graph` and `SampleSpec`. It writes small PyArrow tables to Parquet and
 uses `FileConnector`; tests follow the same approach with hand-authored expected
-labels and selected rows. There are no bundle manifests or frozen-workload APIs
-in the runtime package. Benchmark comparisons and their dataset tooling are
-maintained separately from this PR's production path.
+labels and selected rows.
 
 The snapshot must belong to the configured root when adopted. The engine keeps
 that root after settings change; tasks and caches use managed sibling paths and
