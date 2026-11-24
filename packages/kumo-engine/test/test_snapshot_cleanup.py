@@ -58,6 +58,7 @@ def test_snapshot_discards_only_owned_staging(
     import kumo_core.diskgraph.snapshot as snapshots
     import kumo_core.sources.transfer as transfer
     from filelock import FileLock, Timeout
+    from kumo_core.sources.identity import SourceVersion
 
     import kumo.engine._scratch as scratch
 
@@ -86,7 +87,8 @@ def test_snapshot_discards_only_owned_staging(
             calls.append(table_name)
             if failure == 'stage' and table_name == 'second':
                 raise ValueError('source failure')
-            return SimpleNamespace(credentials=None, version='v1',
+            return SimpleNamespace(credentials=None,
+                                   version=SourceVersion('v1', 'exact'),
                                    source={'path': str(dest)})
 
     source = Source()

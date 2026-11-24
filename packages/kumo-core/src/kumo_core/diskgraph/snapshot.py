@@ -143,10 +143,23 @@ class LocalSnapshotStore:
         """Legacy location, also used while the subprocess builds a new index."""
         return str(self._paths.version_dir(handle.graph_key, handle.graph_data_version))
 
+    def has_resumable_staging(self, handle: DiskgraphSnapshotHandle) -> bool:
+        """Keep eligible checkpoints; ingest validates their state and identity."""
+        from diskgraph import DiskgraphCorruptionError, has_resumable_ingest
+
+        try:
+            return has_resumable_ingest(self.staging_path(handle))
+        except DiskgraphCorruptionError as error:
+            # An inconsistent phase chain cannot resume. Other native errors,
+            # including I/O failures, must not authorize deleting a checkpoint.
+            if str(error).startswith("invalid phase marker chain:"):
+                return False
+            raise
+
     def import_staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
-        """Keep completed legacy snapshots in place while another build loads."""
+        """Preserve completed snapshots and ingest checkpoints while importing."""
         legacy = self.staging_path(handle)
-        if self._ready_candidate(legacy):
+        if self._ready_candidate(legacy) or self.has_resumable_staging(handle):
             return str(self._paths.import_dir(handle.graph_key, uuid.uuid4().hex))
         return legacy
 
@@ -194,7 +207,7 @@ class LocalSnapshotStore:
         build_id = _read_json_object(source / "index_metadata.json").get("index_build_id")
         if self.config.managed_root is None or build_id is None:
             if source != Path(self.staging_path(handle)):
-                raise ValueError("Import cannot replace a completed legacy snapshot in place")
+                raise ValueError("Import cannot replace a completed legacy snapshot or an ingest checkpoint in place")
             self.use_legacy(handle)
             return DiskgraphIngestResult.for_index(source)
         if not isinstance(build_id, str) or not build_id:
@@ -436,7 +449,7 @@ class LocalSnapshotStore:
         except damage:
             pass
 
-        staging = Path(self.staging_path(handle))
+        staging = Path(self.import_staging_path(handle))
         if staging.exists():
             try:
                 self._verify_path(str(staging))
