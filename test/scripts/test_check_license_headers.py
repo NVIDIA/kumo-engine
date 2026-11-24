@@ -23,13 +23,15 @@ SHADCN_HEADER = """// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
 """
 
 
-def test_blueprint_header_normalization_is_exact_and_scoped() -> None:
+def test_blueprint_header_normalization_is_scoped_and_uses_policy() -> None:
     path = "packages/experimental/kumo-transaction/src/tfm/example.py"
     header = """# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """
-    assert check_license_headers.validate_text(path, header + "value = 1\n",
-                                               POLICY) is None
+    for years in ("2026", "2027", "2026-2027,"):
+        dated_header = header.replace("2026", years)
+        assert check_license_headers.validate_text(
+            path, dated_header + "value = 1\n", POLICY) is None
     assert check_license_headers.validate_text(
         path, "#!/usr/bin/env python\n" + header, POLICY) is None
     for other in ("example.py", "packages/kumo-transaction/src/tfm/example.py",
@@ -38,6 +40,7 @@ def test_blueprint_header_normalization_is_exact_and_scoped() -> None:
         assert check_license_headers.validate_text(other, header,
                                                    POLICY) is not None
     for invalid in (
+            header.replace("2026", "20xx"),
             header.replace("Apache-2.0", "MIT"),
             header.replace("NVIDIA", "OTHER"),
             header.replace("All rights reserved.", "Some rights reserved."),
