@@ -37,6 +37,11 @@ python runner.py --bundle /tmp/fm-case/bundle \
   --scratch-dir /tmp/fm-case/scratch --draws 5 --output /tmp/fm-report.json
 ```
 
+For large bundles, set `--memory-limit 64GB` (or another budget appropriate for
+the host) so DuckDB can build its reference indexes. The default is `2GB`.
+`--threads` controls both backends and defaults to two. Reports record both
+settings; source validation and index preparation remain outside timed draws.
+
 `fixtures/smoke/` retains the old tiny frozen fixture. `reports/omnistation-smoke.json`
 is historical evidence, not a measurement of this draft. New comparisons must
 record matching source/wheel identities and decoded arrays/IPC parity. SQL

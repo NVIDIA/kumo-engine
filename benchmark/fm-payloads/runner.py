@@ -53,11 +53,15 @@ def main():
     parser.add_argument("--scratch-dir", type=Path, required=True, help="Managed Kumo storage root")
     parser.add_argument("--draws", type=int, default=7)
     parser.add_argument("--warmups", type=int, default=2)
+    parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--memory-limit", default="2GB", help="DuckDB reference memory budget")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--wheel", type=Path, action="append", default=[])
     args = parser.parse_args()
     if args.draws < 1 or args.warmups < 1:
         parser.error("draws and warmups must be positive")
+    if args.threads < 1:
+        parser.error("threads must be positive")
 
     from fm_dataloader.bundle import Bundle as OldBundle
     from fm_dataloader.multihop_sql import DuckDBMultihopBackend
@@ -88,6 +92,7 @@ def main():
         "cases": [],
         "warmups": args.warmups,
         "draws_per_encoding": args.draws,
+        "resources": {"threads": args.threads, "duckdb_memory_limit": args.memory_limit},
         "graph": {"layers": new_workload.layers,
                   "table_rows": {name: new_bundle.tables[name]["rows"]
                                  for name in new_workload.table_names},
@@ -99,9 +104,10 @@ def main():
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         return
-    old_backend = DuckDBMultihopBackend(old_bundle, native=True)
+    old_backend = DuckDBMultihopBackend(
+        old_bundle, native=True, threads=args.threads, memory_limit=args.memory_limit)
     try:
-        with fm.prepare(new_bundle, new_workload, index=args.index) as loader:
+        with fm.prepare(new_bundle, new_workload, index=args.index, threads=args.threads) as loader:
             report["index_marker_sha256"] = digest(args.index / "fm_snapshot.json")
             with loader.materialize() as request:
                 batch = request.load()
