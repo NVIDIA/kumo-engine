@@ -30,7 +30,7 @@ from kumo.engine import (
     Table,
     configure,
 )
-from kumo.engine.pquery._custom_source import stage_source_table
+from kumo.engine.connector._staging import stage_source_table
 
 SQL = "SELECT user_id, age FROM users WHERE active = 1"
 

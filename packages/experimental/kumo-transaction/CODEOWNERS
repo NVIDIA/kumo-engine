@@ -1,0 +1,12 @@
+# GitLab CODEOWNERS — contract, split, label, evaluation, and governance paths
+# require designated review before merge into v2. Update the group/user
+# handles to match the maintaining team.
+
+* @globalfsiteam
+
+src/tfm/contracts/** @globalfsiteam
+src/tfm/data/splits/** @globalfsiteam
+src/tfm/data/labels/** @globalfsiteam
+src/tfm/evaluation/** @globalfsiteam
+docs/contracts/** @globalfsiteam
+docs/governance/** @globalfsiteam

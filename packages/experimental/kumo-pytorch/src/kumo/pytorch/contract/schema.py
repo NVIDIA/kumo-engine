@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
+from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 
@@ -122,8 +123,10 @@ class TableSpec:
         if not columns:
             raise ValueError(f"table {self.name!r} must declare its columns")
         if self.primary_key is not None and self.primary_key not in columns:
+            suggestion = _column_name_suggestion((self.primary_key,), columns)
             raise ValueError(
                 f"table {self.name!r} columns must include primary key {self.primary_key!r}"
+                + (f"; {suggestion}" if suggestion else "")
             )
         if any(
             not name or dtype is not None and not isinstance(dtype, DType)
@@ -131,8 +134,10 @@ class TableSpec:
         ):
             raise ValueError(f"table {self.name!r} columns require names and DType declarations")
         if isinstance(self.time_column, str) and self.time_column not in columns:
+            suggestion = _column_name_suggestion((self.time_column,), columns)
             raise ValueError(
                 f"table {self.name!r} time column {self.time_column!r} is not a declared column"
+                + (f"; {suggestion}" if suggestion else "")
             )
         if (
             isinstance(self.time_column, str)
@@ -207,6 +212,7 @@ class DataSchema:
             raise ValueError("relation names must be unique")
         known_tables = set(table_names)
         by_name = {table.name: table for table in self.tables}
+        errors = []
         for relation in self.relations:
             if relation.left_table not in known_tables or relation.right_table not in known_tables:
                 raise ValueError(f"relation {relation.name!r} refers to an unknown table")
@@ -218,6 +224,10 @@ class DataSchema:
                     by_name[table_name].columns is not None
                     and key not in by_name[table_name].columns
                 ):
-                    raise ValueError(
+                    suggestion = _column_name_suggestion((key,), by_name[table_name].columns)
+                    errors.append(
                         f"relation {relation.name!r} key {table_name}.{key} is not declared"
+                        + (f"; {suggestion}" if suggestion else "")
                     )
+        if errors:
+            raise ValueError("\n".join(errors))

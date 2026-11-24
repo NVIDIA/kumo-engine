@@ -14,7 +14,13 @@
   "imported_instruction_scopes": [
     "packages/diskgraph/diskgraph-train-table",
     "packages/kumo-pql",
-    "packages/kumo-ui-catalog"
+    "packages/kumo-ui-catalog",
+    "packages/experimental/kumo-transaction",
+    "packages/experimental/kumo-transaction/benchmarks",
+    "packages/experimental/kumo-transaction/docs",
+    "packages/experimental/kumo-transaction/notebooks",
+    "packages/experimental/kumo-transaction/recipes",
+    "packages/experimental/kumo-transaction/src/tfm"
   ],
   "skill_commands": [
     "build-ui",

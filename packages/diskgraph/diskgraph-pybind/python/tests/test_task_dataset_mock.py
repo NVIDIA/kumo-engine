@@ -18,6 +18,7 @@ from diskgraph import (
     build_node_prediction_task_dataset_bundle,
     task_stage_size,
 )
+from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from diskgraph.sampling_plan import SamplingPlan
 
 
@@ -38,8 +39,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
     )
-    return index.iter(**kwargs)
-
+    return index.iter(SamplingOptions(**kwargs))
 
 
 def _metadata(**kwargs):
@@ -406,11 +406,9 @@ def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monke
         rnd_seed=None,
         epoch=0,
         batch_size=3,
-        weighted_seed_sampling={
-            "false_weight": 1.0,
-            "true_weight": 3.0,
-            "num_samples": 6,
-        },
+        weighted_seed_sampling=WeightedSeedSampling(
+            false_weight=1.0, true_weight=3.0, num_samples=6
+        ),
     )
 
     assert num_samples == 6
@@ -485,10 +483,9 @@ def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypa
         rnd_seed=None,
         epoch=0,
         batch_size=3,
-        weighted_seed_sampling={
-            "use_sample_weights": True,
-            "num_samples": 12,
-        },
+        weighted_seed_sampling=WeightedSeedSampling(
+            use_sample_weights=True, num_samples=12
+        ),
     )
 
     assert num_samples == 12

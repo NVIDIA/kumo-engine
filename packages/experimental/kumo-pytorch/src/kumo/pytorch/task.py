@@ -19,6 +19,7 @@ several tasks, or a resume, checks against.
 from __future__ import annotations
 
 import json
+import weakref
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from typing import Any, Literal
@@ -114,6 +115,9 @@ class Task:
 
     Produced by `Plan.materialize`. Reads through the plan's open binding, so it
     is usable while that plan is open.
+    Close the task explicitly or use it as a context manager to release resources
+    promptly. Unclosed tasks are also cleaned up on collection or normal Python
+    exit, and when their plan closes.
 
     Attributes: ``fitted_state`` (a `FittedState`), ``output_schema``, and
     ``fingerprints``, covering the contract, inputs, dataset, anchors, input
@@ -161,6 +165,8 @@ class Task:
         }
         fingerprints["task"] = _fingerprint(fingerprints)
         self.fingerprints: Mapping[str, str] = fingerprints
+        # Keep readers alive until cleanup, without retaining the Task itself.
+        self._finalizer = weakref.finalize(self, anchors.close)
 
     @property
     def manifest(self) -> Mapping[str, Any]:
@@ -451,7 +457,7 @@ class Task:
     def close(self) -> None:
         """Release the materialized anchors. The plan's binding stays open."""
 
-        self._anchors.close()
+        self._finalizer()
 
     def __enter__(self) -> Task:
         return self

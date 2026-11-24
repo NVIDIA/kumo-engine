@@ -130,7 +130,7 @@ def _plan(tmp_path, times, *, splits=SPLITS):
     dataset = api.Dataset(
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     return contract, dataset, engine, table
 
 

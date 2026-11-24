@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kumo.pytorch.column_stats import StatRequest, stats_request
+from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
@@ -73,15 +74,15 @@ def ensure_diskgraph_index(
     num_shards: int = 1,
     num_threads: int | None = None,
     dataset_name: str = "default",
-    if_missing: bool = True,
     column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
+    index_build_id: str | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
     Accepts local Parquet with physical column names matching the logical
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
-    overwritten. ``if_missing=False`` requires the index to exist already.
+    overwritten.
     An ingest also computes ``column_stats``: requests at cutoffs in epoch nanoseconds.
     """
 
@@ -92,18 +93,26 @@ def ensure_diskgraph_index(
     if not dataset_name:
         raise ValueError("dataset_name must be non-empty")
 
+    for name, source in dataset.tables.items():
+        if isinstance(source, Parquet) and source.columns:
+            raise DISKGRAPH_UNSUPPORTED["DG-COLUMN-RENAME"].error(
+                "DiskGraph materialization requires matching physical column names; "
+                f"table {name!r} declares {dict(source.columns)!r}"
+            )
     output = Path(destination).resolve()
     if output.exists():
         artifact = _DiskGraphIndex.open(output)
+        if index_build_id is not None:
+            metadata = json.loads((output / "index_metadata.json").read_text())
+            if metadata.get("index_build_id") != index_build_id:
+                raise ValueError("index build ID mismatch")
         artifact.validate_binding(schema, dataset)
         _warn_dropped_rows(output)
         return artifact
-    if not if_missing:
-        raise FileNotFoundError(f"DiskGraph index does not exist: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     diskgraph = _import_diskgraph()
-    source_snapshot = _dataset_payload(dataset)
+    physical_snapshot = _dataset_payload(dataset)
     config, relation_mapping, source_types = _compile_diskgraph_config(
         schema,
         dataset,
@@ -146,16 +155,17 @@ def ensure_diskgraph_index(
             cat_count_strategy="none",
             **stats_options,
             **thread_options,
+            **({"index_build_id": index_build_id} if index_build_id is not None else {}),
         )
         elapsed = time.perf_counter() - started
-        if _dataset_payload(dataset) != source_snapshot:
+        if _dataset_payload(dataset) != physical_snapshot:
             raise ValueError("Parquet files changed while DiskGraph was ingesting them")
 
         manifest = {
             "manifest_version": _MANIFEST_VERSION,
             "artifact_kind": "diskgraph_base_index",
             "schema_fingerprint": _fingerprint(_schema_payload(schema)),
-            "dataset_fingerprint": _fingerprint(source_snapshot),
+            "dataset_fingerprint": _fingerprint(physical_snapshot),
             "config_fingerprint": hashlib.sha256(config_json.encode()).hexdigest(),
             "relation_mapping": relation_mapping,
             "column_types": {
@@ -255,8 +265,12 @@ def _compile_diskgraph_config(
                 ) from error
             missing = sorted(set(table.columns) - set(physical.names))
             if missing:
+                suggestion = _column_name_suggestion(missing, physical.names)
                 raise ValueError(
                     f"Parquet table {table.name!r} in {path!r} is missing columns {missing}"
+                    + (f", {suggestion}" if suggestion else "")
+                    + (" " if suggestion and suggestion.endswith("?") else ". ")
+                    + "Use the stored names in the contract, or rename the stored columns."
                 )
             source_types[table.name][path] = {}
             for name, declared in table.columns.items():

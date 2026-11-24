@@ -13,13 +13,13 @@ import pytest
 from kumo.pytorch import api
 
 
-@pytest.fixture(scope="module")
-def graph_plan(tmp_path_factory):
-    """Open one real native index for all tiny request and AnchorTable controls."""
+@pytest.fixture
+def graph_plan(tmp_path):
+    """Open a native index under this test's configured scratch root."""
     pytest.importorskip("diskgraph")
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
-    root = tmp_path_factory.mktemp("padding-native")
+    root = tmp_path
     accounts = pa.table({"account_id": [1]})
     transactions = pa.table(
         {
@@ -74,7 +74,7 @@ def graph_plan(tmp_path_factory):
     )
     # The same public saved contract drives both inspectable and model delivery.
     contract = api.DataLoaderSpec.from_json(contract.to_json())
-    engine = api.DiskGraphEngine(index=root / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     with api.prepare(contract, api.Dataset(sources), engine) as plan:
         yield plan
 

@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+seed: 42
+
+# 24 TabFormer users and a small Llama: the full pipeline in minutes on a CPU.
+# Too few users for its metrics to mean anything; config.yaml is the
+# full-size run.
+
+data:
+  adapter: tabformer
+  path: null
+  split_protocol: precomputed
+  observation_window: 36500d
+  # 11 fields and a <sep> per event, plus <bos> and <eos>: 12 * 128 + 1.
+  sequence_length: 128
+  max_tokens: 1537
+  n_entities: 24
+  max_entities: 24
+  events_per_entity: 128
+  # `precomputed` takes its cutoffs from v1's train / val / test partitions
+  # (train ends 2017-05-13); only label_delay is read from temporal_split.
+  temporal_split:
+    train_end: "2016-01-01T00:00:00Z"
+    validation_end: "2018-01-01T00:00:00Z"
+    label_delay: 0h
+
+features:
+  tokenizer: transaction_field_tokenizer
+  # v1's fields without CUST, which is constant within a user's history.
+  fields: [AMT, MERCH, CAT, MCC, HOUR, DOW, MONTH, CARD, CHIP, ZIP3, STATE]
+
+model:
+  backbone: huggingface
+  huggingface:
+    pretrained_path: null
+  composition:
+    granularity:
+      type: flat
+      decoder:
+        depth: 2
+        mask: causal
+        hidden_size: 64
+        num_heads: 4
+        dropout: 0.0
+        max_seq_len: 1537
+    position: rope
+    attention: eager
+    objective: next_event
+    readout: last_token
+    heads:
+      fraud: binary
+
+training:
+  max_steps: 8
+  batch_size: 8
+  learning_rate: 0.0003
+  precision: fp32
+  backend: eager
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 5
+  history_window:
+    enabled: true
+    max_rows: 2000
+    train_negatives_per_positive: 20
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 10
+    exclude_keys: [user]
+
+runtime:
+  device: auto

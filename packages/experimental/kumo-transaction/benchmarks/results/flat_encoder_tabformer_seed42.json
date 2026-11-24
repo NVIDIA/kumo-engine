@@ -1,0 +1,108 @@
+{
+  "question": "ADR 0019's flat BERT-style encoder against v1's decoder and pragma_like on TabFormer, same rows",
+  "seed": 42,
+  "eval_rows": "evaluation.history_window.max_rows=250000 (uniform sample of v1's test rows; the rows of pragma_like_tabformer_seed42)",
+  "runs": {
+    "flat_encoder_tabformer": {
+      "config": "benchmarks/ablations/flat_encoder_tabformer.yaml",
+      "commit": "124ab93",
+      "uncommitted": "flat_encoder, masked_fields, last_event_mean (ADR 0019) and features.exclude_keys",
+      "overrides": {
+        "evaluation.history_window.max_rows": 250000
+      },
+      "hardware": {
+        "gpu": "NVIDIA GB10",
+        "torch": "2.13.0+cu130",
+        "python": "3.12.3"
+      },
+      "seconds": {
+        "prepare": 302.1,
+        "train": 4007.9,
+        "evaluate": 3241.0
+      },
+      "n_parameters": 28533248,
+      "peak_gpu_memory_gib": 16.1,
+      "train_stats": {
+        "final_loss": 0.7769644856452942,
+        "first_loss": 3.6742796897888184,
+        "loss_tail_mean": 0.800131773352623,
+        "nonfinite_grad_steps": 0.0,
+        "grad_norm_median": 0.3835471272468567,
+        "grad_norm_max": 3.2796690464019775,
+        "steps": 3000.0,
+        "precision": "bf16",
+        "backend": "eager",
+        "hf_checkpoint": ""
+      },
+      "metrics": {
+        "history_window_tabular_logistic": {
+          "calibration": 0.11843420142499245,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0,
+          "pr_auc": 0.007470158955603199,
+          "precision": 0.00992579743663872,
+          "precision_at_k": 0.02,
+          "recall": 0.7436823104693141,
+          "recall_at_k": 0.0036101083032490976,
+          "roc_auc": 0.9231644040658422
+        },
+        "history_window_tabular_xgboost": {
+          "calibration": 0.014380901116402585,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0,
+          "pr_auc": 0.06499318914792039,
+          "precision": 0.051420176297747304,
+          "precision_at_k": 0.2,
+          "recall": 0.37906137184115524,
+          "recall_at_k": 0.036101083032490974,
+          "roc_auc": 0.9749664288681679
+        },
+        "history_window_tabular_xgboost_embedding": {
+          "calibration": 0.012602487098765488,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0,
+          "pr_auc": 0.27079313134345084,
+          "precision": 0.10556038227628149,
+          "precision_at_k": 0.32,
+          "recall": 0.8772563176895307,
+          "recall_at_k": 0.05776173285198556,
+          "roc_auc": 0.9959319257867681
+        },
+        "history_window_xgboost_raw": {
+          "calibration": 0.029794365456418812,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0,
+          "pr_auc": 0.041387662187553506,
+          "precision": 0.02945054945054945,
+          "precision_at_k": 0.14,
+          "recall": 0.24187725631768953,
+          "recall_at_k": 0.02527075812274368,
+          "roc_auc": 0.9164044808579314
+        },
+        "history_window_xgboost_raw_embedding": {
+          "calibration": 0.020779820287411457,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0,
+          "pr_auc": 0.22462023793490649,
+          "precision": 0.09884874950377134,
+          "precision_at_k": 0.22,
+          "recall": 0.8989169675090253,
+          "recall_at_k": 0.039711191335740074,
+          "roc_auc": 0.9952825275531643
+        },
+        "history_window_xgboost_raw_embedding:single_event": {
+          "calibration": 0.025082973423930885,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0,
+          "pr_auc": 0.10276205279068594,
+          "precision": 0.0749228735125606,
+          "precision_at_k": 0.18,
+          "recall": 0.6137184115523465,
+          "recall_at_k": 0.032490974729241874,
+          "roc_auc": 0.9813876229736194
+        }
+      }
+    }
+  },
+  "compared_with": "pragma_like_tabformer_seed42.json (pragma_like and the retrained v1 on the same rows)"
+}
