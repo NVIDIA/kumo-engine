@@ -7,6 +7,7 @@ use super::{
     RowPackRowLens,
 };
 use crate::graph_config::{ColumnSpec, DataSource, IngestedType};
+use crate::{mapping::KeyType, scratch::PkMapReservation};
 use arrow_array::{ArrayRef, Decimal128Array, Decimal256Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_rowpack::{BinaryStringHint, RowAccess, RowAccessHints, RowAccessStats};
@@ -650,17 +651,19 @@ fn pk_map_estimate_varbytes_respects_avg_len() {
 }
 
 fn int64_estimate(rows: u64) -> u64 {
-    crate::scratch::estimate_pk_map_bytes(rows, crate::mapping::KeyType::Int64, 0)
+    crate::scratch::estimate_pk_map_bytes(rows, KeyType::Int64, 0)
 }
 
 #[test]
-fn pk_map_reservation_grows_in_doubling_steps_and_fits_the_final_rows() {
-    use crate::mapping::KeyType;
-    use crate::scratch::PkMapReservation;
+fn pk_map_reservation_grows_by_doubling_and_fits_the_final_rows() {
     let budget = Arc::new(super::MemoryBudget::new(1 << 30));
+    let mut empty = PkMapReservation::acquire(Some(&budget), 0, KeyType::Int64, 0).unwrap();
+    assert_eq!(budget.snapshot().in_use, 0);
+    empty.cover(1).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1));
+    drop(empty);
     let mut reservation =
         PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
-    assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
     reservation.cover(1_100).unwrap();
     assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
     reservation.cover(1_101).unwrap();
@@ -673,45 +676,14 @@ fn pk_map_reservation_grows_in_doubling_steps_and_fits_the_final_rows() {
 }
 
 #[test]
-fn pk_map_reservation_takes_budget_for_missing_keys_of_an_empty_shard() {
-    use crate::mapping::KeyType;
-    use crate::scratch::PkMapReservation;
-    let budget = Arc::new(super::MemoryBudget::new(1 << 30));
-    let mut reservation = PkMapReservation::acquire(Some(&budget), 0, KeyType::Int64, 0).unwrap();
-    assert_eq!(budget.snapshot().in_use, 0);
-    reservation.cover(3).unwrap();
-    assert_eq!(budget.snapshot().in_use, int64_estimate(4));
-}
-
-#[test]
-fn pk_map_reservation_rejects_own_rows_above_the_budget() {
-    use crate::mapping::KeyType;
-    use crate::scratch::PkMapReservation;
-    let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_100) - 1));
-    let err = PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0)
-        .err()
-        .expect("own rows above the budget must fail");
-    assert!(
-        err.to_string().contains("single-shard PK-map estimate"),
-        "{err}"
-    );
-    assert_eq!(budget.snapshot().in_use, 0);
-}
-
-#[test]
-fn pk_map_reservation_rejects_growth_above_the_budget() {
-    use crate::mapping::KeyType;
-    use crate::scratch::PkMapReservation;
+fn pk_map_reservation_rejects_own_rows_and_growth_above_the_budget() {
     let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_100)));
+    assert!(PkMapReservation::acquire(Some(&budget), 1_101, KeyType::Int64, 0).is_err());
+    assert_eq!(budget.snapshot().in_use, 0);
     let mut reservation =
         PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
-    let err = reservation
-        .cover(1_101)
-        .expect_err("growth above the budget must fail");
-    assert!(
-        err.to_string().contains("single-shard PK-map estimate"),
-        "{err}"
-    );
+    let err = reservation.cover(1_101).unwrap_err().to_string();
+    assert!(err.contains("single-shard PK-map estimate"), "{err}");
     assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
 }
 

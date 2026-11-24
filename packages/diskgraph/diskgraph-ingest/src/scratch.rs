@@ -172,7 +172,6 @@ pub(crate) struct PkMapReservation {
     key_type: KeyType,
     avg_var_bytes: u64,
     rows: u64,
-    bytes: u64,
 }
 
 impl PkMapReservation {
@@ -189,25 +188,18 @@ impl PkMapReservation {
             key_type,
             avg_var_bytes,
             rows,
-            bytes: 0,
         };
         let bytes = reservation.bytes_for(rows)?;
-        if let Some(budget) = budget {
-            reservation.guard = Some(budget.acquire(bytes)?);
-        }
-        reservation.bytes = bytes;
+        reservation.guard = budget.map(|budget| budget.acquire(bytes)).transpose()?;
         Ok(reservation)
     }
 
+    #[inline]
     pub(crate) fn cover(&mut self, rows: u64) -> anyhow::Result<()> {
-        if rows <= self.rows {
-            return Ok(());
+        if rows > self.rows {
+            self.fit(rows.max(self.rows.saturating_mul(2)))?;
         }
-        let mut target = self.rows.max(1);
-        while target < rows {
-            target = target.saturating_mul(2);
-        }
-        self.fit(target)
+        Ok(())
     }
 
     pub(crate) fn fit(&mut self, rows: u64) -> anyhow::Result<()> {
@@ -216,12 +208,11 @@ impl PkMapReservation {
             guard.resize(bytes);
         }
         self.rows = rows;
-        self.bytes = bytes;
         Ok(())
     }
 
     pub(crate) fn bytes(&self) -> u64 {
-        self.bytes
+        estimate_pk_map_bytes(self.rows, self.key_type, self.avg_var_bytes)
     }
 
     fn bytes_for(&self, rows: u64) -> anyhow::Result<u64> {

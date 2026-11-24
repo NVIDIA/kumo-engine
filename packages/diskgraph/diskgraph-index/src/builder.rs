@@ -321,11 +321,8 @@ impl MemoryBudget {
 
     fn release(&self, bytes: u64) {
         let mut available = self.available.lock().unwrap();
-        let in_use = self
-            .in_use
-            .fetch_sub(bytes, Ordering::Relaxed)
-            .saturating_sub(bytes);
-        *available = self.total.saturating_sub(in_use);
+        let previous = self.in_use.fetch_sub(bytes, Ordering::Relaxed);
+        *available = self.total.saturating_sub(previous.saturating_sub(bytes));
         self.cvar.notify_all();
     }
 
