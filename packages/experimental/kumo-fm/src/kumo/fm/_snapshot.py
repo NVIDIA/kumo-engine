@@ -171,8 +171,9 @@ def _selected_graph(schema, sample, features, bundle):
             if step.relation not in bundle.relations:
                 raise ValueError(f"Unknown relation: {step.relation}")
             rel = bundle.relations[step.relation]
-            source, dest = ((rel["child"], rel["parent"]) if step.direction == "forward"
-                            else (rel["parent"], rel["child"]))
+            left, right = ((rel["parent"], rel["child"]) if rel["parent_is_source"]
+                           else (rel["child"], rel["parent"]))
+            source, dest = (left, right) if step.direction == "forward" else (right, left)
             if source not in frontier:
                 raise ValueError(f"Unreachable graph layer: {source}")
             if bundle.tables[dest]["time_column"] is None:
@@ -190,6 +191,8 @@ def _selected_graph(schema, sample, features, bundle):
         requested = list(features[name])
         if len(requested) != len(set(requested)) or not set(requested) <= set(declared):
             raise ValueError(f"Invalid FM feature projection: {name}")
+        if "instance_id" in requested:
+            raise ValueError(f"FM reserves instance_id for occurrence IDs: {name}.instance_id")
         pk = bundle.tables[name]["primary_key"]
         projections[name] = list(dict.fromkeys((pk, *requested)))
         internal = list(projections[name])

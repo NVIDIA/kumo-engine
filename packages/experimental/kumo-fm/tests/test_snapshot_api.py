@@ -59,7 +59,7 @@ def test_schema_alias_projection_and_target_window():
                                     time=api.TimeWindow("at", start=0, stop=30)), "count")
     assert _target_horizon(target) == 30
     layer = api.GraphLayer((api.GraphSample(
-        "alias", direction="reverse", fanout=2, strategy="recent"),))
+        "alias", direction="forward", fanout=2, strategy="recent"),))
     sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": target},
                             neighborhoods={"history": api.NeighborhoodSpec((layer,))})
     name, fields, tables, relations, projections = _selected_graph(
@@ -70,7 +70,7 @@ def test_schema_alias_projection_and_target_window():
         "order_id", "amount", "at", "user_id"}
     with pytest.raises(ValueError, match="uniformly into timeless"):
         reverse_layer = api.GraphLayer((api.GraphSample(
-            "alias", direction="forward", fanout=2, strategy="recent"),))
+            "alias", direction="reverse", fanout=2, strategy="recent"),))
         reverse_sample = api.SampleSpec(
             entity=api.EntitySpec("orders"),
             neighborhoods={"history": api.NeighborhoodSpec((reverse_layer,))})
@@ -185,3 +185,45 @@ def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_sou
     assert related["employees"].to_pydict() == {
         "instance_id": [99, 99, 99], "id": [10, 20, 30],
         "__fm_edge_manager": [None, 10, 10]}
+
+
+@pytest.mark.parametrize("parent_is_source", [True, False])
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+def test_graph_reachability_follows_declared_endpoints(parent_is_source, direction):
+    tables = tuple(api.TableSpec(name, key, {
+        key: api.DType("int64"), "user_id": api.DType("int64"),
+        "at": api.DType("timestamp", unit="s", timezone="UTC")}, time_column="at")
+        for name, key in (("users", "user_id"), ("orders", "order_id")))
+    left, right = ("users", "orders") if parent_is_source else ("orders", "users")
+    source = api.DataSchema(tables=tables, relations=(
+        api.RelationSpec("link", left, "user_id", right, "user_id"),))
+    root = left if direction == "forward" else right
+    layer = api.GraphLayer((api.GraphSample("link", direction=direction, fanout=2,
+                                            strategy="recent"),))
+    neighborhood = {"history": api.NeighborhoodSpec((layer,))}
+    sample = api.SampleSpec(entity=api.EntitySpec(root), neighborhoods=neighborhood)
+    result = _selected_graph(source, sample, {"users": [], "orders": []}, _schema_view(source))
+    assert result[2] == {"users", "orders"}
+    wrong_root = right if direction == "forward" else left
+    sample = api.SampleSpec(entity=api.EntitySpec(wrong_root), neighborhoods=neighborhood)
+    with pytest.raises(ValueError, match="Unreachable graph layer"):
+        _selected_graph(source, sample, {"users": [], "orders": []}, _schema_view(source))
+
+
+def test_non_key_instance_id_feature_requires_projection_rejection():
+    original = schema()
+    orders = next(table for table in original.tables if table.name == "orders")
+    users = next(table for table in original.tables if table.name == "users")
+    source = api.DataSchema(tables=(users, api.TableSpec(
+        orders.name, orders.primary_key, {**orders.columns, "instance_id": api.DType("int64")},
+        time_column=orders.time_column)), relations=original.relations)
+    layer = api.GraphLayer((api.GraphSample("alias", direction="forward", fanout=2,
+                                            strategy="recent"),))
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), neighborhoods={
+        "history": api.NeighborhoodSpec((layer,))})
+    bundle = _schema_view(source)
+    with pytest.raises(ValueError, match="reserves instance_id.*orders.instance_id"):
+        _selected_graph(source, sample, {"users": [], "orders": ["instance_id"]}, bundle)
+    result = _selected_graph(source, sample, {"users": [], "orders": ["amount"]}, bundle)
+    assert result[4]["orders"] == ["order_id", "amount"]
+    assert "instance_id" not in {item.field for item in result[1]["orders"].fields}

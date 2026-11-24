@@ -50,7 +50,9 @@ positions within each split; repeated pairs remain distinct. Context label
 windows must end before the earliest query. Query targets never enter payloads.
 
 Source primary keys must not be named `instance_id`, which FM reserves for
-occurrence IDs. The `max_instances` budget bounds each split before expanding
+occurrence IDs. Source features named `instance_id` cannot be projected either.
+Graph directions follow the declared relation endpoints: forward goes left to
+right, and reverse goes right to left. The `max_instances` budget bounds each split before expanding
 entities × times or validating explicit pairs.
 
 FM derives schema metadata from the adopted engine. For a relation alias or

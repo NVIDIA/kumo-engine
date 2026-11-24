@@ -9,8 +9,6 @@ from dataclasses import dataclass
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from ._phase import phase
-
 
 @dataclass(frozen=True)
 class EncodedRows:
@@ -19,28 +17,25 @@ class EncodedRows:
 
 
 def encode_rows(table, max_bytes):
-    # Fail explicitly if a source checkout was not built; never silently time
-    # the reference encoder when native encoding was requested.
     from diskgraph import DiskgraphConfigError, encode_fm_rows
 
     # Arrow's calendar formatter has implementation-specific behavior outside
     # Python's year 1..9999 range. Preserve that existing behavior (including
     # errors) with its native string kernel for unusual columns, while normal
     # dates/timestamps use the direct Rust formatter. No per-cell Python values.
-    with phase('native_arrays_prepare', 'type_conversion'):
-        for index, field in enumerate(table.schema):
-            timestamp = pa.types.is_timestamp(field.type)
-            date = pa.types.is_date32(field.type)
-            if not (timestamp or date):
-                continue
-            column = table.column(index)
-            bounds = pc.min_max(column.cast(pa.int64() if timestamp else pa.int32())).as_py()
-            low, high = ((-62135596800000000, 253402300799999999) if timestamp else (-719162, 2932896))
-            if bounds['min'] is not None and (bounds['min'] < low or bounds['max'] > high):
-                values = pc.strftime(column, format='%Y-%m-%dT%H:%M:%S' if timestamp else '%Y-%m-%d')
-                if timestamp:
-                    values = pc.binary_join_element_wise(values, 'Z', '')
-                table = table.set_column(index, field.name, values)
+    for index, field in enumerate(table.schema):
+        timestamp = pa.types.is_timestamp(field.type)
+        date = pa.types.is_date32(field.type)
+        if not (timestamp or date):
+            continue
+        column = table.column(index)
+        bounds = pc.min_max(column.cast(pa.int64() if timestamp else pa.int32())).as_py()
+        low, high = ((-62135596800000000, 253402300799999999) if timestamp else (-719162, 2932896))
+        if bounds['min'] is not None and (bounds['min'] < low or bounds['max'] > high):
+            values = pc.strftime(column, format='%Y-%m-%dT%H:%M:%S' if timestamp else '%Y-%m-%d')
+            if timestamp:
+                values = pc.binary_join_element_wise(values, 'Z', '')
+            table = table.set_column(index, field.name, values)
     try:
         return EncodedRows(encode_fm_rows(table.to_batches(), max_bytes))
     except DiskgraphConfigError as error:
