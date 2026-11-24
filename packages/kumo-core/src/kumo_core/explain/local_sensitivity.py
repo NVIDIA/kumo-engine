@@ -100,6 +100,7 @@ class LocalSensitivity:
         self.walk_status_counts = {}
         self.walk_failure = None
         self.walk_failure_unsupported = False
+        self.numerical_unsupported_reason: str | None = None
         self.numerical_sensitivity = numerical_sensitivity
         self.requires_grad = numerical_sensitivity
         self.attempted_rows = 0
@@ -168,9 +169,24 @@ class LocalSensitivity:
             self._binary_provenance(module, datamodule)
         else:
             self._regression_provenance(module, datamodule)
+        kinds = getattr(datamodule, 'source_identity_kinds', {})
+        self.provenance['source_identity_kinds'] = kinds
+        if self.numerical_sensitivity:
+            unkeyed = sorted(
+                table for table, kind in kinds.items()
+                if kind == 'snapshot_row' and table != module.train_table_name
+                and table in module.encoder.enc_dict
+                and any(isinstance(enc, FusedNumericalEncoder)
+                        for enc in module.encoder.enc_dict[table].modules()))
+            if unkeyed:
+                self.numerical_unsupported_reason = (
+                    'Numerical sensitivity requires a source primary key for '
+                    f"numerical inputs on: {', '.join(unkeyed)}. "
+                    'Set numerical_sensitivity=None for walk-only evidence.')
+                if self.walk_on_unsupported == 'raise':
+                    raise ValueError(self.numerical_unsupported_reason)
+                self.requires_grad = False
         # Precision of the original forward, applied again by offline replay.
-        self.provenance['source_identity_kinds'] = getattr(
-            datamodule, 'source_identity_kinds', {})
         self.provenance['numerics'] = capture_numerics()
         try:
             self.root.mkdir(parents=True, exist_ok=True)
@@ -712,7 +728,9 @@ class LocalSensitivity:
                 sample_sha256=record['sample_sha256'], config=self.config.to_dict(),
                 method='hetero_lrp_gamma_reference_v1')
         try:
-            if self.numerical_sensitivity:
+            if self.numerical_unsupported_reason:
+                cells, status, reason = [], 'unsupported', self.numerical_unsupported_reason
+            elif self.numerical_sensitivity:
                 cells, status, reason = self._cells(module, batch, step_output)
             else:
                 cells, status, reason = [], 'disabled', 'numerical_sensitivity_disabled'

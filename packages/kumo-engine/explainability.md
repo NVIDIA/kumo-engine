@@ -248,4 +248,7 @@ These families have their own support boundaries and retained statuses; training
 Walk evidence identifies each sampled occurrence by its table and position in the retained graph.
 For a table without a declared primary key, the block has `identity_kind="snapshot_row"` and its `pkeys` contain DiskGraph row IDs scoped to that table and graph snapshot.
 Repeated occurrences of one row share its ID.
-Use `numerical_sensitivity=None` for walk-only evidence, since numerical cell sensitivity requires source primary keys.
+Numerical sensitivity requires a source primary key for each table with a modeled numerical input.
+By default, prediction raises before scoring and names the affected unkeyed tables.
+With `on_unsupported="record"`, prediction records numerical sensitivity as unsupported and continues graph and walk capture.
+Use `numerical_sensitivity=None` for walk-only evidence.

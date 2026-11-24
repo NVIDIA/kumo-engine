@@ -2965,18 +2965,9 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         self, ) -> tuple[dict[str, str], dict[str, str]]:
         # index_metadata.json is authoritative for primary_key_map.column and
         # create_time_col (feature_schema.json lacks them).
-        index_path = (self.task_manifest.graph_runtime_metadata
-                      or {}).get('graph_index_path')
-        if not index_path:
-            return {}, {}
-        meta_path = os.path.join(index_path, 'index_metadata.json')
-        if not os.path.exists(meta_path):
-            return {}, {}
-        with open(meta_path) as f:
-            idx_meta = json.load(f)
         pk_dict: dict[str, str] = {}
         time_dict: dict[str, str] = {}
-        for entry in idx_meta.get('node_types') or []:
+        for entry in self._load_index_node_types():
             name = entry.get('name')
             if not name:
                 continue
@@ -3007,8 +2998,9 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
     @property
     def source_identity_kinds(self) -> dict[str, str]:
         """Row identity declared by each table in the scoring snapshot."""
+        keyed_tables = self.pk_col_dict
         return {
-            entry['name']: ('source_primary_key' if entry.get('primary_key_map')
+            entry['name']: ('source_primary_key' if entry['name'] in keyed_tables
                             else 'snapshot_row')
             for entry in self._load_index_node_types() if entry.get('name')
         }

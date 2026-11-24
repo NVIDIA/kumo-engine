@@ -57,3 +57,60 @@ def test_removing_repeated_unkeyed_row_preserves_equal_valued_peer():
     assert remaining['pkeys'] == remaining['node_ids'] == [9]
     assert remaining['numerical_features']['amount'] == [100]
     assert retained['edges'][0]['edge_index'] == [[0], [0]]
+
+
+@pytest.mark.parametrize('policy', ['raise', 'record'])
+def test_unkeyed_numerical_support_policy(tmp_path, policy):
+    import json
+
+    from kumo_core.encoders.fused.numerical import FusedNumericalEncoder
+    from kumo_core.encoders.target.numerical import NumericalTargetEncoder
+    from kumo_core.train.loss import MSELoss
+    from kumoapi.encoder import NAStrategy, Numerical
+    from kumoapi.task import TaskType
+
+    numeric = FusedNumericalEncoder(
+        {'amount': Numerical(na_strategy=NAStrategy.ZERO)}, [], 1, 'fuse')
+    events = torch.nn.Module()
+    events.stype_encoder_dict = torch.nn.ModuleDict({'numerical': numeric})
+    encoder = torch.nn.Module()
+    encoder.enc_dict = torch.nn.ModuleDict({'events': events})
+    module = SimpleNamespace(
+        encoder=encoder, train_table_name='task', device=torch.device('cpu'),
+        task_type=TaskType.REGRESSION, loss=MSELoss(TaskType.REGRESSION),
+        target_encoder=NumericalTargetEncoder(0, 1))
+    dm = SimpleNamespace(source_identity_kinds={'events': 'snapshot_row'})
+    capture = LocalSensitivity(str(tmp_path), {'run_id': 'test'},
+                               walk_on_unsupported=policy)
+    if policy == 'raise':
+        with pytest.raises(ValueError, match='source primary key.*events'):
+            capture.explain_start(module, dm, None)
+        assert not list(tmp_path.iterdir())
+        return
+
+    capture.explain_start(module, dm, None)
+    batch = HeteroData()
+    batch.input_type = 'customers'
+    batch['customers'].n_id = torch.tensor([0])
+    batch['customers'].input_id = torch.tensor([0])
+    batch['customers'].pkey = ['customer']
+    batch['events'].n_id = torch.tensor([5])
+    output = {'logits': torch.tensor([[1.]]), 'pkey': ['customer'], 'time': None}
+    capture.explain_post_step(batch, module, dm, output, None, 0)
+    row = json.loads((tmp_path / 'index.jsonl').read_text())
+    assert row['status'] == 'unsupported' and 'events' in row['reason']
+    assert row['graph_status'] == 'available'
+
+
+def test_snapshot_row_without_primary_key_column(monkeypatch):
+    from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
+
+    dm = object.__new__(DiskgraphLightningDataModule)
+    dm._pk_col_dict = None
+    monkeypatch.setattr(dm, '_load_index_node_types', lambda: [
+        {'name': 'events', 'primary_key_map': {'path': 'events.idx'}},
+        {'name': 'customers', 'primary_key_map': {'column': 'id'}},
+    ])
+    assert dm.pk_col_dict == {'customers': 'id'}
+    assert dm.source_identity_kinds == {
+        'events': 'snapshot_row', 'customers': 'source_primary_key'}
