@@ -71,6 +71,8 @@ train and 6 h for score.
 
 ## Notes
 
+The job's identity-less `SnowflakeConnector` shares the launcher's Snowpark session, checks `--warehouse` against its warehouse, and uses the requested database and schema. Kumo's DDL commits any open transaction on that session.
+
 - The ML Jobs launcher runs the job script from the payload directory, so
   `jobs.py` imports; a non-zero exit fails the job (its `mljob_result` is
   still `None`, so judge a run by its status).

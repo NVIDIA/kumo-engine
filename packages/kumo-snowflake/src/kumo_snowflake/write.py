@@ -15,6 +15,7 @@ from kumo_core.artifact_staging import (
     selected_local_parquet_files,
 )
 from kumo_snowflake.errors import ACCESS_DENIED_SQLSTATE, summary
+from kumo_snowflake.sql import quote_literal
 
 logger = logging.getLogger(__name__)
 _ALLOWED_BLOB_PATH_RE = re.compile(r"^(s3://|gcs://|azure://|@)",
@@ -350,8 +351,10 @@ def write_artifacts_to_table(
         # the parquet schema.
         if not connector.table_exists(table_name):
             suffix = uuid.uuid4().hex[:8]
-            tmp_fmt = f'__kumo_tmp_fmt_{suffix}'
-            tmp_stage = f'__kumo_tmp_stage_{suffix}'
+            tmp_fmt = connector._qualified_table_name(
+                f'__kumo_tmp_fmt_{suffix}')
+            tmp_stage = connector._qualified_table_name(
+                f'__kumo_tmp_stage_{suffix}')
             try:
                 # Create temp file format (required by INFER_SCHEMA)
                 connector.execute_meta_query(
@@ -364,26 +367,27 @@ def write_artifacts_to_table(
 
                 if is_stage_path:
                     # Stage paths: wrap in quotes for INFER_SCHEMA
-                    infer_location = f"'{src_path}'"
+                    infer_location = quote_literal(src_path)
                 else:
                     # Cloud storage: create temp stage with credentials
                     stage_sql = (f"CREATE TEMPORARY STAGE {tmp_stage}\n"
                                  f"URL = '{src_path}'")
                     connector.execute_meta_query(ctx, stage_sql,
                                                  creds_clause=creds_clause)
-                    infer_location = f"'@{tmp_stage}'"
+                    infer_location = quote_literal(f'@{tmp_stage}')
 
                 # Every selected shard shares one schema fingerprint,
                 # so naming a single object both suffices and keeps
                 # inference off any abandoned sibling attempt.
                 infer_files = (f",\n    FILES => ('{copy_files[0]}')"
                                if copy_files else '')
+                fmt_literal = quote_literal(tmp_fmt)
                 infer_sql = (f"CREATE TABLE {qualified_name}\n"
                              f"USING TEMPLATE (\n"
                              f"  SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))\n"
                              f"  FROM TABLE(INFER_SCHEMA(\n"
                              f"    LOCATION => {infer_location},\n"
-                             f"    FILE_FORMAT => '{tmp_fmt}'"
+                             f"    FILE_FORMAT => {fmt_literal}"
                              f"{infer_files})))")
                 connector.execute_meta_query(ctx, infer_sql)
             finally:

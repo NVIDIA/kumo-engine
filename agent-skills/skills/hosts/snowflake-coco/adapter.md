@@ -115,12 +115,7 @@ Keep the environment-specific local setup; never replace it with cloud-URL or AP
 
 If the user is actually on the Kumo Native App or Kumo SaaS, say so and stop — this adapter does not cover them.
 
-**A compute pool alone is not a marker.** A Snowflake ML Job (`snowflake.ml.jobs`) takes a
-`compute_pool`, and so does a container notebook. Neither involves a Kumo application: the job
-script imports `kumo.engine` and connects with `from_spcs_env`, exactly as the notebook does.
-Treat a request to score or train on a named compute pool as an ML Job request (`ml_job.md`),
-never as the Native App. Only a pool or GRANT tied to a Kumo application, or `kumo.init(...)`,
-marks the Native App.
+**A compute pool alone is not a marker.** A Snowflake ML Job (`snowflake.ml.jobs`) takes a `compute_pool`, and so does a container notebook. Neither involves a Kumo application: the job script imports `kumo.engine` and shares the runtime session with `from_session`, as the notebook does. Treat a request to score or train on a named compute pool as an ML Job request (`ml_job.md`), never as the Native App. Only a pool or GRANT tied to a Kumo application, or `kumo.init(...)`, marks the Native App.
 
 ---
 ## 10. Host-supplied values for Snowflake ML Jobs
