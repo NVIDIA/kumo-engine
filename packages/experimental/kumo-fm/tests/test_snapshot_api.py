@@ -52,9 +52,6 @@ def test_population_order_and_repeated_occurrences():
 
 
 def test_schema_alias_projection_and_target_window():
-    bundle = _schema_view(schema())
-    assert bundle.relations["alias"] == {"child": "orders", "parent": "users",
-                                         "foreign_key": "user_id", "parent_is_source": True}
     target = api.Aggregate(api.Rows(path=("alias",),
                                     time=api.TimeWindow("at", start=0, stop=30)), "count")
     assert _target_horizon(target) == 30
@@ -62,6 +59,9 @@ def test_schema_alias_projection_and_target_window():
         "alias", direction="forward", fanout=2, strategy="recent"),))
     sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": target},
                             neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+    bundle = _schema_view(schema(), sample, {"users": [], "orders": ["amount"]})
+    assert bundle.relations["alias"] == {"child": "orders", "parent": "users",
+                                         "foreign_key": "user_id", "parent_is_source": True}
     name, fields, tables, relations, projections = _selected_graph(
         schema(), sample, {"users": [], "orders": ["amount"]}, bundle)
     assert (name, tables, relations) == ("history", {"users", "orders"}, {"alias"})
@@ -154,7 +154,7 @@ def test_source_instance_id_primary_key_rejected_during_schema_preparation(key_t
         "employees", "instance_id", {"instance_id": api.DType(key_type)},
         time_column=api.NON_TEMPORAL),))
     with pytest.raises(ValueError, match="reserves instance_id.*employees"):
-        _schema_view(source)
+        _schema_view(source, api.SampleSpec(entity=api.EntitySpec("employees")), {"employees": []})
 
 
 @pytest.mark.parametrize("parent_is_source", [True, False])
@@ -164,7 +164,9 @@ def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_sou
         "employees", "id", {"id": api.DType("int64"), "manager_id": api.DType("int64")},
         time_column=api.NON_TEMPORAL),), relations=(api.RelationSpec(
             "manager", "employees", left, "employees", right),))
-    bundle = _schema_view(source)
+    declaration = api.SampleSpec(entity=api.EntitySpec("employees"), neighborhoods={
+        "history": api.NeighborhoodSpec((api.GraphLayer((api.GraphSample("manager", fanout=2),)),))})
+    bundle = _schema_view(source, declaration, {"employees": ["id"]})
     work = SimpleNamespace(bundle=bundle, entity="employees", table_names={"employees"},
                            relation_names={"manager"}, projections={"employees": ["id"]},
                            kind="regression", target={"dtype": "float64"},
@@ -202,12 +204,12 @@ def test_graph_reachability_follows_declared_endpoints(parent_is_source, directi
                                             strategy="recent"),))
     neighborhood = {"history": api.NeighborhoodSpec((layer,))}
     sample = api.SampleSpec(entity=api.EntitySpec(root), neighborhoods=neighborhood)
-    result = _selected_graph(source, sample, {"users": [], "orders": []}, _schema_view(source))
+    result = _selected_graph(source, sample, {"users": [], "orders": []}, _schema_view(source, sample, {"users": [], "orders": []}))
     assert result[2] == {"users", "orders"}
     wrong_root = right if direction == "forward" else left
     sample = api.SampleSpec(entity=api.EntitySpec(wrong_root), neighborhoods=neighborhood)
     with pytest.raises(ValueError, match="Unreachable graph layer"):
-        _selected_graph(source, sample, {"users": [], "orders": []}, _schema_view(source))
+        _selected_graph(source, sample, {"users": [], "orders": []}, _schema_view(source, sample, {"users": [], "orders": []}))
 
 
 def test_non_key_instance_id_feature_requires_projection_rejection():
@@ -221,9 +223,31 @@ def test_non_key_instance_id_feature_requires_projection_rejection():
                                             strategy="recent"),))
     sample = api.SampleSpec(entity=api.EntitySpec("users"), neighborhoods={
         "history": api.NeighborhoodSpec((layer,))})
-    bundle = _schema_view(source)
+    bundle = _schema_view(source, sample, {"users": [], "orders": ["instance_id", "amount"]})
     with pytest.raises(ValueError, match="reserves instance_id.*orders.instance_id"):
         _selected_graph(source, sample, {"users": [], "orders": ["instance_id"]}, bundle)
     result = _selected_graph(source, sample, {"users": [], "orders": ["amount"]}, bundle)
     assert result[4]["orders"] == ["order_id", "amount"]
     assert "instance_id" not in {item.field for item in result[1]["orders"].fields}
+
+
+def test_schema_view_ignores_unrequested_types_and_unrelated_tables():
+    original = schema()
+    users = next(table for table in original.tables if table.name == "users")
+    orders = next(table for table in original.tables if table.name == "orders")
+    source = api.DataSchema(tables=(
+        api.TableSpec(users.name, users.primary_key,
+                      {**users.columns, "opaque": api.DType("bytes")}, time_column=api.NON_TEMPORAL),
+        orders,
+        api.TableSpec("unrelated", None, {"opaque": api.DType("bytes")}, time_column=api.NON_TEMPORAL),
+    ), relations=original.relations)
+    layer = api.GraphLayer((api.GraphSample("alias", direction="forward", fanout=2,
+                                            strategy="recent"),))
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), neighborhoods={
+        "history": api.NeighborhoodSpec((layer,))})
+    view = _schema_view(source, sample, {"users": [], "orders": []})
+    assert set(view.tables) == {"users", "orders"}
+    assert set(view.tables["users"]["columns"]) == {"user_id"}
+    assert set(view.tables["orders"]["columns"]) == {"order_id", "user_id", "at"}
+    with pytest.raises(ValueError, match="FM cannot encode users.opaque"):
+        _schema_view(source, sample, {"users": ["opaque"], "orders": []})

@@ -55,8 +55,11 @@ Graph directions follow the declared relation endpoints: forward goes left to
 right, and reverse goes right to left. The `max_instances` budget bounds each split before expanding
 entities × times or validating explicit pairs.
 
-FM derives schema metadata from the adopted engine. For a relation alias or
-projection, pass `schema=api.DataSchema(...)`; PyTorch validates it against the
+FM derives payload types only for the selected graph tables and their requested
+features, primary/foreign keys and clocks. Other source columns and unrelated
+tables do not need FM-compatible types or keys. Requested `int32` and `float32`
+features widen to `int64` and `float64`; target evaluation keeps the source schema.
+For a relation alias or projection, pass `schema=api.DataSchema(...)`; PyTorch validates it against the
 stored graph. Supported plans use one neighborhood, bounded recent fanouts,
 scalar FM wire types, and `Aggregate(Rows(..., time=TimeWindow(start=0,
 stop=positive)))` or a `Compare` over that aggregate. Multiple graph layers run

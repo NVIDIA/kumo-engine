@@ -88,28 +88,43 @@ def _rows(population, split, key_dtype, max_instances=10000):
     return result
 
 
-def _schema_view(schema):
-    """Derive FM's supported scalar schema without touching the base index."""
+def _schema_view(schema, sample, features):
+    """Derive FM scalar types only for graph inputs retained by the request."""
     from kumo.pytorch.contract.schema import table_clock
 
+    selected_relations = {step.relation for neighborhood in sample.neighborhoods.values()
+                          for layer in neighborhood.layers for step in layer.samples}
+    selected_tables = {sample.entity.table}
+    required = {name: set(columns) for name, columns in features.items()}
+    for relation in schema.relations:
+        if relation.name in selected_relations:
+            selected_tables.update((relation.left_table, relation.right_table))
+            required.setdefault(relation.left_table, set()).add(relation.left_key)
+            required.setdefault(relation.right_table, set()).add(relation.right_key)
     tables = {}
     for table in schema.tables:
+        if table.name not in selected_tables:
+            continue
         if table.primary_key is None:
             raise ValueError(f"FM requires a primary key: {table.name}")
         if table.primary_key == "instance_id":
             raise ValueError(f"FM reserves instance_id for occurrence IDs: {table.name}")
+        clock = table_clock(table)
+        retained = required.get(table.name, set()) | {table.primary_key, clock}
         columns = {}
         for name, dtype in table.columns.items():
+            if name not in retained:
+                continue
             arrow = dtype.to_arrow()
             if pa.types.is_timestamp(arrow) and arrow.unit != "ns":
                 physical = "timestamp[us]"
             elif pa.types.is_date32(arrow):
                 physical = "date"
-            elif pa.types.is_float64(arrow):
+            elif pa.types.is_float64(arrow) or pa.types.is_float32(arrow):
                 physical = "float64"
             elif pa.types.is_boolean(arrow):
                 physical = "bool"
-            elif pa.types.is_int64(arrow):
+            elif pa.types.is_int64(arrow) or pa.types.is_int32(arrow):
                 physical = "int64"
             elif pa.types.is_string(arrow):
                 physical = "string"
@@ -122,9 +137,11 @@ def _schema_view(schema):
         if columns[table.primary_key]["dtype"] not in ("int64", "string"):
             raise ValueError(f"FM needs an int64/string key: {table.name}")
         tables[table.name] = {"primary_key": table.primary_key,
-                              "time_column": table_clock(table), "columns": columns}
+                              "time_column": clock, "columns": columns}
     relations = {}
     for relation in schema.relations:
+        if relation.name not in selected_relations:
+            continue
         left, right = tables[relation.left_table], tables[relation.right_table]
         if relation.right_key == right["primary_key"]:
             child, parent, fk = relation.left_table, relation.right_table, relation.left_key
@@ -225,7 +242,8 @@ class SnapshotFMLoader:
         self._prepared_request_type = PreparedRequest
         self._closed = False
         self._engine, self._target = engine, target
-        self._bundle = _schema_view(schema)
+        features = {name: tuple(columns) for name, columns in features.items()}
+        self._bundle = _schema_view(schema, sample, features)
         self._entity = sample.entity.table
         self._key_type = self._bundle.tables[self._entity]["columns"][
             self._bundle.tables[self._entity]["primary_key"]]["dtype"]

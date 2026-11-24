@@ -152,3 +152,56 @@ def test_example_build_index_and_load_batch_without_sdm(tmp_path, monkeypatch):
     second = build_index_and_load_batch(tmp_path / "example")
     assert sorted((tmp_path / "example/producer/indexes").iterdir()) == indexes
     assert second.encode("arrays") == batch.encode("arrays")
+
+
+def test_snapshot_projects_fm_columns_and_widens_numeric_features(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    pq.write_table(pa.table({"id": [7], "age": pa.array([42], pa.int32()),
+                             "score": pa.array([1.25], pa.float32()),
+                             "unused": pa.array([4], pa.uint16())}), source / "users.parquet")
+    pq.write_table(pa.table({"id": [1, 2], "user": [7, 7],
+                             "at": pa.array([10, 20], pa.timestamp("s")),
+                             "amount": pa.array([2.5, 3.5], pa.float32())}), source / "events.parquet")
+    pq.write_table(pa.table({"unused": pa.array([9], pa.uint16())}), source / "unrelated.parquet")
+    connector = kumo.FileConnector(root_dir=str(source))
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / "root")
+    try:
+        graph = kumo.Graph(tables={
+            "users": kumo.Table.from_source_table(connector["users.parquet"], primary_key="id"),
+            "events": kumo.Table.from_source_table(connector["events.parquet"], primary_key="id",
+                                                   time_column="at").with_column("user", stype=Stype.ID),
+            "unrelated": kumo.Table.from_source_table(connector["unrelated.parquet"]),
+        }, edges=[kumo.Edge(src_table="events", fkey="user", dst_table="users")])
+        engine = api.DiskGraphEngine.from_snapshot(graph.snapshot(), num_threads=2)
+        users_schema = next(table for table in engine.schema.tables if table.name == "users")
+        assert users_schema.columns["age"].to_arrow() == pa.int32()
+        assert users_schema.columns["score"].to_arrow() == pa.float32()
+        relation = engine.schema.relations[0].name
+        target = api.Aggregate(api.Rows(path=(relation,),
+                                        time=api.TimeWindow("at", start=0, stop=10)), "sum", "amount")
+        layer = api.GraphLayer((api.GraphSample(relation, direction="reverse", fanout=2,
+                                                strategy="recent"),))
+        sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": target},
+                                neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+        for features in ({"users": [], "events": []},
+                         {"users": (name for name in ("age", "score")), "events": []}):
+            with fm.prepare(engine=engine, sample=sample, target="next", task="regression",
+                            features=features) as loader:
+                batch = loader.load(context=fm.Context(pairs=[(7, at(15))]),
+                                    query=fm.Query(pairs=[(7, at(40))]))
+            tables = batch.tables("context")
+            assert tables["instance_table"]["__fm_target"].to_pylist() == [3.5]
+            users = tables["related_tables"]["users"]
+            assert "unused" not in users.column_names
+            assert "unrelated" not in tables["related_tables"]
+            if "age" in users.column_names:
+                assert users["age"].type == pa.int64()
+                assert users["score"].type == pa.float64()
+                assert users["age"].to_pylist() == [42]
+                assert users["score"].to_pylist() == [1.25]
+            else:
+                assert users.column_names == ["instance_id", "id"]
+    finally:
+        kumo.configure(scratch_dir=previous)
