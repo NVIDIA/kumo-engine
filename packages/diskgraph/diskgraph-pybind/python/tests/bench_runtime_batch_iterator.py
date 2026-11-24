@@ -27,11 +27,12 @@ import tempfile
 import time
 from typing import Any
 
+import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-import diskgraph
 from diskgraph import RuntimeIndex
+from diskgraph.sampling_options import SamplingOptions
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
 def make_runtime_batch_iterator(dataset_ref, **kwargs):
@@ -51,8 +52,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
     )
-    return index.iter(**kwargs)
-
+    return index.iter(SamplingOptions(**kwargs))
 
 
 def _peak_rss_mb() -> float:
@@ -183,16 +183,22 @@ def _build_fixture(
 
 
 def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
-    plan = {
-        "layers": [
-            {"fanouts": {}, "default_fanout": {
-                "fanout": 8, "mode": "uniform", "absent_key_policy": "uniform_fallback",
-            }},
-            {"fanouts": {}, "default_fanout": {
-                "fanout": 8, "mode": "uniform", "absent_key_policy": "uniform_fallback",
-            }},
-        ],
-    }
+    plan = SamplingPlan(
+        [
+            LayerSpec(
+                fanouts={},
+                default_fanout=FanoutSpec(
+                    fanout=8, mode="uniform", absent_key_policy="uniform_fallback"
+                ),
+            ),
+            LayerSpec(
+                fanouts={},
+                default_fanout=FanoutSpec(
+                    fanout=8, mode="uniform", absent_key_policy="uniform_fallback"
+                ),
+            ),
+        ]
+    )
 
     # Warm-up batch — page-in mmapped data + JIT-warm the iterator state.
     iterator, _ = make_runtime_batch_iterator(

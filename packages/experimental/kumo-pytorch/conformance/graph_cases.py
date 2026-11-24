@@ -295,9 +295,7 @@ def _bound(
 
     with bound_tables(contract, tables, engine, parts=parts) as (dataset, bound):
         if shards is not None and isinstance(bound, DiskGraphEngine):
-            bound = DiskGraphEngine(
-                index=bound.index, num_threads=bound.num_threads, num_shards=shards
-            )
+            bound.num_shards = shards
         yield dataset, bound
 
 

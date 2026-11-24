@@ -7,10 +7,16 @@ from collections import Counter
 from itertools import islice
 
 import pytest
-
-from diskgraph import DiskGraphTTBuilder, EdgeRef, RuntimeIndex, SplitSpec, execute_tt_plan
-
+from diskgraph import (
+    DiskGraphTTBuilder,
+    EdgeRef,
+    RuntimeIndex,
+    SplitSpec,
+    execute_tt_plan,
+)
 from diskgraph._c import DiskgraphDataError
+from diskgraph.sampling_options import SamplingOptions
+from diskgraph.sampling_plan import SamplingPlan
 
 
 def test_timestamp_batches_mix_without_repeating_rows(tmp_path, parent_index):
@@ -36,10 +42,19 @@ def test_timestamp_batches_mix_without_repeating_rows(tmp_path, parent_index):
     index = RuntimeIndex(str(manifest), rnd_seed=17, num_threads=1)
 
     def batches(epoch, worker=0, workers=1, cap=None):
-        iterator, _ = index.iter(stage="train", sampling_plan={"layers": []},
-                                 num_workers=workers, worker_id=worker, shuffle=True,
-                                 epoch=epoch, batch_size=5, entity_node_type="users",
-                                 group_by_timestamp=True)
+        iterator, _ = index.iter(
+            SamplingOptions(
+                stage="train",
+                sampling_plan=SamplingPlan(),
+                num_workers=workers,
+                worker_id=worker,
+                shuffle=True,
+                epoch=epoch,
+                batch_size=5,
+                entity_node_type="users",
+                group_by_timestamp=True,
+            )
+        )
         output = []
         for batch in islice(iterator, cap):
             task = batch["task"]

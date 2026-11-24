@@ -186,7 +186,7 @@ def _tokens(*, profile_layout=Padded(), field_layout=Packed(), event_layout=Padd
 def test_package_root_exposes_data_loader_api_not_model_construction():
     assert kumo.pytorch.DataLoaderSpec is DataLoaderSpec
     assert kumo.pytorch.BatchSpec is BatchSpec
-    assert kumo.pytorch.__version__ == "0.1.0a1"
+    assert kumo.pytorch.__version__
     assert not hasattr(kumo.pytorch, "ArchitectureConfig")
 
 

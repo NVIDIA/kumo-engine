@@ -17,6 +17,7 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
+from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
@@ -63,7 +64,9 @@ def test_materialized_label_stats_accept_declared_types(tmp_path, dtype, labels)
         )
         sources[declared.name] = api.Parquet(str(source))
     with api.prepare(
-        spec, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+        spec,
+        api.Dataset(sources),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         values = plan._materialize_values(table, tmp_path / "values", stats_split="train")
         with plan.materialize(values.anchors, fit_split="train") as task:
@@ -155,7 +158,11 @@ def test_selected_stats_reuse_shared_fitter_without_sample_collection(tmp_path, 
 
         monkeypatch.setattr(plan._require_open(), "build", forbidden)
         monkeypatch.setattr(plan._require_open(), "build_model", forbidden, raising=False)
+        monkeypatch.setattr(ParquetAnchors, "fetch", forbidden)
+        monkeypatch.setattr(ParquetAnchors, "_request", forbidden)
         with plan.materialize(values.anchors, fit_split="train") as task:
+            assert isinstance(task._anchors, ParquetAnchors)
+            assert task.fitted_state.fit["inputs"]["statistics"]["cutoff"] == 100 * 10**9
             encoder = task.output("entity").field(name="score").encoder
             assert encoder.mean == 6.0
             assert encoder.scale == pytest.approx(sqrt(92 / 8))
@@ -305,7 +312,7 @@ def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch)
 
 
 def _target_free_diskgraph_case(history_data, tmp_path):
-    schema, dataset, _, _, _ = history_data
+    schema, dataset, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         entity_values={
@@ -340,9 +347,7 @@ def _target_free_diskgraph_case(history_data, tmp_path):
 
 def test_fitted_target_free_task_reuse_needs_no_fit_split(history_data, tmp_path, monkeypatch):
     spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
-    with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split="train") as initial:
             fitted = initial.fitted_state.inputs
             expected = [
@@ -368,10 +373,12 @@ def test_saved_fit_record_omits_temporary_values_paths(history_data, tmp_path):
     from pathlib import Path
 
     spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
-    index = tmp_path / "index"
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
+    engine = api.DiskGraphEngine(num_threads=2)
+    index = engine.index
+    with api.prepare(spec, dataset, engine) as plan:
         with plan.materialize(anchors, fit_split="train") as task:
-            (directory,) = (index / "tasks").glob("task-*")
+            directory = Path(task._anchors._temporary.name)
+            assert directory.parent == tmp_path / "tasks" / index.name
             assert directory.exists()
             fit = task.fitted_state.fit["inputs"]
             assert fit["fit_split"] == ["train"]

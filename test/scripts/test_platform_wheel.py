@@ -47,7 +47,8 @@ def wheel(tmp_path, platform='manylinux_2_34_aarch64', updates=None,
     info = 'kumo_engine-1.0.dist-info'
     windows = platform == 'win_amd64'
     files = {name + '/__init__.py': b'# package' for name in
-             ('kumo/engine', 'kumo_core', 'kumoapi', 'kumopql', 'diskgraph')}
+             ('kumo/engine', 'kumo/pytorch', 'kumo_core', 'kumoapi', 'kumopql',
+              'diskgraph')}
     files.update({
         info + '/METADATA': b'Name: kumo-engine\nRequires-Python: >=3.11\n'
         b'License-Expression: Apache-2.0\n',

@@ -463,6 +463,8 @@ struct FlattenLengths {
     between: bool,
     before: bool,
     after: bool,
+    #[serde(default)]
+    next_token: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -691,6 +693,7 @@ impl LengthPlanning {
                         flatten.after,
                     )
                     .map_err(length_error)?
+                    .saturating_sub(usize::from(flatten.next_token))
                 } else {
                     events
                         .iter()
@@ -846,7 +849,7 @@ impl RuntimeIndex {
     /// once per chunk when work is handed out dynamically.
     #[pyo3(signature = (
         stage_table,
-        sampling_plan_json,
+        sampling_plan,
         num_workers,
         worker_id,
         shuffle,
@@ -878,7 +881,7 @@ impl RuntimeIndex {
     pub fn iter(
         &self,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: PyRef<'_, crate::sampling_plan::PySamplingPlan>,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -906,6 +909,7 @@ impl RuntimeIndex {
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
+        let sampling_plan = sampling_plan.inner.clone();
         Ok(RuntimeBatchIterator {
             history: None,
             planning: None,
@@ -913,7 +917,7 @@ impl RuntimeIndex {
                 .inner
                 .iter(
                     stage_table,
-                    sampling_plan_json,
+                    sampling_plan,
                     num_workers,
                     worker_id,
                     shuffle,
@@ -1008,7 +1012,7 @@ impl RuntimeBatchIterator {
         parent_root,
         tt_id,
         stage_table,
-        sampling_plan_json,
+        sampling_plan,
         num_workers,
         worker_id,
         shuffle,
@@ -1042,7 +1046,7 @@ impl RuntimeBatchIterator {
         parent_root: String,
         tt_id: String,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: PyRef<'_, crate::sampling_plan::PySamplingPlan>,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1071,6 +1075,7 @@ impl RuntimeBatchIterator {
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
+        let sampling_plan = sampling_plan.inner.clone();
         Ok(Self {
             history: None,
             planning: None,
@@ -1078,7 +1083,7 @@ impl RuntimeBatchIterator {
                 .map_err(map_runtime_err)?
                 .iter(
                     stage_table,
-                    sampling_plan_json,
+                    sampling_plan,
                     num_workers,
                     worker_id,
                     shuffle,
@@ -1126,10 +1131,24 @@ impl RuntimeBatchIterator {
     }
 
     /// Attach named neighborhoods to the SAME native anchor schedule.
-    pub fn with_neighborhoods(&mut self, specs: String) -> PyResult<()> {
-        self.inner
-            .with_neighborhoods(&specs)
-            .map_err(map_runtime_err)
+    pub fn with_neighborhoods(&mut self, specs: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(specs) = specs.extract::<String>() {
+            return self.inner.with_neighborhoods(&specs).map_err(map_runtime_err);
+        }
+        let mut plans = std::collections::BTreeMap::new();
+        for (name, spec) in specs.cast::<PyDict>()? {
+            let spec = spec.cast::<PyDict>()?;
+            let plan = spec.get_item("plan")?.ok_or_else(|| {
+                DiskgraphConfigError::new_err("neighborhood requires a native plan")
+            })?;
+            let plan: PyRef<'_, crate::sampling_plan::PySamplingPlan> = plan.extract()?;
+            let projections = spec.get_item("projections")?.ok_or_else(|| {
+                DiskgraphConfigError::new_err("neighborhood requires projections")
+            })?;
+            plans.insert(name.extract()?, (plan.inner.clone(), projections.extract()?));
+        }
+        self.inner.with_neighborhood_plans(plans);
+        Ok(())
     }
 
     /// Attach history work once per epoch; next_batch remains the only batch call.

@@ -10,6 +10,8 @@ The `kumo-engine-pr-cpu-lifecycle` job installs the same wheel in a clean CPU
 environment and runs the small MLflow lifecycle. A failed lifecycle fails
 `kumo-engine-pr-ci` and blocks the merge.
 
+The `kumo-engine-pr-pytorch` job installs the same wheel with the `pytorch` extra and runs the kumo-pytorch README quick start and example notebooks. A failure also fails `kumo-engine-pr-ci`.
+
 ## Workflow selection
 
 The workflow runs on trusted `pull-request/<number>` branches created by the
@@ -23,8 +25,9 @@ exemptions for docs, UI, Helm, tools, or benchmarks. A docs-only follow-up push
 still checks the full PR. A manual run always selects the GPU check.
 
 The `kumo-engine-pr-ci` check always runs. It requires either a successful
-exemption decision or successful build, CPU lifecycle, and GPU jobs. Failed
-selection, build, CPU lifecycle, and GPU jobs fail this check. Pushes to `main` build the wheel and seed caches
+exemption decision or successful build, CPU lifecycle, kumo-pytorch, and GPU
+jobs. Failed selection, build, CPU lifecycle, kumo-pytorch, and GPU jobs fail
+this check. Pushes to `main` build the wheel and seed caches
 without selecting the GPU or PR-required jobs.
 
 ## Eight task checks

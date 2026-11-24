@@ -42,7 +42,9 @@ and eval dataset. Three kinds of file sit in each published skill directory:
   content until NVSkills CI runs again. The catalog then keeps serving the last signed version
   rather than dropping the skill.
 
-Everything else under `skills/` is this script's output: a refresh deletes it.
+Everything else under `skills/` is this script's output: a refresh deletes what the build no
+longer produces and rewrites only the files whose content changed, so a skill whose files did not
+change keeps its bytes, including the router's `SKILL-BUILD` stamp, and is not re-signed.
 
 `--check` ignores the `SKILL-BUILD` stamp, which names the commit that built the package and so
 differs on every commit even when no skill file changed.
@@ -252,18 +254,21 @@ def publish(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list
     kept = signed_cards(dest)
     with tempfile.TemporaryDirectory() as tmp:
         root = build(Path(tmp), catalog_files)
+        want = files(root, kept)
+        have = files(dest, kept)
+        # Rewrite only what differs once the build stamp is ignored: an unchanged skill keeps
+        # its bytes, so NVSkills CI does not re-evaluate and re-sign it for a new stamp alone.
+        for rel in sorted(have.keys() - want.keys()):
+            (dest / rel).unlink()
         if dest.is_dir():
             for path in sorted(dest.rglob('*'), reverse=True):
-                rel = path.relative_to(dest).as_posix()
-                if path.is_file() and path.name not in SIGNED and rel not in kept:
-                    path.unlink()
-                elif path.is_dir() and not any(path.iterdir()):
+                if path.is_dir() and not any(path.iterdir()):
                     path.rmdir()
-        for path in sorted(root.rglob('*')):
-            if path.is_file() and path.relative_to(root).as_posix() not in kept:
-                target = dest / path.relative_to(root)
+        for rel in sorted(want):
+            if have.get(rel) != want[rel]:
+                target = dest / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, target)
+                shutil.copy2(root / rel, target)
     return changes
 
 

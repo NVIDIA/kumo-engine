@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import torch
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingMode, SamplingPlan
+
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     suppress_batch_indices_warning,
@@ -332,7 +334,7 @@ def _runtime_options_from_sampler(sampler_kwargs: Any) -> dict[str, bool]:
 
 
 def _ttng_estimated_edges(
-    sampling_plan: Mapping[str, Any],
+    sampling_plan: SamplingPlan,
     batch_size: int,
 ) -> int:
     """Estimate TT-NG per-batch edge volume for DiskGraph auto-config.
@@ -342,22 +344,22 @@ def _ttng_estimated_edges(
     size rather than legacy ``NumNeighbors`` and its 1024-item default.
     """
     per_seed_fanout = 1
-    for layer in sampling_plan.get("layers") or ():
-        candidates = []
-        for config in (layer.get("fanouts") or {}).values():
-            if config is not None:
-                candidates.append(int(config.get("fanout", 0)))
-        default = layer.get("default_fanout")
-        if default is not None:
-            candidates.append(int(default.get("fanout", 0)))
-        per_seed_fanout *= max(candidates, default=1)
+    for layer in sampling_plan.layers:
+        candidates = (spec.fanout for spec in layer.fanouts.values())
+        if layer.default_fanout is None:
+            per_seed_fanout *= max(candidates, default=1)
+        else:
+            per_seed_fanout *= max(
+                max(candidates, default=layer.default_fanout.fanout),
+                layer.default_fanout.fanout,
+            )
     return int(batch_size * per_seed_fanout * 0.25)
 
 
 def _ttng_diskgraph_runtime_config(
     runtime: DiskgraphTrainingRuntime | None,
     graph_runtime_metadata: Mapping[str, Any] | None,
-    sampling_plan: Mapping[str, Any],
+    sampling_plan: SamplingPlan,
     batch_size: int,
 ) -> dict[str, Any] | None:
     """Return the existing DiskGraph policy for the TT-NG wheel path.
@@ -372,8 +374,7 @@ def _ttng_diskgraph_runtime_config(
     if not index_path:
         return None
     if runtime is None:
-        raise RuntimeError(
-            "diskgraph_runtime is required for DiskGraph training")
+        raise RuntimeError("diskgraph_runtime is required for DiskGraph training")
 
     estimated_edges = _ttng_estimated_edges(sampling_plan, batch_size)
     config = runtime.auto_config(
@@ -708,29 +709,6 @@ def _edge_types_from_index_metadata(
     return edge_types
 
 
-# Used for test only.
-_DEFAULT_TTNG_SAMPLING_PLAN: dict[str, Any] = {
-    'layers': [
-        {
-            'fanouts': {},
-            'default_fanout': {
-                'fanout': 10,
-                'mode': 'temporal_most_recent',
-                'absent_key_policy': 'uniform_fallback',
-            },
-        },
-        {
-            'fanouts': {},
-            'default_fanout': {
-                'fanout': 10,
-                'mode': 'temporal_most_recent',
-                'absent_key_policy': 'uniform_fallback',
-            },
-        },
-    ],
-}
-
-
 # @register required: ConfigMixin.config() needs data_cls when AutoTrainer
 # serializes at a trial boundary, else the first checkpoint raises ValueError.
 @register(data_cls=DiskgraphNestedTrainerConfig)
@@ -773,12 +751,14 @@ class DiskgraphNestedTrainer(Trainer):
             datamodule.runtime_worker_id = runtime_worker_id
 
     def _build_ttng_sampling_plan(self,
-                                  tm: DiskgraphTaskManifest) -> dict[str, Any]:
+                                  tm: DiskgraphTaskManifest) -> SamplingPlan:
         """Compile ``num_neighbors`` into a DiskGraph sampling plan."""
         raw_values = self.sampler_kwargs.num_neighbors.get_values()
         temporal_strategy = getattr(self.sampler_kwargs, "temporal_strategy",
                                     "last")
-        mode = "temporal_most_recent" if temporal_strategy == "last" else "uniform"
+        mode: SamplingMode = (
+            "temporal_most_recent" if temporal_strategy == "last" else "uniform"
+        )
 
         idx_meta = _load_index_metadata(tm.graph_runtime_metadata)
         relations = idx_meta.get("edge_relations") or []
@@ -806,22 +786,17 @@ class DiskgraphNestedTrainer(Trainer):
             if counterpart in all_rel_names:
                 rel_name_to_csc_counterpart[name] = counterpart
 
-        def _hop(fanout: int) -> dict[str, Any]:
-            return {
-                # -1 means all neighbors.
-                "fanout": 1_000_000_000 if fanout < 0 else fanout,
-                "mode": mode,
-                "absent_key_policy": "uniform_fallback",
-            }
+        def _hop(fanout: int) -> FanoutSpec:
+            return FanoutSpec(
+                fanout=1_000_000_000 if fanout < 0 else fanout,
+                mode=mode,
+                absent_key_policy="uniform_fallback",
+            )
 
-        # Case A: Simple list-based num_neighbors (e.g. [10, 5])
         if isinstance(raw_values, list):
-            return {
-                "layers": [{
-                    "fanouts": {},
-                    "default_fanout": _hop(fanout),
-                } for fanout in raw_values]
-            }
+            return SamplingPlan([
+                LayerSpec(default_fanout=_hop(fanout)) for fanout in raw_values
+            ])
 
         # Case B: Dictionary-based per-relation num_neighbors
         per_type_values = raw_values or {}
@@ -831,7 +806,7 @@ class DiskgraphNestedTrainer(Trainer):
         if default_values:
             num_hops = max(num_hops, len(default_values))
 
-        layers = []
+        layers: list[LayerSpec] = []
         unresolved = set()
         resolved_positive_fanout = False
         for hop in range(num_hops):
@@ -854,14 +829,13 @@ class DiskgraphNestedTrainer(Trainer):
 
             default_fanout = (_hop(default_fanout_val)
                               if default_fanout_val != 0 else None)
-            layers.append({
-                "fanouts": fanouts,
-                "default_fanout": default_fanout,
-            })
+            layers.append(LayerSpec(
+                fanouts=fanouts, default_fanout=default_fanout,
+            ))
 
         if unresolved:
             if not resolved_positive_fanout and not any(
-                    layer["default_fanout"] is not None for layer in layers):
+                    layer.default_fanout is not None for layer in layers):
                 raise RuntimeError(
                     "[TT-NG] Per-relation num_neighbors did not resolve any "
                     "DiskGraph edge relations; refusing to train with an "
@@ -870,7 +844,7 @@ class DiskgraphNestedTrainer(Trainer):
                 "[TT-NG] num_neighbors entries do not match any DiskGraph "
                 "edge relation and are not sampled: %s", sorted(unresolved))
 
-        return {"layers": layers}
+        return SamplingPlan(layers)
 
     def init(
         self,

@@ -81,7 +81,7 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
     with api.prepare(
         contract=_source_contract(),
         dataset=dataset,
-        engine=api.DiskGraphEngine(index=tmp_path / "first"),
+        engine=api.DiskGraphEngine(),
     ) as plan:
         saved = plan.contract.to_json()
         with plan.materialize(
@@ -95,7 +95,7 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
         api.prepare(
             contract=api.DataLoaderSpec.from_json(saved),
             dataset=dataset,
-            engine=api.DiskGraphEngine(index=tmp_path / "changed"),
+            engine=api.DiskGraphEngine(),
         )
 
 
@@ -135,7 +135,7 @@ def test_partial_parquet_resolution_preserves_explicit_int64(tmp_path):
     )
     dataset = api.Dataset({"users": api.Parquet(str(tmp_path))})
     contract = _source_contract({"id": None, "value": int64})
-    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    engine = api.DiskGraphEngine()
     # The decimal overflows int64. Metadata validation leaves that check to ingest.
     with patch("pyarrow.parquet.read_table", side_effect=AssertionError("read source rows")):
         assert api.check(contract, dataset, engine) == ()
@@ -196,7 +196,9 @@ def test_missing_binding_is_reported_before_unresolved_native_preflight(tmp_path
     dataset = api.Dataset(tables={"other": api.Parquet(path=str(tmp_path / "missing.parquet"))})
     with patch("pyarrow.parquet.read_schema", side_effect=AssertionError("read missing binding")):
         issues = api.check(
-            contract=contract, dataset=dataset, engine=api.DiskGraphEngine(index=tmp_path / "index")
+            contract=contract,
+            dataset=dataset,
+            engine=api.DiskGraphEngine(),
         )
     assert len(issues) == 2
     assert all(issue.path == "dataset" for issue in issues)

@@ -85,9 +85,12 @@ def assert_same_batches(actual: list[api.Batch], expected: list[api.Batch]) -> N
 def _dataset(engine_name: str, rows: Rows, directory: Path) -> tuple[api.Dataset, api.Engine]:
     if engine_name == "diskgraph":
         pytest.importorskip("diskgraph")
+        import kumo.settings
+
+        kumo.settings.configure(scratch_dir=directory)
         directory.mkdir(parents=True, exist_ok=True)
         dataset = _write_parquet(rows, directory / "parquet")
-        engine = api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+        engine = api.DiskGraphEngine(num_threads=1, num_shards=1)
         return dataset, engine
     return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()}), (
         api.InMemoryEngine()
@@ -126,15 +129,16 @@ def _fresh_process(
 
     artifact = api.Artifact.load(artifact_dir)
     if engine_name == "diskgraph":
+        import kumo.settings
+
+        kumo.settings.configure(scratch_dir=directory)
         dataset = api.Dataset(
             {
                 table: api.Parquet(str(directory / "parquet" / f"{table}.parquet"))
                 for table in _fixture_rows()
             }
         )
-        engine: api.Engine = api.DiskGraphEngine(
-            index=directory / "index", num_threads=1, num_shards=1
-        )
+        engine: api.Engine = api.DiskGraphEngine(num_threads=1, num_shards=1)
     else:
         dataset, engine = _dataset(engine_name, _fixture_rows(), directory)
     with api.prepare(artifact.contract, dataset, engine) as plan:
@@ -172,7 +176,12 @@ def test_a_fresh_process_rebuilds_the_same_batches(
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
     child = torch.load(out, weights_only=False)
 
-    assert child["fingerprints"] == dict(fingerprints)
+    expected_fingerprints = dict(fingerprints)
+    if engine_name == "diskgraph":
+        # A fresh ingest has distinct physical dataset and task identities.
+        for key in ("dataset", "task"):
+            assert child["fingerprints"].pop(key) != expected_fingerprints.pop(key)
+    assert child["fingerprints"] == expected_fingerprints
     assert child["fitted"] == json.loads(json.dumps(fitted))
     assert_same_batches(child["training"], training)
     assert_same_batches(child["inference"], inference)
@@ -922,6 +931,9 @@ def _label_contract(
 
 def _label_parquet(directory: Path) -> tuple[api.Dataset, api.DiskGraphEngine]:
     pytest.importorskip("diskgraph")
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=directory)
     directory.mkdir(parents=True)
     tables = {table.name: table for table in LABEL_SCHEMA.tables}
     for name, rows in LABEL_ROWS.items():
@@ -929,7 +941,7 @@ def _label_parquet(directory: Path) -> tuple[api.Dataset, api.DiskGraphEngine]:
     dataset = api.Dataset(
         {name: api.Parquet(str(directory / f"{name}.parquet")) for name in LABEL_ROWS}
     )
-    return dataset, api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+    return dataset, api.DiskGraphEngine(num_threads=1, num_shards=1)
 
 
 def _trained_label_artifact(contract: api.DataLoaderSpec, out: Path) -> api.Artifact:
