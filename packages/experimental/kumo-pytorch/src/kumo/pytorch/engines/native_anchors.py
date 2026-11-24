@@ -28,7 +28,12 @@ from kumo.pytorch._storage import verify_task_manifest
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
-from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
+from kumo.pytorch.engines.parquet_anchors import (
+    _anchor_key_array,
+    _files,
+    _physical,
+    check_parquet_anchors,
+)
 from kumo.pytorch.materialization import _diskgraph_dtype
 
 
@@ -130,13 +135,7 @@ class NativeAnchors:
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     entity = self._source._tables[self._sample.entity.table]
                     dtype = entity.columns[entity.primary_key]
-                    entities = pa.array(
-                        [
-                            dtype.normalize(value, path="anchors.entity_id")
-                            for value in columns[table.entity_id].to_pylist()
-                        ],
-                        type=dtype.to_arrow(),
-                    )
+                    entities = _anchor_key_array(columns[table.entity_id], dtype)
                     dense = self._source._sampler.lookup_node_ids(
                         self._sample.entity.table, entities
                     )
