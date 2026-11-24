@@ -16,13 +16,7 @@ from kumo.pytorch.engines.native_anchors import NativeAnchors
 pytest.importorskip("diskgraph")
 
 
-@pytest.mark.parametrize("keep", ["first", "last"])
-@pytest.mark.parametrize("order", ["ascending", "descending"])
-@pytest.mark.parametrize("layout", [api.Padded(), api.Packed()])
-@pytest.mark.parametrize("same_rows", [False, True])
-def test_component_caps_preserve_global_ties_and_empty_histories(
-    tmp_path, monkeypatch, keep, order, layout, same_rows
-):
+def _history_case(tmp_path, keep, order, layout, same_rows, *, budgeted_graph=False):
     sources = {}
     users = tmp_path / "users.parquet"
     pq.write_table(pa.table({"id": [1, 2]}), users)
@@ -36,6 +30,7 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
                     "user": [1] * 64,
                     "time": pa.array(list(range(64)), type=pa.timestamp("s", tz="UTC")),
                     "value": [float(component * 1000 + i) for i in range(64)],
+                    "label": [None if i == 63 else i for i in range(64)],
                 }
             ),
             path,
@@ -53,6 +48,7 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
                         "user": api.DType("int64"),
                         "time": api.DType("timestamp", unit="s", timezone="UTC"),
                         "value": api.DType("float64"),
+                        "label": api.DType("int64"),
                     },
                     time_column="time",
                 )
@@ -63,30 +59,50 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
             api.RelationSpec(name, "users", "id", name, "user") for name in ("events", "web")
         ),
     )
+    fields = {"value": api.Field("value")}
+    inputs = {
+        "history": api.Input(
+            api.EventSource(("events", "web"), max_events=3, keep=keep, order=order),
+            api.Fields((api.Encode("value", api.Raw()),)),
+            layout,
+        )
+    }
+    neighborhoods, targets = {}, {}
+    batching = api.Batching(max_samples=2)
+    if budgeted_graph:
+        batching = api.Batching(max_samples=2, max_tokens=3, length_input="history")
+        fields.update(age=api.EventTimeDelta(), label=api.Field("label"))
+        neighborhoods["graph"] = api.NeighborhoodSpec(
+            (api.GraphLayer(tuple(api.GraphSample(name, 4) for name in ("events", "web"))),)
+        )
+        inputs["graph"] = api.Input(api.NeighborhoodSource("graph"), api.Graph(), None)
+        inputs["ages"] = api.Input(
+            api.EventsOf("history"), api.Fields((api.Encode("age", api.Raw()),)), layout
+        )
+        targets["labels"] = api.AlignedEventTarget("history", (api.Encode("label", api.Raw()),))
     sample = api.SampleSpec(
         api.EntitySpec("users"),
         events={
             name: api.EventSpec(
                 api.Rows(("events" if same_rows else name,), time=api.TimeWindow("time", None, 0)),
-                {"value": api.Field("value")},
+                fields,
             )
             for name in ("events", "web")
         },
+        neighborhoods=neighborhoods,
     )
-    contract = api.DataLoaderSpec(
-        schema,
-        sample,
-        api.BatchSpec(
-            inputs={
-                "history": api.Input(
-                    api.EventSource(("events", "web"), max_events=3, keep=keep, order=order),
-                    api.Fields((api.Encode("value", api.Raw()),)),
-                    layout,
-                )
-            },
-            batching=api.Batching(max_samples=2),
-        ),
-    )
+    contract = api.DataLoaderSpec(schema, sample, api.BatchSpec(inputs, targets, batching=batching))
+    return contract, api.Dataset(sources)
+
+
+@pytest.mark.parametrize("keep", ["first", "last"])
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+@pytest.mark.parametrize("layout", [api.Padded(), api.Packed()])
+@pytest.mark.parametrize("same_rows", [False, True])
+def test_component_caps_preserve_global_ties_and_empty_histories(
+    tmp_path, monkeypatch, keep, order, layout, same_rows
+):
+    contract, dataset = _history_case(tmp_path, keep, order, layout, same_rows)
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"id": [1, 2], "at": [100, 100]}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
@@ -107,7 +123,7 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
             yield runtime
 
     with api.prepare(
-        contract, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             monkeypatch.setattr(NativeAnchors, "_iter", checked_iter)
@@ -128,3 +144,55 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
     assert observed
     # PK + clock + one payload field; only three rows per component survive.
     assert observed[0]["values_decoded"] <= 2 * 3 * 3
+
+
+def test_graph_and_event_history_share_a_token_budget(tmp_path, monkeypatch):
+    contract, dataset = _history_case(
+        tmp_path, "last", "ascending", api.Packed(), False, budgeted_graph=True
+    )
+    cutoffs = [100, 61]
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.table({"user": [1, 1], "at": cutoffs}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with (
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
+    ):
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("graph and history delivery fell back to Python request batching")
+
+        monkeypatch.setattr(task._anchors, "_requests", forbidden)
+        monkeypatch.setattr(task._assembler, "batches", forbidden)
+        monkeypatch.setattr(plan._require_open(), "_sample_graph_events", forbidden)
+        batches = list(task.batches(output_format="model"))
+
+    assert [list(batch.metadata["sample_ids"]) for batch in batches] == [[0], [1]]
+    for cutoff, batch in zip(cutoffs, batches, strict=True):
+        assert batch.metadata["entity_ids"].tolist() == [1]
+        assert not any(batch.metadata["is_padding"])
+        assert batch.metadata["as_of_time"].tolist() == [cutoff]
+        end = min(cutoff, 63)
+        times = [end - 1, end, end]
+        history, ages = batch.inputs["history"], batch.inputs["ages"]
+        labels = batch.targets["labels"]
+        assert history["valid"].tolist() == ages["valid"].tolist() == [True] * 3
+        assert history["value"]["valid"].all() and ages["age"]["valid"].all()
+        for view in (history, ages, labels):
+            assert view["offsets"].tolist() == [0, 3]
+        assert history["value"]["values"].tolist() == [1000 + end - 1, end, 1000 + end]
+        assert ages["age"]["values"].tolist() == [cutoff - t for t in times]
+        valid = labels["label"]["valid"]
+        assert valid.tolist() == [t != 63 for t in times]
+        assert labels["label"]["values"][valid].tolist() == [t for t in times if t != 63]
+        graph = batch.inputs["graph"]
+        roots = graph["nodes"]["users"]
+        assert roots["ids"].tolist() == [1] and roots["batch"].tolist() == [0]
+        for table in ("events", "web"):
+            nodes = graph["nodes"][table]
+            src, dst = graph["edges"][table]["index"]
+            neighbors = list(range(end - 3, end + 1))
+            assert sorted(nodes["ids"].tolist()) == sorted(nodes["ids"][dst].tolist()) == neighbors
+            assert roots["ids"][src].tolist() == [1] * 4
+            assert nodes["batch"].tolist() == roots["batch"][src].tolist() == [0] * 4

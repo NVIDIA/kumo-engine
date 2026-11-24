@@ -1175,10 +1175,10 @@ class NativeAnchors:
         Fixed-size GNN batches reuse TT-NG topology/features directly. Boundary
         batches spanning two split stages use the normal sampler, since their
         topology cannot be concatenated without changing local node indices.
-        Token-budget and mixed-layout assembly retain the existing batching
-        policy; only anchor storage/order/reading changes.
+        With a history token budget, sample neighborhoods after native length
+        planning selects the anchors for each model batch.
         """
-        from kumo.pytorch.contract.batch import Graph
+        from kumo.pytorch.contract.batch import EventSource, Graph
         from kumo.pytorch.contract.sample import Field
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
@@ -1213,6 +1213,13 @@ class NativeAnchors:
             for prepared in assembler._prepared_inputs.values()
             if isinstance(prepared.spec.representation, Graph)
         }
+        budgeted_history = policy.max_tokens is not None and isinstance(
+            assembler.spec.inputs[policy.length_input].source, EventSource
+        )
+        native_lengths = (
+            output_format == "model" and world_size == 1 and (not neighborhoods or budgeted_history)
+        )
+        native_schedule = assembler._source is source and (fixed or native_lengths)
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
         plan = None
         projections = {table: [] for table in source._tables}
@@ -1245,7 +1252,7 @@ class NativeAnchors:
                     yield _surface_padding(batch)
 
         named = {}
-        if len(neighborhoods) > 1:
+        if len(neighborhoods) > 1 or (not fixed and native_schedule):
             for name in sorted(neighborhoods):
                 fields = {table: [] for table in source._tables}
                 for prepared in assembler._prepared_inputs.values():
@@ -1277,10 +1284,8 @@ class NativeAnchors:
         inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
             assembler
         )
-        if (
-            (output_format in {"model", "columnar"} or inspectable_graph or sampled)
-            and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
-            and assembler._source is self._source
+        if native_schedule and (
+            output_format in {"model", "columnar"} or inspectable_graph or sampled
         ):
             first_owned = None
 
