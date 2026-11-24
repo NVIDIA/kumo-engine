@@ -56,7 +56,8 @@ def adapt_columnar_batch(adapter, workload, seeds, batch):
                     raise ValueError("kumo-pytorch edge endpoint is out of bounds")
                 values = pa.chunked_array([pa.array(inverse[table_name][indices], pa.uint64())])
             columns.append(values.cast(pa.uint64()))
-        if orientation != (rel["child"], rel["parent"]):
+        # Columnar edges follow declared endpoints, even for self-relations.
+        if rel["parent_is_source"]:
             columns.reverse()
         index = pa.Table.from_arrays(columns, names=["id_a", "id_b"])
         directions[rel_id] = name, 'forward', rel["child"], rel["parent"]

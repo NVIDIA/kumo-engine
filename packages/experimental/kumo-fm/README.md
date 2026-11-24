@@ -49,6 +49,10 @@ axis. `Query(entities=..., at=...)` uses one time. Either accepts ordered
 positions within each split; repeated pairs remain distinct. Context label
 windows must end before the earliest query. Query targets never enter payloads.
 
+Source primary keys must not be named `instance_id`, which FM reserves for
+occurrence IDs. The `max_instances` budget bounds each split before expanding
+entities × times or validating explicit pairs.
+
 FM derives schema metadata from the adopted engine. For a relation alias or
 projection, pass `schema=api.DataSchema(...)`; PyTorch validates it against the
 stored graph. Supported plans use one neighborhood, bounded recent fanouts,

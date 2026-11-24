@@ -10,6 +10,7 @@ import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import timedelta
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,23 +46,30 @@ class Query:
     pairs: object = ()
 
 
-def _rows(population, split, key_dtype):
+def _rows(population, split, key_dtype, max_instances=10000):
     if split == "context" and not isinstance(population, Context):
         raise TypeError("context requires fm.Context")
     if split == "predict" and not isinstance(population, Query):
         raise TypeError("query requires fm.Query")
-    pairs = list(population.pairs)
-    entities = list(population.entities)
-    if pairs and (entities or (split == "context" and population.times) or
+
+    def bounded(values):
+        result = list(islice(values, max_instances + 1))
+        if len(result) > max_instances:
+            raise ValueError("FM instance budget exceeded")
+        return result
+
+    pairs = bounded(population.pairs)
+    entities = bounded(population.entities)
+    times = bounded(population.times) if split == "context" else [population.at]
+    if pairs and (entities or (split == "context" and times) or
                   (split == "predict" and population.at is not None)):
         raise ValueError("Choose explicit pairs or entities with times")
     if not pairs:
-        if split == "context":
-            pairs = [(entity, at) for at in population.times for entity in entities]
-        else:
-            pairs = [(entity, population.at) for entity in entities]
-    if not pairs:
-        raise ValueError(f"{split} needs at least one occurrence")
+        if len(entities) * len(times) > max_instances:
+            raise ValueError("FM instance budget exceeded")
+        if not entities or not times:
+            raise ValueError(f"{split} needs at least one occurrence")
+        pairs = ((entity, at) for at in times for entity in entities)
     result = []
     seen = set()
     for position, item in enumerate(pairs):
@@ -88,6 +96,8 @@ def _schema_view(schema):
     for table in schema.tables:
         if table.primary_key is None:
             raise ValueError(f"FM requires a primary key: {table.name}")
+        if table.primary_key == "instance_id":
+            raise ValueError(f"FM reserves instance_id for occurrence IDs: {table.name}")
         columns = {}
         for name, dtype in table.columns.items():
             arrow = dtype.to_arrow()
@@ -118,11 +128,14 @@ def _schema_view(schema):
         left, right = tables[relation.left_table], tables[relation.right_table]
         if relation.right_key == right["primary_key"]:
             child, parent, fk = relation.left_table, relation.right_table, relation.left_key
+            parent_is_source = False
         elif relation.left_key == left["primary_key"]:
             child, parent, fk = relation.right_table, relation.left_table, relation.right_key
+            parent_is_source = True
         else:
             raise ValueError(f"FM requires one primary-key side: {relation.name}")
-        relations[relation.name] = {"child": child, "parent": parent, "foreign_key": fk}
+        relations[relation.name] = {"child": child, "parent": parent, "foreign_key": fk,
+                                    "parent_is_source": parent_is_source}
     return SimpleNamespace(tables=tables, relations=relations)
 
 
@@ -290,9 +303,8 @@ class SnapshotFMLoader:
         splits = {}
         for split, population in (("context", context), ("predict", query)):
             if population is not None:
-                seeds = _rows(population, split, self._key_type)
-                if len(seeds) > self.workload.budgets["max_instances"]:
-                    raise ValueError("FM instance budget exceeded")
+                seeds = _rows(population, split, self._key_type,
+                              self.workload.budgets["max_instances"])
                 splits[split] = seeds
         if "context" in splits:
             if "predict" not in splits:

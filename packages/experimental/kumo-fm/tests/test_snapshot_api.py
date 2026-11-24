@@ -6,9 +6,12 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pyarrow as pa
 import pytest
 
 from kumo.fm import Context, Query
+from kumo.fm._assembly import GraphAssembler
+from kumo.fm._columnar import adapt_columnar_batch
 from kumo.fm._snapshot import (
     SnapshotFMLoader,
     _rows,
@@ -51,7 +54,7 @@ def test_population_order_and_repeated_occurrences():
 def test_schema_alias_projection_and_target_window():
     bundle = _schema_view(schema())
     assert bundle.relations["alias"] == {"child": "orders", "parent": "users",
-                                         "foreign_key": "user_id"}
+                                         "foreign_key": "user_id", "parent_is_source": True}
     target = api.Aggregate(api.Rows(path=("alias",),
                                     time=api.TimeWindow("at", start=0, stop=30)), "count")
     assert _target_horizon(target) == 30
@@ -103,3 +106,82 @@ def test_context_labels_join_by_occurrence_id_across_batches():
     loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3), (22, 9)]))
     with pytest.raises(ValueError, match="duplicated"):
         loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
+
+
+@pytest.mark.parametrize("population,split", [
+    (Context(entities=range(10), times=range(10)), "context"),
+    (Query(entities=range(11), at=None), "predict"),
+    (Context(pairs=[(1, None)] * 11), "context"),
+    (Query(pairs=[(1, None)] * 11), "predict"),
+])
+def test_population_budget_precedes_row_validation(population, split):
+    # Invalid times would fail conversion if expansion/validation happened first.
+    with pytest.raises(ValueError, match="instance budget"):
+        _rows(population, split, "int64", max_instances=10)
+
+
+def test_population_budget_bounds_iterable_consumption():
+    def oversized():
+        for _ in range(11):
+            yield (1, None)
+        raise AssertionError("consumed past the budget sentinel")
+
+    with pytest.raises(ValueError, match="instance budget"):
+        _rows(Query(pairs=oversized()), "predict", "int64", max_instances=10)
+    rows = _rows(Context(entities=[7, 8], times=["2025-01-01T00:00:00Z"] * 5),
+                 "context", "int64", max_instances=10)
+    assert [row["entity_key"] for row in rows] == [7, 8] * 5
+    assert len(_rows(Query(pairs=[(7, "2025-01-01T00:00:00Z", i)
+                                  for i in range(10)]),
+                     "predict", "int64", max_instances=10)) == 10
+
+
+@pytest.mark.parametrize("split", ["context", "predict"])
+def test_materialize_passes_configured_population_budget(split):
+    loader = object.__new__(SnapshotFMLoader)
+    loader._closed = False
+    loader._key_type = "int64"
+    loader.workload = SimpleNamespace(budgets={"max_instances": 2})
+    population = (Context(entities=range(2), times=[None, None]) if split == "context"
+                  else Query(pairs=[(1, None)] * 3))
+    with pytest.raises(ValueError, match="instance budget"):
+        loader.materialize(**{"context" if split == "context" else "query": population})
+
+
+@pytest.mark.parametrize("key_type", ["int64", "string"])
+def test_source_instance_id_primary_key_rejected_during_schema_preparation(key_type):
+    source = api.DataSchema(tables=(api.TableSpec(
+        "employees", "instance_id", {"instance_id": api.DType(key_type)},
+        time_column=api.NON_TEMPORAL),))
+    with pytest.raises(ValueError, match="reserves instance_id.*employees"):
+        _schema_view(source)
+
+
+@pytest.mark.parametrize("parent_is_source", [True, False])
+def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_source):
+    left, right = ("id", "manager_id") if parent_is_source else ("manager_id", "id")
+    source = api.DataSchema(tables=(api.TableSpec(
+        "employees", "id", {"id": api.DType("int64"), "manager_id": api.DType("int64")},
+        time_column=api.NON_TEMPORAL),), relations=(api.RelationSpec(
+            "manager", "employees", left, "employees", right),))
+    bundle = _schema_view(source)
+    work = SimpleNamespace(bundle=bundle, entity="employees", table_names={"employees"},
+                           relation_names={"manager"}, projections={"employees": ["id"]},
+                           kind="regression", target={"dtype": "float64"},
+                           budgets={"max_candidate_rows": 10, "max_rows_per_table": 10})
+    adapter = SimpleNamespace(bundle=bundle, node_types=["employees"],
+                              assembler=GraphAssembler(bundle), metrics={"native_candidate_rows": 0})
+    parent, child = [0, 0], [1, 2]
+    a, b = (parent, child) if parent_is_source else (child, parent)
+    nodes = api.ColumnarNodes(
+        ids=pa.array([10, 20, 30]), owners=pa.array([0, 0, 0], pa.uint64()),
+        features=pa.table({"id": [10, 20, 30]}))
+    edges = api.ColumnarEdges("employees", "employees", pa.table({
+        "source": pa.array(a, pa.uint64()), "destination": pa.array(b, pa.uint64())}))
+    graph = api.ColumnarGraph(root_type="employees", nodes={"employees": nodes},
+                              edges={"manager": edges})
+    batch = SimpleNamespace(inputs={"graph": graph}, metadata={"sample_ids": [0]})
+    related = adapt_columnar_batch(adapter, work, [{"instance_id": 99, "entity_key": 10}], batch)
+    assert related["employees"].to_pydict() == {
+        "instance_id": [99, 99, 99], "id": [10, 20, 30],
+        "__fm_edge_manager": [None, 10, 10]}
