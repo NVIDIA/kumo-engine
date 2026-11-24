@@ -58,6 +58,24 @@ jobs:
           uv build --wheel --package kumo-pytorch --out-dir "$RUNNER_TEMP/dist"
           uv build --sdist --package kumo-fm --out-dir "$RUNNER_TEMP/dist"
           uv build --wheel "$RUNNER_TEMP"/dist/kumo_fm-*.tar.gz --out-dir "$RUNNER_TEMP/dist"
+      - name: Verify FM has no native build artifacts
+        env:
+          DIST_DIR: ${{ runner.temp }}/dist
+        run: |
+          python - <<'PY'
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          dist = Path(os.environ["DIST_DIR"])
+          wheel = next(dist.glob("kumo_fm-*.whl"))
+          assert wheel.name.endswith("-py3-none-any.whl"), wheel
+          with zipfile.ZipFile(wheel) as archive:
+              assert not any(name.endswith((".so", ".pyd", ".cpp")) for name in archive.namelist())
+          with tarfile.open(next(dist.glob("kumo_fm-*.tar.gz"))) as archive:
+              assert not any(name.endswith(".cpp") for name in archive.getnames())
+          PY
       - name: Install finished wheels outside the checkout
         working-directory: ${{ runner.temp }}
         run: |

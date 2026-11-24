@@ -194,6 +194,7 @@ mod exact_quantiles;
 mod index_metadata;
 mod runtime_batch_iterator;
 mod sampling_plan;
+mod fm_json;
 mod string_lookup;
 mod success_marker;
 mod temporal;
@@ -1990,6 +1991,7 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(fm_json::encode_fm_rows, m)?)?;
     m.add_class::<string_lookup::StringLookup>()?;
     let _ = pyo3_log::try_init();
     let _ = tracing_log::LogTracer::init();

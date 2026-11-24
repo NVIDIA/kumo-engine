@@ -478,6 +478,21 @@ In addition to sampling/features, `diskgraph-pybind` exports the TT generation p
 | `RowFilter` / `StageFilter` | Filter specifications for per-row and per-stage filtering. |
 | `SplitSpec` | Split configuration: ratio, kind, offsets, ranges, temporal flag. |
 
+### FM row encoding
+
+`encode_fm_rows(record_batches, max_bytes)` encodes normalized Arrow record
+batches into compact ASCII JSON row arrays. It accepts int64, float64, bool,
+UTF-8, date32 and UTC microsecond timestamps. Integers outside JavaScript's
+exact range become strings; dates and timestamps use FM's ISO representation.
+Non-finite floats and unsupported types raise `DiskgraphConfigError`, as do
+negative or exceeded byte budgets. The FM wrapper preserves its `ValueError`
+interface and handles Arrow calendar formatting outside Python's year range.
+
+All Arrow batches are imported while the GIL is held. Serialization releases
+the GIL and retains the imported buffers for the duration of the call. No
+Python stream callbacks or per-cell Python objects are used during encoding.
+The encoder ships in DiskGraph's existing Python 3.11+ stable-ABI extension.
+
 ### Python Functions
 
 | Function | Description |

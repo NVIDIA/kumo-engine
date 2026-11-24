@@ -21,12 +21,12 @@ class EncodedRows:
 def encode_rows(table, max_bytes):
     # Fail explicitly if a source checkout was not built; never silently time
     # the reference encoder when native encoding was requested.
-    from ._native_json import encode_rows as native_encode_rows
+    from diskgraph import DiskgraphConfigError, encode_fm_rows
 
     # Arrow's calendar formatter has implementation-specific behavior outside
     # Python's year 1..9999 range. Preserve that existing behavior (including
     # errors) with its native string kernel for unusual columns, while normal
-    # dates/timestamps use the direct C++ formatter. No per-cell Python values.
+    # dates/timestamps use the direct Rust formatter. No per-cell Python values.
     with phase('native_arrays_prepare', 'type_conversion'):
         for index, field in enumerate(table.schema):
             timestamp = pa.types.is_timestamp(field.type)
@@ -41,7 +41,10 @@ def encode_rows(table, max_bytes):
                 if timestamp:
                     values = pc.binary_join_element_wise(values, 'Z', '')
                 table = table.set_column(index, field.name, values)
-    return EncodedRows(native_encode_rows(table.__arrow_c_stream__(), max_bytes))
+    try:
+        return EncodedRows(encode_fm_rows(table.to_batches(), max_bytes))
+    except DiskgraphConfigError as error:
+        raise ValueError(str(error)) from error
 
 
 def dumps(payload, max_bytes):

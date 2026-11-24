@@ -5,6 +5,7 @@
 from ._c import (
     __version__,
     BUILD_COMMIT,
+    encode_fm_rows,
     StringLookup,
     pack_token_stream,
     merge_event_streams,
@@ -142,6 +143,7 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "encode_fm_rows",
     "StringLookup",
     "pack_token_stream",
     "merge_event_streams",

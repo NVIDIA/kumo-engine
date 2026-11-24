@@ -66,8 +66,9 @@ against the same base.
 `loader.materialize(...).load()` and `loader.load(...)` return `PayloadBatch`.
 Its Arrow tables and metadata survive request and loader closure. Row, column
 and decoded-byte budgets apply during assembly; HTTP byte budgets apply during
-encoding. Arrays encoding requires the built C++ extension, with no Python
-fallback; Arrow IPC is an alternate wire format.
+encoding. Arrays encoding uses DiskGraph’s Rust extension with the GIL released; build
+DiskGraph from the same checkout. FM ships a pure Python wheel. Arrow IPC is
+an alternate wire format.
 
 ## Source installation
 
