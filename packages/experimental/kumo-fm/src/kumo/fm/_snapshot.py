@@ -12,14 +12,12 @@ from dataclasses import fields as dataclass_fields
 from datetime import date, datetime, timedelta
 from itertools import islice
 from numbers import Complex
-from types import SimpleNamespace
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from ._assembly import GraphAssembler
-from ._columnar import adapt_columnar_batch
+from ._assembly import assemble_graph
 from ._contract import _Budgets, _PayloadSpec, _SchemaView, _TargetSpec
 from ._types import TYPES, timestamp, validate_scalar
 from .batch import PayloadBatch, _SplitPayload
@@ -169,7 +167,7 @@ def _target_horizon(value):
     return window.stop
 
 
-def _selected_graph(schema, sample, features, bundle):
+def _selected_graph(schema, sample, features, schema_view):
     from kumo.pytorch import api
 
     if len(sample.neighborhoods) != 1:
@@ -186,15 +184,15 @@ def _selected_graph(schema, sample, features, bundle):
         for step in layer.samples:
             if step.strategy != "recent" or not step.fanout or step.fanout < 0:
                 raise ValueError("FM supports bounded recent graph sampling only")
-            if step.relation not in bundle.relations:
+            if step.relation not in schema_view.relations:
                 raise ValueError(f"Unknown relation: {step.relation}")
-            rel = bundle.relations[step.relation]
+            rel = schema_view.relations[step.relation]
             left, right = ((rel["parent"], rel["child"]) if rel["parent_is_source"]
                            else (rel["child"], rel["parent"]))
             source, dest = (left, right) if step.direction == "forward" else (right, left)
             if source not in frontier:
                 raise ValueError(f"Unreachable graph layer: {source}")
-            if bundle.tables[dest]["time_column"] is None:
+            if schema_view.tables[dest]["time_column"] is None:
                 raise ValueError(f"FM cannot sample uniformly into timeless table {dest}")
             following.add(dest)
             tables.update((source, dest))
@@ -205,20 +203,20 @@ def _selected_graph(schema, sample, features, bundle):
     projections = {}
     fields = {}
     for name in sorted(tables):
-        declared = bundle.tables[name]["columns"]
+        declared = schema_view.tables[name]["columns"]
         requested = list(features[name])
         if len(requested) != len(set(requested)) or not set(requested) <= set(declared):
             raise ValueError(f"Invalid FM feature projection: {name}")
         if "instance_id" in requested:
             raise ValueError(f"FM reserves instance_id for occurrence IDs: {name}.instance_id")
-        pk = bundle.tables[name]["primary_key"]
+        pk = schema_view.tables[name]["primary_key"]
         projections[name] = list(dict.fromkeys((pk, *requested)))
         internal = list(projections[name])
-        clock = bundle.tables[name]["time_column"]
+        clock = schema_view.tables[name]["time_column"]
         if clock:
             internal.append(clock)
-        internal.extend(bundle.relations[r]["foreign_key"] for r in relations
-                        if bundle.relations[r]["child"] == name)
+        internal.extend(schema_view.relations[r]["foreign_key"] for r in relations
+                        if schema_view.relations[r]["child"] == name)
         fields[name] = api.Fields(tuple(api.Encode(column, api.Raw())
                                         for column in dict.fromkeys(internal)))
     return graph_name, fields, tables, relations, projections
@@ -304,10 +302,10 @@ class _FMLoader:
         self._closed = False
         self._engine, self._target = engine, target
         features = {name: tuple(columns) for name, columns in features.items()}
-        self._bundle = _schema_view(schema, sample, features)
+        self._schema_view = _schema_view(schema, sample, features)
         self._entity = sample.entity.table
-        self._key_type = self._bundle.tables[self._entity]["columns"][
-            self._bundle.tables[self._entity]["primary_key"]]["dtype"]
+        self._key_type = self._schema_view.tables[self._entity]["columns"][
+            self._schema_view.tables[self._entity]["primary_key"]]["dtype"]
         self._horizon = _target_horizon(sample.targets[target])
         self._kind = task
         if self._kind == "regression":
@@ -321,7 +319,7 @@ class _FMLoader:
             self._classes = dict(classes)
             target_spec = _TargetSpec("string", tuple(str(value) for value in classes.values()))
         graph_name, fields, tables, relations, projections = _selected_graph(
-            schema, sample, features, self._bundle)
+            schema, sample, features, self._schema_view)
         if type(batch_size) is not int or batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
         if budgets is not None and not isinstance(budgets, Mapping):
@@ -331,14 +329,11 @@ class _FMLoader:
             raise ValueError(f"Unknown FM budget keys: {sorted(unknown, key=str)}")
         limits = _Budgets(**(budgets or {}))
         self._batch_size = min(batch_size, limits.max_instances)
-        self._payload = _PayloadSpec(bundle=self._bundle, entity=self._entity,
+        self._payload = _PayloadSpec(schema_view=self._schema_view, entity=self._entity,
                                      kind=self._kind, target=target_spec, table_names=frozenset(tables),
                                      relation_names=frozenset(relations), projections=projections, budgets=limits)
-        self._adapter = SimpleNamespace(bundle=self._bundle,
-                                        node_types=list(self._bundle.tables), assembler=GraphAssembler(self._bundle),
-                                        metrics={"native_candidate_rows": 0})
         self._stack = ExitStack()
-        pk = self._bundle.tables[self._entity]["primary_key"]
+        pk = self._schema_view.tables[self._entity]["primary_key"]
         label_sample = api.SampleSpec(entity=sample.entity,
                                       entity_values={pk: api.Field(pk)}, targets={target: sample.targets[target]})
         label_batch = api.BatchSpec(inputs={"entity": api.Input(
@@ -440,11 +435,9 @@ class _FMLoader:
         return pc.cast(values, pa.float64()) if self._classes is None else _class_labels(values, self._classes)
 
     def _graphs_for(self, anchor, seeds):
-        from ._contract import schema_for
-
         expected = {s["instance_id"]: s for s in seeds}
         seen = set()
-        parts = {name: [] for name in schema_for(self._payload)["related_tables"]}
+        parts = {name: [] for name in self._payload._metadata["schema"]["related_tables"]}
         with self._graphs.materialize(anchor) as task:
             for batch in task.batches(output_format="columnar", shuffle=False,
                                       batch_size=self._batch_size):
@@ -454,10 +447,7 @@ class _FMLoader:
                     raise ValueError("Duplicate or unexpected FM graph occurrence")
                 seen.update(identifiers)
                 chunk = [expected[value] for value in identifiers]
-                local = SimpleNamespace(inputs=batch.inputs,
-                                        metadata={"sample_ids": list(range(len(chunk)))})
-                related = adapt_columnar_batch(
-                    self._adapter, self._payload, chunk, local)
+                related = assemble_graph(self._payload, chunk, batch.inputs["graph"])
                 for name, table in related.items():
                     parts[name].append(table)
         if seen != set(expected):
@@ -469,7 +459,7 @@ class _FMLoader:
             if len(table):
                 rank = pc.index_in(table["instance_id"], value_set=order)
                 index = pc.sort_indices(pa.table({"rank": rank,
-                                                  "key": table[self._bundle.tables[name]["primary_key"]]}),
+                                                  "key": table[self._schema_view.tables[name]["primary_key"]]}),
                                         sort_keys=[("rank", "ascending"), ("key", "ascending")])
                 table = table.take(index)
             result[name] = table

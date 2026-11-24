@@ -12,7 +12,6 @@ from types import MappingProxyType
 import pyarrow as pa
 
 from . import native_json
-from ._contract import metadata_for
 from ._encoding import encode_arrow_table
 from ._types import TYPES
 
@@ -39,10 +38,10 @@ class _SplitPayload:
 class PayloadBatch:
     """One sampled request; Arrow tables stay valid after loader closure."""
 
-    def __init__(self, workload, splits):
-        metadata = metadata_for(workload)
+    def __init__(self, payload_spec, splits):
+        metadata = payload_spec._metadata
         self._metadata = deepcopy(metadata)
-        self._budgets = asdict(workload.budgets)
+        self._budgets = asdict(payload_spec.budgets)
         self._splits = {}
         logical_bytes = 0
         for split, data in splits.items():
@@ -104,16 +103,10 @@ class PayloadBatch:
             raise ValueError("Unknown encoding")
         payload = self.metadata
         for split, (instance, related) in self._splits.items():
-            instance_columns = dict(payload["schema"]["instance_table"]["columns"])
-            if split == "predict":
-                instance_columns.pop("__fm_target")
-            encoded_instance, _ = encode_arrow_table(
-                instance, instance_columns, encoding, self._budgets, native_arrays=encoding == "arrays")
+            encoded_instance = encode_arrow_table(instance, encoding, self._budgets["max_payload_bytes"])
             encoded_related = {}
             for name, table in related.items():
-                encoded_related[name], _ = encode_arrow_table(
-                    table, payload["schema"]["related_tables"][name]["columns"], encoding,
-                    self._budgets, native_arrays=encoding == "arrays")
+                encoded_related[name] = encode_arrow_table(table, encoding, self._budgets["max_payload_bytes"])
             payload[split] = {"instance_table": encoded_instance, "related_tables": encoded_related}
         if encoding == "arrays":
             return native_json.dumps(payload, self._budgets["max_payload_bytes"])

@@ -28,7 +28,7 @@ def workload():
     bundle = _SchemaView(tables=tables, relations={
         "event_user": {"child": "events", "foreign_key": "user_id", "parent": "users"}})
     return _PayloadSpec(
-        bundle=bundle, entity="users", table_names=frozenset(tables), relation_names=frozenset({"event_user"}),
+        schema_view=bundle, entity="users", table_names=frozenset(tables), relation_names=frozenset({"event_user"}),
         projections={"users": ["segment"], "events": ["event_id", "user_id"]},
         target=_TargetSpec("string", ("0", "1")), kind="binary_classification",
         budgets=_Budgets(max_columns=10, max_rows_per_table=10,

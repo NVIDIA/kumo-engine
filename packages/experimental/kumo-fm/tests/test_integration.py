@@ -3,8 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Retained payloads over an Arrow-to-Parquet fixture, with explicit expected rows."""
+import base64
+import json
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from _fixture import LARGE, build_index, when
 
@@ -145,3 +149,68 @@ def test_prepare_binary_classification_refuses_three_class_map(fm_inputs):
     with pytest.raises(ValueError, match="Binary classification requires a two-entry"):
         fm.prepare(**{**fm_inputs, "task": "binary_classification"},
                    classes={0: "none", 1: "one", 2: "many"})
+
+
+@pytest.mark.parametrize("parent_is_source", [True, False])
+def test_self_relation_payload_retains_selected_parents_and_isolated_occurrences(tmp_path, parent_is_source):
+    rows = pa.table({"id": [10, 20, 30, 99],
+                     "manager_id": pa.array([None, 10, 10, None], pa.int64()),
+                     "at": [when(1), when(2), when(3), when(1)]})
+    path = tmp_path / "employees.parquet"
+    pq.write_table(rows, path)
+    left, right = ("id", "manager_id") if parent_is_source else ("manager_id", "id")
+    schema = api.DataSchema(tables=(api.TableSpec(
+        "employees", "id", {field.name: api.DType.from_arrow(field.type) for field in rows.schema},
+        time_column="at"),), relations=(
+            api.RelationSpec("manager", "employees", left, "employees", right),))
+    layer = api.GraphLayer((api.GraphSample("manager", fanout=2, strategy="recent",
+                                            direction="forward" if parent_is_source else "reverse"),))
+    sample = api.SampleSpec(entity=api.EntitySpec("employees"),
+                            targets={"next": api.Aggregate(api.Rows(
+                                path=("manager",), time=api.TimeWindow("at", start=0, stop=86400)), "count")},
+                            neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+    source_contract = api.DataLoaderSpec(schema, sample, api.BatchSpec(inputs={
+        "graph": api.Input(api.NeighborhoodSource("history"), api.Graph(node_fields={
+            "employees": api.Fields(tuple(api.Encode(name, api.Raw()) for name in rows.column_names)),
+        }), None)}))
+    engine = api.DiskGraphEngine(num_threads=2)
+    with api.prepare(contract=source_contract, dataset=api.Dataset({"employees": api.Parquet(str(path))}),
+                     engine=engine):
+        pass
+    engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=engine.index, id="self-relation"))
+    ids = [9007199254740993, -7, -9007199254740993]
+    with fm.prepare(engine=engine, sample=sample, target="next", task="regression",
+                    features={"employees": ["manager_id", "at"]}, batch_size=2) as loader:
+        first = loader.load(query=fm.Query(pairs=[(10, when(10), ids[0]), (99, when(10), ids[1]),
+                                                  (10, when(10), ids[2])]))
+        # Mutating exported metadata must not poison this loader's cached schema.
+        exposed = first.as_arrow_request()
+        exposed["schema"]["related_tables"]["employees"]["columns"].clear()
+        second = loader.load(query=fm.Query(pairs=[(99, when(10), 8)]))
+        with pytest.raises(ValueError, match="Task entity is not eligible at its anchor"):
+            loader.load(query=fm.Query(pairs=[(20, when(1), 9)]))
+    related = first.tables("predict")["related_tables"]["employees"]
+    assert related["instance_id"].to_pylist() == [ids[0]] * 3 + [ids[1]] + [ids[2]] * 3
+    assert related["id"].to_pylist() == [10, 20, 30, 99, 10, 20, 30]
+    assert related["__fm_edge_manager"].to_pylist() == [None, 10, 10, None, None, 10, 10]
+    assert related["at"].type == pa.timestamp("us", tz="UTC")
+    assert second.tables("predict")["related_tables"]["employees"]["id"].to_pylist() == [99]
+    assert list(second.metadata["schema"]["related_tables"]["employees"]["columns"]) == [
+        "instance_id", "id", "manager_id", "at", "__fm_edge_manager"]
+    arrays = json.loads(first.encode("arrays"))
+    assert arrays["predict"]["related_tables"]["employees"]["rows"][1][:3] == [str(ids[0]), 20, 10]
+    ipc = json.loads(second.encode("arrow_ipc"))["predict"]["related_tables"]["employees"]
+    assert pa.ipc.open_stream(base64.b64decode(ipc["payload_base64"])).read_all().equals(
+        second.tables("predict")["related_tables"]["employees"])
+
+
+def test_sampled_candidate_budget_is_enforced_before_payload_assembly(fm_inputs):
+    with fm.prepare(**fm_inputs, budgets={"max_candidate_rows": 2}) as loader:
+        with pytest.raises(ValueError, match="sampled node-plus-edge budget exceeded"):
+            loader.load(query=fm.Query(pairs=[(LARGE, when(25))]))
+
+
+def test_internal_related_row_budget_is_enforced_before_payload_assembly(fm_inputs):
+    with fm.prepare(**fm_inputs, budgets={"max_rows_per_table": 1}) as loader:
+        with pytest.raises(ValueError, match="Expanded related table exceeds row budget"):
+            loader.load(query=fm.Query(pairs=[(LARGE, when(25)), (-5, when(25))]))

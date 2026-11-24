@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Snapshot input validation before any native graph is sampled."""
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -11,9 +12,8 @@ import pyarrow as pa
 import pytest
 
 from kumo.fm import Context, Query
-from kumo.fm._assembly import GraphAssembler
-from kumo.fm._columnar import adapt_columnar_batch
-from kumo.fm._contract import _Budgets, _TargetSpec
+from kumo.fm._assembly import assemble_graph
+from kumo.fm._contract import _Budgets, _PayloadSpec, _TargetSpec
 from kumo.fm._snapshot import (
     _class_labels,
     _FMLoader,
@@ -171,7 +171,8 @@ def test_source_instance_id_primary_key_rejected_during_schema_preparation(key_t
 
 
 @pytest.mark.parametrize("parent_is_source", [True, False])
-def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_source):
+@pytest.mark.parametrize("repeated_edge", [True, False])
+def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_source, repeated_edge):
     left, right = ("id", "manager_id") if parent_is_source else ("manager_id", "id")
     source = api.DataSchema(tables=(api.TableSpec(
         "employees", "id", {"id": api.DType("int64"), "manager_id": api.DType("int64")},
@@ -180,13 +181,11 @@ def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_sou
     declaration = api.SampleSpec(entity=api.EntitySpec("employees"), neighborhoods={
         "history": api.NeighborhoodSpec((api.GraphLayer((api.GraphSample("manager", fanout=2),)),))})
     bundle = _schema_view(source, declaration, {"employees": ["id"]})
-    work = SimpleNamespace(bundle=bundle, entity="employees", table_names={"employees"},
-                           relation_names={"manager"}, projections={"employees": ["id"]},
-                           kind="regression", target=_TargetSpec("float64"),
-                           budgets=_Budgets(max_candidate_rows=10, max_rows_per_table=10))
-    adapter = SimpleNamespace(bundle=bundle, node_types=["employees"],
-                              assembler=GraphAssembler(bundle), metrics={"native_candidate_rows": 0})
-    parent, child = [0, 0], [1, 2]
+    work = _PayloadSpec(schema_view=bundle, entity="employees", table_names=frozenset({"employees"}),
+                        relation_names=frozenset({"manager"}), projections={"employees": ["id"]},
+                        kind="regression", target=_TargetSpec("float64"),
+                        budgets=_Budgets(max_candidate_rows=10, max_rows_per_table=10))
+    parent, child = ([0, 0, 0], [1, 2, 1]) if repeated_edge else ([0, 0], [1, 2])
     a, b = (parent, child) if parent_is_source else (child, parent)
     nodes = api.ColumnarNodes(
         ids=pa.array([10, 20, 30]), owners=pa.array([0, 0, 0], pa.uint64()),
@@ -195,11 +194,21 @@ def test_self_relation_assembly_uses_declared_primary_key_endpoint(parent_is_sou
         "source": pa.array(a, pa.uint64()), "destination": pa.array(b, pa.uint64())}))
     graph = api.ColumnarGraph(root_type="employees", nodes={"employees": nodes},
                               edges={"manager": edges})
-    batch = SimpleNamespace(inputs={"graph": graph}, metadata={"sample_ids": [0]})
-    related = adapt_columnar_batch(adapter, work, [{"instance_id": 99, "entity_key": 10}], batch)
+    related = assemble_graph(work, [{"instance_id": 99, "entity_key": 10}], graph)
     assert related["employees"].to_pydict() == {
         "instance_id": [99, 99, 99], "id": [10, 20, 30],
         "__fm_edge_manager": [None, 10, 10]}
+    parent, child = [0, 2], [1, 1]
+    a, b = (parent, child) if parent_is_source else (child, parent)
+    conflicting = api.ColumnarGraph(root_type="employees", nodes={"employees": nodes}, edges={
+        "manager": api.ColumnarEdges("employees", "employees", pa.table({
+            "source": pa.array(a, pa.uint64()), "destination": pa.array(b, pa.uint64())}))})
+    with pytest.raises(ValueError, match="Selected child has conflicting parents"):
+        assemble_graph(work, [{"instance_id": 99, "entity_key": 10}], conflicting)
+    limited = replace(work, budgets=replace(work.budgets, max_rows_per_table=2))
+    # Refuse oversized node columns before attempting the conflicting parent map.
+    with pytest.raises(ValueError, match="Expanded related table exceeds row budget"):
+        assemble_graph(limited, [{"instance_id": 99, "entity_key": 10}], conflicting)
 
 
 @pytest.mark.parametrize("parent_is_source", [True, False])

@@ -108,6 +108,9 @@ are captured during preparation, independently of later changes to the mapping.
 `PayloadBatch.encode("arrays" | "arrow_ipc")` produces an experimental request
 envelope with `model`, `task`, `schema` and `output` metadata. This package is a
 producer of that envelope; it supplies no HTTP client or response consumer.
+Sampled public columnar graphs feed FM tables directly. The loader caches its
+wire schema, and each payload normalizes its retained tables once before either
+encoding.
 Tests compare arrays/IPC serialization with retained Arrow tables locally.
 Those checks do not establish parity with a live HTTP endpoint; no live endpoint
 or in-repository HTTP consumer is supplied or exercised by this PR.
