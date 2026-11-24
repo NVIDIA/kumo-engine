@@ -499,6 +499,7 @@ class _ValuesSource:
             {**(base.columns if base else {}), **selected.columns},
             base.cutoff if base else selected.cutoff,
             (*(base.files if base else ()), *selected.files),
+            stored_zscore=base.stored_zscore if base else None,
         )
 
     def _online(self, spec):

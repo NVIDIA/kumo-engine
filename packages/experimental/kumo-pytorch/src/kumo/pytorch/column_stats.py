@@ -11,8 +11,9 @@ import hashlib
 import json
 import logging
 import math
+import tempfile
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -85,6 +86,8 @@ class ColumnStats:
     cutoff: Mapping[str, Any]
     #: The ``col_stats/`` files read.
     files: tuple[str, ...] = ()
+    #: Population (mean, scale) for a single indexed column, if this reader owns it.
+    stored_zscore: Callable[[StatRequest], tuple[float, float] | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -309,10 +312,52 @@ def read_column_stats(
         request = stats_request(missing, [ticks], unit)
         diskgraph.cutoff_col_stats(str(index), json.dumps(request), num_threads=num_threads)
         found = read()
+    columns = {item: found[item[0]][item[1]] for item in requests}
+
+    def stored_zscore(request):
+        data = columns.get(request)
+        if data is None:
+            return None
+        n = data["count"] - data["null_count"]
+        if not n:
+            return 0.0, 1.0
+        low, high = data["min"], data["max"]
+        if low == high:
+            return low, 1.0
+        # A smaller deviation can come from a variance rounded into the subnormal range.
+        mean, std = data["mean"], data["std"]
+        if mean is not None and std is not None and std >= 2.0**-511:
+            return mean, std / math.sqrt(n / (n - 1))
+
+        table, column, _ = request
+        key = hashlib.sha256(json.dumps([table, column]).encode()).hexdigest()
+        path = directory / f"zscore-v2-{key}.json"
+        if path.is_file():
+            return tuple(json.loads(path.read_text()))
+        from diskgraph._c import _scaled_column_moments
+
+        # Center tightly clustered values before accumulating their scaled deviations.
+        _, exponent = math.frexp(max(abs(low), abs(high)))
+        magnitude = math.ldexp(1.0, exponent - 1)
+        origin = max(low, min(0.0, high))
+        count, mean, scale = _scaled_column_moments(
+            str(index), table, column, ticks, magnitude, origin, num_threads
+        )
+        if count != n:
+            raise ValueError(
+                f"ZScore scan of {table}.{column} found {count} finite rows, expected {n}"
+            )
+        with tempfile.TemporaryDirectory(dir=directory) as work:
+            temporary = Path(work, path.name)
+            temporary.write_text(json.dumps([mean, scale], allow_nan=False))
+            temporary.replace(path)
+        return mean, scale
+
     return ColumnStats(
-        {item: found[item[0]][item[1]] for item in requests},
+        columns,
         {"value": ticks, "unit": unit},
         tuple(f"{directory.name}/{path.name}" for _, path in sorted(paths.items())),
+        stored_zscore,
     )
 
 
@@ -480,7 +525,8 @@ def _resolve_nanos(value: str | dt.date) -> int | None:
 
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:
     config, dtype = encoder.config, encoder.dtype
-    datas = [stats.columns[request] for request in encoder.requests]
+    requests = encoder.requests
+    datas = [stats.columns[request] for request in requests]
     if isinstance(config, Vocabulary):
         counts: Counter = Counter()
         actual = {}
@@ -506,6 +552,13 @@ def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStat
         )
     if any(data["invalid_count"] for data in datas):
         raise ValueError(f"encoder {identity}: numeric transforms require finite values")
+    if isinstance(config, ZScore) and len(datas) == 1 and stats.stored_zscore is not None:
+        moments = stats.stored_zscore(requests[0])
+        if moments is not None:
+            mean, scale = moments
+            return FittedEncoder(
+                identity=identity, config=config, dtype=dtype, mean=mean, scale=scale or 1.0
+            )
     finite = [data["count"] - data["null_count"] for data in datas]
     if isinstance(config, ZScore):
         count, mean, m2 = 0, 0.0, 0.0

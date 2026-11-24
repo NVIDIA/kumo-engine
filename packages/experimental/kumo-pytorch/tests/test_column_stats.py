@@ -10,15 +10,22 @@ import random
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from math import nextafter
 from pathlib import Path
+from statistics import mean, pstdev
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
+import torch
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import table_column_encoders
 from kumo.pytorch.engine import GraphRoot
+from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.conformance.test_dtype_matrix import _contract as scalar_contract
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 
 pytest.importorskip("diskgraph")
@@ -483,3 +490,53 @@ def test_buckets_cut_values_near_the_float_limits():
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
             cuts = _state(task.fitted_state, '"v"')["boundaries"]
     assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)
+
+
+@pytest.mark.parametrize(
+    "values,reads",
+    [
+        pytest.param([0.0, 2.0**-499], 0, id="tiny-pair"),
+        pytest.param([0.0, 2.0**-599], 1, id="underflow-pair"),
+        pytest.param([2.0**600] * 2, 0, id="large-constant"),
+        pytest.param([0.0, 2.0**600], 1, id="overflow-pair"),
+        pytest.param([0.0, 1.0, 2.0, 4.0], 0, id="ordinary"),
+        pytest.param([0.0, 2.0**-599, 2.0**-598, 2.0**-597], 1, id="variance-underflows"),
+        pytest.param([0.0, 2.0**600, 2.0**601, 2.0**602], 1, id="variance-overflows"),
+        pytest.param([2.0**600] + [nextafter(2.0**600, np.inf)] * 3, 1, id="adjacent-large"),
+        pytest.param([-np.finfo(float).max] + [np.finfo(float).max] * 3, 1, id="subtraction"),
+    ],
+)
+def test_native_zscore_preserves_representable_results(values, reads):
+    from diskgraph import _c
+
+    contract = scalar_contract(api.DType("float64"), api.ZScore(dtype="float64"))
+    rows = [{"id": i, "value": v} for i, v in enumerate(values)]
+    center, scale = mean(values), pstdev(values) or 1.0
+    # The subtraction itself can overflow in float64, even for a finite expected score.
+    expected = [float((Decimal(v) - Decimal(center)) / Decimal(scale)) for v in values]
+    with (
+        bound_tables(contract, {"users": rows}, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        patch.object(_c, "_scaled_column_moments", wraps=_c._scaled_column_moments) as scan,
+    ):
+        anchors = api.AnchorTable(dataset.tables["users"], "id", sample_id="id")
+        for _ in range(2):
+            with plan.materialize(anchors, encoder_cutoff=None) as task:
+                assert isinstance(task._anchors, NativeAnchors)
+                fitted = task.output("entity").field(name="value").encoder
+                # Relative to the spread, one ULP matters for nearly constant large values.
+                assert fitted.mean == pytest.approx(center, rel=0, abs=scale * 1e-14)
+                assert fitted.scale == pytest.approx(scale, rel=1e-14, abs=0)
+                with patch.object(
+                    task._assembler, "batches", side_effect=AssertionError("fallback")
+                ):
+                    (batch,) = task.batches(
+                        batch_size=len(rows), shuffle=False, output_format="model"
+                    )
+                field = batch.inputs["entity"]["value"]
+                assert field["values"].dtype == torch.float64
+                assert field["valid"].all()
+                assert field["values"].tolist() == pytest.approx(
+                    expected, rel=0 if len(values) == 2 else 1e-14, abs=0
+                )
+            assert scan.call_count == reads

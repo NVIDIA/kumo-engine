@@ -287,9 +287,14 @@ class FittedEncoder:
         with np.errstate(over="ignore", invalid="ignore"):
             result = ((numeric - self.mean) / self.scale).astype(self.config.dtype)
         if not np.isfinite(result[valid]).all():
-            raise ValueError(
-                f"encoder {self.identity}: normalized values overflow {self.config.dtype}"
-            )
+            # Opposite finite values can overflow the subtraction but still give a finite score.
+            overflow = valid & ~np.isfinite(result)
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                result[overflow] = (numeric[overflow] * 0.5 - self.mean * 0.5) / (self.scale * 0.5)
+            if not np.isfinite(result[overflow]).all():
+                raise ValueError(
+                    f"encoder {self.identity}: normalized values overflow {self.config.dtype}"
+                )
         result[~valid] = 0
         return result
 

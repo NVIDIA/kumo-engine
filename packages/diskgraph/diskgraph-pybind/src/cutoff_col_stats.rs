@@ -18,6 +18,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_schema::DataType;
 use compact_str::CompactString;
+use diskgraph_core::accumulators::WelfordAccumulator;
 use diskgraph_ingest::column_scan::{
     at_cutoff, create_times, node_chunks, scan_chunk, stored_tables, ScanBudget, StoredTable,
 };
@@ -32,7 +33,7 @@ use tokenizers::{
     AddedToken, OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer, Tokenizer,
 };
 
-use crate::bp_col_stats::drive_from_arrow_column;
+use crate::bp_col_stats::{drive_from_arrow_column, float64s};
 use crate::{map_anyhow_err, DiskgraphConfigError};
 
 const CHUNK_NODES: u64 = 1 << 16;
@@ -151,6 +152,75 @@ fn compute_cutoff_col_stats(
         pool.install(|| {
             from_index(Path::new(index_dir), Path::new(output_dir), &request)
         })
+    })
+    .map_err(map_anyhow_err)
+}
+
+/// Recover a column's population moments when its unscaled variance lost range.
+#[pyfunction]
+#[pyo3(signature = (index_dir, table, column, cutoff, unit, origin, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
+fn _scaled_column_moments(
+    py: Python<'_>,
+    index_dir: &str,
+    table: &str,
+    column: &str,
+    cutoff: Option<i64>,
+    unit: f64,
+    origin: f64,
+    num_threads: Option<usize>,
+) -> PyResult<(u64, f64, f64)> {
+    py.detach(|| -> Result<_> {
+        ensure!(
+            unit.is_finite() && unit > 0.0 && origin.is_finite(),
+            "expected a positive finite unit and a finite origin"
+        );
+        let scaled_origin = origin / unit;
+        let (tables, clock) = stored_tables(Path::new(index_dir), &HashSet::from([table.into()]))?;
+        let stored = &tables[table];
+        let col = stored
+            .columns
+            .iter()
+            .position(|(name, _)| name == column)
+            .ok_or_else(|| anyhow!("index has no column {table}.{column}"))?;
+        let decoded: Vec<_> = std::iter::once(col).chain(stored.create_time).collect();
+        let budget = ScanBudget::new()?;
+        let chunks: Vec<_> = node_chunks(&stored.reader, CHUNK_NODES).collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads.unwrap_or(0))
+            .build()?;
+        let parts = pool.install(|| {
+            chunks
+                .par_iter()
+                .map(|&chunk| {
+                    let mut moments = WelfordAccumulator::new();
+                    scan_chunk(&stored.reader, chunk, &decoded, &budget, |batch, _| {
+                        let times = stored
+                            .create_time
+                            .map(|_| create_times(batch.column(1), clock));
+                        let keep = at_cutoff(times.as_deref(), batch.num_rows(), cutoff);
+                        let values = float64s(batch.column(0))?;
+                        for row in 0..values.len() {
+                            if keep.value(row) && values.is_valid(row) {
+                                moments.observe(values.value(row) / unit - scaled_origin);
+                            }
+                        }
+                        Ok(())
+                    })?;
+                    Ok(moments)
+                })
+                .collect::<Result<Vec<_>>>()
+        })?;
+        let mut moments = WelfordAccumulator::new();
+        for part in parts {
+            moments.merge(&part);
+        }
+        let deviation = (moments.m2 / moments.count.max(1) as f64).sqrt();
+        Ok((
+            moments.count,
+            (moments.mean() + scaled_origin) * unit,
+            deviation * unit,
+        ))
     })
     .map_err(map_anyhow_err)
 }
@@ -500,6 +570,7 @@ fn chunk_lengths(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(_cutoff_col_stats_at, m)?)?;
+    m.add_function(wrap_pyfunction!(_scaled_column_moments, m)?)?;
     m.add_function(wrap_pyfunction!(write_column_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
     m.add_function(wrap_pyfunction!(token_lengths, m)?)?;
