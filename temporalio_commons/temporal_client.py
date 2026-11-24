@@ -69,6 +69,8 @@ _TEMPORAL_CERT_SECRET_NAME_TEMPLATE = 'kumo-{namespace}-temporal'
 
 # Field name in workflow memo (metadata) dict for workflow id suffix.
 ID_SUFFIX_MEMO_FIELD = "id_suffix"
+# Field name in workflow memo for the workflow id length limit, when bounded.
+ID_MAX_LENGTH_MEMO_FIELD = "id_max_length"
 
 DEFAULT_WORKFLOW_TASK_TIMEOUT_SEC = EnvVar('WORKFLOW_TASK_TIMEOUT_SEC',
                                            type=int,
@@ -633,6 +635,9 @@ class ClientOutboundInterceptor(OutboundInterceptor):
     async def start_workflow(self, input: StartWorkflowInput):
         id_suffix = self._config.workflow_id(workflow_id='')
         memo: Dict[str, Any] = {ID_SUFFIX_MEMO_FIELD: id_suffix.encode()}
+        if self._config.max_workflow_id_length is not None:
+            memo[ID_MAX_LENGTH_MEMO_FIELD] = str(
+                self._config.max_workflow_id_length).encode()
         if input.memo:
             memo.update(input.memo)
         input.memo = memo

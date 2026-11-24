@@ -161,7 +161,6 @@ def history_data(tmp_path_factory):
         schema,
         api.Dataset(sources),
         api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()}),
-        root / "index",
         requests,
     )
 
@@ -186,7 +185,7 @@ class _Queries:
 def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
     history_data, keep, layout, aggregate, label, limit
 ):
-    schema, parquet, memory, index, requests = history_data
+    schema, parquet, memory, requests = history_data
     sample = _sample()
     inputs = {"history": _input(keep=keep, layout=layout, limit=limit)}
     if aggregate:
@@ -213,7 +212,7 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
         expected = next(
             reference.materialize(requests, fit_split="train").batches(requests, batch_size=4)
         )
-    with api.prepare(contract, parquet, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
+    with api.prepare(contract, parquet, api.DiskGraphEngine(num_threads=2)) as plan:
         queries = _Queries(plan._source._sampler)
         plan._source._sampler = queries
         with plan.materialize(requests, fit_split="train") as task:

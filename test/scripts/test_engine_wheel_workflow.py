@@ -181,10 +181,10 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         row["arch"]
         for row in JOBS["attach-to-release"]["strategy"]["matrix"]["include"]
     }
-    assert {"x86_64", "arm64"} <= release_arches
-    assert release_arches <= {"x86_64", "arm64", "aarch64"}
-    if "aarch64" in release_arches:
-        assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
+    assert release_arches == arches
+    assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
+    assert next(row for row in JOBS["kitmaker"]["strategy"]["matrix"]["include"]
+                if row["arch"] == "windows-x86_64")["platform"] == "win_amd64"
     for job in ["attach-to-release", "kitmaker"]:
         published = {row["arch"] for row in JOBS[job]["strategy"]["matrix"]["include"]}
         assert published == release_arches
@@ -217,19 +217,13 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         "|| (github.event_name == 'workflow_dispatch' "
         "&& github.ref == 'refs/heads/main') }}"
     )
-    assert (
-        PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
-            "required"
-        ]
-        is True
-    )
+    assert 'secrets' not in PORTAL_WORKFLOW[True]['workflow_call']
+    assert portal["env"]["KITMAKER_API_TOKEN"] == "${{ secrets.KITMAKER_API_TOKEN }}"
     glove = yaml.safe_load(
         (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
     )
     for caller in [JOBS["kitmaker"], glove["jobs"]["kitmaker"]]:
-        assert caller["secrets"] == {
-            "KITMAKER_API_TOKEN": "${{ secrets.KITMAKER_API_TOKEN }}"
-        }
+        assert 'secrets' not in caller
     assert portal["env"]["RELEASE_TAG"] == "${{ inputs.release_tag }}"
     assert JOBS["kitmaker"]["with"]["release_tag"] == (
         "${{ github.event.release.tag_name }}"
@@ -299,3 +293,91 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     # artifact while publishing the current build.
     assert 'run-id' not in download['with']
     assert 'github-token' not in download['with']
+
+
+def test_windows_reload_blocks_publication_with_current_wheel():
+    """Follow the reusable gate to this run's finished wheel."""
+    assert 'platform-qualification' in JOBS['attach-to-release']['needs']
+    workflow = yaml.safe_load((WORKFLOW.parent /
+                              'kumo-engine-platform-smoke.yml').read_text())
+    call = workflow['jobs']['windows-reload']
+    assert call['uses'] == './.github/workflows/kumo-engine-desktop-reload.yml'
+    for boundary in (JOBS['platform-qualification'], call):
+        assert boundary['permissions']['actions'] == 'read'
+        assert boundary['permissions']['id-token'] == 'write'
+    assert call['with'] == {
+        'wheel_run_id': "${{ format('{0}', github.run_id) }}",
+        'native_windows_only': True,
+    }
+    desktop = yaml.safe_load((WORKFLOW.parent /
+                             'kumo-engine-desktop-reload.yml').read_text())
+    reload = desktop['jobs']['reload']
+    assert set(reload['strategy']['matrix']['python']) == {
+        '3.11', '3.12', '3.13', '3.14'}
+    download = next(step['with'] for step in reload['steps']
+                    if step.get('uses', '').startswith('actions/download-artifact@'))
+    assert download['run-id'] == '${{ inputs.wheel_run_id }}'
+    assert download['name'] == (
+        'kumo-engine-wheel-${{ matrix.target.artifact }}-'
+        '${{ needs.wheel.outputs.sha }}')
+
+
+@pytest.mark.parametrize('native_only,count', [('true', 1), ('false', 8), ('', 8)])
+def test_desktop_target_selection(tmp_path, native_only, count):
+    """Run the shared selector, checking callable versus manual coverage."""
+    desktop = yaml.safe_load((WORKFLOW.parent /
+                             'kumo-engine-desktop-reload.yml').read_text())
+    script = desktop['jobs']['wheel']['steps'][0]['run']
+    selector = script[script.index("python - <<'PYTHON'"):]
+    output = tmp_path / 'outputs'
+    subprocess.run(['bash', '-e', '-c', selector], check=True,
+                   env=dict(os.environ, NATIVE_WINDOWS_ONLY=native_only,
+                            GITHUB_OUTPUT=str(output),
+                            PATH=str(Path(sys.executable).parent) +
+                            os.pathsep + os.environ['PATH']), timeout=15)
+    targets = json.loads(output.read_text().removeprefix('targets='))
+    assert len(targets) == count
+    windows = next(row for row in targets if row['name'] == 'windows-native')
+    assert windows['artifact'] == 'windows-x86_64'
+    assert windows['device'] == 'cpu'
+    assert 'extra' not in windows  # Qualify the default Windows installation.
+
+
+@pytest.mark.parametrize('change,accepted', [
+    ({}, True),
+    ({'path': '.github/workflows/unrelated.yml'}, False),
+    ({'event': 'pull_request'}, False),
+    ({'head_repository': {'full_name': 'foreign/repository'}}, False),
+    ({'head_sha': 'invalid'}, False),
+])
+def test_desktop_candidate_validation(tmp_path, change, accepted):
+    """Execute the real lookup filter against valid and foreign build metadata."""
+    desktop = yaml.safe_load((WORKFLOW.parent /
+                             'kumo-engine-desktop-reload.yml').read_text())
+    script = desktop['jobs']['wheel']['steps'][0]['run']
+    payload = dict(path='.github/workflows/kumo-engine-wheel.yml',
+                   event='workflow_dispatch',
+                   head_repository={'full_name': 'NVIDIA/kumo-engine'},
+                   head_sha='a' * 40)
+    payload.update(change)
+    metadata = tmp_path / 'run.json'
+    metadata.write_text(json.dumps(payload))
+    executable = tmp_path / 'gh'
+    executable.write_text(
+        f'#!{sys.executable}\nimport os, sys\n'
+        "assert sys.argv[1:3] == ['api', "
+        "'repos/NVIDIA/kumo-engine/actions/runs/123']\n"
+        "os.execvp('jq', ['jq', '-r', sys.argv[-1], os.environ['RUN_DATA']])\n")
+    executable.chmod(0o755)
+    output = tmp_path / 'outputs'
+    env = dict(os.environ, RUN_ID='123', GITHUB_REPOSITORY='NVIDIA/kumo-engine',
+               RUN_DATA=str(metadata), GITHUB_OUTPUT=str(output),
+               NATIVE_WINDOWS_ONLY='true',
+               PATH=os.pathsep.join((str(tmp_path),
+                                     str(Path(sys.executable).parent),
+                                     os.environ['PATH'])))
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script],
+                            env=env, capture_output=True, text=True, timeout=15)
+    assert (result.returncode == 0) == accepted, result.stderr
+    if accepted:
+        assert output.read_text().splitlines()[0] == 'sha=' + 'a' * 40

@@ -31,9 +31,13 @@ from rest.constants import (
     RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL,
     REGISTER_WATCHER_SIGNAL,
 )
+from service_framework.deploy_env_config import bounded_workflow_id
 from statedb.config.common import TableID
 from statedb.utils.errors import DataRefreshError
-from temporalio_commons.temporal_client import ID_SUFFIX_MEMO_FIELD
+from temporalio_commons.temporal_client import (
+    ID_MAX_LENGTH_MEMO_FIELD,
+    ID_SUFFIX_MEMO_FIELD,
+)
 
 from .workflow_utils import signal_workflow_if_running, start_child_data_wf
 
@@ -132,7 +136,7 @@ class TableParentWorkflowMixin:
     @workflow.signal(name=RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL)
     async def receive_refresh_status_update(self, child_wf_id: WorkflowID,
                                             status_update: TableDataTaskResult):
-        child_wf_id = _strip_wf_id_suffix(child_wf_id)
+        child_wf_id = _child_status_key(child_wf_id)
         log.info('Parent wf received update for %s: %s', child_wf_id,
                  status_update)
         self._child_status_updates[child_wf_id].append(status_update)
@@ -167,7 +171,7 @@ class TableParentWorkflowMixin:
 
         assert child_id not in self._child_wf_ids, (
             f'start_child_refresh called twice for {child_id}')
-        self._child_wf_ids[child_id] = child_wf_id
+        self._child_wf_ids[child_id] = _child_status_key(child_wf_id)
 
         child_wf_task = await start_child_data_wf(
             workflow_fn,
@@ -280,9 +284,14 @@ class TableParentWorkflowMixin:
         return _table_stage_result() or self._child_wf_tasks[child_id].result()
 
 
-def _strip_wf_id_suffix(wf_id: str) -> str:
+def _child_status_key(wf_id: str) -> str:
+    """The child's id as started (bounded), without the deploy suffix."""
     id_suffix = workflow.memo_value(ID_SUFFIX_MEMO_FIELD,
                                     type_hint=bytes).decode()
+    max_length = workflow.memo_value(ID_MAX_LENGTH_MEMO_FIELD, None,
+                                     type_hint=bytes)
     if wf_id.endswith(id_suffix):
-        return wf_id[:-len(id_suffix)]
-    return wf_id
+        wf_id = wf_id[:-len(id_suffix)]
+    if max_length is None:
+        return wf_id
+    return bounded_workflow_id(wf_id, id_suffix, int(max_length.decode()))

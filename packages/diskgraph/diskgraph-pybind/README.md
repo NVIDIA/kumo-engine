@@ -76,6 +76,54 @@ uv pip install .
 
 ## Usage
 
+### Typed runtime sampling plans
+
+`diskgraph.SamplingPlan` is an immutable Rust-owned value exposed by PyO3.
+DiskGraph owns this contract so the native package remains independent of
+`kumo-core`. Constructors accept ordinary Python lists and mappings:
+
+```python
+from diskgraph import FanoutSpec, LayerSpec, RuntimeIndex, SamplingPlan
+
+plan = SamplingPlan([
+    LayerSpec(default_fanout=FanoutSpec(10, "uniform", "uniform_fallback")),
+    LayerSpec(fanouts={
+        "orders_to_users": FanoutSpec(5, "temporal_most_recent", "reject_plan"),
+    }),
+])
+index = RuntimeIndex(runtime_manifest_path, rnd_seed=42, num_threads=4)
+batches, sample_count = index.iter(
+    stage="train", sampling_plan=plan, entity_node_type="users",
+    num_workers=1, worker_id=0, shuffle=False, epoch=0, batch_size=128,
+)
+```
+
+`LayerSpec.fanouts` keys are native relation names. A relation uses its override
+or the layer's `default_fanout`; `None` skips relations without an override.
+`RuntimeIndex.iter` accepts only the native `SamplingPlan` class. Dictionaries,
+JSON strings, `None`, and other types raise `TypeError`; use `SamplingPlan()`
+for zero-hop iteration. The binding clones the underlying Rust plan for each
+iterator without traversing Python fields or serializing JSON.
+
+Constructors copy their inputs into native values. All properties are read-only:
+`layers` is a tuple, and `fanouts` is a read-only mapping. Construct a new plan
+to change the configuration. Native values support pickle, including complete
+plans passed to spawned worker processes. Construction opens no index and
+imports no Torch or training modules.
+
+`SamplerEngine.sample` also accepts native plans. Named neighborhoods accept
+`{"name": {"plan": plan, "projections": {}}}` through
+`RuntimeBatchIterator.with_neighborhoods`. Both APIs retain their existing JSON
+string inputs; the native path passes Rust values without serialization.
+
+`WeightedSampling(weighting, temporal=False)` represents the native `weighted`
+variant; `temporal=True` selects `temporal_weighted`. Weightings are
+`ExponentialDecay(rate)` (per-second rate, native `lambda`),
+`LinearDecay(half_life_seconds)`, or `CustomExpression(id)`. These types describe
+the existing Rust schema and do not enable unsupported engine modes. The current
+engine rejects weighted modes at sampling time. Native validation remains
+authoritative.
+
 `lookup_node_ids` and `canonical_node_mask` parse and query one key at a time
 within the supplied Arrow batch. Neither retains a second batch of parsed keys;
 only the returned IDs or booleans accumulate.
@@ -121,7 +169,8 @@ for event in features:
 
 Scalar feature/target precomputation uses staged `row_aggregate` operations in
 `DiskGraphTTPlan`. Prepare once on the sampler that owns the index, then supply
-only dense entity IDs and epoch-second cutoffs for each input chunk:
+only dense entity IDs and cutoffs in the plan's declared clock for each input chunk
+(epoch seconds when the clock is omitted):
 
 ```python
 prepared = sampler.prepare_aggregate_plan("users", plan_json)
@@ -135,8 +184,13 @@ pool; anchor-dependent bounds and row values are evaluated for each chunk. The
 handle retains its index and may be used after the original Python sampler is
 released. It does not cache anchors or computed results.
 
-All row frames in one query must use the same `cutoff_unit`; omission means
-seconds. `diskgraph.convert_ticks(value, from, to)` exposes the shared fixed-clock
+All row frames in one query must use the same `cutoff_unit`. Prepared scalar plans
+inherit their top-level `timestamp_unit` when a frame omits `cutoff_unit`, including
+frames lowered from PQL aggregates. An explicit frame unit takes precedence.
+An omitted plan clock, and omitted frame units in direct `query_temporal` calls,
+default to seconds. PQL row filters, limits and target-table selection still
+require matching seconds plan, cutoff and index clocks.
+`diskgraph.convert_ticks(value, from, to)` exposes the shared fixed-clock
 request/seed conversion (truncation toward zero, including before 1970).
 `rounding="floor"` selects core floor conversion, used by kumo-pytorch to preserve
 its no-future-event anchor boundary before 1970. The function
@@ -217,11 +271,28 @@ shares a frame traversal between all of its sequence consumers, applies each
 sequence limit, and returns one Arrow `uint64` length vector per sequence. It
 does not build output batches, decode feature columns, sort selected rows, or
 materialize aggregates. When the final relation's destination sort-key clock
-matches the frame clock at lossless one-second resolution, relative-window
+matches the frame clock at lossless one-tick resolution, relative-window
 filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+Shared row materialization and length queries seek candidate ranges before
+unpacking adjacency when the final relation indexes the requested time column.
+Bounds use the existing graph-clock conversion, including cutoff flooring and
+window-offset truncation. The search also supports full-width subsecond keys.
+Coarse sort-key buckets widen candidate admission; stored row timestamps still
+decide membership. Clipped ceiling and floor/NULL regions remain candidates,
+and coarse keys never justify applying a sequence cap before row refinement.
+Missing/mismatched clocks or unsafe decoder arithmetic keep the scan fallback.
+This does not change storage precision, query units, ordering or aggregates.
+
+`edges_visited` counts unpacked candidates, excluding binary-search probes;
+length-query `rows_considered` counts candidates after seeking and distinct
+handling. These counters describe work, not the original adjacency degree.
+The specialized PQL numeric executor retains its existing traversal. See the
+[shared-range benchmark](../scripts/benchmarks/shared_temporal_ranges.md) for
+the scoped comparison protocol.
 
 Aggregate-only, one-hop queries on second-clock indexes lower `count` and
 Float32/Float64 `sum`/`mean`/`min`/`max` to the same resolved aggregate IR and grouped numeric executor

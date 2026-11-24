@@ -2130,7 +2130,9 @@ pub trait ColumnValueObserver {
     fn observe_beyond_clock(&mut self, col_idx: usize) {
         self.observe_parse_failure(col_idx);
     }
-    /// Whether the encode loop calls `start_row`.
+    /// Whether the encode loop calls `start_row`. Such an observer sees a row
+    /// over the node-data limit twice: its first encoding, finished as not
+    /// stored, then the encoding without features that ingest stores.
     fn wants_create_time(&self) -> bool {
         false
     }
@@ -2927,6 +2929,7 @@ impl RowPackEncoder {
             f16_buf,
             key_bufs,
             None,
+            None,
             &mut NoOpObserver,
         )
     }
@@ -2948,6 +2951,8 @@ impl RowPackEncoder {
         // When `Some(slice)`, a non-`None` entry at column `idx` supplies the
         // resolved node-id(s) directly (see [`ResolveOverride`]).
         resolve_overrides: Option<&[ResolveOverride]>,
+        // Columns encoded as null whatever their value, indexed by column.
+        null_columns: Option<&[bool]>,
         observer: &mut O,
     ) -> Result<RowPackRowLens> {
         debug_assert_eq!(key_bufs.len(), self.ctx.columns.len());
@@ -2964,6 +2969,11 @@ impl RowPackEncoder {
         let mut bool_writer = BitWriterRef::new(bools);
 
         for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if null_columns.is_some_and(|nulls| nulls[idx]) {
+                observer.observe_null(idx);
+                tag_writer.write_bits(0, 2);
+                continue;
+            }
             let tag = match col.logical_type {
                 IngestedType::Bool => {
                     match access_or_parse_failure(access.get_bool(idx), idx, observer) {
@@ -5247,6 +5257,7 @@ pub struct RowPackDecoder {
     ctx: RowPackContext,
     dict_values: Vec<Option<Vec<Vec<u8>>>>,
     clock: TimeUnit,
+    null_row: Vec<u8>,
 }
 
 pub struct RowPackDecodeScratch {
@@ -5297,10 +5308,12 @@ impl RowPackDecoder {
                 _ => dict_values.push(None),
             }
         }
+        let null_row = vec![0; (ctx.columns.len() * 2).div_ceil(8)];
         Ok(Self {
             ctx,
             dict_values,
             clock: TimeUnit::Seconds,
+            null_row,
         })
     }
 
@@ -5315,6 +5328,16 @@ impl RowPackDecoder {
 
     pub fn context(&self) -> &RowPackContext {
         &self.ctx
+    }
+
+    /// `row`, or the all-null row when `row` is empty. Empty node data marks a
+    /// row over `MAX_NODE_DATA_LEN`; readers decode it as the all-null row.
+    pub fn row_or_null<'a>(&'a self, row: &'a [u8]) -> &'a [u8] {
+        if row.is_empty() {
+            &self.null_row
+        } else {
+            row
+        }
     }
 
     pub fn decode_msgpack(&self, row: &[u8]) -> Result<Vec<u8>> {
@@ -7293,6 +7316,27 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     }
     if let Some(b) = builder
         .as_any_mut()
+        .downcast_mut::<ListBuilder<Int8Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<ListBuilder<Int16Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<ListBuilder<Int32Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
         .downcast_mut::<ListBuilder<Int64Builder>>()
     {
         b.append_null();
@@ -7303,7 +7347,13 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
         .downcast_mut::<ListBuilder<StringBuilder>>()
     {
         b.append_null();
+        return;
     }
+    debug_assert!(
+        false,
+        "append_null has no case for a {} builder",
+        builder.finish_cloned().data_type()
+    );
 }
 
 /// The bytes the values in a builder from [`make_arrow_builder`] take: string and binary data,

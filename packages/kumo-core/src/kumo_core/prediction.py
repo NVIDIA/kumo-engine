@@ -33,10 +33,12 @@ import diskgraph
 import numpy as np
 from pandas import Timestamp
 
+from .link_candidates import candidate_row_filter
 from .pquery import (
     NativeGraph,
     ValidatedNativeQuery,
     _temporal_target_time_range,
+    to_api_graph,
 )
 from .prediction_options import resolve_prediction_time_options
 from .task_dataset import (
@@ -48,7 +50,7 @@ from .task_dataset import (
 from .train.autoregression import FUTURE_LABELS_COL
 from .training.table import apply_reference_resolution
 from .training.validation import require_single_anchor, validate_anchor_time
-from .types.enums import PredictionArtifactType
+from .types.enums import PredictionArtifactType, TaskType
 
 if TYPE_CHECKING:
     from .embedding_models import EmbeddingModelStore
@@ -307,6 +309,12 @@ def materialize_prediction_task(
     anchors = request.timestamps
     if request.query.task_type == "temporal_link_prediction":
         anchors = (link_prediction_anchor(anchors, generated.table_path), )
+    candidate_filter = candidate_row_filter(
+        request.query.query,
+        to_api_graph(request.graph),
+        task_type=TaskType(request.query.task_type),
+        index_path=request.index_path,
+        runtime=runtime)
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -382,6 +390,7 @@ def materialize_prediction_task(
         has_time=True,
         has_weight=False,
         column_stats=False,
+        predict_candidate_filter=candidate_filter,
     )
     bundle_dir = os.path.dirname(manifest_path)
     runtime_manifest_path = write_flat_manifest(
@@ -557,36 +566,24 @@ def _score_prediction_shard(
     An in-process caller passes the ``manifest`` and ``encoders`` it already
     loaded, so each is parsed and held once.
     """
-    from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.task_dataset import DiskgraphTaskManifest
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
-    from kumo_core.train.trainer import load_encoders
-    from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
 
     if manifest is None:
         manifest = DiskgraphTaskManifest.load(config.manifest_path)
-    task = ResolvedNumericalTask.from_manifest(
-        manifest,
-        name=config.run_id,
-        **(config.task_options or {}),
-    )
-    load_options = {'accelerator': config.accelerator}
-    device = config.devices[worker_id]
-    if device is not None:
-        load_options['devices'] = [device]
-    if config.binary_threshold is not None:
-        load_options['binary_threshold'] = config.binary_threshold
-    trainer = DiskgraphNestedTrainer.load(
-        task,
-        config.model_dir,
-        diskgraph_task_dataset_bundle_dir=config.bundle_dir,
-        encoders=(encoders if encoders is not None else load_encoders(
-            config.model_dir)),
-        infer_config_path=False,
-        diskgraph_runtime=LocalDiskgraphTrainingRuntime(),
+    trainer = DiskgraphNestedTrainer.load_prediction(
+        manifest=manifest,
+        model_dir=config.model_dir,
+        bundle_dir=config.bundle_dir,
+        run_id=config.run_id,
+        encoders=encoders,
+        task_options=config.task_options,
+        binary_threshold=config.binary_threshold,
         embedding_models=config.embedding_models,
-        **load_options,
+        accelerator=config.accelerator,
+        device=config.devices[worker_id],
     )
+    task = trainer.task
     if manifest.task_type == "forecasting":
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts

@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+seed: 42
+
+# v1's design on v2's rows: the baseline model for Milestone 2 criterion 6.
+#
+# Same data, split, pretraining steps, optimizer, and probes as
+# blueprint_v2_lab.yaml, including the history-window probe and its single-event
+# control. Only the model changes, to v1's: one flat token stream through a
+# causal decoder with no positional encoding, trained on next-token prediction
+# alone. d=256 and 8 layers (v1's depth) give 6.6M parameters, next to the
+# hybrid's 8.4M.
+#
+# A flat stream has no event slots, so the tokens change with the model:
+# `flat_key_value` writes each event as [EVT], weekday, hour, and a log-gap
+# bucket, then its key-value tokens. Rows longer than 2,048 tokens keep the
+# profile and the most recent whole events. That is about half of v1's 4,096
+# context, sized for one GB10, and holds a median of 81 of the 128 events.
+#
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run tfm report --config benchmarks/ablations/blueprint_v2_lab_v1_flat.yaml \
+#     --device cuda --run-dir outputs/ablations/lab_v1_flat
+
+data:
+  adapter: pragmatiq
+  path: null
+  observation_window: 730d
+  sequence_length: 128
+  max_tokens: 2048
+  n_entities: 10000
+  max_entities: 10000
+  events_per_entity: 128
+  temporal_split:
+    train_end: "2024-06-01T00:00:00Z"
+    validation_end: "2024-09-01T00:00:00Z"
+    label_delay: 0h
+  fraud_labels: spliced_identity_theft
+  identity_theft:
+    victim_fraction: 0.2
+    negative_window: 7d
+    theft_lookback: 28d
+    donors: matched
+
+features:
+  tokenizer: flat_key_value
+  categorical_keys: [mcc]
+
+model:
+  composition:
+    granularity:
+      type: flat
+      decoder:
+        depth: 8
+        mask: causal
+        hidden_size: 256
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 2048
+    position: nope
+    attention: sdpa
+    objective: next_event
+    readout: last_token
+    heads:
+      fraud: binary
+
+training:
+  max_steps: 3000
+  batch_size: 32
+  learning_rate: 0.0005
+  precision: bf16
+  backend: eager
+  shuffle: true
+  optimizer:
+    betas: [0.9, 0.95]
+    weight_decay: 0.01
+    lr_schedule: cosine
+    warmup_steps: 150
+    min_learning_rate: 0.00002
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+  finetune:
+    enabled: true
+    method: lora
+    head: linear
+    rank: 8
+    alpha: 16.0
+    targets: [qkv, out]
+    max_steps: 300
+    learning_rate: 0.001
+    batch_size: 32
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    max_rows: 4000
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 30
+
+runtime:
+  device: auto

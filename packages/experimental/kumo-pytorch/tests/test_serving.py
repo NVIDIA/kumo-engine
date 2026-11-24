@@ -89,7 +89,6 @@ def _graph_case(path: str, ties: str) -> tuple[api.DataLoaderSpec, Tables, list[
         "schema_shape.graph_orientation": "aligned",
         "contract.graph_direction": "forward",
         "contract.graph_fanout": 2,
-        "contract.graph_temporal": "inherit",
         "time.graph_ties": ties,
         "time.cutoffs": "mixed",
     }
@@ -479,7 +478,7 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
         pq.write_table(table, tmp_path / "parquet" / f"{name}.parquet")
         sources[name] = api.Parquet(str(tmp_path / "parquet" / f"{name}.parquet"))
     dataset = api.Dataset(sources)
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
+    engine = api.DiskGraphEngine(num_threads=1, num_shards=1)
 
     torch.manual_seed(0)
     with api.prepare(example.contract(), dataset, engine) as plan:

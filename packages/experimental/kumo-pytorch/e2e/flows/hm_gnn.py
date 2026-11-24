@@ -47,6 +47,7 @@ from e2e.flows.common import (
     batch_inference,
     dataset,
     fit_classifier,
+    managed_engine,
     oracle_auroc,
     purchases,
     read_predictions,
@@ -62,7 +63,6 @@ from kumo.pytorch.api import (
     BatchSpec,
     Columns,
     DataLoaderSpec,
-    DiskGraphEngine,
     Encode,
     EntitySource,
     EntitySpec,
@@ -250,7 +250,7 @@ class PurchaseGNN(nn.Module):
 def train(data: Path, work: Path, seed: int) -> None:
     torch.manual_seed(seed)
     clock = Stopwatch()
-    engine = DiskGraphEngine(index=work / "index")
+    engine = managed_engine(work)
     with prepare(contract(), dataset(data), engine) as plan:
         clock.lap("prepare")
         with plan.materialize(anchors(data), fit_split="train") as task:

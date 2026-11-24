@@ -217,6 +217,14 @@ class TestExtractFailureInfo:
         assert failure_info.message == "Fallback error message"
         assert failure_info.stacktrace == "Fallback error message"
 
+    def test_nul_characters_are_removed(self):
+        """Postgres JSONB rejects NUL, so the failure info drops it"""
+        failure_info = extract_failure_info(err_msg="bad\x00 value",
+                                            stacktrace="Traceback\x00 ...")
+
+        assert failure_info.message == "bad value"
+        assert failure_info.stacktrace == "Traceback ..."
+
     def test_stacktrace_from_exception_with_validation(self):
         """The validation supplies the user message and the exception (threaded
         through by the workflow crash path) supplies the debug stacktrace.

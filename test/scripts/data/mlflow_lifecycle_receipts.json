@@ -1,0 +1,300 @@
+{
+  "source": "Sanitized MLflow reference topology from successful Databricks GHA run 42266049415; identifiers replaced and numeric metrics limited to UI assertions.",
+  "phases": {
+    "fit": {
+      "status": "passed",
+      "returncode": 0,
+      "result": {
+        "model": "kumo-test-model",
+        "versions": [
+          {
+            "version": "1",
+            "bundle": "bundle-1",
+            "reference": {
+              "run": "00000000000000000000000000000001",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000001",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "1",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-1"
+              },
+              "metrics": {
+                "train/loss": 0.5074871778488159,
+                "val/auroc": 0.5005875825881958
+              },
+              "history": {
+                "train/loss": [
+                  [
+                    1,
+                    0.5159097909927368
+                  ],
+                  [
+                    2,
+                    0.5074871778488159
+                  ]
+                ],
+                "val/auroc": [
+                  [
+                    1,
+                    0.5710928440093994
+                  ],
+                  [
+                    2,
+                    0.5005875825881958
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "version": "2",
+            "bundle": "bundle-2",
+            "reference": {
+              "run": "00000000000000000000000000000002",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000002",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "2",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-2"
+              },
+              "metrics": {
+                "train/loss": 0.5219769477844238,
+                "val/auroc": 0.46298471093177795
+              },
+              "history": {
+                "train/loss": [
+                  [
+                    1,
+                    0.4949831962585449
+                  ],
+                  [
+                    2,
+                    0.5219769477844238
+                  ]
+                ],
+                "val/auroc": [
+                  [
+                    1,
+                    0.6028202772140503
+                  ],
+                  [
+                    2,
+                    0.46298471093177795
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "score": {
+      "status": "passed",
+      "returncode": 0,
+      "result": {
+        "explicit": [
+          {
+            "prediction": "prediction-1",
+            "reference": {
+              "run": "00000000000000000000000000000003",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000003",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "1",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-1",
+                "kumo.prediction_id": "prediction-1",
+                "kumo.fit_run_id": "00000000000000000000000000000001"
+              },
+              "metrics": {
+                "pred/rows": 60.0
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            }
+          },
+          {
+            "prediction": "prediction-2",
+            "reference": {
+              "run": "00000000000000000000000000000004",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000004",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "2",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-2",
+                "kumo.prediction_id": "prediction-2",
+                "kumo.fit_run_id": "00000000000000000000000000000002"
+              },
+              "metrics": {
+                "pred/rows": 60.0
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            }
+          }
+        ],
+        "aliases": [
+          {
+            "prediction": "prediction-3",
+            "reference": {
+              "run": "00000000000000000000000000000005",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000005",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "1",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-1",
+                "kumo.prediction_id": "prediction-3",
+                "kumo.fit_run_id": "00000000000000000000000000000001"
+              },
+              "metrics": {
+                "pred/rows": 60.0
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            }
+          },
+          {
+            "prediction": "prediction-4",
+            "reference": {
+              "run": "00000000000000000000000000000006",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000006",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "2",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-2",
+                "kumo.prediction_id": "prediction-4",
+                "kumo.fit_run_id": "00000000000000000000000000000002"
+              },
+              "metrics": {
+                "pred/rows": 60.0
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            }
+          }
+        ]
+      }
+    },
+    "evaluate": {
+      "status": "passed",
+      "returncode": 0,
+      "result": {
+        "monitoring": [
+          {
+            "prediction": "prediction-3",
+            "reference": {
+              "run": "00000000000000000000000000000005",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000005",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "1",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-1",
+                "kumo.prediction_id": "prediction-3",
+                "kumo.fit_run_id": "00000000000000000000000000000001"
+              },
+              "metrics": {
+                "drift/psi_vs_prev": 0.0,
+                "pred/rows": 60.0,
+                "realized/auroc": 0.45962732919254656
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            },
+            "drift_reference": {
+              "run": "00000000000000000000000000000005",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000005",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "1",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-1",
+                "kumo.prediction_id": "prediction-3",
+                "kumo.fit_run_id": "00000000000000000000000000000001"
+              },
+              "metrics": {
+                "drift/psi_vs_prev": 0.0,
+                "pred/rows": 60.0,
+                "realized/auroc": 0.45962732919254656
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            }
+          },
+          {
+            "prediction": "prediction-4",
+            "reference": {
+              "run": "00000000000000000000000000000006",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000006",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "2",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-2",
+                "kumo.prediction_id": "prediction-4",
+                "kumo.fit_run_id": "00000000000000000000000000000002"
+              },
+              "metrics": {
+                "drift/psi_vs_prev": 0.0,
+                "pred/rows": 60.0,
+                "realized/auroc": 0.4860248447204969
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            },
+            "drift_reference": {
+              "run": "00000000000000000000000000000006",
+              "status": "FINISHED",
+              "run_name": "fixture-run-00000000000000000000000000000006",
+              "experiment_id": "1",
+              "params": {
+                "kumo.model_version": "2",
+                "kumo.model_name": "kumo-test-model",
+                "kumo.bundle_id": "bundle-2",
+                "kumo.prediction_id": "prediction-4",
+                "kumo.fit_run_id": "00000000000000000000000000000002"
+              },
+              "metrics": {
+                "drift/psi_vs_prev": 0.0,
+                "pred/rows": 60.0,
+                "realized/auroc": 0.4860248447204969
+              },
+              "history": {
+                "train/loss": [],
+                "val/auroc": []
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

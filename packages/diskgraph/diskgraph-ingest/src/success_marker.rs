@@ -81,6 +81,12 @@ pub fn write_success_marker(
     let _ = serde_json::from_str::<serde_json::Value>(payload_json)?;
 
     fs::create_dir_all(output_dir)?;
+    // tempfile's Windows persist calls Win32 directly, so retain the extended
+    // path prefix that std::fs adds for paths beyond MAX_PATH.
+    #[cfg(windows)]
+    let native_output_dir = fs::canonicalize(output_dir)?;
+    #[cfg(windows)]
+    let output_dir = native_output_dir.as_path();
     let success_path = output_dir.join(SUCCESS_MARKER_FILENAME);
     let mut tmp_file = NamedTempFile::new_in(output_dir)?;
     tmp_file.write_all(payload_json.as_bytes())?;
@@ -132,6 +138,42 @@ mod tests {
         let read_back = read_success_marker(dir.path()).unwrap();
 
         assert_eq!(read_back.as_deref(), Some(payload.as_str()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_marker_roundtrip() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let mut output_dir = root.path().to_path_buf();
+        // Pass an ordinary path to the writer, not a pre-canonicalized one.
+        assert!(!output_dir.to_string_lossy().starts_with(r"\\?\"));
+        while output_dir.as_os_str().encode_wide().count() < 300 {
+            output_dir.push("snapshot_directory");
+        }
+        fs::create_dir_all(&output_dir).unwrap();
+        let payload = valid_marker(&output_dir);
+
+        write_success_marker(&output_dir, &payload).unwrap();
+        assert_eq!(
+            read_success_marker(&output_dir).unwrap(),
+            Some(payload.clone())
+        );
+
+        let mut replacement: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        replacement["revision"] = serde_json::json!(2);
+        let replacement = replacement.to_string();
+        write_success_marker(&output_dir, &replacement).unwrap();
+        assert_eq!(
+            read_success_marker(&output_dir).unwrap(),
+            Some(replacement.clone())
+        );
+        assert!(matches!(
+            write_success_marker(&output_dir, "invalid JSON"),
+            Err(SuccessMarkerError::InvalidPayload(_))
+        ));
+        assert_eq!(read_success_marker(&output_dir).unwrap(), Some(replacement));
     }
 
     #[test]

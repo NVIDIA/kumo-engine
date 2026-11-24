@@ -28,7 +28,7 @@ the supplied root instead of following old absolute paths. Invalid or ambiguous 
 raises `kumo.InvalidRunError`; resolve the intended run rather than choosing the newest match.
 Retain this selection metadata as well as the artifacts to reopen a run through the API.
 
-Availability keys are `gradient`, `cohorts`, and `samples`. Each entry reports `available`,
+Training availability keys are `gradient`, `cohorts`, and `samples`. Each entry reports `available`,
 `path`, `reason`, and `generation_failure`. Availability checks presence, not contents;
 a generation failure can leave readable partial artifacts. Missing files are not zero-valued
 explanations. Reopening cannot recover generation status captured only during fit, so missing
@@ -38,12 +38,68 @@ missing artifacts and `kumo.InvalidExplanationError` for malformed data.
 Published model bundles exclude these files. `Trainer.load(bundle)` leaves explanations
 unavailable with reason `model_only`; retain `explanations.run_root` separately.
 
+## Inspect a batch prediction run
+
+For a requested prediction, opt in per call:
+
+```python
+prediction = trainer.predict(snapshot, explanations=True)
+explanations = prediction.explanations
+print(explanations.run_root)
+print(explanations.run_id)  # recorded ID, independent of the directory name
+print(explanations.availability)
+print(explanations.coverage)  # typed observed counts and checkpoint
+# Later, reopen the complete retained run without inference:
+explanations = kumo.PredictionExplanations.load("/path/to/retained/prediction/run")
+```
+
+The default `explanations=False` skips explanation computation. Supported outputs are
+column cohorts and sampled graphs, using the current prediction inputs and published checkpoint.
+To cap each population independently, pass
+`explanations=kumo.PredictionExplanationOptions(cohort_rows=500, sample_rows=100)`.
+These are independent positive row limits, including the final batch. With
+`B = max(eval_batch_size // 4, 1)`, the default cohort cap is `max(50 * B, 1000)` rows rounded
+up to whole batches: `ceil(max(50 * B, 1000) / B) * B`. Sampled graphs cover up to the first
+1,000 prediction rows. A smaller population processes fewer rows. Generation starts after
+predictions are saved and any configured export and tracking finish.
+There are no prediction gradient scores, RFM/history readers or observed-target cohorts.
+Node-level task support follows the cohort producer; supported link models have sampled graphs
+and no cohorts. Unsupported tasks remain marked `unsupported` even if another producer fails.
+
+Retain the compact `xai/manifest.json` status with the run. It is the authoritative explanation
+record: actual prediction run ID, enabled/completion state, independent producer outcomes and
+observed coverage. It does not duplicate the full prediction manifest or enumerate graph paths.
+Loading requires valid status; merely copying artifact directories is insufficient. Copied runs
+resolve files beneath their new root and keep their recorded run ID. Inspect recorded errors
+rather than inferring success from JSON presence. Failed producers' partial files cannot be read through the normal API;
+an independently completed producer remains readable. Completed predictions survive XAI failure.
+
+Prediction cohorts live at `xai/column_analysis/pred/column_analysis.json`; graphs and mappings
+live under `xai/subgraph_collector/pred/`. Use the same `cohort_keys()`, `cohort()`, `classes()`,
+`plot_cohort()`, `samples()` and `sample()` methods described below, selecting only available
+outputs. Plots use PRED stage and omit observed targets. Sampled graphs cover selected task rows,
+so repeated entity IDs at different prediction times remain distinct. Read `explanations.coverage`,
+a `PredictionExplanationCoverage` value with `cohort_rows_processed`, `sampled_graphs`, and
+`checkpoint_path` relative to the published model root. `None` means unresolved; zero means
+observed empty. Cohort counts include failed feature callbacks. These are generation counts,
+not the number of files still available after cleanup or a partial copy. Sample membership
+comes from `strategy_mappings.json`; unmapped files do not become prediction samples.
+Check availability separately, and do not describe a bounded prefix as the entire prediction
+population.
+
 ## Read and plot gradient scores
+
+Training runs only. `PredictionExplanations` has no `gradient` availability entry and no
+`gradient_scores()` or `plot_gradient()`; for a prediction run, say gradient attribution is not
+produced for PRED and continue with cohorts or samples.
 
 ```python
 from IPython.display import display
 
-if explanations.availability["gradient"].available:
+gradient = explanations.availability.get("gradient")
+if gradient is None:
+    print("Gradient attribution is not produced for prediction (PRED) runs.")
+elif gradient.available:
     scores = explanations.gradient_scores().to_pandas()  # table, column, score; descending
     if scores.empty:
         print("No gradient rows were recorded.")
@@ -54,7 +110,7 @@ if explanations.availability["gradient"].available:
         axis.set_title(f"TEST gradient scores — {explanations.trial_root}")
         display(figure)
 else:
-    print(explanations.availability["gradient"])
+    print(gradient)
 ```
 
 The reader uses `explain_test/scores.csv` from the selected trial and returns the shared
@@ -156,9 +212,14 @@ Each file is a `kumoapi.explain.Subgraph`:
 List sampled graph references without loading their bodies:
 
 ```python
-samples = explanations.samples()
-if not samples:
-    print("No sampled graphs found in:", explanations.trial_root)
+try:
+    samples = explanations.samples()
+except kumo.ExplanationUnavailableError as error:  # disabled, unsupported, failed, model_only
+    print("Sampled graphs unavailable:", error)
+    samples = ()
+else:
+    if not samples:
+        print("No sampled graphs recorded:", explanations.availability.get("samples"))
 for reference in samples:
     print(reference.artifact_id, reference.categories, reference.original_ids,
           reference.available)
@@ -166,15 +227,18 @@ for reference in samples:
 
 `samples()` lists references without loading graph bodies. Collector-local `artifact_id` values
 are not entity primary keys; `categories` and optional `original_ids` preserve the sampling
-metadata. A reference may name a missing graph, so check `available`. A graph can also be read
-without mapping metadata; arbitrary original-key lookup is not provided.
+metadata. A reference may name a missing graph, so check `available`. Training graphs can also
+be read without mapping metadata; prediction readers require membership in the saved mappings.
+Arbitrary original-key lookup is not provided.
 
 Choose an artifact ID from this inventory; do not silently select the first sample:
 
 ```python
 artifact_id = "0"  # replace with your chosen available collector ID
-reference = next(item for item in samples if item.artifact_id == artifact_id)
-if reference.available:
+reference = next((item for item in samples if item.artifact_id == artifact_id), None)
+if reference is None:
+    print("Sample ID was not recorded:", artifact_id)
+elif reference.available:
     graph = explanations.sample(reference.artifact_id)  # typed kumoapi Subgraph
     print(graph.subgraph_store, graph.feature_store)
 else:
@@ -185,17 +249,25 @@ The typed stores use integer node keys, unlike raw JSON's string object keys. Ei
 be absent. The API preserves structure, feature values, scores, timestamps, and aggregated
 nodes; it does not render an interactive sampled graph.
 
-Absent or empty `subgraph_json/` is not "no neighbourhood": report the path, check
-`disable_explain` and post-training errors, and follow *If artifacts are missing*. The collector skips forecasting, multilabel ranking, and
+Absent or empty `subgraph_json/` is not "no neighbourhood": report the path and recorded
+availability reason; for training also check `disable_explain` and post-training errors, and follow *If artifacts are missing*. The collector skips forecasting, multilabel ranking, and
 link-prediction models other than the hybrid, ID and shallow-RHS modules. These files carry
 entity primary keys and raw feature values of real rows. Review them before sharing, and keep
 them out of shared locations unless the user asks.
 
 ## If artifacts are missing
 
-Check, in order: the selected run/path and retained files; runtime generation support;
-`disable_explain` in the actual run plan; task/module support; and post-training warning/error
-logs. A successful fit alone does not prove explanations succeeded. An older run cannot acquire
+For a **training** run, check, in order: the selected run/path and retained files; runtime
+generation support; `disable_explain` in the actual run plan; task/module support; and
+post-training warning/error logs.
+
+For a **prediction** run, check, in order: the selected `run_root` and its retained
+`xai/manifest.json`; whether that `predict` call passed `explanations=True` or
+`PredictionExplanationOptions` (the default `explanations=False` records reason `disabled`);
+each producer's recorded outcome and error (`unsupported` follows task/module support); and the
+prediction warning/error logs. `disable_explain` does not affect prediction.
+
+A successful fit or prediction alone does not prove explanations succeeded. An older run cannot acquire
 files merely by changing its plan now. Report malformed or empty artifacts explicitly instead
 of interpreting them as zero importance.
 
@@ -210,6 +282,7 @@ training_result = trainer.fit(train_table, snapshot=snapshot)
 
 This runs training; it is not a read-only regeneration command. There is no public standalone
 explanation regeneration API here. `Trainer.load` does not restore missing explanation files.
+An authorized new prediction can request `explanations=True`, including after model loading.
 Do not invoke internal `best_trainer.explain` as customer API code.
 
 ## Evidence and compatibility
@@ -222,6 +295,9 @@ Source: Kumo modules, as shipped in the runtime:
 
 - `kumo.engine.trainer.trainer.Trainer.fit`: post-training dispatch, disable flag, error
   handling, local result fields and run directory.
+- `kumo.engine.trainer.trainer.Trainer.predict`, `kumo.engine.explain.results.PredictionExplanations`
+  and `kumo_core.prediction_explanations`: prediction replay, retained outcomes, support and
+  independent producer completion.
 - `kumo_core.train.trainer.Trainer.set_explainers`, `kumo_core.train.trainer.Trainer.explain`,
   and the explanation directory methods: task/module gates, test-stage refit selection and file
   roots.

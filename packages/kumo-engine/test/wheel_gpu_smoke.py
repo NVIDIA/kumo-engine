@@ -329,7 +329,7 @@ def target_classes(task, targets):
     return sorted({category for value in members for category in value})
 
 
-def build_graph(spec, directory, *, static=False):
+def build_graph(spec, directory, *, static=False, materialize=True):
     from kumoapi.graph import Edge
     from kumoapi.table import Column
 
@@ -354,7 +354,7 @@ def build_graph(spec, directory, *, static=False):
                 if static else definition.get('end_time_col')))
     graph = kumo.Graph(tables, [Edge(**edge) for edge in spec['edges']])
     graph.validate()
-    return graph, graph.snapshot()
+    return graph, graph.snapshot() if materialize else None
 
 
 def prepare_task(task, root, metadata, directory, graphs):
@@ -520,6 +520,23 @@ def run_task(task, prepared, directory, *, reload_atol):
         trainer = kumo.Trainer(make_plan(task), accelerator='gpu')
         fitted = trainer.fit(prepared['training_table'],
                              snapshot=prepared['snapshot'])
+        view = fitted.visualize()
+        cards = {
+            card['id']
+            for tab in view.data['tabs']
+            for card in tab['cards']
+        }
+        expected = {'metrics', 'history', 'training_table'}
+        expected.update({
+            'binary': {'cutoff', 'scores'},
+            'regression': {'predicted'},
+            'forecasting': {'forecast'},
+        }.get(task, set()))
+        if not expected <= cards:
+            raise AssertionError(
+                f'{task}: missing widget cards {expected - cards}')
+        view.page()
+        state['widget_cards'] = sorted(cards)
         checkpoint = local_path(
             str(fitted.artifact_paths['selected_checkpoint']))
         steps = load_kumo_checkpoint(str(checkpoint),

@@ -8,6 +8,14 @@ title = "Kumo secret scanning"
 useDefault = true
 
 [[allowlists]]
+description = "The public RFC 6238 TOTP seed is a test vector, not a live credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$''']
+paths = ['''^test/scripts/test_engine_snowflake_ui\.py$''']
+
+[[allowlists]]
 description = "These password values are synthetic inputs for authentication tests."
 targetRules = ["generic-api-key"]
 condition = "AND"
@@ -42,3 +50,30 @@ condition = "AND"
 regexTarget = "secret"
 regexes = ['''^synthetic_sigv4$''']
 paths = ['''^scripts/benchmarks/object_store/compare_streams\.py$''']
+
+[[allowlists]]
+description = "The transaction import inventory contains source-file SHA-256 checksums; both locations occur in PR history."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
+paths = ['''^packages/(?:experimental/)?kumo-transaction/UPSTREAM\.json$''']
+
+[[allowlists]]
+description = "This imported tokenizer call passes an attribute, not a credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^max_length=self\.max_length$''']
+paths = ['''^packages/(?:experimental/)?kumo-transaction/src/tfm/data/token_cache/flat\.py$''']
+
+[[allowlists]]
+description = "Graph benchmark lookup keys combine a source commit SHA with a validation suffix."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{40}/validation$''']
+paths = [
+  '''^packages/(?:experimental/)?kumo-transaction/benchmarks/results/graph_constructor_checks_l4\.json$''',
+  '''^packages/(?:experimental/)?kumo-transaction/benchmarks/results/graph_execution_views_l4\.json$''',
+]

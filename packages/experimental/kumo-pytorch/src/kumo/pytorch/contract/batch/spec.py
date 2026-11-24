@@ -346,8 +346,10 @@ class Batch:
     and ``valid``; token outputs use ``value_ids``, ``position_ids``, validity
     and source-event indices, with optional ``field_ids`` and ``field_valid``.
     Raw types without a tensor representation stay Arrow arrays in inspectable
-    output. Metadata carries ``sample_ids``, ``entity_ids``, ``as_of_time``,
-    ``splits``, ``is_padding``, request metadata, fingerprints and candidate
+    output. Columnar output holds `ColumnarGraph` objects with Arrow feature
+    tables and selected edge indexes. Metadata carries ``sample_ids``,
+    ``entity_ids``, ``as_of_time``, ``splits``, ``is_padding``, request metadata,
+    fingerprints and candidate
     identities; it is not a route for undeclared features.
     """
 

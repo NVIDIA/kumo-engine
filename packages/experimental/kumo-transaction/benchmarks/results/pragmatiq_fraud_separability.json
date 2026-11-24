@@ -1,0 +1,257 @@
+{
+  "script": "benchmarks/fraud_separability.py",
+  "book": "synth_100k_gen2_m31_seed0",
+  "commit": "ae6e433",
+  "note": "script uncommitted at run time; committed with this record",
+  "runs": {
+    "native": [
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "native",
+        "seed": 0,
+        "rows": 28850,
+        "positives": 3650,
+        "test_rows": 8595,
+        "test_positives": 1035,
+        "positive_share": {
+          "online": 1.0,
+          "abroad": 1.0,
+          "first_time_merchant": 0.8783561643835617
+        },
+        "negative_share": {
+          "online": 0.30468253968253967,
+          "abroad": 0.025992063492063493,
+          "first_time_merchant": 0.29174603174603175
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.999597423510467,
+            "pr_auc": 0.996794418155535
+          },
+          "event_profile": {
+            "roc_auc": 0.9999401886358408,
+            "pr_auc": 0.9995252937803206
+          },
+          "event_profile_history": {
+            "roc_auc": 0.9999693275055594,
+            "pr_auc": 0.9997597734308351
+          }
+        }
+      }
+    ],
+    "splice_random": [
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "splice",
+        "donors": "random",
+        "victims": 3916,
+        "seed": 0,
+        "rows": 26833,
+        "positives": 6696,
+        "test_rows": 7749,
+        "test_positives": 1951,
+        "positive_share": {
+          "online": 0.42562724014336917,
+          "abroad": 0.6720430107526881,
+          "first_time_merchant": 0.9205495818399044
+        },
+        "negative_share": {
+          "online": 0.43144460445945276,
+          "abroad": 0.04012514277201172,
+          "first_time_merchant": 0.29016238764463426
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.4947097295254961,
+            "pr_auc": 0.25178842360394915
+          },
+          "event_profile": {
+            "roc_auc": 0.8630699728728106,
+            "pr_auc": 0.7617675852187019
+          },
+          "event_profile_history": {
+            "roc_auc": 0.9353406033187357,
+            "pr_auc": 0.8519735529331623
+          }
+        }
+      },
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "splice",
+        "donors": "random",
+        "victims": 3928,
+        "seed": 1,
+        "rows": 26322,
+        "positives": 6656,
+        "test_rows": 7836,
+        "test_positives": 2009,
+        "positive_share": {
+          "online": 0.42172475961538464,
+          "abroad": 0.6592548076923077,
+          "first_time_merchant": 0.9229266826923077
+        },
+        "negative_share": {
+          "online": 0.42230245093054003,
+          "abroad": 0.04052679751855995,
+          "first_time_merchant": 0.2889250483067223
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.5055305014512094,
+            "pr_auc": 0.2654666285223656
+          },
+          "event_profile": {
+            "roc_auc": 0.860556404708074,
+            "pr_auc": 0.7677766628535768
+          },
+          "event_profile_history": {
+            "roc_auc": 0.9368340579627815,
+            "pr_auc": 0.8643471337037626
+          }
+        }
+      },
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "splice",
+        "donors": "random",
+        "victims": 3920,
+        "seed": 2,
+        "rows": 27704,
+        "positives": 6765,
+        "test_rows": 8014,
+        "test_positives": 2018,
+        "positive_share": {
+          "online": 0.4221729490022173,
+          "abroad": 0.6702143385070214,
+          "first_time_merchant": 0.9235772357723577
+        },
+        "negative_share": {
+          "online": 0.43134820191986245,
+          "abroad": 0.041167199961793785,
+          "first_time_merchant": 0.27752041644777686
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.5043701912937003,
+            "pr_auc": 0.2572624264819908
+          },
+          "event_profile": {
+            "roc_auc": 0.8629332753054397,
+            "pr_auc": 0.7751829568995756
+          },
+          "event_profile_history": {
+            "roc_auc": 0.9420814735426525,
+            "pr_auc": 0.8728793422981859
+          }
+        }
+      }
+    ],
+    "splice_matched": [
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "splice",
+        "donors": "matched",
+        "victims": 3838,
+        "seed": 0,
+        "rows": 26045,
+        "positives": 6355,
+        "test_rows": 7868,
+        "test_positives": 1903,
+        "positive_share": {
+          "online": 0.42234461054287964,
+          "abroad": 0.043745082612116445,
+          "first_time_merchant": 0.8022029897718332
+        },
+        "negative_share": {
+          "online": 0.4317927882173692,
+          "abroad": 0.039715591670898935,
+          "first_time_merchant": 0.28953783646521075
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.4983834145494893,
+            "pr_auc": 0.24451620109052352
+          },
+          "event_profile": {
+            "roc_auc": 0.5032867325998258,
+            "pr_auc": 0.24460728977741356
+          },
+          "event_profile_history": {
+            "roc_auc": 0.8396345118815792,
+            "pr_auc": 0.6385536676389937
+          }
+        }
+      },
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "splice",
+        "donors": "matched",
+        "victims": 3851,
+        "seed": 1,
+        "rows": 25782,
+        "positives": 6445,
+        "test_rows": 7883,
+        "test_positives": 1956,
+        "positive_share": {
+          "online": 0.42187742435996894,
+          "abroad": 0.03646237393328161,
+          "first_time_merchant": 0.8099301784328937
+        },
+        "negative_share": {
+          "online": 0.42291979107410665,
+          "abroad": 0.04038889176190722,
+          "first_time_merchant": 0.2898071055489476
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.5006323959227175,
+            "pr_auc": 0.2582448331206635
+          },
+          "event_profile": {
+            "roc_auc": 0.49710731590175355,
+            "pr_auc": 0.25152297472278135
+          },
+          "event_profile_history": {
+            "roc_auc": 0.8395447266900665,
+            "pr_auc": 0.6442447242751727
+          }
+        }
+      },
+      {
+        "book": "synth_100k_gen2_m31_seed0",
+        "task": "splice",
+        "donors": "matched",
+        "victims": 3848,
+        "seed": 2,
+        "rows": 26998,
+        "positives": 6480,
+        "test_rows": 7951,
+        "test_positives": 1913,
+        "positive_share": {
+          "online": 0.41975308641975306,
+          "abroad": 0.04243827160493827,
+          "first_time_merchant": 0.8064814814814815
+        },
+        "negative_share": {
+          "online": 0.4311823764499464,
+          "abroad": 0.041232088897553365,
+          "first_time_merchant": 0.27760990349936643
+        },
+        "scores": {
+          "event": {
+            "roc_auc": 0.4997415306820525,
+            "pr_auc": 0.24359929631074473
+          },
+          "event_profile": {
+            "roc_auc": 0.49781779345899047,
+            "pr_auc": 0.2444660056881633
+          },
+          "event_profile_history": {
+            "roc_auc": 0.8500396599546313,
+            "pr_auc": 0.6561545022578181
+          }
+        }
+      }
+    ]
+  }
+}

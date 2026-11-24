@@ -140,25 +140,36 @@ in-memory engine reads `InMemoryRows`, which we'll come to below.
 You don't have to repeat column types that the files already record. With
 Parquet, you can omit `TableSpec.columns`, or give a column's type as `None`,
 and the types are read from the file metadata. `contract.resolve(dataset=...)`
-and `prepare` resolve them without reading any rows. The resolved contract is
-what gets saved and fingerprinted, so if a column's type in the files later
-changes, loading fails loudly instead of quietly reading a different type.
+and `prepare` resolve them without reading any rows. Files used to infer a
+column's type must agree on that type. The resolved contract is saved and
+fingerprinted, and rebinding checks that the source types are compatible.
+
+For a declared `int64` column, DiskGraph also accepts Parquet `int8`,
+`int16`, `int32`, and scale-zero `decimal128` or `decimal256` columns.
+The contract and batches use `int64`. Ingest fails if any decimal value
+falls outside the signed 64-bit range.
+
+Column names are case-sensitive; when column names or types are omitted, resolution reports every table whose stored columns do not match, with close-match suggestions. Fully declared tables are checked when DiskGraph prepares the data.
 
 ## The DiskGraph engine
 
 The DiskGraph engine is built on kumo-engine's DiskGraph, which the
 [kumo-engine README](https://github.com/NVIDIA/kumo-engine#readme) describes.
-[Installation](installation.md) explains how to install it.
 
 ### Building and reusing the index
 
 The first time `prepare` runs, `DiskGraphEngine` builds an index from the
-Parquet files in the directory you give it. Later runs find the index there and
-reuse it.
+Parquet files in the dataset. By default it allocates a physical build ID and
+writes the base under the configured Kumo scratch root at
+`indexes/<index_build_id>`. Reuse the engine instance across preparations, or
+consume a completed core snapshot with `from_snapshot(snapshot)`.
 
 <!-- test: diskgraph -->
 ```python
-engine = api.DiskGraphEngine(index=root / "index", ingest="if_missing", num_shards=1)
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=root)
+engine = api.DiskGraphEngine(num_shards=1)
 with (
     api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=(request,)) as task,
@@ -178,22 +189,106 @@ The January 12 order is after the January 10 prediction time, so it is not
 read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
-fitted encoders, so several contracts over the same tables can share one index.
-Fitting keeps the column statistics of encoders over stored columns in
-`col_stats/`, so it needs the index directory to be writable. Each encoder
-cutoff has one directory there, with a `<table>.col_stats.json` file per table.
-A later fit at the same cutoff computes only the columns and statistics those
-files lack, and adds them. Ingest computes the statistics for the cutoffs in
-`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
-tokenizer is trained on the first fit at its cutoff and kept beside them as
-`<table>.<column>.text-<settings>.tokenizer.json`.
-Its manifest records the schema, the files and their resolved types. If the
-manifest doesn't match the dataset and schema you pass, `prepare` refuses the
-index rather than reusing it, and it never overwrites it. The shard count isn't
-part of that check: an index opened with a different `num_shards` is reused as
-it was built. With
-`ingest="never"`, `prepare` requires an index that already exists, which is
-what you usually want in a scoring job.
+fitted encoders, so several contracts can share one base through the same engine
+instance or snapshot binding. The managed layout is:
+
+```text
+<scratch_root>/indexes/<index_build_id>/
+<scratch_root>/tasks/<index_build_id>/<task_id>/
+<scratch_root>/cache/<index_build_id>/
+```
+
+The build ID identifies one physical ingest, independently of schema and data
+version. Each fresh dataset engine allocates a different ID and ingests its own
+base, even for identical data. There is no automatic reuse across engines by
+graph or data version, so each adds ingestion time and disk usage. Reuse a core
+`Graph.snapshot()` through `DiskGraphEngine.from_snapshot(snapshot)` to share
+the producer's base across engines or processes. Kumo allocates IDs and chooses
+index, task and cache paths internally; callers configure only the process-wide
+scratch root.
+
+Before native task ingest and runtime handoff, Kumo validates the task manifest
+against the engine's captured root: the graph path must match its bound base,
+and every stage path must match the task's allocated directory. Relative paths,
+traversal and symlink redirects are rejected. Snapshot bases retain their
+producer's layout within that root. DiskGraph checks parent build identity.
+
+Fitting reads any statistics already stored under the base's `col_stats/` and
+writes missing statistics, tokenizers and token lengths under the managed
+`cache/<index_build_id>/col_stats/`. Each encoder cutoff has a directory with a
+`<table>.col_stats.json` file per table. A later fit at the same cutoff computes
+only missing columns or statistics. Ingest computes statistics for the cutoffs
+in `DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
+tokenizer is trained on the first fit at its cutoff and saved beside them.
+
+The manifest binds the schema, source files and resolved types. If it differs
+from the dataset and schema you pass, `prepare` refuses reuse. The shard count
+is not part of that check; an existing index keeps the shard count it was built
+with. Use `DiskGraphEngine.from_snapshot(snapshot)` to prepare an existing index
+without source ingestion.
+
+The removed `ingest="never"` option guarded against unexpected ingestion: `prepare`
+refused a missing base instead of ingesting it. Dataset engine construction no
+longer exposes that guard; its first `prepare` ingests the dataset. Migrate
+callers requiring an existing base to `DiskGraphEngine.from_snapshot(snapshot)`
+and omit the Dataset from `prepare`. Snapshot binding validates the completed
+base and refuses missing or incompatible state without rebuilding it or reading
+the original source tables.
+
+### Storage lifetime and cleanup
+
+Closing a plan or task keeps `indexes/<index_build_id>/` and
+`cache/<index_build_id>/`. Close tasks explicitly or use context managers for
+prompt cleanup. Closing a plan closes its live tasks before releasing the engine
+binding. Unclosed tasks also release their native readers and remove their task
+and scratch directories on collection or normal Python exit; empty parent
+directories can remain. There is no automatic garbage collection
+for unused bases, caches or abandoned builds, so repeated runs accumulate disk
+usage.
+
+For a managed build you no longer need, manually remove its matching index,
+cache and leftover task directories only after all engines, tasks and processes
+using it have stopped and no retained snapshot needs its base. Keep builds and
+caches needed for later reuse.
+
+### Open an existing snapshot
+
+`DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. The loader opens `snapshot.index_path` in place and writes tasks and caches under the configured root at `tasks/<index_build_id>/` and `cache/<index_build_id>/`. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
+
+<!-- test: skip (snapshot, sample_spec, batch_spec and anchors belong to the caller) -->
+```python
+engine = api.DiskGraphEngine.from_snapshot(snapshot)
+contract = api.DataLoaderSpec(
+    schema=engine.schema,
+    sample=sample_spec,
+    batch=batch_spec,
+)
+with api.prepare(contract=contract, engine=engine) as plan:
+    with plan.materialize(anchors) as task:
+        for batch in task.batches(output_format="columnar"):
+            graph = batch.inputs["graph"]
+```
+
+`SampleSpec` and `BatchSpec` describe sampling and output encoding. `engine.schema` restores recorded column types and derives keys, clocks and relationships from native config and metadata. PyTorch-produced indexes expose logical relation aliases; core snapshots use native FK names. A compatible schema projection may rename those relations: binding checks endpoints, FK columns and direction. `prepare` rejects a Dataset alongside an existing-index engine. Anchors select entity/time requests; neighborhoods are sampled during iteration.
+
+Use `DiskGraphEngine.from_snapshot(snapshot, random_seed=7)` to select a native
+uniform-neighbor sampling seed. The default is zero; `None` uses fresh randomness.
+This is independent of the seed used to shuffle anchors in `Task.batches`.
+
+PyTorch-produced indexes restore every column's logical type from
+`index_manifest.json`, including each timestamp field's declared unit. Core
+snapshots without that manifest derive types from native metadata, so timestamps
+use the index clock and UTC. Declared types must match the recorded types; omit a
+column's type to resolve it from the index.
+
+The base may be read-only. Task extensions and scalar-materialization scratch are temporary; closing a task removes them. Derived caches remain for reuse. The loader writes no new base metadata. Native extension metadata records the parent build ID, so opening a task against a different base is refused. Statistics may contain diagnostic paths to reused base files; those paths are not needed to restore fitted encoders. Concurrent requests may duplicate computation but do not discard published keys. Install DiskGraph from the matching kumo-engine revision for managed build and external cache support.
+
+Opening requires the resolved `diskgraph_config.json` and the producer's completion metadata. Core snapshots use native inventory/integrity checks; PyTorch indexes use their manifest, published after ingest. Artifacts missing resolved config are refused. Native edge-table layouts, end-time validity and unsupported stored types (including lists) are refused explicitly.
+
+For source ingestion and reuse, keep the same engine instance with the dataset.
+The manifest checks source paths, file sizes and modification times; a changed
+source or schema refuses reuse. To use a producer-managed snapshot after
+sources move, open it with `from_snapshot(snapshot)` without a dataset.
 
 `output_format="model"` lets the DiskGraph engine build the batch's tensors
 column by column, without building a Python record per event. It refuses raw types
@@ -203,7 +298,7 @@ rows, rather than converting them.
 ### What it supports
 
 The DiskGraph engine supports entity fields, event histories, typed
-calculations, aggregates, generated labels and recent graph neighborhoods. A
+calculations, aggregates, generated labels and recent or uniform graph neighborhoods. A
 few contract features are outside what it runs today. `DiskGraphEngine.unsupported`
 lists them, each with a code, what is refused and a next step, and the
 [limitations](limitations.md#diskgraph) page shows the list. When a contract
@@ -214,10 +309,21 @@ refusal](#choosing-an-engine-and-early-refusal).
 ### Anchor tables
 
 An anchor is one example to build: an entity ID, a prediction time, and
-optionally a split, labels, candidates and tracing metadata. A few
-`SampleRequest`s are enough for a quick check. For real work, you write the
-anchors as a table and bind it with an `AnchorTable`. On the DiskGraph engine,
-the anchor table is a Parquet file:
+optionally a split, labels, candidates and tracing metadata. For production
+training, evaluation, offline scoring, and benchmarks, materialize a Parquet
+`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`
+without an explicit request argument. This selects native model iteration for
+eligible contracts. Benchmarks of that iterator should verify the execution
+route because some contracts still use Python assembly.
+
+Use Python `SampleRequest` objects for tests, debugging, or small sets of
+requests supplied at runtime. `task.batches(requests=...)` uses explicit
+request batching, even on a task materialized from an `AnchorTable`. A task
+materialized from a Python request sequence also stays request-backed when
+you call `task.batches(split=...)`. DiskGraph can still sample the data for
+these requests, but these calls bypass native AnchorTable batch iteration.
+
+This example shows how to bind a Parquet anchor table and select its splits:
 
 <!-- test: diskgraph -->
 ```python
@@ -277,15 +383,21 @@ sample IDs; repeated entity/time pairs remain separate examples. Native order
 may differ from the in-memory engine, and padding remains explicitly marked.
 Closing the task removes its temporary seed extension, not the base graph.
 
-Sequence tasks consume the same native anchor batches and resolved root IDs,
-then call the existing temporal-query loader. They keep their temporal plan,
-event selection, typed encoders and tensor layouts; there is no second native
-anchor reader or a GNN-specific anchor contract. Native history parallelism,
-history capping/decoding and cross-component event merging are separate work.
+For eligible sequence contracts, the native model iterator reads histories and
+merges event components before returning the batch to the existing encoders
+and tensor layouts. Eligible length-aware contracts also plan batches and
+reuse per-anchor lengths across epochs.
 
 A selection spanning multiple split stages uses native stage batches. Each stage
 is shuffled independently; batches never mix split stages. The output covers the
 same anchors, while its order differs from the previous global Python shuffle.
+Native graph output formats partition ranks, pad and drop partial
+tails per stage. Refit does not combine partial tails from different splits.
+With `drop_last=True`, either topology may drop a split completely when it is
+smaller than one full batch. Padding uses a rank-owned anchor from another
+selected stage if its current shard is empty; only a rank with no owned anchors
+in the whole selection borrows marked padding from another rank. Padding-only
+batches retain their source anchor's split and metadata.
 Encoder fitting remains a separate stage and is not made streaming here.
 
 The native model path avoids rebuilding a `SampleRequest` for each anchor.
@@ -376,7 +488,7 @@ you can resolve a registered name to the same class instead:
 
 ```python
 print("engines:", api.available_engines())
-configured = api.engine_from_name("diskgraph", index=root / "index", ingest="never")
+configured = api.engine_from_name("diskgraph")
 print(type(configured).__name__)
 ```
 

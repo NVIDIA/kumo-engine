@@ -147,6 +147,8 @@ class InMemorySource:
         seed: int,
         epoch: int,
     ) -> Any:
+        if getattr(spec, "topology", "relations") == "sampled":
+            raise ValueError("sampled graph topology requires native DiskGraph AnchorTable batches")
         return self._graph.batch(
             sample.entity.table,
             self._neighborhood(sample, spec),

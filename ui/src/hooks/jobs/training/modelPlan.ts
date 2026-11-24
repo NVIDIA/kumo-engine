@@ -70,8 +70,9 @@ export const useGetModelPlans = (
 
     const plans = data?.model_plans ?? [];
     const options = data?.advanced_options ?? [];
+    const trialIds = data?.trial_ids ?? [];
 
-    return { plans, options };
+    return { plans, options, trialIds };
 };
 
 /**

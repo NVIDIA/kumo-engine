@@ -2,6 +2,64 @@
 
 DiskGraph is a Rust-based pipeline for turning CSV/Parquet tables into an on-disk graph index and exploring it with a fast TUI.
 
+## Runtime sampling API
+
+Configure local sampling with the same typed options used by remote samplers:
+
+```python
+from dataclasses import replace
+from diskgraph import RuntimeIndex, SamplingOptions, SamplingPlan
+
+index = RuntimeIndex("runtime_manifest.json", rnd_seed=42, num_threads=4)
+options = SamplingOptions(
+    stage="train", batch_size=1024, sampling_plan=SamplingPlan(),
+    entity_node_type="users", shuffle=True,
+)
+batches, sample_count = index.iter(options)
+next_epoch, _ = index.iter(replace(options, epoch=1))
+```
+
+`SamplingOptions` and `WeightedSeedSampling` are frozen Python dataclasses.
+`RuntimeIndex.iter` accepts a `SamplingOptions` object rather than keyword
+arguments; the underlying Rust iterator API is unchanged. An omitted `rnd_seed`
+inherits the index seed, while explicit `None` disables it and is rejected when
+shuffling. Projections and selected seed IDs retain their existing dictionary
+and list formats; treat those containers as read-only while options are in use.
+
+
+### Sampling defaults and compatibility
+
+The complete field defaults and their effective native behavior are documented
+on [`SamplingOptions` and `WeightedSeedSampling`](diskgraph-pybind/python/diskgraph/sampling_options.py).
+All 20 previously optional iterator arguments keep their defaults, including
+automatic fused-mode selection, inward edges, disjoint neighborhoods, no graph
+neighbor replacement, and inherited shuffle seeds. Weighted class multipliers
+still default effectively to 1.0; leaving both unset preserves the all-rows
+sidecar path when per-row weights are enabled.
+
+Five formerly required iterator arguments now have convenience defaults:
+
+| Field | New default | Effect |
+| --- | --- | --- |
+| `sampling_plan` | `SamplingPlan()` | Zero traversal layers: seeds only; supply a plan for neighbors. |
+| `num_workers` | `1` | One logical shard covers the stage. |
+| `worker_id` | `0` | Select that shard. |
+| `shuffle` | `False` | Preserve the unshuffled schedule. |
+| `epoch` | `0` | Use the initial epoch. |
+
+`stage` and `batch_size` remain required. Defaults do not guarantee every
+combination is valid: normal stage graph sampling still requires an explicit
+`entity_node_type`; `None` raises the same native configuration error as before.
+Negative sampling requires `neg_amount_m` with `neg_rhs_node_type`, and RHS
+catalog mode requires `rhs_seed_time` with `rhs_seed_node_type`.
+
+Existing migrated DataModule and
+native-anchor callers still pass all five formerly required values explicitly;
+these defaults do not replace their configured plans, sharding, or shuffling.
+No previous optional default changes. The intentional API break is the typed
+options object and typed weighted-seed settings; formerly missing required
+arguments can now use the documented convenience defaults.
+
 ## Install Rust
 
 ```bash
@@ -148,6 +206,36 @@ binary. Use the `kumo` extra only when calling Kumo compiler APIs outside an
 environment that already installs `kumo-api`.
 
 ## Native batch runtime
+
+### Build identity and external extensions
+
+Allocate `index_build_id` with `diskgraph.new_index_build_id()` before ingest
+and pass it to `diskgraph.ingest(index_build_id=...)` when the output directory
+must be chosen first. Otherwise ingest allocates a fresh ID. A fresh ingest
+with a supplied ID refuses an existing output directory; resume the partial
+build or choose a new ID instead.
+An explicit Encode resume also refuses an output containing `index_metadata.json`
+or `_SUCCESS`; rebuilding a completed index requires a fresh ingest with a new ID
+and output path so existing extensions cannot attach to changed data.
+If resume must restart a partial build with more shards, it may reuse the
+supplied ID only when the saved Encode state records that same ID and the
+output has not been published. The base's
+`index_metadata.json` records this ID; extension ingest records the exact
+parent ID there as well. The reader rejects an extension whose parent ID does
+not match. Old indexes without IDs remain readable with their old extensions,
+but cannot be mixed with ID-bearing builds.
+Partial builds with version-2 Encode state cannot resume saved work because that
+state lacks build identity. An automatic shard-resize restart without a supplied
+ID discards that work and allocates a new ID. Otherwise restart as a fresh ingest,
+choosing a new ID and output path if the ID was preallocated.
+An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
+IDs by default, even for the same source.
+
+The managed-cache writer and external-extension opener are private bindings.
+Kumo owns their layout under its configured root. Public `cutoff_col_stats`
+writes into the index, and the native `RuntimeIndex` constructor accepts
+index-local extension references. The private native opener accepts absolute
+external paths and validates parent build identity, not a Kumo placement rule.
 
 [`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
 and worker-sharded batch generation without Python or transport dependencies. The

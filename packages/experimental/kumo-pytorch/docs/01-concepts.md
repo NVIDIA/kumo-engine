@@ -55,9 +55,11 @@ event ages. Historical windows are half-open, `(start, stop]` in seconds from
 the prediction time, so an event exactly at the prediction time is history and
 anything later is not. Labels look strictly forward from the same time.
 
-On the DiskGraph engine, no input ever reads a row from after its example's
-prediction time, though later rows can still change which of several equally
-timed neighbors a graph sample keeps. The in-memory engine, which serving also
+By default, graph sampling uses the destination's declared clock: timed
+destinations use recent sampling at or before the anchor, and clockless ones
+use uniform sampling. Explicit `strategy="uniform"` ignores the anchor even
+for a timed destination. For recent sampling on DiskGraph, later rows can
+still change which of several equally timed neighbors a graph sample keeps. The in-memory engine, which serving also
 uses, can read later rows through a path that passes through a table with a
 clock; see [limitations](limitations.md#time) for both.
 

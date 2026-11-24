@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Stage 0: does pretraining beat a random initialization on the proxy?
+# Scores the two one-epoch 100k-user checkpoints (one row per user; every
+# 128-event window) and the same architecture untrained. See
+# benchmarks/results/blueprint_v2_hybrid_gb10_tuning.md.
+#
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run --all-extras python benchmarks/proxy_sweep.py \
+#     --spec benchmarks/sweeps/blueprint_v2_stage0_gate.yaml \
+#     --run-root outputs/proxy/stage0 --summary outputs/proxy/stage0.json
+base: benchmarks/ablations/blueprint_v2_lab.yaml
+set:
+  data.token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab
+tasks: [history_window, fraud, churn_6m]
+xgboost_trials: 8
+variants:
+  - name: random_init
+    train: false
+  - name: one_row_per_user_1ep
+    checkpoint: outputs/cache_epoch/tail/seed_42/model.pt
+  - name: full_histories_1ep
+    checkpoint: outputs/cache_epoch/windows/seed_42/model.pt

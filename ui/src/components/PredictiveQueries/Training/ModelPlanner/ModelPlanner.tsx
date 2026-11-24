@@ -19,6 +19,7 @@ import { jobStatus } from "utils/Constants";
 export interface ModelPlannerProps {
     trainingJobId: TrainingJobID;
     bestExperimentIndex: number;
+    bestTrialId?: string;
     jobStatus: jobStatus;
     setOptions: React.Dispatch<React.SetStateAction<DropdownOption[]>>;
     selectedOption: DropdownOption;
@@ -29,25 +30,30 @@ export interface ModelPlannerProps {
 const ModelPlanner = ({
     trainingJobId,
     bestExperimentIndex,
+    bestTrialId,
     jobStatus,
     setOptions,
     selectedOption,
     setSelectedOption,
     fallbackPlan
 }: ModelPlannerProps) => {
-    const { plans: modelPlans, options: advancedOptions } = useGetModelPlans(
-        trainingJobId,
-        jobStatus,
-        bestExperimentIndex
-    );
+    const {
+        plans: modelPlans,
+        options: advancedOptions,
+        trialIds
+    } = useGetModelPlans(trainingJobId, jobStatus, bestExperimentIndex);
+    const bestPlanIndex =
+        bestTrialId !== undefined && trialIds.length > 0
+            ? trialIds.indexOf(bestTrialId)
+            : bestExperimentIndex;
 
     useEffect(() => {
         const options =
             advancedOptions?.length > 0 ? advancedOptions : modelPlans;
-        if (options?.length > bestExperimentIndex) {
+        if (bestPlanIndex >= 0 && options?.length > bestPlanIndex) {
             setSelectedOption({
-                value: bestExperimentIndex.toString(),
-                label: `Experiment ${bestExperimentIndex + 1} (BEST)`
+                value: bestPlanIndex.toString(),
+                label: `Experiment ${bestPlanIndex + 1} (BEST)`
             });
         } else if (options?.length > 0) {
             const d = options.length - 1;
@@ -60,7 +66,7 @@ const ModelPlanner = ({
         modelPlans,
         setOptions,
         advancedOptions,
-        bestExperimentIndex,
+        bestPlanIndex,
         setSelectedOption
     ]);
 
@@ -72,13 +78,13 @@ const ModelPlanner = ({
                 value: idx.toString(),
                 label:
                     `Experiment ${idx + 1}` +
-                    (idx === bestExperimentIndex ? " (BEST)" : "")
+                    (idx === bestPlanIndex ? " (BEST)" : "")
             };
         });
         if (options?.length > 0) {
             setOptions(options);
         }
-    }, [advancedOptions, bestExperimentIndex, modelPlans, setOptions]);
+    }, [advancedOptions, bestPlanIndex, modelPlans, setOptions]);
 
     const currentValue = useMemo(() => {
         return advancedOptions?.length > 0

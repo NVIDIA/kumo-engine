@@ -15,6 +15,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
+from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.batch import BatchSpec, Fields, Graph, UseEncoding
 from kumo.pytorch.contract.dtypes import DType
@@ -428,7 +429,7 @@ class _Validator:
         self,
         path: str,
         message: str,
-        suggestion: str = "correct the declaration",
+        suggestion: str | None = "correct the declaration",
     ) -> None:
         self.issues.append(ValidationIssue(path, message, suggestion))
 
@@ -521,7 +522,11 @@ class _Validator:
     def _column(self, table: str, column: str, path: str) -> DType | None:
         spec = self.tables.get(table)
         if spec is None or column not in spec.columns:
-            self.add(path, f"unknown column {table}.{column}")
+            self.add(
+                path,
+                f"unknown column {table}.{column}",
+                _column_name_suggestion((column,), spec.columns) if spec else None,
+            )
             return None
         return spec.columns[column]
 
@@ -692,23 +697,13 @@ class _Validator:
                             f"not this frontier {sorted(frontier)}",
                         )
                     destinations.add(end)
-                    clock = traversal.time_column or table_clock(self.tables[end])
                     if traversal.time_column:
                         self._time(end, traversal.time_column, f"{item}.time_column")
-                    if traversal.temporal == "inherit":
-                        if clock is None:
-                            self.add(
-                                f"{item}.temporal",
-                                f"traversal into {end!r} has no clock to filter by, "
-                                "and does not say it is intentionally non-temporal",
-                                'declare TableSpec.time_column or set temporal="static" '
-                                "for an intentionally non-temporal traversal",
-                            )
-                    if traversal.strategy == "recent" and clock is None:
+                    if traversal.strategy == "recent" and table_clock(self.tables[end]) is None:
                         self.add(
                             f"{item}.strategy",
                             f"'recent' sampling of {end!r} has no time column to order by",
-                            "declare TableSpec.time_column or an explicit traversal time_column",
+                            "declare TableSpec.time_column or use strategy='uniform'",
                         )
                 frontier = destinations
 
@@ -729,6 +724,9 @@ def _encode(value: Any) -> Any:
 
     if is_dataclass(value) and not isinstance(value, type):
         arguments = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, Graph) and value.topology == "relations":
+            # Keep existing artifacts and default graph fingerprints unchanged.
+            del arguments["topology"]
         if type(value).__name__ == "IdSpace" and not value.special_ids:
             del arguments["special_ids"]
         if type(value).__name__ == "Vocabulary" and value.values is not None:

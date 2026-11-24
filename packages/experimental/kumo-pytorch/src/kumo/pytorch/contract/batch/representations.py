@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from kumo.pytorch.contract.batch._common import _mapping
 from kumo.pytorch.contract.batch.encodings import (
@@ -123,11 +123,21 @@ class Graph:
     :param node_fields: table name to the ``Fields`` (scalar column encodings
         of physical columns) emitted for its nodes. Field-name IDs are not
         supported on graph nodes.
+    :param topology: ``"relations"`` keeps each declared relation's orientation;
+        model and inspectable output deduplicate pairs, while columnar output
+        keeps repeats unless ``deduplicate_edges=True``. ``"sampled"`` preserves
+        DiskGraph's directed edge occurrences, ordering and per-hop counts. It
+        is currently implemented for fixed-size native AnchorTable batches.
+        Selected split stages
+        shuffle and batch independently; it does not reconstruct topology.
     """
 
     node_fields: Mapping[str, Fields] = dataclass_field(default_factory=dict)
+    topology: Literal["relations", "sampled"] = "relations"
 
     def __post_init__(self) -> None:
+        if self.topology not in {"relations", "sampled"}:
+            raise ValueError("graph topology must be 'relations' or 'sampled'")
         if any(
             not isinstance(value, Fields) or not isinstance(value.row, Columns)
             for value in self.node_fields.values()

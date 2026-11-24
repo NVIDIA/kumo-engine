@@ -27,11 +27,12 @@ import tempfile
 import time
 from typing import Any
 
+import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-import diskgraph
 from diskgraph import RuntimeIndex
+from diskgraph.sampling_options import SamplingOptions
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
 def make_runtime_batch_iterator(dataset_ref, **kwargs):
@@ -51,8 +52,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
     )
-    return index.iter(**kwargs)
-
+    return index.iter(SamplingOptions(**kwargs))
 
 
 def _peak_rss_mb() -> float:
@@ -135,6 +135,9 @@ def _build_fixture(
                 [1000 + i for i in range(n_seeds)], type=pa.timestamp("s")
             ),
             "TARGET1": pa.array([i * 0.1 for i in range(n_seeds)], type=pa.float64()),
+            # Resolution mode, as in test_runtime_batch_iterator_e2e.py: single-shard
+            # users node-id == user pk == ENTITY1.
+            "entity_node_id": pa.array([i % n_users for i in range(n_seeds)], type=pa.uint64()),
         }),
         data_dir / "seeds.parquet",
     )
@@ -150,20 +153,11 @@ def _build_fixture(
                     {"name": "ENTITY1", "ingested_dtype": "int64"},
                     {"name": "TIMESTAMP", "ingested_dtype": "timestamp"},
                     {"name": "TARGET1", "ingested_dtype": "float64"},
+                    {"name": "entity_node_id", "ingested_dtype": "u_int64"},
                 ],
                 "primary_key": None,
                 "create_time": "TIMESTAMP",
-                "fkeys": [{
-                    "src_column": "ENTITY1", "dst_table": "users",
-                    "forward": {
-                        "time": {
-                            "table": "train_seeds", "column": "TIMESTAMP",
-                            "bitwidth": 32, "unit": "s",
-                        },
-                    },
-                    "external_parent": True,
-                    "bidirectional": False,
-                }],
+                "fkeys": [],
                 "source": {"type": "parquet", "paths": [str(data_dir / "seeds.parquet")]},
             }],
         }),
@@ -189,16 +183,22 @@ def _build_fixture(
 
 
 def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
-    plan = {
-        "layers": [
-            {"fanouts": {}, "default_fanout": {
-                "fanout": 8, "mode": "uniform", "absent_key_policy": "uniform_fallback",
-            }},
-            {"fanouts": {}, "default_fanout": {
-                "fanout": 8, "mode": "uniform", "absent_key_policy": "uniform_fallback",
-            }},
-        ],
-    }
+    plan = SamplingPlan(
+        [
+            LayerSpec(
+                fanouts={},
+                default_fanout=FanoutSpec(
+                    fanout=8, mode="uniform", absent_key_policy="uniform_fallback"
+                ),
+            ),
+            LayerSpec(
+                fanouts={},
+                default_fanout=FanoutSpec(
+                    fanout=8, mode="uniform", absent_key_policy="uniform_fallback"
+                ),
+            ),
+        ]
+    )
 
     # Warm-up batch — page-in mmapped data + JIT-warm the iterator state.
     iterator, _ = make_runtime_batch_iterator(
@@ -209,6 +209,7 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=batch_size, drop_last=False,
         fused=fused,
+        entity_node_type="users",
     )
     _ = next(iter(iterator))
 
@@ -221,6 +222,7 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=batch_size, drop_last=False,
         fused=fused,
+        entity_node_type="users",
     )
 
     edge_counts: list[int] = []

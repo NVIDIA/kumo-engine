@@ -2456,6 +2456,12 @@ fn run_benchmark_tables(
         label("nodes"),
         ok(&format_number(total_nodes))
     );
+    // Reject unsupported raw controls before starting benchmark workers.
+    let stdin_guard = if io::stdout().is_terminal() && io::stdin().is_terminal() {
+        Some(enter_stdin_raw_mode()?)
+    } else {
+        None
+    };
     let start_time = std::time::Instant::now();
     let end_time = start_time + duration;
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -2575,11 +2581,6 @@ fn run_benchmark_tables(
 
     if io::stdout().is_terminal() {
         enter_benchmark_screen()?;
-        let stdin_guard = if io::stdin().is_terminal() {
-            Some(enter_stdin_raw_mode()?)
-        } else {
-            None
-        };
         let mut samples = Vec::new();
         let mut scale_max = 1u64;
         let mut last_bucket_time = start_time;
@@ -2602,7 +2603,7 @@ fn run_benchmark_tables(
                 }
                 render_benchmark_display(elapsed, duration, total_ops, &samples, &mut scale_max)?;
                 if let Some(guard) = stdin_guard.as_ref() {
-                    if poll_escape(guard.fd)? {
+                    if guard.poll_escape()? {
                         stop_flag.store(true, Ordering::Relaxed);
                         break;
                     }
@@ -2628,6 +2629,7 @@ fn run_benchmark_tables(
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
+    drop(stdin_guard);
 
     let mut total_ops = 0u64;
     let mut total_errors = 0u64;
@@ -2883,12 +2885,14 @@ fn clear_benchmark_display() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 struct StdinGuard {
     fd: i32,
     termios: libc::termios,
     flags: i32,
 }
 
+#[cfg(unix)]
 impl Drop for StdinGuard {
     fn drop(&mut self) {
         unsafe {
@@ -2898,6 +2902,7 @@ impl Drop for StdinGuard {
     }
 }
 
+#[cfg(unix)]
 fn enter_stdin_raw_mode() -> Result<StdinGuard> {
     let fd = libc::STDIN_FILENO;
     unsafe {
@@ -2925,20 +2930,38 @@ fn enter_stdin_raw_mode() -> Result<StdinGuard> {
     }
 }
 
-fn poll_escape(fd: i32) -> Result<bool> {
-    let mut buf = [0u8; 16];
-    let read = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-    if read < 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() == io::ErrorKind::WouldBlock {
+#[cfg(unix)]
+impl StdinGuard {
+    fn poll_escape(&self) -> Result<bool> {
+        let mut buf = [0u8; 16];
+        let read = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if read < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock {
+                return Ok(false);
+            }
+            return Err(anyhow!("stdin read failed: {}", err));
+        }
+        if read == 0 {
             return Ok(false);
         }
-        return Err(anyhow!("stdin read failed: {}", err));
+        Ok(buf[..read as usize].contains(&0x1b))
     }
-    if read == 0 {
-        return Ok(false);
+}
+
+#[cfg(not(unix))]
+struct StdinGuard;
+
+#[cfg(not(unix))]
+fn enter_stdin_raw_mode() -> Result<StdinGuard> {
+    Err(anyhow!("interactive benchmark controls require Unix; redirect stdin or stdout to run without raw controls"))
+}
+
+#[cfg(not(unix))]
+impl StdinGuard {
+    fn poll_escape(&self) -> Result<bool> {
+        Err(anyhow!("interactive benchmark controls require Unix"))
     }
-    Ok(buf[..read as usize].contains(&0x1b))
 }
 
 fn enter_benchmark_screen() -> Result<()> {
@@ -3059,6 +3082,7 @@ fn render_ops_chart(samples: &[u64], width: usize, height: usize, scale_max: &mu
 }
 
 fn terminal_width() -> Option<usize> {
+    #[cfg(unix)]
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
         if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
@@ -3066,6 +3090,19 @@ fn terminal_width() -> Option<usize> {
         }
     }
     std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok())
+}
+
+#[cfg(all(test, not(unix)))]
+mod terminal_tests {
+    #[test]
+    fn raw_controls_report_unsupported() {
+        let error = match super::enter_stdin_raw_mode() {
+            Ok(_) => panic!("raw controls unexpectedly available"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("require Unix"));
+        assert!(error.to_string().contains("redirect stdin or stdout"));
+    }
 }
 
 fn format_duration_short(duration: std::time::Duration) -> String {

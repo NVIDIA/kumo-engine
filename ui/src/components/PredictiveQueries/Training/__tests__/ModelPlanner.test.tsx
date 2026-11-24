@@ -6,8 +6,9 @@ import { MemoryRouter } from "react-router";
 
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import type { AxiosResponse } from "axios";
 import { mockAxiosInstance } from "tests/mockAxios";
-import { createQueryClient } from "tests/testUtil";
+import { createMockResponse, createQueryClient } from "tests/testUtil";
 
 import { jobStatus } from "utils/Constants";
 
@@ -53,9 +54,32 @@ describe("ModelPlanner", () => {
         });
     };
 
+    const defaultGet = mockAxiosInstance.get.getMockImplementation();
+
+    const mockModelPlans = (modelPlans: string[], trialIds: string[]) => {
+        mockAxiosInstance.get.mockImplementation((url, data, options) =>
+            url.endsWith("/model_plans")
+                ? Promise.resolve(
+                      createMockResponse({
+                          model_plans: modelPlans,
+                          advanced_options: [],
+                          trial_ids: trialIds
+                      }) as AxiosResponse<unknown>
+                  )
+                : defaultGet!(url, data, options)
+        );
+    };
+
+    const lastCallArg = (mockFn: ReturnType<typeof vi.fn>) =>
+        mockFn.mock.calls[mockFn.mock.calls.length - 1][0];
+
     beforeEach(() => {
         vi.clearAllMocks();
         queryClient.clear();
+    });
+
+    afterEach(() => {
+        mockAxiosInstance.get.mockImplementation(defaultGet!);
     });
 
     it("Should not render the ModelPlanner content when selectedOption is empty", async () => {
@@ -119,6 +143,53 @@ describe("ModelPlanner", () => {
             const lastCall = calls[calls.length - 1][0];
             expect(lastCall.value).toBe("3");
             expect(lastCall.label).toBe("Experiment 4");
+        });
+    });
+
+    it("Should select the best plan by trial id instead of position", async () => {
+        mockModelPlans(["plan-0", "plan-2", "plan-3"], ["0", "2", "3"]);
+
+        await renderModelPlanner({
+            ...defaultProps,
+            trainingJobId: trainId,
+            bestExperimentIndex: 1,
+            bestTrialId: "3"
+        });
+        await checkApiCall();
+
+        await waitFor(() => {
+            expect(lastCallArg(setSelectedOption)).toEqual({
+                value: "2",
+                label: "Experiment 3 (BEST)"
+            });
+            expect(lastCallArg(setOptions)).toEqual([
+                { value: "0", label: "Experiment 1" },
+                { value: "1", label: "Experiment 2" },
+                { value: "2", label: "Experiment 3 (BEST)" }
+            ]);
+        });
+    });
+
+    it("Should not mark any plan as best when the best trial has no plan", async () => {
+        mockModelPlans(["plan-0", "plan-2"], ["0", "2"]);
+
+        await renderModelPlanner({
+            ...defaultProps,
+            trainingJobId: trainId,
+            bestExperimentIndex: 1,
+            bestTrialId: "1"
+        });
+        await checkApiCall();
+
+        await waitFor(() => {
+            expect(lastCallArg(setSelectedOption)).toEqual({
+                value: "1",
+                label: "Experiment 2"
+            });
+            expect(lastCallArg(setOptions)).toEqual([
+                { value: "0", label: "Experiment 1" },
+                { value: "1", label: "Experiment 2" }
+            ]);
         });
     });
 });

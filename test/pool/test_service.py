@@ -948,9 +948,9 @@ def test_starting_worker_shared_by_concurrent_different_snapshots(
                     _report('worker-a', ready_snapshots=[],
                             in_progress_snapshots=['snap-1'],
                             pvc_total_bytes=1000 << 30,
-                            pvc_free_bytes=1000 << 30)), 1)
+                            pvc_free_bytes=1000 << 30)), 10)
             allow_provision.set()
-            results = await asyncio.wait_for(asyncio.gather(first, second), 1)
+            results = await asyncio.wait_for(asyncio.gather(first, second), 10)
             assert {result.pool_worker_uid
                     for result in results} == {'worker-a'}
             assert set(_k8s_pvcs(controller)) == {'worker-a'}

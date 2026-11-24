@@ -48,6 +48,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 E2E_TIERS = ("t2a", "t2b")
 
 
+@pytest.fixture(autouse=True)
+def isolated_kumo_scratch(tmp_path, monkeypatch):
+    """Give managed indexes a per-test root and restore the prior setting."""
+    import kumo.settings
+
+    monkeypatch.setattr(kumo.settings, "_configured", tmp_path)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "t2a: end-to-end lifecycle tier at S; runs only with --t2a")
     config.addinivalue_line("markers", "t2b: nightly end-to-end tier at M; runs only with --t2b")

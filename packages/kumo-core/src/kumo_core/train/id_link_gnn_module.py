@@ -10,6 +10,7 @@ import kumo_core.modeling.context as modeling_context
 import numpy as np
 import torch
 import torch.nn.functional as F
+from kumo_core.link_candidates import PAIRWISE_CANDIDATES
 from kumo_core.train.base_link_module import (
     DEFAULT_LR_SCHEDULER,
     DEFAULT_LR_SCHEDULER_INTERVAL,
@@ -285,6 +286,11 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
                 'amax', include_self=False))
 
     # Prediction Callbacks ####################################################
+
+    def on_predict_start(self):
+        super().on_predict_start()
+        if self.datamodule.task_manifest.predict_candidate_filter is not None:
+            raise ValueError(PAIRWISE_CANDIDATES)
 
     def predict_step(
         self,
