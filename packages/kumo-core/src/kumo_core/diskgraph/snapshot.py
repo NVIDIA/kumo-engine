@@ -147,8 +147,21 @@ class LocalSnapshotStore:
         """Keep eligible checkpoints; ingest validates their state and identity."""
         from diskgraph import DiskgraphCorruptionError, has_resumable_ingest
 
+        staging = self.staging_path(handle)
+        # Native eligibility uses Path::exists(), which hides access errors.
+        # Probe with raising filesystem operations before False can authorize
+        # cleanup that might delete readable files beside an unreadable _tmp.
         try:
-            return has_resumable_ingest(self.staging_path(handle))
+            with os.scandir(Path(staging) / "_tmp") as entries:
+                for entry in entries:
+                    try:
+                        entry.stat()
+                    except FileNotFoundError:
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        try:
+            return has_resumable_ingest(staging)
         except DiskgraphCorruptionError as error:
             # An inconsistent phase chain cannot resume. Other native errors,
             # including I/O failures, must not authorize deleting a checkpoint.

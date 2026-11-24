@@ -105,7 +105,7 @@ def test_snapshot_resumes_native_checkpoint_without_reencoding(
 
 
 @pytest.mark.parametrize('damage', [
-    'no_checkpoint', 'partial_encode', 'invalid_chain',
+    'no_checkpoint', 'checkpoint_path_file', 'partial_encode', 'invalid_chain',
     'published_bad_marker', 'published_missing_metadata',
 ])
 def test_nonresumable_staging_rebuilds_with_a_new_identity(
@@ -120,8 +120,10 @@ def test_nonresumable_staging_rebuilds_with_a_new_identity(
         'index_build_id']
     sentinel = staging / 'stale-sentinel'
     sentinel.write_bytes(b'must be discarded')
-    if damage == 'no_checkpoint':
+    if damage in ('no_checkpoint', 'checkpoint_path_file'):
         shutil.rmtree(staging / '_tmp')
+        if damage == 'checkpoint_path_file':
+            (staging / '_tmp').write_bytes(b'not a checkpoint directory')
     elif damage == 'partial_encode':
         for marker in (staging / '_tmp').glob('_phase_complete_*'):
             marker.unlink()
@@ -359,3 +361,56 @@ def test_generic_restore_preserves_native_ingest_checkpoints(
     assert _files(staging) == before
     assert {name: (staging / name).stat().st_ino for name in before} == inodes
     assert all(not path.exists() for path in targets)
+
+
+@pytest.mark.parametrize('operation', ['eligibility', 'snapshot', 'import', 'restore'])
+@pytest.mark.parametrize('mode', [0, 0o400], ids=['unreadable', 'unsearchable'])
+def test_unreadable_native_checkpoint_never_authorizes_partial_cleanup(
+        scratch, graph, tmp_path, monkeypatch, operation, mode):
+    import stat
+
+    import diskgraph
+    import kumo_core.diskgraph.ingest as ingest
+
+    import kumo.engine._snapshot_io as snapshot_io
+    from kumo.engine.graph import _lock
+
+    _, store, handle, exports, location = _export_for_checkpoint(graph, tmp_path)
+    staging = _interrupted(graph, monkeypatch)
+    (staging / 'retained-checkpoint').write_bytes(b'must survive a failed access probe')
+    before = _files(staging)
+    inodes = {name: (staging / name).stat().st_ino for name in before}
+    temporary = staging / '_tmp'
+    permissions = stat.S_IMODE(temporary.stat().st_mode)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('denied checkpoint access must fail before ingest or copying')
+
+    monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', forbidden)
+    monkeypatch.setattr(snapshot_io, 'load_into', forbidden)
+    temporary.chmod(mode)
+    try:
+        try:
+            (temporary / '_phase_complete_encode').read_bytes()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip('this user can bypass filesystem permission bits')
+        # This is the actual native behavior that previously authorized
+        # rmtree: exists() silently treats the inaccessible markers as absent.
+        assert not diskgraph.has_resumable_ingest(str(staging))
+        with pytest.raises(PermissionError):
+            if operation == 'eligibility':
+                store.has_resumable_staging(handle)
+            elif operation == 'snapshot':
+                graph.snapshot()
+            elif operation == 'import':
+                kumo.GraphSnapshot.load_from_connector(exports, path=location)
+            else:
+                with _lock(handle.graph_key):
+                    store.restore(handle, str(tmp_path / 'durable'),
+                                  exists=lambda path: True, copy_tree=forbidden)
+    finally:
+        temporary.chmod(permissions)
+    assert _files(staging) == before
+    assert {name: (staging / name).stat().st_ino for name in before} == inodes
