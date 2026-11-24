@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# 2.0.0a1 keys: the GTC Berlin lab's data/blueprint_v2_lab_tuned/config.yaml as
+# shipped (paths below are the lab container's). tests/unit/test_config_migration.py
+# migrates it.
+seed: 42
+
+# The lab's Blueprint v2 checkpoint: final-sweep candidate D, seed 42.
+#
+# This is recipes/blueprint_v2_hybrid/config.lab_tuned.yaml with four overrides,
+# chosen by a final sweep over pretraining steps (1,500 or 3,000) and LoRA rank
+# (8 or 16) on one GB10:
+#
+#   training.max_steps                3000   (was 1500)
+#   training.optimizer.warmup_steps   150    (was 75; 5% of the steps)
+#   fraud_task.finetune.rank          16     (was 8)
+#   fraud_task.finetune.alpha         16.0   (was 8.0)
+#
+# Pretraining took about 42 minutes. The weights were trained with tfm commit
+# 124ab93 and load unchanged in the lab's SDK.
+#
+# Same model as config.lab.yaml (d=256, 8 heads, depths 2/4/4) and the same
+# 10,000-user probe sample, split, and spliced fraud task. What
+# config.lab_tuned.yaml changed from config.lab.yaml, and why:
+#
+# - Tokens. merchant, device_id, and counterparty are one hash-bucket token
+#   each (4,096 buckets per key) instead of up to 32 bytes; app_version is a
+#   category, not a number. Spelled byte by byte, the merchant was not learned:
+#   its next-event cross-entropy sat at the unigram floor. 4,096 rather than
+#   8,192 buckets per key because the full-vocabulary next-event softmax at a
+#   25k vocabulary did not fit beside the prepared book in 121 GB.
+# - Corpus. Pretraining reads every 128-event train-side window of all 100k
+#   users from a token cache (451,886 windows), not one row per sampled user.
+# - Optimizer. Muon (lr 0.01) on the hidden matrices and AdamW (lr 1e-3) on the
+#   rest, batch 128, 3,000 steps here (about 85% of the windows), 5% warmup,
+#   gradients clipped at 1.0.
+#
+# Build the cache once (about 4 min on a GB10 with 6 workers), then train:
+#   export TFM_PRAGMATIQ_ROOT=/dli/task/data/pragmatiq/synth_100k_gen2_m31_seed0
+#   tfm cache-tokens --config /dli/task/data/blueprint_v2_lab_tuned/config.yaml --workers 6
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+#   python /opt/tfm/recipes/blueprint_v2_hybrid/report.py \
+#     --config /dli/task/data/blueprint_v2_lab_tuned/config.yaml --device cuda \
+#     --run-dir outputs/blueprint_v2_hybrid/lab_tuned
+# On a GB10 the caching allocator fragments on variable-length batches and its
+# reservation grows toward the machine's unified memory; expandable segments
+# hold it near the 22 GB the run allocates.
+
+data:
+  adapter: pragmatiq
+  path: null
+  observation_window: 730d
+  sequence_length: 128
+  # The cache's per-event cap. With the identity keys hashed, the longest
+  # event is 9 tokens; 40 is kept so the cache matches config.lab.yaml's.
+  max_tokens: 40
+  n_entities: 10000
+  max_entities: 10000
+  events_per_entity: 128
+  pretrain_window_events: 128
+  token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab_hkey
+  temporal_split:
+    train_end: "2024-06-01T00:00:00Z"
+    validation_end: "2024-09-01T00:00:00Z"
+    label_delay: 0h
+  fraud_labels: spliced_identity_theft
+  identity_theft:
+    victim_fraction: 0.2
+    negative_window: 7d
+    theft_lookback: 28d
+    donors: matched
+
+features:
+  tokenizer: key_value_time
+  categorical_keys: [mcc, app_version]
+  hashed_keys: [merchant, device_id, counterparty]
+  hash_buckets: 4096
+
+model:
+  composition:
+    granularity:
+      type: profile_event_decoder
+      profile_depth: 2
+      event_depth: 4
+      varlen: true
+      decoder:
+        depth: 4
+        mask: causal
+        hidden_size: 256
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 40
+    position: time_rope
+    attention: sdpa
+    objective: next_event_fields
+    readout: last_token
+    heads:
+      fraud: binary
+
+objective:
+  auxiliary: [token_event_key_mlm]
+  mlm:
+    p_token: 0.15
+    p_event: 0.10
+    p_key: 0.10
+    p_unk: 0.10
+    label_smoothing: 0.1
+
+training:
+  max_steps: 3000
+  batch_size: 128
+  learning_rate: 0.001
+  precision: bf16
+  backend: eager
+  shuffle: true
+  optimizer:
+    name: muon
+    muon_learning_rate: 0.01
+    max_grad_norm: 1.0
+    betas: [0.9, 0.95]
+    weight_decay: 0.01
+    lr_schedule: cosine
+    warmup_steps: 150
+    min_learning_rate: 0.00002
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+  finetune:
+    enabled: true
+    method: lora
+    head: linear
+    rank: 16
+    alpha: 16.0
+    targets: [qkv, out, ff.0, ff.2]
+    max_steps: 3000
+    learning_rate: 0.001
+    batch_size: 32
+    validation_fraction: 0.2
+    eval_every: 50
+    patience: 4
+
+evaluation:
+  precision_at_k: 50
+  history_window_probe: true
+  history_window_max_rows: 4000
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 30
+
+runtime:
+  device: auto

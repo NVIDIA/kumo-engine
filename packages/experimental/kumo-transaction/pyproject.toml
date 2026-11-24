@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tfm"
+version = "2.0.0a4"
+description = "Transaction Foundation Model v2 reference-architecture kit"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "NVIDIA" }]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "scikit-learn>=1.5",
+    "torch>=2.9",
+]
+
+[project.optional-dependencies]
+# pyright's `nodejs` extra runs its bundled checker on a Node.js wheel; without
+# it, pyright downloads Node.js on first use, which CI must not do.
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pyright[nodejs]>=1.1.380",
+]
+xgboost = ["xgboost>=2.0"]
+# The tuned tabular baselines (`evaluation.tabular_baselines`): XGBoost with
+# Optuna hyperparameter search, the task-specific reference a lift is measured against.
+baselines = ["xgboost>=2.0", "optuna>=4.0"]
+huggingface = ["transformers>=4.44"]
+# Graph encoders import the actual HeteroGNN shipped by this optional distribution.
+kumo = ["kumo-engine>=1.0.1"]
+pragmatiq = ["pragmatiq==1.1.0"]
+# UMAP matches the Blueprint's notebook-04 view; PCA is the no-extra default.
+umap = ["umap-learn>=0.5"]
+# nbmake is the pytest plugin `make test-notebooks` and CI use to execute every notebook.
+notebooks = [
+    "ipykernel>=6.29",
+    "jupyter>=1.0",
+    "matplotlib>=3.8",
+    "nbmake>=1.5",
+]
+# The documentation site (`make docs`): MkDocs with the Material theme,
+# mkdocstrings for API pages generated from docstrings, mkdocs-gen-files to lay
+# out the repository's Markdown at its repo paths, and mkdocs-jupyter to render
+# the notebooks (without executing them).
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.26",
+  "mkdocs-gen-files>=0.5",
+  "mkdocs-jupyter>=0.25",
+]
+# Install cuDF from RAPIDS wheels for your CUDA version; do not add cudf to the
+# default lockfile. numba rejects NumPy 2.5, so cuDF also needs `numpy<2.5`:
+#   uv pip install cudf-cu13 "numpy<2.5" --extra-index-url=https://pypi.nvidia.com
+rapids = []
+
+[project.scripts]
+tfm = "tfm.cli.main:main"
+
+[project.urls]
+Repository = "https://github.com/NVIDIA/kumo-engine"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+required-version = "==0.13.8"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "recipes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+"recipes/**" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.pyright]
+include = ["src/tfm"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+venvPath = "."
+venv = ".venv"
+
+# Keep the imported kit and its lockfile independent of the Engine workspace.
+[tool.uv.workspace]
+members = []

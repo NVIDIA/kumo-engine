@@ -1,0 +1,3 @@
+# Install the Python API and native runtime from Kumo's main branch.
+diskgraph @ git+https://github.com/NVIDIA/kumo-engine.git@main#subdirectory=packages/diskgraph
+kumo-pytorch @ git+https://github.com/NVIDIA/kumo-engine.git@main#subdirectory=packages/experimental/kumo-pytorch

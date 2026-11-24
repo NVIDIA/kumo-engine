@@ -52,9 +52,29 @@ def synthetic_spec(
 
 
 def test_repository_manifest_inventory_passes() -> None:
-    assert len(check_python_license_metadata.DISTRIBUTIONS) == 15
+    assert len(check_python_license_metadata.DISTRIBUTIONS) == 16
     assert check_python_license_metadata.validate_repository(
         REPOSITORY_ROOT) == []
+
+
+def test_tfm_keeps_its_own_license_and_wheel_payload(tmp_path: Path) -> None:
+    spec = next(spec for spec in check_python_license_metadata.DISTRIBUTIONS
+                if spec.name == "tfm")
+    assert spec.license_expression == "Apache-2.0"
+    assert not spec.uses_repository_license
+    package = REPOSITORY_ROOT / Path(spec.manifest).parent
+    legal = (package / "LICENSE").read_bytes()
+    assert legal != (REPOSITORY_ROOT / "LICENSE").read_bytes()
+    wheel = tmp_path / "demo-1.0.0-py3-none-any.whl"
+    write_wheel(wheel, payloads={"LICENSE": legal})
+    assert check_python_license_metadata.validate_wheel(wheel, REPOSITORY_ROOT,
+                                                        spec) == []
+    write_wheel(
+        wheel, payloads={"LICENSE": (REPOSITORY_ROOT / "LICENSE").read_bytes()})
+    errors = check_python_license_metadata.validate_wheel(
+        wheel, REPOSITORY_ROOT, spec)
+    assert any("differs from its declared source file" in error
+               for error in errors)
 
 
 def test_repository_expression_tracks_notice_inventory() -> None:

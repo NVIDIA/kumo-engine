@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+seed: 42
+
+# Blueprint v2 hybrid at lab size, untuned: one GPU, about 55 minutes.
+# recipes/blueprint_v2/config.yaml is this model with tuned tokens, corpus,
+# and optimizer.
+#
+# d=256, 8 heads, profile/event/decoder depths 2/4/4: 8.4M parameters.
+# 10,000 users with their most recent 128 events. Measured on one GB10
+# (bf16, batch 32): about 0.39 s per step, 7.3 GiB of GPU memory, and 50 GB
+# of host memory. Per run, preparing data takes about 6 min, the 3,000 steps
+# about 20 min, and evaluation (probes, history-window probe, LoRA, and the
+# tuned tabular baselines) about 29 min.
+# Recorded result: benchmarks/results/blueprint_v2_hybrid_lab_kvt_seeds.md.
+# blueprint_v2_hybrid_lab_splice_seeds.md is the run at commit d8cc2a1, before
+# max_tokens moved from 24 to 40, mcc became categorical, and the tabular
+# baselines were added. blueprint_v2_hybrid_lab_seeds.md is the run at commit
+# b54c3eb, before the fraud probe moved to the spliced task below.
+#
+# Use a local pragmatiq book (Generator v2, 100k users, seed 0) built from
+# configs/data/pragmatiq/world.yaml. That world runs 31 months, so every forecast label
+# (churn_6m, default_12m, ltv_positive) is dated after train_end and each task
+# gets scored. The generate command is in the header of configs/data/pragmatiq/world.yaml.
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run tfm report --config benchmarks/ablations/blueprint_v2_lab.yaml \
+#     --device cuda --run-dir outputs/ablations/lab
+# Re-evaluate the trained run without retraining:
+#   uv run tfm evaluate --config benchmarks/ablations/blueprint_v2_lab.yaml \
+#     --device cuda --run-dir outputs/ablations/lab --reuse-checkpoint
+#
+# The fraud probe reads the spliced identity-theft task (ADR 0015), not the
+# book's own fraud labels, which one transaction identifies. It needs the
+# local book: the generated fixture is too small to splice.
+
+data:
+  adapter: pragmatiq
+  path: null
+  observation_window: 730d
+  sequence_length: 128
+  # Tokens per event. Of 1.27M events from 1,000 of the book's users, the
+  # longest is 39 tokens: amount, mcc, and the other single-token fields, then
+  # the merchant, device, or counterparty spelled byte by byte. At 24, 28% of
+  # card-side events lost fields.
+  max_tokens: 40
+  n_entities: 10000
+  max_entities: 10000
+  events_per_entity: 128
+  temporal_split:
+    train_end: "2024-06-01T00:00:00Z"
+    validation_end: "2024-09-01T00:00:00Z"
+    label_delay: 0h
+  fraud_labels: spliced_identity_theft
+  identity_theft:
+    victim_fraction: 0.2
+    negative_window: 7d
+    theft_lookback: 28d
+    donors: matched
+
+features:
+  tokenizer: key_value_time
+  # A merchant category code, not a quantity: percentile buckets would merge
+  # unrelated categories.
+  categorical_keys: [mcc]
+
+model:
+  composition:
+    granularity:
+      type: profile_event_decoder
+      profile_depth: 2
+      event_depth: 4
+      varlen: true
+      decoder:
+        depth: 4
+        mask: causal
+        hidden_size: 256
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 40
+    position: time_rope
+    attention: sdpa
+    objective: next_event_fields
+    readout: last_token
+    heads:
+      fraud: binary
+
+objective:
+  auxiliary: [token_event_key_mlm]
+  mlm:
+    p_token: 0.15
+    p_event: 0.10
+    p_key: 0.10
+    p_unk: 0.10
+    label_smoothing: 0.1
+
+training:
+  max_steps: 3000
+  batch_size: 32
+  learning_rate: 0.0005
+  precision: bf16
+  backend: eager
+  shuffle: true
+  optimizer:
+    betas: [0.9, 0.95]
+    weight_decay: 0.01
+    lr_schedule: cosine
+    warmup_steps: 150
+    min_learning_rate: 0.00002
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+  finetune:
+    enabled: true
+    method: lora
+    head: linear
+    rank: 8
+    alpha: 16.0
+    targets: [qkv, out]
+    max_steps: 300
+    learning_rate: 0.001
+    batch_size: 32
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    max_rows: 4000
+    # The reference a lift is measured against (docs/concepts/evaluation-protocol.md).
+  tabular_baselines:
+    enabled: true
+    xgboost_trials: 30
+
+runtime:
+  device: auto
