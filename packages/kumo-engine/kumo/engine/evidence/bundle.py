@@ -151,7 +151,7 @@ def _identifier(value):
     return value
 
 
-def _validate_graph(graph, source_identity_kinds=None):
+def _validate_graph(graph, source_identity_kinds=None, graph_snapshot_id=None):
     if graph.get('origin') != 'original_forward':
         raise EvidenceValidationError(
             'Scoring graph is not original-forward evidence')
@@ -169,6 +169,9 @@ def _validate_graph(graph, source_identity_kinds=None):
             if kind != expected:
                 raise EvidenceValidationError('Graph identity kind mismatch')
         if kind == 'snapshot_row':
+            if not isinstance(graph_snapshot_id, str) or not graph_snapshot_id.strip():
+                raise EvidenceValidationError(
+                    'Snapshot row identities require a graph_snapshot_id')
             ids = node.get('node_ids')
             if (source_identity_kinds is None or not isinstance(ids, list)
                     or ids != node.get('pkeys') or any(
@@ -334,8 +337,9 @@ class PredictionEvidenceBundle:
         if not path.exists():
             raise EvidenceValidationError('Original scoring graph not retained')
         graph = _read(path)
-        _validate_graph(graph, self.manifest['native_provenance'].get(
-            'source_identity_kinds'))
+        native = self.manifest['native_provenance']
+        _validate_graph(graph, native.get('source_identity_kinds'),
+                        native.get('graph_snapshot_id'))
         return graph
 
     def availability(self, prediction_id):

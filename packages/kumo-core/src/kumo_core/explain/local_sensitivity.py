@@ -238,7 +238,6 @@ class LocalSensitivity:
             'signed_method': None,
             'input_coordinate': None,
             'output_coordinate': 'encoded_positive_class_probability',
-            'numerical_sensitivity': False,
             'temporal_boundary': self._temporal_boundary(),
             'device': 'cpu',
             'loss': type(module.loss).__name__,
@@ -273,8 +272,6 @@ class LocalSensitivity:
             'transformed_numerical_input',
             'output_coordinate':
             'decoded_model_output',
-            'numerical_sensitivity':
-            self.numerical_sensitivity,
             'temporal_boundary': self._temporal_boundary(),
             'device':
             'cpu',
@@ -301,6 +298,10 @@ class LocalSensitivity:
         temporary.write_text(
             _encoded({
                 **self.provenance,
+                'numerical_sensitivity_requested': self.numerical_sensitivity,
+                'numerical_sensitivity': (self.numerical_sensitivity and
+                                          self.numerical_unsupported_reason is None),
+                'numerical_sensitivity_unsupported_reason': self.numerical_unsupported_reason,
                 'complete': complete,
                 'rows': self.rows,
                 'failure': self.failure,

@@ -248,7 +248,10 @@ These families have their own support boundaries and retained statuses; training
 Walk evidence identifies each sampled occurrence by its table and position in the retained graph.
 For a table without a declared primary key, the block has `identity_kind="snapshot_row"` and its `pkeys` contain DiskGraph row IDs scoped to that table and graph snapshot.
 Repeated occurrences of one row share its ID.
+Loading a bundle with snapshot-row identities requires a nonempty `native_provenance.graph_snapshot_id`.
 Numerical sensitivity requires a source primary key for each table with a modeled numerical input.
 By default, prediction raises before scoring and names the affected unkeyed tables.
 With `on_unsupported="record"`, prediction records numerical sensitivity as unsupported and continues graph and walk capture.
-Use `numerical_sensitivity=None` for walk-only evidence.
+The bundle reports `evidence_complete=False` when any requested evidence is unsupported, even if every walk is available.
+For walk-only runs, set `numerical_sensitivity=None` so completeness depends on the requested graph and walk evidence and the usual validation checks.
+In `native_provenance`, `numerical_sensitivity_requested` records the request, `numerical_sensitivity` records whether capture was enabled, and `numerical_sensitivity_unsupported_reason` explains an unsupported request.

@@ -25,10 +25,13 @@ def test_unkeyed_walk_identity(tmp_path, ids):
     block = graph['nodes']['events']
     assert block['identity_kind'] == 'snapshot_row'
     assert block['node_ids'] == block['pkeys'] == ids
-    _validate_graph(graph, kinds)
+    for invalid_id in (None, '', '  ', 7):
+        with pytest.raises(EvidenceValidationError, match='graph_snapshot_id'):
+            _validate_graph(graph, kinds, invalid_id)
+    _validate_graph(graph, kinds, 'test-snapshot')
     block['pkeys'] = [11]
     with pytest.raises(EvidenceValidationError):
-        _validate_graph(graph, kinds)
+        _validate_graph(graph, kinds, 'test-snapshot')
     del batch['customers'].pkey
     with pytest.raises(ValueError, match='source_primary_key identities for customers'):
         capture._sample(batch, module)
@@ -100,6 +103,12 @@ def test_unkeyed_numerical_support_policy(tmp_path, policy):
     row = json.loads((tmp_path / 'index.jsonl').read_text())
     assert row['status'] == 'unsupported' and 'events' in row['reason']
     assert row['graph_status'] == 'available'
+    capture.explain_end(module, dm, {}, None)
+    manifest = json.loads((tmp_path / 'manifest.json').read_text())
+    assert manifest['numerical_sensitivity_requested'] is True
+    assert manifest['numerical_sensitivity'] is False
+    assert manifest['numerical_sensitivity_unsupported_reason'] == row['reason']
+    assert manifest['complete'] is False
 
 
 def test_snapshot_row_without_primary_key_column(monkeypatch):
