@@ -10,7 +10,7 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 - Skill: `kumo-custom-populations`
 - Validation status: `passed`
-- Evaluation date: 2026-11-23
+- Evaluation date: 2026-11-24
 - Evaluator version: `1.6.10`
 - Agents: Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`), Codex (`openai/openai/gpt-6.1-sol`)
 - Tasks: 5 evaluation tasks (4 positive, 1 negative)
@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 95.8% — baseline ran, but no comparable score was available; uplift unavailable | 93.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 91.9% — baseline ran, but no comparable score was available; uplift unavailable | 94.0% — baseline ran, but no comparable score was available; uplift unavailable |
 | Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
-| Correctness | 52.0% → 100.0% (+48.0 points) | 64.0% → 96.0% (+32.0 points) |
-| Discoverability | 98.8% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 50.0% → 82.0% (+32.0 points) | 34.0% → 80.0% (+46.0 points) |
-| Efficiency | 98.2% — baseline ran, but no comparable score was available; uplift unavailable | 96.1% — baseline ran, but no comparable score was available; uplift unavailable |
+| Correctness | 56.0% → 100.0% (+44.0 points) | 68.0% → 96.0% (+28.0 points) |
+| Discoverability | 97.5% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 44.0% → 68.0% (+24.0 points) | 32.0% → 84.0% (+52.0 points) |
+| Efficiency | 94.0% — baseline ran, but no comparable score was available; uplift unavailable | 96.1% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -72,7 +72,7 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
 | claude-code | Efficiency | Token-only comparison | 98.1% → 96.3% (-1.8 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 89.2% → 92.1% (+2.9 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 88.5% → 92.2% (+3.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,19 +80,19 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 611,419 | 615,335 | -3,916 | -0.64% | skill 5/5; base 5/5 |
-| claude-code | kpop-01 | 153,874 | 146,438 | +7,436 | +5.08% | skill 1/1; base 1/1 |
-| claude-code | kpop-02 | 153,855 | 143,893 | +9,962 | +6.92% | skill 1/1; base 1/1 |
-| claude-code | kpop-03 | 113,489 | 106,757 | +6,732 | +6.31% | skill 1/1; base 1/1 |
-| claude-code | kpop-04 | 154,439 | 182,597 | -28,158 | -15.42% | skill 1/1; base 1/1 |
-| claude-code | kpop-05 | 35,762 | 35,650 | +112 | +0.31% | skill 1/1; base 1/1 |
-| codex | All cases | 209,538 | 244,302 | -34,764 | -14.23% | skill 5/5; base 5/5 |
-| codex | kpop-01 | 43,712 | 66,249 | -22,537 | -34.02% | skill 1/1; base 1/1 |
-| codex | kpop-02 | 60,515 | 56,079 | +4,436 | +7.91% | skill 1/1; base 1/1 |
-| codex | kpop-03 | 43,972 | 45,517 | -1,545 | -3.39% | skill 1/1; base 1/1 |
-| codex | kpop-04 | 43,657 | 58,769 | -15,112 | -25.71% | skill 1/1; base 1/1 |
-| codex | kpop-05 | 17,682 | 17,688 | -6 | -0.03% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 820,957 | 859,637 | -38,680 | -4.50% | skill 10/10; base 10/10 |
+| claude-code | All cases | 611,047 | 614,593 | -3,546 | -0.58% | skill 5/5; base 5/5 |
+| claude-code | kpop-01 | 154,208 | 147,437 | +6,771 | +4.59% | skill 1/1; base 1/1 |
+| claude-code | kpop-02 | 153,869 | 143,821 | +10,048 | +6.99% | skill 1/1; base 1/1 |
+| claude-code | kpop-03 | 113,157 | 106,832 | +6,325 | +5.92% | skill 1/1; base 1/1 |
+| claude-code | kpop-04 | 154,120 | 180,783 | -26,663 | -14.75% | skill 1/1; base 1/1 |
+| claude-code | kpop-05 | 35,693 | 35,720 | -27 | -0.08% | skill 1/1; base 1/1 |
+| codex | All cases | 209,179 | 253,304 | -44,125 | -17.42% | skill 5/5; base 5/5 |
+| codex | kpop-01 | 43,777 | 61,426 | -17,649 | -28.73% | skill 1/1; base 1/1 |
+| codex | kpop-02 | 60,458 | 57,169 | +3,289 | +5.75% | skill 1/1; base 1/1 |
+| codex | kpop-03 | 43,552 | 45,130 | -1,578 | -3.50% | skill 1/1; base 1/1 |
+| codex | kpop-04 | 43,666 | 71,861 | -28,195 | -39.24% | skill 1/1; base 1/1 |
+| codex | kpop-05 | 17,726 | 17,718 | +8 | +0.05% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 820,226 | 867,897 | -47,671 | -5.49% | skill 10/10; base 10/10 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 
