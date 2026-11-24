@@ -379,7 +379,7 @@ def _load_local(connector: Any, path: str, root: str,
                             raise ValueError(f'Conflicting contents for index build {build_id}')
                         return store.publish_import(handle, existing)
                 elif target != legacy:
-                    raise ValueError('An ID-less export cannot replace a completed legacy snapshot')
+                    raise ValueError('An ID-less export cannot replace a retained legacy snapshot or checkpoint')
                 load_into(connector, path, root, manifest, target)
             except FileNotFoundError:
                 newer_root, newer = read(connector, path)
@@ -992,10 +992,10 @@ class Graph:
                 result = existing
             else:
                 output_dir = Path(store.staging_path(handle))
-                # Only this graph-owned staging path can be rebuilt. A damaged
-                # published build remains untouched while ingest allocates a
-                # new physical identity. The graph lock excludes other writers.
-                if output_dir.exists():
+                # Keep unfinished native checkpoints so ingest can resume and
+                # validate their identity. Clear only non-resumable staging;
+                # published builds remain untouched under the graph lock.
+                if output_dir.exists() and not store.has_resumable_staging(handle):
                     shutil.rmtree(output_dir)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 # The Rust ingest binary only writes the index's
