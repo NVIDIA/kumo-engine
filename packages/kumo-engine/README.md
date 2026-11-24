@@ -23,7 +23,10 @@ pip install kumo-engine
 | GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
 
-The base package reads and writes local CSV and Parquet files. Optional extras add connectors and additional features; combine them as needed, for example `pip install "kumo-engine[snowflake,text]"`.
+The base package reads and writes local CSV and Parquet files and includes
+experimental snapshot-backed FM payload loading through `kumo.fm`. Optional
+extras add connectors and additional features; combine them as needed, for
+example `pip install "kumo-engine[snowflake,text]"`.
 
 | Extra | Adds |
 | --- | --- |
@@ -38,7 +41,6 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
 | `pytorch` | (Experimental) `kumo.pytorch`, for training your own PyTorch models on your tables |
-| `fm` | (Experimental) Snapshot-backed FM payload loading through `kumo.fm` |
 
 Kumo Engine defaults to CPU for training and model loading on native Windows; use WSL2 for NVIDIA GPU workloads. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 

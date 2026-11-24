@@ -68,7 +68,7 @@ fallback; Arrow IPC is an alternate wire format.
 ## Installation
 
 The candidate merged release wheel includes FM and PyTorch code. Install it
-with `pip install "kumo-engine[fm]"`. The FM extra adds its runtime dependencies;
+with `pip install kumo-engine`, including FM runtime dependencies;
 SDM remains a separate optional install for inference. The arrays encoder uses
 CPython's stable ABI from Python 3.11. This is experimental and its API may
 change between releases.

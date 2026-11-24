@@ -308,6 +308,7 @@ def test_engine_faiss_platform_selection_survives_merge(
         'extras': [*engine['extras'], 'cpu'],
         'requires': setup_kwargs['install_requires'] + provider_requirements,
     })
+    monkeypatch.setitem(COMPONENTS, 'kumo-fm', {})
     result = _merge(tmp_path, list(COMPONENTS))
     assert result.returncode == 0, result.stderr
     metadata, manifest, _ = _read_wheel(tmp_path)
@@ -843,17 +844,23 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     'cp311-abi3-manylinux_2_34_x86_64',
     'cp312-cp312-manylinux_2_34_x86_64',
 ])
-def test_fm_extra_uses_bundled_pytorch_and_stable_abi(tmp_path, monkeypatch, tag):
+def test_default_install_uses_bundled_fm_pytorch_and_stable_abi(
+        tmp_path, monkeypatch, tag):
+    import setuptools
+    from packaging.requirements import Requirement
+
+    setup_kwargs = {}
+    monkeypatch.setattr(setuptools, 'setup',
+                        lambda **kwargs: setup_kwargs.update(kwargs))
+    runpy.run_path(str(REPO_ROOT / 'packages/kumo-engine/setup.py'))
+
     def dependencies(package):
         project = tomllib.loads((REPO_ROOT / package / 'pyproject.toml').read_text())
         return project['project']['dependencies']
 
     engine = COMPONENTS['kumo-engine']
-    extra = tomllib.loads((REPO_ROOT / 'packages/kumo-engine/pyproject.toml')
-                         .read_text())['project']['optional-dependencies']['fm']
     monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
-        **engine, 'extras': [*engine['extras'], 'fm'],
-        'requires': [*engine['requires'], *(f'{r}; extra == "fm"' for r in extra)],
+        **engine, 'requires': setup_kwargs['install_requires'],
     })
     monkeypatch.setitem(COMPONENTS, 'kumo-fm', {
         'requires': dependencies('packages/experimental/kumo-fm'),
@@ -872,7 +879,13 @@ def test_fm_extra_uses_bundled_pytorch_and_stable_abi(tmp_path, monkeypatch, tag
     metadata, _, names = _read_wheel(tmp_path)
     assert 'kumo/fm/_native_json.abi3.so' in names
     requirements = metadata.get_all('Requires-Dist')
-    assert any('pyarrow==24.0.0' in r and 'extra == "fm"' in r for r in requirements)
+    default_requirements = [Requirement(r) for r in requirements
+                            if not Requirement(r).marker or
+                            Requirement(r).marker.evaluate({'extra': ''})]
+    assert any(r.name == 'pyarrow' and str(r.specifier) == '==24.0.0'
+               for r in default_requirements)
+    assert any(r.name == 'numpy' for r in default_requirements)
+    assert 'fm' not in (metadata.get_all('Provides-Extra') or [])
     assert not any(r.startswith(('kumo-fm', 'kumo-pytorch', 'diskgraph',
                                  'kumo-settings', 'duckdb', 'structured-data-models'))
                    for r in requirements)

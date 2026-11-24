@@ -96,9 +96,6 @@ pytorch=[
     "kumo-pytorch",
 ]
 
-# Experimental FM code ships in the wheel; its dependencies are opt-in.
-fm=["kumo-fm"]
-
 # Reports this wheel's release version as the Kumo version. The provider is a
 # top-level module (see `[tool.setuptools] py-modules`) because importing
 # anything under `kumo.engine` would import the whole engine.

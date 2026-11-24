@@ -328,7 +328,7 @@ jobs:
         with: {enable-cache: false}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with: {name: 'engine-pr-wheel-${{ github.sha }}', path: '${{ runner.temp }}/fm-wheel'}
-      - name: Install the candidate with FM dependencies
+      - name: Install the candidate without extras
         run: |
           set -euo pipefail
           for name in ${!PIP_@} ${!UV_@}; do unset "$name"; done
@@ -337,7 +337,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/fm-env"
           uv --no-config pip install --python "$RUNNER_TEMP/fm-env/bin/python" \
             --default-index https://pypi.org/simple --torch-backend cpu \
-            "${wheels[0]}[fm]" 'pytest>=8,<10'
+            "${wheels[0]}" 'pytest>=8,<10'
           uv --no-config pip check --python "$RUNNER_TEMP/fm-env/bin/python"
       - name: Test FM from the merged wheel outside the checkout
         run: |

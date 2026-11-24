@@ -23,7 +23,7 @@ so a bare install can still `import kumo.engine`
 `kumo-api`, `kumo-pql`, `kumo-core`, `kumo-pytorch`, `kumo-fm` and every provider
 are always bundled. The explicit experimental package list in the build script
 contains PyTorch and FM; other experimental packages stay excluded.
-`pip install "kumo-engine[fm]"` adds FM dependencies, including PyArrow 24,
+`pip install kumo-engine` includes FM dependencies, including PyArrow 24,
 without DuckDB or SDM. FM's arrays encoder uses the CPython 3.11 stable ABI.
 Frozen-bundle and DuckDB benchmark tooling is not included in the wheel.
 Kumo-owned source uses Apache-2.0; bundled third-party source and native

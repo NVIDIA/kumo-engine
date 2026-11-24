@@ -116,7 +116,7 @@ test workflows keep their existing checks.
 
 ## FM candidate wheel
 
-The required `fm` matrix installs the candidate merged wheel with `[fm]` on
+The required `fm` matrix installs the candidate merged wheel without extras on
 Python 3.11 and 3.14, outside the checkout. It checks installed import origins,
 release-version agreement, native arrays and Arrow IPC encoding, source-free
 snapshot reuse, Arrow/Parquet fixtures and connector export/reload. All FM
