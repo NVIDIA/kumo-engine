@@ -123,9 +123,7 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
                 observed.append(runtime["history"]["stats"])
             yield runtime
 
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             monkeypatch.setattr(NativeAnchors, "_iter", checked_iter)
             monkeypatch.setattr(
@@ -155,7 +153,7 @@ def test_graph_and_event_history_share_a_token_budget(tmp_path, monkeypatch):
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"user": [1, 1], "at": cutoffs}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at")
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     with (
         api.prepare(contract, dataset, engine) as plan,
         plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
@@ -219,7 +217,7 @@ def test_budgeted_drop_last_across_splits(tmp_path, with_graph, splits, max_toke
     cutoffs = [100, 61, 50][: len(splits)]  # Each anchor has three selected history events.
     pq.write_table(pa.table({"user": [1] * len(splits), "at": cutoffs, "split": splits}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at", split="split")
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     with (
         api.prepare(contract, dataset, engine) as plan,
         plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,

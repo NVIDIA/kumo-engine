@@ -276,7 +276,7 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
         graph, monkeypatch, prediction):
     from kumo_core.sources import object_store
 
-    from kumo.engine.pquery import _custom_source
+    from kumo.engine.connector import _staging
 
     _, snapshot, connector, out = graph
     query = ('PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
@@ -286,15 +286,14 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
     monkeypatch.setattr(
         object_store, 'materialize_arrow_streams',
         partial(object_store.materialize_arrow_streams, max_rows_per_shard=20))
-    stage_source_table = _custom_source.stage_source_table
+    stage_source_table = _staging.stage_source_table
 
     def stage_multipart_source(*args, **kwargs):
         path, version = stage_source_table(*args, **kwargs)
         assert len(list(path.glob('*.parquet'))) > 1
         return path, version
 
-    monkeypatch.setattr(_custom_source, 'stage_source_table',
-                        stage_multipart_source)
+    monkeypatch.setattr(_staging, 'stage_source_table', stage_multipart_source)
     if prediction:
         source = exported.select(['ENTITY1', 'TIMESTAMP'])
         # Two files force multipart staging for prediction too.

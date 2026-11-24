@@ -17,10 +17,10 @@ import json
 import os
 import platform
 from dataclasses import dataclass
-from importlib import metadata
 from pathlib import Path
 from typing import TypedDict
 
+import kumo.pytorch
 from conformance.cases import REPOSITORY
 from conformance.generate import CasePayload, GeneratedCase
 from conformance.registry import REGISTRY_VERSION
@@ -64,15 +64,17 @@ class Repro:
 
 
 def versions() -> Versions:
-    def installed(name: str) -> str | None:
-        try:
-            return metadata.version(name)
-        except metadata.PackageNotFoundError:
-            return None
+    # The kumo-engine wheel bundles both without distribution metadata.
+    try:
+        import diskgraph
+    except ImportError:
+        diskgraph_version = None
+    else:
+        diskgraph_version = diskgraph.__version__
 
     return {
-        "package": installed("kumo-pytorch") or "unknown",
-        "diskgraph": installed("diskgraph"),
+        "package": kumo.pytorch.__version__,
+        "diskgraph": diskgraph_version,
         "registry": REGISTRY_VERSION,
         "python": platform.python_version(),
     }

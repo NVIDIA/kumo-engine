@@ -443,7 +443,12 @@ class Input:
 
 @dataclass(frozen=True)
 class Batch:
-    """Named inputs and the same shared resources as BatchSpec."""
+    """Named inputs and the same shared resources as BatchSpec.
+
+    The iteration order of ``inputs`` and ``targets`` is not specified and may differ
+    between a built contract and one read by ``Artifact.load``. Look entries up by name;
+    do not depend on order, e.g. ``torch.cat(list(batch.inputs.values()), -1)``.
+    """
 
     inputs: Mapping[str, Input | CoreInput]
     targets: Mapping[str, Any] = field(default_factory=dict)

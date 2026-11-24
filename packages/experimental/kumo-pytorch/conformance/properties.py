@@ -1326,9 +1326,8 @@ def index_layout(case: GeneratedCase, engine: str, position: int) -> None:
         engine_object.open(dataset, schema)
         manifest = engine_object.index / "index_manifest.json"
         before = manifest.read_text()
-        again = DiskGraphEngine(
-            index=engine_object.index, num_threads=engine_object.num_threads, num_shards=shards
-        )
+        again = engine_object
+        again.num_shards = shards
         try:
             again.open(dataset, schema)
         except ValueError as error:
