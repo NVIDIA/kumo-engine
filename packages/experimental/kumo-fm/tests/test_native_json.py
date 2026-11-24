@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import json
 import random
 import struct
@@ -26,6 +27,30 @@ def reference(table):
         return value
     rows = [[cell(value) for value in row] for row in zip(*(c.to_pylist() for c in table.columns))]
     return json.dumps(rows, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')
+
+
+def assert_payload_matches_tables(batch):
+    """Compare both wire encodings against retained tables and the Python row oracle."""
+    arrays_body, ipc_body = batch.encode("arrays"), batch.encode("arrow_ipc")
+    arrays, ipc = json.loads(arrays_body), json.loads(ipc_body)
+    for key, value in batch.metadata.items():
+        assert arrays[key] == ipc[key] == value
+    for split in batch.splits:
+        direct = batch.tables(split)
+        tables = {"instance_table": direct["instance_table"], **direct["related_tables"]}
+        for name, table in tables.items():
+            encoded_arrays = (arrays[split][name] if name == "instance_table"
+                              else arrays[split]["related_tables"][name])
+            assert encoded_arrays["format"] == "arrays"
+            assert encoded_arrays["columns"] == table.column_names
+            assert encoded_arrays["rows"] == json.loads(reference(table))
+            encoded_ipc = (ipc[split][name] if name == "instance_table"
+                           else ipc[split]["related_tables"][name])
+            assert encoded_ipc["format"] == "arrow_ipc"
+            assert encoded_ipc["transport"] == "base64"
+            decoded = pa.ipc.open_stream(base64.b64decode(encoded_ipc["payload_base64"])).read_all()
+            assert decoded.equals(table)
+    return arrays_body, ipc_body
 
 
 def test_scalar_bytes_chunks_slices_and_budget():

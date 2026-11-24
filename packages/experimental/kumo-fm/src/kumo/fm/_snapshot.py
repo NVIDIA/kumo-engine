@@ -260,6 +260,34 @@ def _class_labels(values, classes):
     return pc.take(pa.array(names, type=pa.string()), indices)
 
 
+def _align_context_labels(parts, expected, *, target, classes):
+    """Validate Arrow label batches and return values in caller occurrence order."""
+    if not parts:
+        raise ValueError(f"Missing FM context labels for occurrence IDs {expected.to_pylist()}")
+    labels = pa.concat_tables(parts)
+    identifiers = labels["id"]
+    unexpected = pc.is_null(pc.index_in(identifiers, value_set=expected))
+    if pc.any(unexpected).as_py():
+        raise ValueError(f"Unexpected FM context label for occurrence IDs {identifiers.filter(unexpected).to_pylist()}")
+    counts = pc.value_counts(identifiers)
+    duplicated = pc.greater(counts.field("counts"), 1)
+    if pc.any(duplicated).as_py():
+        repeated = counts.field("values").filter(duplicated).to_pylist()
+        raise ValueError(f"FM context label duplicated for occurrence IDs {repeated}")
+    positions = pc.index_in(expected, value_set=identifiers)
+    if positions.null_count:
+        missing = expected.filter(pc.is_null(positions)).to_pylist()
+        raise ValueError(f"Missing FM context labels for occurrence IDs {missing}")
+    valid = pc.take(labels["valid"], positions)
+    nulls = pc.invert(pc.fill_null(valid, False))
+    if pc.any(nulls).as_py():
+        missing = expected.filter(nulls).to_pylist()
+        raise ValueError(f"FM context target {target!r} is null for occurrence IDs {missing}; "
+                         "context targets must be non-null for every occurrence")
+    values = pc.take(labels["value"], positions)
+    return pc.cast(values, pa.float64()) if classes is None else _class_labels(values, classes)
+
+
 class PreparedRequest:
     """Resolved anchors; every load call samples exactly once per included split."""
 
@@ -409,30 +437,7 @@ class _FMLoader:
                 if len(identifiers) != len(values) or len(values) != len(valid):
                     raise ValueError("FM label batch is misaligned")
                 parts.append(pa.table({"id": identifiers, "value": values, "valid": valid}))
-        if not parts:
-            raise ValueError(f"Missing FM context labels for occurrence IDs {expected.to_pylist()}")
-        labels = pa.concat_tables(parts)
-        identifiers = labels["id"]
-        unexpected = pc.is_null(pc.index_in(identifiers, value_set=expected))
-        if pc.any(unexpected).as_py():
-            raise ValueError(f"Unexpected FM context label for occurrence IDs {identifiers.filter(unexpected).to_pylist()}")
-        counts = pc.value_counts(identifiers)
-        duplicated = pc.greater(counts.field("counts"), 1)
-        if pc.any(duplicated).as_py():
-            repeated = counts.field("values").filter(duplicated).to_pylist()
-            raise ValueError(f"FM context label duplicated for occurrence IDs {repeated}")
-        positions = pc.index_in(expected, value_set=identifiers)
-        if positions.null_count:
-            missing = expected.filter(pc.is_null(positions)).to_pylist()
-            raise ValueError(f"Missing FM context labels for occurrence IDs {missing}")
-        valid = pc.take(labels["valid"], positions)
-        nulls = pc.invert(pc.fill_null(valid, False))
-        if pc.any(nulls).as_py():
-            missing = expected.filter(nulls).to_pylist()
-            raise ValueError(f"FM context target {self._target!r} is null for occurrence IDs {missing}; "
-                             "context targets must be non-null for every occurrence")
-        values = pc.take(labels["value"], positions)
-        return pc.cast(values, pa.float64()) if self._classes is None else _class_labels(values, self._classes)
+        return _align_context_labels(parts, expected, target=self._target, classes=self._classes)
 
     def _graphs_for(self, anchor, seeds):
         expected = {s["instance_id"]: s for s in seeds}

@@ -2,15 +2,16 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import sys
-
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_kumo_scratch(tmp_path, monkeypatch):
-    import kumo.settings
+def isolated_kumo_scratch(tmp_path):
+    from kumo import settings
 
-    monkeypatch.setitem(sys.modules, "duckdb", None)
-
-    monkeypatch.setattr(kumo.settings, "_configured", tmp_path / "scratch")
+    previous = settings.scratch_dir()
+    settings.configure(scratch_dir=tmp_path / "scratch")
+    try:
+        yield
+    finally:
+        settings.configure(scratch_dir=previous)

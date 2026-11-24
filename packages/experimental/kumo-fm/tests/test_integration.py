@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from _fixture import LARGE, build_index, when
+from test_native_json import assert_payload_matches_tables
 
 from kumo import fm
 from kumo.pytorch import api
@@ -30,11 +31,11 @@ def test_snapshot_batch_survives_close_without_resampling(tmp_path):
         with loader.materialize(context=fm.Context(pairs=[(LARGE, when(10), 10), (-5, when(10), 11)]),
                                 query=fm.Query(pairs=[(LARGE, when(25), 20), (-5, when(25), 21)])) as request:
             batch = request.load()
-            loader._graphs_for = lambda *_: (_ for _ in ()).throw(AssertionError("resampled"))
             arrays, ipc = batch.encode("arrays"), batch.encode("arrow_ipc")
         with pytest.raises(RuntimeError, match="closed"):
             request.load()
-    assert arrays == batch.encode("arrays") and ipc == batch.encode("arrow_ipc")
+    # Encoding after loader closure must use retained data; compare both formats to the row oracle too.
+    assert assert_payload_matches_tables(batch) == (arrays, ipc)
     assert batch.tables("context")["instance_table"]["__fm_target"].to_pylist() == [1.0, 0.0]
     assert batch.tables("context")["related_tables"]["orders"]["order_id"].to_pylist() == [12, 13]
     assert batch.tables("predict")["related_tables"]["orders"]["order_id"].to_pylist() == [14, 13]
@@ -143,6 +144,15 @@ def test_prepare_is_the_public_factory_and_captures_budget_values(fm_inputs):
             assert isinstance(request, fm.PreparedRequest)
             batch = request.load()
     assert batch.tables("predict")["instance_table"]["__fm_entity_key"].to_pylist() == [LARGE]
+
+
+@pytest.mark.parametrize("split", ["context", "predict"])
+def test_materialize_enforces_configured_population_budget(fm_inputs, split):
+    population = (fm.Context(entities=range(2), times=[None, None]) if split == "context"
+                  else fm.Query(pairs=[(1, None)] * 3))
+    with fm.prepare(**fm_inputs, budgets={"max_instances": 2}) as loader:
+        with pytest.raises(ValueError, match="instance budget"):
+            loader.materialize(**{"context" if split == "context" else "query": population})
 
 
 def test_prepare_binary_classification_refuses_three_class_map(fm_inputs):

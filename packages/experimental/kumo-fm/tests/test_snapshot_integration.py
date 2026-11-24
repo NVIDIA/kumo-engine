@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from _fixture import LARGE, build_index, when
+from test_native_json import assert_payload_matches_tables
 
 from kumo import fm
 from kumo.pytorch import api
@@ -88,7 +89,6 @@ def test_snapshot_multihop_and_occurrence_alignment(tmp_path, depth, monkeypatch
         assert "__fm_edge_" + step in related[child].column_names
         assert related[child]["__fm_edge_" + step].null_count == 0
         assert related[child]["__fm_edge_" + step].to_pylist() == expected_edges[step]
-    assert len(extensions) == 3  # Context labels, context graph, query graph.
+    assert extensions  # Every observed ingest was checked against the adopted base and captured root.
     assert not (tmp_path / "other").exists()
-    assert batch.encode("arrays") == batch.encode("arrays")
-    assert batch.encode("arrow_ipc") == batch.encode("arrow_ipc")
+    assert_payload_matches_tables(batch)

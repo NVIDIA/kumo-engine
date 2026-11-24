@@ -2,5 +2,5 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-recursive-include examples/local_sdm *.py *.ipynb *.md *.lock
+recursive-include examples/local_sdm *.py *.ipynb *.md
 recursive-include tests *.py

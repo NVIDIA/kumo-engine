@@ -5,7 +5,6 @@
 """Snapshot input validation before any native graph is sampled."""
 from dataclasses import replace
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import numpy as np
 import pyarrow as pa
@@ -15,8 +14,8 @@ from kumo.fm import Context, Query
 from kumo.fm._assembly import assemble_graph
 from kumo.fm._contract import _Budgets, _PayloadSpec, _TargetSpec
 from kumo.fm._snapshot import (
+    _align_context_labels,
     _class_labels,
-    _FMLoader,
     _rows,
     _schema_view,
     _selected_graph,
@@ -81,41 +80,32 @@ def test_schema_alias_projection_and_target_window():
 
 
 def test_context_labels_join_by_occurrence_id_across_batches():
-    class Task:
-        def __init__(self, values):
-            self.values = values
+    ids = pa.array([9007199254740993, -9007199254740993], pa.int64())
+    parts = [pa.table({"id": [identifier], "value": [value], "valid": [True]})
+             for identifier, value in [(-9007199254740993, 3.0), (9007199254740993, 9.0)]]
+    aligned = _align_context_labels(parts, ids, target="future", classes=None)
+    assert aligned.to_pylist() == [9.0, 3.0]
 
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *_):
-            pass
+@pytest.mark.parametrize("parts,message", [
+    ([], "Missing FM context labels"),
+    ([pa.table({"id": [22], "value": [3.0], "valid": [True]})], "Missing FM context labels.*11"),
+    ([pa.table({"id": [22, 22], "value": [3.0, 9.0], "valid": [True, True]})], "duplicated.*22"),
+    ([pa.table({"id": [22], "value": [3.0], "valid": [True]}),
+      pa.table({"id": [22], "value": [9.0], "valid": [True]})], "duplicated.*22"),
+    ([pa.table({"id": [99], "value": [3.0], "valid": [True]})], "Unexpected FM context label.*99"),
+    ([pa.table({"id": pa.array([None], pa.int64()), "value": [3.0], "valid": [True]})],
+     "Unexpected FM context label.*None"),
+])
+def test_arrow_label_alignment_refuses_missing_duplicated_or_unexpected_ids(parts, message):
+    with pytest.raises(ValueError, match=message):
+        _align_context_labels(parts, pa.array([11, 22], pa.int64()), target="future", classes=None)
 
-        def batches(self, **_):
-            for identifier, value, present in self.values:
-                yield SimpleNamespace(metadata={"sample_ids": [identifier]},
-                                      targets={"label": {"values": pa.array([value]),
-                                                         "valid": pa.array([present])}})
 
-    loader = object.__new__(_FMLoader)
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True), (11, 9, True)]))
-    loader._batch_size = 1
-    loader._classes = None
-    loader._target = "future"
-    assert loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}]).to_pylist() == [9.0, 3.0]
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True)]))
-    with pytest.raises(ValueError, match="Missing FM context labels"):
-        loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3, True), (22, 9, True)]))
-    with pytest.raises(ValueError, match="duplicated"):
-        loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
-
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(99, 3, True)]))
-    with pytest.raises(ValueError, match="Unexpected FM context label.*99"):
-        loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
-    loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 0, False), (11, 0, False)]))
+def test_null_context_label_ids_are_reported_in_request_order():
+    parts = [pa.table({"id": [22, 11], "value": [0.0, 0.0], "valid": [False, False]})]
     with pytest.raises(ValueError) as error:
-        loader._labels_for(None, [{"instance_id": 11}, {"instance_id": 22}])
+        _align_context_labels(parts, pa.array([11, 22], pa.int64()), target="future", classes=None)
     assert str(error.value) == (
         "FM context target 'future' is null for occurrence IDs [11, 22]; "
         "context targets must be non-null for every occurrence")
@@ -147,18 +137,6 @@ def test_population_budget_bounds_iterable_consumption():
     assert len(_rows(Query(pairs=[(7, "2025-01-01T00:00:00Z", i)
                                   for i in range(10)]),
                      "predict", "int64", max_instances=10)) == 10
-
-
-@pytest.mark.parametrize("split", ["context", "predict"])
-def test_materialize_passes_configured_population_budget(split):
-    loader = object.__new__(_FMLoader)
-    loader._closed = False
-    loader._key_type = "int64"
-    loader._payload = SimpleNamespace(budgets=_Budgets(max_instances=2))
-    population = (Context(entities=range(2), times=[None, None]) if split == "context"
-                  else Query(pairs=[(1, None)] * 3))
-    with pytest.raises(ValueError, match="instance budget"):
-        loader.materialize(**{"context" if split == "context" else "query": population})
 
 
 @pytest.mark.parametrize("key_type", ["int64", "string"])

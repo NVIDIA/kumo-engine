@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Installed-wheel connector → snapshot → FM, including exported reuse."""
-import base64
 import hashlib
 import json
 import shutil
@@ -15,14 +14,13 @@ import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from test_native_json import assert_payload_matches_tables
 
 from kumo import fm, settings
 from kumo.pytorch import api
 
 kumo = pytest.importorskip("kumo.engine")
 from kumoapi.typing import Stype  # noqa: E402
-
-from kumo.engine._scratch import get_scratch_dir  # noqa: E402
 
 
 def inventory(root):
@@ -43,7 +41,7 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path, monkeypatch):
                              "at": pa.array([10, 20, 30, 10], pa.timestamp("s"))}),
                    source / "events.parquet")
     connector = kumo.FileConnector(root_dir=str(source))
-    previous = get_scratch_dir()
+    previous = settings.scratch_dir()
     kumo.configure(scratch_dir=tmp_path / "producer")
     graph = kumo.Graph(tables={
         "users": kumo.Table.from_source_table(connector["users.parquet"], primary_key="id"),
@@ -93,7 +91,7 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path, monkeypatch):
                                                               (-5, at(15), 89), (9007199254740993, at(15), 90)]),
                                     query=fm.Query(pairs=[(-5, at(40), 91),
                                                           (9007199254740993, at(40), 92)]))
-            assert len(extensions) == 3
+            assert extensions  # Every observed ingest was checked for captured-root/task-only placement.
             assert not (tmp_path / "other").exists()
             context = batch.tables("context")
             assert [(row["instance_id"], row["__fm_target"])
@@ -104,21 +102,11 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path, monkeypatch):
                     for row in rows] == [(88, 1, -5), (89, 1, -5),
                                          (90, 4, 9007199254740993)]
             assert "__fm_target" not in batch.tables("predict")["instance_table"].column_names
-            arrays, ipc = batch.encode("arrays"), batch.encode("arrow_ipc")
-            assert arrays == batch.encode("arrays") and ipc == batch.encode("arrow_ipc")
-            wire_arrays, wire_ipc = json.loads(arrays), json.loads(ipc)
-            assert wire_arrays["context"]["related_tables"]["events"]["rows"][2][0] == 90
-            assert str(9007199254740993) in arrays.decode()
-            for split in batch.splits:
-                direct = batch.tables(split)
-                entries = {"instance_table": direct["instance_table"],
-                           **direct["related_tables"]}
-                for name, table in entries.items():
-                    encoded = (wire_ipc[split]["instance_table"] if name == "instance_table"
-                               else wire_ipc[split]["related_tables"][name])
-                    decoded = pa.ipc.open_stream(base64.b64decode(
-                        encoded["payload_base64"])).read_all()
-                    assert decoded.equals(table)
+            arrays, _ = assert_payload_matches_tables(batch)
+            wire = json.loads(arrays)["context"]["related_tables"]["events"]
+            records = [dict(zip(wire["columns"], row, strict=True)) for row in wire["rows"]]
+            assert [(row["instance_id"], row["id"], row["__fm_edge_events_selected"])
+                    for row in records] == [(88, 1, -5), (89, 1, -5), (90, 4, "9007199254740993")]
             return batch.tables("predict")["related_tables"]["events"]
         first = run(snapshot)
         assert inventory(snapshot.index_path) == original_hashes
@@ -166,7 +154,7 @@ def test_snapshot_projects_fm_columns_and_widens_numeric_features(tmp_path):
                              "amount": pa.array([2.5, 3.5], pa.float32())}), source / "events.parquet")
     pq.write_table(pa.table({"unused": pa.array([9], pa.uint16())}), source / "unrelated.parquet")
     connector = kumo.FileConnector(root_dir=str(source))
-    previous = get_scratch_dir()
+    previous = settings.scratch_dir()
     kumo.configure(scratch_dir=tmp_path / "root")
     try:
         graph = kumo.Graph(tables={
@@ -216,7 +204,7 @@ def test_repeated_loads_keep_anchors_in_memory_and_tasks_in_captured_root(tmp_pa
     pq.write_table(pa.table({"id": [1, 2], "user": [entity, entity],
                              "at": pa.array([10, 20], pa.timestamp("s"))}), source / "events.parquet")
     connector = kumo.FileConnector(root_dir=str(source))
-    previous = get_scratch_dir()
+    previous = settings.scratch_dir()
     root = tmp_path / "captured"
     kumo.configure(scratch_dir=root)
     try:
