@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import pyarrow as pa
@@ -77,18 +78,18 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
             for _ in sampling_plan.layers
         ]
     )
-    options = {
-        "stage": "train",
-        "sampling_plan": sampling_plan,
-        "entity_node_type": "users",
-        "num_workers": 1,
-        "worker_id": 0,
-        "shuffle": False,
-        "epoch": 0,
-        "batch_size": 2,
-    }
-    iterator, _ = index.iter(SamplingOptions(**options))
-    reference, _ = index.iter(SamplingOptions(**options))
+    options = SamplingOptions(
+        stage="train",
+        sampling_plan=sampling_plan,
+        entity_node_type="users",
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        epoch=0,
+        batch_size=2,
+    )
+    iterator, _ = index.iter(options)
+    reference, _ = index.iter(options)
     for current in (iterator, reference):
         if extras == "neighborhood":
             current.with_neighborhoods(
@@ -145,9 +146,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
             }
             current.with_history(sampler, "users", json.dumps(plan), "[]")
     first = next(iterator)
-    full_iterator, _ = index.iter(
-        SamplingOptions(**{**options, "sampling_plan": _sampling_plan()})
-    )
+    full_iterator, _ = index.iter(replace(options, sampling_plan=_sampling_plan()))
     full = next(full_iterator)
     assert len(first["graphs"]["main"]["node_ids"]["orders"]) < len(
         full["graphs"]["main"]["node_ids"]["orders"]
@@ -375,18 +374,18 @@ def test_named_neighborhoods_accept_native_plans_without_json(
     index = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
-    options = {
-        "stage": "train",
-        "sampling_plan": SamplingPlan(),
-        "entity_node_type": "users",
-        "num_workers": 1,
-        "worker_id": 0,
-        "shuffle": False,
-        "epoch": 0,
-        "batch_size": 2,
-    }
-    native, _ = index.iter(SamplingOptions(**options))
-    legacy, _ = index.iter(SamplingOptions(**options))
+    options = SamplingOptions(
+        stage="train",
+        sampling_plan=SamplingPlan(),
+        entity_node_type="users",
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        epoch=0,
+        batch_size=2,
+    )
+    native, _ = index.iter(options)
+    legacy, _ = index.iter(options)
     native.with_neighborhoods(
         {"context": {"plan": _sampling_plan(), "projections": {}}}
     )
