@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from ._exceptions import DiskgraphConfigError
-
+from .sampling_plan import SamplingPlan
 
 TaskDatasetRef = str
 
@@ -113,32 +114,30 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     """Recover the seed-table extension reference from a stage ``index_path``.
 
     The stage path itself is the source of truth: return a relative
-    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent.
+    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent,
+    or an absolute external path. Kumo chooses external locations; the native
+    reader validates finalized extension metadata and parent build identity.
+    The catalog namespace is the index-local ID for a relative ref, including
+    a symlink, and the supplied directory basename for an absolute external ref.
     """
-    abs_parent = os.path.abspath(parent_root.rstrip("/"))
-    abs_stage = os.path.abspath(stage_index_path.rstrip("/"))
-    for extension_dir in ("train_tables", "pred_tables"):
-        expected_prefix = os.path.join(abs_parent, extension_dir) + os.sep
-        if not abs_stage.startswith(expected_prefix):
-            continue
-        extension_id = abs_stage[len(expected_prefix):].split(os.sep, 1)[0]
-        if not extension_id:
-            raise DiskgraphConfigError(
-                "could not extract extension id from stage index_path "
-                f"{stage_index_path}"
-            )
-        return f"{extension_dir}/{extension_id}"
-    raise DiskgraphConfigError(
-        "stage index_path must live under <graph_index_path>/train_tables/ "
-        "or <graph_index_path>/pred_tables/: "
-        f"parent={abs_parent}, stage={abs_stage}"
-    )
-
-
-def _sampling_plan_json(sampling_plan: Any) -> str:
-    if isinstance(sampling_plan, str):
-        return sampling_plan
-    return json.dumps(sampling_plan or {"layers": []}, sort_keys=True)
+    # Keep the catalog ID for an index-local symlink even if its target is
+    # elsewhere. Let the native reader resolve and validate the target.
+    if ".." not in Path(parent_root).parts and ".." not in Path(stage_index_path).parts:
+        lexical_parent = Path(os.path.abspath(parent_root))
+        lexical_stage = Path(os.path.abspath(stage_index_path))
+        if lexical_stage.is_relative_to(lexical_parent):
+            parts = lexical_stage.relative_to(lexical_parent).parts
+            if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+                return "/".join(parts)
+        return str(lexical_stage)
+    # Resolve other paths before testing placement: a symlink before '..'
+    # changes which directory that segment names.
+    parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
+    if stage.is_relative_to(parent):
+        parts = stage.relative_to(parent).parts
+        if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+            return "/".join(parts)
+    return str(stage)
 
 
 def _weighted_seed_sampling_json(
@@ -330,12 +329,14 @@ class RuntimeIndex:
         idx = self._indexes.get(extension_ref)
         if idx is None:
             from ._c import RuntimeIndex as _RuntimeIndex
-            idx = _RuntimeIndex(
-                self._parent_root,
-                extension_ref,
-                self._rnd_seed,
-                self._num_threads,
-            )
+            if Path(extension_ref).is_absolute():
+                idx = _RuntimeIndex._from_extension_path(
+                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                )
+            else:
+                idx = _RuntimeIndex(
+                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                )
             self._indexes[extension_ref] = idx
         return idx
 
@@ -353,7 +354,7 @@ class RuntimeIndex:
     def iter(
         self,
         stage: str,
-        sampling_plan: Any,
+        sampling_plan: SamplingPlan,
         num_workers: int,
         worker_id: int,
         shuffle: bool,
@@ -382,12 +383,13 @@ class RuntimeIndex:
     ) -> tuple[Any, int]:
         """Iterate one (stage, epoch, shard) of this index.
 
-        Arguments match :func:`make_runtime_batch_iterator` except that
         ``dataset_ref`` and ``num_threads`` are fixed by the index. ``rnd_seed``
         defaults to the one the index was opened with, which is what callers
         almost always want; pass it explicitly only to vary the shuffle
-        independently of the engine seed. Static LP cutoffs default to the
-        manifest stage. Prediction can set ``disable_pseudo_time=True``.
+        independently of the engine seed. ``sampling_plan`` accepts a
+        :class:`diskgraph.SamplingPlan`; other types raise ``TypeError``.
+        Static LP cutoffs default to the manifest stage.
+        Prediction can set ``disable_pseudo_time=True``.
 
         ``projections`` maps a node type to the columns the caller will
         actually consume, and is resolved once when the iterator is built:
@@ -410,26 +412,36 @@ class RuntimeIndex:
         identical, so the parameter NAME is the only thing that makes a new
         caller against an old wheel fail loudly instead of silently reverting
         to select-all.
+
+        Raises:
+            TypeError: If ``sampling_plan`` is not a ``SamplingPlan``.
         """
+        if not isinstance(sampling_plan, SamplingPlan):
+            raise TypeError("sampling_plan must be a diskgraph.SamplingPlan")
         seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
         _validate_worker_iterator_inputs(
-            batch_size=batch_size, num_workers=num_workers, worker_id=worker_id,
-            shuffle=shuffle, rnd_seed=seed, epoch=epoch,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            worker_id=worker_id,
+            shuffle=shuffle,
+            rnd_seed=seed,
+            epoch=epoch,
         )
         self._resolve()
         ref = self._tables.get(stage)
         if ref is None:
             raise DiskgraphConfigError(
-                f"stage {stage!r} not present in manifest.stages")
+                f"stage {stage!r} not present in manifest.stages"
+            )
         if self.stage_size(stage) == 0:
-            raise DiskgraphConfigError(
-                f"stage {stage!r} not available on this dataset")
+            raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
 
         extension_ref = _extension_ref_from_stage_path(
-            self._parent_root, ref["index_path"])
+            self._parent_root, ref["index_path"]
+        )
         iterator = self._index_for(extension_ref).iter(
             ref["table_name"],
-            _sampling_plan_json(sampling_plan),
+            sampling_plan,
             int(num_workers),
             int(worker_id),
             bool(shuffle),
@@ -458,5 +470,3 @@ class RuntimeIndex:
             projections,
         )
         return iterator, iterator.num_samples()
-
-

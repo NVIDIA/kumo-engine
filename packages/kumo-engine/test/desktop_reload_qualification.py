@@ -14,7 +14,6 @@ import os
 import platform
 import random
 import re
-import resource
 import shutil
 import signal
 import subprocess
@@ -28,6 +27,9 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
+
+if sys.platform != 'win32':
+    import resource
 
 GPU_SMOKE = Path(__file__).with_name('wheel_gpu_smoke.py')
 SPEC = util.spec_from_file_location(GPU_SMOKE.stem, GPU_SMOKE)
@@ -53,6 +55,8 @@ def label(device):
     """Name the OS or macOS version, CPU, device and Python of this run."""
     if sys.platform == 'darwin':
         host = 'macos-' + platform.mac_ver()[0].split('.')[0]
+    elif sys.platform == 'win32':
+        host = 'windows-native'
     elif 'microsoft' in platform.release().lower():
         host = 'windows-wsl'
     else:
@@ -128,6 +132,11 @@ def observe(work):
                 yield
 
 
+def worker_accelerator(device: str) -> str:
+    """Exercise native Windows' default CPU choice and explicit devices elsewhere."""
+    return 'auto' if sys.platform == 'win32' and device == 'cpu' else device
+
+
 def worker(phase, task, device, durable, out, base, data):
     """Produce or consume one task here. Save the prediction and the work."""
     if os.environ.get('DRQ_HIDE_FAISS'):
@@ -142,6 +151,7 @@ def worker(phase, task, device, durable, out, base, data):
     files = kumo.FileConnector(root_dir=str(durable))
     seed = lambda: (random.seed(0), np.random.seed(0), torch.manual_seed(0))
     kumo.configure(scratch_dir=base / 'scratch')
+    accelerator = worker_accelerator(device)
     work = dict(train=set(), predict=set(), search=set(), steps=set())
     if phase == 'produce':  # Only deleted producer storage holds the tables.
         graph = tasks.TASKS[task]['graph']
@@ -158,7 +168,7 @@ def worker(phase, task, device, durable, out, base, data):
     with observe(work):
         if phase == 'produce':
             seed()
-            trainer = kumo.Trainer(tasks.make_plan(task), accelerator=device)
+            trainer = kumo.Trainer(tasks.make_plan(task), accelerator=accelerator)
             trainer.fit(prepared['training_table'], snapshot=snapshot).export(
                 kumo.ModelOutputConfig(files, path='model'))
             meta['model'] = trainer.result.id
@@ -166,7 +176,7 @@ def worker(phase, task, device, durable, out, base, data):
                 kumo.SnapshotOutputConfig(files, path='snapshot'))
         else:
             trainer = kumo.Trainer.load_from_connector(files, path='model',
-                                                       accelerator=device)
+                                                       accelerator=accelerator)
             snapshot = kumo.GraphSnapshot.load_from_connector(
                 files, path=meta['snapshot'])
         options = dict(entities=files['inputs.parquet'])  # As the GPU smoke.
@@ -183,35 +193,63 @@ def worker(phase, task, device, durable, out, base, data):
         work['predict'].clear()  # Only this prediction's batches count.
         frame = trainer.predict(snapshot, **options).frame
     frame.to_parquet(out.with_suffix('.parquet'))
-    meta.update(work)
+    meta.update(work, accelerator_argument=accelerator)
     out.with_suffix('.json').write_text(json.dumps(meta, default=sorted))
 
 
+def worker_environment(base, device, extra):
+    """Give each process fresh storage and caches."""
+    drop = ('KUMO_', 'DISKGRAPH_')
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(drop)}
+    env.update(extra, HOME=str(base / 'home'), USERPROFILE=str(base / 'home'),
+               TMPDIR=str(base / 'tmp'), TEMP=str(base / 'tmp'),
+               TMP=str(base / 'tmp'), XDG_CACHE_HOME=str(base / 'cache'),
+               PYTORCH_ENABLE_MPS_FALLBACK='0')
+    if device == 'cpu':
+        env['CUDA_VISIBLE_DEVICES'] = ''
+    return env
+
+
+def finish_process(process):
+    """Terminate timed-out workers and wait before deleting their storage."""
+    if sys.platform == 'win32':
+        if process.poll() is None:
+            try:
+                subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                               check=True, capture_output=True, timeout=30)
+            except subprocess.CalledProcessError:
+                if process.poll() is None:
+                    raise
+    else:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+    process.wait(timeout=30)
+
+
 def spawn(phase, task, device, durable, out, data=None, **extra):
-    """Run one worker in a new process. Then kill its process group and
-    delete its scratch, HOME, TMPDIR, XDG cache, cwd and fixture copy."""
-    base = Path(tempfile.mkdtemp(prefix='drq-', dir='/tmp'))
+    """Run and reap a worker, terminating its process tree on timeout.
+
+    Delete its scratch, HOME, TMPDIR, XDG cache, cwd and fixture copy.
+    """
+    base = Path(tempfile.mkdtemp(prefix='drq-'))
     for name in ('home', 'cache', 'cwd', 'tmp', 'scratch'):
         (base / name).mkdir()
-    drop = ('KUMO_', 'DISKGRAPH_')  # Could point at other binaries or data.
-    env = {k: v for k, v in os.environ.items() if not k.startswith(drop)}
-    env.update(extra, HOME=str(base / 'home'), TMPDIR=str(base / 'tmp'),
-               XDG_CACHE_HOME=str(base / 'cache'),
-               PYTORCH_ENABLE_MPS_FALLBACK='0')  # No silent CPU fallback.
-    if device == 'cpu':  # A CPU row must not reach a GPU.
-        env['CUDA_VISIBLE_DEVICES'] = ''
+    env = worker_environment(base, device, extra)
     command = [sys.executable, '-Iu', __file__, 'worker', phase, task, device]
     command += map(str, (durable, out, base, data))
     with open(out.with_suffix('.log'), 'wb') as log:
         process = subprocess.Popen(command, cwd=base / 'cwd', env=env,
                                    stdout=log, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
+                                   start_new_session=sys.platform != 'win32')
         try:
             return process.wait(timeout=3600)
         finally:
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            shutil.rmtree(base)
+            try:
+                finish_process(process)
+            finally:
+                if process.poll() is not None:
+                    shutil.rmtree(base)
 
 
 def qualify(task, device, data, out, work, result):
@@ -233,7 +271,9 @@ def qualify(task, device, data, out, work, result):
             cpu = 'torch' if sys.platform == 'darwin' else 'faiss-cpu'
             want['search'] = [dict(gpu='cuda', mps='metal').get(device, cpu)]
         record = json.loads((out / f'{phase}.json').read_text())
-        done = result[phase] = {key: record[key] for key in want}
+        done = {key: record[key] for key in want}
+        result[phase] = dict(
+            done, accelerator_argument=record['accelerator_argument'])
         if done != want:
             raise RuntimeError(f'The {phase} work is {done}, not {want}')
     meta = json.loads((out / 'produce.json').read_text())
@@ -296,7 +336,7 @@ def main():
     summary = dict(label=label(args.device), commit=args.commit, started=now,
                    wheel=args.wheel.name, wheel_sha256=None,
                    cpus=os.cpu_count(), tasks={})
-    work = Path(tempfile.mkdtemp(prefix='drq-work-', dir='/tmp'))
+    work = Path(tempfile.mkdtemp(prefix='drq-work-'))
     try:
         for task in TASKS:
             started = time.monotonic()
@@ -313,9 +353,10 @@ def main():
                               error=f'{type(error).__name__}: {error}')
             result['seconds'] = round(time.monotonic() - started, 1)
             # The largest worker's ru_maxrss: KiB on Linux, bytes on macOS.
-            rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-            summary['peak_rss_mib'] = round(
-                rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10))
+            if sys.platform != 'win32':
+                rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+                summary['peak_rss_mib'] = round(
+                    rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10))
             print(task, json.dumps(result), flush=True)
             (output / 'summary.json').write_text(json.dumps(summary, indent=1))
     finally:

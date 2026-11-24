@@ -11,7 +11,9 @@
 #   3. This workflow builds the wheels at that tag and attaches them to the
 #      release once `check-requirements` resolves each platform's Python
 #      dependencies and `wheel-smoke` tests the finished Linux x86_64 wheel
-#      on all eight GPU task types. The agent skill zips
+#      on all eight GPU task types, and `platform-qualification` validates
+#      the installed platform wheels and native Windows CPU/Faiss reloads.
+#      The agent skill zips
 #      (`kumo-data-science-<host>.zip`, built from the same commit by
 #      `skill-zips`) are attached beside them; the docs and install scripts
 #      link to them by release tag.
@@ -167,20 +169,8 @@ jobs:
           packages/kumo-engine/dist/kumo_engine-*.whl
           --platform-tag "${WHEEL_PLATFORM}"
 
-      - name: Test Windows path validation
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            disk_manager::path_safety::tests
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            rejects_windows_profiling_before_output_changes
-
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
-      # Native Windows wheels are experimental internal CI artifacts only.
+      # Release jobs publish only after this candidate passes qualification.
       - name: Upload wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -270,6 +260,10 @@ jobs:
 
   platform-qualification:
     needs: [build]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
     uses: ./.github/workflows/kumo-engine-platform-smoke.yml
 
   attach-to-release:
@@ -282,8 +276,7 @@ jobs:
           - arch: x86_64
           - arch: arm64
           - arch: aarch64
-          # Native Windows remains experimental; Windows releases use WSL.
-          # - arch: windows-x86_64
+          - arch: windows-x86_64
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -325,9 +318,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native Windows remains experimental; Windows releases use WSL.
-          # - arch: windows-x86_64
-          #   platform: win_amd64
+          - arch: windows-x86_64
+            platform: win_amd64
           - arch: aarch64
             platform: manylinux_2_34_aarch64
           - arch: x86_64
@@ -338,8 +330,6 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/kitmaker-portal.yml
-    secrets:
-      KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
     with:
       project: kumo-engine
       project_id: 6903

@@ -1148,6 +1148,8 @@ fn load_finds_lowercase_node_dir() {
     let metadata = DatasetMetadata {
         timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
         dataset_name: "test".to_string(),
+        index_build_id: None,
+        parent_index_build_id: None,
         node_types: vec![NodeTypeMetadata {
             name: "Users".to_string(), // Mixed case
             max_id: 1,

@@ -672,10 +672,8 @@ def test_native_graph_projection_allows_keyless_nonentity_tables(
                     assert torch.isfinite(nodes["features"]["amount"]["values"]).all()
 
 
-def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
-    native_task, tmp_path, monkeypatch
-):
-    plan, _, table = native_task
+def _scored_graph_plan(native_task, tmp_path):
+    plan, _, _ = native_task
     tables = {table.name: table for table in plan.contract.schema.tables}
     tables["users"] = replace(
         tables["users"], columns={"id": api.DType("string"), "score": api.DType("float64")}
@@ -693,7 +691,14 @@ def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
     )
     dataset = api.Dataset(tables={**plan.dataset.tables, "users": api.Parquet(str(path))})
     engine = api.DiskGraphEngine(index=tmp_path / "scored-index", num_threads=1)
-    with api.prepare(contract, dataset, engine) as prepared:
+    return api.prepare(contract, dataset, engine)
+
+
+def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
+    native_task, tmp_path, monkeypatch
+):
+    _, _, table = native_task
+    with _scored_graph_plan(native_task, tmp_path) as prepared:
         with prepared.materialize(table, fit_split="train") as task:
             native = task._anchors
             projections = []
@@ -717,3 +722,79 @@ def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
             batches = list(task.batches(split=frozenset({"train", "valid"}), shuffle=True, epoch=1))
             assert sum(batch.batch_size for batch in batches) == 6
             assert projections and all("score" not in p["users"] for p in projections)
+
+
+def test_native_scalar_anchor_cursor_survives_fitted_reload(native_task, tmp_path, monkeypatch):
+    _, _, table = native_task
+
+    def fallback(*args, **kwargs):
+        pytest.fail("expected native DiskGraph delivery from Parquet anchors")
+
+    def batches(task):
+        assert isinstance(task._anchors, NativeAnchors)
+        monkeypatch.setattr(task._anchors, "_requests", fallback)
+        monkeypatch.setattr(task._assembler, "batches", fallback)
+        return task.batches(split="train", shuffle=False, output_format="model")
+
+    with _scored_graph_plan(native_task, tmp_path) as prepared:
+        with prepared.materialize(table, fit_split="train") as task:
+            stream = batches(task)
+            assert next(stream).metadata["sample_ids"] == ("a", "b")
+            cursor = stream.state_dict()
+            (last,) = stream
+            assert last.metadata["sample_ids"] == ("d", "f")
+            assert last.targets["label"]["values"].tolist() == [4.0, 6.0]
+            path = tmp_path / "artifact"
+            task.to_artifact().save(path)
+        fitted = api.Artifact.load(path).fitted_state
+        with prepared.materialize(table, fitted=fitted) as reloaded:
+            resumed = batches(reloaded)
+            resumed.load_state_dict(cursor)
+            (restored,) = resumed
+            assert restored.metadata["sample_ids"] == last.metadata["sample_ids"]
+            torch.testing.assert_close(
+                restored.targets["label"]["values"], last.targets["label"]["values"]
+            )
+
+        # The same path and binding now give train order d, b, a, f.
+        rows = pq.read_table(table.source.path)
+        pq.write_table(rows.take([3, 1, 2, 0, 4, 5, 6]), table.source.path)
+        with prepared.materialize(table, fitted=fitted) as changed:
+            resumed = batches(changed)
+            with pytest.raises(ValueError, match="this state was saved for a different task"):
+                resumed.load_state_dict(cursor)
+
+
+def test_native_cursor_rejects_replaced_sample_id_dictionary(native_task):
+    plan, original, table = native_task
+    rows = pq.read_table(table.source.path)
+    ids = rows["sid"].combine_chunks().dictionary_encode()
+
+    def write_ids(dictionary):
+        column = pa.DictionaryArray.from_arrays(ids.indices, dictionary)
+        pq.write_table(
+            rows.set_column(rows.schema.get_field_index("sid"), "sid", column), table.source.path
+        )
+
+    def stream(task):
+        assert isinstance(task._anchors, NativeAnchors)
+        return task.batches(split="train", shuffle=False, output_format="model")
+
+    write_ids(ids.dictionary)
+    with plan.materialize(table, fitted=original.fitted_state) as task:
+        batches = stream(task)
+        assert next(batches).metadata["sample_ids"] == ("a", "b")
+        cursor = batches.state_dict()
+
+    with plan.materialize(table, fitted=original.fitted_state) as task:
+        batches = stream(task)
+        batches.load_state_dict(cursor)
+        (restored,) = batches
+        assert restored.metadata["sample_ids"] == ("d", "f")
+        assert restored.targets["label"]["values"].tolist() == [4.0, 6.0]
+
+    # Keep the index buffers and every other column; swap only the meanings of a and d.
+    write_ids(ids.dictionary.take([3, 1, 2, 0, 4, 5, 6]))
+    with plan.materialize(table, fitted=original.fitted_state) as task:
+        with pytest.raises(ValueError, match="this state was saved for a different task"):
+            stream(task).load_state_dict(cursor)

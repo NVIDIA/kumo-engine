@@ -25,6 +25,7 @@ import pyarrow as pa
 import pytest
 import pytorch_lightning as pl
 import torch
+from diskgraph.sampling_plan import LayerSpec, SamplingPlan
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     DiskgraphTaskBatchIterable,
@@ -130,7 +131,7 @@ def test_stage_batch_target_limits_runtime_worker_shards(
     iterable = DiskgraphTaskBatchIterable(
         manifest_path="/tmp/runtime_manifest.json",
         stage=("train", "val"),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         batch_size=4,
         shuffle=True,
         drop_last=False,
@@ -168,7 +169,7 @@ def test_stage_batch_target_limits_workers_to_full_drop_last_shards(
     iterable = DiskgraphTaskBatchIterable(
         manifest_path="/tmp/runtime_manifest.json",
         stage=("train", ),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         batch_size=8,
         shuffle=True,
         drop_last=True,
@@ -189,7 +190,7 @@ def test_runtime_sharding_rejects_capped_iteration() -> None:
         DiskgraphTaskBatchIterable(
             manifest_path="/tmp/runtime_manifest.json",
             stage=("train", "val"),
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             batch_size=4,
             shuffle=True,
             drop_last=False,
@@ -445,7 +446,7 @@ def _run_shutdown_probe_consumer(ready_fd: int, release_fd: int) -> None:
         dm = DiskgraphLightningDataModule(
             _manifest(),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             train_batch_size=1,
             eval_batch_size=1,
             num_workers=2,
@@ -649,7 +650,7 @@ def test_constructor_reads_train_table_name_and_schema() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(train_table_name="my_train"),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -673,7 +674,7 @@ def test_split_info_bounds_drive_native_stage_times(tmp_path) -> None:
             stage_seed_times=bounds,
         ),
         _mapper_bank(),
-        sampling_plan={'layers': []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -699,7 +700,7 @@ def test_to_hetero_threads_target_encoder(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         target_encoder=target_encoder,
@@ -715,7 +716,7 @@ def test_constructor_rejects_missing_train_table_name() -> None:
         DiskgraphLightningDataModule(
             _manifest(train_table_name=""),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             train_batch_size=2,
             eval_batch_size=1,
         )
@@ -731,7 +732,7 @@ def test_set_shuffle_stream_id_propagates_to_task_iterator(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         base_seed=10,
@@ -754,7 +755,7 @@ def test_runtime_worker_shard_composes_with_torch_worker(
     iterable = DiskgraphTaskBatchIterable(
         manifest_path="/tmp/runtime_manifest.json",
         stage="predict",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         batch_size=4,
         shuffle=False,
         drop_last=False,
@@ -777,7 +778,7 @@ def test_train_dataloader_len_honors_max_steps_per_epoch(tmp_path, ) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -793,7 +794,7 @@ def test_train_dataloader_iteration_stops_at_max_steps_per_epoch(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -816,7 +817,7 @@ def test_lightning_fit_reopens_train_iterator_with_new_shuffle_stream(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 2}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         max_steps_per_epoch=1,
@@ -836,7 +837,7 @@ def test_lightning_epoch_ends_after_configured_train_batches(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -857,7 +858,7 @@ def test_epoch_cap_does_not_change_wheel_training_population(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         max_steps_per_epoch=3,
@@ -877,7 +878,7 @@ def test_train_dataloader_len_honors_min_steps_per_epoch(tmp_path, ) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 2}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         min_steps_per_epoch=3,
@@ -913,7 +914,7 @@ def test_train_iter_replays_wheel_when_natural_lt_max_batches(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         min_steps_per_epoch=5,
@@ -945,7 +946,7 @@ def test_val_dataloader_does_not_replay_wheel_iterator(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -977,7 +978,7 @@ def test_eval_dataloader_honors_max_steps_without_replay(
                   runtime_manifest_path=_eval_runtime_manifest(tmp_path,
                                                                stage)),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
         **{f"max_{stage}_steps": max_steps},
@@ -1074,7 +1075,7 @@ def test_predict_dataloader_len_counts_local_worker_shards(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"predict": 199444}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=1024,
         eval_batch_size=1024,
         num_workers=16,
@@ -1100,7 +1101,7 @@ def test_train_dataloader_chains_refit_stages(
             "val": 1
         }),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=1,
         eval_batch_size=1,
         train_stages=("train", "val"),
@@ -1132,7 +1133,7 @@ def test_capped_refit_interleaves_all_training_stages(
             "val": 10,
         }),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=1,
         eval_batch_size=1,
         max_steps_per_epoch=10,
@@ -1159,7 +1160,7 @@ def test_runtime_options_are_passed_to_wheel_iterator(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         runtime_options={
@@ -1206,7 +1207,7 @@ def test_binary_weighted_seed_sampling_sets_train_epoch_length_and_runtime_optio
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100},
                   runtime_manifest_path=str(runtime_path)),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=16,
         eval_batch_size=16,
         max_steps_per_epoch=4,
@@ -1274,7 +1275,7 @@ def test_weighted_seed_sampling_allocates_across_refit_stages(
             "val": 10,
         }, runtime_manifest_path=str(runtime_path)),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=16,
         eval_batch_size=16,
         max_steps_per_epoch=4,
@@ -1320,7 +1321,7 @@ def test_weighted_seed_sampling_validates_every_refit_stage(tmp_path, ) -> None:
                 "val": 10,
             }, runtime_manifest_path=str(runtime_path)),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             train_batch_size=16,
             eval_batch_size=16,
             train_stages=("train", "val"),
@@ -1361,7 +1362,7 @@ def test_binary_weighted_seed_sampling_rejects_drop_last_train(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100},
                   runtime_manifest_path=str(runtime_path)),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=16,
         eval_batch_size=16,
         drop_last_train=True,
@@ -1453,7 +1454,7 @@ def test_weighted_seed_sampling_uses_row_weight_mass_for_epoch_length(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 3},
                   runtime_manifest_path=str(runtime_path)),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=4,
         eval_batch_size=4,
         max_steps_per_epoch=4,
@@ -1513,7 +1514,7 @@ def test_weighted_seed_sampling_combines_row_and_class_weight_mass(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 3},
                   runtime_manifest_path=str(runtime_path)),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=4,
         eval_batch_size=4,
         max_steps_per_epoch=10,
@@ -1550,7 +1551,7 @@ def test_each_stage_method_passes_correct_stage(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -1564,7 +1565,7 @@ def test_dataloader_yields_hetero_from_task_batch_iterator(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -1583,7 +1584,7 @@ def test_explain_selection_capture_returns_stage_node_ids() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
     )
@@ -1604,7 +1605,7 @@ def test_stage_inputs_requires_explain_selection_capture() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
     )
@@ -1619,7 +1620,7 @@ def test_explain_dataloader_uses_selected_stage_node_ids(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
         num_workers=3,
@@ -1644,7 +1645,7 @@ def test_explain_dataloader_maps_pred_stage_to_predict_runtime_stage(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
     )
@@ -1660,7 +1661,7 @@ def test_explain_dataloader_pred_resolves_only_entity(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
         resolve_entity_node_type="User",
@@ -1696,7 +1697,7 @@ def test_explain_selection_capture_forces_single_worker_eval_loader() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
         num_workers=4,
@@ -1716,7 +1717,7 @@ def test_pred_explain_selection_capture_forces_single_worker_predict_loader(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=2,
         num_workers=4,
@@ -1737,7 +1738,7 @@ def test_dataloader_passes_through_loader_kwargs(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         num_workers=2,
@@ -1756,7 +1757,7 @@ def test_dataloader_passes_through_prefetch_factor(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         num_workers=2,
@@ -2529,7 +2530,7 @@ def test_worker_pool_callback_closes_truncated_and_failed_phases(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2552,7 +2553,7 @@ def test_predict_callback_deferral_does_not_skip_writer_owned_barrier(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2577,7 +2578,7 @@ def test_predict_worker_shutdown_deferral_is_nested_and_base_exception_safe(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2595,7 +2596,7 @@ def test_worker_pool_callback_reaps_processes_on_exception() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2646,7 +2647,7 @@ def test_direct_lightning_fit_installs_callback_and_never_overlaps_pools(
             super().__init__(
                 _manifest(),
                 _mapper_bank(),
-                sampling_plan={"layers": []},
+                sampling_plan=SamplingPlan(),
                 train_batch_size=2,
                 eval_batch_size=1,
             )
@@ -2719,7 +2720,7 @@ def test_setup_does_not_duplicate_explicit_worker_lifecycle_callback() -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -2739,7 +2740,7 @@ def test_prefetch_factor_is_not_set_without_workers(
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
         num_workers=0,
@@ -2756,7 +2757,7 @@ def test_prefetch_factor_below_one_is_rejected_early(bad: int) -> None:
         DiskgraphLightningDataModule(
             _manifest(),
             _mapper_bank(),
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             train_batch_size=2,
             eval_batch_size=1,
             num_workers=2,
@@ -2947,7 +2948,7 @@ def _rhs_dm(
     return DiskgraphLightningDataModule(
         manifest,
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=eval_batch_size,
         task_type="temporal_link_prediction",
@@ -3177,7 +3178,7 @@ def test_rhs_loader_ordering_guard_fires_on_shuffle(tmp_path) -> None:
         DiskgraphTaskBatchIterable(
             manifest_path="/tmp/runtime_manifest.json",
             stage="test",
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             batch_size=2,
             shuffle=True,  # violates the contract
             drop_last=False,
@@ -3201,7 +3202,7 @@ def test_rhs_loader_ordering_guard_fires_on_num_workers(tmp_path) -> None:
         DiskgraphTaskBatchIterable(
             manifest_path="/tmp/runtime_manifest.json",
             stage="test",
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             batch_size=2,
             shuffle=False,
             drop_last=False,
@@ -3394,7 +3395,7 @@ def test_temporal_lp_train_loader_enables_grouping(
                 "predict": 10
             }, runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3428,7 +3429,7 @@ def test_static_lp_with_lhs_loader_and_temporal_rhs_groups(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type="static_link_prediction",
@@ -3450,7 +3451,7 @@ def test_non_lp_task_never_groups(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type="regression",
@@ -3473,7 +3474,7 @@ def test_two_tower_no_lhs_loader_does_not_group(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3543,7 +3544,7 @@ def test_atemporal_rhs_temporal_lp_train_loader_does_not_group(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3572,7 +3573,7 @@ def test_temporal_rhs_temporal_lp_train_loader_groups(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3598,7 +3599,7 @@ def test_rhs_is_temporal_end_time_only(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3616,7 +3617,7 @@ def test_rhs_is_temporal_false_without_rhs_node_type(tmp_path, ) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3640,7 +3641,7 @@ def test_grouped_train_len_uses_true_batch_count_not_ceil(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3656,7 +3657,7 @@ def test_grouped_train_len_uses_true_batch_count_not_ceil(
     flat_dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type="static_link_prediction",
@@ -3678,7 +3679,7 @@ def test_grouped_train_iter_does_not_truncate(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         task_type=_TEMPORAL_LP,
@@ -3706,7 +3707,7 @@ def test_grouped_train_len_honors_step_caps(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 20},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         max_steps_per_epoch=3,
@@ -3734,7 +3735,7 @@ def test_grouped_num_samples_not_divided_by_batch_size(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 1000},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=128,
         eval_batch_size=128,
         task_type=_TEMPORAL_LP,
@@ -3772,7 +3773,7 @@ def test_grouped_global_batches_from_manifest_buckets(
     iterable = DiskgraphTaskBatchIterable(
         manifest_path=runtime_path,
         stage=("train", "val"),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         batch_size=10,
         shuffle=True,
         drop_last=False,
@@ -3815,7 +3816,7 @@ def test_grouped_global_batches_fails_loud_without_bucket_index(
     iterable = DiskgraphTaskBatchIterable(
         manifest_path=str(runtime_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         batch_size=10,
         shuffle=False,
         drop_last=False,
@@ -3860,7 +3861,7 @@ def test_grouped_multistage_refit_spans_all_stages(
             "val": 50
         }, runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         train_stages=("train", "val"),
@@ -3915,7 +3916,7 @@ def test_grouped_global_cap_distributed_across_workers(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100},
                   runtime_manifest_path=runtime_path),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         num_workers=2,
@@ -3961,7 +3962,7 @@ def test_grouped_global_cap_min_steps_distributed(
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 40}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=10,
         num_workers=2,
@@ -4117,7 +4118,7 @@ def test_train_dataloader_sets_fork_context_when_workers(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         num_workers=4,
@@ -4136,7 +4137,7 @@ def test_train_dataloader_no_context_when_single_process(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(tmp_path=tmp_path, stage_counts={"train": 100}),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=10,
         eval_batch_size=1,
         num_workers=0,
@@ -4346,7 +4347,7 @@ def _projection_datamodule(
     return DiskgraphLightningDataModule(
         _projection_manifest(tmp_path),
         _projection_mapper_bank() if mapper_bank is None else mapper_bank,
-        sampling_plan={"layers": [{"fanouts": {}}]},
+        sampling_plan=SamplingPlan([LayerSpec(fanouts={})]),
         train_batch_size=2,
         eval_batch_size=2,
     )
@@ -4615,9 +4616,9 @@ def test_sampling_plan_is_passed_through_untouched(tmp_path) -> None:
     must be the caller's object, unmodified -- no copy, no injected key."""
     dm = _projection_datamodule(tmp_path)
 
-    assert "projections" not in dm.sampling_plan
-    assert "feature_columns" not in dm.sampling_plan
-    assert dm.sampling_plan["layers"] == [{"fanouts": {}}]
+    assert not hasattr(dm.sampling_plan, "projections")
+    assert not hasattr(dm.sampling_plan, "feature_columns")
+    assert list(dm.sampling_plan.layers) == [LayerSpec(fanouts={})]
 
 
 def test_feature_projection_is_empty_without_a_schema(tmp_path) -> None:
@@ -4628,7 +4629,7 @@ def test_feature_projection_is_empty_without_a_schema(tmp_path) -> None:
     dm = DiskgraphLightningDataModule(
         _manifest(),
         _mapper_bank(),
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         train_batch_size=2,
         eval_batch_size=1,
     )
@@ -4670,8 +4671,9 @@ def test_train_and_eval_loaders_send_different_projections(
 
     # The plan itself must arrive clean, with no projection smuggled into it.
     for kwargs in (train_kwargs, val_kwargs):
-        assert "projections" not in kwargs["sampling_plan"]
-        assert "feature_columns" not in kwargs["sampling_plan"]
+        assert kwargs["sampling_plan"] is dm.sampling_plan
+        assert not hasattr(kwargs["sampling_plan"], "projections")
+        assert not hasattr(kwargs["sampling_plan"], "feature_columns")
 
 
 @pytest.mark.parametrize("runtime_fused", [True, False, None])
