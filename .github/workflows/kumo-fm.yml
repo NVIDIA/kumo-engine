@@ -8,23 +8,11 @@ on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
       - 'packages/experimental/kumo-fm/**'
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'packages/kumo-settings/**'
-      - 'packages/kumo-core/**'
-      - 'packages/kumo-engine/**'
-      - 'uv.lock'
       - '.github/workflows/kumo-fm.yml'
   push:
     branches: [main]
     paths:
       - 'packages/experimental/kumo-fm/**'
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'packages/kumo-settings/**'
-      - 'packages/kumo-core/**'
-      - 'packages/kumo-engine/**'
-      - 'uv.lock'
       - '.github/workflows/kumo-fm.yml'
   workflow_dispatch:
 
@@ -37,6 +25,10 @@ jobs:
 
   package-and-wheel:
     needs: diskgraph-wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -46,11 +38,12 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
+          python-version: ${{ matrix.python }}
       - name: Test the source package against the current native stack
         run: |
           uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
             --package kumo-fm --extra test
-          uv run --no-sync --package kumo-fm python -m pytest -q \
+          uv run --no-sync --package kumo-fm python -m pytest -q -m "not dev" \
             packages/experimental/kumo-fm/tests
       - name: Build matching settings, PyTorch and FM wheels
         run: |
@@ -79,7 +72,7 @@ jobs:
       - name: Install finished wheels outside the checkout
         working-directory: ${{ runner.temp }}
         run: |
-          uv venv --python 3.12 fresh
+          uv venv --python "${{ matrix.python }}" fresh
           uv pip install --python fresh/bin/python --torch-backend cpu \
             /tmp/diskgraph-wheel/diskgraph-*.whl dist/kumo_pytorch-*.whl \
             dist/kumo_settings-*.whl dist/kumo_fm-*.whl 'pytest>=8,<10'
@@ -89,9 +82,10 @@ jobs:
           mkdir "$RUNNER_TEMP/stage"
           cp -R packages/experimental/kumo-fm/tests \
             packages/experimental/kumo-fm/examples "$RUNNER_TEMP/stage/"
+          cp packages/experimental/kumo-fm/pyproject.toml "$RUNNER_TEMP/stage/"
           cd "$RUNNER_TEMP/stage"
           ../fresh/bin/python -I -c 'import kumo.fm, kumo.pytorch, diskgraph; print(kumo.fm.__file__)'
-          ../fresh/bin/python -m pytest -q tests
+          ../fresh/bin/python -m pytest -q -m "not dev" tests
       - name: Build matching connector and engine wheels
         run: |
           for package in kumo-api kumo-pql kumo-settings kumo-core kumo-engine; do
