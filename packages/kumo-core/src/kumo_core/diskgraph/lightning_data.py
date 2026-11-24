@@ -19,22 +19,29 @@ import threading
 import time
 import warnings
 import weakref
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import queues as mp_queues
 from multiprocessing.reduction import ForkingPickler
-from typing import Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any
 
 import pytorch_lightning as pl
+from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
+from diskgraph.sampling_plan import SamplingPlan
+from torch._utils import ExceptionWrapper
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+
 from kumo_core.diskgraph.runtime_adapter import (
     MapperBank,
     engine_int64_to_ns,
     runtime_batch_to_hetero,
 )
 from kumo_core.task_dataset import DiskgraphTaskManifest
-from torch._utils import ExceptionWrapper
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -1320,7 +1327,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         *,
         manifest_path: str,
         stage: str | tuple[str, ...],
-        sampling_plan: Any,
+        sampling_plan: SamplingPlan,
         batch_size: int,
         shuffle: bool,
         drop_last: bool,
@@ -1568,18 +1575,27 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         ):
             stage_options = self.stage_runtime_options.get(stage, {})
             options = {**iter_options, **stage_options}
+            weights = options.get("weighted_seed_sampling")
+            if weights is not None:
+                options["weighted_seed_sampling"] = WeightedSeedSampling(**weights)
             iterator, num_samples = index.iter(
-                stage=stage,
-                sampling_plan=self.sampling_plan,
-                projections=({} if options.get("fused") is True else self.projections),
-                num_workers=(stage_num_workers or num_workers),
-                worker_id=(worker_id if stage_worker_id is None else stage_worker_id),
-                shuffle=self.shuffle,
-                epoch=base_epoch + epoch_offset,
-                batch_size=self.batch_size,
-                drop_last=self.drop_last,
-                group_by_timestamp=self.group_by_timestamp,
-                **options,
+                SamplingOptions(
+                    stage=stage,
+                    sampling_plan=self.sampling_plan,
+                    projections=(
+                        {} if options.get("fused") is True else self.projections
+                    ),
+                    num_workers=(stage_num_workers or num_workers),
+                    worker_id=(
+                        worker_id if stage_worker_id is None else stage_worker_id
+                    ),
+                    shuffle=self.shuffle,
+                    epoch=base_epoch + epoch_offset,
+                    batch_size=self.batch_size,
+                    drop_last=self.drop_last,
+                    group_by_timestamp=self.group_by_timestamp,
+                    **options,
+                )
             )
             return iterator, int(num_samples)
 
@@ -1802,12 +1818,14 @@ class _ShutdownWorkerPoolsCallback(pl.Callback):
 
 class DiskgraphLightningDataModule(pl.LightningDataModule):
     """Lightning datamodule over native DiskGraph task batch iterators."""
+    _selected_prediction_rows: torch.Tensor | None = None
+
     def __init__(
         self,
         manifest: DiskgraphTaskManifest | str,
         mapper_bank: MapperBank,
         *,
-        sampling_plan: Any,
+        sampling_plan: SamplingPlan,
         train_batch_size: int,
         eval_batch_size: int,
         shuffle_train: bool = True,
@@ -2039,7 +2057,19 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self._make_dataloader("test", max_eval_steps=self.max_test_steps)
 
     def predict_dataloader(self) -> DataLoader:
+        if self._selected_prediction_rows is not None:
+            return self.explain_dataloader('pred', self._selected_prediction_rows)
         return self._make_dataloader("predict")
+
+    @contextmanager
+    def selected_prediction_rows(self, rows: torch.Tensor) -> Iterator[None]:
+        """Attach selected rows while preserving Lightning's datamodule hooks."""
+        previous = self._selected_prediction_rows
+        self._selected_prediction_rows = rows
+        try:
+            yield
+        finally:
+            self._selected_prediction_rows = previous
 
     def transfer_batch_to_device(self, batch: Any, device: Any,
                                  dataloader_idx: int) -> Any:
@@ -2171,6 +2201,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         """RHS node IDs passing the target filter's candidate-table
         conditions; ``None`` admits all."""
         import torch
+
         from kumo_core.diskgraph.stores import rhs_catalog
         from kumo_core.errors import TrainingValidationError
         row_filter = self.task_manifest.predict_candidate_filter
@@ -2187,8 +2218,10 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return torch.from_numpy(node_ids)
 
     def require_single_predict_anchor(self) -> None:
-        from kumo_core.training.validation import require_single_anchor
         from kumoapi.train import TrainingStage
+
+        from kumo_core.training.validation import require_single_anchor
+
         anchors = self._stage_time_dict.get(TrainingStage.PRED)
         if anchors is not None:
             require_single_anchor(*anchors)
@@ -2414,20 +2447,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
                 'neg_rhs_node_type': self.neg_rhs_node_type,
                 'neg_amount_m': self.neg_amount_m,
             }
-        # FK-free LP resolution: thread entity/target node types so the engine
-        # seeds off entity_node_id and emits lp_pos_* labels. PREDICT is
-        # entity-only, so pass target_node_type for labelled stages only.
-        if self.resolve_entity_node_type is not None:
-            _stage_seq = ([stages] if isinstance(stages, str) else list(stages))
-            _is_predict = 'predict' in _stage_seq
-            runtime_options = {
-                **runtime_options,
-                'entity_node_type':
-                self.resolve_entity_node_type,
-            }
-            if not _is_predict:
-                runtime_options['target_node_type'] = (
-                    self.resolve_target_node_type)
+        runtime_options = self._seed_runtime_options(
+            'predict' if 'predict' in stages else stages[0], runtime_options)
         if is_train and self._weighted_seed_sampling is not None:
             if self.drop_last_train:
                 raise ValueError(
@@ -2958,6 +2979,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         ``RHSTime.get_valid_nodes`` (all-ns RHS validity)."""
         import pandas as pd
         import torch
+
         from kumo_core.diskgraph.stores import read_node_column
 
         ser = pd.to_datetime(
@@ -3034,6 +3056,66 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         with open(meta_path) as f:
             return list(json.load(f).get('node_types') or [])
 
+    def _seed_runtime_options(
+        self, stage: str, options: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Resolve identical seed types for regular and selected-row loaders."""
+        resolved = dict(options)
+        if self.resolve_entity_node_type is not None:
+            resolved['entity_node_type'] = self.resolve_entity_node_type
+            # Prediction tables contain entity-only rows, without target labels.
+            if stage != 'predict':
+                resolved['target_node_type'] = self.resolve_target_node_type
+        return resolved
+
+    def prediction_inputs(self, limit: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Read the first prediction rows without features or model inference."""
+        import torch
+
+        batch_size = int(self.eval_loader_kwargs['batch_size'])
+        names = {str(entry['name']) for entry in self._load_index_node_types()
+                 if entry.get('name')}
+        names.add(self.task_manifest.seed_node_type)
+        iterable = DiskgraphTaskBatchIterable(
+            manifest_path=self.task_manifest.runtime_manifest_path,
+            stage='predict',
+            sampling_plan=SamplingPlan(),
+            projections={name: [] for name in names},
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            base_seed=self.base_seed,
+            shuffle_state=self._shuffle_state,
+            num_seeds=limit,
+            max_batches=math.ceil(limit / batch_size),
+            replay=False,
+            runtime_options=self._seed_runtime_options('predict', {
+                **self.runtime_options, **self._pseudo_time_options('predict'),
+                # Fused mode discards projections and decodes all features.
+                'fused': False,
+            }),
+            dataloader_num_workers=0,
+        )
+        nodes: list[torch.Tensor] = []
+        rows: list[torch.Tensor] = []
+        for batch in iterable:
+            task = batch.get('task') or {}
+            entity_ids = task.get('seed_node_ids')
+            stage_ids = task.get('tt_stage_node_ids')
+            if entity_ids is None or stage_ids is None:
+                raise RuntimeError('Prediction selection requires entity and '
+                                   'task-row IDs')
+            entity_ids = self._array_to_long_tensor(entity_ids)
+            stage_ids = self._array_to_long_tensor(stage_ids)
+            if entity_ids.numel() != stage_ids.numel():
+                raise RuntimeError('Prediction entity and task-row IDs differ '
+                                   'in length')
+            nodes.append(entity_ids)
+            rows.append(stage_ids)
+        if not nodes:
+            return torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+        return torch.cat(nodes)[:limit], torch.cat(rows)[:limit]
+
     def explain_dataloader(
         self,
         stage: str,
@@ -3041,9 +3123,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
     ) -> DataLoader:
         """Eval DataLoader for the XAI second pass over selected stage ids."""
         runtime_stage = "predict" if stage == "pred" else stage
-        if runtime_stage == "predict" and self._is_link_pred:
-            return self._make_dataloader("predict")
-
         if hasattr(seed_nodes, 'tolist'):
             selected_stage_node_ids = seed_nodes.tolist()
         else:
@@ -3059,13 +3138,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             selected_stage_node_ids,
             **self._pseudo_time_options(runtime_stage),
         }
-        if (runtime_stage != "predict"
-                and self.resolve_entity_node_type is not None):
-            runtime_options = {
-                **runtime_options,
-                'entity_node_type': self.resolve_entity_node_type,
-                'target_node_type': self.resolve_target_node_type,
-            }
+        runtime_options = self._seed_runtime_options(runtime_stage,
+                                                     runtime_options)
         iterable = DiskgraphTaskBatchIterable(
             manifest_path=self.task_manifest.runtime_manifest_path,
             stage=runtime_stage,

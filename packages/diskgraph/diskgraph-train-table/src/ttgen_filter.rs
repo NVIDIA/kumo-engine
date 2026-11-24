@@ -14,8 +14,8 @@ use crate::ttgen_resolve::{
     ResolvedStageFilter, ResolvedStageFilterRhs, ResolvedEdge,
 };
 use crate::ttgen_traversal::{
-    dispatch_multicat_row, node_row, read_column_value, row_column_value, MulticatDispatchOutcome,
-    MulticatToken,
+    dispatch_multicat_row, node_row, read_column_number, row_column_number, row_column_value,
+    MulticatDispatchOutcome, MulticatToken,
 };
 
 pub(crate) fn is_nullish_filter_value(value: &Option<Value>) -> bool {
@@ -115,7 +115,7 @@ fn resolve_row_lhs(
 ) -> Option<Value> {
     match lhs {
         ResolvedRowFilterLhs::Column { col_idx, .. } => {
-            row_column_value(current_table, row, *col_idx)
+            row_column_number(current_table, row, *col_idx)
         }
         ResolvedRowFilterLhs::Remote { path, col_idx } => {
             resolve_remote_value(path, current_node, *col_idx)
@@ -264,7 +264,7 @@ fn resolve_remote_value(
     let current = resolve_remote_node(path, start_node)?;
     // Read column from final destination, preserving NULL as None.
     let dst_table = &path.last()?.dst_table;
-    read_column_value(dst_table, current, col_idx)
+    read_column_number(dst_table, current, col_idx)
 }
 
 // ─── Stage filter evaluation (per entity-timestamp, between stages) ──────────

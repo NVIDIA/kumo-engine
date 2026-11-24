@@ -175,32 +175,6 @@ enum DestArg {
     Adls,
 }
 
-/// Increase the soft open-file limit to the hard limit. The encode phase holds
-/// one temp file open per (table, shard) — ~800+ on a 75-shard graph — which
-/// exceeds common container defaults (Docker: 1024 soft / 524288 hard).
-#[cfg(unix)]
-fn increase_nofile_limit() {
-    unsafe {
-        let mut lim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 || lim.rlim_cur >= lim.rlim_max {
-            return;
-        }
-        let old = lim.rlim_cur;
-        lim.rlim_cur = lim.rlim_max;
-        if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) == 0 {
-            tracing::info!(old, new = lim.rlim_max, "raised soft RLIMIT_NOFILE");
-        } else {
-            tracing::warn!(soft = old, "could not raise soft RLIMIT_NOFILE");
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn increase_nofile_limit() {}
-
 fn main() -> Result<()> {
     let args = Args::parse();
     // Answer the runner's thread-count query before initializing tracing or
@@ -213,7 +187,6 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("info,pprof=warn")
         .init();
-    increase_nofile_limit();
     if !args.worker {
         let diagnostic_paths = local_diagnostic_paths(&args);
         if let Some((final_path, worker_path)) = &diagnostic_paths {
@@ -324,6 +297,7 @@ fn run_worker(args: Args) -> Result<()> {
     };
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
+        index_build_id: None,
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,
@@ -853,11 +827,18 @@ struct PublicationMarkerIdentity {
     device: u64,
     #[cfg(unix)]
     inode: u64,
+    #[cfg(windows)]
+    file_id: (u32, u64),
 }
 
 fn publication_marker_identity(root: &std::path::Path) -> Option<PublicationMarkerIdentity> {
-    let metadata =
-        fs::metadata(root.join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME)).ok()?;
+    let path = root.join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME);
+    #[cfg(windows)]
+    let file = fs::File::open(&path).ok()?;
+    #[cfg(windows)]
+    let metadata = file.metadata().ok()?;
+    #[cfg(not(windows))]
+    let metadata = fs::metadata(&path).ok()?;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
 
@@ -868,7 +849,30 @@ fn publication_marker_identity(root: &std::path::Path) -> Option<PublicationMark
         device: metadata.dev(),
         #[cfg(unix)]
         inode: metadata.ino(),
+        #[cfg(windows)]
+        file_id: windows_file_identity(&file)?,
     })
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &fs::File) -> Option<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // The handle remains open while both its metadata and file identity are read.
+    let information = unsafe {
+        if GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) == 0 {
+            return None;
+        }
+        information.assume_init()
+    };
+    Some((
+        information.dwVolumeSerialNumber,
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    ))
 }
 
 fn worker_committed_publication(
@@ -1652,7 +1656,13 @@ mod supervisor_tests {
 
         let replacement = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
         fs::write(replacement.path(), b"fresh").unwrap();
+        let modified =
+            filetime::FileTime::from_last_modification_time(&fs::metadata(&marker).unwrap());
+        filetime::set_file_mtime(replacement.path(), modified).unwrap();
         replacement.persist(&marker).unwrap();
+        let after = publication_marker_identity(directory.path()).unwrap();
+        assert_eq!(after.len, before.len);
+        assert_eq!(after.modified, before.modified);
         assert!(worker_committed_publication(
             directory.path(),
             Some(&before)

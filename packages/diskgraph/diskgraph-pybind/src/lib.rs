@@ -178,7 +178,7 @@ pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
 
 
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
-use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags, SamplingPlan};
+use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags};
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
@@ -193,6 +193,7 @@ mod custom_tt_entry;
 mod exact_quantiles;
 mod index_metadata;
 mod runtime_batch_iterator;
+mod sampling_plan;
 mod string_lookup;
 mod success_marker;
 mod temporal;
@@ -1037,7 +1038,7 @@ impl SamplerEngine {
         &self,
         py: Python<'_>,
         seed_nodes: Bound<'_, PyDict>,
-        plan_json: String,
+        plan_json: &Bound<'_, PyAny>,
         fused: bool,
         seed_timestamps: Option<Bound<'_, PyDict>>,
         swap_edge_direction: Option<bool>,
@@ -1061,8 +1062,13 @@ impl SamplerEngine {
             timestamps = Some(ts_map);
         }
 
-        let plan: SamplingPlan = serde_json::from_str(&plan_json)
-            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
+        let plan = if let Ok(plan) = plan_json.extract::<PyRef<'_, sampling_plan::PySamplingPlan>>() {
+            plan.inner.clone()
+        } else {
+            let plan_json: String = plan_json.extract()?;
+            serde_json::from_str(&plan_json)
+                .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {e}")))?
+        };
 
         let flags = SamplingFlags {
             replace: false,
@@ -1520,6 +1526,7 @@ pub fn convert_kumo_config(
     index_threads=None,
     parent_index_path=None,
     cutoff_col_stats=None,
+    index_build_id=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -1546,6 +1553,7 @@ pub fn ingest(
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
     cutoff_col_stats: Option<&str>,
+    index_build_id: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1582,6 +1590,7 @@ pub fn ingest(
         .transpose()?;
 
     let options = diskgraph_ingest::IngestOptions {
+        index_build_id: index_build_id.map(str::to_owned),
         profile_dir: None,
         progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
@@ -1641,6 +1650,11 @@ pub fn ingest(
             s
         })
         .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize stats: {e}")))
+}
+
+#[pyfunction]
+fn new_index_build_id() -> String {
+    diskgraph_core::metadata::new_index_build_id()
 }
 
 // ---------------------------------------------------------------------------
@@ -2008,6 +2022,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
+    m.add_function(wrap_pyfunction!(new_index_build_id, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;
@@ -2028,6 +2043,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PreparedAggregateQuery>()?;
     runtime_batch_iterator::register(m)?;
+    sampling_plan::register(m)?;
     m.add_class::<PySampleIterator>()?;
     m.add_function(wrap_pyfunction!(tt_builder::build_split_spec_json, m)?)?;
     m.add_function(wrap_pyfunction!(tt_builder::convert_ticks, m)?)?;

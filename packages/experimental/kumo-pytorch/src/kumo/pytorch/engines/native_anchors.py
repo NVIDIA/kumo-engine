@@ -11,6 +11,7 @@ Python keeps bindings and stage counts, not a second full anchor column store.
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 import tempfile
@@ -20,6 +21,8 @@ from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
 from typing import Any
+
+from diskgraph import SamplingPlan
 
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
@@ -99,6 +102,8 @@ class NativeAnchors:
         physical = _physical(table)
         files = _files(table.source.path)
         schema = pq.read_schema(files[0])
+        projected = sorted(set(physical.values()))
+        snapshot = hashlib.sha256(pa.schema([schema.field(name) for name in projected]).serialize())
         self._types = {name: schema.field(column).type for name, column in physical.items()}
         self._aliases = {name: f"anchor_col_{i}" for i, name in enumerate(table.columns)}
         # RowPack has no struct/map/list scalar. Carry those metadata values in
@@ -117,9 +122,12 @@ class NativeAnchors:
         extension = Path(self._extension.name)
         try:
             for file in files:
-                for batch in pq.ParquetFile(file).iter_batches(
-                    columns=sorted(set(physical.values())), batch_size=32768
-                ):
+                for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
+                    # A record-batch message alone omits dictionary values.
+                    sink = pa.BufferOutputStream()
+                    with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
+                        writer.write_batch(batch)
+                    snapshot.update(sink.getvalue())
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     entity = self._source._tables[self._sample.entity.table]
                     dtype = entity.columns[entity.primary_key]
@@ -193,15 +201,20 @@ class NativeAnchors:
                                 str(stage["path"])
                             )
                         stage = by_split[split_name]
-                        selected = data.filter(
+                        mask = (
                             pc.is_null(split) if split_name is None else pc.equal(split, split_name)
                         )
+                        selected = data.filter(mask)
                         writers[split_name].write_batch(selected.to_batches()[0])
                         stage["count"] += len(selected)
+                        if table.as_of_time is not None:
+                            # One scalar per Parquet batch, so `latest_time` never reads anchors.
+                            stage.setdefault("latest", []).append(pc.max(times.filter(mask)))
                     position += batch.num_rows
         finally:
             for writer in writers.values():
                 writer.close()
+        self.snapshot_digest = snapshot.hexdigest()
         manifest = {
             "kind": "diskgraph_task_dataset",
             "graph": {"index_path": str(view)},
@@ -289,6 +302,21 @@ class NativeAnchors:
     def count(self, selection: Any = ALL_ANCHORS) -> int:
         return sum(stage["count"] for stage in self._selection(selection))
 
+    def latest_time(self, selection: Any = ALL_ANCHORS) -> Any:
+        """The latest ``as_of_time`` of the selected anchors, as `fetch` returns it."""
+        stages = self._selection(selection)
+        if not stages:
+            raise ValueError("no anchors selected")
+        if self._table.as_of_time is None:
+            return 0
+        pa, dtype = self._pa, self._types[self._table.as_of_time]
+        # Files may use equivalent timezone aliases. Normalize to the decoding
+        # dtype before combining their maxima, just as `_requests` does.
+        maxima = pa.array(
+            [value.cast(dtype) for stage in stages for value in stage["latest"]], type=dtype
+        )
+        return _arrow_scalar_value(self._pc.max(maxima))
+
     def _iter(
         self,
         stage: Any,
@@ -300,30 +328,32 @@ class NativeAnchors:
         shuffle=False,
         rank=0,
         world_size=1,
-        plan=None,
+        plan: SamplingPlan | None = None,
         projections=None,
         history=None,
         neighborhoods=None,
         length_planning=None,
     ):
         iterator, _ = self._runtime.iter(
-            stage["name"],
-            plan or {"layers": []},
-            world_size,
-            rank,
-            shuffle,
-            epoch,
-            batch_size,
-            rnd_seed=seed,
-            entity_node_type=self._sample.entity.table,
-            fused=False,
-            swap_edge_direction=False,
-            selected_stage_node_ids=ids,
-            projections=projections,
-            disable_pseudo_time=True,
+            self._source._diskgraph.SamplingOptions(
+                stage=stage["name"],
+                sampling_plan=SamplingPlan() if plan is None else plan,
+                num_workers=world_size,
+                worker_id=rank,
+                shuffle=shuffle,
+                epoch=epoch,
+                batch_size=batch_size,
+                rnd_seed=seed,
+                entity_node_type=self._sample.entity.table,
+                fused=False,
+                swap_edge_direction=False,
+                selected_stage_node_ids=ids,
+                projections=projections,
+                disable_pseudo_time=True,
+            )
         )
         if neighborhoods:
-            iterator.with_neighborhoods(json.dumps(neighborhoods))
+            iterator.with_neighborhoods(neighborhoods)
         if history is not None:
             plan_json, merges_json = history
             iterator.with_history(
@@ -347,8 +377,6 @@ class NativeAnchors:
             }
             key = (stage["name"], json.dumps(costs, sort_keys=True))
             if key not in self._length_caches:
-                import hashlib
-
                 filename = hashlib.sha256(key[1].encode()).hexdigest()[:24]
                 fields = (
                     1
@@ -499,6 +527,7 @@ class NativeAnchors:
             EventSource,
             Flatten,
             Nested,
+            NextTokenTarget,
             Packed,
             Tokens,
         )
@@ -728,6 +757,22 @@ class NativeAnchors:
             )
         row = spec.representation.row
         flatten = spec.representation.history
+        flatten_lengths = None
+        if isinstance(flatten, Flatten):
+            flatten_lengths = dict(
+                maximum=flatten.max_tokens,
+                keep_last=flatten.keep == "last",
+                event_boundary=flatten.prefer_event_boundary,
+                separator=flatten.separator is not None,
+                between=flatten.separator_placement == "between",
+                before=flatten.before is not None,
+                after=flatten.after is not None,
+            )
+            if any(
+                isinstance(target, NextTokenTarget) and target.input == policy.length_input
+                for target in assembler._emitted.targets.values()
+            ):
+                flatten_lengths["next_token"] = True
         contract = json.dumps(
             dict(
                 query=json.dumps(query),
@@ -736,17 +781,7 @@ class NativeAnchors:
                 fixed=fixed,
                 history_only=isinstance(row, (Columns, Composite)),
                 row_maximum=row.max_tokens if isinstance(row, Tokens) else None,
-                flatten=dict(
-                    maximum=flatten.max_tokens,
-                    keep_last=flatten.keep == "last",
-                    event_boundary=flatten.prefer_event_boundary,
-                    separator=flatten.separator is not None,
-                    between=flatten.separator_placement == "between",
-                    before=flatten.before is not None,
-                    after=flatten.after is not None,
-                )
-                if isinstance(flatten, Flatten)
-                else None,
+                flatten=flatten_lengths,
                 max_samples=maximum,
                 max_tokens=policy.max_tokens,
                 packed=isinstance(spec.layout, Packed)

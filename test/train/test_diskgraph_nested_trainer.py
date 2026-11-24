@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumo_core.diskgraph.runtime_adapter import runtime_batch_to_hetero
 from kumo_core.explain.subgraph_collector import SubgraphCollector
 from kumo_core.train.diskgraph_nested_trainer import (
@@ -187,6 +188,10 @@ class _StubEncoders:
         return self.encoders[key]
 
 
+class _PredictionStub(SimpleNamespace):
+    predict_setup = DiskgraphNestedTrainer.predict_setup
+
+
 class _StubTrainer:
     """Minimal stand-in for the bits of ``Trainer`` state that
     ``DiskgraphNestedTrainer.init()`` reads.
@@ -260,11 +265,6 @@ class _StubTrainer:
                                    if eval_loader_kwargs is _StubTrainer._UNSET
                                    else eval_loader_kwargs)
 
-        # ``sampler_kwargs`` is read by ``DiskgraphNestedTrainer.init``
-        # only when a non-stub sampling translator is wired in; the
-        # current path uses ``_DEFAULT_TTNG_SAMPLING_PLAN`` and ignores
-        # this attribute. Kept on the stub so the trainer's surface
-        # doesn't drift from the parent ``Trainer``.
         class _FakeNumNeighbors:
             default = None
 
@@ -787,13 +787,20 @@ def test_init_happy_path_builds_datamodule_and_calls_pl_helpers(
     dm_kwargs = stub.datamodule_kwargs  # type: ignore[attr-defined]
     assert dm_kwargs["manifest"] is fake_manifest
     assert dm_kwargs["mapper_bank"] == {}
-    # ``DiskgraphNestedTrainer`` currently uses the hardcoded
-    # ``_DEFAULT_TTNG_SAMPLING_PLAN`` (2-hop uniform fanout=10).
-    # When the ``cfg.neighbor_sampling`` translation lands, update
-    # this assertion to assert against the translated plan.
-    import kumo_core.train.diskgraph_nested_trainer as diskgraph_nested_trainer
-    assert (dm_kwargs["sampling_plan"] ==
-            diskgraph_nested_trainer._DEFAULT_TTNG_SAMPLING_PLAN)
+    assert dm_kwargs["sampling_plan"] == SamplingPlan(
+        [
+            LayerSpec(
+                default_fanout=FanoutSpec(
+                    10, "temporal_most_recent", "uniform_fallback"
+                )
+            ),
+            LayerSpec(
+                default_fanout=FanoutSpec(
+                    10, "temporal_most_recent", "uniform_fallback"
+                )
+            ),
+        ]
+    )
     assert dm_kwargs["train_batch_size"] == 16
     assert dm_kwargs["eval_batch_size"] == 16
     assert dm_kwargs["max_steps_per_epoch"] == 2000
@@ -905,26 +912,26 @@ def test_ttng_auto_config_uses_compiled_plan_and_actual_batch_size(
         return {"mode": "standalone", "num_workers": 8, "rayon_threads": 4}
 
     runtime = SimpleNamespace(auto_config=fake_auto_config)
-    plan = {
-        "layers": [
-            {
-                "fanouts": {
-                    "first": {
-                        "fanout": 2
-                    }
+    plan = SamplingPlan(
+        [
+            LayerSpec(
+                fanouts={
+                    "first": FanoutSpec(
+                        fanout=2, mode="uniform", absent_key_policy="uniform_fallback"
+                    )
                 },
-                "default_fanout": None
-            },
-            {
-                "fanouts": {
-                    "second": {
-                        "fanout": 5
-                    }
+                default_fanout=None,
+            ),
+            LayerSpec(
+                fanouts={
+                    "second": FanoutSpec(
+                        fanout=5, mode="uniform", absent_key_policy="uniform_fallback"
+                    )
                 },
-                "default_fanout": None
-            },
+                default_fanout=None,
+            ),
         ]
-    }
+    )
 
     config = dg_nested_mod._ttng_diskgraph_runtime_config(
         runtime, {"graph_index_path": str(index)}, plan, batch_size=2000)
@@ -1423,19 +1430,15 @@ def test_build_ttng_sampling_plan_non_lp() -> None:
         stub, tm)  # type: ignore[arg-type]
 
     # Verify standard uniform fallback plan
-    assert len(plan["layers"]) == 2
-    assert plan["layers"][0]["default_fanout"] == {
-        "fanout": 15,
-        "mode": "temporal_most_recent",
-        "absent_key_policy": "uniform_fallback",
-    }
-    assert plan["layers"][1]["default_fanout"] == {
-        "fanout": 10,
-        "mode": "temporal_most_recent",
-        "absent_key_policy": "uniform_fallback",
-    }
-    assert plan["layers"][0]["fanouts"] == {}
-    assert plan["layers"][1]["fanouts"] == {}
+    assert len(plan.layers) == 2
+    assert plan.layers[0].default_fanout == FanoutSpec(
+        fanout=15, mode="temporal_most_recent", absent_key_policy="uniform_fallback"
+    )
+    assert plan.layers[1].default_fanout == FanoutSpec(
+        fanout=10, mode="temporal_most_recent", absent_key_policy="uniform_fallback"
+    )
+    assert plan.layers[0].fanouts == {}
+    assert plan.layers[1].fanouts == {}
 
 
 def test_build_ttng_sampling_plan_preserves_encoded_relation_fanout(
@@ -1476,12 +1479,10 @@ def test_build_ttng_sampling_plan_preserves_encoded_relation_fanout(
         stub, tm)  # type: ignore[arg-type]
 
     rel = "transactions_10k_customer_id_to_customers_10k_customer_id_reverse"
-    assert plan["layers"][0]["fanouts"][rel] == {
-        "fanout": 420,
-        "mode": "temporal_most_recent",
-        "absent_key_policy": "uniform_fallback",
-    }
-    assert plan["layers"][0]["default_fanout"]["fanout"] == 16
+    assert plan.layers[0].fanouts[rel] == FanoutSpec(
+        fanout=420, mode="temporal_most_recent", absent_key_policy="uniform_fallback"
+    )
+    assert plan.layers[0].default_fanout.fanout == 16
 
 
 def test_build_ttng_sampling_plan_list_all_neighbors_sentinel() -> None:
@@ -1503,10 +1504,10 @@ def test_build_ttng_sampling_plan_list_all_neighbors_sentinel() -> None:
     plan = DiskgraphNestedTrainer._build_ttng_sampling_plan(
         stub, tm)  # type: ignore[arg-type]
 
-    assert len(plan["layers"]) == 2
-    for layer in plan["layers"]:
-        assert layer["default_fanout"] is not None
-        assert layer["default_fanout"]["fanout"] == 1_000_000_000
+    assert len(plan.layers) == 2
+    for layer in plan.layers:
+        assert layer.default_fanout is not None
+        assert layer.default_fanout.fanout == 1_000_000_000
 
 
 def test_build_ttng_sampling_plan_dict_all_neighbors_and_zero() -> None:
@@ -1538,12 +1539,11 @@ def test_build_ttng_sampling_plan_dict_all_neighbors_and_zero() -> None:
         _dnt._load_index_metadata = orig
 
     # Hop 0: -1 -> large fanout on both the per-relation and default entries.
-    assert plan["layers"][0]["fanouts"]["orders_to_customers"][
-        "fanout"] == 1_000_000_000
-    assert plan["layers"][0]["default_fanout"]["fanout"] == 1_000_000_000
+    assert plan.layers[0].fanouts["orders_to_customers"].fanout == 1_000_000_000
+    assert plan.layers[0].default_fanout.fanout == 1_000_000_000
     # Hop 1: explicit 0 is dropped (skip), not translated.
-    assert "orders_to_customers" not in plan["layers"][1]["fanouts"]
-    assert plan["layers"][1]["default_fanout"] is None
+    assert "orders_to_customers" not in plan.layers[1].fanouts
+    assert plan.layers[1].default_fanout is None
 
 
 def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
@@ -1838,40 +1838,32 @@ def test_build_ttng_sampling_plan_parity_with_sampler(
     regression test against a frozen expected value instead of a live
     parity check between two implementations.
     """
-    EXPECTED_PLAN = {
-        "layers": [
-            {
-                "fanouts": {
-                    "orders_customer_to_my_customers_pk_reverse": {
-                        "fanout": 15,
-                        "mode": "uniform",
-                        "absent_key_policy": "uniform_fallback",
-                    },
-                    "orders_customer_to_my_customers_pk": {
-                        "fanout": 5,
-                        "mode": "uniform",
-                        "absent_key_policy": "uniform_fallback",
-                    },
+    EXPECTED_PLAN = SamplingPlan(
+        [
+            LayerSpec(
+                fanouts={
+                    "orders_customer_to_my_customers_pk_reverse": FanoutSpec(
+                        fanout=15, mode="uniform", absent_key_policy="uniform_fallback"
+                    ),
+                    "orders_customer_to_my_customers_pk": FanoutSpec(
+                        fanout=5, mode="uniform", absent_key_policy="uniform_fallback"
+                    ),
                 },
-                "default_fanout": None,
-            },
-            {
-                "fanouts": {
-                    "orders_customer_to_my_customers_pk_reverse": {
-                        "fanout": 10,
-                        "mode": "uniform",
-                        "absent_key_policy": "uniform_fallback",
-                    },
-                    "orders_customer_to_my_customers_pk": {
-                        "fanout": 5,
-                        "mode": "uniform",
-                        "absent_key_policy": "uniform_fallback",
-                    },
+                default_fanout=None,
+            ),
+            LayerSpec(
+                fanouts={
+                    "orders_customer_to_my_customers_pk_reverse": FanoutSpec(
+                        fanout=10, mode="uniform", absent_key_policy="uniform_fallback"
+                    ),
+                    "orders_customer_to_my_customers_pk": FanoutSpec(
+                        fanout=5, mode="uniform", absent_key_policy="uniform_fallback"
+                    ),
                 },
-                "default_fanout": None,
-            },
-        ],
-    }
+                default_fanout=None,
+            ),
+        ]
+    )
 
     stub = _StubTrainer()
     stub.sampler_kwargs.num_neighbors = _FakeNumNeighbors({
@@ -2355,7 +2347,7 @@ def test_predict_honors_output_options_and_progress(tmp_path) -> None:
         **_worker_shutdown_stub(),
     )
     init_prediction_modes: list[bool] = []
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2429,7 +2421,7 @@ def test_predict_non_lp_embeddings_only_omits_predictions(tmp_path,
 
     init_calls = []
     model = SimpleNamespace(eval_top_k=None, loss=object())
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=task_type),
         datamodule=SimpleNamespace(
             _seed_node_type='customers',
@@ -2509,7 +2501,7 @@ def test_predict_non_lp_embeddings_only_chunks_without_prediction_artifact(
                 if hasattr(callback, 'on_predict_end'):
                     callback.on_predict_end(self, kwargs['model'])
 
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.REGRESSION),
         datamodule=SimpleNamespace(
             _seed_node_type='customers',
@@ -2548,7 +2540,7 @@ def test_predict_non_lp_embeddings_only_chunks_without_prediction_artifact(
 
 
 def test_predict_rejects_no_outputs_before_init(tmp_path) -> None:
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.REGRESSION),
         init=lambda **_: pytest.fail('no-output request must fail before init'),
     )
@@ -2601,7 +2593,7 @@ def test_forecasting_predict_writes_horizon_and_requested_metadata(
         }],
     )
 
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.FORECASTING),
         datamodule=SimpleNamespace(
             _seed_node_type='customers',
@@ -2738,7 +2730,7 @@ def test_predict_chunks_predictions_and_embeddings_without_returning_predictions
         defer_dataloader_worker_shutdown=defer_shutdown,
         shutdown_dataloader_workers=shutdown_workers,
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2826,7 +2818,7 @@ def test_predict_streams_multiple_batches_into_single_partition(
                                     object()],
         **_worker_shutdown_stub(),
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2890,7 +2882,7 @@ def test_predict_multilabel_ranking_matches_legacy_long_format(
         predict_dataloader=lambda: [object()],
         **_worker_shutdown_stub(),
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.MULTILABEL_RANKING),
         datamodule=datamodule,
         pl_model=_PLModel(),
@@ -2949,7 +2941,7 @@ def _lp_stub(pl_model: Any, *, rhs_pkeys: list[Any]) -> Any:
         ),
         **_worker_shutdown_stub(),
     )
-    return SimpleNamespace(
+    return _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.TEMPORAL_LINK_PREDICTION),
         datamodule=datamodule,
         pl_model=pl_model,
@@ -3798,7 +3790,7 @@ def test_predict_bc_timestamp_is_ns_not_overflowed(tmp_path) -> None:
         predict_dataloader=lambda: [object()],
         **_worker_shutdown_stub(),
     )
-    stub = SimpleNamespace(
+    stub = _PredictionStub(
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         datamodule=datamodule,
         pl_model=_PLModel(),

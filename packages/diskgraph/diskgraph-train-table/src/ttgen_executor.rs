@@ -217,10 +217,13 @@ fn train_table_parts(
             TTGenError::SystemError("training table row count overflow".to_string())
         })?;
         parts.push(TrainTablePartRef {
-            path: Path::new(TT_DATASET_DIR)
-                .join(path.file_name().expect("dataset part has a filename"))
-                .to_string_lossy()
-                .into_owned(),
+            // Manifest paths are portable bundle-relative names, not native paths.
+            path: format!(
+                "{TT_DATASET_DIR}/{}",
+                path.file_name()
+                    .expect("dataset part has a filename")
+                    .to_string_lossy()
+            ),
             row_count: part_rows,
             size_bytes: part_size,
         });
@@ -1851,7 +1854,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     let entity_cols: Vec<Option<Value>> = plan
         .entity_col_indices
         .iter()
-        .map(|(_, col_idx)| read_column_value(&plan.entity_table, entity_node, *col_idx))
+        .map(|(_, col_idx)| read_column_number(&plan.entity_table, entity_node, *col_idx))
         .collect();
     let split_value = plan
         .split_projection
@@ -2591,7 +2594,7 @@ fn execute_target_sequence<U: UnitSystem>(
                             continue;
                         }
                     }
-                    if let Some(v) = read_column_value(dst_table, e.dst_node, col_idx) {
+                    if let Some(v) = read_column_number(dst_table, e.dst_node, col_idx) {
                         oldest = Some(v);
                         break;
                     }
@@ -2606,7 +2609,7 @@ fn execute_target_sequence<U: UnitSystem>(
                             continue;
                         }
                     }
-                    if let Some(v) = read_column_value(dst_table, e.dst_node, col_idx) {
+                    if let Some(v) = read_column_number(dst_table, e.dst_node, col_idx) {
                         newest = Some(v);
                         break;
                     }
@@ -2821,15 +2824,7 @@ fn execute_stages<U: UnitSystem>(
                                     None
                                 }
                             } else {
-                                match read_column_value_nullable(
-                                    &col.table,
-                                    column_node,
-                                    col.col_idx,
-                                ) {
-                                    Some(Some(v)) => Some(v),
-                                    Some(None) => None,
-                                    None => None,
-                                }
+                                read_column_number(&col.table, column_node, col.col_idx)
                             }
                         }
                         None => None,
@@ -3467,7 +3462,7 @@ pub(crate) fn execute_aggregate<U: UnitSystem>(
                         });
                         val = Some(Value::List(tokens));
                     } else {
-                        val = read_column_value(dst_table, dst, col_idx);
+                        val = read_column_number(dst_table, dst, col_idx);
                     }
                 } else {
                     val = Some(Value::Int(dst as i64));
@@ -3503,7 +3498,7 @@ pub(crate) fn execute_aggregate<U: UnitSystem>(
                         });
                         val = Some(Value::List(tokens));
                     } else {
-                        val = read_column_value(dst_table, dst, col_idx);
+                        val = read_column_number(dst_table, dst, col_idx);
                     }
                 } else {
                     val = Some(Value::Int(dst as i64));
@@ -3568,6 +3563,34 @@ mod tests {
         drop(sender);
 
         assert_eq!(write_tt_dataset(receiver, &dataset, 3).unwrap(), 7);
+        let (size_bytes, declared) = train_table_parts(&dataset, 7).unwrap();
+        let serialized = serde_json::to_value(&declared).unwrap();
+        assert_eq!(
+            serialized
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "tt.parquet/part-00000.parquet",
+                "tt.parquet/part-00001.parquet",
+                "tt.parquet/part-00002.parquet"
+            ]
+        );
+        // Resolve the portable names against real native paths, including drive
+        // prefixes and backslash separators when this test runs on Windows.
+        assert_eq!(
+            declared
+                .iter()
+                .map(|part| {
+                    let path = dir.path().join(&part.path);
+                    assert!(path.is_file());
+                    std::fs::metadata(path).unwrap().len()
+                })
+                .sum::<u64>(),
+            size_bytes
+        );
         let parts = ordered_tt_dataset_parts(&dataset).unwrap();
         assert_eq!(
             parts

@@ -20,7 +20,7 @@ from kumo.pytorch.column_stats import StatRequest, stats_request
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
-from kumo.pytorch.dataset import Dataset, Parquet, _local_parquet_files
+from kumo.pytorch.dataset import Dataset, Parquet, _can_coerce_to_int64, _local_parquet_files
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 
 _MANIFEST = "index_manifest.json"
@@ -274,7 +274,11 @@ def _compile_diskgraph_config(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}"
                     )
-                if resolved != declared and not (resolved.name == declared.name == "timestamp"):
+                if (
+                    resolved != declared
+                    and not (resolved.name == declared.name == "timestamp")
+                    and not _can_coerce_to_int64(resolved, declared)
+                ):
                     raise ValueError(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}; supply matching typed data"

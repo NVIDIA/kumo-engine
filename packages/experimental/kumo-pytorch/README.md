@@ -79,11 +79,27 @@ another process.
 
 ## Install
 
-kumo-pytorch ships inside the [kumo-engine](https://pypi.org/project/kumo-engine/) package, together with the DiskGraph engine it runs on, and is imported as `kumo.pytorch`. Install it with the `pytorch` extra:
+kumo-pytorch ships inside the [kumo-engine](https://pypi.org/project/kumo-engine/) package, together with the DiskGraph engine it runs on, and is imported as `kumo.pytorch`. Install it with the `pytorch` extra.
+
+With pip, first choose a compatible PyTorch build from the
+[PyTorch installation selector](https://pytorch.org/get-started/locally/),
+then install the engine. For example, for CPU-only use:
 
 ```bash
+pip install "torch>=2.9,<2.13" --index-url https://download.pytorch.org/whl/cpu
 pip install "kumo-engine[pytorch]"
 ```
+
+For CUDA 13.0, use the `https://download.pytorch.org/whl/cu130` index instead.
+A compatible PyTorch already installed satisfies the engine's requirement.
+With uv, select the build directly:
+
+```bash
+uv pip install --torch-backend cpu "kumo-engine[pytorch]"
+```
+
+Replace `cpu` with `cu130`, or use `auto` to select according to the installed
+GPU driver. Apple silicon uses PyTorch's MPS device without a separate CUDA build.
 
 See kumo-engine's [installation requirements](https://github.com/NVIDIA/kumo-engine/tree/main/packages/kumo-engine#installation) for the supported Python versions, platforms and hardware.
 

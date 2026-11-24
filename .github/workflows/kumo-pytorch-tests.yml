@@ -26,12 +26,18 @@ on:  # yamllint disable-line rule:truthy
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-tests.yml'
   workflow_dispatch:
+    inputs:
+      workload:
+        description: Run the package tests or measure one DiskGraph training workload
+        type: choice
+        default: package-tests
+        options: [package-tests, M04, S02, L01]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ inputs.workload && inputs.workload != 'package-tests' && format('-{0}', inputs.workload) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -40,6 +46,7 @@ jobs:
 
   cpu:
     name: kumo-pytorch-tests
+    if: github.event_name != 'workflow_dispatch' || inputs.workload == 'package-tests'
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -64,3 +71,61 @@ jobs:
           uvx ruff@0.17.3 format --check .
       - name: Package build
         run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+
+  throughput:
+    name: DiskGraph throughput · ${{ inputs.workload }}
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["M04","S02","L01"]'), inputs.workload)
+    needs: diskgraph-wheel
+    runs-on: ${{ vars.KUMO_PYTORCH_BINDING_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+    timeout-minutes: 45
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    env:
+      WORKLOAD: ${{ inputs.workload }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with: {persist-credentials: false}
+      - name: Select read access for the pinned objects
+        id: fixture
+        run: |
+          pin=$(python3 -c 'import sys; from e2e.datasets.throughput import pin_path; print(pin_path(sys.argv[1]))' "$WORKLOAD")
+          policy=$(jq -ce '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
+            Resource:(.bucket as $b | [.objects[].key | "arn:aws:s3:::" + $b + "/" + .] | unique)}]}' "$pin")
+          echo "policy=$policy" >> "$GITHUB_OUTPUT"
+      - id: aws
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          inline-session-policy: ${{ steps.fixture.outputs.policy }}
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and verify the workload fixture
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+        run: |
+          start=$(python3 -c 'from time import monotonic; print(monotonic())')
+          python3 -m e2e.datasets.throughput "$WORKLOAD" --stage "$RUNNER_TEMP/kumo-pytorch-data"
+          python3 -c 'import sys, time; print("KUMO_PYTORCH_STAGE_SECONDS=", time.monotonic() - float(sys.argv[1]), sep="")' "$start" >> "$GITHUB_ENV"
+          echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
+          echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-backend: cu130
+      - name: Measure training throughput
+        run: |
+          python -m tests.e2e.throughput "$WORKLOAD" --data-root "$RUNNER_TEMP/kumo-pytorch-data" \
+            --index "$RUNNER_TEMP/throughput-index" --output "$RUNNER_TEMP/throughput-report.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: throughput-${{ inputs.workload }}
+          path: ${{ runner.temp }}/throughput-report.json
+          if-no-files-found: error
