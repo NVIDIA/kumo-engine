@@ -237,7 +237,7 @@ def test_diskgraph_refuses_keyless_relations_without_a_primary_key_side(primary_
     dataset = r.Dataset(
         {table.name: r.Parquet(str(tmp_path / f"{table.name}.parquet")) for table in schema.tables}
     )
-    engine = r.DiskGraphEngine(index=tmp_path / "index")
+    engine = r.DiskGraphEngine()
     with patch.object(engine, "open", side_effect=AssertionError("opened invalid relation")):
         issues = r.check(contract, dataset, engine)
         assert [(issue.path, issue.code) for issue in issues] == [
