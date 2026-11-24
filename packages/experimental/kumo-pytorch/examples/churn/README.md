@@ -10,8 +10,7 @@ recent purchases are, and the day of the week. The notebook declares each of
 these features and how it's encoded, then trains the model and checks it for
 leakage. It does that by comparing the model's score with the best score a model
 could reach using only past data. Finally, it saves the model, scores a test
-set, and serves one prediction from rows it passes in directly, the way an
-online service would.
+set, and serves one Parquet anchor from the same DiskGraph index.
 
 The data comes from the retail generator in `kumo.pytorch.datasets`, which makes
 synthetic data modeled on the public H&M fashion-retail dataset. The example
@@ -41,5 +40,4 @@ running it:
   stores it.
 - [`output_schema.json`](output_schema.json) describes what the model receives
   for each input: types, vocabularies, buckets and fitted statistics.
-- [`serving_request.json`](serving_request.json) is the request it serves,
-  together with the rows passed in for it.
+- [`serving_request.json`](serving_request.json) is the sample ID, entity ID and cutoff of its serving anchor.

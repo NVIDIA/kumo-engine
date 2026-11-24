@@ -5,8 +5,7 @@
 """Build `BuiltSample`s from tables held as Python mappings.
 
 Straightforward scans and joins over the rows given, with times counted in one
-`Clock`. Serving assembles requests with it, and the in-memory engine reads
-its datasets with it.
+`Clock`.
 """
 
 from __future__ import annotations

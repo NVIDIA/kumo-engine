@@ -16,7 +16,7 @@ meet one yet. The [API reference](api/README.md) covers each declaration.
 | Declarative contract, validation, JSON, fingerprints | Implemented |
 | Point-in-time selection and leakage boundaries | Implemented |
 | Encodings, fitting, layouts, targets, previews | Implemented |
-| Artifacts, inference mode, serving from caller-supplied rows | Implemented. Serving builds batches in Python, the same way the in-memory engine does, with times in the DiskGraph engine's clock |
+| Artifacts, inference mode, serving | Implemented. Serving uses a prepared DiskGraph index and Parquet anchors |
 | `DiskGraphEngine` over local Parquet | Graphs with node features, event sequences, aggregates, generated labels and columnar model batches; see [DiskGraph](#diskgraph) |
 | `InMemoryEngine` over `InMemoryRows` | Implemented, for trying things out on tiny data |
 | Streaming, prefetch, caching, remote storage | Not implemented |
@@ -99,7 +99,7 @@ clock) or declares `NON_TEMPORAL`.
 Entity and candidate lookup require the chosen table's declared primary key.
 Other tables may set `primary_key=None`; identical source rows remain separate
 occurrences. Their internal IDs and equal-time order are local to the index,
-so tied limits can select different rows after a rebuild or in a serving subset.
+so tied limits can select different rows after an index rebuild.
 Relations join
 one column on each side; composite keys and arbitrary join predicates are not
 expressible. DiskGraph applies its native ingestion rules: rows it rejects,
@@ -148,7 +148,7 @@ or infinity; encoders that require finite observations reject them.
   the files and the number of index shards can all change which tied neighbor
   a sample keeps. The kept neighbors are always dated at or before the
   prediction time.
-- On the in-memory engine, and so also in serving, the cutoff of a `Rows` path
+- On the in-memory engine, the cutoff of a `Rows` path
   applies only to the table the path ends at. If the path passes through an
   intermediate table that has a clock, rows reached through an intermediate row
   dated after the prediction time are still selected. The DiskGraph engine
@@ -291,8 +291,8 @@ labels do not silently enter a shared input vocabulary.
 
 An artifact doesn't include a copy of your data. `Artifact.load` reloads an artifact written by this version; one whose
 manifest records no file digests is refused. Inference mode emits no targets
-and reads no target rows; serving from supplied rows uses the in-memory engine's
-rules and inspectable output.
+and reads no target rows; serving reads Parquet anchors against an open DiskGraph plan and emits native
+model-format batches.
 
 Batching supports sample limits, actual emitted-position token limits,
 length bucketing, deterministic shuffling, and rank partitioning. Token-budget
@@ -308,7 +308,7 @@ distributed training is up to your training loop.
 model output column by column. It raises an error for the joins, filters, graph
 strategies and sampling features it doesn't support; see
 [DiskGraph](#diskgraph). Where both engines support a contract, DiskGraph's
-batches can still differ from the in-memory engine's, and so from serving's, in
+batches can still differ from the in-memory engine's in
 a few ways: the order of graph nodes within a layer, `std`, `var` and `mean`
 values within floating-point rounding, and which tied neighbor a `recent`
 fanout keeps, as described under [Time](#time).

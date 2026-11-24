@@ -21,11 +21,13 @@ from typing import Any
 
 from kumo.pytorch.anchors import ALL_ANCHORS
 from kumo.pytorch.api import (
+    AnchorTable,
     BatchSpec,
     DataLoaderSpec,
     Dataset,
     InMemoryEngine,
     InMemoryRows,
+    Parquet,
     SampleRequest,
     SampleSpec,
     Task,
@@ -33,7 +35,27 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.assembly import WRITTEN_BESIDE_STATE
 
-__all__ = ["in_memory_dataset", "plan_in_memory"]
+__all__ = ["in_memory_dataset", "plan_in_memory", "serving_anchors"]
+
+
+def serving_anchors(path: Path, requests: Sequence[SampleRequest]) -> AnchorTable:
+    """Write scoring requests as Parquet anchors, without training labels."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    columns = {"sample": [r.sample_id for r in requests], "entity": [r.entity_id for r in requests]}
+    at = "at" if any(r.as_of_time is not None for r in requests) else None
+    split = "split" if any(r.split is not None for r in requests) else None
+    if at:
+        columns[at] = [r.as_of_time for r in requests]
+    if split:
+        columns[split] = [r.split for r in requests]
+    metadata = sorted({key for r in requests for key in r.metadata})
+    columns.update({key: [r.metadata.get(key) for r in requests] for key in metadata})
+    pq.write_table(pa.table(columns), path)
+    return AnchorTable(
+        Parquet(str(path)), "entity", at, sample_id="sample", split=split, metadata=metadata
+    )
 
 
 def reorder_dicts(value: Any, *, shuffled: bool = False) -> Any:

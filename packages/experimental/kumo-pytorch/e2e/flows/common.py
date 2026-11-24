@@ -2,11 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""What both H&M flows share: the tables, the anchors, the caller's row lookup.
+"""What both H&M flows share: the tables, the anchors, native serving.
 
 A flow reads the directory `e2e.datasets.hm` writes. Everything here is what a
 user's own pipeline would hold: how the Parquet files map to a kumo-pytorch schema,
-where the anchors come from, how a request handler looks up one customer's rows,
+where the anchors come from, how a request handler binds one customer's anchor,
 the training loop, and how predictions are keyed and written.
 """
 
@@ -19,6 +19,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import pyarrow as pa
@@ -47,8 +48,6 @@ from kumo.pytorch.api import (
     TimeWindow,
     prepare,
 )
-from kumo.pytorch.data.records import cutoff_to_epoch
-from kumo.pytorch.serving import RowLimit, ServingRowsSpec
 
 DAY = 86_400
 HORIZON_DAYS = 7
@@ -219,100 +218,17 @@ def oracle_auroc(data: Path, predictions: Mapping[int, float]) -> float:
     return auroc(np.array([p[0] for p in pairs]), np.array([p[1] for p in pairs]))
 
 
-@dataclass(frozen=True)
-class CustomerRows:
-    """The caller's row store for serving: what ``rows_spec`` lists, looked up per request."""
-
-    tables: Mapping[str, pa.Table]
-
-    @classmethod
-    def open(cls, data: Path) -> CustomerRows:
-        return cls({name: pq.read_table(data / "tables" / f"{name}.parquet") for name in TABLES})
-
-    def lookup(self, spec: ServingRowsSpec, request: SampleRequest) -> dict[str, pa.Table]:
-        """Follow ``spec`` for one request, hop by hop: each route's join, time window and
-        limit; then only the required tables and columns."""
-
-        cutoff = cutoff_to_epoch(request.as_of_time)
-        fetched: dict[str, pa.Table] = {}
-        routes = sorted(
-            ((table, route) for table in spec.tables.values() for route in table.routes),
-            key=lambda item: item[1].hop,
-        )
-        for table, route in routes:
-            rows = self.tables[table.name]
-            join = route.join
-            if join.request_field == "entity_id":
-                rows = rows.filter(pc.equal(rows[join.column], request.entity_id))
-            elif join.request_field is not None:
-                raise ValueError(f"the H&M lookup has no {join.request_field} to join {table.name}")
-            else:
-                source = fetched[join.from_table][join.from_column]
-                rows = rows.filter(pc.is_in(rows[join.column], value_set=source.combine_chunks()))
-            if route.time_column is not None:
-                window = route.window
-                start, stop = (None, 0) if window is None else (window.start, window.stop)
-                seconds = _seconds(rows[route.time_column])
-                keep = np.ones(len(rows), dtype=bool)
-                if start is not None:
-                    keep &= seconds > cutoff + start
-                if stop is not None:
-                    keep &= seconds <= cutoff + stop
-                rows = rows.filter(pa.array(keep))
-            if route.limit is not None:
-                rows = rows.take(_kept(rows, route.limit, join.column))
-            if table.name in fetched:
-                rows = pa.concat_tables([fetched[table.name], rows])
-                key = next(n for n, c in table.columns.items() if c.role == "primary key")
-                _, first = np.unique(rows[key].to_numpy(), return_index=True)
-                rows = rows.take(np.sort(first))
-            fetched[table.name] = rows
-        return {
-            name: fetched.get(name, self.tables[name].schema.empty_table()).select(
-                [column for column, spec_column in table.columns.items() if spec_column.required]
-            )
-            for name, table in spec.tables.items()
-            if table.required
-        }
+def request_anchors(path: Path, requests: Iterable[SampleRequest]) -> AnchorTable:
+    """Write the H&M serving requests in the same key and clock types as offline anchors."""
+    rows = [
+        {"sample_id": r.sample_id, "customer_id": r.entity_id, "cutoff": r.as_of_time}
+        for r in requests
+    ]
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    return AnchorTable(Parquet(str(path)), "customer_id", "cutoff", sample_id="sample_id")
 
 
-def _seconds(column: pa.ChunkedArray) -> np.ndarray:
-    """Whole UTC seconds, rounding a fractional instant up as stored clocks do."""
-
-    if column.null_count:
-        raise ValueError(
-            "a time column the loader filters on has a NULL; the loader refuses such a row"
-        )
-    if pa.types.is_date32(column.type):
-        return column.cast(pa.int32()).to_numpy().astype(np.int64) * DAY
-    per_second = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[column.type.unit]
-    values = column.cast(pa.int64()).to_numpy()
-    return -(-values // per_second)
-
-
-def _kept(rows: pa.Table, limit: RowLimit, join_column: str) -> np.ndarray:
-    """Positions of the rows a limit keeps per group, every row tied at the last one included."""
-
-    seconds = _seconds(rows[limit.time_column])
-    groups = (
-        np.zeros(len(rows), dtype=np.int64)
-        if limit.per == "request"
-        else np.unique(rows[join_column].to_numpy(), return_inverse=True)[1]
-    )
-    kept: list[int] = []
-    for group in np.unique(groups):
-        members = np.flatnonzero(groups == group)
-        times = seconds[members]
-        ordered = members[np.argsort(-times if limit.order == "newest" else times, kind="stable")]
-        if len(ordered) > limit.count:
-            boundary = seconds[ordered[limit.count - 1]]
-            tied = [i for i in ordered[limit.count :] if seconds[i] == boundary]
-            ordered = np.concatenate((ordered[: limit.count], tied)).astype(np.int64)
-        kept.extend(ordered.tolist())
-    return np.array(sorted(kept), dtype=np.int64)
-
-
-def serving_requests(data: Path, store: CustomerRows, count: int) -> list[SampleRequest]:
+def serving_requests(data: Path, count: int) -> list[SampleRequest]:
     """The point-lookup customers, then others who bought before, at the last test cutoff.
 
     Customers with no purchase at or before the cutoff are left out: kumo-pytorch assembles
@@ -327,7 +243,9 @@ def serving_requests(data: Path, store: CustomerRows, count: int) -> list[Sample
     sample_ids = dict(
         zip(table["customer_id"].to_pylist(), table["sample_id"].to_pylist(), strict=True)
     )
-    transactions = store.tables["transactions"]
+    transactions = pq.read_table(
+        data / "tables/transactions.parquet", columns=["customer_id", "t_dat"]
+    )
     bought = set(
         transactions.filter(pc.less(transactions["t_dat"], cutoff))["customer_id"].to_pylist()
     )
@@ -410,17 +328,20 @@ def batch_inference(artifact: Artifact, model: nn.Module, data: Path, out: Path)
     print(f"infer: scored {len(predictions.scores)} test anchors")
 
 
-def serve(artifact: Artifact, model: nn.Module, data: Path) -> None:
-    """Answer single requests from the caller's rows, as a request handler would."""
-
-    store = CustomerRows.open(data)
-    server = ServingAssembler(artifact)
-    print(f"serve: rows to fetch per request\n{server.rows_spec}")
+def serve(artifact: Artifact, model: nn.Module, data: Path, work: Path) -> None:
+    """Score individual anchors against the flow's existing DiskGraph index."""
+    engine = DiskGraphEngine(index=work / "index")
     served: dict[str, float] = {}
     model.eval()
-    for request in serving_requests(data, store, count=16):
-        (batch,) = server.assemble(store.lookup(server.rows_spec, request), [request])
-        with torch.no_grad():
+    with (
+        prepare(artifact.contract, dataset(data), engine, inference=True) as plan,
+        TemporaryDirectory() as directory,
+        torch.no_grad(),
+    ):
+        server = ServingAssembler(artifact, plan=plan)
+        for request in serving_requests(data, count=16):
+            selection = request_anchors(Path(directory) / "request.parquet", [request])
+            (batch,) = server.assemble(selection)
             served[str(request.sample_id)] = torch.sigmoid(model(batch)).item()
     print(f"serve: answered {len(served)} requests")
 

@@ -4,9 +4,7 @@
 
 """Samples assembled from rows held in memory, independent of any engine.
 
-Serving assembles caller-supplied rows with `RowSource`, in the DiskGraph
-engine's clock; the in-memory engine reads its datasets through it too, in
-whole seconds.
+The in-memory engine reads its datasets through `RowSource` in whole seconds.
 """
 
 from kumo.pytorch.rows.clock import Clock

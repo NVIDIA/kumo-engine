@@ -26,10 +26,11 @@ from typing import Any
 import pytest
 import torch
 
-from conformance.assertions import write_parquet
+from conformance.assertions import bound_case, write_parquet
 from conformance.cases import GoldenCase, discover_cases
 from kumo.pytorch import api
 from kumo.pytorch.assembly import ARTIFACT_DIGESTS, artifact_digests
+from tests.helpers import serving_anchors
 from tests.reference_models.batch_definitions import BATCH_SPECS
 from tests.reference_models.data_schema import SYNTHETIC_SCHEMA
 from tests.reference_models.fixtures import SAMPLES, requests_for
@@ -406,7 +407,10 @@ def test_inference_scores_every_anchor_even_when_training_drops_the_last_batch(
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
             scored = [i for batch in task.batches() for i in batch.metadata["sample_ids"]]
     assert scored == [request.sample_id for request in requests]
-    served = api.ServingAssembler(artifact).assemble(case.tables, requests, batch_size=2)
+    with bound_case(case, "diskgraph") as (dataset, engine):
+        with api.prepare(artifact.contract, dataset, engine) as plan:
+            anchors = serving_anchors(tmp_path / "anchors.parquet", requests)
+            served = api.ServingAssembler(artifact, plan=plan).assemble(anchors, batch_size=2)
     assert [i for batch in served for i in batch.metadata["sample_ids"]] == scored
 
 
@@ -439,35 +443,25 @@ def test_diskgraph_inference_equals_reference_inference(
         assert_same_batches([batch], [expected[batch.metadata["sample_ids"][0]]])
 
 
-def _rows_for(users: set[int]) -> Rows:
-    rows = _fixture_rows()
-    return {
-        "users": [row for row in rows["users"] if row["user_id"] in users],
-        "accounts": [row for row in rows["accounts"] if row["user_id"] in users],
-        "card_transactions": [row for row in rows["card_transactions"] if row["user_id"] in users],
-        "merchants": rows["merchants"],
-    }
-
-
 @pytest.mark.parametrize("contract_name", sorted(CONTRACTS))
 def test_serving_equals_batch_inference(tmp_path: Path, contract_name: str) -> None:
     contract = CONTRACTS[contract_name](_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")
     artifact = api.Artifact.load(tmp_path / "artifact")
     with api.prepare(artifact.contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
-            expected = list(task.batches(batch_size=1, seed=SEED))
-
-    # one request per call, each with only its own user's rows; batches compare by sample ID
-    # because length bucketing orders the batch path
-    server = api.ServingAssembler(artifact)
-    served = {
-        request.sample_id: server.assemble(_rows_for({request.entity_id}), [request], seed=SEED)
-        for request in _requests()
-    }
-    for batch in expected:
-        assert_same_batches(served[batch.metadata["sample_ids"][0]], [batch])
+        requests = _requests()
+        anchors = serving_anchors(tmp_path / "anchors.parquet", requests)
+        server = api.ServingAssembler(artifact, plan=plan)
+        if contract_name == "pragma":
+            with pytest.raises(
+                ValueError, match="native length planning currently requires an EventSource"
+            ):
+                server.assemble(anchors, batch_size=1, seed=SEED)
+            return
+        with plan.materialize(anchors, fitted=artifact.fitted_state, inference=True) as task:
+            expected = list(task.batches(batch_size=1, seed=SEED, output_format="model"))
+        assert_same_batches(server.assemble(anchors, batch_size=1, seed=SEED), expected)
 
 
 def _pragma_without_text(schema: api.DataSchema) -> api.DataLoaderSpec:
@@ -504,6 +498,13 @@ def test_a_customer_without_history_is_scored_on_every_path(
     gives the reference's batch."""
 
     contract = contract_factory(_schema())
+    contract = replace(
+        contract,
+        batch=replace(
+            contract.batch,
+            batching=replace(contract.batch.batching, length_input="history", max_tokens=128),
+        ),
+    )
     _train(contract, *_dataset("in_memory", _fixture_rows(), tmp_path), tmp_path / "artifact")
     artifact = api.Artifact.load(tmp_path / "artifact")
     encoders = artifact.fitted_state.to_dict()["encoders"].values()
@@ -539,15 +540,12 @@ def test_a_customer_without_history_is_scored_on_every_path(
         entity = batch.inputs["entity"]
         assert entity["valid"].all() and entity["value_ids"].shape == (1, 3)
 
-    server = api.ServingAssembler(artifact)
-    for request in requests:
-        own = {
-            name: [row for row in values if row.get("user_id") == request.entity_id]
-            for name, values in rows.items()
-            if name != "merchants"
-        }
-        served = server.assemble({**own, "merchants": rows["merchants"]}, [request], seed=SEED)
-        assert_same_batches(served, [reference[request.sample_id]])
+    dataset, engine = _dataset("diskgraph", rows, tmp_path / "serving")
+    with api.prepare(artifact.contract, dataset, engine) as plan:
+        server = api.ServingAssembler(artifact, plan=plan)
+        for request in requests:
+            anchors = serving_anchors(tmp_path / "anchors.parquet", [request])
+            assert_same_batches(server.assemble(anchors, seed=SEED), [reference[request.sample_id]])
     for output_format in ("inspectable", "model"):
         actual = infer("diskgraph", output_format)
         assert actual.keys() == reference.keys()
@@ -555,36 +553,20 @@ def test_a_customer_without_history_is_scored_on_every_path(
             assert_same_batches([batch], [reference[sample_id]])
 
 
-def test_serving_reads_arrow_tables(tmp_path: Path) -> None:
-    pa = pytest.importorskip("pyarrow")
+@pytest.mark.parametrize("arrow", [False, True])
+def test_serving_refuses_row_only_requests(tmp_path: Path, arrow: bool) -> None:
+    import pyarrow as pa
+
     contract = _pragma_contract(_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
+    rows = _fixture_rows()
+    dataset, engine = _dataset("diskgraph", rows, tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")
     artifact = api.Artifact.load(tmp_path / "artifact")
-    rows = _rows_for({2, 3})
-    tables = {name: pa.Table.from_pylist(values) for name, values in rows.items() if values}
-    tables["merchants"] = pa.Table.from_pylist(rows["merchants"])
-    server = api.ServingAssembler(artifact)
-    assert_same_batches(server.assemble(tables, _requests()), server.assemble(rows, _requests()))
-
-
-def test_serving_refuses_rows_it_would_have_to_guess(tmp_path: Path) -> None:
-    contract = _pragma_contract(_schema())
-    dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
-    _train(contract, dataset, engine, tmp_path / "artifact")
-    server = api.ServingAssembler(api.Artifact.load(tmp_path / "artifact"))
-    rows = _rows_for({2})
-    request = _requests()[:1]
-    spec = "ServingAssembler.rows_spec"
-    with pytest.raises(ValueError, match=r"required tables \['card_transactions'\].*" + spec):
-        server.assemble({k: v for k, v in rows.items() if k != "card_transactions"}, request)
-    with pytest.raises(ValueError, match=r"\['devices'\], which .* does not declare.*" + spec):
-        server.assemble({**rows, "devices": []}, request)
-    broken = [{k: v for k, v in row.items() if k != "amount"} for row in rows["card_transactions"]]
-    with pytest.raises(ValueError, match=r"rows\['card_transactions'\]\[0\] lacks .*'amount'"):
-        server.assemble({**rows, "card_transactions": broken}, request)
-    with pytest.raises(ValueError, match="at least one request"):
-        server.assemble(rows, [])
+    supplied = (
+        {name: pa.Table.from_pylist(values) for name, values in rows.items()} if arrow else rows
+    )
+    with pytest.raises((ValueError, NotImplementedError), match="(?i)(native|diskgraph) serving"):
+        api.ServingAssembler(artifact).assemble(supplied, _requests())
 
 
 def test_state_is_refused_under_a_different_schema_or_contract(tmp_path: Path) -> None:
@@ -784,25 +766,20 @@ def test_golden_inference_case_answers_in_inference_mode(tmp_path: Path) -> None
     assert _golden_values(batches, artifact.fitted_state) == _expected(case)
 
 
-def test_golden_serving_case_answers_from_supplied_rows(tmp_path: Path) -> None:
+def test_golden_serving_case_answers_from_parquet_anchors(tmp_path: Path) -> None:
     case = _golden("C-SERVING-001")
-    requests = list(case.requests)
-    with api.prepare(case.contract, _golden_dataset(case), api.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            task.to_artifact().save(tmp_path)
-    artifact = api.Artifact.load(tmp_path)
-    served = {}
-    for request in requests:
-        rows = {
-            "users": [row for row in case.tables["users"] if row["user_id"] == request.entity_id],
-            "events": [row for row in case.tables["events"] if row["user_id"] == request.entity_id],
-        }
-        batches = api.ServingAssembler(artifact).assemble(rows, [request])
-        served.update(_golden_values(batches, artifact.fitted_state))
-    assert served == _expected(case)
+    with bound_case(case, "diskgraph") as (dataset, engine):
+        with api.prepare(case.contract, dataset, engine) as plan:
+            anchors = serving_anchors(tmp_path / "anchors.parquet", case.requests)
+            with plan.materialize(anchors) as task:
+                task.to_artifact().save(tmp_path / "artifact")
+            artifact = api.Artifact.load(tmp_path / "artifact")
+            batches = api.ServingAssembler(artifact, plan=plan).assemble(anchors)
+    assert _golden_values(batches, artifact.fitted_state) == _expected(case)
 
 
 def test_the_lifecycle_example_runs_in_separate_processes(tmp_path: Path) -> None:
+    pytest.importorskip("diskgraph")
     result = subprocess.run(
         [sys.executable, "-m", "tests.lifecycle_app", str(tmp_path)],
         cwd=ROOT,

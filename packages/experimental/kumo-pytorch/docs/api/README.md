@@ -15,7 +15,7 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [Targets](targets.md) | Explicitly encoded labels and input-derived objectives. |
 | [Lifecycle](lifecycle.md) | The contract, validation, preparation, anchors, fitting, batch iteration and previews. |
 | [Datasets and engines](engines.md) | Where table bytes live, which engine executes the contract, and what it supports. |
-| [Artifacts and serving](artifacts-and-serving.md) | Saving and loading fitted state, model weights, and serving from caller-supplied rows. |
+| [Artifacts and serving](artifacts-and-serving.md) | Saving fitted state and model weights, and serving from a prepared DiskGraph index. |
 | [Object-linked authoring (experimental)](authoring.md) | `kumo.pytorch.build` links declarations through Python objects and lowers them to the ordinary `DataLoaderSpec`. It is experimental: names and arguments may change. |
 | [Example datasets](datasets.md) | Seeded synthetic datasets with planted signals, used by the example notebooks. |
 
@@ -138,8 +138,8 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`FitRecord`](artifacts-and-serving.md#fitrecord) | `kumo.pytorch.api` | Where one half of a fitted state was fitted. |
 | [`save_weights`](artifacts-and-serving.md#save_weights) | `kumo.pytorch.api` | Save model weights with the contract and fitted state they were trained against. |
 | [`load_weights`](artifacts-and-serving.md#load_weights) | `kumo.pytorch.api` | Load weights saved by `save_weights`, refusing them under other fitted state. |
-| [`ServingAssembler`](artifacts-and-serving.md#servingassembler) | `kumo.pytorch.api` | Inference batches for one artifact, from rows the caller fetches and passes in. |
-| [`ServingRowsSpec`](artifacts-and-serving.md#servingrowsspec) | `kumo.pytorch.api` | What to fetch per request for one contract; `str(spec)` renders it for reading. |
+| [`ServingAssembler`](artifacts-and-serving.md#servingassembler) | `kumo.pytorch.api` | Build inference batches with the artifact's fitted encoders on a prepared index. |
+| [`ServingRowsSpec`](artifacts-and-serving.md#servingrowsspec) | `kumo.pytorch.api` | The rows a request depends on. Use `str(spec)` to inspect the description. |
 | [`Batch`](authoring.md#batch) | `kumo.pytorch.build` | Named inputs and the same shared resources as BatchSpec. |
 | [`Column`](authoring.md#column) | `kumo.pytorch.build` | A declared column carrying its table and stored type. |
 | [`Count`](authoring.md#count) | `kumo.pytorch.build` | `count` over the rows reached by `via`, lowered to an `Aggregate`. |

@@ -42,11 +42,12 @@ from e2e.datasets.hm import (  # noqa: E402
     fingerprint_mismatches,
 )
 from e2e.flows.common import (  # noqa: E402
-    CustomerRows,
+    TABLES,
     anchors,
     dataset,
     oracle_auroc,
     read_predictions,
+    request_anchors,
     serving_requests,
 )
 from e2e.flows.hm_gnn import RECENT_PURCHASES  # noqa: E402
@@ -217,9 +218,8 @@ def reference(runs: dict[str, list[Run]], hm: HMDataset) -> dict[str, dict[int, 
     and article and each served customer's purchases at any time (both contracts reach
     purchases only through their customer; a missing row would fail the checks)."""
 
-    store = CustomerRows.open(hm.root)
-    requests = serving_requests(hm.root, store, count=16)
-    tables = dict(store.tables)
+    requests = serving_requests(hm.root, count=16)
+    tables = {name: pq.read_table(hm.table(name)) for name in TABLES}
     served = pa.array([request.entity_id for request in requests])
     purchases = tables["transactions"]
     tables["transactions"] = purchases.filter(pc.is_in(purchases["customer_id"], served))
@@ -230,22 +230,25 @@ def reference(runs: dict[str, list[Run]], hm: HMDataset) -> dict[str, dict[int, 
     }
 
 
-def test_serving_equals_reference_batch_inference(
-    runs: dict[str, list[Run]],
-    flow: str,
-    hm: HMDataset,
-    reference: dict[str, dict[int, Batch]],
+def test_serving_equals_diskgraph_batch_inference(
+    runs: dict[str, list[Run]], flow: str, hm: HMDataset, tmp_path: Path
 ) -> None:
-    """Each request, served from the rows the flow looks up by following rows_spec,
-    gives exactly the reference batch-inference batch (``reference``)."""
-
-    store = CustomerRows.open(hm.root)
-    server = ServingAssembler(Artifact.load(runs[flow][0].work / "artifact"))
-    requests = serving_requests(hm.root, store, count=16)
-    assert sorted(reference[flow]) == sorted(int(r.sample_id) for r in requests)
-    for request in requests:
-        served = server.assemble(store.lookup(server.rows_spec, request), [request], seed=0)
-        assert_same_batches(served, [reference[flow][int(request.sample_id)]])
+    """Single requests reproduce native offline batches from the same prepared index."""
+    work = runs[flow][0].work
+    artifact = Artifact.load(work / "artifact")
+    engine = DiskGraphEngine(index=tmp_path / "index")
+    requests = serving_requests(hm.root, count=16)
+    with prepare(artifact.contract, dataset(hm.root), engine, inference=True) as plan:
+        group = request_anchors(tmp_path / "all.parquet", requests)
+        with plan.materialize(group, fitted=artifact.fitted_state) as task:
+            expected = {
+                b.metadata["sample_ids"][0]: b
+                for b in task.batches(batch_size=1, seed=0, shuffle=False, output_format="model")
+            }
+        server = ServingAssembler(artifact, plan=plan)
+        for request in requests:
+            selection = request_anchors(tmp_path / "single.parquet", [request])
+            assert_same_batches(server.assemble(selection), [expected[request.sample_id]])
 
 
 def test_diskgraph_batch_inference_equals_the_reference(
@@ -546,20 +549,20 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
 
 
 def test_a_history_batch_without_any_event_assembles(
-    runs: dict[str, list[Run]], hm: HMDataset, root: Path
+    runs: dict[str, list[Run]], hm: HMDataset, tmp_path: Path
 ) -> None:
     """A customer with no purchase before the cutoff gets a batch with no event, served
-    or scored alone, on either engine. The flows still serve only customers who
+    or scored alone on DiskGraph. The flows still serve only customers who
     bought before, because their model reads at least one event per batch."""
 
     artifact = Artifact.load(runs["pragma"][0].work / "artifact")
     request = _request_without_history(hm)
-    store, server = CustomerRows.open(hm.root), ServingAssembler(artifact)
-    (served,) = server.assemble(store.lookup(server.rows_spec, request), [request])
-    engine = DiskGraphEngine(index=root / "empty-index")
-    with prepare(artifact.contract, dataset(hm.root), engine) as plan:
-        with plan.materialize([request], fitted=artifact.fitted_state, inference=True) as task:
-            (scored,) = list(task.batches(output_format="model"))
+    selection = request_anchors(tmp_path / "no-history.parquet", [request])
+    engine = DiskGraphEngine(index=tmp_path / "index")
+    with prepare(artifact.contract, dataset(hm.root), engine, inference=True) as plan:
+        (served,) = ServingAssembler(artifact, plan=plan).assemble(selection)
+        with plan.materialize(selection, fitted=artifact.fitted_state) as task:
+            (scored,) = task.batches(output_format="model")
     for batch in (served, scored):
         assert batch.inputs["history"]["value_ids"].shape[0] == 0
         assert not batch.inputs["history"]["sequence"]["valid"].any()
@@ -708,7 +711,7 @@ def _tie_cut_requests(hm: HMDataset) -> dict[int, SampleRequest]:
     times = _purchase_times(hm)
     return {
         int(request.sample_id): request
-        for request in serving_requests(hm.root, CustomerRows.open(hm.root), count=16)
+        for request in serving_requests(hm.root, count=16)
         if _cuts_a_tie(times, request.entity_id, _epoch(request.as_of_time))
     }
 

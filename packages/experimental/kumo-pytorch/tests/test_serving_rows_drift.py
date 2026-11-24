@@ -7,9 +7,8 @@
 If it were ever narrower than inference, serving code that fetches what it lists
 would silently build other batches. For every golden case and each generated
 family (tabular, graph, sequence), this fetches per anchor exactly the rows the
-spec selects (`tests.serving_fetch`), assembles them with `ServingAssembler`, and
-compares the result with reference (in-memory) batch inference over the whole
-dataset.
+spec selects (`tests.serving_fetch`) and compares reference inference on those
+rows with inference over the whole dataset.
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from conformance.sequence_cases import sequence_batch
 from kumo.pytorch import api
 from tests.serving_fetch import Tables, fetch
 from tests.test_inference_lifecycle import assert_same_batches
+from tests.test_serving import _reference_batch
 
 SEED = 7
 ENGINE = "in_memory"
@@ -109,19 +109,18 @@ def _run(case: DriftCase) -> tuple[api.Artifact, dict[str, api.Batch]]:
                 return artifact, {batch.metadata["sample_ids"][0]: batch for batch in batches}
 
 
-def _served(server: api.ServingAssembler, case: DriftCase, request: api.SampleRequest) -> api.Batch:
-    rows = fetch(server.rows_spec, server.contract.schema, case.tables, request)
-    (batch,) = server.assemble(rows, [request], seed=SEED)
-    return batch
+def _served(artifact: api.Artifact, case: DriftCase, request: api.SampleRequest) -> api.Batch:
+    spec = api.ServingRowsSpec.from_contract(artifact.contract)
+    rows = fetch(spec, artifact.contract.schema, case.tables, request)
+    return _reference_batch(artifact, rows, request)
 
 
 @pytest.mark.parametrize("case_id", sorted(CASES))
 def test_serving_what_the_spec_lists_equals_reference_batch_inference(case_id: str) -> None:
     case = CASES[case_id]
     artifact, expected = _run(case)
-    server = api.ServingAssembler(artifact)
     for request in case.requests:
-        assert_same_batches([_served(server, case, request)], [expected[request.sample_id]])
+        assert_same_batches([_served(artifact, case, request)], [expected[request.sample_id]])
 
 
 def test_dropping_a_row_the_spec_lists_changes_some_batches() -> None:
@@ -131,22 +130,22 @@ def test_dropping_a_row_the_spec_lists_changes_some_batches() -> None:
     for case in CASES.values():
         changed.setdefault(case.family, 0)
         artifact, _ = _run(case)
-        server = api.ServingAssembler(artifact)
-        changed[case.family] += _some_row_is_read(server, case)
+        changed[case.family] += _some_row_is_read(artifact, case)
     assert all(changed.values()), changed
 
 
-def _some_row_is_read(server: api.ServingAssembler, case: DriftCase) -> bool:
-    entity = server.rows_spec.entity_table
+def _some_row_is_read(artifact: api.Artifact, case: DriftCase) -> bool:
+    spec = api.ServingRowsSpec.from_contract(artifact.contract)
+    entity = spec.entity_table
     for request in case.requests:
-        rows = fetch(server.rows_spec, server.contract.schema, case.tables, request)
-        (full,) = server.assemble(rows, [request], seed=SEED)
+        rows = fetch(spec, artifact.contract.schema, case.tables, request)
+        full = _reference_batch(artifact, rows, request)
         for name, table in rows.items():
             if name == entity:
                 continue
             for index in range(len(table)):
                 dropped = {**rows, name: table[:index] + table[index + 1 :]}
-                (partial,) = server.assemble(dropped, [request], seed=SEED)
+                partial = _reference_batch(artifact, dropped, request)
                 try:
                     assert_same_batches([partial], [full])
                 except AssertionError:

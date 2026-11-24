@@ -7,7 +7,7 @@
     python -m tests.lifecycle_app [WORKDIR]
 
 runs ``train``, ``infer`` and ``serve`` each in its own process, the way a
-deployment would. The definitions from ``DAY`` through ``rows_for`` are the
+deployment would. The definitions from ``DAY`` through ``dataset`` are the
 guide's ``shop.py`` block verbatim; ``tests/test_inference_lifecycle.py`` checks
 that they stay identical.
 """
@@ -24,6 +24,8 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch import nn
 
@@ -170,17 +172,6 @@ def dataset(rows: Tables) -> api.Dataset:
     return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
 
 
-def rows_for(user_id: int, as_of: int) -> Tables:
-    """The caller's lookup of what `rows_spec` lists: the user and purchases up to `as_of`."""
-    rows = tables()
-    return {
-        "users": [row for row in rows["users"] if row["user_id"] == user_id],
-        "purchases": [
-            row for row in rows["purchases"] if row["user_id"] == user_id and row["at"] <= as_of
-        ],
-    }
-
-
 def train(workdir: Path) -> None:
     torch.manual_seed(0)
     with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
@@ -250,18 +241,36 @@ def infer(workdir: Path) -> None:
 
 def serve(workdir: Path) -> None:
     artifact, model = load_model(workdir)
-    server = api.ServingAssembler(artifact)
-    print(server.rows_spec)
     predictions = json.loads((workdir / "predictions.json").read_text())
+    contents = tables()
+    sources = {}
+    for table in artifact.contract.schema.tables:
+        schema = pa.schema([(k, dtype.to_arrow()) for k, dtype in table.columns.items()])
+        path = workdir / f"{table.name}.parquet"
+        pq.write_table(pa.Table.from_pylist(contents[table.name], schema=schema), path)
+        sources[table.name] = api.Parquet(str(path))
+    engine = api.DiskGraphEngine(index=workdir / "serving-index")
     matches = []
-    for user_id in (1, 2, 3):
-        request = api.SampleRequest(f"user-{user_id}-at-{SCORE_AT // DAY}", user_id, SCORE_AT)
-        (batch,) = server.assemble(rows_for(user_id, SCORE_AT), [request])
-        with torch.no_grad():
-            score = torch.sigmoid(model(batch)).item()
-        # A forward pass over a batch of one may differ from one over sixteen in the last bits.
-        matches.append(math.isclose(score, predictions[request.sample_id], abs_tol=1e-6))
-        print(f"serve: {request.sample_id} scores {score:.3f}")
+    with api.prepare(artifact.contract, api.Dataset(sources), engine, inference=True) as plan:
+        server = api.ServingAssembler(artifact, plan=plan)
+        for request in anchors(SCORE_AT, split=None)[:3]:
+            path = workdir / "request.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "id": [request.sample_id],
+                        "user": [request.entity_id],
+                        "at": [request.as_of_time],
+                    }
+                ),
+                path,
+            )
+            selection = api.AnchorTable(api.Parquet(str(path)), "user", "at", sample_id="id")
+            (batch,) = server.assemble(selection)
+            with torch.no_grad():
+                score = torch.sigmoid(model(batch)).item()
+            matches.append(math.isclose(score, predictions[request.sample_id], abs_tol=1e-6))
+            print(f"serve: {request.sample_id} scores {score:.3f}")
     print("serving equals batch inference:", all(matches))
 
 
