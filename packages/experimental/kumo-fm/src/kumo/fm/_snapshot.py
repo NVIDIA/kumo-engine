@@ -355,6 +355,7 @@ class SnapshotFMLoader:
     def _labels_for(self, anchor, seeds):
         result = {}
         expected = {s["instance_id"] for s in seeds}
+        seen, null_ids = set(), set()
         with self._labels.materialize(anchor) as task:
             for batch in task.batches(output_format="inspectable", shuffle=False,
                                       batch_size=self._batch_size):
@@ -365,8 +366,14 @@ class SnapshotFMLoader:
                     raise ValueError("FM label batch is misaligned")
                 for identifier, value, present in zip(sample_ids, values, valid, strict=True):
                     identifier = int(identifier)
-                    if identifier not in expected or identifier in result or not present:
-                        raise ValueError("Missing, duplicated, or unexpected FM context label")
+                    if identifier not in expected:
+                        raise ValueError(f"Unexpected FM context label for occurrence ID {identifier}")
+                    if identifier in seen:
+                        raise ValueError(f"FM context label duplicated for occurrence ID {identifier}")
+                    seen.add(identifier)
+                    if not present:
+                        null_ids.add(identifier)
+                        continue
                     if self._classes is not None:
                         if value not in self._classes:
                             raise ValueError("Context label is outside declared classes")
@@ -374,8 +381,13 @@ class SnapshotFMLoader:
                     else:
                         value = float(value)
                     result[identifier] = value
-        if set(result) != expected:
-            raise ValueError("Missing FM context labels")
+        if seen != expected:
+            missing = [s["instance_id"] for s in seeds if s["instance_id"] not in seen]
+            raise ValueError(f"Missing FM context labels for occurrence IDs {missing}")
+        if null_ids:
+            missing = [s["instance_id"] for s in seeds if s["instance_id"] in null_ids]
+            raise ValueError(f"FM context target {self._target!r} is null for occurrence IDs {missing}; "
+                             "context targets must be non-null for every occurrence")
         return result
 
     def _graphs_for(self, anchor, seeds):

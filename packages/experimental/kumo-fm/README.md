@@ -47,7 +47,11 @@ Task cleanup retains base indexes and caches; there is no automatic collection.
 axis. `Query(entities=..., at=...)` uses one time. Either accepts ordered
 `pairs=[(entity, time[, occurrence_id]), ...]`. IDs default to zero-based
 positions within each split; repeated pairs remain distinct. Context label
-windows must end before the earliest query. Query targets never enter payloads.
+windows must end before the earliest query. Every context target must be non-null;
+for example, `mean` over an empty future window produces a null label. Loading
+rejects such requests and reports the target name and affected occurrence IDs
+without dropping occurrences. `count` returns zero for an empty window.
+Query targets never enter payloads.
 
 Source primary keys must not be named `instance_id`, which FM reserves for
 occurrence IDs. Source features named `instance_id` cannot be projected either.

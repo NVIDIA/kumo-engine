@@ -37,3 +37,31 @@ def test_snapshot_batch_survives_close_without_resampling(tmp_path):
     assert "__fm_target" not in batch.tables("predict")["instance_table"].column_names
     with pytest.raises(RuntimeError, match="closed"):
         loader.load(query=fm.Query(pairs=[(LARGE, when(25))]))
+
+
+@pytest.mark.parametrize("operation", ["mean", "count"])
+def test_context_targets_report_null_occurrences_without_dropping_rows(tmp_path, operation):
+    index, _ = build_index(tmp_path)
+    engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=index, id="fixture"))
+    target = api.Aggregate(api.Rows(path=("order_user",),
+                                    time=api.TimeWindow("at", start=0, stop=7 * 86400)),
+                           operation, "order_id" if operation == "mean" else None)
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"future": target},
+                            neighborhoods={"history": api.NeighborhoodSpec((api.GraphLayer((
+                                api.GraphSample("order_user", direction="reverse", strategy="recent", fanout=1),
+                            )),))})
+    context = fm.Context(pairs=[(-5, when(10), 202), (LARGE, when(10), 101)])
+    query = fm.Query(pairs=[(LARGE, when(25), 909)])
+    with fm.prepare(engine=engine, sample=sample, target="future", task="regression",
+                    features={"users": [], "orders": []}, batch_size=1) as loader:
+        if operation == "mean":
+            with pytest.raises(ValueError) as error:
+                loader.load(context=context, query=query)
+            assert str(error.value) == (
+                "FM context target 'future' is null for occurrence IDs [202]; "
+                "context targets must be non-null for every occurrence")
+        else:
+            batch = loader.load(context=context, query=query)
+            instance = batch.tables("context")["instance_table"]
+            assert instance["instance_id"].to_pylist() == [202, 101]
+            assert instance["__fm_target"].to_pylist() == [0.0, 1.0]
