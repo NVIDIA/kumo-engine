@@ -207,7 +207,7 @@ class LocalSnapshotStore:
         """Adopt a verified import without replacing a healthy physical build.
 
         The caller holds the graph lock. Old exports without a native build ID
-        retain their legacy location. Damaged physical copies are displaced only
+        retain their legacy location. Damaged physical copies are deleted only
         once their replacement is complete and verified.
         """
         from diskgraph import snapshot_range_checksums
@@ -235,9 +235,7 @@ class LocalSnapshotStore:
             self._publish_reference(handle, build_id)
             return existing
         if target.exists():
-            damaged = source.parent / ".damaged" / f"{build_id}-{uuid.uuid4().hex}"
-            damaged.parent.mkdir(parents=True, exist_ok=True)
-            target.rename(damaged)
+            shutil.rmtree(target)
         return self.publish(handle, result)
 
     def _publish_reference(self, handle: DiskgraphSnapshotHandle, build_id: str) -> None:

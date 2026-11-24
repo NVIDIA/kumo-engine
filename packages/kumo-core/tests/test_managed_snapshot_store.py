@@ -71,6 +71,15 @@ def _files(path):
             for p in path.rglob('*') if p.is_file()}
 
 
+def _damage_build(path, damage):
+    if damage == 'missing_metadata':
+        (path / 'index_metadata.json').unlink()
+    elif damage == 'malformed_metadata':
+        (path / 'index_metadata.json').write_text('{')
+    else:
+        (path / 'col_stats.json').write_text('truncated')
+
+
 def test_restore_reuses_a_published_build_without_copying(staged, tmp_path):
     store, handle, result, source = staged
     durable_root, _ = _durable_copy(store, handle, source, tmp_path)
@@ -136,12 +145,13 @@ def test_restore_does_not_overwrite_a_valid_legacy_copy_hidden_by_a_bad_referenc
 
 
 @pytest.mark.parametrize('failure', ['copy', 'integrity'])
+@pytest.mark.parametrize('damage', ['missing_metadata', 'malformed_metadata', 'artifact'])
 def test_failed_restore_preserves_published_bytes_and_reference(
-        staged, tmp_path, failure):
+        staged, tmp_path, failure, damage):
     store, handle, result, source = staged
     durable_root, _ = _durable_copy(store, handle, source, tmp_path)
     published = Path(store.publish(handle, result).index_path)
-    (published / 'index_metadata.json').unlink()
+    _damage_build(published, damage)
     before = _files(published), store._reference(handle).read_bytes()
     destinations = []
 
@@ -162,27 +172,62 @@ def test_failed_restore_preserves_published_bytes_and_reference(
     assert destinations == [source]
     assert (_files(published), store._reference(handle).read_bytes()) == before
     assert not source.exists()
+    assert not list(tmp_path.rglob('.damaged'))
 
 
-def test_restore_repairs_a_damaged_managed_build_after_staging(staged, tmp_path):
+@pytest.mark.parametrize('damage', ['missing_metadata', 'malformed_metadata', 'artifact'])
+def test_restore_repairs_a_damaged_managed_build_after_staging(staged, tmp_path, damage):
     store, handle, result, source = staged
     durable_root, _ = _durable_copy(store, handle, source, tmp_path)
     published = Path(store.publish(handle, result).index_path)
-    (published / 'index_metadata.json').unlink()
+    _damage_build(published, damage)
+    (published / 'obsolete').write_text('discard with damaged build')
     damaged = _files(published)
+    incoming_inodes = []
+    unrelated = tmp_path / 'indexes/other-build/sentinel'
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text('keep')
 
     def copy_tree(origin, destination):
         assert Path(destination) == source
         assert _files(published) == damaged
         shutil.copytree(origin, destination)
+        incoming_inodes.append((Path(destination) / 'col_stats.json').stat().st_ino)
 
     restored = store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
                              copy_tree=copy_tree)
     assert restored.index_path == str(published)
     assert store.verify(handle) == restored
     assert not source.exists()
-    quarantined = list((source.parent / '.damaged').iterdir())
-    assert len(quarantined) == 1 and _files(quarantined[0]) == damaged
+    assert not (published / 'obsolete').exists()
+    assert (published / 'col_stats.json').stat().st_ino == incoming_inodes[0]
+    assert not list(tmp_path.rglob('.damaged'))
+    assert store.list_ready() == [handle]
+    assert unrelated.read_text() == 'keep'
+
+
+@pytest.mark.parametrize('error', [PermissionError('denied'), OSError('resource exhausted')])
+def test_import_target_verification_io_error_preserves_both_copies(
+        staged, tmp_path, monkeypatch, error):
+    import diskgraph
+
+    store, handle, result, source = staged
+    _, durable = _durable_copy(store, handle, source, tmp_path)
+    published = Path(store.publish(handle, result).index_path)
+    shutil.copytree(durable, source)
+    before = _files(published), _files(source), store._reference(handle).read_bytes()
+    verify = diskgraph.verify_snapshot_integrity
+
+    def verify_target(path):
+        if Path(path) == published:
+            raise error
+        verify(path)
+
+    monkeypatch.setattr(diskgraph, 'verify_snapshot_integrity', verify_target)
+    with pytest.raises(type(error), match=str(error)):
+        store.publish_import(handle, result)
+    assert (_files(published), _files(source), store._reference(handle).read_bytes()) == before
+    assert not list(tmp_path.rglob('.damaged'))
 
 
 def test_crash_after_rename_preserves_a_recoverable_build(

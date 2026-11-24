@@ -138,14 +138,20 @@ def test_export_load_round_trip_relocates_and_is_reused(
 
 
 @pytest.mark.parametrize('operation', ['snapshot', 'import'])
+@pytest.mark.parametrize('damage', ['missing_metadata', 'malformed_metadata', 'artifact'])
 def test_damaged_index_is_rebuilt_or_reloaded(
-        tmp_path, scratch, graph, exports, operation):
+        tmp_path, scratch, graph, exports, operation, damage):
     snapshot = graph.snapshot()
     location, _ = _export(snapshot, exports, tmp_path)
     expected = _index_files(snapshot.index_path)
     stats = snapshot.index_path / 'col_stats.json'
-    stats.write_bytes(stats.read_bytes()[:-1])
-    damaged = stats.read_bytes()
+    if damage == 'missing_metadata':
+        (snapshot.index_path / 'index_metadata.json').unlink()
+    elif damage == 'malformed_metadata':
+        (snapshot.index_path / 'index_metadata.json').write_text('{')
+    else:
+        stats.write_bytes(stats.read_bytes()[:-1])
+    damaged = _index_files(snapshot.index_path)
     from kumo.engine._monitoring import _local_index
     assert _local_index(snapshot.id) is None
     if operation == 'snapshot':
@@ -154,7 +160,7 @@ def test_damaged_index_is_rebuilt_or_reloaded(
         assert rebuilt.id == snapshot.id
         assert rebuilt.index_path != snapshot.index_path
         assert (rebuilt.index_path / 'col_stats.json').read_bytes() == expected['col_stats.json']
-        assert stats.read_bytes() == damaged
+        assert _index_files(snapshot.index_path) == damaged
         assert _local_index(rebuilt.id) == rebuilt.index_path
         return
 
@@ -162,12 +168,41 @@ def test_damaged_index_is_rebuilt_or_reloaded(
         loaded = _load(exports, location)
     assert loaded.index_path == snapshot.index_path
     assert _index_files(loaded.index_path) == expected
-    quarantined = list((tmp_path / 'cpu/snapshots' / snapshot._graph_key /
-                        '.damaged').glob('*/col_stats.json'))
-    assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == damaged
+    assert not list((tmp_path / 'cpu').rglob('.damaged'))
+    graph_dir = tmp_path / 'cpu/snapshots' / snapshot._graph_key
+    assert not [p for p in graph_dir.iterdir() if p.is_dir()]
+    assert [p.name for p in graph_dir.glob('*.index.json')] == [
+        f'{snapshot._data_version}.index.json']
+    assert list((tmp_path / 'cpu/indexes').iterdir()) == [snapshot.index_path]
     from kumo.engine._monitoring import _local_index
     assert _local_index(loaded.id) == loaded.index_path
+
+
+@pytest.mark.parametrize('failure', ['transfer', 'integrity'])
+def test_failed_import_keeps_a_damaged_build_until_replacement_is_verified(
+        tmp_path, scratch, graph, exports, monkeypatch, failure):
+    from diskgraph import DiskgraphCorruptionError
+
+    snapshot = graph.snapshot()
+    location, _ = _export(snapshot, exports, tmp_path)
+    (snapshot.index_path / 'index_metadata.json').unlink()
+    reference = (tmp_path / 'cpu/snapshots' / snapshot._graph_key /
+                 f'{snapshot._data_version}.index.json')
+    before = _index_files(snapshot.index_path), reference.read_bytes()
+    load_into = snapshot_io.load_into
+
+    def load(*args):
+        if failure == 'transfer':
+            raise OSError('interrupted download')
+        load_into(*args)
+        (Path(args[-1]) / 'col_stats.json').write_text('truncated')
+
+    monkeypatch.setattr(snapshot_io, 'load_into', load)
+    with pytest.warns(UserWarning, match='Reloading the damaged'):
+        with pytest.raises(OSError if failure == 'transfer' else DiskgraphCorruptionError):
+            _load(exports, location)
+    assert (_index_files(snapshot.index_path), reference.read_bytes()) == before
+    assert not list((tmp_path / 'cpu').rglob('.damaged'))
 
 
 def test_an_interrupted_reexport_leaves_the_last_export_loadable(
