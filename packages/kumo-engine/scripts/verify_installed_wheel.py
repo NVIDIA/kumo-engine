@@ -22,7 +22,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
-MODULES = ('kumo.engine', 'kumo_core', 'kumoapi', 'kumopql', 'diskgraph._c')
+MODULES = ('kumo.engine', 'kumo.pytorch', 'kumo_core', 'kumoapi', 'kumopql',
+           'diskgraph._c')
 
 
 def check_origin(origin: str | None, prefix: Path) -> str:
