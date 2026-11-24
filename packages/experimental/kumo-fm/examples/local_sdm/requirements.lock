@@ -1,3 +1,0 @@
-pyarrow==24.0.0
-torch==2.13.0
-structured-data-models @ git+https://github.com/NVIDIA/structured-data-models.git@fd2c29d035a165a998ea4fdb2b08a81fd89f71e1

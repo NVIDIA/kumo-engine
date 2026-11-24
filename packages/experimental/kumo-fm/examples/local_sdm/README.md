@@ -7,7 +7,8 @@ manifest, SQL engine, fixture download or query reference implementation.
 
 Install matching engine, DiskGraph, settings, PyTorch and FM wheels. Calling
 `load_batch()` uses only those packages. For model inference, additionally install
-the pinned SDM environment in `requirements.lock` and run:
+the pinned SDM environment documented at the top of
+[`walkthrough.ipynb`](walkthrough.ipynb) and run:
 
 ```bash
 cd packages/experimental/kumo-fm/examples/local_sdm
