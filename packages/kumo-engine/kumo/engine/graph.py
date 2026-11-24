@@ -303,12 +303,7 @@ def _store() -> Any:
         LocalSnapshotStore,
     )
 
-    from kumo._managed_paths import _SnapshotPaths
-
-    root = get_scratch_dir()
-    return LocalSnapshotStore(
-        DiskgraphLocalConfig(data_root=str(_SnapshotPaths.for_root(root).data_root),
-                             managed_root=str(root)))
+    return LocalSnapshotStore(DiskgraphLocalConfig(root=str(get_scratch_dir())))
 
 
 def _lock(graph_key: str) -> Any:

@@ -31,8 +31,7 @@ def _manifest(path):
 
 @pytest.fixture
 def staged(tmp_path):
-    store = LocalSnapshotStore(DiskgraphLocalConfig(
-        str(tmp_path / 'snapshots'), managed_root=str(tmp_path)))
+    store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(tmp_path)))
     handle = DiskgraphSnapshotHandle('graph', 'version')
     path = Path(store.staging_path(handle))
     path.mkdir(parents=True)
@@ -675,26 +674,28 @@ def test_invalid_cached_time_metadata_does_not_hide_a_healthy_prefix_match(
     assert store.list_ready() == [healthy]
 
 
-def test_custom_snapshot_root_is_preserved_with_managed_publication(tmp_path):
-    store = LocalSnapshotStore(DiskgraphLocalConfig(
-        str(tmp_path / 'old-snapshot-location'), managed_root=str(tmp_path / 'managed')))
+def test_single_root_preserves_legacy_reads_and_publishes_managed_builds(tmp_path):
+    root = tmp_path / 'kumo'
+    store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(root)))
     handle = DiskgraphSnapshotHandle('graph', 'version')
     source = _completed_legacy(store, handle)
-    assert source == tmp_path / 'old-snapshot-location/graph/version'
+    assert source == root / 'snapshots/graph/version'
+    assert store.path(handle) == str(source)
+    assert store.list_ready() == [handle]
     metadata = source / 'index_metadata.json'
     metadata.write_text(json.dumps({'index_build_id': 'build'}))
-    # This case checks path policy; native manifest sizes must match the new ID.
-    manifest = json.loads((source / '_MANIFEST.json').read_text())
-    for entry in manifest['files']:
-        entry['size_bytes'] = (source / entry['rel_path']).stat().st_size
-    (source / '_MANIFEST.json').write_text(json.dumps(manifest))
+    _manifest(source)
+
     published = store.publish(handle, DiskgraphIngestResult.for_index(source))
-    assert published.index_path == str(tmp_path / 'managed/indexes/build')
-    reference = tmp_path / 'old-snapshot-location/graph/version.index.json'
+
+    assert published.index_path == str(root / 'indexes/build')
+    reference = root / 'snapshots/graph/version.index.json'
     assert json.loads(reference.read_text()) == {'index_build_id': 'build'}
-    assert store.path(handle) == published.index_path
-    assert store.list_ready() == [handle]
-    assert not (tmp_path / 'managed/snapshots').exists()
+    reopened = LocalSnapshotStore(DiskgraphLocalConfig(root=str(root)))
+    assert reopened.path(handle) == published.index_path
+    assert reopened.list_ready() == [handle]
+    assert reopened.resolve_version_prefix('graph', 'ver') == published.index_path
+    assert not source.exists()
 
 
 _REFERENCE_STATES = [
@@ -781,8 +782,7 @@ def test_completed_snapshot_resolution_agrees_for_all_layout_states(
 def test_unbuilt_snapshot_path_does_not_load_the_native_module(tmp_path, monkeypatch):
     import sys
 
-    store = LocalSnapshotStore(DiskgraphLocalConfig(
-        str(tmp_path / 'snapshots'), managed_root=str(tmp_path)))
+    store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(tmp_path)))
     handle = DiskgraphSnapshotHandle('graph', 'new-version')
     monkeypatch.setitem(sys.modules, 'diskgraph', None)
     assert store.path(handle) == store.staging_path(handle)

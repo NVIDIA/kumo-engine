@@ -44,14 +44,18 @@ class _ManagedIndexPaths:
 
 @dataclass(frozen=True)
 class _SnapshotPaths:
-    """Local snapshot names, including compatibility with a custom legacy root."""
+    """Derive local snapshot names from one explicit Kumo root."""
 
-    data_root: Path
+    root: Path
     _reference_suffix = ".index.json"
 
     @classmethod
     def for_root(cls, root: Path) -> _SnapshotPaths:
-        return cls(root / "snapshots")
+        return cls(root)
+
+    @property
+    def data_root(self) -> Path:
+        return self.root / "snapshots"
 
     def graph_dir(self, graph_key: str) -> Path:
         return self.data_root / _component(graph_key, "graph_key")

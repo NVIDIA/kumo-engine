@@ -36,8 +36,7 @@ class DiskgraphSnapshotError(RuntimeError):
 
 @dataclass(frozen=True)
 class DiskgraphLocalConfig:
-    data_root: str
-    managed_root: str | None = None
+    root: str
 
 
 @dataclass(frozen=True)
@@ -115,7 +114,7 @@ class LocalSnapshotStore:
     """
     def __init__(self, config: DiskgraphLocalConfig) -> None:
         self.config = config
-        self._paths = _SnapshotPaths(Path(config.data_root))
+        self._paths = _SnapshotPaths.for_root(Path(config.root))
 
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
         legacy = self.staging_path(handle)
@@ -127,11 +126,11 @@ class LocalSnapshotStore:
     def _selected_path(self, handle: DiskgraphSnapshotHandle) -> str:
         """Resolve the address even when it is not a completed snapshot yet."""
         reference = self._reference(handle)
-        if self.config.managed_root is not None and reference.is_file():
+        if reference.is_file():
             build_id = _read_json_object(reference).get("index_build_id")
             if not isinstance(build_id, str) or not build_id:
                 raise ValueError("snapshot reference must name an index_build_id")
-            paths = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root))
+            paths = _ManagedIndexPaths(build_id, root=Path(self.config.root))
             if paths.index_dir.exists():
                 metadata = _read_json_object(paths.index_dir / "index_metadata.json")
                 if metadata.get("index_build_id") != build_id:
@@ -190,11 +189,9 @@ class LocalSnapshotStore:
         """Find a verified physical build, independently of logical references."""
         from diskgraph import DiskgraphCorruptionError
 
-        if self.config.managed_root is None:
-            return None
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("imported snapshot has an invalid index_build_id")
-        path = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root)).index_dir
+        path = _ManagedIndexPaths(build_id, root=Path(self.config.root)).index_dir
         try:
             if _read_json_object(path / "index_metadata.json").get("index_build_id") != build_id:
                 return None
@@ -218,7 +215,7 @@ class LocalSnapshotStore:
         source = Path(result.index_path)
         self._verify_path(str(source))
         build_id = _read_json_object(source / "index_metadata.json").get("index_build_id")
-        if self.config.managed_root is None or build_id is None:
+        if build_id is None:
             if source != Path(self.staging_path(handle)):
                 raise ValueError("Import cannot replace a completed legacy snapshot or an ingest checkpoint in place")
             self.use_legacy(handle)
@@ -226,7 +223,7 @@ class LocalSnapshotStore:
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("imported snapshot has an invalid index_build_id")
         self._publication_reference(handle)
-        target = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root)).index_dir
+        target = _ManagedIndexPaths(build_id, root=Path(self.config.root)).index_dir
         existing = self.existing_build(build_id)
         if existing is not None:
             if source != target:
@@ -269,16 +266,13 @@ class LocalSnapshotStore:
         the cached build. A crash after rename can leave an unreferenced build,
         but cannot redirect readers to an incomplete one.
         """
-        if self.config.managed_root is None:
-            return result
-
         self._publication_reference(handle)
         source = Path(result.index_path)
         metadata = _read_json_object(source / "index_metadata.json")
         build_id = metadata.get("index_build_id")
         if not isinstance(build_id, str) or not build_id:
             raise DiskgraphSnapshotError("New snapshot has no index_build_id")
-        paths = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root))
+        paths = _ManagedIndexPaths(build_id, root=Path(self.config.root))
         if not (source / "_SUCCESS").is_file():
             raise DiskgraphSnapshotError("Cannot publish an incomplete snapshot")
         if result.missing_paths():
@@ -329,7 +323,7 @@ class LocalSnapshotStore:
                 continue
             if path.is_dir():
                 versions.add(name)
-            elif self.config.managed_root is not None and path.is_file():
+            elif path.is_file():
                 version = self._paths.reference_version(name)
                 if version is not None:
                     versions.add(version)
@@ -376,7 +370,7 @@ class LocalSnapshotStore:
         ready: list[DiskgraphSnapshotHandle] = []
         seen: set[DiskgraphSnapshotHandle] = set()
         try:
-            graph_keys = sorted(os.listdir(self.config.data_root))
+            graph_keys = sorted(os.listdir(self._paths.data_root))
         except (FileNotFoundError, NotADirectoryError):
             return ready
         for graph_key in graph_keys:
@@ -447,10 +441,6 @@ class LocalSnapshotStore:
         source = self.durable_path(handle, durable_root)
         if not exists(source + "/_SUCCESS"):
             return None
-        if self.config.managed_root is None:
-            copy_tree(source, self.path(handle))
-            return self.verify(handle)
-
         from diskgraph import DiskgraphCorruptionError
 
         damage = (DiskgraphCorruptionError, DiskgraphSnapshotError,
