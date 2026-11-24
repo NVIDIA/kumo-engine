@@ -5,7 +5,7 @@ Observable symptom → likely cause → fix. Ordered by when the agent hits them
 This file is the signal set as previously compiled. It is **not** re-verifiable against the published Kumo documentation, which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
 
 > No verbatim Kumo exception text is established for this SDK. Entries below are keyed on the **observable condition**, not on a quoted message. **Do not fabricate Kumo error strings.**
-> The five messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
+> The messages quoted in §1a and the semantic-type messages quoted in §3 are the exceptions: they are the SDK's own text, read from its source.
 
 **Who applies a fix.** A fix that changes the data — casting a column, deduplicating, flattening,
 filling or filtering values, combining columns into a key, normalising key types — is the user's
@@ -74,8 +74,31 @@ Fully specify tables in production code to avoid unexpected re-inference.
 ### Symptom: row count silently drops after ingestion
 **Cause:** Duplicate primary key values — Kumo retains one row per key and drops the rest.
 **Fix:** Report how many rows the key repeats on (the preflight probe, or the snapshot warning in
-§1a) and put the choice to the user: a different, genuinely unique key, or the source deduplicated
-upstream. The agent does not deduplicate.
+§1a, which stops the notebook before training) and put the choice to the user: a different,
+genuinely unique key, or the source deduplicated upstream. The agent does not deduplicate. A key preflight could not probe — supplied, or confirmed
+from an unverified candidate — is probed read-only before `graph.snapshot()`, and the notebook
+stops when it repeats, after testing the id-like columns the table shares with its linking tables:
+```python
+def q(name):                                   # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
+KEYS = [('<table>', '<key>', ['<shared_id_column>'])]   # keys preflight did not probe
+for table, key, scopes in KEYS:
+    src = f'{DATABASE}.{SCHEMA}.{q(table)}'
+    n, n_distinct, n_non_null = session.sql(    # the session from kumo_finetuning_sdk.md §3.3
+        f'SELECT COUNT(*), COUNT(DISTINCT {q(key)}), COUNT({q(key)}) FROM {src}').collect()[0]
+    print(f'{table}.{key}: {n} rows, {n_distinct} distinct, {n_non_null} non-null')
+    if n and n_distinct == n_non_null == n:
+        continue
+    unique_within = [c for c in scopes if session.sql(
+        f'SELECT COUNT(DISTINCT {q(key)}, {q(c)}) FROM {src}').collect()[0][0] == n]
+    raise RuntimeError(f'{table}.{key} is not unique ({n} rows, {n_distinct} distinct, '
+                       f'{n_non_null} non-null); unique together with: {unique_within or "none"}')
+```
+When the key is unique together with one of those columns, the key is scoped to it (the same id
+reused by different tenants or organisations), and linking on the key alone merges different
+entities. Say so, and suggest a single combined key built in the source and used on both sides of
+every link. Do not combine the columns in the notebook. Test only id-like columns.
 
 ### Symptom: a categorical column has very high cardinality
 **Cause:** Categorical supports up to **4,000 unique values by default**.
@@ -98,13 +121,17 @@ change data, types or the query to make it go away (*Who applies a fix*, above).
 |---|---|---|
 | `Snapshot contains <n> duplicate primary-key row(s) for <table>.<key>` | `<n>` rows share a key; Kumo keeps one per key and drops the rest | a different key, or the source deduplicated; or continue knowing `<n>` rows are gone |
 | `Foreign key <table>.<fk> matched <m> of <n> non-null rows` | only `<m>` of `<n>` rows reach the parent; the rest get no edge | the link may be wrong (wrong column, or values differing in format, e.g. `007` vs `7`), or the parent rows are missing |
+| `Snapshot dropped <n> row(s) with a null or invalid primary key in <table>.<key>` | `<n>` rows have no usable key and are gone from the table | the source fixed upstream, or a different key; or continue knowing `<n>` rows are gone |
 | `<n> invalid values found in <table>.<column>` | `<n>` values did not parse as the column's type and are read as null (see §5) | whether those rows are bad data, or the column's type is wrong |
 | `key <table>.<column> has a floating-point dtype` | an ID column is stored as a float (often an integer key with nulls) | the column fixed upstream as an integer or string key |
 | `foreign key <table>.<fk> (dtype=…) cannot link to primary key <table>.<pk> (dtype=…)` | the two sides of a link hold different types | which side is right, fixed upstream; never cast one side in the notebook |
 
-A float or mismatched key fails `graph.validate()` and stops the notebook. The other three are
-warnings: the notebook keeps going and trains on what is left. Either way, the report the user
-reads starts with the message, the table and column, and the count.
+A float or mismatched key fails `graph.validate()` and stops the notebook. The other four are
+warnings: Kumo keeps going and trains on what is left, so the notebook's snapshot cell turns them
+into a stop before training (`kumo_finetuning_sdk.md` §7). Either way, the report the user reads
+starts with the message, then, per table, how many rows were lost or left unlinked and why —
+repeated key, missing key, or a value (a time, a number) that did not parse — and asks before
+anything trains.
 
 ---
 
@@ -123,11 +150,66 @@ print(table.has_primary_key())
 **silently ignored** when linkages are built, so a broken join looks like a sparse one. If the two
 linked columns have different types, both are **cast to strings** — values equal as numbers may not
 match as strings (`1.0` vs `1`).
-**Fix:** There is **no `get_edge_stats()` in this SDK.** The snapshot reports the match rate
-(§1a). Report it, and put a low one to the user before training: a wrong link to correct, or keys
-to fix upstream so both sides hold the same values in the same type. Do not cast either side.
+**Fix:** There is **no `get_edge_stats()` in this SDK.** The snapshot warns about a low match
+rate (§1a) but keeps going, so the notebook measures it itself, read-only, before
+`graph.snapshot()`, for every link, and stops when fewer than half the rows match. It also counts
+how many would match if the foreign key were padded with leading zeros to the primary key's
+width — the signature of an id that was read as a number somewhere upstream (`007` became `7`):
+```python
+def q(name):                                   # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
+LINKS = [('<src_table>', '<fkey>', '<dst_table>', '<pkey>')]   # every confirmed link
+for src, fk, dst, pk in LINKS:
+    n, matched, padded = session.sql(          # the session from kumo_finetuning_sdk.md §3.3
+        f'WITH p AS (SELECT DISTINCT TO_VARCHAR({q(pk)}) AS k FROM {DATABASE}.{SCHEMA}.{q(dst)}), '
+        f'w AS (SELECT MAX(LENGTH(k)) AS w FROM p) '
+        f'SELECT COUNT(f.{q(fk)}), COUNT(a.k), COUNT(b.k) '
+        f'FROM {DATABASE}.{SCHEMA}.{q(src)} f CROSS JOIN w '
+        f'LEFT JOIN p a ON a.k = TO_VARCHAR(f.{q(fk)}) '
+        f'LEFT JOIN p b ON b.k = LPAD(TO_VARCHAR(f.{q(fk)}), w.w, \'0\')').collect()[0]
+    print(f'{src}.{fk} -> {dst}.{pk}: {matched} of {n} rows match; {padded} if zero-padded')
+    if n and matched < 0.5 * n:
+        raise RuntimeError(f'{src}.{fk} matched {matched} of {n} rows to {dst}.{pk} '
+                           f'({padded} would match zero-padded to the key width).')
+```
+The probe only diagnoses; it never feeds the graph. Report the counts and put the choice to the
+user before training. When the zero-padded count is high, say that the ids lost their leading
+zeros, that this cannot be recovered in the notebook, and that the fix is upstream: load or store
+`<table>.<fkey>` as text so the zeros survive. Otherwise the link is wrong, or the parent rows are
+missing. Do not cast or pad either side in the notebook.
+A link that loses fewer rows than that passes the snapshot silently. The host runtime's link check cell, run before the graph, counts matched, unmatched and
+null values for every link. Report each link's share, and put any unmatched rows to the user before
+training: a wrong link to correct, parent rows missing upstream, or keys to fix upstream so both
+sides hold the same values in the same type; or continue knowing those rows get no edge. Do not
+cast either side, filter the rows or invent the missing parents.
 Set every foreign key to `Stype.ID`; left as numerical it is treated as a feature rather than a
 link.
+
+### Symptom: an event table's foreign key never repeats
+**Cause:** The column holds a per-event id (a new value on every row) instead of the stable id of
+the customer or other entity. Every entity then has a single event and no history; Kumo says
+nothing, and training may still return confident scores or fail without saying why.
+**Fix:** Kumo does not check this, so the notebook does, read-only, before `graph.snapshot()`,
+for every link whose source table is an event table — unless preflight already probed it — and
+stops with the counts:
+```python
+def q(name):                                   # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
+EVENT_LINKS = [('<event_table>', '<foreign_key>')]   # every link out of an event table
+for table, fkey in EVENT_LINKS:
+    n, n_distinct = session.sql(                     # the session from kumo_finetuning_sdk.md §3.3
+        f'SELECT COUNT({q(fkey)}), COUNT(DISTINCT {q(fkey)}) '
+        f'FROM {DATABASE}.{SCHEMA}.{q(table)}').collect()[0]
+    print(f'{table}.{fkey}: {n} non-null rows, {n_distinct} distinct values')
+    if n and n_distinct == n:
+        raise RuntimeError(f'{table}.{fkey} never repeats ({n} rows, {n} distinct): no entity '
+                           'has more than one event. Ask for the stable entity id.')
+```
+Report the table, the column, the counts and whether the link was inferred or supplied, and ask
+the user for the column that repeats across an entity's events. Do not drop the link or train
+anyway. A one-to-one link between two entity tables is normal; do not probe it.
 
 ### Symptom: the edge direction looks wrong / no neighbors are sampled
 **Cause:** `src_table` must be the table holding the **foreign key**; `dst_table` holds the matching **primary key**. Edges are bidirectional once declared, but the declaration itself is directional.
@@ -180,6 +262,31 @@ pquery = kumo.PredictiveQuery(
 )
 pquery.validate()
 ```
+
+### Symptom: `pquery.validate()` fails with `Ambiguous link between tables`
+**Cause:** The query aggregates from one table to another that it reaches through two links —
+two columns of one table pointing at the same parent. The validator cannot pick one. (The title is
+the query validator's own text, from `kumopql`'s join validation.)
+**Fix:** A graph change for the user to choose (`kumo-data-science/accept/preflight.md` §6): keep
+one link, or have the rows written in both directions upstream and keep one link. Do not drop a
+link or column, or copy or swap rows, in the notebook before the user has chosen.
+### Symptom: the query fails with `Aggregation SUM is not intended to operate on foreign keys and ID-type columns.`
+**Cause:** The column `SUM` or `AVG` aggregates is typed `ID`: it is a key, or `infer_metadata()`
+typed it `ID` from its name (`graph_construction.md` *How a semantic type is inferred*).
+Source: shipped package (`kumopql.validator.type_validator`).
+**Fix:** Name the column, its type and why — "`orders.discount_code` is `ID` because it is named
+`*_code`". A key is the wrong column to sum: aggregate a measurement, or `COUNT` the rows. A
+measurement typed `ID` by its name is declared `.with_column('<col>', stype=Stype.numerical)` —
+a type declaration the user confirms at the graph gate (router Node 1c, *Column types*), never a
+silent change.
+### Symptom: `pquery.validate()` warns `Aggregation SUM is intended to operate on numerical columns, but <table>.<column> has semantic type categorical.`
+**Cause:** `infer_metadata()` typed the aggregated column from its few distinct values
+(`graph_construction.md` *How a semantic type is inferred*), not from what it measures. The query
+still validates and training would run. Source: shipped package (`kumopql.validator.type_validator`).
+**Fix:** Stop before training and put it to the user: the column, the type Kumo gave it and why,
+and the task type `get_task_type()` reports. A quantity is declared
+`.with_column('<col>', stype=Stype.numerical)` once the user confirms it (router Node 1c,
+*Column types*). The same applies to every other warning `validate()` titles `Semantic Type Mismatch`.
 
 ### Symptom: aggregation window rejected
 **Cause:** Both *start* and *end* must be **non-negative integers**, and *end* must be **greater than** *start*.
