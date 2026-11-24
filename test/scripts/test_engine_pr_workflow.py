@@ -171,5 +171,13 @@ def test_required_check_only_accepts_a_pr_exemption_or_all_successful_jobs(
     result = _run('required', EVENT_NAME=event, CHANGES_RESULT=changes,
                   GPU_REQUIRED=required, WHEEL_RESULT=wheel,
                   LIFECYCLE_RESULT=lifecycle, PYTORCH_RESULT=pytorch,
-                  GPU_RESULT=gpu)
+                  GPU_RESULT=gpu, FM_RESULT="success")
     assert result.returncode == expected, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('result', ['failure', 'skipped', 'cancelled', ''])
+def test_required_check_rejects_missing_fm_validation(result):
+    check = _run('required', EVENT_NAME='workflow_dispatch',
+                 WHEEL_RESULT='success', LIFECYCLE_RESULT='success',
+                 PYTORCH_RESULT='success', GPU_RESULT='success', FM_RESULT=result)
+    assert check.returncode == 1

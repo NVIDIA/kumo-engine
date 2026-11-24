@@ -113,3 +113,12 @@ and the GPU job has a 22-minute limit. GitHub reports queue,
 build, and GPU job durations.
 The workflow retains the task summary as an artifact. Source and package
 test workflows keep their existing checks.
+
+## FM candidate wheel
+
+The required `fm` matrix installs the candidate merged wheel without extras on
+Python 3.11 and 3.14, outside the checkout. It checks installed import origins,
+release-version agreement, native arrays and Arrow IPC encoding, source-free
+snapshot reuse, Arrow/Parquet fixtures and connector export/reload. All FM
+tests run without DuckDB; frozen-bundle benchmarks live outside the release stack.
+A failed or skipped FM matrix blocks the PR aggregate when code checks apply.

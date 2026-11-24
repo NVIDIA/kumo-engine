@@ -128,8 +128,9 @@ def verify_wheel(path: Path, platform_tag: str) -> dict[str, list[str]]:
         if wheel_metadata.get_all('Tag') != [expected_tag]:
             raise ValueError('Wheel metadata tag differs from its filename')
         required = {
-            'kumo/engine/__init__.py', 'kumo/pytorch/__init__.py',
-            'kumo_core/__init__.py', 'kumoapi/__init__.py', 'kumopql/__init__.py',
+            'kumo/engine/__init__.py', 'kumo/fm/__init__.py',
+            'kumo/pytorch/__init__.py', 'kumo_core/__init__.py',
+            'kumoapi/__init__.py', 'kumopql/__init__.py',
             'diskgraph/__init__.py', 'kumo_bundle_manifest.json',
             dist_info + '/licenses/LICENSE',
             dist_info + '/licenses/THIRD-PARTY.txt',
@@ -144,6 +145,11 @@ def verify_wheel(path: Path, platform_tag: str) -> dict[str, list[str]]:
                      n.endswith('.pyd' if windows else '.so')]
         if len(extension) != 1:
             raise ValueError('Expected one DiskGraph native extension')
+        fm_extension = [n for n in names if n.startswith('kumo/fm/_native_json')
+                        and n.endswith('.pyd' if windows else '.abi3.so')]
+        if len(fm_extension) != 1:
+            raise ValueError('Expected one stable-ABI FM arrays encoder')
+        extension += fm_extension
         for name in required:
             if not wheel.read(name):
                 raise ValueError(f'Empty required wheel member: {name}')

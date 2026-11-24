@@ -3539,6 +3539,7 @@ dependencies = [
     { name = "filelock" },
     { name = "kumo-api" },
     { name = "kumo-core" },
+    { name = "kumo-fm" },
     { name = "kumo-settings" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -3618,6 +3619,7 @@ requires-dist = [
     { name = "kumo-core", editable = "packages/kumo-core" },
     { name = "kumo-databricks", marker = "extra == 'databricks'", editable = "packages/kumo-databricks" },
     { name = "kumo-engine", extras = ["mlflow", "s3"], marker = "extra == 'sagemaker'" },
+    { name = "kumo-fm", editable = "packages/experimental/kumo-fm" },
     { name = "kumo-gcs", marker = "extra == 'gcs'", editable = "packages/kumo-gcs" },
     { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
     { name = "kumo-pytorch", marker = "extra == 'pytorch'", editable = "packages/experimental/kumo-pytorch" },
@@ -3641,7 +3643,6 @@ provides-extras = ["plots", "cpu", "test", "snowflake", "databricks", "bigquery"
 
 [[package]]
 name = "kumo-fm"
-version = "0.1.0a1"
 source = { editable = "packages/experimental/kumo-fm" }
 dependencies = [
     { name = "kumo-pytorch" },

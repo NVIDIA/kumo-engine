@@ -60,7 +60,10 @@ pip install kumo-engine
 | GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
 
-The base package reads and writes local CSV and Parquet files. Optional extras add connectors and additional features; combine them as needed, for example `pip install "kumo-engine[snowflake,text]"`.
+The base package reads and writes local CSV and Parquet files and includes
+experimental snapshot-backed FM payload loading through `kumo.fm`. Optional
+extras add connectors and additional features; combine them as needed, for
+example `pip install "kumo-engine[snowflake,text]"`.
 
 | Extra | Adds |
 | --- | --- |

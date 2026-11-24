@@ -92,3 +92,25 @@ def test_logical_and_wire_budgets_are_independent():
         batch.encode("arrays")
     with pytest.raises(ValueError, match="byte budget"):
         batch.encode("arrow_ipc")
+
+
+def test_native_encoder_scalar_types_and_unicode():
+    from kumo.fm.native_json import encode_rows
+
+    table = pa.table({
+        "int": pa.array([BIG_ID, -BIG_ID, None], pa.int64()),
+        "float": [1.0, -0.0, None],
+        "text": ["snow: \u2603", "music: \U0001d11e\n", None],
+        "bool": [True, False, None],
+        "date": pa.array([0, -1, None], pa.date32()),
+        "timestamp": pa.array([0, -1, None], pa.timestamp("us", tz="UTC")),
+    })
+    expected = [[str(BIG_ID), 1.0, "snow: \u2603", True,
+                 "1970-01-01", "1970-01-01T00:00:00.000000Z"],
+                [str(-BIG_ID), -0.0, "music: \U0001d11e\n", False,
+                 "1969-12-31", "1969-12-31T23:59:59.999999Z"],
+                [None] * 6]
+    wire = encode_rows(table, 10000).data
+    assert wire == json.dumps(expected, separators=(",", ":"), ensure_ascii=True).encode()
+    assert encode_rows(table.slice(1), 10000).data == json.dumps(
+        expected[1:], separators=(",", ":"), ensure_ascii=True).encode()

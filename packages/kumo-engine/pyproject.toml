@@ -114,6 +114,7 @@ Issues="https://github.com/NVIDIA/kumo-engine/issues"
 
 [tool.uv.sources]
 kumo-core = { workspace = true }
+kumo-fm = { workspace = true }
 kumo-snowflake = { workspace = true }
 kumo-databricks = { workspace = true }
 kumo-bigquery = { workspace = true }

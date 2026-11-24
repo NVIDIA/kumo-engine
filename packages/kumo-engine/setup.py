@@ -106,6 +106,8 @@ setup(
         # plain, required dependency here.
         "kumo-core>=0.1.0.dev1",
         "kumo-settings>=0.1.0.dev1",
+        # FM and its PyTorch prerequisite ship in the merged engine wheel.
+        "kumo-fm",
         # Select one Faiss distribution: both provide the `faiss` module.
         # Keep platform markers on these external dependencies so wheel
         # merging preserves them when the bundled core reference is removed.
