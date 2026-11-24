@@ -26,10 +26,18 @@ This skill provides reference docs for translating a validated, structured ML re
 
 ## Provenance of every claim
 
-**The published Kumo documentation is out of date for this version of the local SDK and is not a
-source here.** Do not cite it, link to it, fetch it, or reconcile against it. If a claim in these
-files has no `Source:` line, treat it as unverified and say so rather than filling the gap from
-the public docs or from memory.
+**The legacy Kumo documentation (it predates Kumo Engine) is out of date for this version of the local SDK
+and is not a source here.** Do not cite it, link to it, fetch it, or reconcile against it. If a
+claim in these files has no `Source:` line, treat it as unverified and say so rather than filling
+the gap from other docs or from memory.
+
+**User documentation.** The Kumo Engine user guide at
+<https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview> is the
+documentation to give users. It is a pointer for the user, not an input for you: do not fetch it
+while generating code, and mention it only when the user asks for documentation or wants more
+depth than these files give. For model plans, link the Model Plan Guide named in
+`kumo-model-tuning/references/plans.md`. Where it disagrees with the shipped package, say so and
+follow the package.
 
 Every claim that is grounded carries:
 

@@ -23,3 +23,7 @@ Use [training diagnostics](../kumo-training-diagnostics/SKILL.md) for metrics, s
 and curves. Compare validation evidence under the same protocol; hold test results for final
 evaluation. Explain hypotheses and tradeoffs without promising improvement. This skill does
 not supply custom executable metrics, autonomous target selection or deployment.
+
+If the user asks where model plans are documented, or wants more depth than the reference
+gives, point them to the Kumo Engine Model Plan Guide (link at the end of
+[plan configuration](references/plans.md)). Do not fetch it to build a plan.
