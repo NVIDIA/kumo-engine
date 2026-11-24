@@ -89,7 +89,8 @@ def test_regression_test_summaries_count_every_holdout_row(graph):
     result, summaries, holdout = _fit(
         graph, 'PREDICT SUM(events.V, 0, 7, days) FOR EACH ents.ID')
 
-    error = (holdout['TARGET_PRED'] - holdout['TARGET']).to_numpy()
+    error = (holdout['TARGET_PRED'].to_numpy(np.float64) -
+             holdout['TARGET'].to_numpy(np.float64))
     assert result.metrics['test_mae'] == pytest.approx(np.abs(error).mean())
     assert summaries['test/bias'].value == pytest.approx(error.mean())
     assert sum(summaries['holdout/residuals/rows'].counts) == len(holdout)

@@ -361,7 +361,10 @@ anchor_table = api.AnchorTable(
     sample_id="sample_id",
     split="split",
 )
-engine = api.DiskGraphEngine(index=data / "index")
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=data / "scratch")
+engine = api.DiskGraphEngine()
 with (
     api.prepare(contract=contract(api.Padded()), dataset=parquet, engine=engine) as disk_plan,
     disk_plan.materialize(anchors=anchor_table, fit_split="train") as disk_task,

@@ -30,8 +30,6 @@ runs if you paste the blocks in sequence.
 
 When you need the details on something, these pages are the place to look:
 
-- [Installation](installation.md), if you want CUDA wheels, pip instead of uv,
-  or to run the tests.
 - [Supported features and limitations](limitations.md), to check whether
   the DiskGraph engine supports something you need.
 - The [API reference](api/README.md), for the exact parameters and errors of
@@ -46,5 +44,4 @@ If you'd rather learn from a complete project, the
 The package's own tests live in `tests/`, `conformance/` (the checks behind the
 behavior guarantees) and `e2e/` (end-to-end training and serving runs on
 generated data). You don't need any of them to use kumo-pytorch;
-[installation](installation.md#run-the-tests-and-notebooks-from-a-checkout)
-shows how to run them.
+[development](../README.md#development) shows how to run them.

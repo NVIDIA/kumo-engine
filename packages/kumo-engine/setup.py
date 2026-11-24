@@ -111,5 +111,5 @@ setup(
         # merging preserves them when the bundled core reference is removed.
         'faiss-gpu==1.14.3; sys_platform == "linux" '
         'and platform_machine == "x86_64"',
-        'faiss-cpu==1.14.3; sys_platform == "darwin"',
+        'faiss-cpu==1.14.3; sys_platform == "darwin" or sys_platform == "win32"',
     ], )

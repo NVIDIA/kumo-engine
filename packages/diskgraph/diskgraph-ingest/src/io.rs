@@ -1341,9 +1341,12 @@ mod tests {
         // Plain absolute path
         let abs = tmp.path().join("plain");
         let _ = build_object_store_for_path(abs.to_str().unwrap())?;
-        // Path with a `:` that ISN'T a scheme separator (no `://`)
-        let weird = tmp.path().join("name_with:colon");
-        let _ = build_object_store_for_path(weird.to_str().unwrap())?;
+        #[cfg(unix)]
+        {
+            // A literal colon is valid on Unix, but not in Windows directory names.
+            let weird = tmp.path().join("name_with:colon");
+            let _ = build_object_store_for_path(weird.to_str().unwrap())?;
+        }
         // POSIX `/Volumes/...` is technically also a UC Volume path on
         // Databricks but we can't disambiguate from a real local mount;
         // treated as local on purpose. Document via test.

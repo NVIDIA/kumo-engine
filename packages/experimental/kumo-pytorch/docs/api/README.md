@@ -108,7 +108,7 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`InputExposureWarning`](targets.md#inputexposurewarning) | `kumo.pytorch.api` | A masked value is also selected by an unmasked named input. |
 | [`DataLoaderSpec`](lifecycle.md#dataloaderspec) | `kumo.pytorch.api` | Schema, sampled values, and explicitly encoded model outputs. |
 | [`check`](lifecycle.md#check) | `kumo.pytorch.api` | Return everything wrong with this combination, without raising. |
-| [`prepare`](lifecycle.md#prepare) | `kumo.pytorch.api` | Validate, then bind the dataset through the engine. |
+| [`prepare`](lifecycle.md#prepare) | `kumo.pytorch.api` | Validate, then bind sources or an existing index through the engine. |
 | [`preview`](lifecycle.md#preview) | `kumo.pytorch.api` | Build up to eight raw samples and one model-facing batch. |
 | [`Plan`](lifecycle.md#plan) | `kumo.pytorch.api` | A contract bound to a dataset through an engine, before any anchors. |
 | [`Task`](lifecycle.md#task) | `kumo.pytorch.api` | Anchors bound to a plan: what is iterated, served from, and written out. |

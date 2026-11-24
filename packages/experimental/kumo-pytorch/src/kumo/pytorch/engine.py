@@ -5,13 +5,14 @@
 """The engine interface: what an engine must provide, and how a caller picks one.
 
 A :class:`~kumo.pytorch.dataset.Dataset` says where the data is;
-an :class:`Engine` says what reads it. Both are supplied by the caller, and
-neither names the other.
+an :class:`Engine` says what reads it. Source ingestion supplies both.
+An existing-index ``DiskGraphEngine`` supplies the data binding itself, so
+``prepare`` and ``check`` accept it without a ``Dataset``.
 
 An engine is a factory, not a holder of data: :meth:`Engine.open` binds a
 dataset and returns a :class:`SampleSource`. Construction-time configuration
 (artifact directories, index paths) belongs to the engine; data binding belongs
-to the dataset.
+to the dataset or the explicitly adopted index.
 
 Distributed execution is expressed by ``rank``/``world_size`` on
 ``Task.batches``.
@@ -162,6 +163,13 @@ class SampleSource(Protocol):
 
 
 @runtime_checkable
+class ArtifactIdentitySource(Protocol):
+    """Optional source identity used to bind reusable fitted and materialized state."""
+
+    artifact_identity: str
+
+
+@runtime_checkable
 class ModelSampleSource(Protocol):
     """Optional hot-path extension that keeps source values in typed buffers."""
 
@@ -206,6 +214,15 @@ class Engine(Protocol):
         ...
 
 
+@runtime_checkable
+class ExistingIndexEngine(Protocol):
+    """Optional hooks for engines that bind a stored index without a Dataset."""
+
+    def _check_binding(self, dataset: Dataset | None, schema: DataSchema) -> tuple[Any, ...]: ...
+
+    def _resolve_index_schema(self, schema: DataSchema) -> DataSchema: ...
+
+
 # --------------------------------------------------------------------------
 # Selection
 # --------------------------------------------------------------------------
@@ -237,8 +254,8 @@ def available_engines() -> tuple[str, ...]:
 def engine_from_name(name: str, **config: Any) -> Engine:
     """Resolve a registered name to a class and construct it.
 
-    ``engine_from_name("diskgraph", index=...)`` is exactly
-    ``DiskGraphEngine(index=...)``. Nothing is opened, connected or
+    ``engine_from_name("diskgraph", num_threads=4)`` is exactly
+    ``DiskGraphEngine(num_threads=4)``. Nothing is opened, connected or
     initialized — construction is inert, and resources are acquired by
     :meth:`Engine.open`. The two are named differently on purpose.
 

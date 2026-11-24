@@ -66,6 +66,17 @@ from ._c import (
     CUSTOM_TT_CONTRACT,
 )
 from ._exceptions import DiskgraphTaskError
+from .sampling_plan import (
+    CustomExpression,
+    ExponentialDecay,
+    FanoutSpec,
+    LayerSpec,
+    LinearDecay,
+    SamplingPlan,
+    WeightedSampling,
+)
+
+from .sampling_options import InheritEngineSeed, SamplingOptions, WeightedSeedSampling
 
 # Lazy imports for modules that have external dependencies (kumoapi)
 def __getattr__(name):
@@ -204,6 +215,16 @@ __all__ = [
     "TASK_DATASET_IMPLEMENTATION_KIND",
     "RuntimeIndex",
     "SeedScheduleConfig",
+    "SamplingOptions",
+    "WeightedSeedSampling",
+    "InheritEngineSeed",
+    "SamplingPlan",
+    "LayerSpec",
+    "FanoutSpec",
+    "WeightedSampling",
+    "ExponentialDecay",
+    "LinearDecay",
+    "CustomExpression",
     "task_stage_size",
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",

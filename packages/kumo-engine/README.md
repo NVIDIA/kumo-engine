@@ -18,7 +18,7 @@ pip install kumo-engine
 | Requirement | Details |
 | --- | --- |
 | Python | CPython 3.11 or later |
-| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
+| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows 10 / Windows Server 2016 or later on x86-64 CPU. |
 | CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
 | GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
@@ -27,6 +27,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 
 | Extra | Adds |
 | --- | --- |
+| `cpu` | CPU Faiss for recommendation retrieval on Linux ARM64 |
 | `s3` | Amazon S3 |
 | `gcs` | Google Cloud Storage |
 | `adls` | Azure Data Lake Storage Gen2 |
@@ -36,10 +37,13 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `text` | Encoding for free-text columns, such as descriptions or reviews, with GloVe 6B 50d word vectors |
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
+| `pytorch` | (Experimental) `kumo.pytorch`, for training your own PyTorch models on your tables |
 
-Kumo Engine trains on an NVIDIA GPU or an Apple silicon GPU when one is available, and on the CPU otherwise. To choose the device, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
+Kumo Engine defaults to CPU for training and model loading on native Windows; use WSL2 for NVIDIA GPU workloads. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 
-Recommendation tasks use Faiss for retrieval. On Linux x86-64 and macOS, `pip install kumo-engine` installs Faiss as a dependency. On Linux ARM64, Faiss is optional, and other tasks run without it. To run recommendation tasks there, install CPU Faiss with `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`, or follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md) to build GPU Faiss. The guide also covers CUDA training on ARM64.
+On Windows, install the [latest Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe) and [enable Win32 long paths](https://docs.python.org/3.14/using/windows.html#removing-the-max-path-limitation) for paths longer than 260 characters.
+
+Recommendation tasks use Faiss for retrieval. The base install includes GPU Faiss on Linux x86-64 and CPU Faiss on macOS and Windows. On Linux ARM64, install `pip install "kumo-engine[cpu]"` and choose `accelerator="cpu"` for CPU retrieval. For GPU Faiss on Linux ARM64, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md), which also covers CUDA training on ARM64.
 
 On NVIDIA GPUs, the optional `torch-scatter` package speeds up some training workloads. Install the build for your PyTorch and CUDA versions as described in [PyG's installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
 
@@ -121,6 +125,10 @@ if explanations.availability["gradient"].available:
 ```
 
 See the [training and batch prediction explanations guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md) for plots, column cohorts, sampled graphs, and opt-in prediction explanations.
+
+### Train Your Own PyTorch Model (Experimental)
+
+`kumo.pytorch` builds point-in-time-correct batches from your tables, using the same DiskGraph engine, for a PyTorch model you write yourself. Install it with `pip install "kumo-engine[pytorch]"`. Its API can change in any release without deprecation warnings. See the [kumo-pytorch README](https://github.com/NVIDIA/kumo-engine/blob/main/packages/experimental/kumo-pytorch/README.md).
 
 ### Run in Production
 
