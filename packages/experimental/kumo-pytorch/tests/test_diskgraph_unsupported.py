@@ -294,7 +294,7 @@ def test_text_source_aliases_are_checked_before_delivery_or_keep_both_fields(
 
     contract = _aliased_tokens(copies, budget, bucket)
     dataset = _written(tmp_path)
-    engine = DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = DiskGraphEngine(num_threads=1)
     anchors = _review_anchors(tmp_path, (1,), cutoff=1)
     issues = check(contract, dataset, engine, anchors=anchors)
     if copies == 2 and (budget is not None or bucket):
@@ -302,7 +302,7 @@ def test_text_source_aliases_are_checked_before_delivery_or_keep_both_fields(
         assert issue.code == "DG-TOKEN-LENGTH-ALIAS"
         with pytest.raises(ValueError, match="fields 'first' and 'second' alias column 'kind'"):
             prepare(contract, dataset, engine)
-        assert not (tmp_path / "index").exists()
+        assert not engine.index.exists()
         return
     assert not issues
     with prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
