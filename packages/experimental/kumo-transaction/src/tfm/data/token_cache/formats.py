@@ -133,7 +133,8 @@ def register_token_cache_format(
 
 def token_cache_format(name: str) -> TokenCacheFormat:
     """The format registered as `name`, or the object `"package.module:attribute"` names."""
-    import tfm.data.token_cache.columnar
+    # Import both built-in formats so they register before lookup.
+    import tfm.data.token_cache.columnar  # noqa: F401
     import tfm.data.token_cache.flat  # noqa: F401
 
     fmt = _FORMATS.get(name)
