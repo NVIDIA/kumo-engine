@@ -5,6 +5,7 @@
   "source_version": "2.0.0a4",
   "adapted_files": [
     ".gitlab-ci.yml",
+    "CHANGELOG.md",
     "Makefile",
     "README.md",
     "benchmarks/ablations/blueprint_v1_era.yaml",
@@ -37,6 +38,9 @@
     "docs/_site/api/features.md",
     "docs/_site/api/graph.md",
     "docs/_site/api/index.md",
+    "examples/kumo-engine/README.md",
+    "examples/kumo-engine/requirements.txt",
+    "examples/kumo-engine/run.py",
     "mkdocs.yml",
     "pyproject.toml",
     "recipes/blueprint_v1/config.cached.yaml",

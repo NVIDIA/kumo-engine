@@ -121,19 +121,29 @@ Use Python 3.12 with PyTorch 2.9+, Kumo's PyTorch/DiskGraph packages and Pragmat
 
 ```bash
 uv pip install --upgrade-package diskgraph --upgrade-package kumo-pytorch \
+  --upgrade-package kumo-settings \
   -e ".[pragmatiq]" -r examples/kumo-engine/requirements.txt
 python examples/kumo-engine/seed_data.py
 python examples/kumo-engine/run.py
 ```
 
-The install command follows Kumo's `main` branch and refreshes both Kumo packages
-when rerun. To reproduce a particular environment, replace `@main` in both
-requirements with the same commit SHA.
+The install command follows Kumo's `main` branch and refreshes the three Kumo
+packages when rerun. To reproduce an environment, replace every `@main`
+reference in the requirements with the same commit SHA.
 
 Use `seed_data.py --source PATH` for an existing book. The runner reads
 [Blueprint-v2's configuration](../../recipes/blueprint_v2/config.yaml); pass
 `--config PATH` to adjust model/training settings, including batch size.
-`--index PATH` reuses an index and `--anchors PATH` selects an anchor table.
+`--anchors PATH` selects an anchor table.
+
+DiskGraph builds the index under Kumo's scratch directory
+(`~/.cache/kumo-engine` by default). Use `--scratch-dir PATH` to choose another
+root. The runner prints the resolved index path after preparing it. To reuse
+that build, pass the printed path as `--index PATH` and use the same scratch
+root. If the original source tables are unavailable, pass the anchor Parquet
+file with `--anchors PATH`. Older indexes without a managed build ID need to be
+rebuilt from Parquet.
+
 Data, fitted encoders, weights and training logs go under `outputs/kumo-engine/`.
 
 This example uses eight static profile attributes and derived first-transaction
