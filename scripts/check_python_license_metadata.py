@@ -92,6 +92,8 @@ DISTRIBUTIONS = (
                      "kumo-pytorch", ("LICENSE", )),
     DistributionSpec("packages/experimental/kumo-fm/pyproject.toml",
                      "kumo-fm", ("LICENSE", )),
+    DistributionSpec("benchmark/fm-payloads/pyproject.toml",
+                     "kumo-fm-benchmark", ("LICENSE", )),
     DistributionSpec("tools/glove-6b-50d/pyproject.toml", "kumo-glove-6b-50d",
                      ("LICENSE", "THIRD-PARTY.txt"),
                      notice_artifacts=("glove-6b-50d-bundled-data", )),

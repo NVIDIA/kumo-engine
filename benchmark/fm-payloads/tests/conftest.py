@@ -9,5 +9,4 @@ import pytest
 def isolated_kumo_scratch(tmp_path, monkeypatch):
     import kumo.settings
 
-
     monkeypatch.setattr(kumo.settings, "_configured", tmp_path / "scratch")

@@ -162,6 +162,7 @@ jobs:
             packages/kumo-engine
             packages/experimental/kumo-pytorch
             packages/experimental/kumo-fm
+            benchmark/fm-payloads
             tools/glove-6b-50d
           )
           for project in "${projects[@]}"; do
