@@ -32,7 +32,7 @@ from kumo.pytorch.column_stats import (
     read_column_stats,
     token_lengths_file,
 )
-from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
+from kumo.pytorch.contract.batch import EntitySource, EventSource, Fields, Input, Tokens
 from kumo.pytorch.contract.dtypes import (
     DType,
     _arrow_scalar_value,
@@ -90,6 +90,42 @@ __all__ = ["DiskGraphEngine"]
 def _refusal(code: str, path: str, message: str) -> ValidationIssue:
     entry = DISKGRAPH_UNSUPPORTED[code]
     return ValidationIssue(path, message, entry.next_step, code)
+
+
+def _token_budget_aliases(contract: DataLoaderSpec) -> list[ValidationIssue]:
+    policy = contract.batch.batching
+    if policy.max_tokens is None and not policy.bucket_by_length:
+        return []
+    spec = contract.batch.inputs.get(policy.length_input)
+    if (
+        spec is None
+        or not isinstance(spec.source, EventSource)
+        or spec.source.collection != "history"
+        or not isinstance(spec.representation, Fields)
+        or not isinstance(spec.representation.row, Tokens)
+    ):
+        return []
+    issues = []
+    for name in spec.source.events:
+        event = contract.sample.events.get(name)
+        if event is None:
+            continue  # General contract validation reports unknown components.
+        seen = {}
+        for use in spec.representation.fields:
+            field = use.field.removeprefix(f"events/{name}/")
+            value = event.fields.get(field)
+            if isinstance(value, Field) and not value.path:
+                first = seen.setdefault(value.column, field)
+                if first != field:
+                    issues.append(
+                        _refusal(
+                            "DG-TOKEN-LENGTH-ALIAS",
+                            f"batch.inputs.{policy.length_input}",
+                            f"Event {name!r} fields {first!r} and {field!r} alias column "
+                            f"{value.column!r}, which token length planning counts only once",
+                        )
+                    )
+    return issues
 
 
 def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationIssue]:
@@ -249,6 +285,7 @@ class DiskGraphEngine:
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
         issues = _sample_refusals(contract.sample)
+        issues.extend(_token_budget_aliases(contract))
         tables = {table.name: table for table in contract.schema.tables}
         relations = {relation.name: relation for relation in contract.schema.relations}
         for index, relation in enumerate(contract.schema.relations):

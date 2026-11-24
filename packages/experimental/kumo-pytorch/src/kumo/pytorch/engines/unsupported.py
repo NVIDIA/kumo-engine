@@ -126,6 +126,12 @@ _ENTRIES = (
         "key, before writing the Parquet files",
     ),
     Unsupported(
+        "DG-TOKEN-LENGTH-ALIAS",
+        "For token budgets or length bucketing, two fields of one event component "
+        "in the length input can't alias the same stored column.",
+        "select the column once in the length input, or batch by sample count alone",
+    ),
+    Unsupported(
         "DG-COLUMN-RENAME",
         "`Parquet(columns=...)` renames in a table binding are refused; physical "
         "column names must match the declared ones. Anchor tables accept renames.",
