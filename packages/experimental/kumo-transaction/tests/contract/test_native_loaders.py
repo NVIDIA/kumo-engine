@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real DiskGraph integration against the Python selection oracle."""
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
@@ -150,9 +151,7 @@ def test_native_graph_matches_uncapped_reference(sharing, depth):
                 )
 
             assert rows(actual) == rows(expected)
-        assert {r: e.shape[1] for r, e in actual.edge_index.items()} == {
-            r: e.shape[1] for r, e in expected.edge_index.items()
-        }
+        assert _canonical_edges(actual) == _canonical_edges(expected)
         actual.node_features["users"].add_(1)
         with pytest.raises(ValueError):
             actual.assert_validated()
@@ -322,9 +321,7 @@ def test_native_multiple_fk_roles_and_separate_future_targets(peer, monkeypatch)
             assert sorted(actual.node_features[name].tolist()) == sorted(
                 expected.node_features[name].tolist()
             )
-        assert {r: e.shape[1] for r, e in actual.edge_index.items()} == {
-            r: e.shape[1] for r, e in expected.edge_index.items()
-        }
+        assert _canonical_edges(actual) == _canonical_edges(expected)
 
         def forbidden(*args, **kwargs):
             raise AssertionError("Future target construction must not sample encoder inputs")
@@ -391,3 +388,152 @@ def test_native_training_resources_close_on_setup_and_fit_errors(failure, monkey
         pipeline.run_train(artifacts)
     assert not source.exists()
     assert not index.exists()
+
+
+def _canonical_edges(batch):
+    def node(name, index):
+        return (
+            int(batch.node_sample[name][index]),
+            tuple(batch.node_features[name][index].tolist()),
+            int(batch.node_available_us[name][index]),
+        )
+
+    return {
+        relation: sorted((node(relation[0], a), node(relation[2], b)) for a, b in edge.T.tolist())
+        for relation, edge in batch.edge_index.items()
+    }
+
+
+def test_native_graph_sampling_does_not_rescan_links():
+    class Counted(tuple):
+        visits = 0
+
+        def __iter__(self):
+            for item in super().__iter__():
+                self.visits += 1
+                yield item
+
+    base = graph_fixture()
+    links = Counted(base.links)
+    sampler = NativeGraphSampler(replace(base, links=links), depth=2, fanout=20)
+    try:
+        initial = links.visits
+        for i in range(4):
+            batch = sampler.sample((GraphAnchor(str(i), "a", NOW),), "users")
+            assert batch.edge_index[base.relations[0]].shape[1] == 3
+        assert links.visits == initial
+    finally:
+        sampler.close()
+
+
+def test_native_graph_compares_clock_instants_across_dst_folds():
+    from zoneinfo import ZoneInfo
+
+    from tfm.contracts.errors import UnsupportedCombinationError
+
+    first = datetime(2024, 11, 3, 1, 30, tzinfo=ZoneInfo("America/New_York"), fold=0)
+    second = first.replace(fold=1)
+    base = graph_fixture()
+    row = replace(base.rows[3], available_at=second, event_time=first)
+    with pytest.raises(UnsupportedCombinationError, match="clocks"):
+        NativeGraphSampler(
+            replace(base, rows=base.rows[:3] + (row,) + base.rows[4:]), depth=1, fanout=2
+        )
+    sampler = NativeGraphSampler(base, depth=1, fanout=2)
+    try:
+        batch = sampler.sample(
+            (GraphAnchor("local", "a", first), GraphAnchor("utc", "a", first.astimezone(UTC))),
+            "users",
+            sharing="shared",
+        )
+        batch.assert_validated()
+        with pytest.raises(ValueError, match="identical cutoffs"):
+            sampler.sample(
+                (GraphAnchor("first", "a", first), GraphAnchor("second", "a", second)),
+                "users",
+                sharing="shared",
+            )
+    finally:
+        sampler.close()
+
+
+def test_forecast_missing_owner_matches_reference_error():
+    from tfm.contracts.errors import SchemaError
+
+    labels = [SimpleNamespace(entity_id="absent", timestamp=NOW)]
+    for loader in ("python", "kumo_pytorch"):
+        with pytest.raises(SchemaError):
+            native.build_sequences_at_label_cutoffs(events(), labels, max_events=10, loader=loader)
+    # Existing owners with no history at their cutoff are intentionally skipped.
+    labels = [SimpleNamespace(entity_id="a", timestamp=NOW - timedelta(days=1))]
+    assert native.build_sequences_at_label_cutoffs(events(), labels, max_events=10) == []
+
+
+def test_native_history_binding_is_atomic_and_single_use(monkeypatch):
+    with native.NativeHistories(events()) as source:
+        materialize = source.plan.materialize
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("materialize")
+
+        monkeypatch.setattr(source.plan, "materialize", fail)
+        with pytest.raises(RuntimeError, match="materialize"):
+            source.bind([("a", NOW)], ["train"])
+        assert not hasattr(source, "requests")
+        monkeypatch.setattr(source.plan, "materialize", materialize)
+        task = source.bind([("a", NOW)], ["train"])
+        batch = next(iter(task.batches(split="train", batch_size=1, output_format="model")))
+        expected = source.decode(batch)
+        with pytest.raises(ValueError, match="only bind once"):
+            source.bind([("b", NOW)], ["train"])
+        assert source.decode(batch) == expected
+
+
+@pytest.mark.parametrize("window_events", [3, 20])
+def test_native_windows_use_one_stage_and_bounded_history_with_repeated_ids(window_events):
+    from tfm.data.collate import collate_batch
+    from tfm.features.tokenizers.financial import TransactionFieldTokenizer
+
+    values = [
+        TransactionEvent("a", "repeated", NOW - timedelta(seconds=1), numeric={"amount": float(i)})
+        for i in range(21)
+    ]
+    rows = native.build_entity_windows(values, NOW, window_events=window_events, loader="python")
+    tokenizer = TransactionFieldTokenizer()
+    tokenizer.fit(rows)
+    batches = native.NativeSequenceBatches(
+        rows, tokenizer, batch_size=2, max_tokens=64, seed=42, amount_key="amount"
+    )
+    try:
+        assert len(set(batches.task._anchors.splits())) == 1
+        assert max(Counter(e.entity_id for e in batches.source.events).values()) == window_events
+        for i in reversed(range(len(batches))):
+            actual = batches[i]
+            expected = collate_batch(
+                batches.rows[2 * i : 2 * i + 2], tokenizer, max_tokens=64, amount_key="amount"
+            )
+            torch.testing.assert_close(actual.input_ids, expected.input_ids, rtol=0, atol=0)
+    finally:
+        batches.close()
+
+
+def test_native_graph_preparation_failure_closes_index(monkeypatch):
+    from tfm.data import graph_recipe
+
+    created = []
+
+    class Tracked(NativeGraphSampler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("later preparation failure")
+
+    monkeypatch.setattr(graph_recipe, "NativeGraphSampler", Tracked)
+    monkeypatch.setattr(graph_recipe, "_require_training_amount", fail)
+    config = load_recipe_config("recipes/gnn_encoder/config.smoke.yaml")
+    with pytest.raises(RuntimeError, match="later preparation failure"):
+        graph_recipe.prepare_graph_data(config)
+    assert len(created) == 1
+    assert not created[0].native_root.exists()

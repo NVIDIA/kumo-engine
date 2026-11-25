@@ -1,5 +1,8 @@
 # pragmatiq: PRAGMA-like and Blueprint v2, slot by slot
 
+Install Python 3.12, rustup, a C/C++ compiler and Linux build tools before
+syncing the `native` extra. See the [installation guide](../../examples/kumo-engine/README.md#canonical-recipes).
+
 A lab on one multi-source book for two recipes:
 [`pragma_like`](../../recipes/pragma_like), Revolut PRAGMA's bidirectional
 encoder, and [`blueprint_v2`](../../recipes/blueprint_v2), PRAGMA's event and

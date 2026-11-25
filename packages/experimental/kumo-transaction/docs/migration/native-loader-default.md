@@ -42,3 +42,15 @@ narrower schema/clock contract and its own recent-fanout tie ordering; selecting
 for commands and limitations. These reference integrations still import a
 bounded object corpus for validation, tokenization, targets and probes; they do
 not establish full-book out-of-core training or native future-aggregate parity.
+
+## Indexed training windows
+
+Native training indexes each declared window as a separate retrieval entity,
+so it reads only that window’s events. Repeated source event IDs remain valid,
+including distinct events with the same owner/ID and tied timestamps. Event
+occurrences retain their original order, labels and timestamps. One physical
+training anchor stage serves indexed minibatches through positional sharding;
+the final partial minibatch drops only explicitly added selection padding.
+This avoids one native storage stage per minibatch and full-owner history reads
+for every tiled window. The bounded object corpus and window index still reside
+in memory/on local disk; this is not a full-book throughput claim.

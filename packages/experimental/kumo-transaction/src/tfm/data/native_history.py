@@ -37,8 +37,26 @@ Loader = Literal["kumo_pytorch", "python"]
 class NativeHistories:
     """One owned DiskGraph index and materialized anchor table, closed explicitly."""
 
-    def __init__(self, events: Sequence[TransactionEvent]) -> None:
+    def __init__(
+        self,
+        events: Sequence[TransactionEvent],
+        *,
+        windows: Sequence[TransactionSequence] | None = None,
+    ) -> None:
         self.api = native_api()
+        # A window is an independent retrieval entity. This bounds native reads
+        # to its exact members, including repeated IDs and tied timestamps.
+        originals = None
+        if windows is not None:
+            originals = {}
+            indexed = []
+            for i, window in enumerate(windows):
+                for j, event in enumerate(window.events):
+                    owner, key = str(i), str(j)
+                    indexed.append(replace(event, entity_id=owner, event_id=key))
+                    originals[owner, key] = replace(event)
+            events = indexed
+        self.originals = originals
         self.events = tuple(
             replace(e)
             for e in sorted(
@@ -145,7 +163,9 @@ class NativeHistories:
 
     def bind(self, requests: Sequence[tuple[str, datetime]], splits: Sequence[str]) -> Any:
         """Bind exact caller identities and cutoffs through an AnchorTable, not requests."""
-        self.requests = tuple((owner, ensure_utc(at)) for owner, at in requests)
+        if hasattr(self, "requests"):
+            raise ValueError("Native histories can only bind once")
+        bound = tuple((owner, ensure_utc(at)) for owner, at in requests)
         if len(splits) != len(requests) or not requests:
             raise ValueError("Native anchors need a nonempty, aligned split column")
         path = self.root / "anchors.parquet"
@@ -156,10 +176,8 @@ class NativeHistories:
                     "owner": pa.array(
                         [self.owners[owner] for owner, _ in requests], type=pa.int64()
                     ),
-                    "at": pa.array(
-                        [at for _, at in self.requests], type=pa.timestamp("us", tz="UTC")
-                    ),
-                    "cutoff_us": pa.array([utc_us(at) for _, at in self.requests], type=pa.int64()),
+                    "at": pa.array([at for _, at in bound], type=pa.timestamp("us", tz="UTC")),
+                    "cutoff_us": pa.array([utc_us(at) for _, at in bound], type=pa.int64()),
                     "split": list(splits),
                 }
             ),
@@ -173,7 +191,9 @@ class NativeHistories:
             split="split",
             metadata=("cutoff_us",),
         )
-        return self.stack.enter_context(self.plan.materialize(anchors, fit_split=splits[0]))
+        task = self.stack.enter_context(self.plan.materialize(anchors, fit_split=splits[0]))
+        self.requests = bound
+        return task
 
     def decode(self, batch: Any) -> dict[int, tuple[TransactionEvent, ...]]:
         """Check native bindings and map raw row IDs back to immutable source snapshots."""
@@ -207,7 +227,15 @@ class NativeHistories:
                 raise ValueError("Native history crosses entity boundaries")
             # Native clocks can be coarser than the source. No candidate beyond
             # the exact cutoff is passed to a tokenizer or model.
-            out[i] = tuple(e for e in events if e.event_timestamp <= cutoff)
+            selected = tuple(e for e in events if e.event_timestamp <= cutoff)
+            out[i] = (
+                selected
+                if self.originals is None
+                else tuple(
+                    self.originals[e.entity_id, e.event_id]
+                    for e in sorted(selected, key=lambda event: int(event.event_id))
+                )
+            )
         return out
 
 
@@ -326,6 +354,12 @@ def build_sequences_at_label_cutoffs(
             observation_window=observation_window,
             causal=causal,
         )
+    owners = {event.entity_id for event in events}
+    for row in rows:
+        if row.entity_id not in owners:
+            # Preserve the shared validator's missing-owner error, independently
+            # of owners with history outside the requested observation window.
+            validate_events(())
     histories = _histories(events, [(r.entity_id, r.timestamp) for r in rows])
     out = []
     for row, history in zip(rows, histories, strict=True):
@@ -372,18 +406,21 @@ class NativeSequenceBatches(Sequence[Any]):
         self.rows = tuple(rows[i] for i in order)
         self.tokenizer, self.batch_size, self.max_tokens = tokenizer, batch_size, max_tokens
         self.amount_key, self.label_window = amount_key, label_window
-        by_key = {}
-        for row in self.rows:
-            for e in row.events:
-                key = (e.entity_id, e.event_id)
-                if key in by_key and by_key[key] != e:
-                    raise ValueError("Conflicting native source records")
-                by_key[key] = e
-        self.source = NativeHistories(list(by_key.values()))
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        self.source = NativeHistories((), windows=self.rows)
+        # Native rank selection visits positions rank + k * world_size. Store a
+        # rectangular transpose once so each rank selects one indexed minibatch,
+        # with a single physical anchor stage independent of minibatch count.
+        self.binding_order = tuple(
+            min(i * batch_size + j, len(self.rows) - 1)
+            for j in range(batch_size)
+            for i in range(len(self))
+        )
         try:
             self.task = self.source.bind(
-                [(r.entity_id, r.cutoff_time) for r in self.rows],
-                [str(i // batch_size) for i in range(len(self.rows))],
+                [(str(i), self.rows[i].cutoff_time) for i in self.binding_order],
+                ["train"] * len(self.binding_order),
             )
         except BaseException:
             self.close()
@@ -408,28 +445,30 @@ class NativeSequenceBatches(Sequence[Any]):
             raise IndexError(index)
         decoded = {}
         for native in self.task.batches(
-            split=str(index), batch_size=self.batch_size, shuffle=False, output_format="model"
+            split="train",
+            batch_size=self.batch_size,
+            shuffle=False,
+            rank=index,
+            world_size=len(self),
+            output_format="model",
         ):
             for sid, history in self.source.decode(native).items():
                 if sid in decoded:
                     raise ValueError("Native loader repeated a training sample")
-                decoded[sid] = {(e.entity_id, e.event_id): e for e in history}
-        expected = range(
-            index * self.batch_size, min((index + 1) * self.batch_size, len(self.rows))
-        )
+                decoded[sid] = history
+        expected = tuple(index + j * len(self) for j in range(self.batch_size))
         if set(decoded) != set(expected):
             raise ValueError("Native training batch membership changed")
         selected = []
-        for sid in expected:
-            original = self.rows[sid]
-            if any((e.entity_id, e.event_id) not in decoded[sid] for e in original.events):
+        count = min(self.batch_size, len(self.rows) - index * self.batch_size)
+        for sid in expected[:count]:
+            original = self.rows[self.binding_order[sid]]
+            # Synthetic window row IDs preserve occurrence identity even when
+            # source event IDs repeat. Restore the caller's exact window order.
+            history = decoded[sid]
+            if history != original.events:
                 raise ValueError("Native retrieval lost a required window event")
-            selected.append(
-                replace(
-                    original,
-                    events=tuple(decoded[sid][e.entity_id, e.event_id] for e in original.events),
-                )
-            )
+            selected.append(replace(original, events=history))
         return collate_batch(
             selected,
             self.tokenizer,

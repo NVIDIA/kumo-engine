@@ -96,4 +96,15 @@ and FutureSubgraph targets retain their separate Python reference pass.
 
 The advanced example startup overlaps the narrower work proposed in #524.
 This broader sync also updates loader defaults and canonical graph/hybrid
-runners; it does not include #524's additional snapshot-reuse interface.
+runners. It also carries forward #524's completed-index reuse interface and
+its offline-source regression smoke, while retaining this package's dependency pin.
+
+Engine review follow-up adapts `native_graph.py` to cache edge clocks and compare
+UTC instants, `graph_recipe.py` to close failed preparations, and
+`native_history.py` to retain missing-owner errors, atomic single-use binding,
+repeated event IDs and bounded indexed-window retrieval with a single anchor
+stage. The native contract tests cover these changes. Setup/readme corrections
+name the independent package directory and native build prerequisites. The
+additional `tests/recipe_smoke/test_kumo_engine_example.py` comes from #524
+(commit `dff4ff4dbcabe123e98652065e134f277b43812b`), outside the pinned source
+inventory; it verifies a fresh build and index reuse with source tables offline.

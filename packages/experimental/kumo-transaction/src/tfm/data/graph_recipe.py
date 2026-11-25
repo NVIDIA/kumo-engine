@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 
@@ -111,6 +112,21 @@ def prepare_graph_data(
     That mode never constructs future labels or requires historical SSL windows.
     FutureSubgraph fits targets/codecs only on the historical training corpus.
     """
+    with ExitStack() as resources:
+        result = _prepare_graph_data(
+            config, tokenizer=tokenizer, transform=transform, resources=resources
+        )
+        resources.pop_all()  # PreparedGraphData owns the sampler on success.
+        return result
+
+
+def _prepare_graph_data(
+    config: RecipeConfig,
+    *,
+    tokenizer: StatefulSequenceTokenizer | None,
+    transform: FutureTargetTransform | None,
+    resources: ExitStack,
+) -> PreparedGraphData:
     events, transfers = _events(config)
     data, g = config.data, config.model.composition.granularity
     objective = config.training.objective if config.runtime.stage != "downstream" else "binary"
@@ -127,6 +143,8 @@ def prepare_graph_data(
         depth=g.depth,
         fanout=g.fanout,
     )
+    if isinstance(sampler, NativeGraphSampler):
+        resources.callback(sampler.close)
     owners = sorted({e.entity_id for e in events})
     if len(owners) < 12:
         raise ValueError("Graph recipe needs at least 12 observed owners from the selected source")

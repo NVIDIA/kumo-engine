@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
@@ -22,6 +23,10 @@ from tfm.contracts.graph import STATIC_TIME, GraphAnchor, GraphBatch, utc_us
 from tfm.data.adapters.kumo_graph import from_kumo_graph
 from tfm.data.graph import GraphSampler, RelationalGraph, order_graph_by_hop
 from tfm.extras.kumo_pytorch import SOURCE_REVISION, native_api, temporary_engine
+
+
+def _clock(value: datetime | None) -> int:
+    return STATIC_TIME if value is None else utc_us(value)
 
 
 @dataclass
@@ -51,7 +56,7 @@ class NativeGraphSampler(GraphSampler):
                 "Native graph recipes require static users and user-to-event FK roles"
             )
         for row in graph.rows:
-            if row.available_at != row.event_time or (
+            if _clock(row.available_at) != _clock(row.event_time) or (
                 row.available_at is not None and utc_us(row.available_at) % 1_000_000
             ):
                 raise UnsupportedCombinationError(
@@ -80,11 +85,13 @@ class NativeGraphSampler(GraphSampler):
             self.api = api
             schema_tables, schema_relations = [], []
             parents: dict[str, dict[int, int]] = {}
+            self.edge_clocks = {}
             for no, relation in enumerate(graph.relations):
                 source, role, target = relation
                 if relation not in active_relations:
                     continue
                 mapping = {}
+                clocks = {}
                 for link in graph.links:
                     if link.relation != relation:
                         continue
@@ -93,12 +100,16 @@ class NativeGraphSampler(GraphSampler):
                         raise UnsupportedCombinationError(
                             "Native graph examples require one parent per FK role"
                         )
-                    if link.available_at != self.rows[target, link.target_id].available_at:
+                    if _clock(link.available_at) != _clock(
+                        self.rows[target, link.target_id].available_at
+                    ):
                         raise UnsupportedCombinationError(
                             "Native FK clocks must equal the event availability clock"
                         )
                     mapping[dest] = self.codes[source][link.source_id]
+                    clocks[mapping[dest], dest] = _clock(link.available_at)
                 parents[role] = mapping
+                self.edge_clocks[relation] = clocks
                 schema_relations.append(api.RelationSpec(role, source, "id", target, f"fk_{no}"))
             for name, table in self.tables.items():
                 if name not in active:
@@ -214,7 +225,7 @@ class NativeGraphSampler(GraphSampler):
             raise UnsupportedCombinationError(
                 "Native graph example requires second-aligned cutoffs without observation_start; select data.loader: python otherwise"
             )
-        if sharing == "shared" and len({a.cutoff for a in anchors}) != 1:
+        if sharing == "shared" and len({utc_us(a.cutoff) for a in anchors}) != 1:
             raise ValueError("Shared graphs require identical cutoffs")
         ids = tuple(self.codes[root_type][a.entity_id] for a in anchors)
         path = self.native_root / f"anchors-{self.native_calls}.parquet"
@@ -262,14 +273,7 @@ class NativeGraphSampler(GraphSampler):
                 edge_clocks = {}
                 for source, role, target in self.graph.relations:
                     edge = payload["edges"][role]["index"]
-                    known = {
-                        (
-                            self.codes[source][link.source_id],
-                            self.codes[target][link.target_id],
-                        ): STATIC_TIME if link.available_at is None else utc_us(link.available_at)
-                        for link in self.graph.links
-                        if link.relation == (source, role, target)
-                    }
+                    known = self.edge_clocks.get((source, role, target), {})
                     edge_clocks[source, role, target] = torch.tensor(
                         [
                             known[

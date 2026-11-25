@@ -132,7 +132,7 @@ the adapter prefers users with fraud so the small configs have positives.
 
 ## Commands
 
-CPU-safe smoke (synthetic, eager decoder, no extras):
+CPU-safe smoke (synthetic, eager decoder; requires the `native` extra):
 
 ```bash
 uv run tfm smoke --recipe blueprint_v1
