@@ -423,7 +423,7 @@ def test_production_guard_requires_main_and_the_databricks_environment(
     import urllib.request
 
     environment = dict(
-        can_admins_bypass=False, protection_rules=[
+        can_admins_bypass=True, protection_rules=[
             dict(type='required_reviewers', prevent_self_review=True,
                  reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
         ], deployment_branch_policy=dict(protected_branches=False,
