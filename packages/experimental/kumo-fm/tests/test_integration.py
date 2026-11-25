@@ -5,6 +5,7 @@
 """Retained payloads over an Arrow-to-Parquet fixture, with explicit expected rows."""
 import base64
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pyarrow as pa
@@ -224,3 +225,189 @@ def test_internal_related_row_budget_is_enforced_before_payload_assembly(fm_inpu
     with fm.prepare(**fm_inputs, budgets={"max_rows_per_table": 1}) as loader:
         with pytest.raises(ValueError, match="Expanded related table exceeds row budget"):
             loader.load(query=fm.Query(pairs=[(LARGE, when(25)), (-5, when(25))]))
+
+
+def test_default_graph_strategy_matches_explicit_recent_for_timed_destinations(fm_inputs):
+    original = fm_inputs["sample"]
+    graph_name, neighborhood = next(iter(original.neighborhoods.items()))
+    step = neighborhood.layers[0].samples[0]
+    default = replace(original, neighborhoods={graph_name: api.NeighborhoodSpec((
+        api.GraphLayer((replace(step, strategy=None),)),))})
+    query = fm.Query(pairs=[(LARGE, when(25), -9007199254740993), (-5, when(25), 9007199254740993)])
+    batches = []
+    for sample in (original, default):
+        with fm.prepare(**{**fm_inputs, "sample": sample}) as loader:
+            batches.append(loader.load(query=query))
+    for name, table in batches[0].tables("predict")["related_tables"].items():
+        assert batches[1].tables("predict")["related_tables"][name].equals(table)
+    assert batches[0].encode("arrays") == batches[1].encode("arrays")
+    assert batches[1].tables("predict")["related_tables"]["orders"]["order_id"].to_pylist() == [14, 13]
+
+
+@pytest.mark.parametrize("strategy", [None, "uniform", "recent"])
+def test_fm_rejects_timeless_destinations_after_default_strategy_resolution(fm_inputs, strategy):
+    target = api.Aggregate(api.Rows(path=(), time=api.TimeWindow("at", start=0, stop=86400)), "count")
+    layer = api.GraphLayer((api.GraphSample("order_user", direction="forward", fanout=1,
+                                            strategy=strategy),))
+    sample = api.SampleSpec(entity=api.EntitySpec("orders"), targets={"next": target},
+                            neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+    with pytest.raises(ValueError, match="timeless table users"):
+        fm.prepare(**{**fm_inputs, "sample": sample})
+
+
+def test_resolved_uniform_strategy_is_refused_for_timed_destinations(fm_inputs):
+    original = fm_inputs["sample"]
+    name, neighborhood = next(iter(original.neighborhoods.items()))
+    step = replace(neighborhood.layers[0].samples[0], strategy="uniform")
+    sample = replace(original, neighborhoods={name: api.NeighborhoodSpec((api.GraphLayer((step,)),))})
+    with pytest.raises(ValueError, match="bounded recent graph sampling only"):
+        fm.prepare(**{**fm_inputs, "sample": sample})
+
+
+def test_default_strategy_preserves_diskgraph_clock_override_refusal(fm_inputs):
+    original = fm_inputs["sample"]
+    name, neighborhood = next(iter(original.neighborhoods.items()))
+    step = replace(neighborhood.layers[0].samples[0], strategy=None, time_column="order_id")
+    sample = replace(original, neighborhoods={name: api.NeighborhoodSpec((api.GraphLayer((step,)),))})
+    with pytest.raises(api.ValidationError) as error:
+        fm.prepare(**{**fm_inputs, "sample": sample})
+    assert any(issue.code == "DG-GRAPH-CLOCK-OVERRIDE" for issue in error.value.issues)
+
+
+@pytest.fixture
+def collision_inputs(tmp_path, request):
+    primary_key = getattr(request, "param", "event_id")
+    events = {"__fm_edge_activity": [700], "__fm_edge_unselected": [800],
+              primary_key: [11], "user": [7], "at": [when(1)]}
+    rows = {"users": pa.table({"id": [7], "__fm_edge_activity": [900]}), "events": pa.table(events)}
+    tables, sources = [], {}
+    for name, table in rows.items():
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(table, path)
+        sources[name] = api.Parquet(str(path))
+        tables.append(api.TableSpec(name, "id" if name == "users" else primary_key,
+                                    {field.name: api.DType.from_arrow(field.type) for field in table.schema},
+                                    time_column=api.NON_TEMPORAL if name == "users" else "at"))
+    schema = api.DataSchema(tuple(tables), (api.RelationSpec("activity", "events", "user", "users", "id"),))
+    layer = api.GraphLayer((api.GraphSample("activity", fanout=1, direction="reverse"),))
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": api.Aggregate(
+        api.Rows(path=("activity",), time=api.TimeWindow("at", start=0, stop=86400)), "count")},
+        neighborhoods={"history": api.NeighborhoodSpec((layer,))})
+    contract = api.DataLoaderSpec(schema, sample, api.BatchSpec(inputs={"graph": api.Input(
+        api.NeighborhoodSource("history"), api.Graph(node_fields={
+            name: api.Fields(tuple(api.Encode(column, api.Raw()) for column in table.column_names))
+            for name, table in rows.items()}), None)}))
+    engine = api.DiskGraphEngine(num_threads=2)
+    with api.prepare(contract=contract, dataset=api.Dataset(sources), engine=engine):
+        pass
+    engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=engine.index, id="collision"))
+    return {"engine": engine, "sample": sample, "target": "next", "task": "regression",
+            "features": {"users": [], "events": []}}
+
+
+def test_projected_source_feature_cannot_replace_its_generated_relationship_column(collision_inputs):
+    with pytest.raises(ValueError, match="collide with generated relationship columns.*events.__fm_edge_activity"):
+        fm.prepare(**{**collision_inputs, "features": {"users": [], "events": ["__fm_edge_activity"]}})
+
+
+@pytest.mark.parametrize("collision_inputs", ["__fm_edge_activity"], indirect=True)
+def test_retained_primary_key_cannot_replace_its_generated_relationship_column(collision_inputs):
+    with pytest.raises(ValueError, match="collide with generated relationship columns.*events.__fm_edge_activity"):
+        fm.prepare(**collision_inputs)
+
+
+def test_same_named_feature_on_other_table_and_unprojected_collision_are_preserved(collision_inputs):
+    features = {"users": ["__fm_edge_activity"], "events": ["__fm_edge_unselected"]}
+    with fm.prepare(**{**collision_inputs, "features": features}) as loader:
+        batch = loader.load(query=fm.Query(pairs=[(7, when(10), 99)]))
+    related = batch.tables("predict")["related_tables"]
+    assert related["users"]["__fm_edge_activity"].to_pylist() == [900]
+    assert related["events"]["__fm_edge_activity"].to_pylist() == [7]
+    assert related["events"]["__fm_edge_unselected"].to_pylist() == [800]
+    assert_payload_matches_tables(batch)
+
+
+@pytest.mark.parametrize("collision_inputs", ["__fm_edge_unselected"], indirect=True)
+def test_primary_key_with_unrelated_generated_looking_name_remains_valid(collision_inputs):
+    with fm.prepare(**collision_inputs) as loader:
+        batch = loader.load(query=fm.Query(pairs=[(7, when(10), 99)]))
+    table = batch.tables("predict")["related_tables"]["events"]
+    assert table["__fm_edge_unselected"].to_pylist() == [11]
+    assert table["__fm_edge_activity"].to_pylist() == [7]
+
+
+@pytest.mark.parametrize("batch_size", [1, 8])
+def test_candidate_budget_spans_internal_batches_and_resets_after_failure(fm_inputs, batch_size):
+    engine = fm_inputs["engine"]
+    task_root = engine.index.parent.parent / "tasks" / engine.index_build_id
+    with fm.prepare(**fm_inputs, batch_size=batch_size, budgets={"max_candidate_rows": 5}) as loader:
+        with pytest.raises(ValueError, match="node-plus-edge budget exceeded for the load request"):
+            loader.load(query=fm.Query(pairs=[(LARGE, when(25), 1), (-5, when(25), 2)]))
+        assert not task_root.exists() or not list(task_root.iterdir())
+        # A failed load must not consume a later call's three-row allowance.
+        batch = loader.load(query=fm.Query(pairs=[(LARGE, when(25), 3)]))
+        assert batch.tables("predict")["related_tables"]["orders"]["order_id"].to_pylist() == [14]
+        with loader.materialize(query=fm.Query(pairs=[(-5, when(25), 4)])) as request:
+            for _ in range(2):
+                repeated = request.load()
+                assert repeated.tables("predict")["related_tables"]["orders"]["order_id"].to_pylist() == [13]
+    assert not task_root.exists() or not list(task_root.iterdir())
+
+
+@pytest.mark.parametrize("batch_size", [1, 8])
+@pytest.mark.parametrize("limit", [5, 6])
+def test_candidate_budget_sums_context_and_query_and_resets_each_load(fm_inputs, batch_size, limit):
+    engine = fm_inputs["engine"]
+    task_root = engine.index.parent.parent / "tasks" / engine.index_build_id
+    context = fm.Context(pairs=[(LARGE, when(10), -9007199254740993)])
+    query = fm.Query(pairs=[(LARGE, when(25), 9007199254740993)])
+    with fm.prepare(**fm_inputs, batch_size=batch_size, budgets={"max_candidate_rows": limit}) as loader:
+        if limit == 5:
+            with pytest.raises(ValueError, match="node-plus-edge budget exceeded for the load request"):
+                loader.load(context=context, query=query)
+        else:
+            for _ in range(2):
+                batch = loader.load(context=context, query=query)
+                assert batch.tables("context")["instance_table"]["__fm_target"].to_pylist() == [1.0]
+                assert batch.tables("predict")["instance_table"]["instance_id"].to_pylist() == [9007199254740993]
+
+    assert not task_root.exists() or not list(task_root.iterdir())
+
+
+@pytest.mark.parametrize("limit", [6, 7])
+def test_candidate_budget_counts_repeated_selected_edges_before_assembly(tmp_path, limit):
+    rows = pa.table({"id": [10, 20, 30], "manager_id": pa.array([None, 10, 10], pa.int64()),
+                     "at": [when(1), when(2), when(3)]})
+    path = tmp_path / "employees.parquet"
+    pq.write_table(rows, path)
+    schema = api.DataSchema(tables=(api.TableSpec(
+        "employees", "id", {field.name: api.DType.from_arrow(field.type) for field in rows.schema},
+        time_column="at"),), relations=(
+            api.RelationSpec("manager", "employees", "id", "employees", "manager_id"),))
+    sample = api.SampleSpec(entity=api.EntitySpec("employees"), targets={"next": api.Aggregate(
+        api.Rows(path=("manager",), time=api.TimeWindow("at", start=0, stop=86400)), "count")},
+        neighborhoods={"history": api.NeighborhoodSpec((
+            api.GraphLayer((api.GraphSample("manager", direction="forward", fanout=2),)),
+            api.GraphLayer((api.GraphSample("manager", direction="reverse", fanout=1),)),
+        ))})
+    graph_sample = replace(sample, targets={})
+    contract = api.DataLoaderSpec(schema, graph_sample, api.BatchSpec(inputs={"graph": api.Input(
+        api.NeighborhoodSource("history"), api.Graph(node_fields={"employees": api.Fields(tuple(
+            api.Encode(column, api.Raw()) for column in rows.column_names))}), None)}))
+    engine = api.DiskGraphEngine(num_threads=2)
+    with api.prepare(contract=contract, dataset=api.Dataset({"employees": api.Parquet(str(path))}),
+                     engine=engine) as plan:
+        anchors = api.AnchorTable(api.InMemoryRows([{"id": 10, "at": when(10)}]), "id", "at")
+        with plan.materialize(anchors) as task:
+            graph = next(task.batches(output_format="columnar", batch_size=1)).inputs["graph"]
+            assert len(graph.nodes["employees"].ids) == 3
+            assert len(graph.edges["manager"].index) == 4  # Two pairs selected in both directions.
+    engine = api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=engine.index, id="repeated-edges"))
+    with fm.prepare(engine=engine, sample=sample, target="next", task="regression",
+                    features={"employees": []}, budgets={"max_candidate_rows": limit}) as loader:
+        if limit == 6:
+            with pytest.raises(ValueError, match="node-plus-edge budget exceeded for the load request"):
+                loader.load(query=fm.Query(pairs=[(10, when(10))]))
+        else:
+            batch = loader.load(query=fm.Query(pairs=[(10, when(10))]))
+            assert batch.tables("predict")["related_tables"]["employees"]["id"].to_pylist() == [10, 20, 30]

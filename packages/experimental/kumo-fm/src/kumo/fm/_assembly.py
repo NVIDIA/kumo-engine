@@ -25,9 +25,6 @@ def assemble_graph(payload, seeds, graph):
 
     if not isinstance(graph, ColumnarGraph) or graph.root_type != payload.entity:
         raise ValueError("Expected a columnar graph rooted at the FM entity")
-    count = sum(len(node.ids) for node in graph.nodes.values()) + sum(len(edge.index) for edge in graph.edges.values())
-    if count > payload.budgets.max_candidate_rows:
-        raise ValueError("FM sampled node-plus-edge budget exceeded")
     for name in payload.table_names:
         if len(graph.nodes[name].ids) > payload.budgets.max_rows_per_table:
             raise ValueError("Expanded related table exceeds row budget")
@@ -50,7 +47,7 @@ def assemble_graph(payload, seeds, graph):
         parent = edge[parent_column].to_numpy(zero_copy_only=False)
         parents = graph.nodes[relation["parent"]].features[schema_view.tables[relation["parent"]]["primary_key"]]
         positions = _parent_positions(child, parent, len(graph.nodes[relation["child"]].ids))
-        edge_columns["__fm_edge_" + name] = pc.take(parents, positions)
+        edge_columns[(relation["child"], "__fm_edge_" + name)] = pc.take(parents, positions)
 
     instance_ids = pa.array([seed["instance_id"] for seed in seeds], pa.int64())
     ready = {}
@@ -60,8 +57,8 @@ def assemble_graph(payload, seeds, graph):
         for column in spec["columns"]:
             if column == "instance_id":
                 columns[column] = pc.take(instance_ids, node.owners)
-            elif column in edge_columns:
-                columns[column] = edge_columns[column]
+            elif (name, column) in edge_columns:
+                columns[column] = edge_columns[(name, column)]
             else:
                 columns[column] = node.features[column]
         ready[name] = pa.table(columns)

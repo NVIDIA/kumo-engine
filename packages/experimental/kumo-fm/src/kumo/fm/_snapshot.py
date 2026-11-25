@@ -169,7 +169,10 @@ def _target_horizon(value):
 
 def _selected_graph(schema, sample, features, schema_view):
     from kumo.pytorch import api
+    from kumo.pytorch.contract.sample import resolve_sample_types
 
+    sample = resolve_sample_types(schema, api.SampleSpec(
+        entity=sample.entity, neighborhoods=sample.neighborhoods))
     if len(sample.neighborhoods) != 1:
         raise ValueError("FM requires exactly one declared NeighborhoodSpec")
     graph_name, neighborhood = next(iter(sample.neighborhoods.items()))
@@ -182,8 +185,6 @@ def _selected_graph(schema, sample, features, schema_view):
             raise ValueError("FM cannot sample an empty graph layer")
         following = set()
         for step in layer.samples:
-            if step.strategy != "recent" or not step.fanout or step.fanout < 0:
-                raise ValueError("FM supports bounded recent graph sampling only")
             if step.relation not in schema_view.relations:
                 raise ValueError(f"Unknown relation: {step.relation}")
             rel = schema_view.relations[step.relation]
@@ -194,6 +195,8 @@ def _selected_graph(schema, sample, features, schema_view):
                 raise ValueError(f"Unreachable graph layer: {source}")
             if schema_view.tables[dest]["time_column"] is None:
                 raise ValueError(f"FM cannot sample uniformly into timeless table {dest}")
+            if step.strategy != "recent" or not step.fanout or step.fanout < 0:
+                raise ValueError("FM supports bounded recent graph sampling only")
             following.add(dest)
             tables.update((source, dest))
             relations.add(step.relation)
@@ -211,6 +214,12 @@ def _selected_graph(schema, sample, features, schema_view):
             raise ValueError(f"FM reserves instance_id for occurrence IDs: {name}.instance_id")
         pk = schema_view.tables[name]["primary_key"]
         projections[name] = list(dict.fromkeys((pk, *requested)))
+        generated = {"__fm_edge_" + relation for relation in relations
+                     if schema_view.relations[relation]["child"] == name}
+        collisions = generated.intersection(projections[name])
+        if collisions:
+            raise ValueError(f"FM source columns collide with generated relationship columns: "
+                             f"{[name + '.' + column for column in sorted(collisions)]}")
         internal = list(projections[name])
         clock = schema_view.tables[name]["time_column"]
         if clock:
@@ -439,20 +448,26 @@ class _FMLoader:
                 parts.append(pa.table({"id": identifiers, "value": values, "valid": valid}))
         return _align_context_labels(parts, expected, target=self._target, classes=self._classes)
 
-    def _graphs_for(self, anchor, seeds):
+    def _graphs_for(self, anchor, seeds, remaining_candidates):
         expected = {s["instance_id"]: s for s in seeds}
         seen = set()
         parts = {name: [] for name in self._payload._metadata["schema"]["related_tables"]}
         with self._graphs.materialize(anchor) as task:
             for batch in task.batches(output_format="columnar", shuffle=False,
                                       batch_size=self._batch_size):
+                graph = batch.inputs["graph"]
+                count = sum(len(node.ids) for node in graph.nodes.values()) + sum(
+                    len(edge.index) for edge in graph.edges.values())
+                if count > remaining_candidates:
+                    raise ValueError("FM sampled node-plus-edge budget exceeded for the load request")
+                remaining_candidates -= count
                 identifiers = [int(value) for value in batch.metadata["sample_ids"]]
                 if (len(identifiers) != len(set(identifiers)) or
                         any(value not in expected or value in seen for value in identifiers)):
                     raise ValueError("Duplicate or unexpected FM graph occurrence")
                 seen.update(identifiers)
                 chunk = [expected[value] for value in identifiers]
-                related = assemble_graph(self._payload, chunk, batch.inputs["graph"])
+                related = assemble_graph(self._payload, chunk, graph)
                 for name, table in related.items():
                     parts[name].append(table)
         if seen != set(expected):
@@ -468,14 +483,16 @@ class _FMLoader:
                                         sort_keys=[("rank", "ascending"), ("key", "ascending")])
                 table = table.take(index)
             result[name] = table
-        return result
+        return result, remaining_candidates
 
     def _load(self, splits):
         if self._closed:
             raise RuntimeError("Loader is closed")
         ready = {}
+        remaining_candidates = self._payload.budgets.max_candidate_rows
         for split, seeds in splits.items():
             anchor = self._anchor(seeds)
             labels = self._labels_for(anchor, seeds) if split == "context" else None
-            ready[split] = _SplitPayload(seeds, self._graphs_for(anchor, seeds), labels)
+            related, remaining_candidates = self._graphs_for(anchor, seeds, remaining_candidates)
+            ready[split] = _SplitPayload(seeds, related, labels)
         return PayloadBatch(self._payload, ready)

@@ -56,8 +56,12 @@ Query targets never enter payloads.
 Source primary keys must not be named `instance_id`, which FM reserves for
 occurrence IDs. Source features named `instance_id` cannot be projected either.
 Graph directions follow the declared relation endpoints: forward goes left to
-right, and reverse goes right to left. The `max_instances` budget bounds each split before expanding
-entities × times or validating explicit pairs.
+right, and reverse goes right to left. An omitted sampling strategy resolves
+through PyTorch's defaults: recent for timed destinations, uniform for timeless
+destinations. FM accepts only the resolved bounded recent case. Projected source
+columns and retained primary keys must not collide with a generated
+`__fm_edge_<relation>` column on the same child table. The `max_instances` budget
+bounds each split before expanding entities × times or validating explicit pairs.
 
 FM derives payload types only for the selected graph tables and their requested
 features, primary/foreign keys and clocks. Other source columns and unrelated
@@ -99,9 +103,12 @@ are captured during preparation, independently of later changes to the mapping.
 | `max_instances` | 10,000 | Occurrences in each context/query split, checked before expansion |
 | `max_rows_per_table` | 1,000,000 | Rows in each final instance/related table per split; also checked during internal assembly |
 | `max_columns` | 500 | Columns in each payload table, including generated IDs and relationship columns |
-| `max_candidate_rows` | 1,000,000 | Sampled node-plus-edge rows in each internal graph batch; this scope follows `batch_size` |
+| `max_candidate_rows` | 1,000,000 | Sum of sampled node-plus-edge rows over all graph batches and both splits in one load, independent of `batch_size`; resets for every load |
 | `max_decoded_arrow_bytes` | 31,457,280 (30 MiB) | Sum of logical Arrow bytes across all retained tables and splits |
 | `max_payload_bytes` | 31,457,280 (30 MiB) | Complete encoded JSON body, including metadata and arrays or base64 IPC |
+
+The candidate budget counts graph rows as emitted by PyTorch, including repeated
+selected edges. Every `loader.load(...)` or `request.load()` starts a fresh count.
 
 ## Wire output
 
