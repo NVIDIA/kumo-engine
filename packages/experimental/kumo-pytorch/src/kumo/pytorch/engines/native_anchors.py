@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
 from typing import Any
+from weakref import WeakSet
 
 from diskgraph import SamplingPlan
 
@@ -94,6 +95,7 @@ class NativeAnchors:
         )
         self.path = Path(self._scratch.name)
         self._closed = False
+        self._bucketed_passes = WeakSet()
         self._length_caches = {}
         self._last_length_planning_stats = (0, 0)
         try:
@@ -993,6 +995,55 @@ class NativeAnchors:
                 )
             yield batch
 
+    def _bucketed_request_chunks(self, stages, assembler, selection, *, size, seed, epoch, shuffle):
+        """Stably sort the selected pass by length while retaining only a chunk of requests."""
+        import sqlite3
+        from contextlib import closing
+        from itertools import islice
+
+        def request_chunks():
+            if shuffle:
+                order = self.order(
+                    selection, seed=seed, epoch=epoch, shuffle=True, rank=0, world_size=1
+                )
+                while positions := list(islice(order, size)):
+                    yield positions, self.fetch(selection, positions)
+            else:
+                rows = self._merged_rows(stages)
+                while chunk := list(islice(rows, size)):
+                    yield (
+                        [position for _, position, _ in chunk],
+                        [request for _, _, request in chunk],
+                    )
+
+        # The primary key keeps equal-length anchors in pass order, including for shuffles.
+        with tempfile.TemporaryDirectory(dir=self.path) as directory:
+            # A task may release this suspended pass from another thread.
+            with closing(
+                sqlite3.connect(Path(directory) / "order.sqlite", check_same_thread=False)
+            ) as db:
+                db.execute(
+                    "CREATE TABLE anchors (length INTEGER, ordinal INTEGER, position INTEGER, "
+                    "PRIMARY KEY (length, ordinal)) WITHOUT ROWID"
+                )
+                ordinal = 0
+                for positions, requests in request_chunks():
+                    lengths = assembler._model_batch_lengths(requests)
+                    db.executemany(
+                        "INSERT INTO anchors VALUES (?, ?, ?)",
+                        (
+                            (int(lengths[i]), ordinal + i, position)
+                            for i, position in enumerate(positions)
+                        ),
+                    )
+                    ordinal += len(positions)
+                db.commit()
+                with closing(
+                    db.execute("SELECT position FROM anchors ORDER BY length, ordinal")
+                ) as ordered:
+                    while chunk := ordered.fetchmany(size):
+                        yield self.fetch(selection, [position for (position,) in chunk])
+
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
         pa = self._pa
         key = next(name for name in runtime["raw_features"] if name.endswith("/" + stage["name"]))
@@ -1109,6 +1160,8 @@ class NativeAnchors:
     def close(self) -> None:
         if not getattr(self, "_closed", True):
             self._closed = True
+            for chunks in list(self._bucketed_passes):
+                chunks.close()
             sampler = getattr(self, "_history_engine", None)
             self._source._release_sampler(sampler)
             self._runtime = None
@@ -1189,10 +1242,11 @@ class NativeAnchors:
         Fixed-size GNN batches reuse TT-NG topology/features directly. Boundary
         batches spanning two split stages use the normal sampler, since their
         topology cannot be concatenated without changing local node indices.
-        Token-budget and mixed-layout assembly retain the existing batching
-        policy; only anchor storage/order/reading changes.
+        For a single split stage with a history token budget, sample neighborhoods
+        after native length planning selects the anchors for each model batch.
+        Multiple stages share a batching pass over the combined anchor stream.
         """
-        from kumo.pytorch.contract.batch import Graph
+        from kumo.pytorch.contract.batch import EventSource, Graph
         from kumo.pytorch.contract.sample import Field
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
@@ -1227,6 +1281,20 @@ class NativeAnchors:
             for prepared in assembler._prepared_inputs.values()
             if isinstance(prepared.spec.representation, Graph)
         }
+        budgeted_history = policy.max_tokens is not None and isinstance(
+            assembler.spec.inputs[policy.length_input].source, EventSource
+        )
+        stages = self._selection(selection)
+        # A native length planner can only group anchors within one split stage.
+        # A multi-stage token budget needs the combined stream to fill boundary
+        # batches and apply drop_last once to the tail of the pass.
+        native_lengths = (
+            output_format == "model"
+            and world_size == 1
+            and (not neighborhoods or budgeted_history)
+            and (policy.max_tokens is None or len(stages) == 1)
+        )
+        native_schedule = assembler._source is source and (fixed or native_lengths)
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
         plan = None
         projections = {table: [] for table in source._tables}
@@ -1259,7 +1327,7 @@ class NativeAnchors:
                     yield _surface_padding(batch)
 
         named = {}
-        if len(neighborhoods) > 1:
+        if (fixed and len(neighborhoods) > 1) or (not fixed and native_schedule):
             for name in sorted(neighborhoods):
                 fields = {table: [] for table in source._tables}
                 for prepared in assembler._prepared_inputs.values():
@@ -1286,15 +1354,12 @@ class NativeAnchors:
                     "plan": source._sampling_plan(self._sample.neighborhoods[name])[0],
                     "projections": fields,
                 }
-        stages = self._selection(selection)
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
         inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
             assembler
         )
-        if (
-            (output_format in {"model", "columnar"} or inspectable_graph or sampled)
-            and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
-            and assembler._source is self._source
+        if native_schedule and (
+            output_format in {"model", "columnar"} or inspectable_graph or sampled
         ):
             first_owned = None
 
@@ -1350,7 +1415,7 @@ class NativeAnchors:
         pending: list[SampleRequest] = []
         first = None
         emitted = 0
-        stages = self._selection(selection)
+        target = -(-sum(stage["count"] for stage in stages) // world_size)
 
         def streams():
             if not shuffle and len(stages) > 1:
@@ -1381,6 +1446,24 @@ class NativeAnchors:
                     yield runtime, self._requests(stage, runtime)
                 offset += stage["count"]
 
+        if output_format == "model" and policy.max_tokens is not None and len(stages) > 1:
+            if policy.bucket_by_length:
+                chunks = self._bucketed_request_chunks(
+                    stages, assembler, selection, size=size, seed=seed, epoch=epoch, shuffle=shuffle
+                )
+                self._bucketed_passes.add(chunks)
+            else:
+                chunks = (requests for _, requests in streams())
+            for batch in assembler._budgeted_model_batches(
+                chunks,
+                maximum=maximum,
+                epoch=epoch,
+                seed=seed,
+                drop_last=policy.drop_last if drop_last is None else drop_last,
+            ):
+                yield _surface_padding(batch)
+            return
+
         for runtime, requests in streams():
             emitted += len(requests)
             if requests and first is None:
@@ -1392,13 +1475,13 @@ class NativeAnchors:
                 )
                 runtime["_anchor_neighborhood"] = name
             if not pending and len(requests) == size:
-                yield from assemble(requests, runtime, False)
+                yield from assemble(requests, runtime, emitted == target)
             else:
                 pending.extend(requests)
                 while len(pending) >= size:
-                    yield from assemble(pending[:size], None, False)
+                    final = emitted == target and len(pending) == size
+                    yield from assemble(pending[:size], None, final)
                     pending = pending[size:]
-        target = -(-self.count(selection) // world_size)
         if emitted < target:
             if first is None:
                 first = self.fetch(selection, [0])[0]

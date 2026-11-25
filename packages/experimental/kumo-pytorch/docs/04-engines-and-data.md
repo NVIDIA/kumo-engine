@@ -241,7 +241,9 @@ the original source tables.
 
 Closing a plan or task keeps `indexes/<index_build_id>/` and
 `cache/<index_build_id>/`. Close tasks explicitly or use context managers for
-prompt cleanup. Closing a plan closes its live tasks before releasing the engine
+prompt cleanup. Closing a task also releases the temporary SQLite sort used by
+a length-bucketed, multi-stage token-budget pass, even if its iterator is only
+partly consumed. Closing a plan closes its live tasks before releasing the engine
 binding. Unclosed tasks also release their native readers and remove their task
 and scratch directories on collection or normal Python exit; empty parent
 directories can remain. There is no automatic garbage collection
@@ -330,6 +332,11 @@ omitting the old `chunk_batches` option because it had no effect on requests.
 If you relied on `batches(split=...)` after materializing Python requests,
 pass your selected requests explicitly or bind the population as an `AnchorTable`.
 Start a fresh iterator when migrating a paused request-backed split pass.
+
+A batch checkpoint records how many batches were consumed. The revised
+token-budget scheduler can group different anchors into each batch, so affected
+passes reject checkpoints from the older schedule. Restart the pass, or finish
+it with the version that saved it.
 
 This example shows how to bind a Parquet anchor table and select its splits:
 

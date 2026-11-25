@@ -2400,7 +2400,13 @@ class PreparedBatchPlan:
                 self.spaces[space_name].roles,
                 packer=getattr(self._source, "pack_token_stream", None) if model else None,
             )
-            return dict(enumerate(int(length) for length in np.diff(tokens.boundaries)))
+            lengths = np.diff(tokens.boundaries)
+            if any(
+                isinstance(target, NextTokenTarget) and target.input == input_name
+                for target in self._emitted.targets.values()
+            ):
+                lengths = np.maximum(lengths - 1, 0)
+            return dict(enumerate(int(length) for length in lengths))
         lengths = np.diff(tokens.boundaries)
         if isinstance(prepared.spec.source, EntitySource):
             return dict(enumerate(int(length) for length in lengths))
@@ -2490,28 +2496,7 @@ class PreparedBatchPlan:
         )
         built = self._request_builder(values) if requests and not model else values
         if model and (policy.max_tokens is not None or policy.bucket_by_length):
-            length_spec = self.spec.inputs[policy.length_input]
-            native_counter = getattr(self._source, "model_lengths", None)
-            if isinstance(length_spec.source, EventsOf):
-                parent = self.spec.inputs[length_spec.source.input]
-                row = parent.representation.row
-                if (
-                    isinstance(row, Columns)
-                    or isinstance(row, Tokens)
-                    and row.missing in {"omit", "emit"}
-                    or isinstance(row, Composite)
-                    and not row.required_fields
-                ):
-                    length_spec = replace(length_spec, source=parent.source)
-            if (
-                callable(native_counter)
-                and isinstance(length_spec.source, EventSource)
-                and isinstance(length_spec.representation.row, Columns)
-            ):
-                measured = native_counter(self.sample, length_spec, values)
-                lengths = {index: int(measured[index]) for index in order}
-            else:
-                lengths = self._model_lengths(values, policy.length_input)
+            lengths = self._model_batch_lengths(values)
         else:
             lengths = (
                 self._measure_values(built, policy.length_input)
@@ -2529,37 +2514,83 @@ class PreparedBatchPlan:
         ):
             chunks = chunks[:-1]
         for chunk in chunks:
-            started = time.perf_counter_ns()
-            if model:
-                selected_requests = [values[index] for index in chunk]
-                builder = getattr(self._source, "build_model_ordered", None)
-                orders = {}
-                for value in self.spec.inputs.values():
-                    if isinstance(value.source, EventSource):
-                        for event in value.source.events:
-                            orders.setdefault(event, set()).add(value.source.order)
-                source_values = (
-                    builder(
-                        self._model_sample,
-                        selected_requests,
-                        event_orders={
-                            name: tuple(sorted(directions)) for name, directions in orders.items()
-                        },
-                    )
-                    if callable(builder)
-                    else self._source.build_model(self._model_sample, selected_requests)
+            selected = [built[index] for index in chunk]
+            yield self._deliver_batch(selected, output_format, epoch, seed)
+
+    def _deliver_batch(self, values, output_format, epoch, seed):
+        model = output_format == "model"
+        started = time.perf_counter_ns()
+        if model:
+            builder = getattr(self._source, "build_model_ordered", None)
+            orders = {}
+            for value in self.spec.inputs.values():
+                if isinstance(value.source, EventSource):
+                    for event in value.source.events:
+                        orders.setdefault(event, set()).add(value.source.order)
+            source_values = (
+                builder(
+                    self._model_sample,
+                    values,
+                    event_orders={
+                        name: tuple(sorted(directions)) for name, directions in orders.items()
+                    },
                 )
-                batch = self._collate(
-                    source_values, epoch=epoch, seed=seed, model=True, requests=selected_requests
-                )
-            else:
-                batch = self._collate([built[index] for index in chunk], epoch=epoch, seed=seed)
-            self._last_batch_profile = {
-                "output_format": output_format,
-                "samples": len(chunk),
-                "model_assembly_ns": time.perf_counter_ns() - started,
-            }
-            yield batch
+                if callable(builder)
+                else self._source.build_model(self._model_sample, values)
+            )
+            batch = self._collate(
+                source_values, epoch=epoch, seed=seed, model=True, requests=values
+            )
+        else:
+            batch = self._collate(values, epoch=epoch, seed=seed)
+        self._last_batch_profile = {
+            "output_format": output_format,
+            "samples": len(values),
+            "model_assembly_ns": time.perf_counter_ns() - started,
+        }
+        return batch
+
+    def _model_batch_lengths(self, values):
+        policy = self.spec.batching
+        length_spec = self.spec.inputs[policy.length_input]
+        native_counter = getattr(self._source, "model_lengths", None)
+        if isinstance(length_spec.source, EventsOf):
+            parent = self.spec.inputs[length_spec.source.input]
+            row = parent.representation.row
+            if (
+                isinstance(row, Columns)
+                or isinstance(row, Tokens)
+                and row.missing in {"omit", "emit"}
+                or isinstance(row, Composite)
+                and not row.required_fields
+            ):
+                length_spec = replace(length_spec, source=parent.source)
+        if (
+            callable(native_counter)
+            and isinstance(length_spec.source, EventSource)
+            and isinstance(length_spec.representation.row, Columns)
+        ):
+            measured = native_counter(self.sample, length_spec, values)
+            return dict(enumerate(map(int, measured)))
+        return self._model_lengths(values, policy.length_input)
+
+    def _budgeted_model_batches(self, request_chunks, *, maximum, epoch, seed, drop_last):
+        """Pack an ordered stream of anchors, carrying only its unfinished batch."""
+        self._validate_model_contract()
+        if maximum <= 0:
+            raise ValueError("batch_size must be positive")
+        tail = []
+        for requests in request_chunks:
+            values = tail + requests
+            lengths = self._model_batch_lengths(values)
+            groups = self._compose_batches(range(len(values)), lengths, self.spec.batching, maximum)
+            tail = []
+            if groups and len(groups[-1]) < maximum:
+                tail = [values[i] for i in groups.pop()]
+            for group in groups:
+                yield self._deliver_batch([values[i] for i in group], "model", epoch, seed)
+        if tail and not drop_last:
+            yield self._deliver_batch(tail, "model", epoch, seed)
 
     def _model_lengths(self, values, input_name):
         source_values = self._source.build_model(self.sample, values)
