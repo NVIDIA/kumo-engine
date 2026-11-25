@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -93,3 +94,333 @@ def test_optional_parse_stats_do_not_block_existing_warnings(
                 },
             ]})
     assert len(caught) == 1
+
+
+def _min_stats(tmp_path, table, columns, stype='kumo.numerical'):
+    directory = tmp_path / 'col_stats_min'
+    directory.mkdir(exist_ok=True)
+    (directory / f'{table}.json').write_text(
+        json.dumps({
+            f'{column}__{stype}__{stat}__False': {
+                'value': value
+            }
+            for column, stats in columns.items()
+            for stat, value in stats.items()
+        }))
+    return SimpleNamespace(
+        kumo_stats_dir=str(tmp_path),
+        ingest_stats_path=str(tmp_path / 'ingest_stats.json'))
+
+
+def test_snapshot_reports_non_finite_values_per_column(tmp_path):
+    result = _min_stats(
+        tmp_path, 'events', {
+            'amount': {
+                'COUNT': 12,
+                'INVALID_FRACTION': 0.25,
+                'NUM_PARSE_FAILURES': 0
+            },
+            'ratio': {
+                'COUNT': 12,
+                'INVALID_FRACTION': 1 / 6
+            },
+            'clean': {
+                'COUNT': 12,
+                'INVALID_FRACTION': 0.0
+            },
+            'odd': {
+                'COUNT': 12,
+                'INVALID_FRACTION': 'bad'
+            },
+            'uncounted': {
+                'INVALID_FRACTION': 0.5
+            },
+            'flag': {
+                'COUNT': 3
+            },
+        })
+    with pytest.warns(UserWarning) as caught:
+        _warn_ingest_data_loss(result, {'tables': [{'table_name': 'events'}]})
+    assert [str(w.message) for w in caught] == [
+        '3 non-finite value(s) (inf, -inf or NaN) found in events.amount. '
+        'They are stored as is and left out of the column statistics. '
+        'Infinity usually comes from a division by zero upstream; replace '
+        'non-finite values at the source.',
+        '2 non-finite value(s) (inf, -inf or NaN) found in events.ratio. '
+        'They are stored as is and left out of the column statistics. '
+        'Infinity usually comes from a division by zero upstream; replace '
+        'non-finite values at the source.',
+    ]
+
+
+def test_latlong_invalid_values_are_not_reported_as_non_finite(tmp_path):
+    from kumo.engine.graph import invalid_value_counts
+
+    result = _min_stats(
+        tmp_path, 'events',
+        {'geo': {
+            'COUNT': 8,
+            'NUM_PARSE_FAILURES': 2,
+            'INVALID_FRACTION': 0.5
+        }}, stype='kumo.latlong')
+    with pytest.warns(UserWarning) as caught:
+        _warn_ingest_data_loss(result, {'tables': [{'table_name': 'events'}]})
+    assert [str(w.message) for w in caught] == [
+        '2 invalid values found in events.geo. Invalid values are parsed as '
+        'null. Please correct and retrain if needed.'
+    ]
+    assert invalid_value_counts(tmp_path, ['events']) == {'events': {'geo': 2}}
+
+
+@pytest.mark.parametrize('column, counts, expected', [
+    ({
+        'name': 'country',
+        'dtype': 'string',
+        'stype': 'categorical'
+    }, [['US', 5], ['NA', 2], ['N/A', 1], ['None', 1], ['', 3]
+        ], "events.country holds 7 value(s) that look like missing ('', 'N/A', "
+     "'NA', 'None'); they are kept as text. If they mean missing, replace "
+     "them with nulls at the source; a number or date column reads them as "
+     "missing."),
+    ({
+        'name': 'country',
+        'dtype': 'string',
+        'stype': 'categorical'
+    }, [['US', 5], ['none', 2], ['NULL ', 1], ['N/a', 1], ['  ', 3]
+        ], "events.country holds 7 value(s) that look like missing ('  ', "
+     "'N/a', 'NULL ', 'none'); they are kept as text. If they mean missing, "
+     "replace them with nulls at the source; a number or date column reads "
+     "them as missing."),
+    ({
+        'name': 'country',
+        'dtype': 'string',
+        'stype': 'categorical'
+    }, [['US', 5], ['DE', 2]], None),
+    ({
+        'name': 'code',
+        'dtype': 'string',
+        'stype': 'ID'
+    }, [['NA', 5]], None),
+    ({
+        'name': 'notes',
+        'dtype': 'string',
+        'stype': 'text'
+    }, [['NA', 5]], None),
+    ({
+        'name': 'tags',
+        'dtype': 'string',
+        'stype': 'multicategorical'
+    }, [['NA', 5]], None),
+    ({
+        'name': 'age',
+        'dtype': 'int64',
+        'stype': 'categorical'
+    }, [[1, 5], [None, 2]], None),
+    ({
+        'name': 'flag',
+        'dtype': 'bool',
+        'stype': 'categorical'
+    }, [[False, 5], [True, 2]], None),
+    ({
+        'name': 'country',
+        'dtype': 'string',
+        'stype': 'categorical'
+    }, 'bad', None),
+    ({
+        'name': 'country',
+        'dtype': 'string',
+        'stype': 'categorical'
+    }, [['NA'], [], ['N/A', 'x'], ['null', 0]], None),
+])
+def test_snapshot_reports_text_that_looks_like_missing(tmp_path, column, counts,
+                                                       expected):
+    result = _min_stats(tmp_path, 'events',
+                        {column['name']: {
+                             'CATEGORY_COUNTS': counts
+                         }})
+    config = {'tables': [{'table_name': 'events', 'cols': [column]}]}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _warn_ingest_data_loss(result, config)
+    messages = [str(w.message) for w in caught]
+    assert messages == ([expected] if expected else [])
+
+
+def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
+    result = _min_stats(
+        tmp_path, 'events', {
+            'country': {
+                'COUNT': 100,
+                'NUM_NA': 5,
+                'CATEGORY_COUNTS': [['US', 50], ['NA', 10]]
+            }
+        })
+    config = {
+        'tables': [{
+            'table_name':
+            'events',
+            'cols': [{
+                'name': 'country',
+                'dtype': 'string',
+                'stype': 'categorical'
+            }]
+        }]
+    }
+    with pytest.warns(UserWarning, match='holds at least 10 value'):
+        _warn_ingest_data_loss(result, config)
+
+
+@pytest.mark.parametrize('narrowed, stats, expected', [
+    ({
+        ('events', 'amount'): ('double', 0, 0, 0)
+    }, {
+        'MIN': 0.0,
+        'MAX': 16777216.0
+    }, "events.amount is stored as float32 but comes from double and reaches "
+     "16,777,216; from 16,777,216 on float32 no longer resolves every whole "
+     "number, so values are rounded. Declare dtype=Dtype.float64 for the "
+     "column to keep full precision."),
+    ({
+        ('events', 'amount'): ('double', 0, 0, 0)
+    }, {
+        'MIN': 0.0,
+        'MAX': 16777215.0
+    }, None),
+    ({
+        ('events', 'amount'): ('decimal128(10, 2)', 2, 0, 0)
+    }, {
+        'MIN': 0.25,
+        'MAX': 131072.015625
+    }, "events.amount is stored as float32 but comes from decimal128(10, 2) "
+     "and reaches 131,072.02; from 131,072 on float32 no longer resolves "
+     "steps of 0.01, so values are rounded. Declare dtype=Dtype.float64 for "
+     "the column to keep full precision."),
+    ({
+        ('events', 'amount'): ('decimal128(10, 2)', 2, 0, 0)
+    }, {
+        'MIN': 0.25,
+        'MAX': 131071.98
+    }, None),
+    ({
+        ('events', 'amount'): ('int64', 0, 0, 0)
+    }, {
+        'MIN': -16777300.0,
+        'MAX': 5.0
+    }, "events.amount is stored as float32 but comes from int64 and reaches "
+     "16,777,300; from 16,777,216 on float32 no longer resolves every whole "
+     "number, so values are rounded. Declare dtype=Dtype.float64 for the "
+     "column to keep full precision."),
+    ({}, {
+        'MIN': 0.0,
+        'MAX': 1e12
+    }, None),
+    ({
+        ('events', 'other'): ('double', 0, 0, 0)
+    }, {
+        'MIN': 0.0,
+        'MAX': 1e12
+    }, None),
+    ({
+        ('events', 'amount'): ('decimal128(10, 2)', 2, 0, 0)
+    }, {
+        'CATEGORY_COUNTS': [[0.25, 2], [131072.015625, 2], ['inf', 1]]
+    }, "events.amount is stored as float32 but comes from decimal128(10, 2) "
+     "and reaches 131,072.02; from 131,072 on float32 no longer resolves "
+     "steps of 0.01, so values are rounded. Declare dtype=Dtype.float64 for "
+     "the column to keep full precision."),
+    ({
+        ('events', 'amount'): ('double', 0, 0, 0)
+    }, {
+        'CATEGORY_COUNTS': [['a', 2], [], None, [True, 1]],
+        'MIN': 'x'
+    }, None),
+    ({
+        ('events', 'amount'): ('double', 50, 3, 0)
+    }, {
+        'MIN': 0.0,
+        'MAX': 0.0
+    }, "events.amount is stored as float32 but comes from double and holds 3 "
+     "sampled value(s) too small for float32, which stores them as 0. "
+     "Declare dtype=Dtype.float64 for the column to keep them."),
+    ({
+        ('events', 'amount'): ('double', 0, 0, 2)
+    }, {
+        'MIN': 0.5,
+        'MAX': 2.5
+    }, "events.amount is stored as float32 but comes from double and holds 2 "
+     "sampled value(s) too large for float32, which stores them as "
+     "infinity. Declare dtype=Dtype.float64 for the column to keep them."),
+    ({
+        ('events', 'amount'): ('double', 45, 0, 0)
+    }, {
+        'MIN': 1.03e-43,
+        'MAX': 1.04e-43
+    }, "events.amount is stored as float32 but comes from double and reaches "
+     "1.04e-43; from 0 on float32 no longer resolves steps of 1e-45, so "
+     "values are rounded. Declare dtype=Dtype.float64 for the column to "
+     "keep full precision."),
+])
+def test_snapshot_reports_values_beyond_float32_precision(
+        tmp_path, narrowed, stats, expected):
+    result = _min_stats(tmp_path, 'events', {'amount': stats})
+    config = {
+        'tables': [{
+            'table_name':
+            'events',
+            'cols': [{
+                'name': 'amount',
+                'dtype': 'float32',
+                'stype': 'numerical'
+            }]
+        }]
+    }
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _warn_ingest_data_loss(result, config, narrowed)
+    messages = [str(w.message) for w in caught]
+    assert messages == ([expected] if expected else [])
+
+
+def test_the_module_imports_with_denormals_flushed():
+    import subprocess
+    import sys
+
+    code = ('import torch; torch.set_flush_denormal(True); '
+            'import kumo.engine.graph as graph; print(graph._FLOAT64_PLACES)')
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                            text=True, check=True)
+    assert result.stdout.strip() == '324'
+
+
+def test_snapshot_exposes_invalid_value_counts_per_column(tmp_path):
+    from kumo.engine.graph import GraphSnapshot
+
+    index = tmp_path / 'index'
+    index.mkdir()
+    tables = [{'table_name': name} for name in ('events', 'users', 'absent')]
+    snapshot = GraphSnapshot('graph@data', index, {'tables': tables})
+    assert snapshot.invalid_value_counts == {}
+    stats = index / 'kumo_col_stats'
+    stats.mkdir()
+    _min_stats(
+        stats, 'events', {
+            'amount': {
+                'NUM_PARSE_FAILURES': 4,
+                'INVALID_FRACTION': 1 / 6,
+                'COUNT': 12
+            },
+            'clean': {
+                'NUM_PARSE_FAILURES': 0,
+                'INVALID_FRACTION': 0.0,
+                'COUNT': 12
+            },
+            'flag': {
+                'NUM_PARSE_FAILURES': 1
+            },
+            'bad': {
+                'NUM_PARSE_FAILURES': 'x'
+            },
+        })
+    _min_stats(stats, 'users', {'age': {'NUM_PARSE_FAILURES': 0}})
+    (stats / 'col_stats_min' / 'broken.json').write_text('[]')
+    assert snapshot.invalid_value_counts == {'events': {'amount': 6, 'flag': 1}}
