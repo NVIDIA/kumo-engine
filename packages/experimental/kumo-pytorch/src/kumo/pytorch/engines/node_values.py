@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import replace
+from threading import Lock
 
 import numpy as np
 import pyarrow as pa
@@ -24,6 +26,76 @@ from kumo.pytorch.contract.sample import (
     SampleSpec,
     graph_node_dtype,
 )
+
+
+def _distinct_pairs(ids, ticks):
+    if ticks.min() == ticks.max():
+        unique, inverse = np.unique(ids, return_inverse=True)
+        return unique, np.full(len(unique), ticks[0], dtype=np.int64), inverse
+    order = np.lexsort((ticks, ids))
+    sorted_ids, sorted_ticks = ids[order], ticks[order]
+    first = np.r_[
+        True, (sorted_ids[1:] != sorted_ids[:-1]) | (sorted_ticks[1:] != sorted_ticks[:-1])
+    ]
+    inverse = np.empty(len(ids), dtype=np.intp)
+    inverse[order] = np.cumsum(first) - 1
+    return sorted_ids[first], sorted_ticks[first], inverse
+
+
+class DegreeCache:
+    """Exact temporal counts from an immutable task index, at most four 2 MiB programs."""
+
+    def __init__(self):
+        self.entries = OrderedDict()
+        self.lock = Lock()
+
+    def read(self, key, names, ids, ticks, fetch):
+        with self.lock:
+            capacity = min(65536, (2 << 20) // (17 + 8 * len(names)))
+            if not capacity:
+                unique, cutoffs, inverse = _distinct_pairs(ids, ticks)
+                return {
+                    name: values.take(inverse) for name, values in fetch(unique, cutoffs).items()
+                }
+            if key not in self.entries:
+                if len(self.entries) == 4:
+                    self.entries.popitem(last=False)
+                self.entries[key] = (
+                    np.empty(capacity, dtype=np.uint64),
+                    np.empty(capacity, dtype=np.int64),
+                    np.zeros(capacity, dtype=bool),
+                    {name: np.empty(capacity, dtype=np.uint64) for name in names},
+                )
+            self.entries.move_to_end(key)
+            stored_ids, stored_ticks, occupied, counts = self.entries[key]
+            # The hash chooses a slot only; compare the complete ID and signed clock.
+            hashed = ids ^ (ticks.view(np.uint64) * np.uint64(11400714819323198485))
+            slots = (hashed ^ (hashed >> 32)) % capacity
+            hits = occupied[slots] & (stored_ids[slots] == ids) & (stored_ticks[slots] == ticks)
+            result = {name: column[slots] for name, column in counts.items()}
+            if not hits.all():
+                missing = ~hits
+                unique, cutoffs, inverse = _distinct_pairs(ids[missing], ticks[missing])
+                fetched = fetch(unique, cutoffs)
+                # Pick one occurrence per slot, so colliding keys, ticks and values agree.
+                targets, keep = np.unique(slots[missing], return_index=True)
+                occupied[targets] = False
+                for name, values in fetched.items():
+                    native = values.to_numpy()
+                    result[name][missing] = native[inverse]
+                    counts[name][targets] = native[inverse[keep]]
+                stored_ids[targets] = ids[missing][keep]
+                stored_ticks[targets] = ticks[missing][keep]
+                occupied[targets] = True
+            return {name: pa.array(values) for name, values in result.items()}
+
+
+def _query_lengths(source, table, nodes, cutoffs, plan):
+    result = source._sampler.query_temporal_lengths({table: nodes}, {table: cutoffs}, plan)
+    return {
+        f"entity:{seq['name'].removeprefix('event:')}": seq["lengths"]
+        for seq in result["sequences"]
+    }
 
 
 def _node_program(source, table, declarations, requested):
@@ -84,6 +156,8 @@ def computed_node_arrays(source, neighborhood, table, requested, ids, owners, ro
         }
     # Anchor materializations apply only to their original roots. Their fields
     # may even use the same names as the values declared for this node table.
+    runtime = getattr(source, "_runtime_batch", None)
+    cache = None if runtime is None else runtime.get("_degree_cache")
     if getattr(source, "_materialized_values", None) is not None:
         source = source._materialized_reference.source
     declarations = neighborhood.node_values[table]
@@ -98,32 +172,30 @@ def computed_node_arrays(source, neighborhood, table, requested, ids, owners, ro
     # An AnchorTable without an as_of_time column uses epoch zero.
     ticks = np.asarray([0] if root_ticks is None else root_ticks, dtype=np.int64)
     node_ids = np.asarray(ids, dtype=np.uint64)
-    if ticks.min() == ticks.max():
-        unique_ids, inverse = np.unique(node_ids, return_inverse=True)
-        cutoffs = [int(ticks[0])] * len(unique_ids)
-    else:
-        # Sort both coordinates at their native widths, including unsigned IDs
-        # and negative or nanosecond-precision timestamps.
-        cutoffs = ticks[np.asarray(owners, dtype=np.intp)]
-        order = np.lexsort((cutoffs, node_ids))
-        ordered_ids, ordered_ticks = node_ids[order], cutoffs[order]
-        first = np.r_[
-            True, (ordered_ids[1:] != ordered_ids[:-1]) | (ordered_ticks[1:] != ordered_ticks[:-1])
-        ]
-        unique_ids = ordered_ids[first]
-        cutoffs = ordered_ticks[first].tolist()
-        inverse = np.empty(len(ids), dtype=np.intp)
-        inverse[order] = np.cumsum(first) - 1
+    occurrence_ticks = (
+        np.full(len(ids), ticks[0], dtype=np.int64)
+        if len(ticks) == 1
+        else ticks[np.asarray(owners, dtype=np.intp)]
+    )
+    if (
+        cache is not None
+        and lengths
+        and not aggregates
+        and all(isinstance(declarations[name], Aggregate) for name in requested)
+    ):
+        names = tuple(f"entity:{name}" for name in requested)
+
+        def fetch(nodes, times):
+            return _query_lengths(source, table, nodes.tolist(), times.tolist(), lengths)
+
+        counts = cache.read((table, lengths), names, node_ids, occurrence_ticks, fetch)
+        return source._entity_arrays(sample, {}, counts)
+    unique_ids, cutoffs, inverse = _distinct_pairs(node_ids, occurrence_ticks)
+    cutoffs = cutoffs.tolist()
     native_ids = unique_ids.tolist()
     scalar_values = {}
     if lengths:
-        result = source._sampler.query_temporal_lengths(
-            {table: native_ids}, {table: cutoffs}, lengths
-        )
-        scalar_values.update(
-            (f"entity:{sequence['name'].removeprefix('event:')}", sequence["lengths"])
-            for sequence in result["sequences"]
-        )
+        scalar_values.update(_query_lengths(source, table, native_ids, cutoffs, lengths))
     if aggregates:
         result = source._sampler.query_temporal(
             {table: native_ids}, {table: cutoffs}, aggregates, output_format="model"

@@ -31,6 +31,7 @@ from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_valu
 from kumo.pytorch.engines.parquet_anchors import (
     _anchor_key_array,
     _candidate_row,
+    _candidate_rows,
     _entity_id_type,
     _entity_ids,
     _physical,
@@ -38,6 +39,20 @@ from kumo.pytorch.engines.parquet_anchors import (
 )
 from kumo.pytorch.materialization import _diskgraph_dtype
 from kumo.pytorch.parquet_sources import parquet_objects
+
+
+def _stage_columns(pa, schema, first_part):
+    def columns(schema):
+        return [{"name": field.name, **_diskgraph_dtype(pa, field.type)} for field in schema]
+
+    try:
+        return columns(schema)
+    except TypeError:
+        # A later input part can use a different Arrow representation. Parquet
+        # normalizes some of these (e.g. integer dictionaries) to supported scalars.
+        import pyarrow.parquet as pq
+
+        return columns(pq.read_schema(first_part))
 
 
 def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
@@ -79,7 +94,9 @@ class NativeAnchors:
     def __init__(self, source: Any, sample: Any, table: AnchorTable, *, directory=None):
         import pyarrow as pa
         import pyarrow.compute as pc
-        import pyarrow.parquet as pq
+
+        from kumo.pytorch.engines.graph_projection import GraphProjectionCache
+        from kumo.pytorch.engines.node_values import DegreeCache
 
         self._source, self._sample, self._table = source, sample, table
         self._feature_types = sample_value_types(source.schema, sample)
@@ -94,14 +111,16 @@ class NativeAnchors:
         self.path = Path(self._scratch.name)
         self._closed = False
         self._length_caches = {}
+        self._graph_feature_cache = GraphProjectionCache()
+        self._degree_cache = DegreeCache()
         self._last_length_planning_stats = (0, 0)
         try:
-            self._materialize(pq)
+            self._materialize()
         except BaseException:
             self.close()
             raise
 
-    def _materialize(self, pq: Any) -> None:
+    def _materialize(self) -> None:
         pa, pc = self._pa, self._pc
         table = self._table
         files = parquet_objects(table.source.path)
@@ -130,6 +149,7 @@ class NativeAnchors:
         self._stages: list[dict[str, Any]] = []
         by_split: dict[str | None, dict[str, Any]] = {}
         writers = {}
+        stage_schemas = {}
         position = 0
         view = Path(self._source._index_path)
         extension = Path(self._temporary.name)
@@ -206,6 +226,7 @@ class NativeAnchors:
                             stage["path"] = self.path / f"{stage['name']}.parquet"
                             self._stages.append(stage)
                             by_split[split_name] = stage
+                            stage_schemas[split_name] = data.schema
                             writers[split_name] = self._source._diskgraph.TaskParquetWriter(
                                 str(stage["path"])
                             )
@@ -236,10 +257,9 @@ class NativeAnchors:
                 specs.append(
                     {
                         "name": stage["name"],
-                        "columns": [
-                            {"name": field.name, **_diskgraph_dtype(pa, field.type)}
-                            for field in pq.read_schema(stage["path"] / "part-00000.parquet")
-                        ],
+                        "columns": _stage_columns(
+                            pa, stage_schemas[stage["split"]], stage["path"] / "part-00000.parquet"
+                        ),
                         "primary_key": None,
                         "create_time": "TIMESTAMP" if table.as_of_time is not None else None,
                         "fkeys": [],
@@ -462,13 +482,10 @@ class NativeAnchors:
         )
         candidates = {}
         if sample.candidate_sets:
-            requests = (
-                [
-                    _candidate_row(table, columns, i, position)
-                    for i, position in enumerate(positions.to_pylist())
-                ]
+            requests, graph_ids = (
+                _candidate_rows(table, columns, positions.to_pylist(), graph_only)
                 if table.candidates
-                else ({},) * n
+                else (None, {})
             )
             as_of_times = evaluation_times
             if table.as_of_time and len(graph_only) != len(sample.candidate_sets):
@@ -489,6 +506,7 @@ class NativeAnchors:
                     entity_ids,
                     cutoffs=evaluation_times,
                     graph_only=graph_only,
+                    graph_ids=graph_ids,
                 )
         else:
             self._source._last_candidate_draw_profile = None
@@ -889,7 +907,6 @@ class NativeAnchors:
             sample_candidate_walks,
         )
         from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
-        from kumo.pytorch.engines.graph_projection import GraphProjectionCache
         from kumo.pytorch.task import _padding_sample_ids, _surface_padding
 
         if output_format == "model":
@@ -1027,9 +1044,9 @@ class NativeAnchors:
         walk_groups = (
             compatible_walk_groups(assembler, graph_only) if output_format == "model" else ()
         )
-        graph_feature_cache = GraphProjectionCache()
         for runtime, padded, runtime_stage in runtime_batches():
-            runtime["_graph_feature_cache"] = graph_feature_cache
+            runtime["_graph_feature_cache"] = self._graph_feature_cache
+            runtime["_degree_cache"] = self._degree_cache
             runtime["_anchor_neighborhood"] = anchor_neighborhood
             if has_candidate_walks:
                 runtime["_candidate_walk_stats"] = {"walk_pushes": 0, "walk_decoded_entries": 0}
@@ -1216,6 +1233,8 @@ class NativeAnchors:
             self._source._release_sampler(sampler)
             self._runtime = None
             self._history_engine = None
+            self._graph_feature_cache = None
+            self._degree_cache = None
             del sampler
             self._length_caches.clear()
             getattr(self, "_token_length_arrays", {}).clear()
@@ -1295,6 +1314,7 @@ class NativeAnchors:
         """
         from kumo.pytorch.contract.batch import Graph
         from kumo.pytorch.contract.sample import DrawNeighbors, Field
+        from kumo.pytorch.engines.graph_projection import cacheable_projection
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
         if output_format == "columnar":
@@ -1355,7 +1375,22 @@ class NativeAnchors:
                         for use in group.fields
                         if use.field in source._tables[table].columns
                     )
-            return {table: list(dict.fromkeys(names)) for table, names in fields.items()}
+            fields = {table: list(dict.fromkeys(names)) for table, names in fields.items()}
+            if (
+                output_format == "model"
+                and fixed
+                and assembler._source is source
+                and all(
+                    graph.topology == "relations"
+                    for graph in graph_inputs.get(neighborhood_name, ())
+                )
+            ):
+                # A native projection decodes features separately for every node occurrence.
+                # Model assembly can gather immutable numeric rows once per distinct ID.
+                for table, names in fields.items():
+                    if cacheable_projection(source._tables[table].columns or {}, names):
+                        fields[table] = []
+            return fields
 
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
         plan = source._sampling_plan(self._sample.neighborhoods[name])[0] if name else None

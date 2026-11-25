@@ -69,7 +69,7 @@ def draw_candidate_ids(source, sample, roots):
     return results
 
 
-def _row_pools(source, sample, roots, draws):
+def _row_program(source, sample, draws):
     from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
 
     # One native sequence per window, including all requested keys and weights.
@@ -87,6 +87,15 @@ def _row_pools(source, sample, roots, draws):
         }
         events[next(iter(sharing))] = EventSpec(rows, fields)
     program = _TemporalPlanCompiler(source).compile(SampleSpec(entity=sample.entity, events=events))
+    return by_rows, program
+
+
+def _row_pools(source, sample, roots, draws):
+    # The same immutable sample drives every batch in a materialized task.
+    cached = getattr(source, "_candidate_row_program", None)
+    if cached is None or cached[0] is not sample:
+        cached = source._candidate_row_program = (sample, *_row_program(source, sample, draws))
+    _, by_rows, program = cached
     result = source._query_values(
         sample,
         source._root_ids(sample.entity.table, roots),
@@ -189,23 +198,37 @@ def _select(pool, roots, draw, name, seed):
         return groups
     if pool["id"].null_count:
         pool = pool.filter(pc.is_valid(pool["id"]))
+    if not len(pool):
+        return groups
+    weights = None
     if draw.weight:
         weight = arrow_float64(pool["weight"])
-        invalid = pc.or_(pc.less(weight, 0), pc.invert(pc.is_finite(weight)))
-        if pc.any(invalid).as_py():
+        weights = (weight.fill_null(0) if weight.null_count else weight).to_numpy()
+        if not np.isfinite(weights).all() or (weights < 0).any():
             raise ValueError(
                 f"candidate set {name!r} requires finite nonnegative weights in {draw.weight!r}"
             )
-        pool = pool.set_column(pool.schema.get_field_index("weight"), "weight", weight)
-        pool = pool.filter(pc.greater(weight, 0))
-    if not len(pool):
-        return groups
-
     # Fix the pool order independently of native event chunks and batch size.
-    pool = pool.sort_by([("owner", "ascending"), ("id", "ascending")])
-    owners = pool["owner"].to_numpy()
-    ids = pool["id"]
-    different_ids = pc.not_equal(ids.slice(1), ids.slice(0, len(ids) - 1)).to_numpy()
+    owners, ids = pool["owner"].to_numpy(), pool["id"]
+    if pa.types.is_integer(ids.type):
+        ids = ids.to_numpy()
+        order = np.lexsort((ids, owners))
+    else:
+        order = pc.sort_indices(
+            pool, sort_keys=[("owner", "ascending"), ("id", "ascending")]
+        ).to_numpy()
+    if weights is not None:
+        if (weights == 0).any():
+            order = order[weights[order] > 0]
+            if not len(order):
+                return groups
+        weights = weights[order]
+    owners, ids = owners[order], ids.take(order)
+    different_ids = (
+        ids[1:] != ids[:-1]
+        if isinstance(ids, np.ndarray)
+        else pc.not_equal(ids.slice(1), ids.slice(0, len(ids) - 1)).to_numpy()
+    )
     first = np.flatnonzero(np.r_[True, (owners[1:] != owners[:-1]) | different_ids])
     ids = ids.take(first)
     owners = owners[first]
@@ -218,7 +241,7 @@ def _select(pool, roots, draw, name, seed):
         if draw.weight:
             # Sum in log space, including repeated weights whose total exceeds
             # float64. Gumbel top-k draws in proportion to remaining mass.
-            log_mass = np.logaddexp.reduceat(np.log(pool["weight"].to_numpy()), first)
+            log_mass = np.logaddexp.reduceat(np.log(weights), first)
             priorities = log_mass - np.log(-np.log(priorities))
         ordered = np.lexsort((-priorities, owners))
         ranks = np.arange(len(ordered)) - np.repeat(starts, sizes)
@@ -226,7 +249,7 @@ def _select(pool, roots, draw, name, seed):
     counts = np.zeros(len(roots), dtype=np.intp)
     counts[owners[starts]] = np.minimum(sizes, draw.count)
     offsets = np.r_[0, np.cumsum(counts)]
-    values = _arrow_values(selected)
+    values = selected.tolist() if isinstance(selected, np.ndarray) else _arrow_values(selected)
     return [tuple(values[a:b]) for a, b in zip(offsets[:-1], offsets[1:], strict=True)]
 
 

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kumo.pytorch.contract.sample import BuiltSample
-    from kumo.pytorch.engine import GraphRoot
+    from kumo.pytorch.engine import CandidateGraphRoots, GraphRoot
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,9 @@ class ModelSourceBatch:
     candidates: Mapping[str, tuple[tuple[BuiltSample, ...], ...]] = field(default_factory=dict)
 
     # Graph-only DiskGraph candidates already have an owning cutoff and no row payload.
-    candidate_roots: Mapping[str, tuple[tuple[GraphRoot, ...], ...]] = field(default_factory=dict)
+    candidate_roots: Mapping[str, CandidateGraphRoots | tuple[tuple[GraphRoot, ...], ...]] = field(
+        default_factory=dict
+    )
 
     @property
     def batch_size(self) -> int:

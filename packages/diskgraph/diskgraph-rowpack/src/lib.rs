@@ -7536,6 +7536,15 @@ pub fn make_arrow_builder(
     Ok((arrow_schema::Field::new(name, arrow_type, true), builder))
 }
 
+fn contains_signaling_f32(words: &[[u8; 4]]) -> bool {
+    // The scalar decoder widens f32 to f64 and narrows it for Arrow f32.
+    // Preserve that conversion's NaN behavior on every target.
+    words.iter().fold(false, |found, &word| {
+        let magnitude = u32::from_le_bytes(word) & 0x7fff_ffff;
+        found | (0x7f80_0001..0x7fc0_0000).contains(&magnitude)
+    })
+}
+
 fn decode_and_append_to_builder(
     builder: &mut dyn arrow_array::builder::ArrayBuilder,
     col: &ColumnContext,
@@ -7744,31 +7753,53 @@ fn decode_and_append_to_builder(
         | ColumnEncoding::FixedFloatArray { storage, .. } => {
             let fixed_len = float_array_encoding(&col.encoding).and_then(|(_, len)| len);
             let len = read_float_array_len(data, *storage, fixed_len, false)?;
+            // Payload size has been validated. Words may be unaligned in rowpack.
+            let (bytes, tail) = data.split_at(len * float_storage_bytes(*storage));
             match col.logical_type {
                 IngestedType::Float16Array | IngestedType::Float32Array => {
-                    scratch.float32.clear();
-                    for _ in 0..len {
-                        let v = decode_float(data, *storage)?;
-                        scratch.float32.push(v as f32);
-                    }
                     let b = builder
                         .as_any_mut()
                         .downcast_mut::<ListBuilder<Float32Builder>>()
                         .unwrap();
-                    b.values().append_slice(&scratch.float32);
+                    let words = bytes.as_chunks::<4>().0;
+                    if matches!(storage, FloatStorage::F32) && !contains_signaling_f32(words) {
+                        // SAFETY: a mapped slice iterator yields exactly its reported length.
+                        unsafe {
+                            b.values().append_trusted_len_iter(
+                                words.iter().copied().map(f32::from_le_bytes),
+                            );
+                        }
+                        *data = tail;
+                    } else {
+                        scratch.float32.clear();
+                        for _ in 0..len {
+                            scratch.float32.push(decode_float(data, *storage)? as f32);
+                        }
+                        b.values().append_slice(&scratch.float32);
+                    }
                     b.append(true);
                 }
                 IngestedType::Float64Array => {
-                    scratch.float64.clear();
-                    for _ in 0..len {
-                        let v = decode_float(data, *storage)?;
-                        scratch.float64.push(v);
-                    }
                     let b = builder
                         .as_any_mut()
                         .downcast_mut::<ListBuilder<Float64Builder>>()
                         .unwrap();
-                    b.values().append_slice(&scratch.float64);
+                    if matches!(storage, FloatStorage::F64) {
+                        let words = bytes.as_chunks::<8>().0;
+                        // SAFETY: a mapped slice iterator yields exactly its reported length.
+                        unsafe {
+                            b.values().append_trusted_len_iter(
+                                words.iter().copied().map(f64::from_le_bytes),
+                            );
+                        }
+                        *data = tail;
+                    } else {
+                        scratch.float64.clear();
+                        for _ in 0..len {
+                            scratch.float64.push(decode_float(data, *storage)?);
+                        }
+                        b.values().append_slice(&scratch.float64);
+                    }
                     b.append(true);
                 }
                 _ => return Err(anyhow!("rowpack invalid array type")),

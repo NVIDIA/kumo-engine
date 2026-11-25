@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._c import (
+    _gather_byte_rows as _gather_byte_rows,
     __version__,
     BUILD_COMMIT,
     StringLookup,

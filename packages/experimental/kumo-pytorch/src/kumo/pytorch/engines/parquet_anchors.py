@@ -25,7 +25,7 @@ from kumo.pytorch.anchors import (
     SplitSelection,
 )
 from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values
-from kumo.pytorch.contract.sample import SampleRequest, TargetValue
+from kumo.pytorch.contract.sample import CandidateRequest, SampleRequest, TargetValue
 from kumo.pytorch.dataset import _can_coerce_to_int64, _MissingParquetColumns
 from kumo.pytorch.parquet_sources import open_parquet_file, parquet_objects
 from kumo.pytorch.spec import ValidationIssue
@@ -187,6 +187,59 @@ def _candidate_row(table, columns, index, position):
         )
         result[name] = binding._requests(entries, position)
     return result
+
+
+def _candidate_rows(table, columns, positions, graph_only=()):
+    """Decode typed Parquet candidate fields in bulk, retaining offsets and labels."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    requests = [{} for _ in positions] if table.candidates.keys() - set(graph_only) else None
+    graph_ids = {}
+    for name, binding in table.candidates.items():
+        lists = columns[binding.column]
+        if isinstance(lists, pa.ChunkedArray):
+            lists = lists.combine_chunks()
+        entries = lists.flatten()
+        if entries.null_count:
+            # Report malformed structs in the same source row and field order as fetch.
+            return [_candidate_row(table, columns, i, p) for i, p in enumerate(positions)], {}
+        ids = entries.field(binding.entity_id)
+        keys = (
+            ids.to_numpy().tolist()
+            if not ids.null_count and pa.types.is_integer(ids.type)
+            else _arrow_values(ids)
+        )
+        if name in graph_only:
+            if binding.targets and keys:
+                raise ValueError(f"unknown supplied target: {min(binding.targets)!r}")
+            candidates = keys
+        else:
+            labels = [
+                (target, _arrow_values(entries.field(field)))
+                for target, field in sorted(binding.targets.items())
+            ]
+            candidates = (
+                [
+                    CandidateRequest(
+                        key, tuple(TargetValue(target, values[i]) for target, values in labels)
+                    )
+                    for i, key in enumerate(keys)
+                ]
+                if labels
+                else [CandidateRequest(key) for key in keys]
+            )
+        lengths = pc.fill_null(pc.list_value_length(lists), 0).to_numpy()
+        bounds = np.empty(len(lengths) + 1, dtype=np.int64)
+        bounds[0] = 0
+        np.cumsum(lengths, out=bounds[1:])
+        groups = tuple(tuple(candidates[a:b]) for a, b in zip(bounds[:-1], bounds[1:], strict=True))
+        if name in graph_only:
+            graph_ids[name] = groups
+        else:
+            for row, group in zip(requests, groups, strict=True):
+                row[name] = group
+    return requests, graph_ids
 
 
 class ParquetAnchors(PositionalAnchors):

@@ -7,12 +7,14 @@
 from dataclasses import replace
 from unittest.mock import patch
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
 
 from kumo.pytorch import api
+from kumo.pytorch.engines.node_values import DegreeCache
 from tests.test_candidate_neighborhoods import parquet_inputs
 from tests.test_engine_drawn_candidates import ISOLATED, POSITIVE, QUERY, as_list, data, future
 from tests.test_scored_walks import walk_contract, write_parquet
@@ -22,6 +24,41 @@ def count(relation, *, start=None):
     return api.Aggregate(
         api.Rows((relation,), time=api.TimeWindow("at", start=start, stop=0)), "count"
     )
+
+
+def test_exact_degree_cache_reuses_only_matching_nodes_clocks_and_programs():
+    cache = DegreeCache()
+    calls = []
+    name = "entity:degree"
+
+    def read(ids, ticks, program=1):
+        def fetch(nodes, cutoffs):
+            pairs = list(zip(nodes.tolist(), cutoffs.tolist(), strict=True))
+            calls.append(pairs)
+            # Keep this reference wide enough to catch unsigned ID or signed tick loss.
+            counts = [((i ^ (t % 2**64)) + program) % 2**64 for i, t in pairs]
+            return {name: pa.array(counts, type=pa.uint64())}
+
+        result = cache.read(
+            program, (name,), np.array(ids, np.uint64), np.array(ticks, np.int64), fetch
+        )
+        assert result[name].to_pylist() == [
+            ((i ^ (t % 2**64)) + program) % 2**64 for i, t in zip(ids, ticks, strict=True)
+        ]
+
+    high = 2**63 + 77
+    read([high, high], [-2, -2])
+    read([high], [-2])
+    assert calls == [[(high, -2)]]
+    read([high, high], [-2, -1])
+    assert calls[-1] == [(high, -1)]
+    read([high], [-2], program=2)
+    assert calls[-1] == [(high, -2)]
+    # Same clock, distinct native IDs forced into one slot. Mixed hits must
+    # retain the hit's count while admitting a colliding miss.
+    read([0, 65536, 0], [0, 0, 0])
+    read([65536, 0], [0, 0])
+    read([0, 65536], [0, 0])
 
 
 def node_columns(graph, table):

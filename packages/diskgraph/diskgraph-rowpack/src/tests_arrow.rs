@@ -184,3 +184,94 @@ fn test_decode_batch_subset() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn wide_float_arrays_decode_to_arrow_across_storage_widths() -> Result<()> {
+    use arrow_array::{Float64Array, ListArray};
+
+    let mut values: Vec<f32> = (0..1152).map(|i| (i - 576) as f32 / 8.0).collect();
+    values[..6].copy_from_slice(&[
+        -0.0,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(0xffc1_2000),
+        f32::from_bits(0x7f91_2000),
+        0.0,
+    ]);
+    let wide: Vec<f64> = values.iter().copied().map(f64::from).collect();
+    for storage in [FloatStorage::F16, FloatStorage::F32, FloatStorage::F64] {
+        for (logical, value) in [
+            (IngestedType::Float32Array, ValueRef::Float32Array(&values)),
+            (IngestedType::Float64Array, ValueRef::Float64Array(&wide)),
+        ] {
+            for encoding in [
+                ColumnEncoding::FixedFloatArray {
+                    storage,
+                    len: values.len(),
+                },
+                ColumnEncoding::FloatArray { storage },
+            ] {
+                let ctx = RowPackContext {
+                    version: ROWPACK_VERSION,
+                    columns: vec![ColumnContext {
+                        name: "embedding".into(),
+                        logical_type: logical,
+                        encoding,
+                    }],
+                    estimated_row_bytes: 0,
+                };
+                let mut scratch = RowPackScratch::new(&ctx);
+                let encoder = RowPackEncoder::new(ctx.clone())?;
+                let decoder = RowPackDecoder::new(ctx)?;
+                let mut row = Vec::new();
+                encoder.encode_row_into(std::slice::from_ref(&value), &mut row, &mut scratch)?;
+                let stride = float_storage_bytes(storage);
+                let start = row.len() - values.len() * stride;
+                let mut finite = row.clone();
+                finite[start..start + 6 * stride].fill(0);
+                let batch = decoder.decode_batch_to_arrow(
+                    &[&row[..], decoder.row_or_null(&[]), &finite[..]],
+                    &[0],
+                )?;
+                let list = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<ListArray>()
+                    .unwrap();
+                assert!(list.is_null(1));
+                for (i, row) in [(0, &row), (2, &finite)] {
+                    let mut input = &row[start..];
+                    let a = list.value(i);
+                    let expected_len = values.len();
+                    assert_eq!(a.len(), expected_len);
+                    if logical == IngestedType::Float32Array {
+                        let actual = a.as_any().downcast_ref::<Float32Array>().unwrap();
+                        // Match the original Arrow decoder: narrow each decoded value inside
+                        // the loop. Materializing an intermediate f64 array can quiet a
+                        // signaling f32 NaN where an immediate round trip preserves its bits.
+                        let mut expected = Vec::<f32>::with_capacity(expected_len);
+                        for _ in 0..expected_len {
+                            expected.push(decode_float(&mut input, storage)? as f32);
+                        }
+                        for (j, (v, e)) in actual.values().iter().zip(&expected).enumerate() {
+                            assert_eq!(
+                                v.to_bits(),
+                                e.to_bits(),
+                                "{logical:?} {storage:?} row={i} index={j}"
+                            );
+                        }
+                    } else {
+                        let actual = a.as_any().downcast_ref::<Float64Array>().unwrap();
+                        for v in actual.values() {
+                            assert_eq!(v.to_bits(), decode_float(&mut input, storage)?.to_bits());
+                        }
+                    }
+                }
+                assert!(decoder
+                    .decode_batch_to_arrow(&[&row[..row.len() - 1]], &[0])
+                    .is_err());
+            }
+        }
+    }
+    Ok(())
+}

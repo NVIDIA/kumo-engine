@@ -77,7 +77,7 @@ from kumo.pytorch.encoding import (
     typed_key,
     unjson_value,
 )
-from kumo.pytorch.engine import GraphRoot
+from kumo.pytorch.engine import CandidateGraphRoots, GraphRoot
 from kumo.pytorch.output import (
     TokenRows,
     flatten_rows,
@@ -2334,7 +2334,16 @@ class PreparedBatchPlan:
                     candidate_sample = self.sample.candidate_sets[candidate_set].sample_spec()
                     if candidate_set in graph_roots:
                         group = graph_roots[candidate_set]
-                        roots = [root for candidates in group for root in candidates]
+                        if isinstance(group, CandidateGraphRoots):
+                            roots = [
+                                group.root(owner, position, entity_id)
+                                for owner, ids in enumerate(group.entity_ids)
+                                for position, entity_id in enumerate(ids)
+                            ]
+                            boundaries = group.bounds
+                        else:
+                            roots = [root for candidates in group for root in candidates]
+                            boundaries = offsets([len(candidates) for candidates in group])
                     else:
                         group = candidate_sets[candidate_set]
                         roots = [
@@ -2346,7 +2355,7 @@ class PreparedBatchPlan:
                             for candidates in group
                             for record in candidates
                         ]
-                    boundaries = offsets([len(candidates) for candidates in group])
+                        boundaries = offsets([len(candidates) for candidates in group])
                     if columnar:
                         import pyarrow as pa
 
@@ -2466,18 +2475,21 @@ class PreparedBatchPlan:
         if all(type(value) is int and -(2**63) <= value < 2**63 for value in entity_ids):
             metadata["entity_ids"] = torch.tensor(entity_ids, dtype=torch.long)
         if candidate_sets or graph_roots:
-            metadata["candidate_entity_ids"] = {
-                name: (
-                    tuple(tuple(root.entity_id for root in group) for group in graph_roots[name])
-                    if name in graph_roots
-                    else tuple(
+            ids = {}
+            for name in self.sample.candidate_sets:
+                if name in graph_roots:
+                    group = graph_roots[name]
+                    ids[name] = (
+                        group.entity_ids
+                        if isinstance(group, CandidateGraphRoots)
+                        else tuple(tuple(root.entity_id for root in owners) for owners in group)
+                    )
+                elif name in candidate_sets:
+                    ids[name] = tuple(
                         tuple(item.history.entity_id for item in group)
                         for group in candidate_sets[name]
                     )
-                )
-                for name in self.sample.candidate_sets
-                if name in candidate_sets or name in graph_roots
-            }
+            metadata["candidate_entity_ids"] = ids
         return Batch(
             inputs=kernel_metadata(result), targets=kernel_metadata(targets), metadata=metadata
         )

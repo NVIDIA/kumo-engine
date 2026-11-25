@@ -2494,6 +2494,49 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    fn decode_feature_rows(
+        &self,
+        shards: &[ShardHandle],
+        node_ids: &[u64],
+        col_indices: &[usize],
+        decoder: &RowPackDecoder,
+    ) -> Result<arrow_array::RecordBatch> {
+        let mut raw_rows = Vec::with_capacity(node_ids.len());
+        let mut last_shard_idx = 0;
+
+        for &global_id in node_ids {
+            let shard = if global_id >= shards[last_shard_idx].min_id
+                && global_id <= shards[last_shard_idx].max_id
+            {
+                &shards[last_shard_idx]
+            } else {
+                last_shard_idx = self.find_shard(shards, global_id)?;
+                &shards[last_shard_idx]
+            };
+
+            let local_id = global_id - shard.min_id;
+            let edges_view = shard
+                .reader
+                .edges_for_node(local_id)
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+
+            let data = edges_view
+                .node_data()
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?
+                .ok_or_else(|| {
+                    EngineError::DataCorruption(format!(
+                        "node {} has no feature data",
+                        global_id
+                    ))
+                })?;
+            raw_rows.push(decoder.row_or_null(data));
+        }
+
+        decoder
+            .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
+            .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))
+    }
+
     /// Feature fetching in standalone mode. Multi-threaded to speedup feature
     /// fetching for cases when sampled subgraph size is large.
     fn accumulate_features_from_ids_chunked(
@@ -2519,7 +2562,12 @@ impl DiskGraphEngine {
         let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| chunks
             .into_par_iter()
             .map(|chunk_ids| {
-                // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
+                // Cache misses and sequential scans already arrive in storage order.
+                // Returning the decoded batch also avoids copying wide list columns via take.
+                if chunk_ids.windows(2).all(|pair| pair[0] < pair[1]) {
+                    return self.decode_feature_rows(shards, chunk_ids, col_indices, decoder);
+                }
+                // Deduplicate requested IDs to minimize disk I/O and decoding.
                 let mut unique_ids_unsorted = Vec::new();
                 let mut dedup_map = HashMap::new();
                 let mut take_indices = vec![0u32; chunk_ids.len()];
@@ -2555,41 +2603,7 @@ impl DiskGraphEngine {
 
                 let unique_ids: Vec<u64> = sorted_pairs.into_iter().map(|x| x.0).collect();
 
-                // 5. Fetch and Decode ONLY unique IDs
-                let mut raw_rows = Vec::with_capacity(unique_ids.len());
-                let mut last_shard_idx = 0;
-
-                for &global_id in &unique_ids {
-                    let shard = if global_id >= shards[last_shard_idx].min_id
-                        && global_id <= shards[last_shard_idx].max_id
-                    {
-                        &shards[last_shard_idx]
-                    } else {
-                        last_shard_idx = self.find_shard(shards, global_id)?;
-                        &shards[last_shard_idx]
-                    };
-
-                    let local_id = global_id - shard.min_id;
-                    let edges_view = shard
-                        .reader
-                        .edges_for_node(local_id)
-                        .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
-
-                    let data = edges_view
-                        .node_data()
-                        .map_err(|e| EngineError::DataCorruption(e.to_string()))?
-                        .ok_or_else(|| {
-                            EngineError::DataCorruption(format!(
-                                "node {} has no feature data",
-                                global_id
-                            ))
-                        })?;
-                    raw_rows.push(decoder.row_or_null(data));
-                }
-
-                let unique_batch = decoder
-                    .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
-                    .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
+                let unique_batch = self.decode_feature_rows(shards, &unique_ids, col_indices, decoder)?;
 
                 // 6. Broadcast (take) unique rows back to the requested redundant order
                 let expanded_columns: std::result::Result<Vec<_>, arrow::error::ArrowError> = unique_batch

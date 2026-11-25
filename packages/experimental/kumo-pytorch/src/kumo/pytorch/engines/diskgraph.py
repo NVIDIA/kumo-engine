@@ -43,7 +43,7 @@ from kumo.pytorch.column_stats import (
     read_column_stats,
     token_lengths_file,
 )
-from kumo.pytorch.contract.batch import EntitySource, EventSource, Fields, Input, Tokens
+from kumo.pytorch.contract.batch import EntitySource, EventSource, Fields, Input, Raw, Tokens
 from kumo.pytorch.contract.dtypes import (
     DType,
     _arrow_scalar_value,
@@ -93,7 +93,13 @@ from kumo.pytorch.data.records import (
 )
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
-from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
+from kumo.pytorch.engine import (
+    AnchorTask,
+    CandidateGraphRoots,
+    GraphRoot,
+    SampleSource,
+    register_engine,
+)
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
 from kumo.pytorch.index_binding import IndexBinding, open_index
@@ -646,6 +652,9 @@ class DiskGraphSource:
         self._column_cache = ColumnCache(artifact.path, paths.cache_dir)
         self._cache_root = self._column_cache.root
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
+        from kumo.pytorch.engines.graph_projection import contiguous_node_counts
+
+        self._contiguous_node_counts = contiguous_node_counts(metadata)
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
         self._random_seed = random_seed
@@ -1000,12 +1009,13 @@ class DiskGraphSource:
         *,
         cutoffs=None,
         graph_only=(),
+        graph_ids=None,
     ):
         """Resolve candidate IDs and build each occurrence at its parent's prediction time."""
 
         self._last_candidate_draw_profile = None
         drawn = {name for name, candidate in spec.candidate_sets.items() if candidate.draw}
-        for requested in candidate_requests:
+        for requested in candidate_requests or ():
             unknown = requested.keys() - spec.candidate_sets.keys()
             if unknown:
                 raise ValueError(f"unknown candidate set(s): {sorted(unknown)}")
@@ -1013,6 +1023,10 @@ class DiskGraphSource:
                 raise ValueError(
                     f"cannot supply IDs for engine-drawn candidate sets: {sorted(overridden)}"
                 )
+        if graph_ids and (overridden := graph_ids.keys() & drawn):
+            raise ValueError(
+                f"cannot supply IDs for engine-drawn candidate sets: {sorted(overridden)}"
+            )
         selected = {}
         if drawn:
             ticks = map(self._cutoff, as_of_times) if cutoffs is None else cutoffs
@@ -1023,10 +1037,29 @@ class DiskGraphSource:
             selected = self.draw_candidate_ids(spec, roots)
         groups = {}
         for name, declaration in spec.candidate_sets.items():
+            if name in graph_only and graph_ids is not None:
+                if name in selected:
+                    by_owner = tuple(selected[name])
+                else:
+                    by_owner = graph_ids.get(name, ((),) * len(sample_ids))
+                    if any(len(set(group)) != len(group) for group in by_owner):
+                        raise ValueError(f"candidate IDs must be unique within set {name!r}")
+                groups[name] = CandidateGraphRoots(
+                    name,
+                    by_owner,
+                    sample_ids,
+                    cutoffs,
+                )
+                continue
             offsets = [0]
             requests = []
             for i, (sets, at, owner) in enumerate(
-                zip(candidate_requests, as_of_times, sample_ids, strict=True)
+                zip(
+                    candidate_requests or ({},) * len(sample_ids),
+                    as_of_times,
+                    sample_ids,
+                    strict=True,
+                )
             ):
                 if name in selected:
                     entries = ((key, ()) for key in selected[name][i])
@@ -1621,6 +1654,7 @@ class DiskGraphSource:
             state,
             stages,
             root_ticks=[root.cutoff for root in roots] if neighborhood.node_values else None,
+            deferred_projections=getattr(spec, "deferred_projections", None),
         )
         self._last_graph_profile = {
             "samples": len(roots),
@@ -2847,6 +2881,7 @@ class DiskGraphSource:
         profile: dict[str, int] | None = None,
         *,
         root_ticks=None,
+        deferred_projections=None,
     ) -> dict[str, Any]:
         decode_started = time.perf_counter_ns()
         global_ids: dict[str, list[np.ndarray]] = defaultdict(list)
@@ -2888,8 +2923,7 @@ class DiskGraphSource:
         feature_fetch_ns = 0
         feature_encode_ns = 0
         for table in sorted(tables):
-            # Native feature lookup still accepts a list of global node IDs.
-            ids = np.concatenate(global_ids[table]).tolist() if global_ids[table] else []
+            ids = np.concatenate(global_ids[table]) if global_ids[table] else []
             primary_key = self._tables[table].primary_key
             started = time.perf_counter_ns()
             batch = np.concatenate(owners[table]) if owners[table] else np.empty(0, dtype=np.int64)
@@ -2897,6 +2931,15 @@ class DiskGraphSource:
             requested = tuple(
                 dict.fromkeys((*(() if primary_key is None else (primary_key,)), *names))
             )
+            deferred = ()
+            if deferred_projections is not None:
+                computed = neighborhood.node_values.get(table, {})
+                physical = tuple(name for name in requested if name not in computed)
+                project = self._deferred_graph_fields(table, ids, physical, encoders.get(table, {}))
+                if project is not None:
+                    deferred_projections[table] = project
+                    deferred = physical
+                    requested = tuple(name for name in requested if name in computed)
             feature_arrays = self._graph_node_arrays(
                 neighborhood,
                 table,
@@ -2907,25 +2950,44 @@ class DiskGraphSource:
             )
             feature_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
-            node_ids = _graph_node_ids(
-                feature_arrays[primary_key]
-                if primary_key is not None
-                else self._pa.array(ids, type=self._pa.uint64())
+            node_ids = (
+                None
+                if deferred
+                else _graph_node_ids(
+                    feature_arrays[primary_key]
+                    if primary_key is not None
+                    else self._pa.array(ids, type=self._pa.uint64())
+                )
             )
             identity_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
+            features = {}
+            vectors = getattr(feature_arrays, "vectors", {})
+            for field, binding in encoders.get(table, {}).items():
+                if field in deferred:
+                    features[field] = None
+                    continue
+                dtype = self._tables[table].columns.get(field)
+                if (
+                    field in vectors
+                    and binding.destination is None
+                    and isinstance(binding.encoder.config, Raw)
+                    and binding.encoder.dtype == dtype
+                ):
+                    values, valid = vectors[field]
+                    features[field] = {
+                        "values": torch.from_numpy(values.reshape(-1, *dtype.shape)),
+                        "valid": torch.from_numpy(valid),
+                    }
+                else:
+                    values = feature_arrays[field]
+                    if dtype is not None and dtype.name == "timestamp":
+                        values = self._typed_array(values, dtype)
+                    features[field] = binding.encode_arrow(values)
             nodes[table] = {
                 "ids": node_ids,
                 "batch": torch.from_numpy(batch),
-                "features": {
-                    field: encoder.encode_arrow(
-                        self._typed_array(feature_arrays[field], self._tables[table].columns[field])
-                        if field in self._tables[table].columns
-                        and self._tables[table].columns[field].name == "timestamp"
-                        else feature_arrays[field]
-                    )
-                    for field, encoder in encoders.get(table, {}).items()
-                },
+                "features": features,
             }
             feature_encode_ns += time.perf_counter_ns() - started
         if profile is not None:
@@ -2979,6 +3041,67 @@ class DiskGraphSource:
             profile["topology_assembly_ns"] = time.perf_counter_ns() - topology_started
         return {"nodes": nodes, "edges": edges}
 
+    def _deferred_graph_fields(self, table, ids, names, bindings):
+        """Project stored raw vectors directly in the final order of shared candidate graphs."""
+        runtime = getattr(self, "_runtime_batch", None)
+        cache = None if runtime is None else runtime.get("_graph_feature_cache")
+        definition = self._tables[table]
+        pk, columns = definition.primary_key, definition.columns
+        if (
+            cache is None
+            or pk is None
+            or pk not in names
+            or not columns[pk].integer
+            or pk in bindings
+            or len(names) < 2
+        ):
+            return None
+        shapes = {}
+        for name in names:
+            if name == pk:
+                continue
+            binding = bindings.get(name)
+            dtype = columns.get(name)
+            if (
+                dtype is None
+                or not dtype.shape
+                or binding is None
+                or binding.destination is not None
+                or not isinstance(binding.encoder.config, Raw)
+                or binding.encoder.dtype != dtype
+            ):
+                return None
+            shapes[name] = dtype.shape
+        dense_ids = np.asarray(ids, dtype=np.uint64)
+
+        def project(indices):
+            if not len(indices):
+                empty = self._feature_arrays(table, (), names)
+                return _graph_node_ids(empty[pk]), {
+                    name: bindings[name].encode_arrow(empty[name]) for name in shapes
+                }
+            arrays = cache.read(
+                (table, names),
+                dense_ids[indices],
+                lambda selected: self._read_feature_arrays(table, selected, names),
+                dense_count=self._contiguous_node_counts.get(table, 0),
+                as_numpy=True,
+            )
+            keys, valid = arrays[pk]
+            if keys.dtype == np.int64 and valid.all():
+                public_ids = torch.from_numpy(keys)
+            else:
+                public_ids = _graph_node_ids(self._pa.array(keys, mask=~valid))
+            return public_ids, {
+                name: {
+                    "values": torch.from_numpy(arrays[name][0].reshape(-1, *shape)),
+                    "valid": torch.from_numpy(arrays[name][1]),
+                }
+                for name, shape in shapes.items()
+            }
+
+        return project
+
     def _feature_values(self, table: str, node_ids: Sequence[int], column: str) -> list[Any]:
         if not node_ids:
             return []
@@ -3022,7 +3145,7 @@ class DiskGraphSource:
                     return result
         if not names:
             return {}
-        if not node_ids:
+        if not len(node_ids):
             columns = self._tables[table].columns or {}
             return {
                 name: self._pa.nulls(0)
@@ -3032,19 +3155,20 @@ class DiskGraphSource:
             }
         cache = None if runtime is None else runtime.get("_graph_feature_cache")
         if cache is not None:
-            types = self._tables[table].columns or {}
-            selected = [types.get(name) for name in names]
-            if all(t is not None and (t.shape or t.integer) for t in selected) and any(
-                t.shape for t in selected
-            ):
+            from kumo.pytorch.engines.graph_projection import cacheable_projection
+
+            if cacheable_projection(self._tables[table].columns or {}, names):
                 return cache.read(
                     (table, tuple(names)),
                     node_ids,
                     lambda selected: self._read_feature_arrays(table, selected, names),
+                    dense_count=self._contiguous_node_counts.get(table, 0),
                 )
         return self._read_feature_arrays(table, node_ids, names)
 
     def _read_feature_arrays(self, table, node_ids, names):
+        if isinstance(node_ids, np.ndarray):
+            node_ids = node_ids.tolist()
         chunks: dict[str, list[Any]] = {name: [] for name in names}
         for event in self._sampler.fetch_features(
             [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]

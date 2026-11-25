@@ -6,6 +6,7 @@
 
 from dataclasses import replace
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -80,6 +81,12 @@ def fixture(
             name: replace(input_, representation=api.Graph({"pins": fields("image")}))
             for name, input_ in original.batch.inputs.items()
         }
+        if mixed:
+            original = replace(
+                original,
+                sample=replace(original.sample, entity_values={"key": api.Field(column="id")}),
+            )
+            inputs["root"] = api.Input(api.EntitySource(), fields("key"), api.Separate())
         declaration = replace(original, batch=replace(original.batch, inputs=inputs))
     return api.prepare(declaration, dataset, api.DiskGraphEngine(num_threads=1)), anchors
 
@@ -115,6 +122,96 @@ def test_root_neighbor_and_candidate_arrays(tmp_path, fixed):
                 assert {1, 2, 3, 4} <= set(ids)
         empty = next(task.request_batches([REQUESTS[1]])).inputs["positive_graph"]
         check_tensors(empty["nodes"]["pins"]["features"]["image"], [])
+
+
+def test_graph_vectors_reused_across_iterators_and_owned_by_each_model_batch(tmp_path, monkeypatch):
+    plan, anchors = fixture(tmp_path, mixed=True)
+    with plan, plan.materialize(anchors) as task:
+        source = task._assembler._source
+        fetch = source._read_feature_arrays
+        stage_iter = task._anchors._iter
+        projections, fetches = [], []
+
+        def traced_iter(*args, **kwargs):
+            projections.append(kwargs["projections"]["pins"])
+            return stage_iter(*args, **kwargs)
+
+        def traced_fetch(table, ids, names):
+            if table == "pins" and "image" in names:
+                fetches.append(tuple(ids))
+            return fetch(table, ids, names)
+
+        monkeypatch.setattr(task._anchors, "_iter", traced_iter)
+        monkeypatch.setattr(source, "_read_feature_arrays", traced_fetch)
+        for epoch in range(2):
+            batch = next(task.batches(output_format="model", epoch=epoch, shuffle=False))
+            assert projections[-1] == ["id"]  # root entity values still use native projection
+            assert (
+                batch.inputs["root"]["key"]["values"].tolist()
+                == batch.metadata["entity_ids"].tolist()
+            )
+            for name in ("graph", "positive_graph"):
+                nodes = batch.inputs[name]["nodes"]["pins"]
+                ids = nodes["ids"].tolist()
+                assert len(set(ids)) < len(ids)
+                feature = nodes["features"]["image"]
+                check_tensors(feature, ids)
+                feature["values"].fill_(-99)
+                feature["valid"].logical_not_()
+            if epoch == 0:
+                assert fetches and all(len(set(ids)) == len(ids) for ids in fetches)
+                fetches.clear()
+        assert not fetches
+
+
+def test_deferred_candidate_fields_project_only_final_occurrences(tmp_path, monkeypatch):
+    from kumo.pytorch.engines.diskgraph import _graph_node_ids
+
+    plan, anchors = fixture(tmp_path)
+    with plan, plan.materialize(anchors) as task:
+        source = task._assembler._source
+        bindings = task._assembler._prepared_inputs["graph"].state["pins"]
+        dense_ids = np.array([3, 1, 2, 0], dtype=np.uint64)
+        names = ("id", "image")
+        expected_ids = _graph_node_ids(source._read_feature_arrays("pins", dense_ids, names)["id"])
+        fetch = source._read_feature_arrays
+        reads = []
+
+        def traced_fetch(table, ids, fields):
+            reads.append((table, tuple(ids), tuple(fields)))
+            return fetch(table, ids, fields)
+
+        monkeypatch.setattr(source, "_read_feature_arrays", traced_fetch)
+        monkeypatch.setattr(
+            source,
+            "_runtime_batch",
+            {
+                "_graph_feature_cache": task._anchors._graph_feature_cache,
+                "raw_features": {},
+            },
+            raising=False,
+        )
+        project = source._deferred_graph_fields("pins", dense_ids, names, bindings)
+        assert project is not None and not reads
+        indices = np.array([0, 2, 0, 1, 3, 1], dtype=np.int64)
+        for positions in (indices, indices[::-1], indices[:0]):
+            ids, features = project(positions)
+            assert ids.tolist() == expected_ids.numpy()[positions].tolist()
+            check_tensors(features["image"], ids.tolist())
+            features["image"]["values"].fill_(99)
+            features["image"]["valid"].logical_not_()
+            ids.fill_(-1)
+        assert reads == [("pins", (0, 1, 2, 3), names)]
+        # A remapped binding cannot use the direct raw vector representation.
+        assert (
+            source._deferred_graph_fields(
+                "pins",
+                dense_ids,
+                names,
+                {"image": replace(bindings["image"], destination=object())},
+            )
+            is None
+        )
 
 
 @pytest.mark.parametrize("candidate_anchors", [False, True])

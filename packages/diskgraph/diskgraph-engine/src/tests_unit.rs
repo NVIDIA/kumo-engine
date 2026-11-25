@@ -2874,6 +2874,7 @@ fn test_fetch_features_empty_node_data_is_null() {
     let sampler = empty_node_data_graph(dir.path());
     for (ids, expected) in [
         (vec![1], vec![None]),
+        (vec![0, 1, 2], vec![Some(7), None, Some(7)]),
         (vec![0, 1, 2, 1], vec![Some(7), None, Some(7), None]),
     ] {
         let mut output = InMemoryOutput::new();

@@ -12,7 +12,13 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
-from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
+from kumo.pytorch.engine import GraphRoot
+from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from kumo.pytorch.engines.parquet_anchors import (
+    ParquetAnchors,
+    _candidate_rows,
+    check_parquet_anchors,
+)
 from tests.test_candidate_neighborhoods import REQUESTS, assert_graphs, contract, parquet_inputs
 from tests.test_scored_walks import star
 
@@ -102,6 +108,13 @@ def test_parquet_candidate_order_nulls_and_submicrosecond_labels(tmp_path):
         (3, 1),
     ]
     assert [entry.targets[0].value.value for entry in groups[0]] == [3, 1]
+    positions = [2, 1, 0, 2]
+    chunks = pa.chunked_array([nested.slice(i, 1) for i in positions])
+    requests, compact = _candidate_rows(table, {"positives": chunks}, positions)
+    assert requests == [request.candidates for request in selected] and compact == {}
+    malformed = pa.array([[], [None]], type=dtype)
+    with pytest.raises(ValueError, match="candidate 0 of anchor row 91 must be a struct"):
+        _candidate_rows(table, {"positives": malformed}, [77, 91])
 
 
 def test_native_walk_counters_include_candidate_work(tmp_path):
@@ -128,3 +141,36 @@ def test_native_walk_counters_include_candidate_work(tmp_path):
         root, candidates = observed["root", fmt], observed["candidates", fmt]
         assert min(*root, *candidates) > 0
         assert observed["both", fmt] == tuple(a + b for a, b in zip(root, candidates, strict=True))
+
+
+def test_compact_candidate_ids_keep_nullable_keys_and_legacy_root_groups():
+    from types import SimpleNamespace
+
+    binding = api.AnchorTable(
+        api.Parquet("typed.parquet"),
+        "entity",
+        candidates={"positive": api.CandidateColumn("positives", "pin")},
+    )
+    dtype = pa.list_(pa.struct([("pin", pa.uint64())]))
+    values = pa.array([[], [{"pin": None}, {"pin": 2**64 - 1}]], type=dtype)
+    rows, ids = _candidate_rows(binding, {"positives": values}, [13, 9], {"positive"})
+    assert rows is None and ids == {"positive": ((), (None, 2**64 - 1))}
+    sample = contract(star()[0]).sample
+    args = ([12, 5], ["a", "b"], [1, 2])
+    options = {"graph_only": {"positive"}, "cutoffs": (12, 5)}
+    legacy = DiskGraphSource.build_candidates(
+        SimpleNamespace(),
+        sample,
+        [{}, {"positive": (api.CandidateRequest(None), api.CandidateRequest(2**64 - 1))}],
+        *args,
+        **options,
+    )
+    assert legacy["positive"] == (
+        (),
+        (GraphRoot("b:positive:0", None, 5), GraphRoot("b:positive:1", 2**64 - 1, 5)),
+    )
+    packed = DiskGraphSource.build_candidates(
+        SimpleNamespace(), sample, None, *args, graph_ids=ids, **options
+    )["positive"]
+    assert packed.entity_ids == ids["positive"] and packed.bounds.tolist() == [0, 0, 2]
+    assert packed.root(1, 1, 2**64 - 1) == legacy["positive"][1][1]

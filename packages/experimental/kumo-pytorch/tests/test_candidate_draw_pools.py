@@ -57,6 +57,20 @@ def test_reuses_query_graph_for_multiple_edges_and_resolves_reverse_destinations
         assert all(len(ids) == len(set(ids)) for groups in result.values() for ids in groups)
 
 
+def test_integer_draws_match_arrow_order_with_duplicates_and_wide_unsigned_ids():
+    base = 2**64 - 10
+    values = [base + n for n in (1, 4, 2, 1, 3, 2, 2, 3)]
+    roots = [GraphRoot("first", 3, -1), GraphRoot("second", 9, 7)]
+    draw = api.DrawRows(api.Rows(), "id", count=2, weight="visits")
+    columns = {"owner": [1, 0, 1, 0, 0, 1, 0, 1], "weight": [1, 5, 1, 0, 2, 9, 3, 0]}
+    integers = pa.table({**columns, "id": pa.array(values, type=pa.uint64())})
+    decimals = pa.table({**columns, "id": pa.array(values, type=pa.decimal128(20))})
+    for seed in (0, 7, 111):
+        assert _select(integers, roots, draw, "positives", seed) == _select(
+            decimals, roots, draw, "positives", seed
+        )
+
+
 def test_nullable_and_extreme_weights_and_nanosecond_ids():
     values = pa.array([11, 11, 12, 13, None, 14], type=pa.timestamp("ns"))
     roots = [GraphRoot("anchor", 9, 1), GraphRoot("empty", 9, 0)]

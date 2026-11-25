@@ -59,7 +59,7 @@ def _take(value, indices):
     return tuple(value[i] for i in indices)  # non-numeric public node IDs
 
 
-def _expand(shared, inverse, root_table, edge_types):
+def _expand(shared, inverse, root_table, edge_types, deferred_rows):
     """A one-layer walk emits distinct destinations per root, in native score/rank order."""
     nodes, edges = {}, {}
     owners = np.arange(len(inverse), dtype=np.int64)
@@ -84,17 +84,38 @@ def _expand(shared, inverse, root_table, edge_types):
             }
             indices = np.concatenate((indices, dest)) if root else dest
             batch = np.concatenate((batch, owner)) if root else owner
+        if table in deferred_rows:
+            deferred_rows[table].append(indices)
+            ids = None
+        else:
+            ids = _take(node["ids"], indices) if len(indices) else torch.empty(0, dtype=torch.long)
         nodes[table] = {
-            "ids": _take(node["ids"], indices)
-            if len(indices)
-            else torch.empty(0, dtype=torch.long),
+            "ids": ids,
             "batch": torch.from_numpy(batch),
             "features": {
-                field: {key: _take(value, indices) for key, value in encoded.items()}
+                field: None
+                if encoded is None
+                else {key: _take(value, indices) for key, value in encoded.items()}
                 for field, encoded in node["features"].items()
             },
         }
     return {"nodes": nodes, "edges": {name: edges[name] for name in shared["edges"]}}
+
+
+def _fill_projections(projections, deferred_rows, graphs):
+    # Gather directly into final occurrence order. Slices for different graphs are disjoint
+    # even when several candidates refer to the same immutable source row.
+    for table, project in projections.items():
+        rows = deferred_rows[table]
+        ids, features = project(np.concatenate(rows))
+        start = 0
+        for graph, positions in zip(graphs, rows, strict=True):
+            stop = start + len(positions)
+            node = graph["nodes"][table]
+            node["ids"] = ids[start:stop] if len(positions) else torch.empty(0, dtype=torch.long)
+            for field, encoded in features.items():
+                node["features"][field] = {key: value[start:stop] for key, value in encoded.items()}
+            start = stop
 
 
 def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
@@ -102,21 +123,20 @@ def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
     for spec, prepared, inputs in groups:
         unique, rows = {}, []
         occurrences = {}
-        for name, candidate in inputs.items():
+        for candidate in dict.fromkeys(inputs.values()):
             owners = candidate_roots[candidate]
             inverse = []
-            for group in owners:
-                for root in group:
-                    key = (root.entity_id, root.cutoff)
-                    index = unique.setdefault(key, len(rows))
+            for owner, (cutoff, ids) in enumerate(
+                zip(owners.cutoffs, owners.entity_ids, strict=True)
+            ):
+                for position, entity_id in enumerate(ids):
+                    index = unique.setdefault((entity_id, cutoff), len(rows))
                     if index == len(rows):
-                        rows.append(root)
+                        rows.append(owners.root(owner, position, entity_id))
                     inverse.append(index)
-            occurrences[name] = (
-                np.asarray(inverse, dtype=np.int64),
-                offsets([len(g) for g in owners]),
-            )
+            occurrences[candidate] = np.asarray(inverse, dtype=np.int64), owners.bounds
 
+        deferred = {}
         # Native sampling and point-in-time projections both run once for the shared roots.
         shared = source.sample_graph(
             spec,
@@ -124,6 +144,7 @@ def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
                 source=prepared.spec.source.name,
                 topology=prepared.spec.representation.topology,
                 node_fields=prepared.spec.representation.node_fields,
+                deferred_projections=deferred,
             ),
             prepared.state,
             rows,
@@ -134,7 +155,10 @@ def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
         for name, edge in shared["edges"].items():
             starts = offsets(np.bincount(edge["index"][0].numpy(), minlength=len(rows)))
             edge_types[edge["destination_type"]] = name, starts
-        for name, (inverse, boundaries) in occurrences.items():
-            output[name] = _expand(shared, inverse, spec.entity.table, edge_types)
-            output[name]["candidate_offsets"] = torch.from_numpy(boundaries)
+        deferred_rows = {table: [] for table in deferred}
+        for name, candidate in inputs.items():
+            inverse, boundaries = occurrences[candidate]
+            output[name] = _expand(shared, inverse, spec.entity.table, edge_types, deferred_rows)
+            output[name]["candidate_offsets"] = torch.from_numpy(boundaries.copy())
+        _fill_projections(deferred, deferred_rows, [output[name] for name in inputs])
     return output
