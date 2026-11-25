@@ -220,9 +220,12 @@ Source: shipped package (`kumoapi.model_plan`, `kumo_core.model_plan`,
 
 ## User documentation
 
-This file and the shipped package are the source for generated plans; do not fetch external
-pages to configure one. When the user asks where model plans are documented, or wants more depth
-than this file gives (the effect of each field, the full option lists for architectures, losses
-and link prediction), point them to the Kumo Engine **Model Plan Guide**:
-<https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/train-a-model/model-plan-guide>. If
-the guide and this file disagree, say so and follow the shipped package.
+The Kumo Engine **Model Plan Guide** is
+<https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/train-a-model/model-plan-guide>; link
+it when the user asks where model plans are documented. You may fetch it, or the Kumo Engine user
+guide named in `kumoai-reference/SKILL.md`, to answer a user's
+conceptual question (what a field does, how settings trade off); fetch nothing else. Never fetch
+them or use their content while building or editing a plan or choosing SDK names, signatures or
+values: this file and the shipped package are the only source for those. When you answer from
+the guide, say so; if it disagrees with this file or the shipped package, say that too and
+follow the package.
