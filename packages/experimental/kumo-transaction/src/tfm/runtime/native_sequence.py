@@ -238,6 +238,7 @@ def run_command(
         views=views,
         target_level="sequence",
         observation_seconds=int(parse_duration(config.data.observation_window).total_seconds()),
+        amount_key=config.data.amount_field,
         features=config.features,
     ) as inputs:
         if payload is not None:

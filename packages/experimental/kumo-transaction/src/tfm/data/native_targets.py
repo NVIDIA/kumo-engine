@@ -148,8 +148,8 @@ class NativeFutureTargets(AbstractContextManager["NativeFutureTargets"]):
                 if table != parent or distance != hop - 1:
                     continue
                 self.db.execute(
-                    f"INSERT INTO future_terminal SELECT l.{target},MAX(COALESCE(n.available_us,{STATIC_TIME}),COALESCE(l.available_us,{STATIC_TIME})) FROM links l JOIN identities n ON n.table_name=? AND n.code=l.{target} WHERE l.role=? AND l.{source}=? AND COALESCE(l.available_us,{STATIC_TIME})<=? AND n.event_us>? AND n.event_us<=? ON CONFLICT(code) DO UPDATE SET available=MAX(available,excluded.available)",
-                    (child, role.name, node, end, cutoff, end),
+                    f"INSERT INTO future_terminal SELECT l.{target},MAX(COALESCE(n.available_us,{STATIC_TIME}),COALESCE(l.available_us,{STATIC_TIME})) FROM links l JOIN identities n ON n.table_name=? AND n.code=l.{target} WHERE l.role=? AND l.{source}=? AND n.event_us>? AND n.event_us<=? ON CONFLICT(code) DO UPDATE SET available=MAX(available,excluded.available)",
+                    (child, role.name, node, cutoff, end),
                 )
             count, known = self.db.execute(
                 "SELECT COUNT(*),MAX(available) FROM future_terminal"

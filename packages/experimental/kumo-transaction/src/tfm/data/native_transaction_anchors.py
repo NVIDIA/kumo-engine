@@ -187,7 +187,11 @@ def sequence_anchors(source: NativeSourceFiles, config: RecipeConfig, path: Path
         if cutoffs["test"] < cutoffs["validation"]:
             raise SchemaError("Temporal source has no test partition; adjust cutoffs")
     window = parse_duration(data.observation_window)
-    windows = side_label_windows(cutoffs["train"], cutoffs["validation"], cutoffs["test"], window)
+    windows = (
+        side_label_windows(cutoffs["train"], cutoffs["validation"], cutoffs["test"], window)
+        if data.load_labels
+        else {}
+    )
     schema = pa.schema(
         [
             ("id", pa.string()),
@@ -276,7 +280,7 @@ def sequence_anchors(source: NativeSourceFiles, config: RecipeConfig, path: Path
                 buffer.append(
                     {
                         "id": owner,
-                        "sample_id": f"{owner}:{at.isoformat()}",
+                        "sample_id": f"{side}:{owner}:{at.isoformat()}",
                         "cutoff": at,
                         "split": side,
                         "target": target,

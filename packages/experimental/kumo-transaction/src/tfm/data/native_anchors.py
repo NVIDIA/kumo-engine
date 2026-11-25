@@ -161,13 +161,12 @@ def task_anchors(source: NativeSourceFiles, task: RelationalTaskConfig, output: 
                     raise SchemaError(
                         f"Anchor {row.get('sample_id')}: missing available entity label"
                     )
-                if label is not None:
-                    row = {
-                        **row,
-                        "target": label[0],
-                        "label_available_us": label[1],
-                        "label_cutoff_us": label[2],
-                    }
+                row = {
+                    **row,
+                    "target": None if label is None else label[0],
+                    "label_available_us": None if label is None else label[1],
+                    "label_cutoff_us": None if label is None else label[2],
+                }
             buffer.append({**row, "cutoff": cutoff})
             if len(buffer) == 4096:
                 writer.write_table(pa.Table.from_pylist(buffer, schema=schema))

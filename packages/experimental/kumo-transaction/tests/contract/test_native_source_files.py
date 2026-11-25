@@ -174,3 +174,51 @@ def test_date_composite_keys_roundtrip_without_aliasing_strings(tmp_path):
         assert actual["__tfm_fk_0"].to_pylist() == [0]
         assert actual[EVENT_US].to_pylist() == [1704067200000000]
         assert actual.schema.field("day").type == pa.timestamp("us", tz="UTC")
+
+
+def test_normalization_rejects_payload_replacement_between_key_and_feature_passes(
+    tmp_path, monkeypatch
+):
+    source = declaration(tmp_path)
+    original = NativeSourceFiles._write_sources
+
+    def swap(self):
+        path = source.files["events"]
+        rows = pq.read_table(path)
+        pq.write_table(rows.take(pa.array([1, 0])), path)
+        return original(self)
+
+    monkeypatch.setattr(NativeSourceFiles, "_write_sources", swap)
+    with pytest.raises(SchemaError, match="source snapshot changed"):
+        NativeSourceFiles(source, tmp_path / "normalized")
+
+
+def test_task_replay_cannot_inject_labels_without_a_validated_source_match(tmp_path):
+    from tfm.config import load_recipe_config
+    from tfm.data.adapters.synthetic_relational import source_files
+    from tfm.data.native_anchors import task_anchors
+
+    config = load_recipe_config("recipes/relational_inputs/config.yaml")
+    task = config.data.relational
+    assert task is not None
+    source = source_files(config.data, seed=config.seed, fixture_dir=tmp_path / "source")
+    requested = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["entity0"],
+                "sample_id": ["unmatched"],
+                "split": ["predict"],
+                "cutoff": [START],
+                "target": [1.0],
+                "label_available_us": [1],
+                "label_cutoff_us": [2],
+            }
+        ),
+        requested,
+    )
+    task = task.model_copy(update={"anchors": str(requested)})
+    with NativeSourceFiles(source, tmp_path / "normalized") as normalized:
+        output = task_anchors(normalized, task, tmp_path / "anchors.parquet")
+        row = pq.read_table(output).to_pylist()[0]
+        assert row["target"] is row["label_available_us"] is row["label_cutoff_us"] is None

@@ -210,6 +210,11 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                         raise UnsupportedCombinationError(
                             "anchors.cutoff: native anchors require whole-second UTC timestamps"
                         )
+                    if (
+                        self.original.observed_through is not None
+                        and cutoff > self.original.observed_through
+                    ):
+                        raise SchemaError("Native anchor cutoff exceeds declared source coverage")
                     if row.get("observation_start") is not None:
                         raise UnsupportedCombinationError(
                             "anchors.observation_start: per-anchor history lower bounds require a supported native projection"
@@ -372,7 +377,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                 table.name: self.api.Parquet(str(source.files[table.name]))
                 for table in source.tables
                 if table.role == "input"
-                and pq.ParquetFile(source.files[table.name]).metadata.num_rows > 0
+                and table.name in {entry.name for entry in contract.schema.tables}
             }
         )
         fitted = None if view == self.fit_view else self.task(mode, view=self.fit_view).fitted_state

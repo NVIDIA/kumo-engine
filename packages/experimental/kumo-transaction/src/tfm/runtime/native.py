@@ -471,14 +471,20 @@ def run_command(
                 ).to(resolved_device)
                 if config.runtime.stage == "downstream":
                     assert config.runtime.encoder_checkpoint is not None
-                    encoder_expected = {"schema": encoder_schema}
-                    if payload is not None:
-                        encoder_expected.update(payload["metadata"].get("encoder_source") or {})
-                    encoder_source = load_encoder_state(
-                        _encoder(graph_stage),
-                        config.runtime.encoder_checkpoint,
-                        expected=encoder_expected,
-                    )
+                    if payload is None:
+                        encoder_source = load_encoder_state(
+                            _encoder(graph_stage),
+                            config.runtime.encoder_checkpoint,
+                            expected={"schema": encoder_schema},
+                        )
+                    else:
+                        encoder_source = payload["metadata"].get("encoder_source")
+                        if not isinstance(encoder_source, dict) or _digest(
+                            encoder_source.get("schema")
+                        ) != _digest(encoder_schema):
+                            raise ValueError(
+                                "Native checkpoint encoder schema differs from requested inputs"
+                            )
                 if payload is None and (config.runtime.stage != "downstream" or mode == "graph"):
                     stages["graph_binary"] = fit_selected(
                         graph_stage,
@@ -710,6 +716,7 @@ def run_command(
         if command == "train":
             return out
         evaluation, controls, historical, graph_features, arrays = {}, {}, {}, {}, {}
+        frozen_graph = {}
         for split in splits:
             stream = inputs.batches(
                 split,
@@ -738,6 +745,27 @@ def run_command(
             arrays[f"{split}_labels_valid"] = np.isfinite(values[2])
             arrays[f"{split}_sample_ids"] = np.asarray(sample_ids)
             arrays[f"{split}_entity_ids"] = np.asarray(entity_ids)
+            if mode == "hybrid" and command != "infer":
+                assert graph_stage is not None
+                frozen_values, frozen_entities, frozen_samples, _ = _recorded_predictions(
+                    graph_stage,
+                    inputs.batches(
+                        split,
+                        mode="graph",
+                        batch_size=config.evaluation.inference_batch_size,
+                        require_labels=True,
+                        hop_trim=gran.trim,
+                    ),
+                    resolved_device,
+                )
+                if (
+                    frozen_entities != entity_ids
+                    or frozen_samples != sample_ids
+                    or not np.array_equal(frozen_values[2], values[2])
+                ):
+                    raise SchemaError("Frozen graph probe is not aligned with hybrid predictions")
+                frozen_graph[split] = frozen_values
+                arrays[f"{split}_graph"] = frozen_values[0]
             if sequence_control is not None and command != "infer":
                 controls[split] = _predictions(
                     sequence_control,
@@ -799,6 +827,19 @@ def run_command(
             metrics[name] = classification_metrics(
                 test[2], fit_predict_probe(x, train[2], y, seed=config.seed)
             )
+        if frozen_graph:
+            for name, train_values, test_values in (
+                ("embedding", frozen_graph["train"][0], frozen_graph["test"][0]),
+                (
+                    "combined",
+                    np.concatenate((train_raw, frozen_graph["train"][0]), 1),
+                    np.concatenate((test_raw, frozen_graph["test"][0]), 1),
+                ),
+            ):
+                metrics[f"graph_only_{name}"] = classification_metrics(
+                    test[2],
+                    fit_predict_probe(train_values, train[2], test_values, seed=config.seed),
+                )
         if controls:
             metrics["sequence_control_task_head"] = classification_metrics(
                 controls["test"][2], controls["test"][1]

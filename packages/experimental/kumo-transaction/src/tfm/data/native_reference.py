@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 
 from tfm.contracts.schema import EntityProfile, LifelongItem, TransactionEvent, TransactionSequence
 from tfm.data.native_inputs import NativeInputs
+from tfm.data.native_source import source_entity_id
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -30,7 +31,7 @@ class ReferenceRows:
         self.inputs = inputs
         self.db = inputs.normalized.connection
         self.db.execute(
-            "CREATE TABLE reference_rows(table_name TEXT,code INTEGER,numbers TEXT,categories TEXT,texts TEXT,PRIMARY KEY(table_name,code))"
+            "CREATE TABLE reference_rows(table_name TEXT,code INTEGER,numbers TEXT,categories TEXT,texts TEXT,event_id TEXT,PRIMARY KEY(table_name,code))"
         )
         for table in inputs.source.tables:
             if table.role != "input":
@@ -39,6 +40,7 @@ class ReferenceRows:
                 batch_size=4096
             ):
                 rows = []
+                original = next(t for t in inputs.original.tables if t.name == table.name)
                 for row in block.to_pylist():
                     fields = [
                         {
@@ -49,9 +51,14 @@ class ReferenceRows:
                         for mapping in (table.numeric, table.categorical, table.text)
                     ]
                     rows.append(
-                        (table.name, row["__tfm_row_id"], *(json.dumps(value) for value in fields))
+                        (
+                            table.name,
+                            row["__tfm_row_id"],
+                            *(json.dumps(value) for value in fields),
+                            source_entity_id(tuple(row[column] for column in original.key)),
+                        )
                     )
-                self.db.executemany("INSERT INTO reference_rows VALUES (?,?,?,?,?)", rows)
+                self.db.executemany("INSERT INTO reference_rows VALUES (?,?,?,?,?,?)", rows)
         self.db.commit()
 
     def rows(self, sample_ids: Sequence[str]) -> ReferenceSequences:
@@ -112,7 +119,7 @@ class ReferenceRows:
             JOIN reference_rows r ON r.table_name='events' AND r.code=i.code
             JOIN event_partitions p ON p.code=i.code
             WHERE l.role='events' AND l.parent=? AND i.event_us<=? {extra}
-            ORDER BY i.event_us DESC,i.code DESC LIMIT ?
+            ORDER BY i.event_us DESC,r.event_id DESC LIMIT ?
         """,
                 parameters,
             )

@@ -47,6 +47,10 @@ def test_source_native_cli_bypasses_object_histories_and_python_tokenizers(
     assert (out / "anchors.parquet").is_file()
     assert list((out / "native-fitted").glob("*/fitted-state.json"))
     before = dict(np.load(out / "embeddings.npz"))
+    if variant == "hybrid_smoke":
+        assert "train_graph" in before
+        metrics = json.loads((out / "metrics.json").read_text())
+        assert {"graph_only_embedding", "graph_only_combined"} <= metrics.keys()
     assert before["train_entity_ids"].tolist() == ["entity0", "entity1", "entity2", "entity3"]
     (out / "model.manifest.json").write_text("corrupt")
     run_command("evaluate", config_path=config, run_dir=out, device="cpu", reuse_checkpoint=True)
@@ -267,3 +271,57 @@ def test_source_native_same_width_feature_reorder_rejected_before_weights(tmp_pa
     monkeypatch.setattr(torch.nn.Module, "load_state_dict", forbidden)
     with pytest.raises(ValueError, match="source/anchor identity"):
         run_command("infer", config_path=config, run_dir=out, device="cpu", reuse_checkpoint=True)
+
+
+def test_native_downstream_reuse_needs_only_its_bundled_encoder_weights(tmp_path):
+    pretrain_path = Path("recipes/relational_inputs/config.encoder_pretrain_smoke.yaml")
+    pretrain = run_command(
+        "train", config_path=pretrain_path, run_dir=tmp_path / "pretrain", device="cpu"
+    )
+    config = yaml.safe_load(Path("recipes/relational_inputs/config.graph_smoke.yaml").read_text())
+    config["runtime"].update(stage="downstream", encoder_checkpoint=str(pretrain / "encoder.pt"))
+    path = tmp_path / "downstream.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = run_command("smoke", config_path=path, run_dir=tmp_path / "downstream", device="cpu")
+    before = dict(np.load(out / "embeddings.npz"))
+    (pretrain / "encoder.pt").rename(pretrain / "encoder.offline")
+    run_command("evaluate", config_path=path, run_dir=out, device="cpu", reuse_checkpoint=True)
+    after = dict(np.load(out / "embeddings.npz"))
+    for name, values in before.items():
+        np.testing.assert_array_equal(values, after[name])
+
+
+def test_native_sequence_raw_features_use_the_selected_amount_alias(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from tfm.data.adapters.registry import table_source as original_source
+    from tfm.runtime import native_sequence
+
+    def custom_source(data, *, seed, fixture_dir):
+        source = original_source(
+            data.model_copy(update={"amount_field": "amount"}), seed=seed, fixture_dir=fixture_dir
+        )
+        tables = tuple(
+            replace(
+                t,
+                numeric={
+                    ("payment_total" if key == "amount" else key): column
+                    for key, column in t.numeric.items()
+                },
+            )
+            if t.name == "events"
+            else t
+            for t in source.tables
+        )
+        future = {**source.future_numeric, "events": {"amount": "payment_total"}}
+        return replace(source, tables=tables, future_numeric=future)
+
+    monkeypatch.setattr(native_sequence, "table_source", custom_source)
+    config = yaml.safe_load(Path("recipes/blueprint_v2/config.smoke.yaml").read_text())
+    config["data"].update(loader="kumo_pytorch", amount_field="payment_total")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = run_command("smoke", config_path=path, run_dir=tmp_path / "run", device="cpu")
+    values = np.load(out / "embeddings.npz")
+    assert np.isfinite(values["train_raw"]).all()
+    assert (values["train_raw"][:, :2] > 0).all()

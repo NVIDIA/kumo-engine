@@ -28,6 +28,7 @@ from tfm.config import OptimizerConfig
 from tfm.contracts.capabilities import BackendCapabilities
 from tfm.contracts.errors import UnsupportedCombinationError
 from tfm.training.distributed import (
+    distributed_info,
     join_distributed_group,
     launcher_topology,
     leave_distributed_group,
@@ -95,7 +96,8 @@ class DdpTrainer:
         progress: TrainingProgress | None = None,
     ) -> dict[str, float | str]:
         launch_world_size, local_rank = launcher_topology()
-        if not isinstance(batches, Sequence) and launch_world_size == 1:
+        group_world_size, _ = distributed_info()
+        if not isinstance(batches, Sequence) and launch_world_size == group_world_size == 1:
             stats = train_model(
                 model,
                 batches,

@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 
 from tfm.contracts.errors import SchemaError
 from tfm.contracts.table_source import TableSource
-from tfm.data.native_source import EVENT_US
+from tfm.data.native_source import EVENT_US, ROW_ID
 
 pc: Any = arrow_compute
 
@@ -58,5 +58,25 @@ def source_view(
                         ),
                     )
                 writer.write_table(pa.Table.from_batches([block]).filter(selected))
+        if pq.ParquetFile(path).metadata.num_rows == 0 and original.metadata.num_rows:
+            # DiskGraph cannot index zero rows. Keep one unreachable physical
+            # sentinel: its ID is outside the original registry and every
+            # incoming ownership/FK is NULL. It cannot match an anchor or be
+            # traversed from any real row. Anchor-only fitting never sees it.
+            declaration = next(table for table in source.tables if table.name == name)
+            clocks = {declaration.event_time, declaration.available_at}
+            first = next(original.iter_batches(batch_size=1))
+            sentinel = pa.Table.from_arrays(
+                [
+                    pa.array([original.metadata.num_rows], type=pa.int64())
+                    if field.name == ROW_ID
+                    else first.column(field.name)
+                    if field.name in clocks
+                    else pa.nulls(1, type=field.type)
+                    for field in original.schema_arrow
+                ],
+                names=original.schema_arrow.names,
+            )
+            pq.write_table(sentinel, path)
         files[name] = path
     return replace(source, files=files)

@@ -378,3 +378,25 @@ def test_single_process_ddp_stream_matches_eager_exactly(monkeypatch):
     assert actual["final_loss"] == expected["final_loss"]
     for key, value in eager.state_dict().items():
         torch.testing.assert_close(streamed.state_dict()[key], value, rtol=0, atol=0)
+
+
+def test_stream_rejects_initialized_multi_rank_group_without_launcher_variables(monkeypatch):
+    monkeypatch.setattr("tfm.training.ddp.launcher_topology", lambda: (1, 0))
+    monkeypatch.setattr("tfm.training.ddp.distributed_info", lambda: (2, 0))
+
+    class Rows:
+        def __len__(self):
+            return 1
+
+        def __iter__(self):
+            raise AssertionError("An unsharded stream must not be consumed")
+
+    with pytest.raises(UnsupportedCombinationError, match="by index"):
+        DdpTrainer().fit(
+            nn.Linear(1, 1),
+            Rows(),
+            max_steps=1,
+            learning_rate=1e-3,
+            seed=0,
+            device=torch.device("cpu"),
+        )

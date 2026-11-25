@@ -556,3 +556,158 @@ def test_generated_anchors_preserve_date_key_types_and_utc_date_clocks(tmp_path)
             batch.assert_validated()
             assert batch.anchors[0].entity_id == source_entity_id((1, day))
             assert batch.history.event_mask.tolist() == [[True]]
+
+
+def test_native_source_watermark_includes_equal_cutoff_and_rejects_later(tmp_path):
+    from tfm.data.native_inputs import NativeInputs
+
+    source = replace(source_files(tmp_path), observed_through=START + timedelta(seconds=2))
+    request = tmp_path / "requested.parquet"
+    for seconds in (2, 3):
+        pq.write_table(
+            pa.table(
+                {
+                    "id": ["train"],
+                    "sample_id": ["one"],
+                    "split": ["train"],
+                    "cutoff": [START + timedelta(seconds=seconds)],
+                }
+            ),
+            request,
+        )
+        kwargs = dict(
+            root="users",
+            history_paths={"events": ("activity",)},
+            anchors=request,
+            work_dir=tmp_path / f"work{seconds}",
+            max_events=8,
+            batch_size=1,
+        )
+        if seconds == 2:
+            with NativeInputs(source, **kwargs):
+                pass
+        else:
+            with pytest.raises(SchemaError, match="source coverage"):
+                NativeInputs(source, **kwargs)
+
+
+def test_empty_optional_fit_view_table_retains_namespace_for_heldout_history(tmp_path):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    source = source_files(tmp_path)
+    optional = RelationalTable(
+        "messages",
+        ("id",),
+        numeric={"message_value": "value"},
+        event_time="at",
+        available_at="at",
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["late"],
+                "owner": ["train"],
+                "value": [7],
+                "at": [START + timedelta(seconds=2)],
+            }
+        ),
+        tmp_path / "messages.parquet",
+    )
+    source = replace(
+        source,
+        tables=(*source.tables, optional),
+        relationships=(
+            *source.relationships,
+            RelationalForeignKey("messages", "users", "messages", ("owner",)),
+        ),
+        files={**source.files, "messages": tmp_path / "messages.parquet"},
+    )
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train", "train"],
+                "sample_id": ["train", "test"],
+                "split": ["train", "test"],
+                "cutoff": [START + timedelta(seconds=1), START + timedelta(seconds=2)],
+            }
+        ),
+        anchors,
+    )
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths={"activity": ("activity",), "messages": ("messages",)},
+        anchors=anchors,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        fit_view="train",
+        views={
+            "train": {
+                "events": SourceRows(before_us=1704067201000000),
+                "messages": SourceRows(before_us=1704067201000000),
+            }
+        },
+    ) as inputs:
+        with inputs.batches("train", mode="history") as train:
+            first = next(iter(train))
+        with inputs.batches("test", mode="history") as test:
+            second = next(iter(test))
+        assert first.event_mask.sum() == 1
+        assert second.event_mask.sum() == 4
+        assert (
+            inputs.task("history").fitted_state.fingerprint
+            == inputs.task("history", view="full").fitted_state.fingerprint
+        )
+
+
+def test_integer_amounts_mix_with_histories_without_an_amount_field(tmp_path):
+    from tfm.data.native_inputs import NativeInputs
+
+    source = source_files(tmp_path)
+    events = pq.read_table(source.files["events"])
+    events = events.set_column(
+        events.schema.get_field_index("amount"), "amount", pa.array([1, 0, 3, 100], type=pa.int64())
+    )
+    pq.write_table(events, source.files["events"])
+    pq.write_table(events, tmp_path / "messages.parquet")
+    messages = RelationalTable(
+        "messages", ("id",), numeric={"other": "amount"}, event_time="at", available_at="at"
+    )
+    source = replace(
+        source,
+        tables=(*source.tables, messages),
+        relationships=(
+            *source.relationships,
+            RelationalForeignKey("messages", "users", "messages", ("owner",)),
+        ),
+        files={**source.files, "messages": tmp_path / "messages.parquet"},
+    )
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train"],
+                "sample_id": ["train"],
+                "cutoff": [START + timedelta(seconds=2)],
+                "split": ["train"],
+            }
+        ),
+        anchors,
+    )
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths={"activity": ("activity",), "messages": ("messages",)},
+        anchors=anchors,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+    ) as inputs:
+        with inputs.batches("train", mode="history") as batches:
+            batch = next(iter(batches))
+        assert batch.event_mask.sum() == 6
+        assert batch.numeric_features is not None
+        torch.testing.assert_close(batch.numeric_features[0, :3], torch.tensor([4 / 6, 3, 6]))

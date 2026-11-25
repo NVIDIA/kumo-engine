@@ -645,7 +645,7 @@ def tabformer_tables(config: DataConfig, *, seed: int, fixture_dir: Path) -> Tab
         else paths
     )
     # The CSV reference samples owners without looking at outcomes.
-    if config.load_labels and paths[0].suffix != ".csv":
+    if config.load_labels and config.stratify_by_fraud and paths[0].suffix != ".csv":
         for path in positive_paths:
             for row in rows(path, ("User", "Is Fraud?")):
                 if _is_fraud_value(row["Is Fraud?"]):

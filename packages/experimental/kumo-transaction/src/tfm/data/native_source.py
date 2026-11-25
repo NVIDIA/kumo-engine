@@ -176,9 +176,11 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
         self.same_clocks: dict[str, bool] = {}
         self.counts: dict[str, int] = {}
         self.source_identity: dict[str, str] = {}
+        self._source_stats: dict[str, tuple[int, ...]] = {}
         try:
             self._index_keys()
             self.source = self._write_sources()
+            self._verify_snapshot()
             self.connection.execute("CREATE INDEX links_forward ON links(role,parent)")
             self.connection.commit()
             self.forward_degrees = dict(
@@ -193,9 +195,28 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
             batch_size=self.block_size, columns=columns
         )
 
+    @staticmethod
+    def _snapshot_stat(path: Path) -> tuple[int, ...]:
+        info = path.stat()
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def _verify_snapshot(self) -> None:
+        for name, path in self.original.files.items():
+            expected = self._source_stats[name]
+            if (
+                self._snapshot_stat(path) != expected
+                or file_sha256(path) != self.source_identity[name]
+                or self._snapshot_stat(path) != expected
+            ):
+                raise SchemaError(f"{name}: source snapshot changed during normalization")
+
     def _index_keys(self) -> None:
         for table in self.original.tables:
-            self.source_identity[table.name] = file_sha256(self.original.files[table.name])
+            path = self.original.files[table.name]
+            self._source_stats[table.name] = self._snapshot_stat(path)
+            self.source_identity[table.name] = file_sha256(path)
+            if self._snapshot_stat(path) != self._source_stats[table.name]:
+                raise SchemaError(f"{table.name}: source snapshot changed during normalization")
             if table.role == "labels":
                 self.counts[table.name] = pq.ParquetFile(
                     self.original.files[table.name]

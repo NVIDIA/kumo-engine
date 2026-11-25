@@ -154,3 +154,71 @@ def test_future_reader_escapes_source_directory_uri(tmp_path):
     finally:
         cache.close()
         normalized.close()
+
+
+@pytest.mark.parametrize("partition_seconds", [24, 30])
+def test_late_terminal_observation_delays_target_instead_of_erasing_event(
+    tmp_path, partition_seconds
+):
+    from datetime import timedelta
+
+    import pyarrow as pa
+
+    from tfm.contracts.relational import RelationalForeignKey, RelationalTable
+    from tfm.contracts.table_source import TableSource
+
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    pq.write_table(pa.table({"id": ["one"]}), tmp_path / "users.parquet")
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["late"],
+                "owner": ["one"],
+                "amount": [4.0],
+                "at": [start + timedelta(seconds=15)],
+                "known": [start + timedelta(seconds=25)],
+            }
+        ),
+        tmp_path / "events.parquet",
+    )
+    source = TableSource(
+        (
+            RelationalTable("users", ("id",), immutable=True),
+            RelationalTable(
+                "events",
+                ("id",),
+                numeric={"amount": "amount"},
+                event_time="at",
+                available_at="known",
+            ),
+        ),
+        (RelationalForeignKey("events", "users", "events", ("owner",)),),
+        {n: tmp_path / f"{n}.parquet" for n in ("users", "events")},
+    )
+    with NativeSourceFiles(source, tmp_path / "normalized") as normalized:
+        normalized.connection.execute(
+            "CREATE TABLE anchors (sample_id TEXT,root INTEGER,cutoff INTEGER,split TEXT)"
+        )
+        normalized.connection.execute(
+            "INSERT INTO anchors VALUES (?,?,?,?)", ("one", 0, int(start.timestamp()) + 10, "train")
+        )
+        cache = NativeFutureTargets(
+            normalized,
+            root="users",
+            depth=1,
+            fanout=10,
+            horizon_us=10_000_000,
+            observed_through_us=utc_us(start) + 30_000_000,
+            partition_end_us=utc_us(start) + partition_seconds * 1_000_000,
+        )
+        try:
+            if partition_seconds == 24:
+                with pytest.raises(ValueError, match="declared partition"):
+                    cache.prepare(("train",))
+            else:
+                cache.prepare(("train",))
+                target = cache.raw((GraphAnchor("one", "one", start + timedelta(seconds=10)),))
+                assert target.values[0, 0] == 1
+                assert target.available_us.tolist() == [utc_us(start) + 25_000_000]
+        finally:
+            cache.close()

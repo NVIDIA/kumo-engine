@@ -292,3 +292,117 @@ def test_native_flat_window_groups_store_each_event_once_and_share_token_ids(tmp
             int(value) in lookup or int(value) in (0, 1, 2, 3)
             for value in probe.input_ids.flatten()
         )
+
+
+def test_tabformer_opt_out_samples_independently_of_fraud_outcomes(tmp_path):
+    from tfm.data.adapters import tabformer
+
+    root = tabformer.write_tabformer_fixture(tmp_path / "book", n_users=12, events_per_user=3)
+    config = load_recipe_config("recipes/blueprint_v1/config.smoke.yaml").data.model_copy(
+        update={
+            "adapter": "tabformer",
+            "path": str(root),
+            "max_entities": 4,
+            "stratify_by_fraud": False,
+            "load_labels": True,
+        }
+    )
+    selected = []
+    for attempt in (0, 1):
+        source = table_source(config, seed=42, fixture_dir=tmp_path / f"source{attempt}")
+        selected.append(pq.read_table(source.files["users"])["id"].to_pylist())
+        for path in root.rglob("*.parquet"):
+            table = pq.read_table(path)
+            if "Is Fraud?" in table.column_names:
+                import pyarrow as pa
+
+                table = table.set_column(
+                    table.schema.get_field_index("Is Fraud?"),
+                    "Is Fraud?",
+                    pa.array(["Yes"] * len(table)),
+                )
+                pq.write_table(table, path)
+    assert selected[0] == selected[1]
+    assert set(pq.read_table(source.files["events"])["fraud_value"].to_pylist()) == {1.0}
+
+
+def test_precomputed_sequence_anchor_ids_include_the_partition(tmp_path):
+    from tfm.data.adapters.native_transactions import _ScalarBook
+    from tfm.data.native_source import NativeSourceFiles
+    from tfm.data.native_transaction_anchors import sequence_anchors
+
+    config = load_recipe_config("recipes/blueprint_v2/config.smoke.yaml")
+    config.data.split_protocol = "precomputed"
+    config.data.load_labels = False
+    instant = 1704067200000000
+    with _ScalarBook(tmp_path / "book", "amount") as book:
+        for partition in ("train", "validation", "test"):
+            book.event(
+                "one",
+                partition,
+                instant,
+                "transaction",
+                {"amount": 1},
+                {},
+                {},
+                1.0,
+                instant,
+                partition=partition,
+            )
+        source = book.tables(config.data)
+    with NativeSourceFiles(source, tmp_path / "normalized") as normalized:
+        path = sequence_anchors(normalized, config, tmp_path / "anchors.parquet")
+        rows = pq.read_table(path).to_pylist()
+        assert len({r["sample_id"] for r in rows}) == len(rows) == 3
+        assert {r["split"] for r in rows} == {"train", "validation", "test"}
+        assert len({r["cutoff"] for r in rows}) == 1
+
+
+def test_lazy_reference_ties_use_original_event_id_before_history_limit(tmp_path):
+    import pyarrow as pa
+
+    from tfm.data.adapters.native_transactions import _ScalarBook
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_reference import ReferenceRows
+
+    config = load_recipe_config("recipes/blueprint_v2/config.smoke.yaml")
+    instant = 1704067200000000
+    with _ScalarBook(tmp_path / "book", "amount") as book:
+        book.event("one", "z", instant, "transaction", {"amount": 9}, {}, {}, None, None)
+        book.event("one", "a", instant, "transaction", {"amount": 1}, {}, {}, None, None)
+        source = book.tables(config.data)
+    physical = pq.read_table(source.files["events"])
+    ids = physical["id"].to_pylist()
+    pq.write_table(
+        physical.take(pa.array([ids.index("z"), ids.index("a")])), source.files["events"]
+    )
+    from datetime import UTC, datetime
+
+    requested = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["one"],
+                "sample_id": ["one"],
+                "split": ["train"],
+                "cutoff": [datetime(2024, 1, 2, tzinfo=UTC)],
+            }
+        ),
+        requested,
+    )
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths={"events": ("events",)},
+        anchors=requested,
+        work_dir=tmp_path / "work",
+        max_events=2,
+        batch_size=1,
+    ) as inputs:
+        db = inputs.normalized.connection
+        db.execute("CREATE TABLE event_partitions (code INTEGER PRIMARY KEY,partition TEXT)")
+        db.executemany("INSERT INTO event_partitions VALUES (?,?)", [(0, None), (1, None)])
+        references = ReferenceRows(inputs)
+        assert [e.event_id for e in references.sequence("one").events] == ["a", "z"]
+        inputs.max_events = 1
+        assert [e.event_id for e in references.sequence("one").events] == ["z"]

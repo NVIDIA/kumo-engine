@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate native replay labels and source watermarks, reject source replacement
+  during normalization, preserve late-observed future terminals and empty fit
+  views, and retain frozen-GNN probes and standalone downstream checkpoint reuse.
+  Honor amount-field and sampling settings in native sequence preparation.
+
 - Replace canonical native recipes' prepared-window/indexed-batch path with
   source-table DiskGraph indexes, train-fitted native encoders, continuous
   seed/epoch iterators and owned CPU tensor prefetch. Stream graph and hybrid

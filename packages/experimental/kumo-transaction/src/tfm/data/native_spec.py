@@ -271,11 +271,13 @@ def history_contract(
                 "__dow": api.Derived(api.CalendarPart("weekday"), ("__clock",)),
                 "__dom": api.Derived(api.CalendarPart("day"), ("__clock",)),
                 "__age": api.EventTimeDelta(unit="seconds"),
-                "__amount": (
+                "__amount_raw": (
                     api.Field(column=table.numeric[amount_key])
                     if amount_key in table.numeric
                     else api.Constant(0.0, api.DType("float64"))
                 ),
+                "__amount_zero": api.Constant(0.0, api.DType("float64")),
+                "__amount": api.Derived("add", ("__amount_raw", "__amount_zero")),
             }
         )
         events[name] = api.EventSpec(
