@@ -914,7 +914,7 @@ def execute(root, manifest, connection, timeout):
                         manifest['mode'] == 'lifecycle'
                         and 'lifecycle/summary.json' in by_path):
                     required = {
-                        'venv.log', 'install.log', 'pip-check.log',
+                        'install.log', 'pip-check.log',
                         'child-auth.stdout.json', 'child-auth.stderr.log',
                         'dependency-manifest.json', 'cached-files.json'
                     }

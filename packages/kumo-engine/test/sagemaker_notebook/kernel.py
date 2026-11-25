@@ -54,9 +54,6 @@ def execute(config):
     try:
         budget = load('sagemaker_budget', 'sagemaker_budget.py')
         with budget.limit(root):
-            assert 'include-system-site-packages = false' in (
-                root / 'venv/pyvenv.cfg').read_text()
-            assert Path(sys.executable).parent == root / 'venv/bin'
             for name, asset in config['assets'].items():
                 path = payload / name
                 assert hashlib.sha256(
@@ -67,13 +64,14 @@ def execute(config):
             (payload / 'runtime-context.json').write_text(json.dumps(context))
             installation = json.loads(
                 (evidence / 'installation.json').read_text())
+            assert Path(installation['interpreter']) == Path(sys.executable)
             assert installation['pip_check_returncode'] == 0
             assert installation['wheel_sha256'] == config['wheel_sha256']
             report['installation'] = installation
             helpers = load('lifecycle_helpers', 'wheel_mlops_lifecycle.py')
             wheel = payload / config['candidate']['wheel_file']
             report['environment'] = helpers.check_install(
-                wheel, config['candidate']['expected_version'])
+                wheel, config['candidate']['expected_version'], managed=True)
             sys.path.insert(0, str(payload))
             if config['scenario'] in ('graph', 'all'):
                 fixture = root / 'fixture'
@@ -106,13 +104,13 @@ def execute(config):
                     tracking_arn=config['tracking_arn'],
                     experiment='kumo-test-mlops',
                     model_prefix='kumo-test-mlops', accelerator='cpu',
-                    execution_context='sagemaker', environment='venv',
+                    execution_context='sagemaker', environment='managed',
                     notebook_context=str(payload / 'runtime-context.json'))
                 (lifecycle / 'platform.json').write_text(
                     json.dumps(dict(config=profile, attempt=config['attempt'])))
                 for phase in ('negative', 'fit', 'score', 'evaluate'):
                     command = [
-                        sys.executable, '-I',
+                        sys.executable, '-P',
                         str(payload / 'wheel_mlops_lifecycle.py'),
                         '--execute-platform', '--wheel',
                         str(wheel), '--expected-version',

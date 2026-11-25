@@ -37,7 +37,6 @@ SOURCES = {
     'sagemaker_budget.py': HERE / 'budget.py',
     'graph_fixture.py': SHARED / 'graph_fixture.py',
     'explanation.py': SHARED / 'explanation.py',
-    'kernel-requirements.txt': HERE / 'kernel-requirements.txt',
 }
 
 

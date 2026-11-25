@@ -8,9 +8,10 @@ the same entrypoint and resource configuration.
 
 ## Notebook execution
 
-The initialization script creates a clean virtual environment, installs the
-selected complete wheel with `[sagemaker]`, checks its dependencies, and registers the
-notebook kernel. Kernel tools are installed separately from the product.
+The initialization script installs the selected complete wheel with `[sagemaker]`
+into the SageMaker Distribution interpreter and checks its dependencies. It registers
+that interpreter as the job's notebook kernel. The notebook verifies that it is
+running the interpreter used to install the candidate.
 The runner caches inputs in S3 by SHA256 and checks S3 checksums before reuse.
 The container is the unchanged AWS SageMaker Distribution 3.6.1 CPU image,
 mirrored into the dedicated `kumo-mlops-validation` ECR repository and pinned
@@ -275,13 +276,12 @@ shutdown, and 10-minute terminal cleanup wait. Offline harness regressions can
 run locally without cloud credentials; automatic platform-regression CI remains
 a separate follow-up.
 
-The runner and kernel-tool requirements are generated hash locks. Edit their
-`.in` files and run `python packages/kumo-engine/test/sagemaker_notebook/compile_requirements.py`
-with uv 0.13.7. Actions and bootstrap install these tools with `--require-hashes`.
-The candidate product wheel remains selected separately by its verified hash.
-Its `[sagemaker]` dependency closure is resolved from PyPI at installation time;
-those product dependencies are not covered by the runner or kernel-tool hash locks.
-`pip check` validates the installed closure, not its hashes.
+The runner requirements are a generated hash lock. Edit the runner's `.in` file
+and run `python packages/kumo-engine/test/sagemaker_notebook/compile_requirements.py`
+with uv 0.13.7. Actions install the runner tools with `--require-hashes`.
+The candidate wheel is selected separately by its verified hash. Its `[sagemaker]`
+dependencies are resolved from PyPI against the packages already in the image.
+`pip check` validates the installed dependencies.
 
 Notebook Jobs retain the installed 3,600-second limit. Bootstrap records one
 3,000-second work deadline shared by staging, installation, kernel graph work and all

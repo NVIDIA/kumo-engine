@@ -5,6 +5,7 @@
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import uuid
@@ -29,9 +30,18 @@ def notebook(spec, kernel_source=None):
         kernel_source = (HERE / 'lifecycle_kernel.py').read_text()
     code = 'CONFIG = ' + repr(
         spec) + '\n' + kernel_source + '\nexecute(CONFIG, dbutils)'
+    candidate = spec['candidate']
+    wheel = spec['assets'][candidate['wheel_file']]['path']
     codes = [
-        "import platform; assert platform.machine() == 'x86_64', platform.machine()",
-        code
+        'import hashlib, platform\n'
+        'from pathlib import Path\n'
+        "assert platform.machine() == 'x86_64', platform.machine()\n"
+        f"with Path({wheel!r}).open('rb') as candidate:\n"
+        f"    assert hashlib.file_digest(candidate, 'sha256').hexdigest() == "
+        f"{candidate['wheel_sha256']!r}",
+        '%pip install ' + shlex.quote(wheel + '[databricks,mlflow,s3,pytorch]'),
+        'dbutils.library.restartPython()',
+        code,
     ]
     return dict(
         nbformat=4, nbformat_minor=5, metadata=dict(kernelspec=dict(
@@ -119,8 +129,15 @@ def engine_verdict(report):
     positive = all(states[n] == 'passed' for n in ('fit', 'score', 'evaluate'))
     complete = set(phases) == expected and all(s == 'passed'
                                                for s in states.values())
-    if (positive or complete) and report.get('pip_check_returncode') != 0:
-        raise ValueError('Lifecycle dependency admission did not pass')
+    if positive or complete:
+        if report.get('pip_check_returncode') != 0:
+            raise ValueError('Lifecycle dependency admission did not pass')
+        if (report.get('environment', {}).get('sha256')
+                != report['wheel_sha256'] or report.get(
+                    'native_imports', {}).get('pytorch') != 'kumo.pytorch'
+                or not report.get('native_imports', {}).get('transformers')):
+            raise ValueError(
+                'Native Databricks notebook imports were not verified')
     return dict(positive_lifecycle='passed' if positive else 'incomplete',
                 engine_checks='passed' if complete else 'incomplete',
                 phases=states, full_qualification='incomplete',

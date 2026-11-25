@@ -157,12 +157,13 @@ predictions use the existing `FileConnector` through the notebook's mounted
 `/Volumes` filesystem. Tracking and version/alias loading still use native
 Databricks MLflow and Unity Catalog. Direct Volume Parquet ingestion through
 `DatabricksConnector` is outside this scenario.
-The notebook creates a clean virtual environment,
-uses `venv --without-pip` and pip’s [target-interpreter option](https://pip.pypa.io/en/stable/topics/python-option/)
-to install the candidate with its Databricks and MLflow extras, and requires
-`pip check` to pass. The explicit `mlflow,s3` extras include MLflow’s Unity Catalog artifact
-storage dependencies. Each phase runs in a fresh process using runtime-derived
-credentials, verifies its effective Databricks identity, and checks its installed wheel.
+The notebook verifies the candidate wheel checksum, installs
+`[databricks,mlflow,s3,pytorch]` with `%pip`, and restarts Python. The explicit
+`mlflow,s3` extras supply Unity Catalog artifact storage dependencies. The notebook
+checks that the selected engine wheel, PyTorch API, and runtime Transformers all
+import and requires `pip check` to pass. Each phase starts a fresh process with the
+notebook package search path and runtime-derived credentials, verifies its effective
+Databricks identity, and checks its installed wheel.
 The runner PAT is never copied into the notebook. Producer scratch and source data
 are removed before recovery phases. The same process-group deadline handling as the
 shared runner stops timed-out workers and their descendants.
@@ -250,7 +251,7 @@ ledger scope and run owner/path before cancelling and waiting for termination.
 An unknown submission result or unprovable ownership preserves resources.
 Definitive rejected submissions release owned resources and retain the API error.
 
-Lifecycle execution uses the shared phase runner (negative first), clean-venv
+Lifecycle execution uses the shared phase runner (negative first), native runtime
 admission and 600-second phase bounds. The 5,400-second Jobs limit includes
 installation, execution and evidence-publication margin; the controller allows
 6,000 seconds and the Actions job reserves further recovery time.

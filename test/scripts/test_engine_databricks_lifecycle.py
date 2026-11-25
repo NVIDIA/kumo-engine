@@ -24,7 +24,10 @@ def runner(monkeypatch):
 def passed_report():
     return dict(
         identity='test-principal', wheel_sha256='a' * 64,
-        lifecycle_status='blocked', pip_check_returncode=0, phases={
+        lifecycle_status='blocked', pip_check_returncode=0,
+        environment=dict(sha256='a' * 64),
+        native_imports=dict(pytorch='kumo.pytorch', transformers='4.51.3'),
+        phases={
             n:
             dict(
                 status='passed', returncode=0,
@@ -41,7 +44,8 @@ def test_engine_success_preserves_full_qualification_gap(runner):
     assert result['remaining_requirements']['native_ui']['status'] == 'blocked'
 
 
-@pytest.mark.parametrize('field', ['identity', 'wheel', 'context', 'pip'])
+@pytest.mark.parametrize(
+    'field', ['identity', 'wheel', 'context', 'pip', 'native_imports'])
 def test_passed_phase_requires_real_admission_evidence(runner, field):
     report = passed_report()
     phase = report['phases']['fit']
@@ -51,8 +55,10 @@ def test_passed_phase_requires_real_admission_evidence(runner, field):
         phase['platform']['placement']['context'] = 'client'
     elif field == 'wheel':
         phase['environment']['sha256'] = 'b' * 64
-    else:
+    elif field == 'pip':
         report['pip_check_returncode'] = 1
+    else:
+        del report['native_imports']
     with pytest.raises(ValueError):
         runner.engine_verdict(report)
 
@@ -69,14 +75,16 @@ def test_permission_block_does_not_qualify_all_engine_checks(runner):
 def evidence(runner, tmp_path):
     spec = dict(
         attempt='a' * 12, source_commit='b' * 40,
-        candidate=dict(wheel_sha256='c' * 64), assets={}, test_sources={},
-        expected_user='test-principal',
+        candidate=dict(wheel_sha256='c' * 64, wheel_file='candidate.whl'),
+        assets={'candidate.whl': dict(path='/Volumes/test/candidate.whl')
+                }, test_sources={}, expected_user='test-principal',
         output='/Volumes/kumo_test_catalogue/kumo_test/test_stage/test-only',
         notebook_path='/Shared/test-only')
     report = dict(status='blocked', attempt=spec['attempt'],
                   source_commit=spec['source_commit'],
-                  wheel_sha256=spec['candidate']['wheel_sha256'], payload={},
-                  test_sources={}, notebook_path=spec['notebook_path'],
+                  wheel_sha256=spec['candidate']['wheel_sha256'],
+                  payload=spec['assets'], test_sources={},
+                  notebook_path=spec['notebook_path'],
                   identity='test-principal', execution_id='d' * 12)
     content = json.dumps(report).encode()
     receipt = dict(attempt=spec['attempt'], source_commit=spec['source_commit'],
@@ -160,16 +168,24 @@ def test_dirty_lifecycle_source_is_rejected_before_auth_or_cloud_calls(
         runner.execute(SimpleNamespace(cluster_id='0101-010101-test'), tmp_path)
 
 
-def test_notebook_keeps_committed_kernel_after_working_source_changes(
-        runner, monkeypatch):
+def test_notebook_installs_pytorch_before_running_the_committed_kernel(
+        evidence, monkeypatch):
+    runner, spec, *_ = evidence
+
     def no_read(path, *args, **kwargs):
         raise AssertionError(
             'Frozen notebook construction must not reread working source')
 
     monkeypatch.setattr(Path, 'read_text', no_read)
-    value = runner.notebook(dict(attempt='a' * 12),
+    value = runner.notebook(spec,
                             kernel_source='COMMITTED_KERNEL_SENTINEL = True')
-    code = ''.join(value['cells'][-1]['source'])
+    verify, install, restart, code = [
+        ''.join(cell['source']) for cell in value['cells']
+    ]
+    assert spec['candidate']['wheel_sha256'] in verify
+    assert install.startswith('%pip install ')
+    assert '/Volumes/test/candidate.whl[databricks,mlflow,s3,pytorch]' in install
+    assert restart == 'dbutils.library.restartPython()'
     assert 'COMMITTED_KERNEL_SENTINEL = True' in code
 
 
@@ -249,23 +265,41 @@ def test_native_worker_crash_retains_and_redacts_phase_log(
     runtime.mkdir()
     monkeypatch.setattr(tempfile, 'mkdtemp', lambda **kwargs: str(runtime))
     monkeypatch.setenv('DATABRICKS_RUNTIME_VERSION', 'test-runtime')
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        subprocess, 'run',
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0))
+    transformers = (None if failure == 'runtime_import' else SimpleNamespace(
+        __version__='4.51.3'))
+    monkeypatch.setitem(sys.modules, 'transformers', transformers)
+    pytorch = SimpleNamespace(__name__='kumo.pytorch')
+    monkeypatch.setitem(sys.modules, 'kumo', SimpleNamespace(pytorch=pytorch))
+    monkeypatch.setitem(sys.modules, 'kumo.pytorch', pytorch)
     workspace = SimpleNamespace(
-        current_user=SimpleNamespace(me=lambda: SimpleNamespace(user_name='test-user')),
-        config=SimpleNamespace(host='https://test.cloud.databricks.com',
-                               authenticate=lambda: {'Authorization': 'Bearer test-runtime-token'}))
+        current_user=SimpleNamespace(
+            me=lambda: SimpleNamespace(user_name='test-user')),
+        config=SimpleNamespace(
+            host='https://test.cloud.databricks.com', authenticate=lambda:
+            {'Authorization': 'Bearer test-runtime-token'}))
     monkeypatch.setitem(sys.modules, 'databricks.sdk',
                         SimpleNamespace(WorkspaceClient=lambda: workspace))
-    context = SimpleNamespace(notebookPath=lambda: SimpleNamespace(get=lambda: '/Shared/test'))
-    utils = SimpleNamespace(notebook=lambda: SimpleNamespace(getContext=lambda: context))
-    dbutils = SimpleNamespace(notebook=SimpleNamespace(entry_point=SimpleNamespace(
-        getDbutils=lambda: utils)))
+    context = SimpleNamespace(
+        notebookPath=lambda: SimpleNamespace(get=lambda: '/Shared/test'))
+    utils = SimpleNamespace(
+        notebook=lambda: SimpleNamespace(getContext=lambda: context))
+    dbutils = SimpleNamespace(notebook=SimpleNamespace(
+        entry_point=SimpleNamespace(getDbutils=lambda: utils)))
     source = tmp_path / 'wheel_mlops_lifecycle.py'
     source.write_text('''import json
 from pathlib import Path
 
+def check_install(wheel, expected_version, *, managed):
+    assert managed
+    return {}
+
 def execute(command, root, log, timeout, env=None):
     if '--execute-platform' in command:
+        assert command[1] == '-P'
+        assert env['PYTHONPATH']
         output = Path(command[command.index('--output-dir') + 1])
         output.mkdir()
         (output / 'fit.log').write_text('native worker crash: ' + env['DATABRICKS_TOKEN'])
@@ -280,20 +314,29 @@ def execute(command, root, log, timeout, env=None):
     ))
     wheel = tmp_path / 'candidate.whl'
     wheel.write_bytes(b'wheel')
-    assets = {p.name: dict(path=str(p), size=p.stat().st_size,
-                           sha256=hashlib.sha256(p.read_bytes()).hexdigest())
-              for p in (source, wheel)}
+    assets = {
+        p.name:
+        dict(path=str(p), size=p.stat().st_size,
+             sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+        for p in (source, wheel)
+    }
     output = tmp_path / 'output'
-    kernel.execute(dict(attempt='a' * 12, source_commit='b' * 40,
-                        candidate=dict(wheel_file=wheel.name,
-                                       wheel_sha256=assets[wheel.name]['sha256'],
-                                       expected_version='1.0'),
-                        notebook_path='/Shared/test', assets=assets, test_sources={},
-                        expected_user='test-user', cluster_id='0101-010101-test',
-                        artifact_root='/Volumes/test/models', experiment='test',
-                        output=str(output)), dbutils)
+    kernel.execute(
+        dict(
+            attempt='a' * 12, source_commit='b' * 40,
+            candidate=dict(wheel_file=wheel.name,
+                           wheel_sha256=assets[wheel.name]['sha256'],
+                           expected_version='1.0'),
+            notebook_path='/Shared/test', assets=assets, test_sources={},
+            expected_user='test-user', cluster_id='0101-010101-test',
+            artifact_root='/Volumes/test/models', experiment='test',
+            output=str(output)), dbutils)
     report = json.loads((output / 'lifecycle-result.json').read_text())
     assert report['status'] == 'failed'
+    if failure == 'runtime_import':
+        assert 'import of transformers halted' in report['error']
+        assert not (output / 'fit.log').exists()
+        return
     if failure == 'worker_crash':
         assert 'Worker produced no receipt' in report['error']
     else:
