@@ -256,8 +256,8 @@ RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps --no-sources 
         /opt/app/src/packages/kumo-gcs \
  && rm -rf /root/.cache/uv
 
-# Validate the staged snapshot dependency and DiskGraph runtime.
-RUN python3 -c "from kumo_core.diskgraph.snapshot import DiskgraphIngestResult; print('snapshot import ok')" \
+# Validate installed packages without the temporary kumo stub on sys.path.
+RUN python3 -I -c "from kumo_core.diskgraph.snapshot import DiskgraphIngestResult; print('snapshot import ok')" \
  && python3 -c "from diskgraph import SamplerEngine; print('diskgraph import ok')" \
  && python3 -c "import os, diskgraph; from pathlib import Path; ingest = Path(diskgraph.__file__).parent / 'bin' / 'ingest'; assert ingest.is_file() and os.access(ingest, os.X_OK), ingest; print(f'diskgraph ingest binary ok: {ingest}')"
 
