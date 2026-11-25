@@ -2542,43 +2542,19 @@ impl DiskGraphEngine {
         let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| chunks
             .into_par_iter()
             .map(|chunk_ids| {
-                // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
-                let mut unique_ids_unsorted = Vec::new();
-                let mut dedup_map = HashMap::new();
-                let mut take_indices = vec![0u32; chunk_ids.len()];
-
-                for (pos, &global_id) in chunk_ids.iter().enumerate() {
-                    let idx = *dedup_map.entry(global_id).or_insert_with(|| {
-                        let new_idx = unique_ids_unsorted.len() as u32;
-                        unique_ids_unsorted.push(global_id);
-                        new_idx
-                    });
-                    take_indices[pos] = idx;
-                }
-
-                // 2. Sort Unique IDs for Sequential Disk I/O
-                let mut sorted_pairs: Vec<(u64, u32)> = unique_ids_unsorted
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, id)| (id, i as u32))
-                    .collect();
-                sorted_pairs.sort_unstable_by_key(|x| x.0);
-
-                // 3. Create reverse mapping from old unique index to new sorted index
-                let mut old_to_new = vec![0u32; sorted_pairs.len()];
-                for (new_idx, &(_, old_idx)) in sorted_pairs.iter().enumerate() {
-                    old_to_new[old_idx as usize] = new_idx as u32;
-                }
-
-                // 4. Update take_indices to point to the new sorted positions
-                for idx in &mut take_indices {
-                    *idx = old_to_new[*idx as usize];
+                // Sort for sequential reads and remember where each decoded row belongs.
+                let mut requests: Vec<_> = chunk_ids.iter().copied().enumerate().collect();
+                requests.sort_unstable_by_key(|&(_, id)| id);
+                let mut unique_ids = Vec::with_capacity(requests.len());
+                let mut take_indices = vec![0u32; requests.len()];
+                for (pos, id) in requests {
+                    if unique_ids.last() != Some(&id) {
+                        unique_ids.push(id);
+                    }
+                    take_indices[pos] = (unique_ids.len() - 1) as u32;
                 }
                 let take_array = arrow_array::UInt32Array::from(take_indices);
 
-                let unique_ids: Vec<u64> = sorted_pairs.into_iter().map(|x| x.0).collect();
-
-                // 5. Fetch and Decode ONLY unique IDs
                 let mut raw_rows = Vec::with_capacity(unique_ids.len());
                 let mut last_shard_idx = 0;
 
@@ -2614,7 +2590,7 @@ impl DiskGraphEngine {
                     .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
                     .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
 
-                // 6. Broadcast (take) unique rows back to the requested redundant order
+                // Restore the requested row order, including duplicates.
                 let expanded_columns: std::result::Result<Vec<_>, arrow::error::ArrowError> = unique_batch
                     .columns()
                     .iter()
