@@ -452,25 +452,41 @@ class NativeAnchors:
         sample_ids = tuple(
             columns[table.sample_id].to_pylist() if table.sample_id else positions.to_pylist()
         )
+        entity_ids = tuple(columns[table.entity_id].to_pylist())
+        evaluation_times = (
+            tuple(runtime["task"]["seed_timestamps"].to_pylist()) if table.as_of_time else (0,) * n
+        )
         candidates = {}
         if sample.candidate_sets:
-            requests = [
-                _candidate_row(table, columns, i, position)
-                for i, position in enumerate(positions.to_pylist())
-            ]
+            requests = (
+                [
+                    _candidate_row(table, columns, i, position)
+                    for i, position in enumerate(positions.to_pylist())
+                ]
+                if table.candidates
+                else ({},) * n
+            )
             as_of_times = (
                 _column_values(pa, columns[table.as_of_time], self._types[table.as_of_time])
                 if table.as_of_time
                 else (0,) * n
             )
-            candidates = self._source.build_candidates(sample, requests, as_of_times, sample_ids)
+            if any(candidate.draw for candidate in sample.candidate_sets.values()):
+                runtime["_anchor_sample"] = sample
+                runtime["_anchor_roots"] = tuple(
+                    zip(sample_ids, entity_ids, evaluation_times, strict=True)
+                )
+            with runtime_features(self._source, runtime):
+                candidates = self._source.build_candidates(
+                    sample, requests, as_of_times, sample_ids, entity_ids, cutoffs=evaluation_times
+                )
+        else:
+            self._source._last_candidate_draw_profile = None
         return ModelSourceBatch(
             candidates=candidates,
             sample_ids=sample_ids,
-            entity_ids=tuple(columns[table.entity_id].to_pylist()),
-            evaluation_times=tuple(runtime["task"]["seed_timestamps"].to_pylist())
-            if table.as_of_time
-            else (0,) * n,
+            entity_ids=entity_ids,
+            evaluation_times=evaluation_times,
             entity_type=self._sample.entity.entity_type,
             timestamp_unit=self._source._clock,
             entity_values={
@@ -837,6 +853,7 @@ class NativeAnchors:
         plan,
         projections,
         size,
+        anchor_neighborhood,
         neighborhoods,
         maximum,
         seed,
@@ -978,6 +995,9 @@ class NativeAnchors:
                 )
 
         for runtime, padded, runtime_stage in runtime_batches():
+            runtime["_anchor_neighborhood"] = anchor_neighborhood
+            if has_candidate_walks:
+                runtime["_candidate_walk_stats"] = {"walk_pushes": 0, "walk_decoded_entries": 0}
             anchors = self._batch_values(runtime_stage, runtime, sample)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
@@ -993,12 +1013,12 @@ class NativeAnchors:
                     anchors,
                     sample_ids=_padding_sample_ids(anchors.sample_ids, flags),
                     request_metadata=tuple(
-                        {**meta, PADDING_KEY: True} if flag else meta
-                        for meta, flag in zip(anchors.request_metadata, flags, strict=True)
+                        {**meta, PADDING_KEY: owner} if flag else meta
+                        for meta, owner, flag in zip(
+                            anchors.request_metadata, anchors.sample_ids, flags, strict=True
+                        )
                     ),
                 )
-            if has_candidate_walks:
-                runtime["_candidate_walk_stats"] = {"walk_pushes": 0, "walk_decoded_entries": 0}
             with runtime_features(source, runtime):
                 if output_format == "columnar":
                     batch = _surface_padding(
@@ -1231,7 +1251,7 @@ class NativeAnchors:
         policy; only anchor storage/order/reading changes.
         """
         from kumo.pytorch.contract.batch import Graph
-        from kumo.pytorch.contract.sample import Field
+        from kumo.pytorch.contract.sample import DrawNeighbors, Field
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
         if output_format == "columnar":
@@ -1263,33 +1283,38 @@ class NativeAnchors:
             )
         maximum = batch_size if batch_size is not None else policy.max_samples
         size = maximum if fixed else chunk
-        neighborhoods = {
-            prepared.spec.source.name
-            for prepared in assembler._prepared_inputs.values()
-            if isinstance(prepared.spec.representation, Graph)
-            and prepared.spec.source.candidates is None
+        graph_inputs = defaultdict(list)
+        for prepared in assembler._prepared_inputs.values():
+            if (
+                isinstance(prepared.spec.representation, Graph)
+                and prepared.spec.source.candidates is None
+            ):
+                graph_inputs[prepared.spec.source.name].append(prepared.spec.representation)
+        neighborhoods = set(graph_inputs) | {
+            candidate.draw.neighborhood
+            for candidate in self._sample.candidate_sets.values()
+            if isinstance(candidate.draw, DrawNeighbors)
         }
-        name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
-        plan = None
-        projections = {table: [] for table in source._tables}
-        if name is not None:
-            plan, _ = source._sampling_plan(self._sample.neighborhoods[name])
-            for prepared in assembler._prepared_inputs.values():
-                if (
-                    isinstance(prepared.spec.representation, Graph)
-                    and prepared.spec.source.candidates is None
-                ):
-                    for table, fields in prepared.spec.representation.node_fields.items():
-                        projections[table].extend(field.field for field in fields.fields)
-            # Identity is required by the existing graph assembler, even for
-            # graph node types without a declared model feature.
-            for table, definition in source._tables.items():
-                if definition.primary_key is not None:
-                    projections[table].insert(0, definition.primary_key)
-            projections[self._sample.entity.table].extend(entity_columns)
-            projections = {
-                table: list(dict.fromkeys(fields)) for table, fields in projections.items()
+
+        def graph_projections(neighborhood_name):
+            # Emitted graphs include public node keys. A draw-only graph uses native
+            # endpoints and looks up public keys just for the selected candidates.
+            fields = {
+                table: [definition.primary_key]
+                if neighborhood_name in graph_inputs and definition.primary_key is not None
+                else []
+                for table, definition in source._tables.items()
             }
+            for graph in graph_inputs.get(neighborhood_name, ()):
+                for table, group in graph.node_fields.items():
+                    fields[table].extend(use.field for use in group.fields)
+            return {table: list(dict.fromkeys(names)) for table, names in fields.items()}
+
+        name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
+        plan = source._sampling_plan(self._sample.neighborhoods[name])[0] if name else None
+        projections = graph_projections(name)
+        root_table = self._sample.entity.table
+        projections[root_table] = list(dict.fromkeys([*projections[root_table], *entity_columns]))
 
         def assemble(requests: Sequence[SampleRequest], runtime: Any, final: bool):
             with runtime_features(source, runtime):
@@ -1303,35 +1328,17 @@ class NativeAnchors:
                 ):
                     yield _surface_padding(batch)
 
-        named = {}
-        if len(neighborhoods) > 1:
-            for name in sorted(neighborhoods):
-                fields = {table: [] for table in source._tables}
-                for prepared in assembler._prepared_inputs.values():
-                    if (
-                        isinstance(prepared.spec.representation, Graph)
-                        and prepared.spec.source.candidates is None
-                        and prepared.spec.source.name == name
-                    ):
-                        for table, group in prepared.spec.representation.node_fields.items():
-                            fields[table].extend(use.field for use in group.fields)
-                for table in fields:
-                    fields[table] = list(
-                        dict.fromkeys(
-                            [
-                                *(
-                                    ()
-                                    if source._tables[table].primary_key is None
-                                    else (source._tables[table].primary_key,)
-                                ),
-                                *fields[table],
-                            ]
-                        )
-                    )
-                named[name] = {
-                    "plan": source._sampling_plan(self._sample.neighborhoods[name])[0],
-                    "projections": fields,
+        named = (
+            {
+                label: {
+                    "plan": source._sampling_plan(self._sample.neighborhoods[label])[0],
+                    "projections": graph_projections(label),
                 }
+                for label in sorted(neighborhoods)
+            }
+            if len(neighborhoods) > 1
+            else {}
+        )
         stages = self._selection(selection)
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
         inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
@@ -1371,7 +1378,6 @@ class NativeAnchors:
                         first_owned = (next(stage for stage in stages if stage["count"]), 0)
                 return first_owned
 
-            projections[self._sample.entity.table].extend(entity_columns)
             for stage in stages:
                 yield from self._typed_batches(
                     assembler,
@@ -1380,6 +1386,7 @@ class NativeAnchors:
                     projections=projections,
                     size=size,
                     maximum=maximum,
+                    anchor_neighborhood=name,
                     neighborhoods=named,
                     seed=seed,
                     epoch=epoch,

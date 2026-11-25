@@ -11,11 +11,9 @@ validation and a backfill while the contract does not, so binding anchors into
 `DataLoaderSpec` would change the fingerprint of runs whose data semantics are
 identical.
 
-kumo-pytorch does not enumerate anchors. Which entity is predicted at which time, how
-train/validation/test are split, and which candidates are scored are decisions
-with business meaning that belong upstream — the same reasoning that keeps
-candidate *generation* out. What kumo-pytorch does is read that set without routing a
-billion rows through Python objects, and decide the order it is consumed in.
+kumo-pytorch reads an upstream set of entities, prediction times and splits
+without routing a billion rows through Python objects. Each candidate set can
+be supplied alongside those anchors or drawn by DiskGraph.
 
 An engine may choose the order, subject to these guarantees. Every epoch visits
 each anchor exactly once, ranks are disjoint and cover the split, every rank
@@ -60,7 +58,7 @@ __all__ = [
 ]
 
 PADDING_KEY = "_is_padding"
-"""Reserved request-metadata key marking a padding anchor.
+"""Reserved request-metadata key carrying the original sample ID of a padding anchor.
 
 Surfaced to callers as ``Batch.metadata["is_padding"]`` and removed from
 ``request_metadata``, so it never collides with a user's own metadata.
@@ -344,6 +342,15 @@ def anchor_issues(
             )
         )
     for name in sorted(set(table.candidates) & set(declared_sets)):
+        if declared_sets[name].draw is not None:
+            issues.append(
+                ValidationIssue(
+                    f"anchors.candidates.{name}",
+                    f"candidate set {name!r} is drawn by the engine",
+                    "remove its CandidateColumn from the anchor table",
+                )
+            )
+            continue
         overlap = sorted(
             key
             for key in table.candidates[name].targets

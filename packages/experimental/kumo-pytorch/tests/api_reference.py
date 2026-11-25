@@ -73,6 +73,8 @@ API_PAGES: tuple[Page, ...] = (
             "DatedEntityValue",
             "EventSpec",
             "CandidateSetSpec",
+            "DrawRows",
+            "DrawNeighbors",
             "NeighborhoodSpec",
             "GraphLayer",
             "GraphSample",

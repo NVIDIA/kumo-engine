@@ -3,7 +3,7 @@
 A contract is three declarations: `DataSchema` (what is stored), `SampleSpec`
 (what one example may read at its prediction time) and `BatchSpec` (what the
 model receives). This page builds one contract over a small shop, then extends
-it with a graph neighborhood and caller-supplied candidates. Every block runs
+it with a graph neighborhood and candidate sets. Every block runs
 in order; paste them into one Python session.
 
 These snippets use Python requests to inspect a few examples. For training,
@@ -343,7 +343,7 @@ pin_graph = api.Graph({"pins": api.Fields((api.Encode("image_emb", api.Raw()),))
 
 For `N` sampled Pin occurrences, `graph["nodes"]["pins"]["features"]["image_emb"]`
 contains float32 `values` of shape `[N, 1024]` and a boolean `valid` of shape
-`[N]`. This also applies to query roots and caller-supplied positive graphs.
+`[N]`. This also applies to query roots and positive graphs.
 A null row produces a zero tensor and a false validity bit. A stored all-zero
 vector is valid.
 
@@ -459,6 +459,60 @@ the candidate occurrences in caller order. The graph's `candidate_offsets`
 maps each anchor to its slice of that sequence. An empty set repeats the
 previous offset. For DiskGraph Parquet anchors, bind a list-of-structs column
 with `CandidateColumn`; the entity ID in each struct becomes a graph root.
+
+## Drawing candidates with DiskGraph
+
+Set `CandidateSetSpec.draw` to select IDs inside DiskGraph. A scored draw
+names an existing query neighborhood and its walk output. This example keeps
+the first five ranks and draws up to two distinct items, weighted by score.
+
+```python
+activity = api.NeighborhoodSpec((api.GraphLayer((
+    api.WalkSample("activity", edges=("purchases",), keep={"items": 5}, restart=0.2, budget=1000),
+)),))
+ranked_items = api.DrawNeighbors(
+    "history", ("activity.items",), count=2, weight="score", ranks=(0, 5)
+)
+ranked_sample = api.SampleSpec(
+    entity=api.EntitySpec("users"),
+    neighborhoods={"history": activity},
+    candidate_sets={"items": api.CandidateSetSpec(api.EntitySpec("items"), draw=ranked_items)},
+)
+```
+
+For training positives from subsequent purchases, select the item key from
+the purchase rows. Here the lower bound excludes the anchor time and the upper
+bound includes purchases exactly seven days later.
+
+```python
+bought_next_week = api.DrawRows(
+    api.Rows(("user_purchases",), time=api.TimeWindow("at", start=0, stop=7 * DAY)),
+    column="item_id",
+    count=2,
+)
+positives = api.CandidateSetSpec(
+    api.EntitySpec("items"),
+    draw=bought_next_week,
+    neighborhoods={"purchases": api.NeighborhoodSpec((
+        api.GraphLayer((api.GraphSample("item_purchases", 5),)),
+    ))},
+)
+```
+
+Supply just the anchor for a drawn set. The selected IDs appear in
+`batch.metadata["candidate_entity_ids"]` in the order used by candidate
+inputs and graphs. A future purchase supplies the item ID. Its item features
+and graph still use the original prediction time. A candidate from a timed
+table is eligible only once its own row is visible at that time. Future-window draws are
+available during training. Historical rows and scored neighborhoods can also
+supply candidates during batch inference.
+
+Both sources draw without replacement. With no weight, every distinct ID
+has equal probability. With a weight, repeated occurrences add to the
+entity's weight. Null IDs and zero or null weights are skipped. An empty or
+undersized pool returns all eligible IDs up to `count`. A fixed
+`DiskGraphEngine(random_seed=...)` replays each anchor's draw across batch
+sizes and ordering on the same index.
 
 ## Authoring with Python objects (experimental)
 

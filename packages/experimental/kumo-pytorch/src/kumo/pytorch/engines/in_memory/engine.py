@@ -68,6 +68,13 @@ class InMemoryEngine:
                     )
                 )
         for name, candidates in contract.sample.candidate_sets.items():
+            if candidates.draw is not None:
+                issues.append(
+                    ValidationIssue(
+                        f"sample.candidate_sets.{name}.draw",
+                        "engine-drawn candidates require DiskGraphEngine",
+                    )
+                )
             if candidates.neighborhoods:
                 issues.append(
                     ValidationIssue(

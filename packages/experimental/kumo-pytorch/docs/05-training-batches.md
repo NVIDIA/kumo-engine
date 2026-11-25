@@ -428,6 +428,25 @@ events, and median time producing the candidate graph, including sampling.
 Use `--positives 0` for the cost of empty candidate lists, `--mode hop` for
 ordinary relation traversal, or `--output-format columnar` for Arrow batches.
 
+### Timing engine-drawn candidate graphs
+
+Run these from the same package directory to compare candidate selection with
+replaying the exact selected IDs from a Parquet anchor column.
+
+```bash
+python -m tests.e2e.scored_walk_throughput --draw neighbors --positives 4 --batches 24 --repeats 5
+python -m tests.e2e.scored_walk_throughput --draw future --positives 4 --batches 24 --repeats 5
+```
+
+The first command draws from a Pin’s ranked neighbors in proportion to score.
+The second draws from a user’s eight subsequent actions. Its query graph
+includes up to four historical Pins. Both commands sample a graph for each
+selected Pin at its parent’s prediction time. The loader checks that drawn
+and replayed batches have the same anchor order, candidate IDs, edge counts
+and walk work. The JSON reports both batch latency distributions and
+`candidate_draw_p50_ms`, the median time spent selecting IDs per batch.
+For scored draws this timer starts after the query walk has run.
+
 ### Timing array feature delivery
 
 From `packages/experimental/kumo-pytorch`, run both layouts with the same

@@ -12,6 +12,7 @@ import json
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, fields, is_dataclass, replace
 from dataclasses import field as dataclass_field
 from types import MappingProxyType, SimpleNamespace
@@ -56,6 +57,7 @@ from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
 from kumo.pytorch.contract.dtypes import DType, _arrow_values
 from kumo.pytorch.contract.sample import (
     BuiltSample,
+    DrawNeighbors,
     ExternalTarget,
     SampleRequest,
     SampleSpec,
@@ -776,6 +778,7 @@ def _fit_inputs(
         and isinstance(value.representation.row, Composite)
         and value.representation.row.vocabulary is None
     }
+    drawn_graph_roots = None
     for name, value in spec.inputs.items():
         graph_slots = [slot for slot in observed if slot[0] == name]
         if isinstance(value.representation, Graph) and graph_slots:
@@ -802,6 +805,24 @@ def _fit_inputs(
                     )
                     for request in requests
                 ]
+            elif sample.candidate_sets[candidate_set].draw is not None:
+                if drawn_graph_roots is None:
+                    # Graph encoder fitting must observe the same drawn roots as delivery.
+                    drawn_graph_roots = {
+                        key: [] for key, decl in sample.candidate_sets.items() if decl.draw
+                    }
+                    for chunk in _chunks(values_for(None)):
+                        parents = [
+                            GraphRoot(r.sample_id, r.entity_id, graph_cutoff(r.as_of_time))
+                            for r in chunk
+                        ]
+                        for key, groups in source.draw_candidate_ids(sample, parents).items():
+                            drawn_graph_roots[key].extend(
+                                GraphRoot(f"{parent.sample_id}:{key}:{i}", candidate, parent.cutoff)
+                                for parent, group in zip(parents, groups, strict=True)
+                                for i, candidate in enumerate(group)
+                            )
+                roots = drawn_graph_roots[candidate_set]
             else:
                 roots = [
                     GraphRoot(
@@ -1638,7 +1659,6 @@ def _fit_targets(
             dated_entity_values={},
             events={},
             current_events={},
-            neighborhoods={},
         )
     else:
         built = None
@@ -2557,7 +2577,25 @@ class PreparedBatchPlan:
                 world_size=world_size,
             )
         )
-        built = self._request_builder(values) if requests and not model else values
+        drawn_neighborhoods = (
+            {
+                candidate.draw.neighborhood
+                for candidate in self.sample.candidate_sets.values()
+                if isinstance(candidate.draw, DrawNeighbors)
+            }
+            if requests
+            else set()
+        )
+        shared_draw = bool(drawn_neighborhoods) and any(
+            isinstance(value.representation, Graph)
+            and value.source.candidates is None
+            and value.source.name in drawn_neighborhoods
+            for value in self.spec.inputs.values()
+        )
+        draw_scope = self._source.reuse_draw_graphs if shared_draw else nullcontext
+        built = values
+        if requests and not model and (not shared_draw or policy.length_input is not None):
+            built = self._request_builder(values)
         if model and (policy.max_tokens is not None or policy.bucket_by_length):
             length_spec = self.spec.inputs[policy.length_input]
             native_counter = getattr(self._source, "model_lengths", None)
@@ -2599,30 +2637,41 @@ class PreparedBatchPlan:
             chunks = chunks[:-1]
         for chunk in chunks:
             started = time.perf_counter_ns()
-            if model:
-                selected_requests = [values[index] for index in chunk]
-                builder = getattr(self._source, "build_model_ordered", None)
-                orders = {}
-                for value in self.spec.inputs.values():
-                    if isinstance(value.source, EventSource):
-                        for event in value.source.events:
-                            orders.setdefault(event, set()).add(value.source.order)
-                source_values = (
-                    builder(
-                        self._model_sample,
-                        selected_requests,
-                        event_orders={
-                            name: tuple(sorted(directions)) for name, directions in orders.items()
-                        },
+            with draw_scope():
+                if model:
+                    selected_requests = [values[index] for index in chunk]
+                    builder = getattr(self._source, "build_model_ordered", None)
+                    orders = {}
+                    for value in self.spec.inputs.values():
+                        if isinstance(value.source, EventSource):
+                            for event in value.source.events:
+                                orders.setdefault(event, set()).add(value.source.order)
+                    source_values = (
+                        builder(
+                            self._model_sample,
+                            selected_requests,
+                            event_orders={
+                                name: tuple(sorted(directions))
+                                for name, directions in orders.items()
+                            },
+                        )
+                        if callable(builder)
+                        else self._source.build_model(self._model_sample, selected_requests)
                     )
-                    if callable(builder)
-                    else self._source.build_model(self._model_sample, selected_requests)
-                )
-                batch = self._collate(
-                    source_values, epoch=epoch, seed=seed, model=True, requests=selected_requests
-                )
-            else:
-                batch = self._collate([built[index] for index in chunk], epoch=epoch, seed=seed)
+                    batch = self._collate(
+                        source_values,
+                        epoch=epoch,
+                        seed=seed,
+                        model=True,
+                        requests=selected_requests,
+                    )
+                else:
+                    records = (
+                        self._request_builder([values[index] for index in chunk])
+                        if shared_draw
+                        else [built[index] for index in chunk]
+                    )
+                    batch = self._collate(records, epoch=epoch, seed=seed)
             self._last_batch_profile = {
                 "output_format": output_format,
                 "samples": len(chunk),

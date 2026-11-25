@@ -45,12 +45,12 @@ clock is what point-in-time filtering compares against.
 An **anchor** is one example to build: an entity (a row of the entity table,
 by primary key) and a **prediction time**. In code, the prediction time is the
 `as_of_time` field, and some pages call it the cutoff. You supply anchors, as
-`SampleRequest`s or an `AnchorTable`. You also decide how to split them and
-which candidates to score; kumo-pytorch doesn't generate any of these.
+`SampleRequest`s or an `AnchorTable`. You choose the splits. For ranking, you can supply candidate IDs or have
+DiskGraph draw them from a sampled neighborhood or related rows.
 
 `SampleSpec` selects what that example may read at that time: the entity's own
 values, past events, aggregates over related rows, graph neighborhoods,
-caller-supplied candidates, and typed calculations such as calendar parts and
+candidate values, and typed calculations such as calendar parts and
 event ages. Historical windows are half-open, `(start, stop]` in seconds from
 the prediction time, so an event exactly at the prediction time is history and
 anything later is not. Labels look strictly forward from the same time.

@@ -48,6 +48,8 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`DatedEntityValue`](samples.md#datedentityvalue) | `kumo.pytorch` | One repeated, timestamped value associated with the entity. |
 | [`EventSpec`](samples.md#eventspec) | `kumo.pytorch` | Rows and fields for one named chronological event component. |
 | [`CandidateSetSpec`](samples.md#candidatesetspec) | `kumo.pytorch` | Point-in-time values and optional generated targets for named candidates. |
+| [`DrawRows`](samples.md#drawrows) | `kumo.pytorch` | Draw distinct candidate IDs from rows reached from the request entity. |
+| [`DrawNeighbors`](samples.md#drawneighbors) | `kumo.pytorch` | Draw distinct destinations from an already sampled query neighborhood. |
 | [`NeighborhoodSpec`](samples.md#neighborhoodspec) | `kumo.pytorch` | Rows belonging to one sampled neighborhood around the entity. |
 | [`GraphLayer`](samples.md#graphlayer) | `kumo.pytorch` | Relationship traversals performed from one neighborhood frontier. |
 | [`GraphSample`](samples.md#graphsample) | `kumo.pytorch` | One bounded relationship traversal used to select neighboring rows. |

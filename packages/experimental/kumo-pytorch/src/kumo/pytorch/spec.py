@@ -26,6 +26,8 @@ from kumo.pytorch.contract.sample import (
     Compare,
     Constant,
     Derived,
+    DrawNeighbors,
+    DrawRows,
     EventTimeDelta,
     ExternalTarget,
     Field,
@@ -493,6 +495,34 @@ class _Validator:
         for name, candidates in sample.candidate_sets.items():
             location = f"{path}.candidate_sets.{name}"
             self._sample(candidates.sample_spec(), location, candidate=True)
+            draw = candidates.draw
+            if isinstance(draw, DrawRows):
+                table = self._rows(
+                    draw.rows,
+                    entity.table,
+                    f"{location}.draw.rows",
+                    "target" if draw.future else "context",
+                )
+                dtype = self._column(table, draw.column, f"{location}.draw.column")
+                candidate_table = self.tables.get(candidates.entity.table)
+                if candidate_table is not None and candidate_table.primary_key is not None:
+                    key = candidate_table.primary_key
+                    key_dtype = candidate_table.columns[key]
+                    if dtype is not None and dtype != key_dtype:
+                        self.add(
+                            f"{location}.draw.column",
+                            f"{table}.{draw.column} must have the candidate primary key type "
+                            f"of {candidate_table.name}.{key} ({key_dtype})",
+                        )
+                if draw.weight is not None:
+                    weight = self._column(table, draw.weight, f"{location}.draw.weight")
+                    if weight is not None and not weight.numeric:
+                        self.add(f"{location}.draw.weight", "draw weights must be numeric scalars")
+            elif isinstance(draw, DrawNeighbors) and draw.neighborhood not in sample.neighborhoods:
+                self.add(
+                    f"{location}.draw.neighborhood",
+                    f"unknown query neighborhood {draw.neighborhood!r}",
+                )
         self._graph(sample, path, candidate=candidate)
 
     def _scope(self, values: Mapping[str, Any], table: str, path: str, *, event: bool) -> None:
@@ -692,6 +722,13 @@ class _Validator:
     def _graph(self, sample: SampleSpec, path: str, *, candidate: bool) -> None:
         for name, neighborhood in sample.neighborhoods.items():
             location = f"{path}.neighborhoods.{name}"
+            draws = {
+                set_name: candidates
+                for set_name, candidates in sample.candidate_sets.items()
+                if isinstance(candidates.draw, DrawNeighbors)
+                and candidates.draw.neighborhood == name
+            }
+            endpoints: dict[str, set[str]] = {}
             edge_sets = set(self.relations)
             frontier = {sample.entity.table}
             for layer_index, layer in enumerate(neighborhood.layers):
@@ -718,6 +755,7 @@ class _Validator:
                             if key in edge_sets:
                                 self.add(item, f"duplicate walk edge set {key!r}")
                             edge_sets.add(key)
+                            endpoints[key] = {table}
                         destinations.update(traversal.keep)
                         continue
                     relation = self.relations.get(traversal.relation)
@@ -736,18 +774,19 @@ class _Validator:
                             f"not this frontier {sorted(frontier)}",
                         )
                     destinations.add(end)
+                    endpoints.setdefault(traversal.relation, set()).add(end)
                     if traversal.time_column:
                         self._time(end, traversal.time_column, f"{item}.time_column")
                     clock = table_clock(self.tables[end])
                     if (
-                        candidate
+                        (candidate or draws)
                         and traversal.strategy == "uniform"
                         and (clock or traversal.time_column)
                     ):
                         self.add(
                             f"{item}.strategy",
                             f"uniform sampling of timed table {end!r} ignores the candidate anchor",
-                            "use recent sampling on timed candidate hops",
+                            "use recent sampling on timed hops used by candidates",
                         )
                     if traversal.strategy == "recent" and clock is None:
                         self.add(
@@ -756,6 +795,32 @@ class _Validator:
                             "declare TableSpec.time_column or use strategy='uniform'",
                         )
                 frontier = destinations
+            for set_name, candidates in draws.items():
+                draw = candidates.draw
+                assert isinstance(draw, DrawNeighbors)
+                draw_path = f"{path}.candidate_sets.{set_name}.draw"
+                for edge in draw.edges:
+                    if edge not in endpoints:
+                        self.add(
+                            f"{draw_path}.edges", f"unknown sampled edge set {edge!r} in {name!r}"
+                        )
+                        continue
+                    if endpoints[edge] != {candidates.entity.table}:
+                        self.add(
+                            f"{draw_path}.edges",
+                            f"edge set {edge!r} must end at candidate table "
+                            f"{candidates.entity.table!r}",
+                        )
+                    scored = edge not in self.relations
+                    if draw.ranks is not None and not scored:
+                        self.add(f"{draw_path}.ranks", f"edge set {edge!r} has no rank")
+                    if draw.weight is not None and (
+                        not scored or draw.weight not in {"score", "rank"}
+                    ):
+                        self.add(
+                            f"{draw_path}.weight",
+                            f"edge set {edge!r} has no {draw.weight!r} weight",
+                        )
 
 
 def _known_types() -> dict[str, type[Any]]:
@@ -780,6 +845,8 @@ def _encode(value: Any) -> Any:
             del arguments["candidates"]
         if isinstance(value, CandidateSetSpec) and not value.neighborhoods:
             del arguments["neighborhoods"]
+        if isinstance(value, CandidateSetSpec) and value.draw is None:
+            del arguments["draw"]
         if isinstance(value, Graph) and value.topology == "relations":
             # Keep existing artifacts and default graph fingerprints unchanged.
             del arguments["topology"]

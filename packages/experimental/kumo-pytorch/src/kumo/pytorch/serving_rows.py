@@ -898,6 +898,8 @@ def _derive(contract: DataLoaderSpec) -> ServingRowsSpec:
     sample = contract.sample
     if any(dtype.shape for table in contract.schema.tables for dtype in table.columns.values()):
         raise ValueError("array feature columns require DiskGraphEngine")
+    if any(candidate.draw is not None for candidate in sample.candidate_sets.values()):
+        raise ValueError("engine-drawn candidates require DiskGraphEngine")
     if any(candidate.neighborhoods for candidate in sample.candidate_sets.values()):
         raise ValueError("candidate neighborhoods require DiskGraphEngine")
     names = _BatchNames(sample, contract.batch)

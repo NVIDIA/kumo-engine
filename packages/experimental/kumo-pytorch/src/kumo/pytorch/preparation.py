@@ -50,7 +50,13 @@ from kumo.pytorch.column_stats import (
     token_length_columns,
 )
 from kumo.pytorch.contract.batch.encodings import Text
-from kumo.pytorch.contract.sample import Aggregate, Compare, SampleRequest, sample_value_types
+from kumo.pytorch.contract.sample import (
+    Aggregate,
+    Compare,
+    DrawRows,
+    SampleRequest,
+    sample_value_types,
+)
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import (
@@ -166,6 +172,7 @@ def _check(
     except ValidationError as error:
         issues.extend(error.issues)
     if inference:
+        issues.extend(_future_draw_issues(contract))
         try:
             contract.validate()
         except ValidationError as error:
@@ -180,6 +187,18 @@ def _check(
         if anchor_preflight is not None:
             issues.extend(anchor_preflight(anchors))
     return contract, tuple(issues)
+
+
+def _future_draw_issues(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
+    return tuple(
+        ValidationIssue(
+            f"sample.candidate_sets.{name}.draw",
+            "drawing candidates from future rows is training-only",
+            "supply candidates or draw from historical rows for inference",
+        )
+        for name, candidates in contract.sample.candidate_sets.items()
+        if isinstance(candidates.draw, DrawRows) and candidates.draw.future
+    )
 
 
 def _inference_view(contract: DataLoaderSpec) -> DataLoaderSpec:
@@ -281,6 +300,8 @@ class Plan:
                 f"its targets were not checked against engine {self.engine.name!r}; to "
                 "train, prepare the contract without inference=True"
             )
+        if inference and (draw_issues := _future_draw_issues(self.contract)):
+            raise ValidationError(draw_issues)
         if inference and fitted is None:
             raise ValueError(
                 "inference never fits: pass fitted= with the training task's state, "

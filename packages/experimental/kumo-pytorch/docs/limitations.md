@@ -278,8 +278,10 @@ another input exposing the same qualified field produces an
 `InputExposureWarning`, not automatic masking or rejection. Mask targets use
 reserved replacement IDs and deterministic sample/field coordinates.
 
-Candidate labels follow the candidate order you provide. Pair-specific
-attributes and candidate generation aren't implemented. DiskGraph doesn't
+Candidate labels follow the order of each candidate set. DiskGraph can draw
+distinct IDs from scored neighborhoods or related rows. Future action windows
+are training-only. Row draws use the same temporal paths and window support as
+DiskGraph event sequences. Pair-specific attributes are unsupported. DiskGraph doesn't
 support current events or dated values yet.
 
 ## Fitting, saved state, and batching

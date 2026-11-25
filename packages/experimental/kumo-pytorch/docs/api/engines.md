@@ -340,7 +340,7 @@ describe the engine's storage; they are not constructor selectors.
 **Parameters**
 
 - `num_threads`: native sampling threads.
-- `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
+- `random_seed`: seed for native uniform-neighbor sampling and candidate draws. Defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
 
@@ -362,7 +362,7 @@ Attach to an existing same-root Kumo snapshot by physical build identity.
 The original base stays in place. Tasks and caches use sibling managed paths
 under kumo.settings.scratch_dir(); no public work/output directories are needed.
 Cross-root imports and snapshots without a build ID are refused.
-`random_seed` controls native uniform-neighbor sampling, as on the
+`random_seed` controls native uniform-neighbor sampling and candidate draws, as on the
 dataset constructor: zero by default, or `None` for fresh randomness.
 
 #### `DiskGraphEngine.schema`

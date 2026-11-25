@@ -44,6 +44,8 @@ __all__ = [
     "DatedEntityValue",
     "Derived",
     "DerivedOperation",
+    "DrawNeighbors",
+    "DrawRows",
     "EntitySpec",
     "EntityValue",
     "EventSpec",
@@ -911,18 +913,98 @@ class ExternalTarget:
 
 
 @dataclass(frozen=True)
+class DrawRows:
+    """Draw distinct candidate IDs from rows reached from the request entity.
+
+    :param rows: historical rows or future action rows. A future window starts
+        at or after the anchor and excludes its lower bound.
+    :param column: column containing primary keys of the candidate entity table.
+    :param count: maximum number of distinct candidates to select.
+    :param weight: optional numeric column whose weights are summed per entity.
+        Without a weight, each distinct entity is equally likely.
+    """
+
+    rows: Rows
+    column: str
+    count: int = 1
+    weight: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rows, Rows):
+            raise TypeError("DrawRows requires a Rows declaration")
+        if not isinstance(self.column, str) or not self.column:
+            raise ValueError("draw column must be a nonempty name")
+        _check_draw(self.count, self.weight)
+
+    @property
+    def future(self) -> bool:
+        """Whether candidate selection reads beyond the request's anchor."""
+        window = self.rows.time
+        return window is not None and (window.stop is None or window.stop > 0)
+
+
+@dataclass(frozen=True)
+class DrawNeighbors:
+    """Draw distinct destinations from an already sampled query neighborhood.
+
+    :param neighborhood: name in the request entity's neighborhoods.
+    :param edges: hop relation names or scored walk outputs (``name.table``).
+    :param count: maximum number of distinct destinations to select.
+    :param weight: optional numeric edge attribute, summed per destination.
+        Without a weight, each distinct destination is equally likely.
+    :param ranks: optional zero-based half-open interval for ranked walk edges.
+    """
+
+    neighborhood: str
+    edges: tuple[str, ...]
+    count: int = 1
+    weight: str | None = None
+    ranks: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.neighborhood, str) or not self.neighborhood:
+            raise ValueError("draw neighborhood must be a nonempty name")
+        if isinstance(self.edges, str) or not self.edges:
+            raise ValueError("draw edges must be a nonempty sequence of edge names")
+        edges = tuple(self.edges)
+        if any(not isinstance(name, str) or not name for name in edges) or len(edges) != len(
+            set(edges)
+        ):
+            raise ValueError("draw edges must contain distinct nonempty names")
+        object.__setattr__(self, "edges", edges)
+        if self.ranks is not None:
+            ranks = tuple(self.ranks)
+            if (
+                len(ranks) != 2
+                or any(type(value) is not int for value in ranks)
+                or not 0 <= ranks[0] < ranks[1]
+            ):
+                raise ValueError("draw ranks must be an interval with 0 <= lo < hi")
+            object.__setattr__(self, "ranks", ranks)
+        _check_draw(self.count, self.weight)
+
+
+def _check_draw(count: int, weight: str | None) -> None:
+    if type(count) is not int or count <= 0:
+        raise ValueError("draw count must be a positive integer")
+    if weight is not None and (not isinstance(weight, str) or not weight):
+        raise ValueError("draw weight must be a nonempty name")
+
+
+@dataclass(frozen=True)
 class CandidateSetSpec:
     """Point-in-time values and optional generated targets for named candidates.
 
     Each candidate uses the primary request's time, and its values and targets
-    follow the same typed sampling rules as the entity's. Candidate generation
-    is the caller's. A candidate neighborhood is rooted at that candidate and
-    sampled at the parent request's cutoff.
+    follow the same typed sampling rules as the entity's. A candidate
+    neighborhood is rooted at that candidate and sampled at the parent
+    request's cutoff, including when a future action selects its ID.
 
-    :param neighborhoods: graphs sampled for each supplied candidate. Ordinary
+    :param neighborhoods: graphs sampled for each candidate. Ordinary
         hops to a timed table must use the default or explicit recent strategy.
-    :param entity: what a candidate *is*; candidates are supplied per request,
-        not selected here.
+    :param entity: the entity table of the candidates.
+    :param draw: how DiskGraph selects the candidates. Omit for candidates
+        supplied on a request or anchor table.
     """
 
     entity: EntitySpec
@@ -932,8 +1014,11 @@ class CandidateSetSpec:
     )
 
     neighborhoods: Mapping[str, NeighborhoodSpec] = dataclass_field(default_factory=dict)
+    draw: DrawRows | DrawNeighbors | None = None
 
     def __post_init__(self) -> None:
+        if self.draw is not None and not isinstance(self.draw, (DrawRows, DrawNeighbors)):
+            raise TypeError("candidate draw must be a DrawRows or DrawNeighbors declaration")
         if any(not str(name) for name in self.values):
             raise ValueError("candidate value names must be non-empty")
         if any(not str(name) for name in self.targets):
@@ -945,7 +1030,7 @@ class CandidateSetSpec:
         object.__setattr__(self, "targets", _mapping(self.targets))
 
     def sample_spec(self) -> SampleSpec:
-        """Use normal sample construction for each caller-supplied candidate."""
+        """Use normal sample construction for each candidate at the anchor."""
 
         return SampleSpec(
             entity=self.entity,
@@ -985,7 +1070,7 @@ class SampleSpec:
         whose lower bound is at or after zero; that bound is excluded, so a
         target never reads an event at the anchor itself. Declaring a target
         never inserts it into an input.
-    :param candidate_sets: how to build the candidates a request supplies.
+    :param candidate_sets: how to select and build candidates for a request.
     """
 
     entity: EntitySpec

@@ -40,7 +40,7 @@ see `DataLoaderSpec.requires_anchor_time`.
 - `current_events`: events kept apart from `events` so an objective can distinguish the event being predicted from its history. Each requires `TimeWindow(column=..., start=-1, stop=0)` and `limit=1`, selecting the event at the anchor's stored second; a historical window ending at zero still includes that event too.
 - `neighborhoods`: named graph neighborhoods around the entity.
 - `targets`: labels computed from future rows. Labels already known to the caller arrive on the request instead and are declared here with `ExternalTarget`. A computed target needs an explicit future window whose lower bound is at or after zero; that bound is excluded, so a target never reads an event at the anchor itself. Declaring a target never inserts it into an input.
-- `candidate_sets`: how to build the candidates a request supplies.
+- `candidate_sets`: how to select and build candidates for a request.
 
 ### `EntitySpec`
 
@@ -458,20 +458,22 @@ class CandidateSetSpec(
     values: Mapping[str, EntityValue] = {},
     targets: Mapping[str, Aggregate | Compare | RowTarget | ExternalTarget] = {},
     neighborhoods: Mapping[str, NeighborhoodSpec] = {},
+    draw: DrawRows | DrawNeighbors | None = None,
 )
 ```
 
 Point-in-time values and optional generated targets for named candidates.
 
 Each candidate uses the primary request's time, and its values and targets
-follow the same typed sampling rules as the entity's. Candidate generation
-is the caller's. A candidate neighborhood is rooted at that candidate and
-sampled at the parent request's cutoff.
+follow the same typed sampling rules as the entity's. A candidate
+neighborhood is rooted at that candidate and sampled at the parent
+request's cutoff, including when a future action selects its ID.
 
 **Parameters**
 
-- `neighborhoods`: graphs sampled for each supplied candidate. Ordinary hops to a timed table must use the default or explicit recent strategy.
-- `entity`: what a candidate *is*; candidates are supplied per request, not selected here.
+- `neighborhoods`: graphs sampled for each candidate. Ordinary hops to a timed table must use the default or explicit recent strategy.
+- `entity`: the entity table of the candidates.
+- `draw`: how DiskGraph selects the candidates. Omit for candidates supplied on a request or anchor table.
 
 #### `CandidateSetSpec.sample_spec`
 
@@ -479,7 +481,54 @@ sampled at the parent request's cutoff.
 CandidateSetSpec.sample_spec() -> SampleSpec
 ```
 
-Use normal sample construction for each caller-supplied candidate.
+Use normal sample construction for each candidate at the anchor.
+
+### `DrawRows`
+
+*class* · `kumo.pytorch.api.DrawRows`
+
+```python
+class DrawRows(rows: Rows, column: str, count: int = 1, weight: str | None = None)
+```
+
+Draw distinct candidate IDs from rows reached from the request entity.
+
+**Parameters**
+
+- `rows`: historical rows or future action rows. A future window starts at or after the anchor and excludes its lower bound.
+- `column`: column containing primary keys of the candidate entity table.
+- `count`: maximum number of distinct candidates to select.
+- `weight`: optional numeric column whose weights are summed per entity. Without a weight, each distinct entity is equally likely.
+
+#### `DrawRows.future`
+
+*property*
+
+Whether candidate selection reads beyond the request's anchor.
+
+### `DrawNeighbors`
+
+*class* · `kumo.pytorch.api.DrawNeighbors`
+
+```python
+class DrawNeighbors(
+    neighborhood: str,
+    edges: tuple[str, ...],
+    count: int = 1,
+    weight: str | None = None,
+    ranks: tuple[int, int] | None = None,
+)
+```
+
+Draw distinct destinations from an already sampled query neighborhood.
+
+**Parameters**
+
+- `neighborhood`: name in the request entity's neighborhoods.
+- `edges`: hop relation names or scored walk outputs (`name.table`).
+- `count`: maximum number of distinct destinations to select.
+- `weight`: optional numeric edge attribute, summed per destination. Without a weight, each distinct destination is equally likely.
+- `ranks`: optional zero-based half-open interval for ranked walk edges.
 
 ### `NeighborhoodSpec`
 
