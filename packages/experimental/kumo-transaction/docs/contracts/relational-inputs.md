@@ -37,6 +37,13 @@ visible root and configured cutoff, generate them from a label table's predictio
 timestamps, or replay an explicit anchor table. Repeated roots are independent
 samples. An unavailable root is an error for explicit anchors.
 
+The relational recipe runner binds checkpoint identity to the complete ordered
+anchor table, including prediction rows. Checkpoint reuse requires that same
+table. Custom prediction anchors are supported only in a new run, which fits
+again; loading trained weights against a different prediction-anchor table is
+not supported by this runner. Schema, ordered feature allowlists and encoder
+identity are checked independently and remain required.
+
 Tables with `role="labels"` are excluded from input projections, including in
 pretraining without a task label configuration. Task-table binary labels are
 **entity-level** labels at the anchor cutoff. They

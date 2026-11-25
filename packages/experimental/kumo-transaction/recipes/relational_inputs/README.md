@@ -49,7 +49,11 @@ Return `AdapterResult(relational=RelationalDataset(...))` from an adapter select
 by `data.adapter`. Declare tables, composite keys, explicit clocks, feature
 allowlists, FK roles and label-only tables once. Configure `data.relational.root`,
 `history_paths`, and either label timestamps or cutoff-generated anchors. A
-Parquet `anchors` table is optional for exact replay and custom predictions.
+Parquet `anchors` table is optional for exact replay and custom predictions in a
+new run. Checkpoint reuse requires the identical complete anchor table, including
+prediction rows: its digest is part of the recorded experiment identity. Changing
+anchors requires a new run and fits the model again; this reference runner does
+not support reusing trained weights with a different prediction-anchor table.
 See the [input contract](../../docs/contracts/relational-inputs.md) and
 [synthetic adapter](../../src/tfm/data/adapters/synthetic_relational.py).
 
