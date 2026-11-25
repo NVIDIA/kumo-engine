@@ -117,9 +117,7 @@ def sampled_plan(tmp_path):
         tables={name: api.Parquet(str(paths[name])) for name in ("people", "events")}
     )
     anchors = api.AnchorTable(api.Parquet(str(paths["anchors"])), "entity", "cutoff", split="split")
-    with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
-    ) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
         yield plan, anchors
 
 
@@ -259,7 +257,7 @@ def test_sampled_rejects_requests_and_deduplication(sampled_plan):
     with plan.materialize(anchors, fit_split="train") as task:
         requests = task._anchors.fetch(api.ALL_ANCHORS, [0, 1])
         with pytest.raises(ValueError, match="native AnchorTable"):
-            list(task.batches(requests, output_format="model"))
+            list(task.request_batches(requests, output_format="model"))
         with pytest.raises(ValueError, match="preserves edge occurrences"):
             list(task.batches(output_format="columnar", deduplicate_edges=True))
 
@@ -496,14 +494,16 @@ def test_sampled_enforces_entity_availability(
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(contract, plan.dataset, plan.engine) as bound:
         with bound.materialize(anchors) as task:
-            arguments = {}
             if requests:
-                arguments["requests"] = task._anchors.fetch(api.ALL_ANCHORS, [0])
+                explicit = task._anchors.fetch(api.ALL_ANCHORS, [0])
+                batches = task.request_batches(explicit, output_format=output_format)
+            else:
+                batches = task.batches(output_format=output_format)
             if cutoff <= 0:
                 with pytest.raises(ValueError, match="did not exist"):
-                    next(task.batches(output_format=output_format, **arguments))
+                    next(batches)
             else:
-                assert next(task.batches(output_format=output_format, **arguments)).inputs["graph"]
+                assert next(batches).inputs["graph"]
 
 
 def _refit_anchors(tmp_path, counts):
@@ -746,7 +746,7 @@ def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):
     with api.prepare(
         contract,
         api.Dataset({"people": api.Parquet(str(path))}),
-        api.DiskGraphEngine(index=tmp_path / "index", num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         with plan.materialize(
             api.AnchorTable(api.Parquet(str(anchor_path)), "entity", "cutoff")
@@ -802,7 +802,7 @@ def test_native_graph_inspectable_keeps_raw_string_inputs_and_targets(
     with api.prepare(
         contract,
         original.dataset,
-        api.DiskGraphEngine(index=tmp_path / f"raw-{topology}", num_threads=1),
+        api.DiskGraphEngine(num_threads=1),
     ) as plan:
         with plan.materialize(anchors, fit_split="train") as task:
             batches = list(task.batches(split="train", output_format="inspectable"))

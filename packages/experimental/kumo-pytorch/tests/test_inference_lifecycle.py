@@ -85,9 +85,12 @@ def assert_same_batches(actual: list[api.Batch], expected: list[api.Batch]) -> N
 def _dataset(engine_name: str, rows: Rows, directory: Path) -> tuple[api.Dataset, api.Engine]:
     if engine_name == "diskgraph":
         pytest.importorskip("diskgraph")
+        import kumo.settings
+
+        kumo.settings.configure(scratch_dir=directory)
         directory.mkdir(parents=True, exist_ok=True)
         dataset = _write_parquet(rows, directory / "parquet")
-        engine = api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+        engine = api.DiskGraphEngine(num_threads=1, num_shards=1)
         return dataset, engine
     return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()}), (
         api.InMemoryEngine()
@@ -98,7 +101,7 @@ def _train(contract: api.DataLoaderSpec, dataset: api.Dataset, engine: api.Engin
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             task.to_artifact().save(out)
-            batches = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            batches = list(task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH))
             return task.fingerprints, task.fitted_state.to_dict(), batches
 
 
@@ -115,7 +118,9 @@ def _infer(
             _requests(), fitted=artifact.fitted_state, inference=inference
         ) as task:
             return list(
-                task.batches(batch_size=1, seed=SEED, epoch=EPOCH, output_format=output_format)
+                task.request_batches(
+                    _requests(), batch_size=1, seed=SEED, epoch=EPOCH, output_format=output_format
+                )
             )
 
 
@@ -126,20 +131,21 @@ def _fresh_process(
 
     artifact = api.Artifact.load(artifact_dir)
     if engine_name == "diskgraph":
+        import kumo.settings
+
+        kumo.settings.configure(scratch_dir=directory)
         dataset = api.Dataset(
             {
                 table: api.Parquet(str(directory / "parquet" / f"{table}.parquet"))
                 for table in _fixture_rows()
             }
         )
-        engine: api.Engine = api.DiskGraphEngine(
-            index=directory / "index", num_threads=1, num_shards=1
-        )
+        engine: api.Engine = api.DiskGraphEngine(num_threads=1, num_shards=1)
     else:
         dataset, engine = _dataset(engine_name, _fixture_rows(), directory)
     with api.prepare(artifact.contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fitted=artifact.fitted_state) as task:
-            training = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            training = list(task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH))
             fingerprints = dict(task.fingerprints)
     inference = _infer(artifact, dataset, engine)
     torch.save(
@@ -172,7 +178,12 @@ def test_a_fresh_process_rebuilds_the_same_batches(
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
     child = torch.load(out, weights_only=False)
 
-    assert child["fingerprints"] == dict(fingerprints)
+    expected_fingerprints = dict(fingerprints)
+    if engine_name == "diskgraph":
+        # A fresh ingest has distinct physical dataset and task identities.
+        for key in ("dataset", "task"):
+            assert child["fingerprints"].pop(key) != expected_fingerprints.pop(key)
+    assert child["fingerprints"] == expected_fingerprints
     assert child["fitted"] == json.loads(json.dumps(fitted))
     assert_same_batches(child["training"], training)
     assert_same_batches(child["inference"], inference)
@@ -188,7 +199,7 @@ def test_every_fitted_state_kind_survives_the_artifact(tmp_path: Path, name: str
     with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
             task.to_artifact().save(tmp_path)
-            expected = list(task.batches(batch_size=2, seed=SEED))
+            expected = list(task.request_batches(requests, batch_size=2, seed=SEED))
             state = task.fitted_state.to_dict()
             bound = task.bound_contract()
     assert sorted(path.name for path in tmp_path.iterdir()) == [
@@ -202,9 +213,14 @@ def test_every_fitted_state_kind_survives_the_artifact(tmp_path: Path, name: str
     assert artifact.bound_contract == bound
     with api.prepare(artifact.contract, dataset, api.InMemoryEngine()) as plan:
         with plan.materialize(requests, fitted=artifact.fitted_state) as task:
-            assert_same_batches(list(task.batches(batch_size=2, seed=SEED)), expected)
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, seed=SEED)), expected
+            )
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-            assert all(not batch.targets for batch in task.batches(batch_size=2, seed=SEED))
+            assert all(
+                not batch.targets
+                for batch in task.request_batches(requests, batch_size=2, seed=SEED)
+            )
 
 
 def _labelled_contract() -> tuple[api.DataLoaderSpec, Rows]:
@@ -266,7 +282,7 @@ def test_a_reloaded_label_vocabulary_is_the_trained_one(tmp_path: Path) -> None:
             _labelled("bronze", "bronze", "silver"), fitted=artifact.fitted_state
         ) as task:
             assert _tier_ids(task) == trained
-            batch = next(task.batches())
+            batch = next(task.request_batches(_labelled("bronze", "bronze", "silver")))
     unknown = api.Vocabulary().unknown_id
     assert batch.targets["tier"]["values"].tolist() == [unknown, unknown, trained["silver"]]
 
@@ -281,7 +297,9 @@ def test_inference_emits_no_targets_and_keys_every_output(tmp_path: Path, engine
         with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
             assert task.inference
             assert task.output_schema["targets"] == {}
-            inference = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            inference = list(
+                task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH)
+            )
     assert all(training_batch.targets for training_batch in training)
     for batch, training_batch in zip(inference, training, strict=True):
         assert batch.targets == {}
@@ -302,7 +320,7 @@ def test_inference_turns_masking_off(tmp_path: Path, engine_name: str) -> None:
         with plan.materialize(
             _requests(), fitted=artifact.fitted_state.inputs, fit_split="train"
         ) as task:
-            plain = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            plain = list(task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH))
 
     corrupted = [batch.targets["masked_values"]["corruption"].any() for batch in training]
     assert any(corrupted)
@@ -367,7 +385,7 @@ def test_inference_never_asks_the_engine_for_a_target(tmp_path: Path) -> None:
 
         source.build = spy
         with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
-            list(task.batches(batch_size=2))
+            list(task.request_batches(_requests(), batch_size=2))
     # caller-supplied labels read no rows, so only their declarations remain
     assert built and all(
         isinstance(target, api.ExternalTarget) for spec in built for target in spec.targets.values()
@@ -399,12 +417,14 @@ def test_inference_scores_every_anchor_even_when_training_drops_the_last_batch(
     requests = list(case.requests)
     with api.prepare(contract, _golden_dataset(case), api.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
-            assert sum(batch.batch_size for batch in task.batches()) == 2
+            assert sum(batch.batch_size for batch in task.request_batches(requests)) == 2
             task.to_artifact().save(tmp_path)
     artifact = api.Artifact.load(tmp_path)
     with api.prepare(artifact.contract, _golden_dataset(case), api.InMemoryEngine()) as plan:
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-            scored = [i for batch in task.batches() for i in batch.metadata["sample_ids"]]
+            scored = [
+                i for batch in task.request_batches(requests) for i in batch.metadata["sample_ids"]
+            ]
     assert scored == [request.sample_id for request in requests]
     served = api.ServingAssembler(artifact).assemble(case.tables, requests, batch_size=2)
     assert [i for batch in served for i in batch.metadata["sample_ids"]] == scored
@@ -457,7 +477,7 @@ def test_serving_equals_batch_inference(tmp_path: Path, contract_name: str) -> N
     artifact = api.Artifact.load(tmp_path / "artifact")
     with api.prepare(artifact.contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
-            expected = list(task.batches(batch_size=1, seed=SEED))
+            expected = list(task.request_batches(_requests(), batch_size=1, seed=SEED))
 
     # one request per call, each with only its own user's rows; batches compare by sample ID
     # because length bucketing orders the batch path
@@ -521,7 +541,9 @@ def test_a_customer_without_history_is_scored_on_every_path(
         dataset, engine = _dataset(engine_name, rows, tmp_path / f"{engine_name}-{output_format}")
         with api.prepare(artifact.contract, dataset, engine) as plan:
             with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-                batches = task.batches(batch_size=1, seed=SEED, output_format=output_format)
+                batches = task.request_batches(
+                    requests, batch_size=1, seed=SEED, output_format=output_format
+                )
                 return {batch.metadata["sample_ids"][0]: batch for batch in batches}
 
     reference = infer("in_memory")
@@ -750,7 +772,7 @@ def test_golden_artifact_case_reloads_in_a_fresh_process(tmp_path: Path) -> None
         f"artifact = api.Artifact.load(Path({str(tmp_path / 'artifact')!r})); "
         "plan = api.prepare(artifact.contract, _golden_dataset(case), api.InMemoryEngine()); "
         "task = plan.materialize(list(case.requests), fitted=artifact.fitted_state); "
-        "batches = list(task.batches(batch_size=8)); "
+        "batches = list(task.request_batches(case.requests, batch_size=8)); "
         "print(json.dumps(_golden_values(batches, artifact.fitted_state)))"
     )
     result = subprocess.run(
@@ -779,7 +801,7 @@ def test_golden_inference_case_answers_in_inference_mode(tmp_path: Path) -> None
     artifact = api.Artifact.load(tmp_path)
     with api.prepare(artifact.contract, _golden_dataset(case), api.InMemoryEngine()) as plan:
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-            batches = list(task.batches(batch_size=8))
+            batches = list(task.request_batches(requests, batch_size=8))
     assert all(not batch.targets for batch in batches)
     assert _golden_values(batches, artifact.fitted_state) == _expected(case)
 
@@ -922,6 +944,9 @@ def _label_contract(
 
 def _label_parquet(directory: Path) -> tuple[api.Dataset, api.DiskGraphEngine]:
     pytest.importorskip("diskgraph")
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=directory)
     directory.mkdir(parents=True)
     tables = {table.name: table for table in LABEL_SCHEMA.tables}
     for name, rows in LABEL_ROWS.items():
@@ -929,14 +954,14 @@ def _label_parquet(directory: Path) -> tuple[api.Dataset, api.DiskGraphEngine]:
     dataset = api.Dataset(
         {name: api.Parquet(str(directory / f"{name}.parquet")) for name in LABEL_ROWS}
     )
-    return dataset, api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+    return dataset, api.DiskGraphEngine(num_threads=1, num_shards=1)
 
 
 def _trained_label_artifact(contract: api.DataLoaderSpec, out: Path) -> api.Artifact:
     memory = api.Dataset({name: api.InMemoryRows(rows) for name, rows in LABEL_ROWS.items()})
     with api.prepare(contract, memory, api.InMemoryEngine()) as plan:
         with plan.materialize(list(LABEL_REQUESTS)) as task:
-            assert next(task.batches(batch_size=8)).targets["label"]
+            assert next(task.request_batches(LABEL_REQUESTS, batch_size=8)).targets["label"]
             task.to_artifact().save(out)
     return api.Artifact.load(out)
 
@@ -950,7 +975,7 @@ def test_diskgraph_scores_a_contract_whose_label_it_cannot_build(
     memory = api.Dataset({name: api.InMemoryRows(rows) for name, rows in LABEL_ROWS.items()})
     with api.prepare(artifact.contract, memory, api.InMemoryEngine(), inference=True) as plan:
         with plan.materialize(list(LABEL_REQUESTS), fitted=artifact.fitted_state) as task:
-            expected = list(task.batches(batch_size=8))
+            expected = list(task.request_batches(LABEL_REQUESTS, batch_size=8))
     dataset, engine = _label_parquet(tmp_path / "diskgraph")
 
     # training still refuses at check(), before any data is opened
@@ -963,7 +988,9 @@ def test_diskgraph_scores_a_contract_whose_label_it_cannot_build(
         with plan.materialize(list(LABEL_REQUESTS), fitted=artifact.fitted_state) as task:
             assert task.inference
             for output_format in ("inspectable", "model"):
-                actual = list(task.batches(batch_size=8, output_format=output_format))
+                actual = list(
+                    task.request_batches(LABEL_REQUESTS, batch_size=8, output_format=output_format)
+                )
                 assert_same_batches(actual, expected)
 
 
@@ -998,7 +1025,7 @@ def test_an_inference_plan_materializes_only_inference(tmp_path: Path) -> None:
         with plan.materialize(anchors, fitted=artifact.fitted_state) as task:
             from_table = list(task.batches(batch_size=8))
         with plan.materialize(list(LABEL_REQUESTS), fitted=artifact.fitted_state) as task:
-            from_requests = list(task.batches(batch_size=8))
+            from_requests = list(task.request_batches(LABEL_REQUESTS, batch_size=8))
     assert [batch.metadata["sample_ids"] for batch in from_table] == [
         tuple(request.sample_id for request in LABEL_REQUESTS)
     ]
@@ -1042,7 +1069,9 @@ def _infer_with(
 ) -> tuple[list[api.Batch], api.Task]:
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fitted=fitted, inference=True) as task:
-            return list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH)), task
+            return list(
+                task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH)
+            ), task
 
 
 @pytest.mark.parametrize("engine_name", ENGINES)
@@ -1101,7 +1130,7 @@ def test_inference_from_the_input_half_reads_no_target_row(tmp_path: Path) -> No
         with plan.materialize(
             _requests(), fitted=artifact.fitted_state.inputs, inference=True
         ) as task:
-            list(task.batches(batch_size=2))
+            list(task.request_batches(_requests(), batch_size=2))
     assert built and all(
         isinstance(target, api.ExternalTarget) for spec in built for target in spec.targets.values()
     )

@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+seed: 42
+
+# blueprint_v1's model, schedule, and probe on a within-era TabFormer split.
+#
+# TabFormer's fraud comes in campaigns; from 2017 nearly every fraud is in Rome,
+# so v1's cut (train to 2017-05-13) tests inside a campaign training never saw.
+# This cut keeps train (to 2014), validation (2015), and test (2016) inside the
+# online-fraud era and drops later events. Everything else is config.yaml's.
+#
+#   uv run python benchmarks/tabformer_era_split.py --root ~/data/TabFormer --out ~/data/TabFormer_era
+#   export TFM_TABFORMER_ROOT=~/data/TabFormer_era
+#   uv run tfm train --config benchmarks/ablations/blueprint_v1_era.yaml --device cuda \
+#     --run-dir outputs/blueprint_v1_era/seed_42
+
+data:
+  adapter: tabformer
+  path: null
+  split_protocol: precomputed
+  observation_window: 36500d
+  n_entities: 2000
+  max_entities: 2000
+  # 11 fields and a <sep> per event, plus <bos> and <eos>: 12 * 128 + 1.
+  sequence_length: 128
+  max_tokens: 1537
+  events_per_entity: 128
+  # Pretraining rows are wider than probe rows: 12 * 341 + 1 = 4093 tokens.
+  pretrain_windows:
+    events: 341
+    max_tokens: 4096
+  # `precomputed` takes its cutoffs from the era partitions (train ends
+  # 2014-12-31); only label_delay is read from temporal_split.
+  temporal_split:
+    train_end: "2015-01-01T00:00:00Z"
+    validation_end: "2016-01-01T00:00:00Z"
+    label_delay: 0h
+
+features:
+  tokenizer: transaction_field_tokenizer
+  # v1's fields without CUST, which is constant within a user's history.
+  fields: [AMT, MERCH, CAT, MCC, HOUR, DOW, MONTH, CARD, CHIP, ZIP3, STATE]
+
+model:
+  backbone: huggingface
+  huggingface:
+    pretrained_path: null
+    num_key_value_heads: 2
+    rope_theta: 500000.0
+    tie_word_embeddings: false
+  composition:
+    granularity:
+      type: flat
+      decoder:
+        depth: 8
+        mask: causal
+        hidden_size: 512
+        num_heads: 8
+        dropout: 0.0
+        max_seq_len: 4096
+        ffn_size: 1408
+    position: rope
+    attention: sdpa
+    objective: next_event
+    readout: last_token
+    heads:
+      fraud: binary
+
+training:
+  max_steps: 3000
+  batch_size: 16
+  learning_rate: 0.0002
+  precision: bf16
+  backend: eager
+  packing: false
+  shuffle: true
+  optimizer:
+    betas: [0.9, 0.95]
+    weight_decay: 0.077
+    lr_schedule: cosine
+    warmup_steps: 500
+    min_learning_rate: 0.0000065
+    schedule_steps: 10000
+
+fraud_task:
+  head: logistic_regression
+  use_raw_features: true
+  use_tfm_embeddings: true
+
+evaluation:
+  precision_at_k: 50
+  history_window:
+    enabled: true
+    # Every training-side fraud (about 17,000) with up to 5 negatives each; the
+    # evaluation side scores every test-period row of the evaluation users, at
+    # TabFormer's natural fraud rate (about 0.1%).
+    max_rows: null
+    train_negatives_per_positive: 5
+  inference_batch_size: 32
+  inference_precision: bf16
+  tabular_baselines:
+    enabled: true
+    # One setting for every arm, so arms differ only in their features: the
+    # median of seed 42's 30-trial searches on the five history-window arms,
+    # which saw training rows only.
+    xgboost_trials: 0
+    xgboost_params:
+      max_depth: 7
+      learning_rate: 0.02
+      min_child_weight: 2.8
+      subsample: 0.87
+      colsample_bytree: 0.76
+      reg_lambda: 0.43
+      reg_alpha: 0.09
+      scale_pos_weight: 1.0
+    n_jobs: 16
+    device: cuda
+    exclude_keys: [user]
+
+runtime:
+  device: auto

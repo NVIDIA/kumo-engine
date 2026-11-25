@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Stage 4: context. 512 events per window, for pretraining and for the probe
+# histories, against stage 3's 128. Batch 32 keeps the events per step (and
+# the step count) equal to stage 3's 128 x 128, so the comparison is at the
+# same token budget. The vocabulary is fit on 512-event sequences, so this
+# needs its own cache.
+#
+#   uv run --all-extras tfm cache-tokens --config <base with the set below> --workers 6
+#   export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
+#   uv run --all-extras python benchmarks/proxy_sweep.py \
+#     --spec benchmarks/sweeps/blueprint_v2_stage4_context.yaml \
+#     --run-root outputs/proxy/stage4 --summary outputs/proxy/stage4.json
+base: benchmarks/ablations/blueprint_v2_lab.yaml
+set:
+  data.token_cache: ~/data/tfm_cache/synth_100k_gen2_m31_seed0_lab_hkey_512
+  data.sequence_length: 512
+  data.events_per_entity: 512
+  data.pretrain_windows.events: 512
+  features.categorical_keys: [mcc, app_version]
+  features.hashed_keys: [merchant, device_id, counterparty]
+  features.hash_buckets: 4096
+  training.batch_size: 32
+  training.max_steps: 1500
+  training.learning_rate: 0.001
+  training.optimizer.warmup_steps: 75
+  training.optimizer.max_grad_norm: 1.0
+  training.optimizer.name: muon
+  training.optimizer.muon.learning_rate: 0.01
+tasks: [history_window, fraud, churn_6m]
+xgboost_trials: 8
+variants:
+  - name: random_init_512
+    train: false
+  - name: causal_512

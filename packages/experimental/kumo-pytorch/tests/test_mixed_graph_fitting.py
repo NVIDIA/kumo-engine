@@ -106,7 +106,7 @@ def _contract(schema, shared, target):
 def test_mixed_fitting_keeps_columnar_values_and_matches_records(
     history_data, tmp_path, monkeypatch, anchor_table, shared, target
 ):
-    schema, dataset, _memory, index, original = history_data
+    schema, dataset, _memory, original = history_data
     contract = _contract(schema, shared, target)
     requests = [
         replace(request, targets=(api.TargetValue("label", str(i % 2)),))
@@ -139,18 +139,21 @@ def test_mixed_fitting_keeps_columnar_values_and_matches_records(
             split="split",
             targets={"label": "label"},
         )
+
+    def deliver(task, output_format):
+        if anchor_table:
+            return list(task.batches(batch_size=2, output_format=output_format))
+        return list(task.request_batches(requests, batch_size=2, output_format=output_format))
+
     # Exercise chunk boundaries without manufacturing a large fitting population.
     monkeypatch.setattr(assembly, "_FIT_CHUNK", 2)
-    with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=1)) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         with monkeypatch.context() as previous:
             previous.setattr(DiskGraphSource, "build_model", None)
             reference = plan.materialize(anchors, fit_split="train")
         with reference:
             expected_state = reference.fitted_state
-            expected = {
-                fmt: list(reference.batches(batch_size=2, output_format=fmt))
-                for fmt in ("model", "inspectable")
-            }
+            expected = {fmt: deliver(reference, fmt) for fmt in ("model", "inspectable")}
 
         calls = []
         graph_calls = []
@@ -181,7 +184,7 @@ def test_mixed_fitting_keeps_columnar_values_and_matches_records(
             assert actual.fitted_state == expected_state
             assert actual.fitted_state.fingerprint == expected_state.fingerprint
             for fmt, expected_batches in expected.items():
-                batches = list(actual.batches(batch_size=2, output_format=fmt))
+                batches = deliver(actual, fmt)
                 assert len(batches) == len(expected_batches)
                 for batch, expected_batch in zip(batches, expected_batches, strict=True):
                     assert_equal(batch.inputs, expected_batch.inputs)

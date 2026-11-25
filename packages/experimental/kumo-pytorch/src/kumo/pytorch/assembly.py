@@ -1257,8 +1257,9 @@ def _mask_tokens(
     history_position = np.arange(rows.size) - np.repeat(
         rows.boundaries[:-1], np.diff(rows.boundaries)
     )
+    # The masking hash uses the low 32 bits. Reduce before packing unsigned IDs into int64.
     entity_keys = [
-        int(value)
+        int(value) & 0xFFFF_FFFF
         if isinstance(value, (int, bool))
         else int.from_bytes(hashlib.sha256(str(value).encode()).digest()[:4], "big")
         for value in entity_ids

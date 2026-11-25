@@ -73,7 +73,9 @@ def _batches(
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(requests, fitted=fitted, inference=inference) as task:
             return list(
-                task.batches(batch_size=1, seed=SEED, epoch=EPOCH, output_format=output_format)
+                task.request_batches(
+                    requests, batch_size=1, seed=SEED, epoch=EPOCH, output_format=output_format
+                )
             )
 
 
@@ -107,7 +109,7 @@ def test_every_fitted_state_kind_pickles_to_the_same_batches(tmp_path: Path, nam
     with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
             task.to_artifact().save(tmp_path)
-            expected = list(task.batches(batch_size=2, seed=SEED))
+            expected = list(task.request_batches(requests, batch_size=2, seed=SEED))
             fitted = _round_trip(task.fitted_state)
             bound = task.bound_contract()
     assert fitted == task.fitted_state
@@ -131,9 +133,13 @@ def test_every_fitted_state_kind_pickles_to_the_same_batches(tmp_path: Path, nam
     )
     with api.prepare(copy.contract, dataset, api.InMemoryEngine()) as plan:
         with plan.materialize(requests, fitted=copy.fitted_state) as task:
-            assert_same_batches(list(task.batches(batch_size=2, seed=SEED)), expected)
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, seed=SEED)), expected
+            )
         with plan.materialize(requests, fitted=fitted) as task:
-            assert_same_batches(list(task.batches(batch_size=2, seed=SEED)), expected)
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, seed=SEED)), expected
+            )
 
 
 def test_state_used_by_diskgraph_pickles_without_its_engine(tmp_path: Path) -> None:
@@ -142,7 +148,9 @@ def test_state_used_by_diskgraph_pickles_without_its_engine(tmp_path: Path) -> N
     dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
-            expected = list(task.batches(batch_size=1, seed=SEED, output_format="model"))
+            expected = list(
+                task.request_batches(_requests(), batch_size=1, seed=SEED, output_format="model")
+            )
             fitted = _round_trip(task.fitted_state)
     assert fitted == task.fitted_state
     assert_same_batches(
@@ -162,6 +170,9 @@ class _ShardedInference(IterableDataset[api.Batch]):
         requests: list[api.SampleRequest],
         output_format: str,
     ) -> None:
+        import kumo.settings
+
+        self.scratch_dir = kumo.settings.scratch_dir()
         self.artifact = artifact
         self.dataset = dataset
         self.engine = engine
@@ -169,6 +180,9 @@ class _ShardedInference(IterableDataset[api.Batch]):
         self.output_format = output_format
 
     def __iter__(self) -> Iterator[api.Batch]:
+        import kumo.settings
+
+        kumo.settings.configure(scratch_dir=self.scratch_dir)
         worker = get_worker_info()
         assert worker is not None, "built for DataLoader workers"
         yield from _batches(
@@ -267,7 +281,9 @@ def test_an_artifact_input_half_is_reused_under_other_targets(
         with plan.materialize(_requests(), fit_split="train") as task:
             artifact = task.to_artifact()
             artifact.save(tmp_path / "artifact")
-            pretrained = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            pretrained = list(
+                task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH)
+            )
             pretrained_state = task.fitted_state
 
     loaded = api.Artifact.load(tmp_path / "artifact")
@@ -276,7 +292,7 @@ def test_an_artifact_input_half_is_reused_under_other_targets(
     dataset, engine = _dataset(engine_name, _fixture_rows(), tmp_path / "finetune")
     with api.prepare(finetune, dataset, engine) as plan:
         with plan.materialize(_requests(), fitted=inputs, fit_split="train") as task:
-            tuned = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            tuned = list(task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH))
             state = task.fitted_state
     assert state.inputs == inputs == pretrained_state.inputs
     assert sorted(state["targets"]) == ["future_spend"]
@@ -297,7 +313,7 @@ def test_an_artifact_with_inconsistent_fitted_state_is_refused(tmp_path: Path) -
             task.to_artifact().save(tmp_path / "artifact")
 
     def changed(name: str, text: str) -> Path:
-        directory = tmp_path / "changed"
+        directory = tmp_path / "indexes" / "changed"
         shutil.rmtree(directory, ignore_errors=True)
         shutil.copytree(tmp_path / "artifact", directory)
         (directory / name).write_text(text)
@@ -433,7 +449,7 @@ def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             task.to_artifact().save(tmp_path / "artifact")
-            expected = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            expected = list(task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH))
             manifest = dict(task.manifest)
             bound = task.bound_contract()
         written = json.loads((tmp_path / "artifact" / "fitted-state.json").read_text())
@@ -441,7 +457,10 @@ def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
         loaded = api.Artifact.load(tmp_path / "artifact").fitted_state
         with plan.materialize(_requests(), fitted=loaded) as task:
             assert task.manifest == manifest
-            assert_same_batches(list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH)), expected)
+            assert_same_batches(
+                list(task.request_batches(_requests(), batch_size=1, seed=SEED, epoch=EPOCH)),
+                expected,
+            )
 
     if written["targets"]:
         path = tmp_path / "artifact" / "fitted-state.json"

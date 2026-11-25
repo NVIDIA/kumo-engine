@@ -37,6 +37,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `text` | Encoding for free-text columns, such as descriptions or reviews, with GloVe 6B 50d word vectors |
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
+| `pytorch` | (Experimental) `kumo.pytorch`, for training your own PyTorch models on your tables |
 
 Kumo Engine defaults to CPU for training and model loading on native Windows; use WSL2 for NVIDIA GPU workloads. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 
@@ -124,6 +125,10 @@ if explanations.availability["gradient"].available:
 ```
 
 See the [training and batch prediction explanations guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md) for plots, column cohorts, sampled graphs, and opt-in prediction explanations.
+
+### Train Your Own PyTorch Model (Experimental)
+
+`kumo.pytorch` builds point-in-time-correct batches from your tables, using the same DiskGraph engine, for a PyTorch model you write yourself. Install it with `pip install "kumo-engine[pytorch]"`. Its API can change in any release without deprecation warnings. See the [kumo-pytorch README](https://github.com/NVIDIA/kumo-engine/blob/main/packages/experimental/kumo-pytorch/README.md).
 
 ### Run in Production
 

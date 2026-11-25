@@ -4,15 +4,27 @@
 
 """Derived encoder caches preserve values, errors, and portable fitted state."""
 
+import importlib.util
 import pickle
 
 import pyarrow as pa
 import pytest
 import torch
 
-from kumo.pytorch.contract.batch import Vocabulary
+from kumo.pytorch.contract.batch import Text, Vocabulary
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.encoding import FittedSpace, fit_encoder
+
+
+def test_text_without_tokenizers_names_the_kumo_engine_extra(monkeypatch):
+    find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args: None if name == "tokenizers" else find_spec(name, *args),
+    )
+    with pytest.raises(ImportError, match=r'pip install "kumo-engine\[pytorch\]"'):
+        fit_encoder("review", Text(), DType("string"), ["good", "bad"])
 
 
 @pytest.mark.parametrize("physical", [pa.string(), pa.large_string()])
@@ -90,12 +102,16 @@ def test_diskgraph_rebuilds_runtime_lookups_from_portable_fitted_state(monkeypat
     ):
         with plan.materialize(requests) as task:
             written = task.fitted_state.to_dict()
-            expected = list(task.batches(batch_size=2, output_format="model"))
-            assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
+            expected = list(task.request_batches(requests, batch_size=2, output_format="model"))
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, output_format="model")), expected
+            )
             assert task.fitted_state.to_dict() == written
             fitted = pickle.loads(pickle.dumps(task.fitted_state))
         assert len(builds) == 1
         with plan.materialize(requests, fitted=fitted) as task:
-            assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, output_format="model")), expected
+            )
             assert task.fitted_state.to_dict() == written
         assert len(builds) == 2

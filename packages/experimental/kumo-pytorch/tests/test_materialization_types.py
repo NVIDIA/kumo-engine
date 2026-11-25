@@ -76,7 +76,7 @@ def test_a_later_file_cannot_change_the_declared_type(tmp_path):
         pa.table({"id": [1], "value": pa.array([1.5], type=pa.float64())}), tables / "one.parquet"
     )
     pq.write_table(pa.table({"id": [2], "value": ["not a number"]}), tables / "two.parquet")
-    index = tmp_path / "index"
+    engine = DiskGraphEngine()
     with pytest.raises(ValueError, match=r"rows.value.*two.parquet.*declared.*physical"):
         prepare(
             contract=_contract(DType(name="float64")),
@@ -85,9 +85,9 @@ def test_a_later_file_cannot_change_the_declared_type(tmp_path):
                     "rows": Parquet(path=str(tables)),
                 }
             ),
-            engine=DiskGraphEngine(index=index),
+            engine=engine,
         )
-    assert not index.exists()
+    assert not engine.index.exists()
 
 
 def test_declared_int64_ingests_mixed_integer_and_scale_zero_decimal_files(tmp_path):
@@ -109,11 +109,11 @@ def test_declared_int64_ingests_mixed_integer_and_scale_zero_decimal_files(tmp_p
             parts / f"{row}.parquet",
         )
     dataset = Dataset({"rows": Parquet(str(parts))})
-    engine = DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = DiskGraphEngine(num_threads=1)
     requests = tuple(SampleRequest(str(row), row, 0) for row in range(1, len(cases) + 1))
     with prepare(_contract(DType("int64")), dataset, engine) as plan:
         with plan.materialize(requests) as task:
-            batch = next(task.batches(batch_size=len(cases), shuffle=False))
+            batch = next(task.request_batches(requests, batch_size=len(cases), shuffle=False))
     field = batch.inputs["values"]["value"]
     assert field["values"].dtype == torch.int64
     assert field["values"].tolist() == [-128, -32768, 2147483647, minimum, maximum, 0]
@@ -130,14 +130,14 @@ def test_int64_ingest_rejects_scale_zero_decimal_overflow_in_a_later_file(tmp_pa
         pa.table({"id": [2], "value": pa.array([Decimal(value)], type=dtype)}),
         parts / "two.parquet",
     )
-    index = tmp_path / "index"
+    engine = DiskGraphEngine(num_threads=1)
     with pytest.raises(diskgraph.DiskgraphSourceValidationError, match=r"rows.*value.*64-bit"):
         prepare(
             _contract(DType("int64")),
             Dataset({"rows": Parquet(str(parts))}),
-            DiskGraphEngine(index=index, num_threads=1),
+            engine,
         )
-    assert not index.exists()
+    assert not engine.index.exists()
 
 
 @pytest.mark.parametrize(
@@ -156,7 +156,7 @@ def test_declared_int64_still_rejects_incompatible_physical_types(tmp_path, valu
         prepare(
             _contract(DType("int64")),
             Dataset({"rows": Parquet(str(path))}),
-            DiskGraphEngine(index=tmp_path / "index"),
+            DiskGraphEngine(),
         )
 
 
@@ -171,7 +171,7 @@ def test_untyped_all_null_source_is_not_guessed_from_a_declaration(tmp_path):
                     "rows": Parquet(path=str(source)),
                 }
             ),
-            engine=DiskGraphEngine(index=tmp_path / "index"),
+            engine=DiskGraphEngine(),
         )
 
 
@@ -184,18 +184,17 @@ def test_timestamp_physical_metadata_and_resolved_seconds_are_both_recorded(tmp_
         type=pa.timestamp("us", tz="UTC"),
     )
     pq.write_table(pa.table({"id": [1], "value": values}), source)
-    index = tmp_path / "index"
+    engine = DiskGraphEngine()
     contract = _contract(DType(name="timestamp", unit="s", timezone="UTC"))
     dataset = Dataset(tables={"rows": Parquet(path=str(source))})
-    with prepare(contract=contract, dataset=dataset, engine=DiskGraphEngine(index=index)) as plan:
-        task = plan.materialize(
-            anchors=(SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
-        )
-        batch = next(task.batches(batch_size=1))
+    with prepare(contract=contract, dataset=dataset, engine=engine) as plan:
+        requests = (SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
+        task = plan.materialize(requests)
+        batch = next(task.request_batches(requests, batch_size=1))
         assert batch.inputs["values"]["value"]["values"].to_pylist() == [
             dt.datetime(1970, 1, 1, tzinfo=dt.UTC),
         ]
-    manifest = json.loads((index / "index_manifest.json").read_text())
+    manifest = json.loads((engine.index / "index_manifest.json").read_text())
     assert manifest["source_types"]["rows"][str(source)]["value"] == "timestamp[us, tz=UTC]"
     assert manifest["column_types"]["rows"]["value"]["unit"] == "s"
     assert manifest["column_types"]["rows"]["value"]["timezone"] == "UTC"
@@ -212,7 +211,7 @@ def test_corrupt_schema_reports_the_table_and_file(tmp_path):
                     "rows": Parquet(path=str(source)),
                 }
             ),
-            engine=DiskGraphEngine(index=tmp_path / "index"),
+            engine=DiskGraphEngine(),
         )
 
 
@@ -263,7 +262,9 @@ def _batch_values(plan):
         SampleRequest(sample_id=str(row["id"]), entity_id=row["id"], as_of_time=0)
         for row in _WIDE_ROWS
     )
-    batch = next(plan.materialize(anchors=requests).batches(batch_size=len(requests)))
+    batch = next(
+        plan.materialize(anchors=requests).request_batches(requests, batch_size=len(requests))
+    )
     return {
         name: {
             field: {key: value.tolist() for key, value in buffers.items()}
@@ -306,7 +307,7 @@ def test_large_string_and_large_binary_parquet_match_the_reference(tmp_path, dec
     with prepare(
         contract=_wide_contract(types if declared else dict.fromkeys(types)),
         dataset=Dataset(tables={"rows": Parquet(path=str(source))}),
-        engine=DiskGraphEngine(index=tmp_path / "index"),
+        engine=DiskGraphEngine(),
     ) as plan:
         actual = _batch_values(plan)
     with prepare(

@@ -610,9 +610,11 @@ def test_qualified_entity_numeric_outputs_preserve_engine_and_delivery_parity(
         contract, {"users": [{"id": i, "value": v} for i, v in enumerate(values, 1)]}, engine_name
     ) as (dataset, engine):
         with prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
-            outputs = [next(task.batches(anchors, batch_size=2))]
+            outputs = [next(task.request_batches(anchors, batch_size=2))]
             if engine_name == "diskgraph":
-                outputs.append(next(task.batches(anchors, batch_size=2, output_format="model")))
+                outputs.append(
+                    next(task.request_batches(anchors, batch_size=2, output_format="model"))
+                )
             for output in outputs:
                 assert output.inputs["zscore"]["entity/v"]["values"].tolist() == [
                     float(v) / 2 for v in values
@@ -690,7 +692,7 @@ def test_full_and_input_only_reuse_keep_independent_target_resources_separate(ta
     assert changed.input_fingerprint == contract.input_fingerprint
     with prepare(changed, dataset, InMemoryEngine()) as plan:
         with plan.materialize(requests, fitted=saved.inputs) as task:
-            result = next(task.batches(requests, batch_size=2))
+            result = next(task.request_batches(requests, batch_size=2))
             binding = task.target("label").field(name="value")
             assert result.targets["label"]["values"].tolist() == [
                 binding.encode(value="a"),

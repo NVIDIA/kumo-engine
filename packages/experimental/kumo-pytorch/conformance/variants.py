@@ -174,11 +174,11 @@ def _remote(dataset: Dataset, engine: Engine) -> tuple[Dataset, Engine]:
 
 
 def _two_ranks(task: Task, requests: tuple[SampleRequest, ...]) -> Iterable[Batch]:
-    return task.batches(requests, rank=0, world_size=2)
+    return task.request_batches(requests, rank=0, world_size=2)
 
 
 def _model(task: Task, requests: tuple[SampleRequest, ...]) -> Iterable[Batch]:
-    return task.batches(requests, batch_size=8, output_format="model")
+    return task.request_batches(requests, batch_size=8, output_format="model")
 
 
 def _raw_string(contract: DataLoaderSpec) -> DataLoaderSpec:

@@ -144,8 +144,8 @@ A readable multi-line summary of the contract.
 ```python
 def check(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
@@ -169,14 +169,18 @@ The whole contract must still be well formed.
 ```python
 def prepare(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     inference: bool = False,
 ) -> Plan
 ```
 
-Validate, then bind the dataset through the engine.
+Validate, then bind sources or an existing index through the engine.
+
+Omit `dataset` only for a DiskGraphEngine created with
+`from_snapshot`. Its stored schema supplies omitted types; it never reads
+the original sources or rebuilds the base. `engine` is always required.
 
 Every check that does not need data happens first, so an unexecutable
 combination is refused before a row is read. Anchors, and everything fitted
@@ -221,7 +225,7 @@ Called as `preview(task, requests)` or
 ```python
 class Plan(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
     source: SampleSource,
     *,
@@ -237,6 +241,7 @@ score. `materialize` binds anchors and returns the `Task` that is iterated.
 
 Owns the opened binding: close it with `plan.close()` or use the plan as a
 context manager. Tasks read through it and are usable while it is open.
+Closing the plan also closes its live tasks before releasing the binding.
 
 `inference` is true for a plan prepared with `prepare(..., inference=True)`:
 its targets were not checked against the engine, so it only materializes
@@ -258,8 +263,9 @@ Plan.materialize(
 
 Bind anchors, fit what is still unfitted, and return the task.
 
-`anchors` is an `AnchorTable` when the anchors exist as data, or
-`SampleRequest` values built in code.
+Bind an `AnchorTable` to iterate its rows with `Task.batches`.
+A sequence of `SampleRequest` values can supply fitting examples.
+To batch Python requests, pass them explicitly to `Task.request_batches`.
 
 `fit_split` says which anchors fitting may read, and is never implied
 when the anchors carry splits — so held-out or unassigned anchors cannot
@@ -297,7 +303,7 @@ and new targets cannot add members to a reused final ID space.
 Plan.close() -> None
 ```
 
-Release the engine binding. Idempotent.
+Close live tasks, then release the engine binding. Idempotent.
 
 ### `Task`
 
@@ -320,6 +326,9 @@ Anchors bound to a plan: what is iterated, served from, and written out.
 
 Produced by `Plan.materialize`. Reads through the plan's open binding, so it
 is usable while that plan is open.
+Close the task explicitly or use it as a context manager to release resources
+promptly. Unclosed tasks are also cleaned up on collection or normal Python
+exit, and when their plan closes.
 
 Attributes: `fitted_state` (a `FittedState`), `output_schema`, and
 `fingerprints`, covering the contract, inputs, dataset, anchors, input
@@ -377,7 +386,6 @@ Anchors in `split`: a name, a set of names, or every anchor when omitted.
 
 ```python
 Task.batches(
-    requests: Sequence[SampleRequest] | None = None,
     *,
     split: str | Collection[str | None] | AllAnchors | None = None,
     batch_size: int | None = None,
@@ -393,14 +401,14 @@ Task.batches(
 ) -> TaskBatches
 ```
 
-Emit batches over this task's anchors, or over requests built in code.
+Emit batches over this task's materialized `AnchorTable`.
 
-Without `requests`, iterates the materialized anchors of `split` — a
-name, a set of names (`None` selects anchors with no split), or every
-anchor when omitted — reading them a chunk at a time
-so memory follows batch size rather than anchor count. With
-`requests`, serves exactly those — the path a request handler or a
-preview has — through the same fitted state.
+`split` is a name, a set of names (`None` in the set selects anchors
+with no split), or every anchor when omitted. Rows are read in chunks.
+For production loading and benchmarks, use DiskGraph with a Parquet
+`AnchorTable` and `output_format="model"` to select native model iteration
+for eligible contracts. Use `Task.request_batches` for Python requests,
+including requests originally supplied for fitting.
 
 Every rank gets the same number of anchors: a short rank is topped up by
 repeating one of its own anchors, and `Batch.metadata["is_padding"]`
@@ -435,6 +443,35 @@ and resume retain their normal semantics. By default, selected edge pairs
 may repeat across native chunks. `deduplicate_edges=True` is available
 only for columnar output: it allocates edge arrays to retain the first
 occurrence of each pair per relation, preserving example isolation.
+
+#### `Task.request_batches`
+
+```python
+Task.request_batches(
+    requests: Sequence[SampleRequest],
+    *,
+    batch_size: int | None = None,
+    epoch: int = 0,
+    seed: int = 0,
+    shuffle: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    drop_last: bool | None = None,
+    output_format: Literal['inspectable', 'model'] = 'inspectable',
+) -> TaskBatches
+```
+
+Batch explicitly supplied Python requests using this task's fitted state.
+
+Use this for debugging, tests, or small sets of requests supplied at
+runtime. Requests must be supplied on every call, including when they
+were used for fitting. Filter the sequence yourself to select a split.
+This path bypasses native AnchorTable iteration. For population loading
+and benchmarks, materialize a Parquet `AnchorTable` with DiskGraph and
+use `Task.batches` with `output_format="model"`.
+
+Without shuffling or length bucketing, requests are visited in the order
+supplied (within each rank), subject to padding and `drop_last`.
 
 #### `Task.preview`
 

@@ -241,13 +241,14 @@ from shop import TRAIN_AT, ActivityModel, anchors, contract, dataset, tables
 
 workdir = Path("run-001")
 torch.manual_seed(0)
+training = anchors(TRAIN_AT, split="train")
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
-    with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
+    with plan.materialize(training, fit_split="train") as task:
         model = ActivityModel(task.output_schema)  # embedding sizes come from here
         optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
         for epoch in range(30):
-            for batch in task.batches(split="train", epoch=epoch, shuffle=True):
+            for batch in task.request_batches(training, epoch=epoch, shuffle=True):
                 labels = (batch.targets["active"]["values"] > 0).float()
                 loss = nn.functional.binary_cross_entropy_with_logits(model(batch), labels)
                 optimizer.zero_grad()
@@ -359,7 +360,7 @@ with api.prepare(artifact.contract, dataset(tables()), api.InMemoryEngine()) as 
     scoring = anchors(SCORE_AT, split=None)
     with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
         with torch.no_grad():
-            for batch in task.batches():
+            for batch in task.request_batches(scoring):
                 if not predictions:
                     for path, tensor in leaves("inputs", batch.inputs):
                         print(f"{path:<34} {tuple(tensor.shape)} {tensor.dtype}")
@@ -439,7 +440,10 @@ scoring_table = api.AnchorTable(
     as_of_time="as_of",
     sample_id="sample_id",
 )
-engine = api.DiskGraphEngine(index=data / "index")
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=data / "scratch")
+engine = api.DiskGraphEngine()
 disk_predictions = {}
 with api.prepare(artifact.contract, parquet, engine) as plan:
     with plan.materialize(scoring_table, fitted=artifact.fitted_state, inference=True) as task:
@@ -457,10 +461,15 @@ print(f"user-3-at-34 scores {disk_predictions['user-3-at-34']:.3f}")
 user-3-at-34 scores 0.647
 ```
 
-The first `prepare` builds the index under `shop-data/index`. A scheduled
-scoring job usually passes `ingest="never"`, so that it fails if the index it
-expects is missing instead of building a new one. See
-[building and reusing the index](04-engines-and-data.md#building-and-reusing-the-index).
+The first `prepare` builds the index under the configured scratch root's
+`indexes/<index_build_id>/`. Reuse the same engine for later preparations in
+this process. For a scheduled scoring job, reopen a core snapshot through
+`DiskGraphEngine.from_snapshot(snapshot)` and omit the Dataset from `prepare`.
+This validates an existing completed base without rebuilding it or reading its
+original source tables. It replaces the removed `ingest="never"` guard, which
+refused a missing base. Constructing a fresh dataset engine in each scoring job
+instead triggers a new ingest. See [opening an existing snapshot](04-engines-and-data.md#open-an-existing-snapshot)
+for the scoring workflow that requires an existing base.
 
 ### What inference mode changes
 

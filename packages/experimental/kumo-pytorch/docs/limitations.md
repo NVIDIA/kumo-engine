@@ -73,6 +73,7 @@ both `check` and `prepare` before any data is read; the others are refused while
 | `DG-CANDIDATE-SETS` | Candidate sets, in `SampleSpec.candidate_sets` or as candidate columns of an anchor table, are refused. | `check()` | Build the candidates' features with a second contract whose entity is the candidate table, anchored at the same times, and pair them in your own code. |
 | `DG-GRAPH-CLOCK-OVERRIDE` | The DiskGraph engine doesn't support a graph traversal `time_column` other than the destination table's clock yet. | `check()` | Use the destination table's declared clock. |
 | `DG-REDUCTION-OPERAND` | Reductions over decimal or bytes columns are refused; direct decimal field reads are supported. | `check()` | Cast decimals to float64 or integer units, and bytes to a string or integer key, before writing the Parquet files. |
+| `DG-TOKEN-LENGTH-ALIAS` | For token budgets or length bucketing, two fields of one event component in the length input can't alias the same stored column. | `check()` | Select the column once in the length input, or batch by sample count alone. |
 | `DG-COLUMN-RENAME` | `Parquet(columns=...)` renames in a table binding are refused; physical column names must match the declared ones. Anchor tables accept renames. | `prepare()` | Rename the columns in the Parquet files to the declared names. |
 | `DG-INT64-CLOCK` | A column declared as a timestamp must be stored as a Parquet timestamp; an int64 column of epoch values is refused. | `prepare()` | Write the column as a Parquet timestamp in the declared unit. |
 | `DG-NESTED-COLUMN` | Parquet columns of list, struct or map type are refused; every declared column must be stored as a scalar. | `prepare()` | Flatten the values into scalar columns, or into rows of their own table, before writing the Parquet files. |
@@ -306,9 +307,11 @@ distributed training is up to your training loop.
 
 ## Engine support
 
-`DiskGraphEngine` reads an index built from local Parquet files and builds
-model output column by column. It raises an error for the joins, filters, graph
-strategies and sampling features it doesn't support; see
+`DiskGraphEngine` builds indexes from local Parquet files or opens a completed
+[snapshot](04-engines-and-data.md#open-an-existing-snapshot)
+without the original sources. It builds model output column by column. It
+raises an error for the joins, filters, graph strategies and sampling features
+it doesn't support; see
 [DiskGraph](#diskgraph). Where both engines support a contract, DiskGraph's
 batches can still differ from the in-memory engine's, and so from serving's, in
 a few ways: the order of graph nodes within a layer, `std`, `var` and `mean`

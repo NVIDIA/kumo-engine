@@ -96,7 +96,7 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
     outputs = []
     for engine in (
         api.InMemoryEngine(),
-        api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+        api.DiskGraphEngine(num_threads=1),
     ):
         dataset = api.Dataset(
             {name: api.InMemoryRows(table.to_pylist()) for name, table in tables.items()}
@@ -106,7 +106,8 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         with api.prepare(contract, dataset, engine) as plan:
             task = plan.materialize((request,), fit_split="train")
             batch = next(
-                task.batches(
+                task.request_batches(
+                    (request,),
                     batch_size=1,
                     output_format="inspectable"
                     if isinstance(engine, api.InMemoryEngine)

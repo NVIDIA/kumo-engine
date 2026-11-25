@@ -1,0 +1,205 @@
+{
+  "question": "encoder-only pragma_like against v1's decoder on TabFormer, same rows",
+  "seed": 42,
+  "eval_rows": "evaluation.history_window.max_rows=250000 (uniform sample of v1's test rows)",
+  "runs": {
+    "pragma_like_tabformer": {
+      "config": "benchmarks/ablations/pragma_like_tabformer.yaml",
+      "commit": "124ab93",
+      "overrides": {
+        "evaluation.history_window.max_rows": 250000
+      },
+      "hardware": {
+        "gpu": "NVIDIA GB10",
+        "torch": "2.13.0+cu130",
+        "python": "3.12.3"
+      },
+      "seconds": {
+        "prepare": 299.7,
+        "train": 0.0,
+        "evaluate": 1593.7
+      },
+      "n_parameters": 11407104,
+      "peak_gpu_memory_gib": 7.8,
+      "train_stats": {
+        "backend": "eager",
+        "final_loss": 2.343008041381836,
+        "first_loss": 35.11762619018555,
+        "grad_norm_max": 232.69351196289062,
+        "grad_norm_median": 8.900221824645996,
+        "hf_checkpoint": "",
+        "loss_tail_mean": 2.3775963830947875,
+        "nonfinite_grad_steps": 0.0,
+        "precision": "bf16",
+        "steps": 1500.0
+      },
+      "metrics": {
+        "history_window_tabular_logistic": {
+          "roc_auc": 0.9231644040658422,
+          "pr_auc": 0.007470158955603199,
+          "precision_at_k": 0.02,
+          "recall_at_k": 0.0036101083032490976,
+          "calibration": 0.11843420142499245,
+          "precision": 0.00992579743663872,
+          "recall": 0.7436823104693141,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_tabular_xgboost": {
+          "roc_auc": 0.9749664288681679,
+          "pr_auc": 0.06499318914792039,
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.036101083032490974,
+          "calibration": 0.014380901116402585,
+          "precision": 0.051420176297747304,
+          "recall": 0.37906137184115524,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_tabular_xgboost_embedding": {
+          "roc_auc": 0.9800373904538936,
+          "pr_auc": 0.07040660475711753,
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.036101083032490974,
+          "calibration": 0.015255067222952343,
+          "precision": 0.05550239234449761,
+          "recall": 0.4187725631768953,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_xgboost_raw": {
+          "roc_auc": 0.9164044808579314,
+          "pr_auc": 0.041387662187553506,
+          "precision_at_k": 0.14,
+          "recall_at_k": 0.02527075812274368,
+          "calibration": 0.029794365456418812,
+          "precision": 0.02945054945054945,
+          "recall": 0.24187725631768953,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_xgboost_raw_embedding": {
+          "roc_auc": 0.9173606449809204,
+          "pr_auc": 0.03945060050441762,
+          "precision_at_k": 0.16,
+          "recall_at_k": 0.02888086642599278,
+          "calibration": 0.025296562128573417,
+          "precision": 0.034536082474226806,
+          "recall": 0.24187725631768953,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_xgboost_raw_embedding:single_event": {
+          "roc_auc": 0.9283684228262098,
+          "pr_auc": 0.04222013898455221,
+          "precision_at_k": 0.16,
+          "recall_at_k": 0.02888086642599278,
+          "calibration": 0.018147827372079702,
+          "precision": 0.02570694087403599,
+          "recall": 0.18050541516245489,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        }
+      }
+    },
+    "v1_tabformer_250k": {
+      "config": "recipes/blueprint_v1/config.yaml",
+      "commit": "124ab93",
+      "overrides": {
+        "evaluation.history_window.max_rows": 250000
+      },
+      "hardware": {
+        "gpu": "NVIDIA GB10",
+        "torch": "2.13.0+cu130",
+        "python": "3.12.3"
+      },
+      "seconds": {
+        "prepare": 297.8,
+        "train": 4853.9,
+        "evaluate": 3152.1
+      },
+      "n_parameters": 25882625,
+      "peak_gpu_memory_gib": 21.36,
+      "train_stats": {
+        "final_loss": 0.5659990310668945,
+        "first_loss": 8.248023986816406,
+        "loss_tail_mean": 0.5743105468153954,
+        "nonfinite_grad_steps": 0.0,
+        "grad_norm_median": 0.5987352728843689,
+        "grad_norm_max": 9.077783584594727,
+        "steps": 3000.0,
+        "precision": "bf16",
+        "backend": "eager",
+        "hf_checkpoint": "outputs/ablations/v1_tabformer_250k/seed_42/hf_checkpoint"
+      },
+      "metrics": {
+        "history_window_tabular_logistic": {
+          "roc_auc": 0.9231644040658422,
+          "pr_auc": 0.007470158955603199,
+          "precision_at_k": 0.02,
+          "recall_at_k": 0.0036101083032490976,
+          "calibration": 0.11843420142499245,
+          "precision": 0.00992579743663872,
+          "recall": 0.7436823104693141,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_tabular_xgboost": {
+          "roc_auc": 0.9749664288681679,
+          "pr_auc": 0.06499318914792039,
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.036101083032490974,
+          "calibration": 0.014380901116402585,
+          "precision": 0.051420176297747304,
+          "recall": 0.37906137184115524,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_tabular_xgboost_embedding": {
+          "roc_auc": 0.9809884586779191,
+          "pr_auc": 0.06908909373972058,
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.036101083032490974,
+          "calibration": 0.014067288880511467,
+          "precision": 0.05774783445620789,
+          "recall": 0.4332129963898917,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_xgboost_raw": {
+          "roc_auc": 0.9164044808579314,
+          "pr_auc": 0.041387662187553506,
+          "precision_at_k": 0.14,
+          "recall_at_k": 0.02527075812274368,
+          "calibration": 0.029794365456418812,
+          "precision": 0.02945054945054945,
+          "recall": 0.24187725631768953,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_xgboost_raw_embedding": {
+          "roc_auc": 0.9650640057197816,
+          "pr_auc": 0.056623114348316836,
+          "precision_at_k": 0.14,
+          "recall_at_k": 0.02527075812274368,
+          "calibration": 0.030912479046592403,
+          "precision": 0.045951859956236324,
+          "recall": 0.37906137184115524,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        },
+        "history_window_xgboost_raw_embedding:single_event": {
+          "roc_auc": 0.9468427190612397,
+          "pr_auc": 0.03362226865880745,
+          "precision_at_k": 0.12,
+          "recall_at_k": 0.021660649819494584,
+          "calibration": 0.029843864237193263,
+          "precision": 0.029182079736950268,
+          "recall": 0.2563176895306859,
+          "n_eval": 250000.0,
+          "n_eval_positive": 277.0
+        }
+      }
+    }
+  }
+}

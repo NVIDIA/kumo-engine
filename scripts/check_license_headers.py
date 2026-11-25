@@ -279,6 +279,21 @@ def validate_text(path: str, text: str, policy: dict[str, Any]) -> str | None:
     start, preamble_error = header_start(path, lines, policy)
     if preamble_error is not None:
         return preamble_error
+    # Accept Blueprint's combined copyright and rights statement in memory
+    # before applying the shared header validation.
+    if ("hash" in styles
+            and path.startswith("packages/experimental/kumo-transaction/")
+            and ".." not in PurePosixPath(path).parts):
+        first_comment = line_comment_body(lines, start, "#", start + 1)
+        copyright_line = first_comment[0][0] if first_comment else ""
+        rights_statement = policy["rights_statement"]
+        rights_suffix = f" {rights_statement}"
+        if (copyright_line.startswith(SPDX_COPYRIGHT_PREFIX)
+                and copyright_line.endswith(rights_suffix)):
+            lines[start:start + 1] = [
+                f"# {copyright_line.removesuffix(rights_suffix)}",
+                f"# {rights_statement}",
+            ]
     limit = min(len(lines), policy["max_header_lines"])
     style_errors: list[str] = []
     for style in styles:

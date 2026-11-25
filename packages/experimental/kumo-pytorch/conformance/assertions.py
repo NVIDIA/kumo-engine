@@ -111,6 +111,8 @@ def bound_tables(
         require_engine(engine_name)
         with tempfile.TemporaryDirectory(prefix="conformance-") as temporary:
             directory = Path(temporary)
+            import kumo.settings
+
             bindings = {}
             for name, rows in tables.items():
                 path = directory / (f"{name}.parquet" if parts == 1 else name)
@@ -120,14 +122,14 @@ def bound_tables(
                 # Refusal paths deliberately do not exist. Reading one is a bug.
                 bindings[name] = Parquet(str(path))
             settings = _CASE.get()
-            yield (
-                Dataset(bindings),
-                DiskGraphEngine(
-                    index=directory / "index",
-                    num_threads=int(settings.get("execution.num_threads", 1)),
-                    num_shards=int(settings.get("execution.num_shards", 1)),
-                ),
-            )
+            with patch.object(kumo.settings, "_configured", directory):
+                yield (
+                    Dataset(bindings),
+                    DiskGraphEngine(
+                        num_threads=int(settings.get("execution.num_threads", 1)),
+                        num_shards=int(settings.get("execution.num_shards", 1)),
+                    ),
+                )
     else:
         raise ValueError(f"unknown conformance engine {engine_name!r}")
 
@@ -199,7 +201,9 @@ def assert_answer(case: GoldenCase, engine_name: str) -> None:
             with plan.materialize(case.requests) as task:
                 result = preview(task, case.requests).to_dict()
                 if case.batch is not None:
-                    batches = list(task.batches(case.requests, batch_size=len(case.requests)))
+                    batches = list(
+                        task.request_batches(case.requests, batch_size=len(case.requests))
+                    )
                     assert len(batches) == 1, f"{case.id}: expected exactly one batch"
                     batch = batches[0]
                     assert_projection(
@@ -350,7 +354,7 @@ def assert_execution_error(
             with plan.materialize(case.requests) as task:
                 expect(
                     lambda: list(
-                        task.batches(
+                        task.request_batches(
                             case.requests,
                             batch_size=len(case.requests),
                             output_format=output_format,
