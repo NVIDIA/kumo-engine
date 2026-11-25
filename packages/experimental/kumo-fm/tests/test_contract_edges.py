@@ -59,11 +59,11 @@ def test_date_and_generator_population():
 
 @pytest.mark.parametrize("budget", [0, -1, True, 1.5, "10", None])
 def test_invalid_budget_values(case, budget):
-    with pytest.raises(ValueError, match="positive integers"):
+    with pytest.raises(ValueError, match="max_instances.*positive integer"):
         prepare(case[0], budgets={"max_instances": budget})
 
 
-@pytest.mark.parametrize("batch_size", [0, -1, 1.5, "10"])
+@pytest.mark.parametrize("batch_size", [0, -1, True, False, None, 1.5, "10"])
 def test_invalid_batch_size(case, batch_size):
     with pytest.raises(ValueError, match="batch_size"):
         prepare(case[0], batch_size=batch_size)
@@ -73,7 +73,12 @@ def test_invalid_batch_size(case, batch_size):
                                       {0: "a", 1: "b", 2: "c"}])
 def test_invalid_class_maps(case, classes):
     with pytest.raises(ValueError, match="two-entry"):
-        prepare(case[0], task="classification", classes=classes)
+        prepare(case[0], task="binary_classification", classes=classes)
+
+
+def test_ambiguous_classification_alias_is_rejected(case):
+    with pytest.raises(ValueError, match="task must be.*binary_classification"):
+        prepare(case[0], task="classification", classes={False: "no", True: "yes"})
 
 
 @pytest.mark.parametrize("features", [{"users": []}, {"users": [], "events": ["missing"]},
@@ -83,8 +88,6 @@ def test_invalid_projections(case, features):
         prepare(case[0], features=features)
 
 
-@pytest.mark.xfail(strict=True, raises=pytest.fail.Exception,
-                   reason="#391 review 4687200524: unknown budget keys pass silently")
 def test_unknown_budget_key_is_rejected(case):
     with (pytest.raises((TypeError, ValueError), match="max_payload_byte|[Uu]nknown"),
           prepare(case[0], budgets={"max_payload_byte": 1})):
@@ -104,8 +107,6 @@ def test_default_strategy_matches_explicit_recent(case):
 
 
 @pytest.mark.parametrize("dtype", [pa.int32(), pa.float32(), pa.binary(), pa.decimal128(10, 2)])
-@pytest.mark.xfail(strict=True, raises=ValueError,
-                   reason="#391 review 4687200488: unprojected columns block preparation")
 def test_unprojected_unsupported_columns_do_not_block_fm(tmp_path, dtype):
     engine, keys, _ = make_case(tmp_path, ignored_dtype=dtype)
     with prepare(engine) as loader:
@@ -123,7 +124,9 @@ def test_generated_edge_feature_name_is_reserved(case):
     schema = api.DataSchema(tables, engine.schema.relations)
     with pytest.raises(ValueError, match="reserv|colli"):
         _selected_graph(schema, sample_for(),
-                        {"users": [], "events": ["__fm_edge_activity"]}, _schema_view(schema))
+                        {"users": [], "events": ["__fm_edge_activity"]},
+                        _schema_view(schema, sample_for(),
+                                     {"users": [], "events": ["__fm_edge_activity"]}))
 
 
 @pytest.mark.parametrize("batch_size", [pytest.param(1, marks=pytest.mark.xfail(
@@ -139,17 +142,16 @@ def test_candidate_budget_is_independent_of_batch_size(case, batch_size):
 @pytest.mark.parametrize("ids,values,valid,classes,match", [
     ([1], [1], [], None, "misaligned"),
     ([1], [], [True], None, "misaligned"),
-    ([1], [1], [False], None, "Missing, duplicated, or unexpected"),
-    ([99], [1], [True], None, "unexpected"),
+    ([1], [1], [False], None, "context target.*null"),
+    ([99], [1], [True], None, "Unexpected"),
     ([1, 1], [1, 2], [True, True], None, "duplicated"),
     ([1], [2], [True], {0: "no", 1: "yes"}, "outside declared classes"),
     ([], [], [], None, "Missing FM context labels"),
 ])
-def test_context_label_corruption_fails_closed(ids, values, valid, classes, match):
+def test_context_label_corruption_fails_closed(case, monkeypatch, ids, values, valid, classes, match):
     from types import SimpleNamespace
 
     import numpy as np
-    from kumo.fm._snapshot import SnapshotFMLoader
 
     class Task:
         def __enter__(self):
@@ -162,22 +164,21 @@ def test_context_label_corruption_fails_closed(ids, values, valid, classes, matc
             yield SimpleNamespace(metadata={"sample_ids": ids}, targets={"label": {
                 "values": np.array(values), "valid": np.array(valid)}})
 
-    loader = object.__new__(SnapshotFMLoader)
-    loader._labels = SimpleNamespace(materialize=lambda _: Task())
-    loader._batch_size = 2
-    loader._classes = classes
-    with pytest.raises(ValueError, match=match):
-        loader._labels_for(None, [{"instance_id": 1}])
+    engine, keys, _ = case
+    options = {} if classes is None else {"task": "binary_classification", "classes": classes}
+    with prepare(engine, **options) as loader:
+        monkeypatch.setattr(loader, "_labels", SimpleNamespace(materialize=lambda _: Task()))
+        with pytest.raises(ValueError, match=match):
+            loader.load(context=fm.Context(pairs=[(keys[0], instant(10), 1)]),
+                        query=fm.Query(pairs=[(keys[0], instant(20), 2)]))
 
 
 @pytest.mark.parametrize("dtype", [pa.int32(), pa.float32()])
-@pytest.mark.xfail(strict=True, raises=ValueError,
-                   reason="#391 review 4687200488: projected narrow scalars need lossless widening")
 def test_projected_narrow_scalars_widen_losslessly(tmp_path, dtype):
     engine, keys, events = make_case(tmp_path, amount_dtype=dtype)
     with prepare(engine, features={"users": [], "events": ["amount"]}) as loader:
         batch = loader.load(query=fm.Query(entities=[keys[0]], at=instant(30)))
     table = batch.tables("predict")["related_tables"]["events"]
-    assert table["amount"].type == pa.float64()
+    assert table["amount"].type == (pa.int64() if pa.types.is_integer(dtype) else pa.float64())
     source = {e["id"]: e["amount"] for e in events}
     assert table["amount"].to_pylist() == [source[key] for key in table["id"].to_pylist()]

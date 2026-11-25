@@ -5,7 +5,7 @@
 """Opt-in native correctness campaigns; see ../TESTING.md for resource controls."""
 import hashlib
 import os
-from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -37,11 +37,14 @@ def hashes(root):
 
 @pytest.mark.parametrize("seed", [391, 2026, 73013])
 @pytest.mark.parametrize("string_keys", [False, True])
-def test_randomized_high_fanout_against_python_oracle(tmp_path, seed, string_keys):
+def test_randomized_high_fanout_against_python_oracle(tmp_path, monkeypatch, seed, string_keys):
     engine, keys, events = make_case(
         tmp_path, seed=seed, string_keys=string_keys,
         entities=max(4, size("FM_DEV_ENTITIES", 24)),
         events_per_entity=size("FM_DEV_EVENTS", 1000))
+    directory = tmp_path / "system-temp"
+    directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
     before = hashes(engine.index)
     context = [(key, 5000, i - 2**53) for i, key in enumerate(keys + keys[:3])]
     query = [(key, 20000, i + 2**53) for i, key in enumerate(reversed(keys))]
@@ -52,11 +55,10 @@ def test_randomized_high_fanout_against_python_oracle(tmp_path, seed, string_key
         with prepare(engine, sample=sample_for(fanout=50), batch_size=batch_size,
                      budgets={"max_payload_bytes": 256 * 1024**2,
                               "max_decoded_arrow_bytes": 256 * 1024**2}) as loader:
-            directory = Path(loader._temporary.name)
             batch = loader.load(
                 context=fm.Context(pairs=[(k, instant(t), i) for k, t, i in context]),
                 query=fm.Query(pairs=[(k, instant(t), i) for k, t, i in query]))
-        assert not directory.exists()
+        assert not list(directory.iterdir())
         assert_oracle(batch, events, {"context": context, "predict": query}, fanout=50)
         assert_wire_roundtrip(batch)
         if retained is not None:

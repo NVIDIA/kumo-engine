@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Public API tests against hand-computed relational and temporal results."""
-from pathlib import Path
+import tempfile
 
 import pytest
 from _correctness import (
@@ -44,12 +44,11 @@ def test_temporal_oracle_and_batch_boundaries(case, parent_first, batch_size):
     assert_wire_roundtrip(batch)
 
 
-@pytest.mark.parametrize("task", ["classification", "binary_classification"])
-def test_binary_labels_query_only_and_closed_requests(case, task):
+def test_binary_labels_query_only_and_closed_requests(case):
     engine, keys, events = case
     context = [(keys[0], 10, 91), (keys[-1], 10, 92)]
     query = [(keys[0], 20, 91)]  # Exact end of context label horizon is observable.
-    with prepare(engine, sample=sample_for(classification=True), task=task,
+    with prepare(engine, sample=sample_for(classification=True), task="binary_classification",
                  classes={False: "no", True: "yes"}) as loader:
         with loader.materialize(
                 context=fm.Context(pairs=[(k, instant(t), i) for k, t, i in context]),
@@ -99,15 +98,15 @@ def test_preparation_failure_releases_prepared_plan(case, monkeypatch):
     assert closed == [True]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="#391 review 4687200529: anchors accumulate until loader.close")
-def test_repeated_load_does_not_retain_anchor_files(case):
+def test_repeated_load_does_not_retain_anchor_files(case, tmp_path, monkeypatch):
     engine, keys, _ = case
+    directory = tmp_path / "system-temp"
+    directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
     with prepare(engine) as loader:
-        directory = Path(loader._temporary.name)
         for _ in range(3):
             loader.load(query=fm.Query(entities=[keys[0]], at=instant(30)))
-            assert not list(directory.glob("*.parquet"))
+            assert not list(directory.iterdir())
 
 
 @pytest.mark.parametrize("parent_first", [False, True])
