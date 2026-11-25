@@ -51,7 +51,20 @@ async function hoverTooltip(page, graph, svg, table, column) {
     box && box.width > 0 && box.height > 0,
     "Tooltip row is not rendered",
   );
-  await row.hover({ timeout: 10000 });
+  try {
+    await row.hover({ timeout: 10000 });
+  } catch (error) {
+    if (error.name !== "TimeoutError") throw error;
+    const intercepted = error.message.includes("intercepts pointer events");
+    const atCenter = await row.evaluate((element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(x + width / 2, y + height / 2);
+      return hit ? { tag: hit.tagName, inside: element.contains(hit) } : null;
+    });
+    throw new VerificationError(
+      `Graph schema row hover timed out (${intercepted ? "pointer intercepted" : "action unavailable"}, ${atCenter ? (atCenter.inside ? "row receives pointer" : `hit ${atCenter.tag}`) : "row center outside frame"})`,
+    );
+  }
   const tooltip = graph.getByRole("tooltip");
   const deadline = Date.now() + 5000;
   do {
