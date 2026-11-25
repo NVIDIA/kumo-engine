@@ -251,7 +251,7 @@ def first_batch(sample, batch, anchors=users_at_30):
     # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
     with api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan:
         with plan.materialize(anchors=anchors, fit_split="train") as task:
-            return next(task.batches(requests=anchors, seed=17))
+            return next(task.request_batches(anchors, seed=17))
 ```
 
 `first_batch` fits the encoders on the training anchors and returns the first

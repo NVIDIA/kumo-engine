@@ -168,7 +168,7 @@ with (
     translated = task.output(name="tokens").field(name="currency")
     country = task.output(name="tokens").field(name="country")
     independent_country = task.output(name="country_again").field(name="country")
-    emitted = next(task.batches(batch_size=2))
+    emitted = next(task.request_batches(anchors, batch_size=2))
 
     assert local.encoder is translated.encoder is task.encoders["currencies"]
     assert country.encoder is not independent_country.encoder

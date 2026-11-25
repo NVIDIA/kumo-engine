@@ -114,7 +114,9 @@ def test_selected_history_fitting_keeps_columns_and_exact_state(
             reference = plan.materialize(requests, fit_split="train")
         with reference:
             expected_state = reference.fitted_state
-            expected = list(reference.batches(batch_size=2, output_format="model"))
+            expected = list(
+                reference.request_batches(requests, batch_size=2, output_format="model")
+            )
         observed = []
         arrow_values = assembly._arrow_values
         input_fitting = assembly._fit_inputs
@@ -142,7 +144,9 @@ def test_selected_history_fitting_keeps_columns_and_exact_state(
             assert any(isinstance(values, pa.ChunkedArray) for values in observed)
             assert actual.fitted_state == expected_state
             assert actual.fitted_state.fingerprint == expected_state.fingerprint
-            actual_batches = list(actual.batches(batch_size=2, output_format="model"))
+            actual_batches = list(
+                actual.request_batches(requests, batch_size=2, output_format="model")
+            )
             assert len(actual_batches) == len(expected)
             for batch, previous in zip(actual_batches, expected, strict=True):
                 assert_equal(batch.inputs, previous.inputs)

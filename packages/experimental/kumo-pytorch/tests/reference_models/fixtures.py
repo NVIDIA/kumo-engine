@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 
 from kumo.pytorch.api import (
+    AnchorTable,
     DataLoaderSpec,
     Dataset,
     InMemoryEngine,
@@ -196,8 +197,23 @@ def model_task(
     dataset = Dataset(
         tables={table: InMemoryRows(rows=rows) for table, rows in (tables or _tables()).items()}
     )
+    anchors = AnchorTable(
+        source=InMemoryRows(
+            rows=[
+                {
+                    "sample_id": request.sample_id,
+                    "entity_id": request.entity_id,
+                    "as_of_time": request.as_of_time,
+                }
+                for request in requests or requests_for(name)
+            ]
+        ),
+        entity_id="entity_id",
+        as_of_time="as_of_time",
+        sample_id="sample_id",
+    )
     with prepare(contract=contract, dataset=dataset, engine=InMemoryEngine()) as plan:
-        with plan.materialize(requests or requests_for(name), fitted=fitted) as task:
+        with plan.materialize(anchors, fitted=fitted) as task:
             yield task
 
 
