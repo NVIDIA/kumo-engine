@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, TypeVar
+
+logger = logging.getLogger(__name__)
 
 
 class ExplicitFilesystemCredentialsRequired(RuntimeError):
@@ -22,6 +25,7 @@ class FilesystemCredentialScope:
     credentials: Mapping[str, Any] | None
     require_explicit: bool
     cache: dict[tuple[str, int, str], Any] = field(default_factory=dict)
+    closers: list[Callable[[], None]] = field(default_factory=list)
 
     @property
     def provider(self) -> str | None:
@@ -29,6 +33,20 @@ class FilesystemCredentialScope:
             return None
         value = self.credentials.get('provider')
         return str(value) if value else None
+
+    def close_on_exit(self, closer: Callable[[], None]) -> None:
+        self.closers.append(closer)
+
+    def close(self) -> None:
+        closers, self.closers = self.closers, []
+        for closer in reversed(closers):
+            try:
+                closer()
+            except Exception as error:
+                logger.warning(
+                    'Filesystem credential scope cleanup failed '
+                    '(error_type=%s)',
+                    type(error).__name__)
 
 
 _current_scope: contextvars.ContextVar[FilesystemCredentialScope
@@ -49,6 +67,7 @@ def credential_scope(
         yield
     finally:
         _current_scope.reset(token)
+        scope.close()
 
 
 def credentials_for_provider(provider: str) -> FilesystemCredentialScope | None:

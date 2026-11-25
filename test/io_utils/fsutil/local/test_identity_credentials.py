@@ -298,6 +298,32 @@ def test_gcs_client_and_requester_pays_bucket_use_scoped_credential(
     ]
 
 
+def test_scoped_gcs_clients_are_closed_when_the_scope_exits(
+        monkeypatch) -> None:
+    created = []
+
+    def construct(**kwargs):
+        created.append(Mock())
+        return created[-1]
+
+    monkeypatch.setattr('io_utils.fsutil.impl_gcs.storage.Client', construct)
+    clients = ThreadLocalGCSClient()
+    credentials = {'provider': 'gcs', 'credential': object()}
+
+    with credential_scope(credentials, require_explicit=True):
+        main = clients.client()
+        with ContextPropagatingThreadPoolExecutor(max_workers=2) as executor:
+            workers = [
+                f.result()
+                for f in [executor.submit(clients.client) for _ in range(4)]
+            ]
+        assert clients.client() is main
+        main.close.assert_not_called()
+
+    assert {id(worker) for worker in workers} <= {id(c) for c in created}
+    assert all(client.close.call_count == 1 for client in created)
+
+
 def test_adls_client_uses_scoped_credential_and_connector_endpoint(
         monkeypatch) -> None:
     credential = object()

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import functools
 import logging
 import os
 import threading
@@ -23,6 +24,8 @@ from google.cloud import storage
 from google.cloud.storage._media.requests import _request_helpers
 from kumo_core.sources.cpu import cpu_budget
 from pyarrow import fs as pafs
+
+from .clients import ThreadClients
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +153,22 @@ class _ScopedDownloadFilesystem:
             self.refresh_at = expiry - margin
             return filesystem
 
+    def release(self) -> None:
+        with self.lock:
+            self.filesystem = None
+
 
 def _utc_expiry(expiry: datetime.datetime) -> datetime.datetime:
     if expiry.tzinfo is None:
         return expiry.replace(tzinfo=datetime.timezone.utc)
     return expiry.astimezone(datetime.timezone.utc)
+
+
+def _storage_client(project: str | None,
+                    credentials: Credentials | None) -> storage.Client:
+    if project is None and isinstance(credentials, AnonymousCredentials):
+        project = ''
+    return storage.Client(project=project, credentials=credentials)
 
 
 class GCSDownloader:
@@ -167,7 +181,8 @@ class GCSDownloader:
                             if credentials is not None else None)
         self.project = project
         self.requester_pays_project = requester_pays_project
-        self._clients = threading.local()
+        self._clients = ThreadClients(
+            functools.partial(_storage_client, project, self.credentials))
         self._scoped = (_ScopedDownloadFilesystem(self.credentials)
                         if self.credentials is not None and
                         not isinstance(self.credentials, AnonymousCredentials)
@@ -176,15 +191,15 @@ class GCSDownloader:
         self._ambient_filesystem = None
         self._ambient_expires = 0.0
 
+    def close(self) -> None:
+        self._clients.close()
+        if self._scoped is not None:
+            self._scoped.release()
+        with self._filesystem_lock:
+            self._ambient_filesystem = None
+
     def _blob(self, bucket: str, key: str):
-        if not hasattr(self._clients, 'client'):
-            project = self.project
-            if project is None and isinstance(self.credentials,
-                                              AnonymousCredentials):
-                project = ''
-            self._clients.client = storage.Client(project=project,
-                                                  credentials=self.credentials)
-        return self._clients.client.bucket(
+        return self._clients.get().bucket(
             bucket, user_project=self.requester_pays_project).blob(key)
 
     def filesystem(self):
