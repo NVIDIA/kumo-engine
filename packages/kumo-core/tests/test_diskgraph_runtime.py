@@ -937,6 +937,107 @@ def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
             for p in invalid_path.rglob("*") if p.is_file()} == before
 
 
+@pytest.mark.parametrize("layout", ["legacy", "managed", "managed_with_legacy"])
+@pytest.mark.parametrize("operation", ["candidate", "listing", "prefix"])
+@pytest.mark.parametrize("failure", ["non_utf8", "unreadable"])
+def test_marker_encoding_damage_is_distinct_from_read_permissions(
+        native_time_snapshot, tmp_path, layout, operation, failure):
+    from diskgraph import read_success_marker, verify_snapshot_integrity
+
+    store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path)))
+    handle = DiskgraphSnapshotHandle("graph", "version")
+    legacy = Path(store.staging_path(handle))
+    _copy_runtime_snapshot(native_time_snapshot, legacy)
+    index = legacy
+    if layout != "legacy":
+        index = Path(store.publish(handle, DiskgraphIngestResult.for_index(legacy)).index_path)
+    fallback = None
+    if layout == "managed_with_legacy":
+        _copy_runtime_snapshot(native_time_snapshot, legacy)
+        fallback = legacy
+    assert store._ready_candidate(str(index))
+    marker = index / "_SUCCESS"
+    permissions = marker.stat().st_mode
+    if failure == "non_utf8":
+        marker.write_bytes(bytes([255, 254]))
+    before = {p.relative_to(tmp_path): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+
+    def lookup():
+        if operation == "candidate":
+            return store._ready_candidate(str(index))
+        if operation == "listing":
+            return store.list_ready()
+        return store.resolve_version_prefix(handle.graph_key, "ver")
+
+    try:
+        if failure == "unreadable":
+            marker.chmod(0)
+            try:
+                marker.read_bytes()
+            except PermissionError:
+                pass
+            else:
+                pytest.skip("this user or platform bypasses file permission bits")
+        # Both files pass native manifest verification. The native marker reader
+        # exposes the two distinct failures through the same exception class.
+        verify_snapshot_integrity(str(index))
+        with pytest.raises(DiskgraphSystemError):
+            read_success_marker(str(index))
+        if failure == "unreadable":
+            with pytest.raises((PermissionError, DiskgraphSystemError), match="[Pp]ermission denied|Access is denied"):
+                lookup()
+        else:
+            expected = {"candidate": False,
+                        "listing": [handle] if fallback else [],
+                        "prefix": str(fallback) if fallback else None}[operation]
+            assert lookup() == expected
+    finally:
+        marker.chmod(permissions)
+    assert {p.relative_to(tmp_path): p.read_bytes()
+            for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file descriptor limits")
+def test_marker_descriptor_exhaustion_propagates(native_time_snapshot):
+    import subprocess
+
+    script = """
+import errno
+import resource
+import sys
+from pathlib import Path
+
+from diskgraph import DiskgraphSystemError, read_success_marker
+from kumo_core.diskgraph.snapshot import DiskgraphLocalConfig, LocalSnapshotStore
+
+path = sys.argv[1]
+store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(Path(path).parent)))
+assert store._ready_candidate(path)
+limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+try:
+    resource.setrlimit(resource.RLIMIT_NOFILE, (0, limit[1]))
+    try:
+        read_success_marker(path)
+    except DiskgraphSystemError:
+        pass
+    else:
+        raise AssertionError("native marker read must fail with no descriptors")
+    try:
+        store._ready_candidate(path)
+    except OSError as error:
+        assert error.errno == errno.EMFILE, error
+    else:
+        raise AssertionError("descriptor exhaustion must not become a cache miss")
+finally:
+    resource.setrlimit(resource.RLIMIT_NOFILE, limit)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(native_time_snapshot)],
+        capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 @pytest.mark.parametrize("clock", get_args(TimestampPrecision))
 def test_ingest_config_names_the_clock_unless_seconds(clock: str) -> None:
     ingest_config: dict = {}

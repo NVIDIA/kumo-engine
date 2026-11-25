@@ -353,12 +353,16 @@ class LocalSnapshotStore:
         return next((path for path in candidates if self._ready_candidate(path)), None)
 
     def _ready_candidate(self, path: str) -> bool:
-        from diskgraph import DiskgraphCorruptionError, DiskgraphSystemError
+        from diskgraph import DiskgraphCorruptionError
 
         try:
+            # The native reader reports both invalid UTF-8 and I/O failures as
+            # DiskgraphSystemError. Decode separately so only encoding damage
+            # becomes ValueError; permission and resource errors must propagate.
+            (Path(path) / "_SUCCESS").read_text(encoding="utf-8")
             self._verify_path(path)
             return check_diskgraph_output(path) is not None
-        except (DiskgraphCorruptionError, DiskgraphSnapshotError, DiskgraphSystemError,
+        except (DiskgraphCorruptionError, DiskgraphSnapshotError,
                 FileNotFoundError, IsADirectoryError, NotADirectoryError,
                 ValueError, KeyError):
             logger.warning("Skipping invalid snapshot at %s", path)
