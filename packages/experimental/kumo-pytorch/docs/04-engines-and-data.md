@@ -151,6 +151,10 @@ For a declared `int64` column, DiskGraph also accepts Parquet `int8`,
 The contract and batches use `int64`. Ingest fails if any decimal value
 falls outside the signed 64-bit range.
 
+The entity ID column of a Parquet `AnchorTable` accepts the same types when the entity table's primary key is `int64`. `Plan.materialize` reads those IDs as `int64`, so requests, batches and materialized anchors carry `int64` IDs, and an ID outside the signed 64-bit range fails with an error that names `anchors.entity_id`. Snowflake's Parquet unload, for example, writes `INT` and `BIGINT` columns as scale-zero decimals.
+
+A declared integer column never accepts a float column, because `float64` represents integers exactly only up to 2^53. pandas stores an integer column that contains NULLs as `float64`, so an integer column read through pandas, for example with Snowpark's `DataFrame.to_pandas()`, arrives as floats. Read it through Arrow instead: Snowpark's `DataFrame.to_arrow()` keeps a nullable integer column as integers.
+
 Column names are case-sensitive; when column names or types are omitted, resolution reports every table whose stored columns do not match, with close-match suggestions. Fully declared tables are checked when DiskGraph prepares the data.
 
 ## The DiskGraph engine
