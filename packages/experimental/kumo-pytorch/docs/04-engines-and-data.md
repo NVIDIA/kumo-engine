@@ -137,6 +137,8 @@ file, a directory or a glob. A dataset binds exactly the contract's tables, and
 it doesn't name an engine. The DiskGraph engine reads `Parquet` sources, and the
 in-memory engine reads `InMemoryRows`, which we'll come to below.
 
+When the stored column names differ from the contract's, such as the upper-case names of a Snowflake export, `columns` maps them: `api.Parquet(path=..., columns={"USER_ID": "user_id"})` reads `USER_ID` as `user_id`. Everything after that, including the DiskGraph index, uses the contract's names.
+
 You don't have to repeat column types that the files already record. With
 Parquet, you can omit `TableSpec.columns`, or give a column's type as `None`,
 and the types are read from the file metadata. `contract.resolve(dataset=...)`

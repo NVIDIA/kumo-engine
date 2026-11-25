@@ -77,7 +77,8 @@ DataSource::BigQuery { connection_id, ... }
 
 ```rust
 ColumnSpec {
-    name: String,
+    name: String,                      // Column name in the index
+    source_name: Option<String>,       // Parquet column to read, if not name
     ingested_dtype: IngestedType,      // How data is stored in index
     source_dtype: Option<String>,      // Original Arrow type
     timestamp_format: Option<String>,  // For string timestamp parsing

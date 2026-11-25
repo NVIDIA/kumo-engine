@@ -877,23 +877,6 @@ def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monke
         assert len(calls) == 1
 
 
-def test_source_ingest_refuses_column_renames(indexed, tmp_path):
-    _, _, dataset, spec, _ = indexed
-    engine = api.DiskGraphEngine()
-    with api.prepare(spec, dataset, engine):
-        pass
-    renamed = api.Dataset(
-        {
-            name: api.Parquet(source.path, columns={"value": "renamed"})
-            if name == "events"
-            else source
-            for name, source in dataset.tables.items()
-        }
-    )
-    with pytest.raises(ValueError, match="DG-COLUMN-RENAME"):
-        api.prepare(spec, renamed, engine)
-
-
 def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_path, monkeypatch):
     from kumo.pytorch import materialization
 

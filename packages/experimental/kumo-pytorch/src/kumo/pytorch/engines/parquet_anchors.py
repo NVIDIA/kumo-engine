@@ -26,6 +26,7 @@ from kumo.pytorch.anchors import (
 )
 from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
+from kumo.pytorch.dataset import _MissingParquetColumns
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.spec import ValidationIssue
 
@@ -41,9 +42,7 @@ def _files(path: str) -> list[str]:
 def _physical(table: AnchorTable) -> dict[str, str]:
     """Logical anchor column -> physical Parquet column (honouring `Parquet.columns` renames)."""
 
-    logical_of = dict(getattr(table.source, "columns", {}) or {})
-    physical_of = {logical: physical for physical, logical in logical_of.items()}
-    return {name: physical_of.get(name, name) for name in table.columns}
+    return table.source._bind_columns(tuple(table.columns))
 
 
 def _anchor_key_array(values: Any, dtype: DType) -> Any:
@@ -77,25 +76,27 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
     if "://" in table.source.path:
         return ()  # DiskGraphEngine.check_sources refuses it (DG-REMOTE-PARQUET)
     try:
-        files = _files(table.source.path)
+        _files(table.source.path)
     except (FileNotFoundError, ValueError) as error:
         return (ValidationIssue("anchors.source.path", str(error), "point at local Parquet files"),)
-    import pyarrow.parquet as pq
-
-    required = _physical(table)
-    for file in files:
-        present = set(pq.read_schema(file).names)
-        missing = sorted(
-            logical for logical, physical in required.items() if physical not in present
+    try:
+        _physical(table)
+    except _MissingParquetColumns as error:
+        return (
+            ValidationIssue(
+                "anchors.columns",
+                f"anchor Parquet file {error.path!r} lacks columns {error.columns}",
+                "write those columns or rename them through Parquet(columns=...)",
+            ),
         )
-        if missing:
-            return (
-                ValidationIssue(
-                    "anchors.columns",
-                    f"anchor Parquet file {file!r} lacks columns {missing}",
-                    "write those columns or rename them through Parquet(columns=...)",
-                ),
-            )
+    except (ValueError, OSError) as error:
+        return (
+            ValidationIssue(
+                "anchors.columns",
+                f"anchor Parquet {error}",
+                "write those columns or rename them through Parquet(columns=...)",
+            ),
+        )
     return ()
 
 

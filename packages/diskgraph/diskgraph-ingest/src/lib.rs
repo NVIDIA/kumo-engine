@@ -920,7 +920,12 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // same pass) or was loaded directly from JSON. Idempotent. See
     // kumo-ai/kumo#28478.
     source.normalize_multicat_pseudo_list();
-    source.validate()?;
+    let synthetic_columns = options
+        .resolve_columns
+        .iter()
+        .map(|column| (column.table.as_str(), column.node_id_col.as_str()))
+        .collect();
+    source.validate_with_synthetic_columns(&synthetic_columns)?;
     promote_legacy_cloud_parquet_sources(&mut source)?;
     // Size num_shards in the process that spends the per-shard PK-map/MPHF
     // memory. An upstream conversion may have pinned a host-sized value in a
@@ -2075,6 +2080,7 @@ mod tests_repopulate_helpers {
         TableSpec {
             name: name.to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -2107,6 +2113,7 @@ mod tests_repopulate_helpers {
             name: name.to_string(),
             columns: vec![
                 ColumnSpec {
+                    source_name: None,
                     name: "src_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
                     source_dtype: None,
@@ -2119,6 +2126,7 @@ mod tests_repopulate_helpers {
                     multicategorical_delimiter: None,
                 },
                 ColumnSpec {
+                    source_name: None,
                     name: "dst_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
                     source_dtype: None,
@@ -3476,6 +3484,10 @@ impl PublicIngestError {
             || format!("column '{column_name}'"),
             |table_name| format!("table {table_name} column '{column_name}'"),
         );
+        Self::int64_decimal_out_of_range_at(location)
+    }
+
+    fn int64_decimal_out_of_range_at(location: String) -> Self {
         Self::new(format!(
             "{location} contains a scale-zero decimal value outside Kumo's signed 64-bit integer \
              range; cast the column to DOUBLE or STRING in Custom SQL, or keep its values within \
@@ -13314,8 +13326,13 @@ fn text_stats_from_prefix(
             }
             let source_index = batch
                 .schema()
-                .index_of(&table.columns[column_index].name)
-                .context("missing text column in Encode prefix")?;
+                .index_of(table.columns[column_index].source_column())
+                .with_context(|| {
+                    format!(
+                        "missing {} in Encode prefix",
+                        table.columns[column_index].source_description()
+                    )
+                })?;
             let array = batch.column(source_index);
             for row in 0..batch.num_rows() {
                 if samples[sample_index].len() >= TEXT_SAMPLE_LIMIT {
@@ -16847,8 +16864,8 @@ fn oversized_row_nulls(
 fn source_column<'a>(batch: &'a RecordBatch, column: &ColumnSpec) -> Result<&'a ArrayRef> {
     let idx = batch
         .schema()
-        .index_of(&column.name)
-        .with_context(|| format!("missing column {} in batch", column.name))?;
+        .index_of(column.source_column())
+        .with_context(|| format!("missing {} in source batch", column.source_description()))?;
     Ok(batch.column(idx))
 }
 
@@ -17844,17 +17861,19 @@ fn validate_source_schema(
         if synthetic_columns.contains(&column.name) {
             continue;
         }
-        let field_index = schema.index_of(&column.name).map_err(|_| {
+        let field_index = schema.index_of(column.source_column()).map_err(|_| {
             PublicIngestError::new(format!(
-                "table {} source schema is missing column '{}'",
-                table.name, column.name
+                "table {} source schema is missing {}",
+                table.name,
+                column.source_description()
             ))
         })?;
         let actual = schema.field(field_index).data_type();
         if *actual == DataType::Null {
             return Err(PublicIngestError::new(format!(
-                "table {} column '{}' has Null data type in the source schema",
-                table.name, column.name
+                "table {} {} has Null data type in the source schema",
+                table.name,
+                column.source_description()
             ))
             .into());
         }
@@ -17872,12 +17891,16 @@ fn validate_source_batch_values(
         {
             continue;
         }
-        let field_index = batch.schema().index_of(&column.name).map_err(|_| {
-            PublicIngestError::new(format!(
-                "table {} source batch is missing column '{}'",
-                table.name, column.name
-            ))
-        })?;
+        let field_index = batch
+            .schema()
+            .index_of(column.source_column())
+            .map_err(|_| {
+                PublicIngestError::new(format!(
+                    "table {} source batch is missing {}",
+                    table.name,
+                    column.source_description()
+                ))
+            })?;
         let array = batch.column(field_index);
         match array.data_type() {
             DataType::Decimal128(_, scale) if *scale == 0 => {
@@ -17887,10 +17910,11 @@ fn validate_source_batch_values(
                     .ok_or_else(|| anyhow!("decimal128 array cast failed"))?;
                 for row in 0..values.len() {
                     if !values.is_null(row) && i64::try_from(values.value(row)).is_err() {
-                        return Err(PublicIngestError::int64_decimal_out_of_range(
-                            Some(&table.name),
-                            &column.name,
-                        )
+                        return Err(PublicIngestError::int64_decimal_out_of_range_at(format!(
+                            "table {} {}",
+                            table.name,
+                            column.source_description()
+                        ))
                         .into());
                     }
                 }
@@ -17902,10 +17926,11 @@ fn validate_source_batch_values(
                     .ok_or_else(|| anyhow!("decimal256 array cast failed"))?;
                 for row in 0..values.len() {
                     if !values.is_null(row) && values.value(row).to_i64().is_none() {
-                        return Err(PublicIngestError::int64_decimal_out_of_range(
-                            Some(&table.name),
-                            &column.name,
-                        )
+                        return Err(PublicIngestError::int64_decimal_out_of_range_at(format!(
+                            "table {} {}",
+                            table.name,
+                            column.source_description()
+                        ))
                         .into());
                     }
                 }
