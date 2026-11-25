@@ -238,10 +238,19 @@ def test_default_graph_strategy_matches_explicit_recent_for_timed_destinations(f
     for sample in (original, default):
         with fm.prepare(**{**fm_inputs, "sample": sample}) as loader:
             batches.append(loader.load(query=query))
-    for name, table in batches[0].tables("predict")["related_tables"].items():
-        assert batches[1].tables("predict")["related_tables"][name].equals(table)
-    assert batches[0].encode("arrays") == batches[1].encode("arrays")
-    assert batches[1].tables("predict")["related_tables"]["orders"]["order_id"].to_pylist() == [14, 13]
+    for batch in batches:
+        arrays, _ = assert_payload_matches_tables(batch)
+        predict = json.loads(arrays)["predict"]
+        instances = predict["instance_table"]
+        records = [dict(zip(instances["columns"], row, strict=True)) for row in instances["rows"]]
+        assert [(row["instance_id"], row["__fm_entity_key"]) for row in records] == [
+            ("-9007199254740993", str(LARGE)), ("9007199254740993", -5)]
+        assert "__fm_target" not in instances["columns"]
+        orders = predict["related_tables"]["orders"]
+        records = [dict(zip(orders["columns"], row, strict=True)) for row in orders["rows"]]
+        assert [(row["instance_id"], row["order_id"], row["__fm_edge_order_user"])
+                for row in records] == [("-9007199254740993", 14, str(LARGE)),
+                                        ("9007199254740993", 13, -5)]
 
 
 @pytest.mark.parametrize("strategy", [None, "uniform", "recent"])

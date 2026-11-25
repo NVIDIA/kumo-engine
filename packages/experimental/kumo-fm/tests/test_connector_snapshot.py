@@ -132,15 +132,20 @@ def test_example_build_index_and_load_batch_without_sdm(tmp_path, monkeypatch):
     from connector_to_prediction import build_index_and_load_batch
 
     batch = build_index_and_load_batch(tmp_path / "example")
-    context = batch.tables("context")["instance_table"]
-    assert context.num_rows == 32
-    assert context["__fm_target"].to_pylist() == ["yes", "no"] * 16
-    assert batch.tables("predict")["instance_table"].num_rows == 8
-    assert batch.encode("arrays") and batch.encode("arrow_ipc")
     indexes = sorted((tmp_path / "example/producer/indexes").iterdir())
     second = build_index_and_load_batch(tmp_path / "example")
     assert sorted((tmp_path / "example/producer/indexes").iterdir()) == indexes
-    assert second.encode("arrays") == batch.encode("arrays")
+    for candidate in (batch, second):
+        arrays, _ = assert_payload_matches_tables(candidate)
+        wire = json.loads(arrays)
+        context = wire["context"]["instance_table"]
+        records = [dict(zip(context["columns"], row, strict=True)) for row in context["rows"]]
+        assert [(row["__fm_entity_key"], row["__fm_target"]) for row in records] == [
+            (user, "yes" if user % 2 == 0 else "no") for user in range(32)]
+        predict = wire["predict"]["instance_table"]
+        records = [dict(zip(predict["columns"], row, strict=True)) for row in predict["rows"]]
+        assert [row["__fm_entity_key"] for row in records] == list(range(8))
+        assert "__fm_target" not in predict["columns"]
 
 
 def test_snapshot_projects_fm_columns_and_widens_numeric_features(tmp_path):
