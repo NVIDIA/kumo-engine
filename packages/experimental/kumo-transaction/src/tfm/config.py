@@ -81,6 +81,47 @@ class PretrainWindowsConfig(StrictConfig):
 _PRETRAIN_WINDOWS = "Use data.pretrain_windows: {events, max_tokens}."
 
 
+class RelationalLabelConfig(StrictConfig):
+    """Anchor-level binary labels, kept separate from observed feature tables."""
+
+    table: str
+    root_columns: tuple[str, ...]
+    timestamp: str
+    target: str
+    available_at: str
+    split: str = "split"
+    horizon_days: int = Field(ge=0)
+    label_delay_days: int = Field(default=0, ge=0)
+
+
+class RelationalTaskConfig(StrictConfig):
+    """One root/path/anchor task shared by sequence, graph and hybrid modes."""
+
+    root: str
+    history_paths: dict[str, tuple[str, ...]]
+    cutoffs: dict[str, str] = Field(default_factory=dict)
+    label_cutoffs: dict[str, str] = Field(default_factory=dict)
+    labels: RelationalLabelConfig | None = None
+    anchors: str | None = None
+    """Optional replay/prediction Parquet table: sample_id, root key columns, cutoff, split."""
+    ownership: Literal["event_time", "prediction_time"] = "event_time"
+    tie_policy: Literal["canonical_key_asc"] = "canonical_key_asc"
+
+    @model_validator(mode="after")
+    def _paths_and_anchors(self) -> RelationalTaskConfig:
+        if (
+            not self.root
+            or not self.history_paths
+            or any(not path for path in self.history_paths.values())
+        ):
+            raise ValueError("Relational task needs a root and nonempty named history paths")
+        if self.labels is None and not self.cutoffs and self.anchors is None:
+            raise ValueError(
+                "Relational task needs configured cutoffs, label timestamps or replay anchors"
+            )
+        return self
+
+
 class DataConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "pretrain_window_events": _PRETRAIN_WINDOWS,
@@ -114,6 +155,8 @@ class DataConfig(StrictConfig):
     """Recipe history/graph retrieval backend. Python is the default;
     `kumo_pytorch` explicitly selects the experimental native integration. An explicit
     token cache continues to select its declared cache batch builder."""
+    relational: RelationalTaskConfig | None = None
+    """Shared relational task; the adapter supplies its dataset declaration."""
     path: str | None = None
     """Local book root. `pragmatiq` with no path and no `TFM_PRAGMATIQ_ROOT`
     generates a small synthetic fixture in the run directory."""
@@ -167,6 +210,8 @@ class DataConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _splice_needs_pragmatiq(self) -> DataConfig:
+        if self.relational is not None and "stratify_by_fraud" not in self.model_fields_set:
+            self.stratify_by_fraud = False
         if self.fraud_labels == "spliced_identity_theft" and self.adapter != "pragmatiq":
             raise ValueError(
                 "data.fraud_labels `spliced_identity_theft` is built from a pragmatiq book; "
@@ -811,6 +856,8 @@ class RecipeConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _cross_section_rules(self) -> RecipeConfig:
+        if self.data.relational is not None:
+            return self._relational_rules()
         if self.recipe_family == "graph":
             return self._graph_rules()
         kind = self.model.composition.granularity.type
@@ -872,6 +919,80 @@ class RecipeConfig(StrictConfig):
             problems.extend(_flat_pretrain_row_problems(self))
         if problems:
             raise ValueError("; ".join(problems) + ".")
+        return self
+
+    def _relational_rules(self) -> RecipeConfig:
+        from tfm.pooling.registry import build_readout
+        from tfm.pooling.usr_token import UsrTokenPool
+
+        if self.data.stratify_by_fraud:
+            raise ValueError("Relational anchors must be independent of event fraud labels")
+        if self.model.backbone != "eager":
+            raise ValueError("Relational reference recipes currently use the eager model backbone")
+        if isinstance(build_readout(self.model.composition.readout), UsrTokenPool):
+            raise ValueError("Relational causal histories require a history-visible readout")
+        if self.model.composition.granularity.decoder.ffn_size is not None:
+            raise ValueError(
+                "Relational history blocks currently use fixed 4*hidden feed-forward width"
+            )
+        kind = self.model.composition.granularity.type
+        if (self.recipe_family, kind) not in {
+            ("sequence", "profile_event_decoder"),
+            ("graph", "gnn_encoder"),
+            ("graph", "gnn_sequence"),
+        }:
+            raise ValueError(
+                "Relational tasks require profile_event_decoder in sequence or gnn_encoder/gnn_sequence in graph"
+            )
+        if self.data.token_cache is not None or self.data.pretrain_windows is not None:
+            raise ValueError(
+                "Relational anchors do not support token caches or tiled pretraining windows"
+            )
+        if self.model.composition.position not in {"nope", "time_rope"}:
+            raise ValueError("Relational histories support nope or time_rope")
+        if self.model.composition.objective != "binary" and not (
+            kind == "gnn_encoder" and self.training.objective == "future_subgraph"
+        ):
+            raise ValueError("Relational downstream tasks require explicit binary supervision")
+        if kind == "profile_event_decoder" and (
+            self.runtime.stage != "full" or self.training.objective != "binary"
+        ):
+            raise ValueError(
+                "Relational sequence models support direct binary training in the full stage"
+            )
+        if self.runtime.stage == "downstream" and not self.runtime.encoder_checkpoint:
+            raise ValueError("downstream stage requires runtime.encoder_checkpoint")
+        requires_labels = self.runtime.stage != "pretrain" or self.training.objective == "binary"
+        if self.data.load_labels != requires_labels:
+            raise ValueError("data.load_labels must match the relational stage's task supervision")
+        if (
+            not requires_labels
+            and self.data.relational is not None
+            and self.data.relational.labels is not None
+        ):
+            raise ValueError(
+                "Label-free relational pretraining uses cutoff/replay anchors; omit data.relational.labels"
+            )
+        if requires_labels:
+            assert self.data.relational is not None
+            if self.data.relational.labels is None:
+                raise ValueError("Supervised relational recipes require an entity label table")
+        for settings in (self.training, self.sequence_training):
+            if settings.backend != "eager" or settings.packing or settings.max_steps < 1:
+                raise ValueError(
+                    "Relational stages require eager unpacked training and positive steps"
+                )
+        if self.evaluation.surprise or self.fraud_task.supervised_head.enabled:
+            raise ValueError(
+                "Relational entity tasks do not support fraud heads or next-event surprise"
+            )
+        if (
+            self.model.composition.granularity.history_model is not None
+            or self.model.composition.granularity.task_head is not None
+        ):
+            raise ValueError(
+                "Relational reference recipes currently use the standard history stack and binary head"
+            )
         return self
 
     def _graph_rules(self) -> RecipeConfig:

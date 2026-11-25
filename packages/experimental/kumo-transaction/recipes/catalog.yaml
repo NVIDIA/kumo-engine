@@ -74,3 +74,19 @@ recipes:
       pretrain_only_smoke: graph stage only, label-free FutureSubgraph, plain encoder export
       downstream_smoke: binary downstream using outputs/gnn_encoder/pretrain_only/encoder.pt
     notes: supervised/full, label-free pretrain, or encoder-reusing downstream; eager only.
+
+  - id: relational_inputs
+    title: Shared relational inputs for sequence, graph and hybrid
+    tier: experimental
+    data: synthetic
+    configs:
+      smoke: bounded synthetic tables and entity-level binary labels, CPU
+      default: same small sequence example
+      graph_smoke: six-hop fanout-ten Engine GNN on the same declaration
+      hybrid_smoke: frozen selected GNN plus sequence decoder on aligned anchors
+      future_smoke: FutureSubgraph warm-up and supervised hybrid plus matched sequence control
+      encoder_pretrain_smoke: tokenizer-free label-free encoder export
+    notes: >
+      One adapter declares keyed tables, FK roles, clocks and feature allowlists.
+      Generated/replayed anchors share point-in-time histories and graph views.
+      Python defaults; native candidate retrieval is opt-in and bounded.

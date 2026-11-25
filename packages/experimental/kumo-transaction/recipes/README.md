@@ -23,6 +23,7 @@ re-evaluate a trained run.
 
 | [`gnn_encoder`](gnn_encoder) | Heterogeneous GNN, binary supervision or future-subgraph pretraining | generated relational fixture; optional local pragmatiq | — |
 | [`gnn_sequence`](gnn_sequence) | Frozen GNN conditions Blueprint v2 through its profile encoder | generated relational fixture; optional local pragmatiq | — |
+| [`relational_inputs`](relational_inputs) | Sequence, Engine GNN and hybrid from one keyed-table declaration and anchor stream | generic synthetic tables | — |
 
 Start with **blueprint_v1** for the end-to-end flow on public data. Use
 **pragma_like** for a PRAGMA-style encoder, and **blueprint_v2** for the

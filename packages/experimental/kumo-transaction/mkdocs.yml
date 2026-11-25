@@ -151,6 +151,7 @@ nav:
       - docs/contracts/transaction-event-schema.md
       - docs/contracts/model-input-output-contracts.md
       - docs/contracts/task-label-contracts.md
+      - docs/contracts/relational-inputs.md
       - docs/reference/support-policy.md
       - notebooks/STYLE.md
       - docs/recipes/recipe-template.md

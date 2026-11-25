@@ -35,7 +35,7 @@ which cutoff, and with which label.
 | `build_entity_sequences`, `build_entity_windows` | `tfm.data.sequence_builders` | One history per entity at a cutoff, or tiled windows for pretraining |
 | `build_sequences_at_label_cutoffs` | `tfm.data.sequence_builders` | One history per labelled row, cut at that row's timestamp |
 | `assign_temporal_split`, `split_entities` | `tfm.data.splits` | Time cutoffs for pretraining, and entity-disjoint probe folds |
-| `LabelWindow` | `tfm.data.labels` | The `(start, end]` period whose labels one side of a probe may read ([probe split rules](evaluation-protocol.md)) |
+| `LabelWindow` | `tfm.data.labels` | The `(start, end]` period whose labels one side of a probe may read ([probe-side label windows](../contracts/task-label-contracts.md#probe-side-label-windows)) |
 
 ### 1. Event representation
 

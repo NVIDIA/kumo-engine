@@ -205,6 +205,17 @@ def run_command(
         if config_path is None:
             raise ValueError("Pass a parsed recipe config or its path")
         config = RecipeConfig.model_validate(yaml.safe_load(config_path.read_text()))
+    if config.data.relational is not None:
+        from tfm.runtime.relational import run_command as run_relational
+
+        return run_relational(
+            command,
+            config=config,
+            config_path=config_path,
+            run_dir=run_dir,
+            device=device,
+            reuse_checkpoint=reuse_checkpoint,
+        )
     if device is not None:
         config = config.model_copy(
             update={"runtime": config.runtime.model_copy(update={"device": device})}

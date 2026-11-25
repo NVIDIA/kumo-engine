@@ -311,3 +311,18 @@ that presence. Missing amounts on individual events remain supported.
 token cache retains its batch builder; packing retains the packer over the selected
 histories. See the [migration guide](../migration/native-loader-default.md) for
 source build requirements and graph schema/clock limitations.
+
+## Shared relational tasks
+
+`data.relational` selects the adapter's bounded `RelationalDataset` declaration.
+It declares `root`, named `history_paths`, cutoff- or label-generated anchors,
+and optional replay `anchors`. `labels` declares the separate entity-level binary
+source, horizon, delay and split fitting cutoffs. Labels-role tables never become
+inputs. Pretrain-only FutureSubgraph uses cutoff/replay anchors with
+`data.load_labels: false` and no `data.relational.labels`.
+
+See the [contract](../contracts/relational-inputs.md) and
+[worked configurations](../../recipes/relational_inputs/README.md). Python remains
+the default. Numeric fixed-FK graph projection and point-in-time sequence
+ownership have explicit capability checks; unsupported graph feature kinds or
+versioned topology fail before fitting or training.

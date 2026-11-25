@@ -91,3 +91,19 @@ explain the startup, throughput and memory tradeoffs for both workload families.
 
 Full-book streaming and pipeline optimization are follow-up work: they change
 ingestion, tokenization and batching together and need their own evaluation.
+
+## Shared relational declaration
+
+The [relational recipe](../../recipes/relational_inputs/README.md) shows one
+adapter supplying tables, composite keys, relationships, clocks and feature
+allowlists for sequence, graph and hybrid. Recipes select roots/history paths
+and generate anchors from labels or cutoffs; supplied anchors remain optional.
+See [ownership and label semantics](../contracts/relational-inputs.md).
+
+This new fixed-FK graph path is separate from the original user/event example.
+It handles reached table types in both directions, independent observation
+clocks, exact cutoff snapshots and canonical fanout ties. It deliberately reads
+complete eligible candidate sets before capping, so native retrieval is opt-in
+and makes no performance claim. Numeric graph features are supported; versioned
+topology and categorical/text graph feature encoding fail explicitly. Sequence
+histories support point-in-time ownership traversal through timed intermediates.

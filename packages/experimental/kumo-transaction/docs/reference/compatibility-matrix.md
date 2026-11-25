@@ -15,6 +15,7 @@ milestone status is in [roadmap.md](roadmap.md).
 | `blueprint_v2` (+ `notebooks/pragmatiq`) | `experimental` | unit, contract, recipe smoke, notebooks in smoke mode | CPU / CUDA | PRAGMA encoders under a causal decoder (Blueprint v2 guide); `eager` or `ddp` |
 | `gnn_encoder` | `experimental` | unit, contract, recipe smoke | CPU checked; CUDA short check | Direct Engine GNN; binary supervision or future-subgraph pretraining; generated data; logistic probes |
 | `gnn_sequence` | `experimental` | unit, contract, recipe smoke | CPU and CUDA smoke | Selected frozen Engine GNN conditions Blueprint v2 through profile tokens; cutoff-level binary supervision |
+| `relational_inputs` | `experimental` | contract, CPU recipe smoke | CPU | One bounded fixed-FK declaration for profile/event sequence, GNN and hybrid; explicit entity labels; native opt-in candidate retrieval; see [limits](../../recipes/relational_inputs/README.md#limitations) |
 | Slot ablations (`benchmarks/ablations`) | `experimental` | recipe smoke (shared probe split asserted) | CPU | One slot swapped per variant, median [min, max] over `--seeds` |
 | 2.0.0a1 config migration (`tfm migrate-config`) | `reference` | unit (every moved key, every refusal, the lab's checkpoint config) | CPU | Rewrites 2.0.0a1 keys; refuses settings 2.0.0a2 cannot run; comments are not kept |
 

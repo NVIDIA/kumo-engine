@@ -5,7 +5,7 @@ tokens, give TabFormer a history embedding that adds to raw features, where
 v1's causal decoder's does not reliably
 ([`blueprint_v1_seeds`](blueprint_v1_seeds.md)) and `pragma_like`'s does not
 at all ([`pragma_like_tabformer_seed42`](pragma_like_tabformer_seed42.md))?
-[flat-encoder guide](../../recipes/blueprint_v1/README.md)'s encoder
+[flat-encoder configuration](../ablations/flat_encoder_tabformer.yaml)'s encoder
 differs from v1 only in its attention mask, objective, and readout. One seed,
 an exploration: not a quality, fraud, or production claim.
 

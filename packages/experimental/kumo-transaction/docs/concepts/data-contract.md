@@ -264,7 +264,7 @@ source records. Exact residual filtering preserves inclusive lower bounds and
 microsecond cutoffs before tokenization. Existing train-only tokenizer fits,
 label availability and window membership remain authoritative.
 
-The experimental graph sampler requires whole-second clocks, static user roots,
+The legacy event-adapter native graph sampler requires whole-second clocks, static user roots,
 one-parent event/transfer FK roles and event-time availability. It copies native
 tensors, validates disjoint ownership and temporal bounds, and then optionally
 unions same-cutoff samples for shared training. Native recent-fanout ties use
@@ -278,3 +278,15 @@ Resource-backed custom training inputs can implement
 The recipe runner closes that resource after fitting or setup failure. Graph
 loaders provide `loader_manifest` and `tie_policy` metadata directly; native
 resource cleanup is registered when the loader is created.
+
+
+The opt-in shared relational declaration has a separate
+[contract and worked recipe](../contracts/relational-inputs.md). It preserves
+row/link observation clocks through timed intermediate tables, generates or
+replays complete prediction anchors and identifies entity labels explicitly.
+Its native fixed-FK graph path filters cutoff snapshots before candidate
+retrieval and canonical fanout, with structural rows exempt from activity-window
+lower bounds while retaining real availability clocks. It overfetches candidates
+for deterministic ties and makes no performance claim. Unsupported projections
+fail before fitting or training; these limits differ from the legacy user/event
+adapter above.

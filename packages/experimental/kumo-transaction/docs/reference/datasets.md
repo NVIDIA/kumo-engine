@@ -187,3 +187,14 @@ history; known all-negatives and app-only retained histories remain valid. Owner
 sampling stays independent of labels. This requirement belongs to the binary
 recipe arms; generic unlabeled graph sampling and FutureSubgraph helpers do not
 require fraud labels.
+
+
+## Shared relational synthetic fixture
+
+`relational_inputs` uses `tfm.data.adapters.synthetic_relational:adapter`, a
+small deterministic fixture of entity, container, activity and label-only tables.
+Its role is contract and CPU smoke validation, including matched loader/model
+views, not model quality. Entity-disjoint train/validation/test rows carry
+explicit prediction timestamps, a two-day horizon and one-day label delay.
+The six-hop adversarial fixture is separate test data for membership, availability
+and ties. Neither fixture contributes benchmark results or external data.

@@ -132,6 +132,7 @@ class GraphBatch(ValidatedBatch):
     node_hop: Mapping[str, Tensor] | None = None
     num_sampled_nodes: Mapping[str, tuple[int, ...]] | None = None
     num_sampled_edges: Mapping[EdgeType, tuple[int, ...]] | None = None
+    window_exempt_types: frozenset[str] = frozenset()
 
     single_parent_relations: frozenset[EdgeType] = field(
         init=False, repr=False, default=frozenset()
@@ -158,6 +159,10 @@ class GraphBatch(ValidatedBatch):
         ):
             raise ValueError("Shared graphs require identical cutoffs and observation windows")
         types = set(self.node_features)
+        if not self.window_exempt_types.issubset(types):
+            raise ValueError(
+                "Observation-window exemptions must name declared structural node types"
+            )
         if types != set(self.node_sample) or types != set(self.node_available_us):
             raise ValueError("Graph node dictionaries must have identical types")
         if self.root_type not in types or self.root_index.shape != (self.batch_size,):
@@ -190,7 +195,9 @@ class GraphBatch(ValidatedBatch):
                 raise ValueError("Node owner outside anchor range")
             if bool((times > cutoffs[owners]).any()):
                 raise ValueError("Future node availability in graph inputs")
-            if bool(((times != STATIC_TIME) & (times < starts[owners])).any()):
+            if name not in self.window_exempt_types and bool(
+                ((times != STATIC_TIME) & (times < starts[owners])).any()
+            ):
                 raise ValueError("Node predates observation window")
         self._indices(self.root_index, len(self.node_features[self.root_type]))
         owners = self.node_sample[self.root_type][self.root_index]
@@ -417,7 +424,7 @@ class GraphTrainingBatch(ValidatedBatch):
 
 @dataclass(frozen=True)
 class GraphSupervisedBatch(ValidatedBatch):
-    """Graph inputs and available sequence-level binary task labels [B].
+    """Graph inputs and available binary task labels [B], with explicit target level.
 
     This is direct task supervision, not an event label or future-target vector.
     Labels and their availability remain outside the encoder inputs.
@@ -429,16 +436,19 @@ class GraphSupervisedBatch(ValidatedBatch):
     labels: Tensor
     label_available_us: Tensor
     label_cutoff_us: int
+    target_level: Literal["sequence", "entity"] = "sequence"
 
     def __post_init__(self) -> None:
         require_cpu(self)
+        if self.target_level not in {"sequence", "entity"}:
+            raise ValueError("Binary target_level must explicitly name sequence or entity")
         self.graph.assert_validated()
         if (
             self.labels.shape != (self.graph.batch_size,)
             or self.labels.requires_grad
             or not bool(((self.labels == 0) | (self.labels == 1)).all())
         ):
-            raise ValueError("Expected detached sequence-level binary labels [B]")
+            raise ValueError("Expected detached binary task labels [B]")
         if (
             self.label_available_us.shape != self.labels.shape
             or self.label_available_us.dtype != torch.long
@@ -450,7 +460,7 @@ class GraphSupervisedBatch(ValidatedBatch):
 
 @dataclass(frozen=True)
 class GraphHistoryBatch(ValidatedBatch):
-    """Cutoff-aligned graph/history inputs and optional sequence-level binary labels.
+    """Cutoff-aligned graph/history inputs and optional binary task labels.
 
     history_anchors certify the cutoffs used by the history builder. Labels
     require their own availability clocks, independently of feature cutoffs.
@@ -464,6 +474,7 @@ class GraphHistoryBatch(ValidatedBatch):
     labels: Tensor | None = None
     label_available_us: Tensor | None = None
     label_cutoff_us: int | None = None
+    target_level: Literal["sequence", "entity"] = "sequence"
 
     _history_projection: SequenceSupervisedBatch | None = field(
         default=None, init=False, repr=False, compare=False, metadata={"validation_cache": True}
@@ -471,6 +482,8 @@ class GraphHistoryBatch(ValidatedBatch):
 
     def __post_init__(self) -> None:
         require_cpu(self)
+        if self.target_level not in {"sequence", "entity"}:
+            raise ValueError("Binary target_level must explicitly name sequence or entity")
         self.graph.assert_validated()
         if self.graph.anchors != self.history_anchors:
             raise ValueError("Graph and history anchors/cutoffs differ")
@@ -486,7 +499,7 @@ class GraphHistoryBatch(ValidatedBatch):
                 or not bool(((self.labels == 0) | (self.labels == 1)).all())
                 or self.labels.requires_grad
             ):
-                raise ValueError("Expected detached sequence-level binary labels [B]")
+                raise ValueError("Expected detached binary task labels [B]")
             if (
                 self.label_available_us is None
                 or self.label_cutoff_us is None
@@ -497,6 +510,31 @@ class GraphHistoryBatch(ValidatedBatch):
                 raise ValueError("Task labels are not available at the declared fitting cutoff")
         elif self.label_available_us is not None or self.label_cutoff_us is not None:
             raise ValueError("Label availability provided without labels")
+        self._seal()
+
+
+@dataclass(frozen=True)
+class SequencePredictionBatch(ValidatedBatch):
+    """Unlabeled history inputs with exact anchor identities and mutation guards."""
+
+    execution_fields: ClassVar[frozenset[str]] = frozenset(("history",))
+
+    history: KeyValueTimeBatch
+    anchors: tuple[GraphAnchor, ...]
+    target_level: Literal["sequence", "entity"] = "sequence"
+
+    def __post_init__(self) -> None:
+        require_cpu(self)
+        if self.target_level not in {"sequence", "entity"}:
+            raise ValueError("Binary target_level must explicitly name sequence or entity")
+        if not self.anchors or len({a.sample_id for a in self.anchors}) != len(self.anchors):
+            raise ValueError("History predictions need unique, nonempty anchors")
+        if (
+            self.history.sequence_ids != tuple(a.sample_id for a in self.anchors)
+            or self.history.entity_ids != tuple(a.entity_id for a in self.anchors)
+            or self.history.batch_size != len(self.anchors)
+        ):
+            raise ValueError("Prediction history sample order differs from anchors")
         self._seal()
 
 
@@ -515,9 +553,12 @@ class SequenceSupervisedBatch(ValidatedBatch):
     labels: Tensor
     label_available_us: Tensor
     label_cutoff_us: int
+    target_level: Literal["sequence", "entity"] = "sequence"
 
     def __post_init__(self) -> None:
         require_cpu(self)
+        if self.target_level not in {"sequence", "entity"}:
+            raise ValueError("Binary target_level must explicitly name sequence or entity")
         if not self.anchors or len({a.sample_id for a in self.anchors}) != len(self.anchors):
             raise ValueError("Sequence controls need unique, nonempty anchors")
         if (
@@ -531,7 +572,7 @@ class SequenceSupervisedBatch(ValidatedBatch):
             or self.labels.requires_grad
             or not bool(((self.labels == 0) | (self.labels == 1)).all())
         ):
-            raise ValueError("Expected detached sequence-level binary labels [B]")
+            raise ValueError("Expected detached binary task labels [B]")
         if (
             self.label_available_us.shape != self.labels.shape
             or self.label_available_us.dtype != torch.long
@@ -560,6 +601,7 @@ class SequenceSupervisedBatch(ValidatedBatch):
             batch.labels,
             batch.label_available_us,
             batch.label_cutoff_us,
+            target_level=batch.target_level,
         )
         object.__setattr__(batch, "_history_projection", result)
         return result
