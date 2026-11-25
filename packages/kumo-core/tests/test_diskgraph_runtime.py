@@ -30,6 +30,7 @@ from kumo_core.diskgraph.snapshot import (
     DiskgraphSnapshotError,
     DiskgraphSnapshotHandle,
     LocalSnapshotStore,
+    write_diskgraph_success_marker,
 )
 from kumo_core.io.filesystem import makedirs, open_file
 from kumoapi.typing import TimestampPrecision
@@ -810,31 +811,78 @@ def test_cached_discarded_time_parse_failures_remain_allowed(tmp_path):
     validate_cached_source_times(str(tmp_path))
 
 
+@pytest.fixture(scope="module")
+def native_time_snapshot(tmp_path_factory):
+    _require_ingest_binary()
+    root = tmp_path_factory.mktemp("native-time-snapshot")
+    source = root / "events"
+    source.mkdir()
+    pq.write_table(pa.table({
+        "id": [1, 2, 3],
+        "ts": pa.array([10, 20, 30], type=pa.timestamp("s")),
+    }), source / "part.parquet")
+    result = execute_diskgraph_ingest(
+        {"name": "events", "tables": [{
+            "table_name": "events", "source_table_name": "events",
+            "connector_id": "native",
+            "pkey": {"name": "id", "dtype": "int64", "stype": "ID"},
+            "time_col": {"name": "ts", "dtype": "date", "stype": "timestamp"},
+            "cols": [], "fkeys": [],
+        }]},
+        DiskgraphIngestSpec(
+            data_persist_dir=str(root / "persist"),
+            table_data_versions={"events": "1"},
+            source_paths={"events": str(source)},
+            output_dir=str(root / "index"),
+            execution=diskgraph_runner.IngestExecutionConfig(
+                success_marker_content=DiskgraphIngestResult.for_index(root / "index").to_json()),
+        ),
+    )
+    LocalSnapshotStore._verify_path(result.index_path)
+    return Path(result.index_path)
+
+
+def _copy_runtime_snapshot(source, destination):
+    shutil.copytree(source, destination)
+    write_diskgraph_success_marker(
+        str(destination), DiskgraphIngestResult.for_index(destination))
+
+
+def _empty_required_time_table(path):
+    from diskgraph import verify_snapshot_integrity
+
+    metadata_path = path / "index_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    table, = metadata["node_types"]
+    assert table["name"] == "events"
+    assert table["create_time_col"] == "ts"
+    assert any(shard["max_id"] >= shard["min_id"] for shard in table["shards"])
+    for shard in table["shards"]:
+        shard.update(min_id=1, max_id=0)
+    metadata_path.write_text(json.dumps(metadata))
+    # Keep the manifest consistent so native verification reaches the later
+    # semantic guard, reproducing an old cache with an empty required-time table.
+    manifest_path = path / "_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry, = [entry for entry in manifest["files"]
+              if entry["rel_path"] == "index_metadata.json"]
+    entry["size_bytes"] = metadata_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest))
+    verify_snapshot_integrity(str(path))
+
+
 @pytest.mark.parametrize("operation", ["restore", "checkpoint"])
 def test_snapshot_store_rejects_empty_required_time_table(
-        monkeypatch, tmp_path, operation):
+        native_time_snapshot, tmp_path, operation):
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path / "local")))
     handle = DiskgraphSnapshotHandle("graph", "v1")
     durable_root = str(tmp_path / "durable")
     source = Path(store.durable_path(handle, durable_root)
                   if operation == "restore" else store.path(handle))
-    source.mkdir(parents=True)
-    marker = DiskgraphIngestResult.for_index(str(source)).to_json()
-    (source / "_SUCCESS").write_text(marker)
-    (source / "index_metadata.json").write_text(json.dumps({
-        "node_types": [{
-            "name": "events", "create_time_col": "ts",
-            "shards": [{"min_id": 1, "max_id": 0}],
-        }],
-    }))
-    monkeypatch.setitem(sys.modules, "diskgraph", SimpleNamespace(
-        DiskgraphCorruptionError=DiskgraphCorruptionError,
-        DiskgraphSystemError=DiskgraphSystemError,
-        verify_snapshot_integrity=lambda path: None,
-        read_success_marker=lambda path: (Path(path) / "_SUCCESS").read_text(),
-        has_resumable_ingest=lambda path: False,
-        write_success_marker=lambda path, value: (Path(path) / "_SUCCESS").write_text(value),
-    ))
+    _copy_runtime_snapshot(native_time_snapshot, source)
+    _empty_required_time_table(source)
+    before = {p.relative_to(source): p.read_bytes()
+              for p in source.rglob("*") if p.is_file()}
     with pytest.raises(DiskgraphSnapshotError, match="no usable rows"):
         if operation == "restore":
             store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
@@ -845,39 +893,48 @@ def test_snapshot_store_rejects_empty_required_time_table(
                 copy_tree=shutil.copytree, replace_tree=shutil.move)
     if operation == "checkpoint":
         assert not Path(durable_root).exists()
-    assert (source / "_SUCCESS").read_text() == marker
+    else:
+        assert not Path(store.staging_path(handle)).exists()
+        assert not store._reference(handle).exists()
+        assert not (tmp_path / "local" / "indexes").exists()
+    assert {p.relative_to(source): p.read_bytes()
+            for p in source.rglob("*") if p.is_file()} == before
 
 
 @pytest.mark.parametrize("invalid_first", [True, False])
+@pytest.mark.parametrize("damage", ["empty_required_time", "missing_artifact", "non_utf8_marker"])
 def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
-        monkeypatch, tmp_path, invalid_first):
+        native_time_snapshot, tmp_path, invalid_first, damage):
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path)))
-    versions = ["invalid", "valid"] if invalid_first else ["valid", "invalid"]
-    markers = {}
-    for version in versions:
-        path = Path(store.path(DiskgraphSnapshotHandle("graph", version)))
-        path.mkdir(parents=True)
-        markers[str(path)] = DiskgraphIngestResult.for_index(str(path)).to_json()
-        (path / "index_metadata.json").write_text(json.dumps({
-            "node_types": [{
-                "name": "events", "create_time_col": "ts",
-                "shards": [{"min_id": 1,
-                            "max_id": 0 if version == "invalid" else 1}],
-            }],
-        }))
-    touched = []
-    monkeypatch.setitem(sys.modules, "diskgraph", SimpleNamespace(
-        DiskgraphCorruptionError=DiskgraphCorruptionError,
-        DiskgraphSystemError=DiskgraphSystemError,
-        read_success_marker=lambda path: markers.get(path),
-        touch_success_marker=touched.append,
-        verify_snapshot_integrity=lambda path: None,
-    ))
-    assert store.list_ready() == [DiskgraphSnapshotHandle("graph", "valid")]
-    assert touched == [store.path(DiskgraphSnapshotHandle("graph", "valid"))]
-    with pytest.raises(DiskgraphSnapshotError, match="no usable rows"):
-        store.verify(DiskgraphSnapshotHandle("graph", "invalid"))
-    assert Path(store.path(DiskgraphSnapshotHandle("graph", "invalid"))).exists()
+    invalid = DiskgraphSnapshotHandle("graph", "a-invalid" if invalid_first else "z-invalid")
+    valid = DiskgraphSnapshotHandle("graph", "z-valid" if invalid_first else "a-valid")
+    invalid_path = Path(store.path(invalid))
+    valid_path = Path(store.path(valid))
+    for path in (invalid_path, valid_path):
+        _copy_runtime_snapshot(native_time_snapshot, path)
+        os.utime(path / "_SUCCESS", ns=(1_000_000_000, 1_000_000_000))
+    error = DiskgraphSnapshotError
+    message = "no usable rows"
+    if damage == "empty_required_time":
+        _empty_required_time_table(invalid_path)
+    elif damage == "missing_artifact":
+        (invalid_path / "col_stats.json").unlink()
+        error, message = DiskgraphCorruptionError, "1 missing file"
+    else:
+        (invalid_path / "_SUCCESS").write_bytes(bytes([255, 254]))
+        error, message = DiskgraphSystemError, "valid UTF-8"
+    invalid_mtime = (invalid_path / "_SUCCESS").stat().st_mtime_ns
+    valid_mtime = (valid_path / "_SUCCESS").stat().st_mtime_ns
+    before = {p.relative_to(invalid_path): p.read_bytes()
+              for p in invalid_path.rglob("*") if p.is_file()}
+
+    assert store.list_ready() == [valid]
+    assert (valid_path / "_SUCCESS").stat().st_mtime_ns > valid_mtime
+    assert (invalid_path / "_SUCCESS").stat().st_mtime_ns == invalid_mtime
+    with pytest.raises(error, match=message):
+        store.verify(invalid)
+    assert {p.relative_to(invalid_path): p.read_bytes()
+            for p in invalid_path.rglob("*") if p.is_file()} == before
 
 
 @pytest.mark.parametrize("clock", get_args(TimestampPrecision))
