@@ -1176,14 +1176,18 @@ def test_native_verification_io_errors_are_not_treated_as_damage(
             _local_index(snapshot.id)
 
 
-@pytest.mark.parametrize('reference_state', [
-    'valid', 'absent', 'json', 'shape', 'id', 'traversal', 'target_missing',
-    'metadata_missing', 'metadata_json', 'metadata_directory', 'metadata_mismatch',
-    'marker_missing', 'artifact_missing',
+# The core store suite covers the full layout/error matrix. These cases exercise
+# the distinct engine reuse, fallback and recovery paths with native indexes.
+@pytest.mark.parametrize(('reference_state', 'legacy_state'), [
+    pytest.param('valid', 'healthy', id='prefer-managed'),
+    pytest.param('valid', 'metadata', id='ignore-damaged-legacy'),
+    pytest.param('json', 'healthy', id='broken-reference-fallback'),
+    pytest.param('metadata_mismatch', 'healthy', id='damaged-managed-fallback'),
+    pytest.param('target_missing', 'absent', id='no-completed-copy'),
+    pytest.param('artifact_missing', 'metadata', id='both-copies-damaged'),
 ])
-@pytest.mark.parametrize('legacy_state', ['healthy', 'absent', 'metadata'])
 @pytest.mark.parametrize('operation', ['snapshot', 'import'])
-def test_completed_snapshot_fallback_and_recovery_combinations(
+def test_completed_snapshot_fallback_and_recovery(
         tmp_path, scratch, graph, exports, monkeypatch,
         reference_state, legacy_state, operation):
     from kumo_core.diskgraph.snapshot import (
@@ -1207,26 +1211,12 @@ def test_completed_snapshot_fallback_and_recovery_combinations(
         if legacy_state == 'metadata':
             (legacy / 'index_metadata.json').write_text('{broken')
     reference = store._reference(handle)
-    if reference_state == 'absent':
-        reference.unlink()
-    elif reference_state in {'json', 'shape', 'id', 'traversal'}:
-        reference.write_text({
-            'json': '{broken', 'shape': '[]', 'id': '{"index_build_id": 1}',
-            'traversal': '{"index_build_id": "../outside"}',
-        }[reference_state])
+    if reference_state == 'json':
+        reference.write_text('{broken')
     elif reference_state == 'target_missing':
         shutil.rmtree(managed)
-    elif reference_state == 'metadata_missing':
-        (managed / 'index_metadata.json').unlink()
-    elif reference_state == 'metadata_json':
-        (managed / 'index_metadata.json').write_text('{broken')
-    elif reference_state == 'metadata_directory':
-        (managed / 'index_metadata.json').unlink()
-        (managed / 'index_metadata.json').mkdir()
     elif reference_state == 'metadata_mismatch':
         (managed / 'index_metadata.json').write_text('{"index_build_id":"other"}')
-    elif reference_state == 'marker_missing':
-        (managed / '_SUCCESS').unlink()
     elif reference_state == 'artifact_missing':
         (managed / 'col_stats.json').unlink()
     expected = (managed if reference_state == 'valid' else

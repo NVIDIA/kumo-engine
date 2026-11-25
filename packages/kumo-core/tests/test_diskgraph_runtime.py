@@ -938,10 +938,9 @@ def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
 
 
 @pytest.mark.parametrize("layout", ["legacy", "managed", "managed_with_legacy"])
-@pytest.mark.parametrize("operation", ["candidate", "listing", "prefix"])
 @pytest.mark.parametrize("failure", ["non_utf8", "unreadable"])
 def test_marker_encoding_damage_is_distinct_from_read_permissions(
-        native_time_snapshot, tmp_path, layout, operation, failure):
+        native_time_snapshot, tmp_path, layout, failure):
     from diskgraph import read_success_marker, verify_snapshot_integrity
 
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path)))
@@ -963,12 +962,12 @@ def test_marker_encoding_damage_is_distinct_from_read_permissions(
     before = {p.relative_to(tmp_path): p.read_bytes()
               for p in tmp_path.rglob("*") if p.is_file()}
 
-    def lookup():
-        if operation == "candidate":
-            return store._ready_candidate(str(index))
-        if operation == "listing":
-            return store.list_ready()
-        return store.resolve_version_prefix(handle.graph_key, "ver")
+    lookups = [
+        (lambda: store._ready_candidate(str(index)), False),
+        (store.list_ready, [handle] if fallback else []),
+        (lambda: store.resolve_version_prefix(handle.graph_key, "ver"),
+         str(fallback) if fallback else None),
+    ]
 
     try:
         if failure == "unreadable":
@@ -984,14 +983,12 @@ def test_marker_encoding_damage_is_distinct_from_read_permissions(
         verify_snapshot_integrity(str(index))
         with pytest.raises(DiskgraphSystemError):
             read_success_marker(str(index))
-        if failure == "unreadable":
-            with pytest.raises((PermissionError, DiskgraphSystemError), match="[Pp]ermission denied|Access is denied"):
-                lookup()
-        else:
-            expected = {"candidate": False,
-                        "listing": [handle] if fallback else [],
-                        "prefix": str(fallback) if fallback else None}[operation]
-            assert lookup() == expected
+        for lookup, expected in lookups:
+            if failure == "unreadable":
+                with pytest.raises((PermissionError, DiskgraphSystemError), match="[Pp]ermission denied|Access is denied"):
+                    lookup()
+            else:
+                assert lookup() == expected
     finally:
         marker.chmod(permissions)
     assert {p.relative_to(tmp_path): p.read_bytes()
