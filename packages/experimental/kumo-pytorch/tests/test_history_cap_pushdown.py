@@ -233,7 +233,7 @@ def test_budgeted_drop_last_across_splits(tmp_path, with_graph, splits, max_toke
     ):
         requests = task._anchors.fetch(api.ALL_ANCHORS, range(len(splits)))
         for drop_last in (False, True):
-            reference = task.batches(requests, drop_last=drop_last, output_format="model")
+            reference = task.request_batches(requests, drop_last=drop_last, output_format="model")
             reference_ids = [list(batch.metadata["sample_ids"]) for batch in reference]
             if drop_last:
                 assert reference_ids == expected
@@ -311,7 +311,9 @@ def test_budgeted_batches_cross_read_chunks(
         requests = task._anchors.fetch(api.ALL_ANCHORS, range(len(splits)))
         for drop_last in (False, True):
             kept = expected[:-1] if drop_last and len(expected[-1]) < max_samples else expected
-            reference = list(task.batches(requests, drop_last=drop_last, output_format="model"))
+            reference = list(
+                task.request_batches(requests, drop_last=drop_last, output_format="model")
+            )
             assert [list(batch.metadata["sample_ids"]) for batch in reference] == kept
             for chunk_batches in (8, 1, 16):
                 actual = task.batches(
