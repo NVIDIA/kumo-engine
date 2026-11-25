@@ -49,13 +49,12 @@ _ENTRIES = (
         "DG-SOURCE-KIND",
         "Tables and anchor tables must be bound to Parquet files; other sources, "
         "such as `InMemoryRows`, are refused.",
-        "write the rows to a local Parquet file and bind it with `Parquet(path)`",
+        "write the rows to Parquet locally or on S3 and bind them with `Parquet(path)`",
     ),
     Unsupported(
         "DG-REMOTE-PARQUET",
-        "The DiskGraph engine doesn't support remote Parquet paths, such as `s3://`, "
-        "yet, for tables or anchor tables.",
-        "copy the files to a local disk and bind the local path",
+        "DiskGraph accepts local and S3 Parquet paths for tables and anchor tables.",
+        "bind a local Parquet path or an `s3://` URI",
     ),
     Unsupported(
         "DG-RELATION-KEYS",

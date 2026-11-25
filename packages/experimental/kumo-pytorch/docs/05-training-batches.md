@@ -317,7 +317,10 @@ The examples above run on the in-memory engine so they can print small results.
 A real training job reads Parquet files through the DiskGraph engine, and the
 contract doesn't change. Here we write the same users, purchases and anchors to
 Parquet files, and fit on the training split as before. On the DiskGraph engine,
-the anchors are a Parquet `AnchorTable` too.
+the anchors are a Parquet `AnchorTable` too. An S3 anchor object or prefix uses
+the same split selection and point-in-time sampling as a local file. The task
+keeps its derived seed index under the configured scratch root.
+[Reading Parquet from S3](04-engines-and-data.md#reading-parquet-from-s3)
 
 <!-- test: diskgraph -->
 ```python

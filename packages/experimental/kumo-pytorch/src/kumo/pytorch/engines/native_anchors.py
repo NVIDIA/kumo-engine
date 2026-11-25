@@ -33,11 +33,11 @@ from kumo.pytorch.engines.parquet_anchors import (
     _candidate_row,
     _entity_id_type,
     _entity_ids,
-    _files,
     _physical,
-    check_parquet_anchors,
+    _read_anchor_batches,
 )
 from kumo.pytorch.materialization import _diskgraph_dtype
+from kumo.pytorch.parquet_sources import parquet_objects
 
 
 def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
@@ -81,8 +81,6 @@ class NativeAnchors:
         import pyarrow.compute as pc
         import pyarrow.parquet as pq
 
-        if issues := check_parquet_anchors(table):
-            raise ValueError(issues[0].describe())
         self._source, self._sample, self._table = source, sample, table
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
@@ -106,11 +104,15 @@ class NativeAnchors:
     def _materialize(self, pq: Any) -> None:
         pa, pc = self._pa, self._pc
         table = self._table
-        physical = _physical(table)
-        files = _files(table.source.path)
-        schema = pq.read_schema(files[0])
+        files = parquet_objects(table.source.path)
+        schemas = table.source._schemas(files)
+        physical = _physical(table, schemas)
+        schema = schemas[files[0]["path"]]
         projected = sorted(set(physical.values()))
         snapshot = hashlib.sha256(pa.schema([schema.field(name) for name in projected]).serialize())
+        remote = table.source.path.startswith("s3://")
+        if remote:
+            snapshot.update(json.dumps(files, sort_keys=True).encode())
         self._types = {name: schema.field(column).type for name, column in physical.items()}
         entity = self._source._tables[self._sample.entity.table]
         key = entity.columns[entity.primary_key]
@@ -133,15 +135,17 @@ class NativeAnchors:
         extension = Path(self._temporary.name)
         try:
             for file in files:
-                for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
-                    # A record-batch message alone omits dictionary values.
-                    sink = pa.BufferOutputStream()
-                    with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
-                        writer.write_batch(batch)
-                    snapshot.update(sink.getvalue())
+                for batch in _read_anchor_batches(table, file, columns=projected, batch_size=32768):
+                    if not remote:
+                        # S3 reads are already pinned to the manifest hashed above.
+                        # For local files include dictionary values in the content hash.
+                        sink = pa.BufferOutputStream()
+                        with pa.ipc.new_stream(sink, batch.schema.remove_metadata()) as writer:
+                            writer.write_batch(batch)
+                        snapshot.update(sink.getvalue())
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     # Files may differ in physical type, so each batch is read on its own.
-                    columns[table.entity_id] = _entity_ids(columns[table.entity_id], key, file)
+                    columns[table.entity_id] = _entity_ids(columns[table.entity_id], key, file["path"])
                     entities = _anchor_key_array(columns[table.entity_id], key)
                     dense = self._source._sampler.lookup_node_ids(
                         self._sample.entity.table, entities

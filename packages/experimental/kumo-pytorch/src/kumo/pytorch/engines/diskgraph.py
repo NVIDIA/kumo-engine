@@ -253,13 +253,13 @@ class DiskGraphEngine:
     prediction, such as event histories and graph neighborhoods, without keeping
     the full index in RAM.
 
-    The base index is built from local Parquet files and is independent of
+    The base index reads local or S3 Parquet files and is independent of
     anchors, fitted encoders and output layout. Several contracts can reuse it
     through the same engine instance or a snapshot binding. Its manifest binds
-    the schema, physical file metadata (not a content snapshot) and resolved
-    types; every file's declared columns and physical types are checked before
-    ingestion. Native ingestion rules apply: rows with
-    NULL clocks and other rejected rows are dropped and counted.
+    the schema, physical file metadata and resolved types. For S3 sources it
+    records the object paths, sizes, ETags and available version IDs. Every
+    file's declared columns and physical types are checked before ingestion.
+    Native ingestion drops and counts rows with NULL clocks and other rejected rows.
 
     Supported: direct entity fields, historical event fields, typed scalar
     calculations, aggregates and comparisons, nested grouping, generated scalar
@@ -536,7 +536,7 @@ class DiskGraphEngine:
 
     @staticmethod
     def check_sources(sources: Mapping[str, TableSource], path: str) -> tuple[ValidationIssue, ...]:
-        """Refuse sources other than local Parquet, before any data is read.
+        """Refuse unsupported Parquet locations and source kinds before reading data.
 
         ``sources`` maps table names to their sources; an empty name means the
         source at ``path`` itself, such as an anchor table's.
@@ -547,12 +547,16 @@ class DiskGraphEngine:
             message = f"engine 'diskgraph' does not read {unreadable} sources"
             issues.append(_refusal("DG-SOURCE-KIND", path, message))
         for name, source in sources.items():
-            if isinstance(source, Parquet) and "://" in source.path:
+            if (
+                isinstance(source, Parquet)
+                and "://" in source.path
+                and not source.path.startswith("s3://")
+            ):
                 issues.append(
                     _refusal(
                         "DG-REMOTE-PARQUET",
                         f"{path}.{name}.path" if name else f"{path}.path",
-                        f"local Parquet paths are required; got {source.path!r}",
+                        "Parquet sources require a local path or s3:// URI",
                     )
                 )
         return tuple(issues)
@@ -855,30 +859,34 @@ class DiskGraphSource:
 
         return NativeAnchors(self, sample, table, directory=directory)
 
-    def materialize_scalar_batches(self, sample, anchors, batch_size):
+    def materialize_scalar_batches(self, sample, anchors, batch_size, *, objects):
         """Scan native TT batches and evaluate scalar arrays without SampleRequests."""
         from kumo.pytorch.engines.parquet_anchors import (
             _anchor_key_array,
             _entity_ids,
-            _files,
             _physical,
+            _read_anchor_batches,
         )
 
-        physical = _physical(anchors)
+        physical = _physical(anchors, objects=objects)
         compiled = _TemporalPlanCompiler(self).compile(sample)
         prepared = self._sampler.prepare_aggregate_plan(
             sample.entity.table, json.dumps(self._aggregate_plan(sample, compiled.plan))
         )
         entity = self._tables[sample.entity.table]
         key_dtype = entity.columns[entity.primary_key]
-        for path in _files(anchors.source.path):
-            for batch in self._diskgraph.read_custom_tt_parquet_batches(
-                path, columns=sorted(set(physical.values())), batch_size=batch_size
+        for item in objects:
+            for batch in _read_anchor_batches(
+                anchors,
+                item,
+                columns=sorted(set(physical.values())),
+                batch_size=batch_size,
+                local_reader=self._diskgraph.read_custom_tt_parquet_batches,
             ):
                 started = time.perf_counter_ns()
                 columns = {name: batch.column(column) for name, column in physical.items()}
                 columns[anchors.entity_id] = _entity_ids(
-                    columns[anchors.entity_id], key_dtype, path
+                    columns[anchors.entity_id], key_dtype, item["path"]
                 )
                 keys = _anchor_key_array(columns[anchors.entity_id], key_dtype)
                 roots = self._sampler.lookup_node_ids(sample.entity.table, keys)

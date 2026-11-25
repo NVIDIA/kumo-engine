@@ -91,13 +91,13 @@ class Parquet(path: str = '', columns: Mapping[str, str] = {})
 
 One logical table stored as Parquet.
 
-`path` may name a file, a directory, or a glob. `columns` renames
-physical columns to the logical names the schema uses, for the common case
+`path` may name a local file, directory or glob, or an S3 object or prefix.
+`columns` renames physical columns to the logical names the schema uses, for the common case
 where a warehouse column is not called what the model calls it.
 
 **Parameters**
 
-- `path`: a file, a directory, or a glob.
+- `path`: a local file, directory or glob, or an S3 URI.
 - `columns`: physical column name to the logical name the schema uses.
 
 #### `Parquet.to_dict`
@@ -308,13 +308,13 @@ local SSDs and retrieves time-correct context for training and batch
 prediction, such as event histories and graph neighborhoods, without keeping
 the full index in RAM.
 
-The base index is built from local Parquet files and is independent of
+The base index reads local or S3 Parquet files and is independent of
 anchors, fitted encoders and output layout. Several contracts can reuse it
 through the same engine instance or a snapshot binding. Its manifest binds
-the schema, physical file metadata (not a content snapshot) and resolved
-types; every file's declared columns and physical types are checked before
-ingestion. Native ingestion rules apply: rows with
-NULL clocks and other rejected rows are dropped and counted.
+the schema, physical file metadata and resolved types. For S3 sources it
+records the object paths, sizes, ETags and available version IDs. Every
+file's declared columns and physical types are checked before ingestion.
+Native ingestion drops and counts rows with NULL clocks and other rejected rows.
 
 Supported: direct entity fields, historical event fields, typed scalar
 calculations, aggregates and comparisons, nested grouping, generated scalar
@@ -390,7 +390,7 @@ DiskGraphEngine.check_sources(
 ) -> tuple[ValidationIssue, ...]
 ```
 
-Refuse sources other than local Parquet, before any data is read.
+Refuse unsupported Parquet locations and source kinds before reading data.
 
 `sources` maps table names to their sources; an empty name means the
 source at `path` itself, such as an anchor table's.

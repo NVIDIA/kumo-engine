@@ -753,15 +753,10 @@ pub(crate) fn parse_cloud_object_authority(path: &str) -> Result<CloudSource> {
     } else {
         1
     };
-    let key = rest
-        .split('/')
-        .nth(index)
-        .unwrap_or("")
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("");
+    let key = rest.split('/').nth(index).unwrap_or("");
     ensure!(
-        !key.is_empty(),
+        !key.is_empty()
+            && (matches!(authority, CloudSource::S3 { .. }) || !key.starts_with(['?', '#'])),
         "object-store manifest path {path} has no object key"
     );
     Ok(authority)

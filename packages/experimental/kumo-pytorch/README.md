@@ -269,3 +269,9 @@ python -m pytest -q
 ```
 
 Tests that need DiskGraph skip if it can't be imported, and tests that need a GPU skip without one. Pass `--require-imports` to make a skip caused by a missing dependency fail instead. `python -m conformance --engine all` checks the [behavior guarantees](conformance/README.md) on both engines, `python -m pytest -m notebook` runs the example notebooks, and [e2e/README.md](e2e/README.md) explains the opt-in end-to-end runs.
+
+The S3 integration tests start a loopback S3-compatible endpoint. Install
+`moto[server]` in the test environment and run `python -m pytest -q -k s3`
+from this package directory. The tests use fixture credentials and a temporary
+bucket. Run `python -m tests.e2e.s3_parquet_throughput` for paired local and
+S3 timings covering index construction, reuse, anchor staging and batch iteration.

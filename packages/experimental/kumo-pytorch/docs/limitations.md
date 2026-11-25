@@ -17,7 +17,7 @@ meet one yet. The [API reference](api/README.md) covers each declaration.
 | Point-in-time selection and leakage boundaries | Implemented |
 | Encodings, fitting, layouts, targets, previews | Implemented |
 | Artifacts, inference mode, serving from caller-supplied rows | Implemented. Serving builds batches in Python, the same way the in-memory engine does |
-| `DiskGraphEngine` over local Parquet | Graphs with node features, event sequences, aggregates, generated labels and columnar model batches; see [DiskGraph](#diskgraph) |
+| `DiskGraphEngine` over local or S3 Parquet | Graphs with node features, event sequences, aggregates, generated labels and columnar model batches; see [DiskGraph](#diskgraph) |
 | `InMemoryEngine` over `InMemoryRows` | Implemented for small datasets. Scored walks, candidate-rooted neighborhoods and fixed-shape array features require `DiskGraphEngine`. |
 | Streaming, prefetch, caching, remote storage | Not implemented |
 | Artifact and schema migration | Not implemented: an artifact loads only in the version that wrote it |
@@ -60,8 +60,8 @@ both `check` and `prepare` before any data is read; the others are refused while
 <!-- generated from DiskGraphEngine.unsupported by tests/limitations_reference.py -->
 | Code | Refused | Refused at | Instead |
 |---|---|---|---|
-| `DG-SOURCE-KIND` | Tables and anchor tables must be bound to Parquet files; other sources, such as `InMemoryRows`, are refused. | `check()` | Write the rows to a local Parquet file and bind it with `Parquet(path)`. |
-| `DG-REMOTE-PARQUET` | The DiskGraph engine doesn't support remote Parquet paths, such as `s3://`, yet, for tables or anchor tables. | `check()` | Copy the files to a local disk and bind the local path. |
+| `DG-SOURCE-KIND` | Tables and anchor tables must be bound to Parquet files; other sources, such as `InMemoryRows`, are refused. | `check()` | Write the rows to Parquet locally or on S3 and bind them with `Parquet(path)`. |
+| `DG-REMOTE-PARQUET` | DiskGraph accepts local and S3 Parquet paths for tables and anchor tables. | `check()` | Bind a local Parquet path or an `s3://` URI. |
 | `DG-RELATION-KEYS` | A relation must have exactly one side that is its own table's primary key; joins of two foreign keys, and of two primary keys, are refused. | `check()` | For two foreign keys, relate each to a key table whose primary key is the shared key; for two primary keys, add a copy of the key as an ordinary column of one table and relate through that column. |
 | `DG-TIMED-INTERMEDIATE` | A `Rows` path can't pass through an intermediate table that has a clock, because the cutoff can't be applied at an intermediate hop. | `check()` | Use a direct relation if it gives the same rows, or precompute the joined rows into one table before writing the Parquet files. |
 | `DG-ROW-FILTER` | Row filters, in `Rows.filters` or `EntitySpec.filters`, are refused. | `check()` | Precompute the condition as a column, or write only the matching rows to their own table, before writing the Parquet files. |
@@ -308,7 +308,7 @@ distributed training is up to your training loop.
 
 ## Engine support
 
-`DiskGraphEngine` builds indexes from local Parquet files or opens a completed
+`DiskGraphEngine` builds local indexes from local or S3 Parquet sources, or opens a completed
 [snapshot](04-engines-and-data.md#open-an-existing-snapshot)
 without the original sources. It builds model output column by column. It
 raises an error for the joins, filters, graph strategies and sampling features

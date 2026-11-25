@@ -313,19 +313,20 @@ class Plan:
         source = self._require_open()
         logical_anchors = anchors  # Scalar materialization uses a temporary Parquet path.
         directory = None
-        if (
-            values is None
-            and isinstance(anchors, AnchorTable)
-            and isinstance(anchors.source, Parquet)
-        ):
-            import pyarrow.parquet as pq
+        if isinstance(anchors, AnchorTable) and isinstance(anchors.source, Parquet):
+            if anchors.source.path.startswith("s3://"):
+                if issues := _source_issues(self.engine, {"": anchors.source}, "anchors.source"):
+                    raise ValidationError(issues)
+            elif values is None:
+                # Persisted scalar caches and their statistics are local task artifacts.
+                import pyarrow.parquet as pq
 
-            from kumo.pytorch.aggregate_materialization import _META, MaterializedValues
-            from kumo.pytorch.materialization import _local_parquet_files
+                from kumo.pytorch.aggregate_materialization import _META, MaterializedValues
+                from kumo.pytorch.dataset import _local_parquet_files
 
-            files = _local_parquet_files(anchors.source.path)
-            if _META in (pq.read_schema(files[0]).metadata or {}):
-                values = MaterializedValues.open(anchors.source.path)
+                files = _local_parquet_files(anchors.source.path)
+                if _META in (pq.read_schema(files[0]).metadata or {}):
+                    values = MaterializedValues.open(anchors.source.path)
         if (
             values is None
             and isinstance(anchors, AnchorTable)
@@ -397,6 +398,8 @@ class Plan:
 
                 task_anchors = ParquetAnchors(anchors)
             snapshot = getattr(task_anchors, "snapshot_digest", None)
+            if source_fingerprint := getattr(values, "source_fingerprint", None):
+                snapshot = (source_fingerprint, snapshot)
             anchors_fingerprint = _fingerprint(
                 (logical_anchors, snapshot) if snapshot is not None else logical_anchors
             )

@@ -25,10 +25,10 @@ from kumo.pytorch.dataset import (
     Parquet,
     _can_coerce_to_int64,
     _float_integer_hint,
-    _local_parquet_files,
     _MissingParquetColumns,
 )
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
+from kumo.pytorch.parquet_sources import open_parquet_file, parquet_objects
 
 _MANIFEST = "index_manifest.json"
 _MANIFEST_VERSION = 3
@@ -85,7 +85,7 @@ def ensure_diskgraph_index(
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
-    Accepts local Parquet with optional column renames and PK/FK relations
+    Accepts local and S3 Parquet with optional column renames and PK/FK relations
     with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten.
@@ -118,6 +118,7 @@ def ensure_diskgraph_index(
         dataset,
         num_shards=num_shards,
         dataset_name=dataset_name,
+        physical_snapshot=physical_snapshot,
     )
     config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
     stats_options = {}
@@ -176,6 +177,13 @@ def ensure_diskgraph_index(
             "num_shards": num_shards,
             "ingest_seconds": elapsed,
         }
+        s3_objects = {
+            name: snapshot["files"]
+            for name, snapshot in physical_snapshot.items()
+            if snapshot["path"].startswith("s3://")
+        }
+        if s3_objects:
+            manifest["s3_objects"] = s3_objects
         (build / _MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         if output.exists():
             raise FileExistsError(f"DiskGraph index appeared during ingest: {output}")
@@ -228,10 +236,10 @@ def _compile_diskgraph_config(
     *,
     num_shards: int,
     dataset_name: str,
+    physical_snapshot: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     try:
         import pyarrow as pa
-        import pyarrow.parquet as pq
     except ImportError as error:  # pragma: no cover - installed with DiskGraph
         raise ImportError("DiskGraph materialization requires pyarrow") from error
 
@@ -245,15 +253,17 @@ def _compile_diskgraph_config(
             raise TypeError(
                 f"DiskGraph materialization requires Parquet for table {table.name!r}, got {kind!r}"
             )
-        if "://" in source.path:
-            raise DISKGRAPH_UNSUPPORTED["DG-REMOTE-PARQUET"].error(
-                f"local Parquet paths are required; got {source.path!r}"
-            )
-        paths = _local_parquet_files(source.path)
+        files = (
+            physical_snapshot[table.name]["files"]
+            if physical_snapshot is not None
+            else _source_files(source)
+        )
         schemas = {}
-        for path in paths:
+        for item in files:
+            path = item["path"]
             try:
-                schemas[path] = pq.read_schema(path)
+                with open_parquet_file(item) as parquet:
+                    schemas[path] = parquet.schema_arrow
             except Exception as error:
                 raise ValueError(
                     f"table {table.name!r}: cannot read Parquet schema from {path}: {error}"
@@ -306,7 +316,11 @@ def _compile_diskgraph_config(
                 }
                 for name, dtype in sorted(table.columns.items())
             ],
-            "source": {"type": "parquet", "paths": paths},
+            "source": (
+                {"type": "object_store_parquet", "objects": files, "auth_profile": "ambient"}
+                if source.path.startswith("s3://")
+                else {"type": "parquet", "paths": [item["path"] for item in files]}
+            ),
             "fkeys": [],
         }
         if table.primary_key is not None:
@@ -471,22 +485,20 @@ def _schema_payload(schema: DataSchema) -> dict[str, Any]:
     }
 
 
+def _source_files(source: Parquet) -> list[dict[str, Any]]:
+    if "://" in source.path and not source.path.startswith("s3://"):
+        raise DISKGRAPH_UNSUPPORTED["DG-REMOTE-PARQUET"].error(
+            "DiskGraph Parquet sources require a local path or s3:// URI"
+        )
+    return parquet_objects(source.path)
+
+
 def _dataset_payload(dataset: Dataset) -> dict[str, Any]:
     payload = {}
     for name, source in sorted(dataset.tables.items()):
         if not isinstance(source, Parquet):
             raise TypeError("DiskGraph index provenance only supports Parquet datasets")
-        payload[name] = {
-            **source.to_dict(),
-            "files": [
-                {
-                    "path": path,
-                    "size": Path(path).stat().st_size,
-                    "mtime_ns": Path(path).stat().st_mtime_ns,
-                }
-                for path in _local_parquet_files(source.path)
-            ],
-        }
+        payload[name] = {**source.to_dict(), "files": _source_files(source)}
     return payload
 
 

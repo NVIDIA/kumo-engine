@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read an anchor table stored as local Parquet, for engines whose data is Parquet.
+"""Read an anchor table stored as Parquet, for engines whose data is Parquet.
 
 Anchor columns are held as Arrow arrays (millions of anchors cost a few hundred
 megabytes) and turned into `SampleRequest` values only when a batch fetches
@@ -27,21 +27,21 @@ from kumo.pytorch.anchors import (
 from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
 from kumo.pytorch.dataset import _can_coerce_to_int64, _MissingParquetColumns
+from kumo.pytorch.parquet_sources import open_parquet_file, parquet_objects
 from kumo.pytorch.spec import ValidationIssue
 
 __all__ = ["ParquetAnchors", "check_parquet_anchors"]
 
 
-def _files(path: str) -> list[str]:
-    from kumo.pytorch.materialization import _local_parquet_files
-
-    return _local_parquet_files(path)
-
-
-def _physical(table: AnchorTable) -> dict[str, str]:
+def _physical(table: AnchorTable, schemas=None, *, objects=None) -> dict[str, str]:
     """Logical anchor column -> physical Parquet column (honouring `Parquet.columns` renames)."""
 
-    return table.source._bind_columns(tuple(table.columns))
+    if schemas is None and objects is not None:
+        schemas = table.source._schemas(objects)
+    file_columns = (
+        None if schemas is None else {path: schema.names for path, schema in schemas.items()}
+    )
+    return table.source._bind_columns(tuple(table.columns), file_columns=file_columns)
 
 
 def _anchor_key_array(values: Any, dtype: DType) -> Any:
@@ -95,21 +95,16 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
 
     if getattr(table.source, "kind", None) != "parquet":
         return ()  # DiskGraphEngine.check_sources refuses it (DG-SOURCE-KIND)
-    if "://" in table.source.path:
-        return ()  # DiskGraphEngine.check_sources refuses it (DG-REMOTE-PARQUET)
+    if "://" in table.source.path and not table.source.path.startswith("s3://"):
+        return ()  # DiskGraphEngine.check_sources refuses other URI schemes
     try:
-        files = _files(table.source.path)
-    except (FileNotFoundError, ValueError) as error:
-        return (ValidationIssue("anchors.source.path", str(error), "point at local Parquet files"),)
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    try:
-        schemas = {file: pq.read_schema(file) for file in files}
-        required = table.source._bind_columns(
-            tuple(table.columns),
-            file_columns={file: schema.names for file, schema in schemas.items()},
+        schemas = table.source._schemas()
+    except (OSError, ValueError) as error:
+        return (
+            ValidationIssue("anchors.source.path", str(error), "point at readable Parquet files"),
         )
+    try:
+        required = _physical(table, schemas)
     except _MissingParquetColumns as error:
         return (
             ValidationIssue(
@@ -127,26 +122,52 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
             ),
         )
     for file, schema in schemas.items():
-        for name, binding in table.candidates.items():
-            dtype = schema.field(required[binding.column]).type
-            if not (
-                (
-                    pa.types.is_list(dtype)
-                    or pa.types.is_large_list(dtype)
-                    or pa.types.is_fixed_size_list(dtype)
-                )
-                and pa.types.is_struct(dtype.value_type)
-                and all(field in dtype.value_type.names for field in binding.fields)
-            ):
-                return (
-                    ValidationIssue(
-                        f"anchors.candidates.{name}",
-                        f"{binding.column!r} in {file!r} must be a list of structs "
-                        f"with fields {binding.fields}, got {dtype}",
-                        "supply the candidate ID and bound label fields in each struct",
-                    ),
-                )
+        if issue := _schema_issue(table, file, schema, required):
+            return (issue,)
     return ()
+
+
+def _schema_issue(table, file, schema, required=None):
+    import pyarrow as pa
+
+    if required is None:
+        required = _physical(table, {file: schema})
+    for name, binding in table.candidates.items():
+        dtype = schema.field(required[binding.column]).type
+        if not (
+            (
+                pa.types.is_list(dtype)
+                or pa.types.is_large_list(dtype)
+                or pa.types.is_fixed_size_list(dtype)
+            )
+            and pa.types.is_struct(dtype.value_type)
+            and all(field in dtype.value_type.names for field in binding.fields)
+        ):
+            return ValidationIssue(
+                f"anchors.candidates.{name}",
+                f"{binding.column!r} in {file!r} must be a list of structs "
+                f"with fields {binding.fields}, got {dtype}",
+                "supply the candidate ID and bound label fields in each struct",
+            )
+    return None
+
+
+def _read_anchor_batches(table, item, *, columns, batch_size, local_reader=None):
+    if local_reader is not None and not item["path"].startswith("s3://"):
+        yield from local_reader(item["path"], columns=columns, batch_size=batch_size)
+        return
+    with open_parquet_file(item) as reader:
+        if issue := _schema_issue(table, item["path"], reader.schema_arrow):
+            raise ValueError(issue.describe())
+        if item["path"].startswith("s3://"):
+            # Arrow coalesces ranges for a row group. Limit prefetch to one group
+            # so a large remote part is never prefetched as a whole.
+            for group in range(reader.num_row_groups):
+                yield from reader.iter_batches(
+                    row_groups=[group], columns=columns, batch_size=batch_size
+                )
+        else:
+            yield from reader.iter_batches(columns=columns, batch_size=batch_size)
 
 
 def _candidate_row(table, columns, index, position):
@@ -169,18 +190,34 @@ def _candidate_row(table, columns, index, position):
 
 
 class ParquetAnchors(PositionalAnchors):
-    """Anchors from local Parquet, in file-then-row order (the canonical order)."""
+    """Anchors from Parquet, in file-then-row order (the canonical order)."""
 
     def __init__(self, table: AnchorTable):
-        issues = check_parquet_anchors(table)
-        if issues:
-            raise ValueError(issues[0].describe())
+        import pyarrow as pa
         import pyarrow.dataset as pads
 
         self._table = table
-        physical = _physical(table)
-        data = pads.dataset(_files(table.source.path), format="parquet").to_table(
-            columns=sorted(set(physical.values()))
+        files = parquet_objects(table.source.path)
+        schemas = table.source._schemas(files)
+        physical = _physical(table, schemas)
+        columns = sorted(set(physical.values()))
+        parts = []
+        remote = table.source.path.startswith("s3://")
+        for item in files:
+            if issue := _schema_issue(table, item["path"], schemas[item["path"]], physical):
+                raise ValueError(issue.describe())
+            if remote:
+                with open_parquet_file(item) as reader:
+                    part = reader.read(columns=columns)
+                    if parts and part.schema != parts[0].schema:
+                        part = part.cast(parts[0].schema)
+                    parts.append(part)
+        data = (
+            pa.concat_tables(parts)
+            if remote
+            else pads.dataset([item["path"] for item in files], format="parquet").to_table(
+                columns=columns
+            )
         )
         self._columns = {
             logical: data.column(column).combine_chunks() for logical, column in physical.items()

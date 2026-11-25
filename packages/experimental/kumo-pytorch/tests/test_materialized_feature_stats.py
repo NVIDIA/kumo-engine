@@ -345,6 +345,60 @@ def _target_free_diskgraph_case(history_data, tmp_path):
     return spec, dataset, api.AnchorTable(api.Parquet(str(path)), "entity", "at", split="split")
 
 
+def test_s3_scalar_anchors_fit_on_selected_rows_and_keep_object_identity(history_data, tmp_path):
+    import boto3
+
+    moto = pytest.importorskip("moto")
+    spec, dataset, local = _target_free_diskgraph_case(history_data, tmp_path)
+    rows = pq.read_table(local.source.path)
+    remote = replace(
+        local,
+        source=api.Parquet("s3://anchor-fixture/anchors.parquet", columns={"clock": "at"}),
+    )
+    renamed = rows.rename_columns(["entity", "clock", "split"])
+    with moto.mock_aws(), api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket="anchor-fixture")
+
+        def write(data, compression="snappy"):
+            sink = pa.BufferOutputStream()
+            pq.write_table(data, sink, compression=compression)
+            client.put_object(
+                Bucket="anchor-fixture", Key="anchors.parquet", Body=sink.getvalue().to_pybytes()
+            )
+
+        write(renamed)
+        with (
+            plan.materialize(local, fit_split="train") as reference,
+            plan.materialize(remote, fit_split="train") as task,
+        ):
+            assert task.count("train") == reference.count("train") == 2
+            assert (
+                task.output("entity").field(name="spent").encoder
+                == reference.output("entity").field(name="spent").encoder
+            )
+            for actual, expected in zip(
+                task.batches(output_format="model", shuffle=False),
+                reference.batches(output_format="model", shuffle=False),
+                strict=True,
+            ):
+                assert actual.inputs["entity"]["spent"]["values"].equal(
+                    expected.inputs["entity"]["spent"]["values"]
+                )
+            first = task.fitted_state.fit["inputs"]["anchors"]
+            fitted = task.fitted_state
+        with plan.materialize(remote, fit_split="train") as repeated:
+            assert repeated.fitted_state.fit["inputs"]["anchors"] == first
+        # Equal projected rows in a rewritten object retain their values but change identity.
+        write(renamed, compression=None)
+        with plan.materialize(remote, fit_split="train") as changed:
+            assert changed.fitted_state.fit["inputs"]["anchors"] != first
+        write(renamed.slice(0, 0))
+        with plan.materialize(remote, fitted=fitted) as empty:
+            assert empty.count() == 0
+            assert list(empty.batches(output_format="model")) == []
+
+
 def test_fitted_target_free_task_reuse_needs_no_fit_split(history_data, tmp_path, monkeypatch):
     spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
     with api.prepare(spec, dataset, api.DiskGraphEngine(num_threads=2)) as plan:
