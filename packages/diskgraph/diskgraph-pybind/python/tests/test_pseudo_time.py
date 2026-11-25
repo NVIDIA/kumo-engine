@@ -65,9 +65,13 @@ def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path, par
             )
         )
         return {
-            node for batch in batches
-            for node in (batch["graphs"]["main"]["node_ids"]["orders"].to_pylist()
-                         if "orders" in batch["graphs"]["main"]["node_ids"] else [])
+            node
+            for batch in batches
+            for node in (
+                batch.graphs["main"].node_ids["orders"].to_pylist()
+                if "orders" in batch.graphs["main"].node_ids
+                else []
+            )
         }
 
     for stage, cutoff in [("train", 1), ("val", 1), ("test", 2)]:
@@ -114,4 +118,4 @@ def test_runtime_index_accepts_extensions_without_fact_metadata(
             entity_node_type="users",
         )
     )
-    assert sum(len(batch["task"]["input_ids"]) for batch in batches) == size > 0
+    assert sum(len(batch.task.input_ids) for batch in batches) == size > 0

@@ -28,13 +28,9 @@ Against the TT-NG compose stack (see kumo/docker/compose/docker-compose.ttng-ove
 """
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import pathlib
-import sys
-import tempfile
-from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -230,7 +226,9 @@ def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(parent_index):
     assert actual == pytest.approx(expected)
 
 
-def test_runtime_batch_iterator_dict_contract(tmp_path, parent_index, node_prediction_plan):
+def test_runtime_batch_iterator_record_contract(
+    tmp_path, parent_index, node_prediction_plan
+):
     """Full chain: execute_tt_plan → flat manifest → make_runtime_batch_iterator.
 
     Validates the dict shape against the PR #28765 runtime_batch_to_hetero
@@ -276,21 +274,23 @@ def test_runtime_batch_iterator_dict_contract(tmp_path, parent_index, node_predi
 
     seen = 0
     for batch in iterator:
-        seen += len(batch["task"]["input_ids"])
+        seen += len(batch.task.input_ids)
 
         # task bag: required keys
         for key in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
-            assert key in batch["task"], f"batch['task'] missing {key!r}"
+            assert getattr(batch.task, key) is not None, (
+                f"batch['task'] missing {key!r}"
+            )
 
         # topology: parent entities present
-        assert "users" in batch["graphs"]["main"]["node_ids"], (
+        assert "users" in batch.graphs["main"].node_ids, (
             f"parent entity 'users' missing from topology; "
-            f"present: {list(batch['graphs']['main']['node_ids'])}"
+            f"present: {list(batch.graphs['main'].node_ids)}"
         )
 
         # seed namespace excluded from topology
         seed_ns = "tt_batch_contract/train_seeds"
-        assert seed_ns not in batch["graphs"]["main"]["node_ids"], (
+        assert seed_ns not in batch.graphs["main"].node_ids, (
             f"seed namespace {seed_ns!r} leaked into topology — "
             "seed rows must be in task.*, not graphs.main"
         )
@@ -334,7 +334,7 @@ def test_multi_worker_yields_disjoint_shards(tmp_path, parent_index, node_predic
         # With no shuffle, worker 0 gets even offsets, worker 1 gets odd offsets.
         ids = set()
         for b in it:
-            ids.update(int(x) for x in b["task"]["tt_stage_node_ids"].to_pylist())
+            ids.update(int(x) for x in b.task.tt_stage_node_ids.to_pylist())
         return ids
 
     ids0 = collect_ids(0)
@@ -396,7 +396,6 @@ def test_materialize_task_dataset_placeholder_manifest(tmp_path):
     execute_tt_plan. We mock get_validated_artifact_bundle to bypass the file
     format check and focus on the placeholder-path logic in the service.
     """
-    import os
     from unittest.mock import patch
 
     from kumo.engine._backend import DiskgraphHandle

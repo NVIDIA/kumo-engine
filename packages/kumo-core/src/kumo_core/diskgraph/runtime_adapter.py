@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapter from a kumo-diskgraph native runtime batch to PyG ``HeteroData``.
 
-Pure transform of the dict yielded by
+Pure transform of the typed batch yielded by
 ``diskgraph.RuntimeIndex(...).iter(...)`` into a ``HeteroData`` (graph
 topology + seed-table block) plus per-namespace raw feature tables. Without an
 engine bundle, ``graphs`` / ``raw_features`` are empty and only the seed block
@@ -12,13 +12,22 @@ is populated.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, Mapping, TypedDict
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any, TypeAlias, TypedDict, cast
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import torch
+from diskgraph.runtime_batch import (
+    RuntimeBatch,
+    RuntimeEdge,
+    RuntimeEdgeCounts,
+    RuntimeFeatureBlock,
+    RuntimeGraph,
+    RuntimeTask,
+)
 from torch_frame import TensorFrame
 from torch_frame.data import MultiNestedTensor
 from torch_geometric.data import HeteroData
@@ -27,16 +36,16 @@ from torch_geometric.sampler.base import HeteroSamplerOutput
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.encoders.tensor_frame import get_tf
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    MultiCategoricalTensorMapper,
+    TensorMapper,
+)
 
 # A column value as handed across the diskgraph FFI boundary: the wheel
 # always builds these through pyarrow (see diskgraph-pybind's py_*_array
 # helpers), so this is Arrow-or-absent, never a plain Python list.
-ArrowArray = pa.Array | pa.ChunkedArray | None
-
-# A target value before ``_shape_target`` unwraps a still-multi-column
-# RecordBatch (the wheel's multi-TARGET node-prediction shape).
-TargetLike = pa.RecordBatch | ArrowArray
+ArrowArray: TypeAlias = pa.Array | pa.ChunkedArray | None
 
 _CLASSIFICATION_TASK_TYPES = frozenset({
     "binary_classification",
@@ -69,70 +78,6 @@ _NP_UNIT_TO_NS_FACTOR = {
     "D": 86_400_000_000_000,
 }
 
-# --- FFI-boundary shapes -----------------------------------------------
-# These TypedDicts document (without restructuring) the dicts the native
-# ``diskgraph.RuntimeIndex(...).iter(...)`` yields. They stay dicts at
-# runtime -- the wheel builds them, not this module -- but replace bare
-# ``Any``/``Mapping[str, Any]`` typing with the actual optional-key shape.
-
-
-class EdgeTypeKey(TypedDict):
-    src: str
-    rel: str
-    dst: str
-
-
-class EdgeIndexEntry(TypedDict):
-    edge_type: EdgeTypeKey
-    src: ArrowArray
-    dst: ArrowArray
-
-
-class EdgeCountsEntry(TypedDict):
-    edge_type: EdgeTypeKey
-    counts: ArrowArray
-
-
-class GraphChannel(TypedDict, total=False):
-    node_ids: dict[str, ArrowArray]
-    batch_dict: dict[str, ArrowArray]
-    edge_index_dict: list[EdgeIndexEntry]
-    num_sampled_nodes_dict: dict[str, ArrowArray]
-    num_sampled_edges_dict: list[EdgeCountsEntry]
-
-
-class RawTask(TypedDict, total=False):
-    input_ids: ArrowArray
-    seed_node_ids: ArrowArray
-    seed_timestamps: ArrowArray
-    target: TargetLike
-    target_mask: ArrowArray
-    weight: ArrowArray
-    tt_stage_node_ids: ArrowArray
-    amount_m: int
-    num_positives: int
-    rhs_seed_type: str
-    lp_pos_local: ArrowArray
-    lp_pos_counts: ArrowArray
-    lp_pos_rhs_global: ArrowArray
-    lp_pos_mask: ArrowArray
-    lp_pos_weight: ArrowArray
-    lp_exclude_counts: ArrowArray
-    lp_exclude_rhs_global: ArrowArray
-    neg_mask: ArrowArray
-
-
-class RawFeatureBlock(TypedDict, total=False):
-    record_batches: list[pa.RecordBatch]
-    node_ids: ArrowArray
-
-
-class RuntimeBatch(TypedDict, total=False):
-    task: RawTask
-    graphs: dict[str, GraphChannel]
-    raw_features: dict[str, RawFeatureBlock]
-
-
 class NodeTypeMeta(TypedDict, total=False):
     mapper_key: str
     feature_columns: list[str]
@@ -156,10 +101,7 @@ class NormalizedTask:
     send, addressed the same way regardless of which of "seed", "supervision"
     or "identity" a reader would file it under -- so the grouping bought
     nothing a reader used, and cost an extra ``.seed_ref.`` /
-    ``.supervision.`` /  ``.identity.`` hop at every call site. ``slots=True``
-    is what makes the ragged-field loop in ``_normalize_task_payload`` safe:
-    a renamed or misspelled key there raises ``AttributeError`` instead of
-    silently creating a new attribute nothing reads.
+    ``.supervision.`` /  ``.identity.`` hop at every call site.
     """
     input_ids: ArrowArray
     seed_node_id: ArrowArray
@@ -182,18 +124,23 @@ class RawFeatures:
     row_ids: dict[str, torch.Tensor] = field(default_factory=dict)
 
 
-def engine_int64_to_ns(arr: "pa.Array | pa.ChunkedArray",
-                       index_np_time_unit: str) -> "pa.Array":
+def engine_int64_to_ns(
+    arr: pa.Array | pa.ChunkedArray, index_np_time_unit: str
+) -> pa.Array:
     """Scale an int64 engine-unit timestamp Arrow array to int64 NANOSECONDS,
     vectorized. ``ns`` is a no-op. NULLs are preserved (propagate through
     ``pa.compute.multiply``)."""
     import pyarrow.compute as pc
+
     if isinstance(arr, pa.ChunkedArray):
         arr = arr.combine_chunks()
     factor = _NP_UNIT_TO_NS_FACTOR.get(index_np_time_unit, 1)
     if factor == 1:
         return arr
-    return pc.multiply(arr.cast(pa.int64()), pa.scalar(factor, type=pa.int64()))
+    # PyArrow registers arithmetic kernels dynamically.
+    return pc.multiply(  # type: ignore[attr-defined]
+        arr.cast(pa.int64()), pa.scalar(factor, type=pa.int64())
+    )
 
 
 def runtime_batch_to_hetero(
@@ -232,7 +179,7 @@ def runtime_batch_to_hetero(
 
     hetero = HeteroData()
 
-    task = _normalize_task_payload(batch["task"])
+    task = _normalize_task_payload(batch.task)
     main = _normalize_graph_channel(_channel(batch, channel), task,
                                     seed_node_type=seed_node_type)
     # Limit the back-fill to graph schema node types (see _attach_graph_topology).
@@ -256,8 +203,9 @@ def runtime_batch_to_hetero(
         target_encoder=target_encoder,
         index_np_time_unit=index_np_time_unit,
     )
-    _attach_lp_indices(hetero, batch["task"], train_table_name,
-                       seed_node_type=seed_node_type)
+    _attach_lp_indices(
+        hetero, batch.task, train_table_name, seed_node_type=seed_node_type
+    )
     # evaluation_step reads batch[entity].batch_size to slice embeddings to the
     # seed rows; PyG doesn't auto-derive it, so set it from len(input_ids).
     batch_size = _value_len(task.input_ids)
@@ -284,8 +232,8 @@ def runtime_batch_to_hetero(
         _attach_lp_exclude(hetero, task, train_table_name, seed_node_type)
 
     raw_features = _collect_raw_features(
-        batch.get("raw_features", {}) or {},
-        main.get("node_ids", {}) or {},
+        batch.raw_features,
+        main.node_ids,
     )
     _alias_forecasting_seed_features(
         raw_features,
@@ -464,7 +412,7 @@ def _attach_pkeys_and_times(
 
 def _attach_placeholder_tensor_frames(
     hetero: HeteroData,
-    main: GraphChannel,
+    main: RuntimeGraph,
 ) -> None:
     """Attach an empty TF for every node type with ``n_id`` but no ``tf``.
 
@@ -518,28 +466,33 @@ def _record_batch_to_tf(
     return get_tf(record_batch, dict(mapper_dict))
 
 
-def _channel(batch: RuntimeBatch, channel: str) -> GraphChannel:
-    graphs = batch.get("graphs") or {}
-    return graphs.get(channel) or {}
+def _channel(batch: RuntimeBatch, channel: str) -> RuntimeGraph:
+    return batch.graphs.get(channel) or RuntimeGraph()
 
 
-def _normalize_task_payload(task: RawTask) -> NormalizedTask:
+def _normalize_task_payload(task: RuntimeTask) -> NormalizedTask:
     normalized = NormalizedTask(
-        input_ids=task.get("input_ids"),
-        seed_node_id=task.get("seed_node_ids"),
-        seed_time=task.get("seed_timestamps"),
-        tt_stage_node_ids=task.get("tt_stage_node_ids"),
+        input_ids=task.input_ids,
+        seed_node_id=task.seed_node_ids,
+        seed_time=task.seed_timestamps,
+        tt_stage_node_ids=task.tt_stage_node_ids,
+        lp_pos_counts=task.lp_pos_counts,
+        lp_pos_rhs_global=task.lp_pos_rhs_global,
+        lp_pos_mask=task.lp_pos_mask,
+        lp_pos_weight=task.lp_pos_weight,
+        lp_exclude_counts=task.lp_exclude_counts,
+        lp_exclude_rhs_global=task.lp_exclude_rhs_global,
     )
 
     # Set target only when one is present (predict has none). The wheel
     # emits ``task.target`` as a RecordBatch for multi-TARGET; unwrap the
     # single column to an Array for ``_shape_target``.
-    target = task.get("target")
+    target = task.target
     if target is not None:
         if isinstance(target, pa.RecordBatch):
             # Ragged multi-positive carries no single target column (positives
             # live in ``lp_pos_*``); enforce the one-column shape only otherwise.
-            if (target.num_columns != 1 and task.get("lp_pos_counts") is None):
+            if target.num_columns != 1 and task.lp_pos_counts is None:
                 raise ValueError(
                     f"adapter expects single-TARGET RecordBatch; got "
                     f"{target.num_columns} columns: {target.schema.names}")
@@ -547,53 +500,38 @@ def _normalize_task_payload(task: RawTask) -> NormalizedTask:
                 target = target.column(0)
                 # With ``lp_pos_counts`` the positives go ragged via
                 # ``lp_pos_*`` and ``.y`` stays unset; set target only otherwise.
-                if task.get("lp_pos_counts") is None:
+                if task.lp_pos_counts is None:
                     normalized.target = target
         else:
             normalized.target = target
         # target_mask: True == TARGET1 PK didn't resolve to an RHS node id;
         # carried so the LP module can drop those rows.
-        if task.get("target_mask") is not None:
-            normalized.target_mask = task.get("target_mask")
-        if task.get("weight") is not None:
-            normalized.weight = task.get("weight")
-
-    # Ragged multi-positive LP fields (anchor-major), set independently of
-    # the single-target path above. ``lp_exclude_*`` carry the static-eval
-    # past-visit exclusion set (present only on TT-NG VAL/TEST static
-    # batches). ``lp_pos_local`` is deliberately absent: ``_attach_lp_indices``
-    # reads it off the raw ``task`` dict directly, so it has no normalized
-    # field to land in.
-    for _ragged_key in ("lp_pos_counts", "lp_pos_rhs_global", "lp_pos_mask",
-                        "lp_pos_weight", "lp_exclude_counts",
-                        "lp_exclude_rhs_global"):
-        if task.get(_ragged_key) is not None:
-            setattr(normalized, _ragged_key, task.get(_ragged_key))
+        if task.target_mask is not None:
+            normalized.target_mask = task.target_mask
+        if task.weight is not None:
+            normalized.weight = task.weight
 
     return normalized
 
 
 def _normalize_graph_channel(
-    main: GraphChannel,
+    main: RuntimeGraph,
     task: NormalizedTask,
     *,
     seed_node_type: str | None = None,
-) -> GraphChannel:
-    if main.get("node_ids") or not seed_node_type:
+) -> RuntimeGraph:
+    if main.node_ids or not seed_node_type:
         return main
     seed_ids = task.seed_node_id
     if _value_len(seed_ids) == 0:
         return main
-    return {
-        **dict(main),
-        "node_ids": {
-            seed_node_type: seed_ids
+    return replace(
+        main,
+        node_ids={seed_node_type: seed_ids},
+        batch_dict={
+            seed_node_type: pa.array(range(_value_len(seed_ids)), type=pa.uint32())
         },
-        "batch_dict": {
-            seed_node_type: pa.array(range(_value_len(seed_ids)),
-                                     type=pa.uint32())
-        },
-    }
+    )
 
 
 def _value_len(values: ArrowArray) -> int:
@@ -632,7 +570,7 @@ def _values_to_list(values: ArrowArray) -> list[Any]:
 
 def _attach_graph_topology(
     hetero: HeteroData,
-    main: GraphChannel,
+    main: RuntimeGraph,
     *,
     bidirectional_output: bool = False,
     allowed_node_types: frozenset[str] | None = None,
@@ -640,8 +578,8 @@ def _attach_graph_topology(
     sampler_out = _graph_channel_to_sampler_output(main)
     if bidirectional_output:
         # Legacy DiskGraph sampling calls HeteroSamplerOutput.to_bidirectional()
-        # before materializing HeteroData. The TT-NG runtime yields a plain
-        # pydict, so recreate that sampler-output surface and reuse PyG's
+        # before materializing HeteroData. The TT-NG runtime yields typed
+        # topology records, so recreate that sampler-output surface and reuse PyG's
         # transform instead of duplicating its relation pairing logic.
         sampler_out = sampler_out.to_bidirectional(keep_orig_edges=True)
 
@@ -662,11 +600,11 @@ def _attach_graph_topology(
     # ``num_sampled_edges_dict`` + any returned ``edge_index_dict``) with a
     # zero-length block so downstream code sees the same node-type set as PyG.
     schema_node_types: set[str] = set()
-    for entry in main.get("num_sampled_edges_dict") or []:
-        src, _, dst = _decode_sampled_edge_counts(entry)[0]
+    for counts_entry in main.num_sampled_edges_dict or []:
+        src, _, dst = _decode_sampled_edge_counts(counts_entry)[0]
         schema_node_types.add(src)
         schema_node_types.add(dst)
-    for entry in main.get("edge_index_dict") or []:
+    for entry in main.edge_index_dict or []:
         edge_type, _ = _decode_edge_index(entry)
         schema_node_types.add(edge_type[0])
         schema_node_types.add(edge_type[2])
@@ -765,20 +703,21 @@ def _attach_graph_topology(
 
 
 def _graph_channel_to_sampler_output(
-    main: GraphChannel, ) -> HeteroSamplerOutput:
+    main: RuntimeGraph,
+) -> HeteroSamplerOutput:
     node = {
         node_type: _values_to_tensor(ids, dtype=torch.long)
-        for node_type, ids in (main.get("node_ids") or {}).items()
+        for node_type, ids in (main.node_ids or {}).items()
     }
     batch = {
         node_type: _values_to_tensor(batch_indices, dtype=torch.long)
-        for node_type, batch_indices in (main.get("batch_dict") or {}).items()
+        for node_type, batch_indices in (main.batch_dict or {}).items()
     }
 
     row: dict[tuple[str, str, str], torch.Tensor] = {}
     col: dict[tuple[str, str, str], torch.Tensor] = {}
     edge: dict[tuple[str, str, str], torch.Tensor | None] = {}
-    for entry in main.get("edge_index_dict") or []:
+    for entry in main.edge_index_dict or []:
         edge_type, edge_index = _decode_edge_index(entry)
         row[edge_type] = edge_index[0]
         col[edge_type] = edge_index[1]
@@ -786,14 +725,14 @@ def _graph_channel_to_sampler_output(
 
     num_sampled_nodes = {
         node_type: _values_to_list(counts)
-        for node_type, counts in (
-            main.get("num_sampled_nodes_dict") or {}).items()
+        for node_type, counts in (main.num_sampled_nodes_dict or {}).items()
     }
     num_sampled_edges = {
         edge_type: counts
-        for edge_type, counts in (_decode_sampled_edge_counts(entry)
-                                  for entry in (
-                                      main.get("num_sampled_edges_dict") or []))
+        for edge_type, counts in (
+            _decode_sampled_edge_counts(entry)
+            for entry in (main.num_sampled_edges_dict or [])
+        )
     }
 
     # Create empty row/col stores for reported schema relations with both
@@ -820,23 +759,23 @@ def _graph_channel_to_sampler_output(
 
 
 def _decode_edge_index(
-    entry: EdgeIndexEntry, ) -> tuple[tuple[str, str, str], torch.Tensor]:
-    key = entry["edge_type"]
-    edge_type = normalize_diskgraph_edge_type(key["src"], key["rel"],
-                                              key["dst"])
-    src = _values_to_tensor(entry.get("src"), dtype=torch.long)
-    dst = _values_to_tensor(entry.get("dst"), dtype=torch.long)
+    entry: RuntimeEdge,
+) -> tuple[tuple[str, str, str], torch.Tensor]:
+    key = entry.edge_type
+    edge_type = normalize_diskgraph_edge_type(key.src, key.rel, key.dst)
+    src = _values_to_tensor(entry.src, dtype=torch.long)
+    dst = _values_to_tensor(entry.dst, dtype=torch.long)
     if src.numel() == 0:
         return edge_type, torch.empty((2, 0), dtype=torch.long)
     return edge_type, torch.stack((src, dst), dim=0).contiguous()
 
 
 def _decode_sampled_edge_counts(
-    entry: EdgeCountsEntry, ) -> tuple[tuple[str, str, str], list[Any]]:
-    key = entry["edge_type"]
-    edge_type = normalize_diskgraph_edge_type(key["src"], key["rel"],
-                                              key["dst"])
-    return edge_type, _values_to_list(entry.get("counts"))
+    entry: RuntimeEdgeCounts,
+) -> tuple[tuple[str, str, str], list[Any]]:
+    key = entry.edge_type
+    edge_type = normalize_diskgraph_edge_type(key.src, key.rel, key.dst)
+    return edge_type, _values_to_list(entry.counts)
 
 
 def _attach_seed_table(
@@ -882,7 +821,7 @@ def _attach_seed_table(
 
 def _attach_lp_indices(
     hetero: HeteroData,
-    task: RawTask,
+    task: RuntimeTask,
     train_table_name: str,
     seed_node_type: str | None = None,
 ) -> None:
@@ -894,15 +833,15 @@ def _attach_lp_indices(
     ``amount_m`` (M). No-op when ``amount_m`` is absent / 0 (shallow / eval) or
     ``rhs_seed_type`` is not a real node type.
     """
-    amount_m = task.get("amount_m")
+    amount_m = task.amount_m
     if amount_m is None or int(amount_m) <= 0:
         return
-    rhs_seed_type = task.get("rhs_seed_type")
+    rhs_seed_type = task.rhs_seed_type
     if rhs_seed_type is None or rhs_seed_type not in hetero.node_types:
         return
 
     M = int(amount_m)
-    B = int(task["num_positives"])
+    B = int(task.num_positives)
 
     # common_step reads ``src_index`` off the entity block (== seed_node_type),
     # not the train-table placeholder; keep it on the train-table block too.
@@ -911,7 +850,7 @@ def _attach_lp_indices(
     if seed_node_type is not None and seed_node_type in hetero.node_types:
         hetero[seed_node_type].src_index = src_index
     # lp_pos_local: engine's chosen rhs slot per anchor; else seeds-first arange(B).
-    lp_pos_local = task.get("lp_pos_local")
+    lp_pos_local = task.lp_pos_local
     if lp_pos_local is not None:
         hetero[rhs_seed_type].dst_pos_index = _values_to_tensor(
             lp_pos_local, dtype=torch.long)
@@ -920,8 +859,8 @@ def _attach_lp_indices(
     hetero[rhs_seed_type].dst_neg_index = torch.arange(B, B + B * M,
                                                        dtype=torch.long).view(
                                                            B, M)
-    neg_mask_tensor = _values_to_tensor(task.get("neg_mask"), dtype=torch.bool)
-    if task.get("neg_mask") is not None:
+    neg_mask_tensor = _values_to_tensor(task.neg_mask, dtype=torch.bool)
+    if task.neg_mask is not None:
         assert neg_mask_tensor.numel() == B * M, (
             f"dst_neg_mask length {neg_mask_tensor.numel()} != B*M "
             f"({B}*{M})")
@@ -1036,7 +975,7 @@ def _attach_lp_exclude(
 
 
 def _shape_target(
-    target: ArrowArray,
+    target: pa.Array | pa.ChunkedArray,
     task_type: str | None,
     target_encoder: TargetEncoder | None = None,
 ) -> torch.Tensor | MultiNestedTensor:
@@ -1069,7 +1008,7 @@ def _shape_target(
 
 
 def _shape_multilabel_target(
-    target: ArrowArray,
+    target: pa.Array | pa.ChunkedArray,
     target_encoder: TargetEncoder | None,
 ) -> MultiNestedTensor:
     sep = None
@@ -1079,7 +1018,9 @@ def _shape_multilabel_target(
     if target_encoder is None:
         mapped = [[int(v) for v in row] for row in values]
     else:
-        mapping = target_encoder.tensor_mapper.mapping
+        mapping = cast(
+            MultiCategoricalTensorMapper, target_encoder.tensor_mapper
+        ).mapping
         mapped = []
         for row in values:
             labels, indices = _target_label_indices(list(row), mapping)
@@ -1143,12 +1084,12 @@ def _target_label_indices(
 
 
 def _categorical_indices(
-    target: ArrowArray,
+    target: pa.Array | pa.ChunkedArray,
     target_encoder: TargetEncoder,
 ) -> torch.Tensor:
     values = _arrow_array_to_pylist(target)
 
-    mapping = target_encoder.tensor_mapper.mapping
+    mapping = cast(CategoricalTensorMapper, target_encoder.tensor_mapper).mapping
     values, indices = _target_label_indices(values, mapping)
     if (indices < 0).any():
         unknown = [values[i] for i, idx in enumerate(indices) if idx < 0]
@@ -1158,8 +1099,9 @@ def _categorical_indices(
     return torch.tensor(indices, dtype=torch.long)
 
 
-def _array_to_multilabel_lists(values: ArrowArray, *,
-                               sep: str) -> list[list[Any]]:
+def _array_to_multilabel_lists(
+    values: pa.Array | pa.ChunkedArray, *, sep: str
+) -> list[list[Any]]:
     if isinstance(values, pa.ChunkedArray):
         values = values.combine_chunks()
     py_values = values.to_pylist()
@@ -1185,7 +1127,7 @@ def _arrow_array_to_tensor(values: ArrowArray) -> torch.Tensor:
     return _values_to_tensor(values, dtype=torch.float32)
 
 
-def _arrow_array_to_pylist(values: ArrowArray) -> list[Any]:
+def _arrow_array_to_pylist(values: pa.Array | pa.ChunkedArray) -> list[Any]:
     if isinstance(values, pa.ChunkedArray):
         values = values.combine_chunks()
     return values.to_pylist()
@@ -1203,16 +1145,16 @@ def _all_present(values: ArrowArray) -> bool:
 
 
 def _collect_raw_features(
-    raw_features: Mapping[str, RawFeatureBlock],
+    raw_features: Mapping[str, RuntimeFeatureBlock],
     node_ids: Mapping[str, ArrowArray],
 ) -> RawFeatures:
     out = RawFeatures()
     for namespace, block in raw_features.items():
-        record_batches = block.get("record_batches") or []
+        record_batches = block.record_batches or []
         if not record_batches:
             continue
         out.tables[namespace] = _concat_record_batches(record_batches)
-        ids = block.get("node_ids")
+        ids = block.node_ids
         if ids is None:
             ids = node_ids.get(namespace)
         if ids is not None:
@@ -1241,7 +1183,7 @@ def _alias_forecasting_seed_features(
         return
     mapper_key = seed_meta.get("mapper_key")
     expected = set(seed_meta.get("feature_columns") or [])
-    if not expected and mapper_key in mapper_bank:
+    if not expected and mapper_key is not None and mapper_key in mapper_bank:
         expected = set(mapper_bank[mapper_key])
     if not expected:
         return

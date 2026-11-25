@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from diskgraph import SamplingPlan
+from diskgraph import RuntimeHistory, SamplingPlan
 from kumo._managed_paths import _ManagedIndexPaths
 
 from kumo.pytorch._storage import (
@@ -1440,17 +1440,17 @@ class DiskGraphSource:
 
     def sample_graph_batch(self, sample, spec, state, runtime):
         """Consume already sampled topology/features without rebuilding requests."""
-        if spec.source in runtime["graphs"]:
-            graph = runtime["graphs"][spec.source]
-            selected = {
-                **runtime,
-                "graphs": {"main": graph},
-                "raw_features": {
-                    table: runtime["raw_features"][f"{spec.source}/{table}"]
-                    for table in graph["node_ids"]
-                    if f"{spec.source}/{table}" in runtime["raw_features"]
+        if spec.source in runtime.graphs:
+            graph = runtime.graphs[spec.source]
+            selected = dataclass_replace(
+                runtime,
+                graphs={"main": graph},
+                raw_features={
+                    table: runtime.raw_features[f"{spec.source}/{table}"]
+                    for table in graph.node_ids
+                    if f"{spec.source}/{table}" in runtime.raw_features
                 },
-            }
+            )
         else:
             selected = runtime
         if spec.topology == "sampled":
@@ -1512,7 +1512,7 @@ class DiskGraphSource:
         from kumo.pytorch.contract.batch import ColumnarEdges, ColumnarGraph, ColumnarNodes
 
         pa = self._pa
-        graph = runtime["graphs"]["main"]
+        graph = runtime.graphs["main"]
         neighborhood = sample.neighborhoods[spec.source]
         _, physical_relations = self._sampling_plan(neighborhood)
         relations = {
@@ -1524,8 +1524,8 @@ class DiskGraphSource:
             tables.update((relation.left_table, relation.right_table))
         nodes = {}
         for table in sorted(tables):
-            ids = graph["node_ids"].get(table, pa.array([], type=pa.uint64()))
-            owners = graph["batch_dict"].get(table, pa.array([], type=pa.uint64()))
+            ids = graph.node_ids.get(table, pa.array([], type=pa.uint64()))
+            owners = graph.batch_dict.get(table, pa.array([], type=pa.uint64()))
             fields = spec.node_fields.get(table)
             names = () if fields is None else tuple(use.field for use in fields.fields)
             definition = self._tables[table]
@@ -1534,13 +1534,13 @@ class DiskGraphSource:
                     (*(() if definition.primary_key is None else (definition.primary_key,)), *names)
                 )
             )
-            raw = runtime["raw_features"].get(table)
+            raw = runtime.raw_features.get(table)
             if len(owners) != len(ids):
                 raise RuntimeError(f"native columnar node/owner alignment mismatch: {table}")
             if len(ids) and requested:
                 if raw is None:
                     raise RuntimeError(f"missing native columnar features for {table!r}")
-                data = pa.Table.from_batches(raw["record_batches"])
+                data = pa.Table.from_batches(raw.record_batches)
                 if len(data) != len(ids) or len(owners) != len(ids):
                     raise RuntimeError(f"native columnar node/feature alignment mismatch: {table}")
                 columns = {
@@ -1562,21 +1562,19 @@ class DiskGraphSource:
                 raise ValueError("sampled graph topology preserves edge occurrences")
 
             counts = {
-                entry["edge_type"]["rel"]: tuple(entry["counts"].to_pylist())
-                for entry in graph["num_sampled_edges_dict"]
-                if entry["edge_type"]["rel"] in physical_relations
+                entry.edge_type.rel: tuple(entry.counts.to_pylist())
+                for entry in graph.num_sampled_edges_dict
+                if entry.edge_type.rel in physical_relations
             }
             edge_types = {
-                entry["edge_type"]["rel"]: entry["edge_type"]
-                for entry in (*graph["edge_index_dict"], *graph["num_sampled_edges_dict"])
-                if entry["edge_type"]["rel"] in physical_relations
+                entry.edge_type.rel: entry.edge_type
+                for entry in (*graph.edge_index_dict, *graph.num_sampled_edges_dict)
+                if entry.edge_type.rel in physical_relations
             }
             buffers = {
-                entry["edge_type"]["rel"]: pa.table(
-                    {"source": entry["src"], "destination": entry["dst"]}
-                )
-                for entry in graph["edge_index_dict"]
-                if entry["edge_type"]["rel"] in physical_relations
+                entry.edge_type.rel: pa.table({"source": entry.src, "destination": entry.dst})
+                for entry in graph.edge_index_dict
+                if entry.edge_type.rel in physical_relations
             }
             edges = {}
             for physical, kind in edge_types.items():
@@ -1590,8 +1588,8 @@ class DiskGraphSource:
                         }
                     )
                 edges[physical] = ColumnarEdges(
-                    kind["src"],
-                    kind["dst"],
+                    kind.src,
+                    kind.dst,
                     index,
                     logical,
                     "forward"
@@ -1603,20 +1601,20 @@ class DiskGraphSource:
                 nodes,
                 edges,
                 {
-                    table: tuple(graph["num_sampled_nodes_dict"][table].to_pylist())
-                    if table in graph["num_sampled_nodes_dict"]
+                    table: tuple(graph.num_sampled_nodes_dict[table].to_pylist())
+                    if table in graph.num_sampled_nodes_dict
                     else (0,)
                     for table in nodes
                 },
                 counts,
             )
         parts = defaultdict(list)
-        for edge in graph["edge_index_dict"]:
-            physical = edge["edge_type"]["rel"]
+        for edge in graph.edge_index_dict:
+            physical = edge.edge_type.rel
             if physical not in physical_relations:
                 continue
             name = physical_relations[physical]
-            left, right = edge["src"], edge["dst"]
+            left, right = edge.src, edge.dst
             if physical != self._relation_mapping[name]["forward"]:
                 left, right = right, left
             parts[name].append(pa.record_batch([left, right], names=["source", "destination"]))
@@ -1650,7 +1648,7 @@ class DiskGraphSource:
         """Adapt iterator buffers; history work has finished before Python resumes."""
         if self._sampler is None:
             raise RuntimeError("DiskGraph source is closed")
-        roots = runtime["task"]["seed_node_ids"].to_pylist()
+        roots = runtime.task.seed_node_ids.to_pylist()
         direct = self._direct_entity_arrays(spec, roots)
         if compiled is None:
             return dataclass_replace(
@@ -1661,7 +1659,7 @@ class DiskGraphSource:
             (),
             anchors.evaluation_times,
             compiled,
-            runtime["history"],
+            runtime.history,
             direct,
             anchor_values=anchors,
         )
@@ -1669,21 +1667,21 @@ class DiskGraphSource:
 
     def _runtime_graph_events(self, sample, source, runtime):
         neighborhood = sample.neighborhoods[source]
-        graph = runtime["graphs"].get(source, runtime["graphs"]["main"])
+        graph = runtime.graphs.get(source, runtime.graphs["main"])
         events = []
-        for table, ids in graph["node_ids"].items():
+        for table, ids in graph.node_ids.items():
             if table in self._node_types:
                 events.append(
                     {
                         "type": "node",
                         "type_id": self._node_types.index(table),
                         "batch": self._pa.record_batch(
-                            [graph["batch_dict"][table], ids], names=["id_a", "id_b"]
+                            [graph.batch_dict[table], ids], names=["id_a", "id_b"]
                         ),
                     }
                 )
-        for edge in graph["edge_index_dict"]:
-            relation = edge["edge_type"]["rel"]
+        for edge in graph.edge_index_dict:
+            relation = edge.edge_type.rel
             events.append(
                 {
                     "type": "edge",
@@ -1692,9 +1690,7 @@ class DiskGraphSource:
                         for i, value in enumerate(self._relations_by_id)
                         if value["name"] == relation
                     ),
-                    "batch": self._pa.record_batch(
-                        [edge["src"], edge["dst"]], names=["id_a", "id_b"]
-                    ),
+                    "batch": self._pa.record_batch([edge.src, edge.dst], names=["id_a", "id_b"]),
                 }
             )
         _, physical_relations = self._sampling_plan(neighborhood)
@@ -1712,8 +1708,8 @@ class DiskGraphSource:
         runtime = getattr(self, "_runtime_batch", None)
         if (
             runtime is not None
-            and (source in runtime["graphs"] or runtime["_anchor_neighborhood"] == source)
-            and runtime["_anchor_roots"]
+            and (source in runtime.graphs or runtime.metadata["_anchor_neighborhood"] == source)
+            and runtime.metadata["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
             return self._runtime_graph_events(sample, source, runtime)
@@ -1784,7 +1780,7 @@ class DiskGraphSource:
         requests: Sequence[SampleRequest | GraphRoot],
     ) -> list[int]:
         runtime = getattr(self, "_runtime_batch", None)
-        if runtime is not None and runtime["_anchor_roots"] == tuple(
+        if runtime is not None and runtime.metadata["_anchor_roots"] == tuple(
             (
                 request.sample_id,
                 request.entity_id,
@@ -1794,7 +1790,7 @@ class DiskGraphSource:
             )
             for request in requests
         ):
-            return runtime["task"]["seed_node_ids"].to_pylist()
+            return runtime.task.seed_node_ids.to_pylist()
         definition = next(item for item in self.schema.tables if item.name == table)
         dtype = definition.columns[definition.primary_key]
         root_ids = self._sampler.lookup_node_ids(
@@ -1948,22 +1944,28 @@ class DiskGraphSource:
         requests: Sequence[SampleRequest],
         cutoffs: Sequence[int],
         compiled: _CompiledTemporalPlan,
-        result: Mapping[str, Any],
+        result: RuntimeHistory | Mapping[str, Any],
         direct_values: Mapping[str, Any],
         *,
         anchor_values: ModelSourceBatch | None = None,
     ) -> ModelSourceBatch:
-        sequences = {item["name"]: item for item in result["sequences"]}
-        aggregates = {item["name"]: item["values"] for item in result["aggregates"]}
+        if isinstance(result, RuntimeHistory):
+            sequences = {
+                item.name: (item.batch, item.offsets, item.timestamps) for item in result.sequences
+            }
+            aggregates = {item.name: item.values for item in result.aggregates}
+        else:
+            sequences = {
+                item["name"]: (item["batch"], item["offsets"], item["timestamps"])
+                for item in result["sequences"]
+            }
+            aggregates = {item["name"]: item["values"] for item in result["aggregates"]}
         events: dict[str, ModelSequence] = {}
         ordered_events: dict[tuple[str, str], ModelSequence] = {}
         row_targets: dict[str, ModelRowTarget] = {}
 
         for native_name, output in compiled.sequences.items():
-            sequence = sequences[native_name]
-            batch = sequence["batch"]
-            offsets = sequence["offsets"]
-            timestamps = sequence["timestamps"]
+            batch, offsets, timestamps = sequences[native_name]
             table = destination_table(self.schema, spec.entity.table, output.spec.rows.path)
             fields = {}
             for name in _value_evaluation_order(output.spec.fields):
@@ -2499,10 +2501,10 @@ class DiskGraphSource:
         names: Sequence[str],
     ) -> dict[str, Any]:
         runtime = getattr(self, "_runtime_batch", None)
-        if runtime is not None and table in runtime["raw_features"]:
-            ids = runtime["graphs"]["main"]["node_ids"].get(table)
+        if runtime is not None and table in runtime.raw_features:
+            ids = runtime.graphs["main"].node_ids.get(table)
             if ids is not None and np.array_equal(ids.to_numpy(), np.asarray(node_ids)):
-                data = self._pa.Table.from_batches(runtime["raw_features"][table]["record_batches"])
+                data = self._pa.Table.from_batches(runtime.raw_features[table].record_batches)
                 if all(name in data.column_names for name in names):
                     return {
                         name: self._decode_decimal_array(table, name, data[name].combine_chunks())

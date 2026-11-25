@@ -3,21 +3,29 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``runtime_batch_to_hetero``.
 
-Pure data-transformation tests that do not require a real native
-runtime; the synthetic batch dicts here mirror the shape produced by
-``diskgraph.make_task_batch_iterator`` so the adapter is exercised
-end-to-end against the runtime contract without standing up a graph fixture.
+Synthetic DiskGraph runtime records exercise graph conversion and encoding
+without opening a graph index.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-import kumo_core.diskgraph.runtime_adapter as runtime_adapter
 import pyarrow as pa
 import pytest
 import torch
+from diskgraph.runtime_batch import (
+    RuntimeBatch,
+    RuntimeEdge,
+    RuntimeEdgeCounts,
+    RuntimeEdgeType,
+    RuntimeFeatureBlock,
+    RuntimeGraph,
+    RuntimeTask,
+)
+from kumo_core.diskgraph import runtime_adapter
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.diskgraph.runtime_adapter import (
+    FeatureSchema,
     _expand_lp_exclude,
     attach_tensor_frames,
     engine_int64_to_ns,
@@ -45,28 +53,24 @@ def auto_setup_kumo_backend() -> bool:
     return False
 
 
-def _empty_batch(*, n_inputs: int = 0) -> dict[str, Any]:
+def _empty_batch(*, n_inputs: int = 0) -> RuntimeBatch:
     """Runtime batch shape with no engine attached: only the task block
     is populated.  ``graphs`` and ``raw_features`` are empty dicts."""
-    return {
-        "task": {
-            "input_ids":
-            pa.array(range(n_inputs), type=pa.uint64()),
-            "tt_stage_node_ids":
-            pa.array(range(n_inputs), type=pa.uint64()),
-            "seed_node_ids":
-            pa.array([100 + i for i in range(n_inputs)], type=pa.uint64()),
-            "target":
-            pa.array([float(i % 2) for i in range(n_inputs)],
-                     type=pa.float64()),
-        },
-        "graphs": {},
-        "raw_features": {},
-        "metadata": {},
-    }
+    return RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array(range(n_inputs), type=pa.uint64()),
+            tt_stage_node_ids=pa.array(range(n_inputs), type=pa.uint64()),
+            seed_node_ids=pa.array(
+                [100 + i for i in range(n_inputs)], type=pa.uint64()
+            ),
+            target=pa.array([float(i % 2) for i in range(n_inputs)], type=pa.float64()),
+        ),
+        graphs={},
+        raw_features={},
+    )
 
 
-def _populated_batch() -> dict[str, Any]:
+def _populated_batch() -> RuntimeBatch:
     """Runtime batch with an engine attached: 3 seeds + 4 sampled
     User nodes, one User-(follows)->User edge, fused-feature record
     batches for User."""
@@ -81,75 +85,63 @@ def _populated_batch() -> dict[str, Any]:
         ],
         schema=feat_schema,
     )
-    return {
-        "task": {
-            "input_ids":
-            pa.array([0, 1, 2], type=pa.uint64()),
-            "tt_stage_node_ids":
-            pa.array([10, 11, 12], type=pa.uint64()),
-            "seed_node_ids":
-            pa.array([100, 101, 102], type=pa.uint64()),
-            "seed_timestamps":
-            pa.array([1_700_000_000, 1_700_500_000, 1_700_600_000],
-                     type=pa.int64()),
-            "target":
-            pa.array([1.0, 0.0, 1.0], type=pa.float64()),
-            "weight":
-            pa.array([0.5, 1.0, 1.5], type=pa.float64()),
-        },
-        "graphs": {
-            "main": {
-                "node_ids": {
+    return RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1, 2], type=pa.uint64()),
+            tt_stage_node_ids=pa.array([10, 11, 12], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101, 102], type=pa.uint64()),
+            seed_timestamps=pa.array(
+                [1_700_000_000, 1_700_500_000, 1_700_600_000], type=pa.int64()
+            ),
+            target=pa.array([1.0, 0.0, 1.0], type=pa.float64()),
+            weight=pa.array([0.5, 1.0, 1.5], type=pa.float64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={
                     "User": pa.array([100, 101, 102, 200], type=pa.uint64()),
                 },
-                "edge_index_dict": [
-                    {
-                        "edge_type": {
-                            "src": "User",
-                            "rel": "follows",
-                            "dst": "User"
-                        },
-                        "src": pa.array([0, 1], type=pa.uint32()),
-                        "dst": pa.array([3, 3], type=pa.uint32()),
-                    },
+                edge_index_dict=[
+                    RuntimeEdge(
+                        edge_type=RuntimeEdgeType(
+                            src="User", rel="follows", dst="User"
+                        ),
+                        src=pa.array([0, 1], type=pa.uint32()),
+                        dst=pa.array([3, 3], type=pa.uint32()),
+                    ),
                 ],
-                "batch_dict": {
+                batch_dict={
                     "User": pa.array([0, 1, 2, 1], type=pa.uint32()),
                 },
-                "num_sampled_nodes_dict": {
+                num_sampled_nodes_dict={
                     "User": pa.array([3, 1], type=pa.uint64()),
                 },
-                "num_sampled_edges_dict": [
-                    {
-                        "edge_type": {
-                            "src": "User",
-                            "rel": "follows",
-                            "dst": "User"
-                        },
-                        "counts": pa.array([2], type=pa.uint64()),
-                    },
+                num_sampled_edges_dict=[
+                    RuntimeEdgeCounts(
+                        edge_type=RuntimeEdgeType(
+                            src="User", rel="follows", dst="User"
+                        ),
+                        counts=pa.array([2], type=pa.uint64()),
+                    ),
                 ],
-                "metadata": {},
-            }
+            )
         },
-        "raw_features": {
-            "User": {
-                "key": "User",
-                "num_rows": 4,
-                "columns": ["age", "country"],
-                "metadata": {},
-                "node_ids": pa.array([100, 101, 102, 200], type=pa.uint64()),
-                "record_batches": [user_features],
-            }
+        raw_features={
+            "User": RuntimeFeatureBlock(
+                key="User",
+                num_rows=4,
+                node_ids=pa.array([100, 101, 102, 200], type=pa.uint64()),
+                record_batches=[user_features],
+            )
         },
-        "metadata": {},
-    }
+    )
 
 
 def test_empty_batch_yields_seed_block_only() -> None:
     batch = _empty_batch(n_inputs=3)
     hetero, raw_features, raw_row_ids = runtime_batch_to_hetero(
-        batch, train_table_name="train_table")
+        batch, train_table_name="train_table"
+    )
 
     # Seed block is populated.
     seed = hetero["train_table"]
@@ -169,7 +161,7 @@ def test_empty_batch_yields_seed_block_only() -> None:
 
 def test_populated_batch_builds_graph_and_seed_block() -> None:
     batch = _populated_batch()
-    hetero, raw_features, raw_row_ids = runtime_batch_to_hetero(
+    hetero, _raw_features, _raw_row_ids = runtime_batch_to_hetero(
         batch, train_table_name="train_table")
 
     # Graph topology.
@@ -200,8 +192,9 @@ def test_populated_batch_builds_graph_and_seed_block() -> None:
 
 def test_epoch_second_seed_timestamps_are_normalized_to_ns() -> None:
     batch = _empty_batch(n_inputs=2)
-    batch["task"]["seed_timestamps"] = pa.array([1_700_000_000, 1_700_000_001],
-                                                type=pa.int64())
+    batch.task.seed_timestamps = pa.array(
+        [1_700_000_000, 1_700_000_001], type=pa.int64()
+    )
 
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table")
@@ -228,7 +221,7 @@ def test_diskgraph_fk_relation_names_are_normalized() -> None:
 
 def test_multiclass_target_record_batch_uses_target_encoder_mapping() -> None:
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["target"] = pa.RecordBatch.from_arrays(
+    batch.task.target = pa.RecordBatch.from_arrays(
         [pa.array(["silver", "gold", "silver"], type=pa.string())],
         names=["TARGET1"],
     )
@@ -252,7 +245,7 @@ def test_multiclass_target_record_batch_uses_target_encoder_mapping() -> None:
 
 def test_multiclass_target_record_batch_maps_numeric_strings() -> None:
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["target"] = pa.RecordBatch.from_arrays(
+    batch.task.target = pa.RecordBatch.from_arrays(
         [pa.array(["1", "2", "1"], type=pa.string())],
         names=["TARGET1"],
     )
@@ -276,7 +269,7 @@ def test_multiclass_target_record_batch_maps_numeric_strings() -> None:
 
 def test_multilabel_target_record_batch_builds_multi_nested_tensor() -> None:
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["target"] = pa.RecordBatch.from_arrays(
+    batch.task.target = pa.RecordBatch.from_arrays(
         [pa.array(["red;blue", "", "blue"], type=pa.string())],
         names=["TARGET1"],
     )
@@ -302,7 +295,7 @@ def test_multilabel_target_record_batch_builds_multi_nested_tensor() -> None:
 
 def test_multilabel_target_record_batch_maps_numeric_strings() -> None:
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["target"] = pa.RecordBatch.from_arrays(
+    batch.task.target = pa.RecordBatch.from_arrays(
         [pa.array(["1|2", "", "2"], type=pa.string())],
         names=["TARGET1"],
     )
@@ -329,7 +322,7 @@ def test_multilabel_target_record_batch_maps_numeric_strings() -> None:
 def test_multilabel_ranking_target_record_batch_builds_multi_nested_tensor(
 ) -> None:
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["target"] = pa.RecordBatch.from_arrays(
+    batch.task.target = pa.RecordBatch.from_arrays(
         [pa.array(["red|blue", "", "blue"], type=pa.string())],
         names=["TARGET1"],
     )
@@ -355,7 +348,7 @@ def test_multilabel_ranking_target_record_batch_builds_multi_nested_tensor(
 
 def test_multilabel_ranking_target_record_batch_maps_numeric_strings() -> None:
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["target"] = pa.RecordBatch.from_arrays(
+    batch.task.target = pa.RecordBatch.from_arrays(
         [pa.array(["1|2", "", "2"], type=pa.string())],
         names=["TARGET1"],
     )
@@ -381,7 +374,7 @@ def test_multilabel_ranking_target_record_batch_maps_numeric_strings() -> None:
 
 def test_forecasting_skips_seed_y_for_sequence_target() -> None:
     batch = _empty_batch(n_inputs=2)
-    batch["task"]["target"] = pa.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    batch.task.target = pa.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
 
     hetero, _, _ = runtime_batch_to_hetero(
         batch,
@@ -398,59 +391,52 @@ def test_columnar_native_batch_shape_matches_diskgraph_iterator_output(
         [pa.array([41, 22, 35, 19], type=pa.int64())],
         schema=pa.schema([("age", pa.int64())]),
     )
-    batch = {
-        "task": {
-            "input_ids": pa.array([0, 1, 2], type=pa.uint64()),
-            "tt_stage_node_ids": pa.array([10, 11, 12], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101, 102], type=pa.uint64()),
-            "seed_timestamps": pa.array([1700, 1701, 1702], type=pa.int64()),
-            "target": pa.array([1.0, 0.0, 1.0], type=pa.float64()),
-            "weight": pa.array([0.5, 1.0, 1.5], type=pa.float64()),
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1, 2], type=pa.uint64()),
+            tt_stage_node_ids=pa.array([10, 11, 12], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101, 102], type=pa.uint64()),
+            seed_timestamps=pa.array([1700, 1701, 1702], type=pa.int64()),
+            target=pa.array([1.0, 0.0, 1.0], type=pa.float64()),
+            weight=pa.array([0.5, 1.0, 1.5], type=pa.float64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={"User": pa.array([100, 101, 102, 200], type=pa.uint64())},
+                batch_dict={"User": pa.array([0, 1, 2, 1], type=pa.uint32())},
+                edge_index_dict=[
+                    RuntimeEdge(
+                        edge_type=RuntimeEdgeType(
+                            src="User", rel="follows", dst="User"
+                        ),
+                        src=pa.array([0, 1], type=pa.uint32()),
+                        dst=pa.array([3, 3], type=pa.uint32()),
+                    )
+                ],
+                num_sampled_nodes_dict={"User": pa.array([3, 1], type=pa.uint64())},
+                num_sampled_edges_dict=[
+                    RuntimeEdgeCounts(
+                        edge_type=RuntimeEdgeType(
+                            src="User", rel="follows", dst="User"
+                        ),
+                        counts=pa.array([2], type=pa.uint64()),
+                    )
+                ],
+            )
         },
-        "graphs": {
-            "main": {
-                "node_ids": {
-                    "User": pa.array([100, 101, 102, 200], type=pa.uint64())
-                },
-                "batch_dict": {
-                    "User": pa.array([0, 1, 2, 1], type=pa.uint32())
-                },
-                "edge_index_dict": [{
-                    "edge_type": {
-                        "src": "User",
-                        "rel": "follows",
-                        "dst": "User"
-                    },
-                    "src": pa.array([0, 1], type=pa.uint32()),
-                    "dst": pa.array([3, 3], type=pa.uint32()),
-                }],
-                "num_sampled_nodes_dict": {
-                    "User": pa.array([3, 1], type=pa.uint64())
-                },
-                "num_sampled_edges_dict": [{
-                    "edge_type": {
-                        "src": "User",
-                        "rel": "follows",
-                        "dst": "User"
-                    },
-                    "counts":
-                    pa.array([2], type=pa.uint64()),
-                }],
-            }
+        raw_features={
+            "User": RuntimeFeatureBlock(
+                key="User",
+                num_rows=4,
+                node_ids=pa.array([100, 101, 102, 200], type=pa.uint64()),
+                record_batches=[features],
+            )
         },
-        "raw_features": {
-            "User": {
-                "key": "User",
-                "num_rows": 4,
-                "node_ids": pa.array([100, 101, 102, 200], type=pa.uint64()),
-                "record_batches": [features],
-            }
-        },
-    }
+    )
 
     hetero, raw_features, raw_row_ids = runtime_batch_to_hetero(
-        batch, train_table_name="train_table",
-        task_type="binary_classification")
+        batch, train_table_name="train_table", task_type="binary_classification"
+    )
 
     assert hetero["train_table"].input_id.tolist() == [0, 1, 2]
     # seconds (default engine unit) normalized to ns canonical.
@@ -492,26 +478,21 @@ def test_record_batches_concat_when_engine_emits_multiple_hops() -> None:
     hop1 = pa.RecordBatch.from_arrays([pa.array([35, 19], pa.int64())],
                                       schema=schema)
     batch = _empty_batch(n_inputs=2)
-    batch["graphs"] = {
-        "main": {
-            "node_ids": {
-                "User": pa.array([100, 101, 102, 200], type=pa.uint64())
-            },
-            "edge_index_dict": [],
-            "batch_dict": {},
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [],
-            "metadata": {},
-        }
+    batch.graphs = {
+        "main": RuntimeGraph(
+            node_ids={"User": pa.array([100, 101, 102, 200], type=pa.uint64())},
+            edge_index_dict=[],
+            batch_dict={},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[],
+        )
     }
-    batch["raw_features"] = {
-        "User": {
-            "key": "User",
-            "num_rows": 4,
-            "columns": ["age"],
-            "metadata": {},
-            "record_batches": [seeds, hop1],
-        }
+    batch.raw_features = {
+        "User": RuntimeFeatureBlock(
+            key="User",
+            num_rows=4,
+            record_batches=[seeds, hop1],
+        )
     }
     _, raw_features, raw_row_ids = runtime_batch_to_hetero(
         batch, train_table_name="train_table")
@@ -523,27 +504,20 @@ def test_record_batches_concat_when_engine_emits_multiple_hops() -> None:
 
 def test_empty_edge_type_lands_as_2x0_tensor() -> None:
     batch = _empty_batch(n_inputs=1)
-    batch["graphs"] = {
-        "main": {
-            "node_ids": {
-                "User": pa.array([], type=pa.uint64())
-            },
-            "edge_index_dict": [
-                {
-                    "edge_type": {
-                        "src": "User",
-                        "rel": "follows",
-                        "dst": "User"
-                    },
-                    "src": pa.array([], type=pa.uint32()),
-                    "dst": pa.array([], type=pa.uint32()),
-                },
+    batch.graphs = {
+        "main": RuntimeGraph(
+            node_ids={"User": pa.array([], type=pa.uint64())},
+            edge_index_dict=[
+                RuntimeEdge(
+                    edge_type=RuntimeEdgeType(src="User", rel="follows", dst="User"),
+                    src=pa.array([], type=pa.uint32()),
+                    dst=pa.array([], type=pa.uint32()),
+                ),
             ],
-            "batch_dict": {},
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [],
-            "metadata": {},
-        }
+            batch_dict={},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[],
+        )
     }
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table")
@@ -554,43 +528,44 @@ def test_empty_edge_type_lands_as_2x0_tensor() -> None:
 
 def test_bidirectional_output_reuses_pyg_reverse_edge_transform() -> None:
     batch = _empty_batch(n_inputs=1)
-    batch["graphs"] = {
-        "main": {
-            "node_ids": {
+    batch.graphs = {
+        "main": RuntimeGraph(
+            node_ids={
                 "transactions": pa.array([10, 11], type=pa.uint64()),
                 "articles": pa.array([20], type=pa.uint64()),
             },
-            "edge_index_dict": [{
-                "edge_type": {
-                    "src": "transactions",
-                    "rel": "transactions_article_id_to_articles_article_id",
-                    "dst": "articles",
-                },
-                "src": pa.array([0, 1], type=pa.uint32()),
-                "dst": pa.array([0, 0], type=pa.uint32()),
-            }],
-            "batch_dict": {},
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [{
-                "edge_type": {
-                    "src": "transactions",
-                    "rel": "transactions_article_id_to_articles_article_id",
-                    "dst": "articles",
-                },
-                "counts":
-                pa.array([2], type=pa.uint64()),
-            }, {
-                "edge_type": {
-                    "src": "articles",
-                    "rel":
-                    "transactions_article_id_to_articles_article_id_reverse",
-                    "dst": "transactions",
-                },
-                "counts":
-                pa.array([0], type=pa.uint64()),
-            }],
-            "metadata": {},
-        }
+            edge_index_dict=[
+                RuntimeEdge(
+                    edge_type=RuntimeEdgeType(
+                        src="transactions",
+                        rel="transactions_article_id_to_articles_article_id",
+                        dst="articles",
+                    ),
+                    src=pa.array([0, 1], type=pa.uint32()),
+                    dst=pa.array([0, 0], type=pa.uint32()),
+                )
+            ],
+            batch_dict={},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[
+                RuntimeEdgeCounts(
+                    edge_type=RuntimeEdgeType(
+                        src="transactions",
+                        rel="transactions_article_id_to_articles_article_id",
+                        dst="articles",
+                    ),
+                    counts=pa.array([2], type=pa.uint64()),
+                ),
+                RuntimeEdgeCounts(
+                    edge_type=RuntimeEdgeType(
+                        src="articles",
+                        rel="transactions_article_id_to_articles_article_id_reverse",
+                        dst="transactions",
+                    ),
+                    counts=pa.array([0], type=pa.uint64()),
+                ),
+            ],
+        )
     }
 
     hetero, _, _ = runtime_batch_to_hetero(
@@ -623,38 +598,37 @@ def test_unsampled_schema_node_types_are_backfilled_empty() -> None:
     are now back-filled are kept (zero-column), exactly as PyG keeps them.
     """
     batch = _empty_batch(n_inputs=1)
-    batch["graphs"] = {
-        "main": {
+    batch.graphs = {
+        "main": RuntimeGraph(
             # Only ``users`` was sampled (anchor seeds, no product neighbors).
-            "node_ids": {
+            node_ids={
                 "users": pa.array([0, 1, 2], type=pa.uint64()),
             },
-            "edge_index_dict": [],
-            "batch_dict": {},
-            "num_sampled_nodes_dict": {},
+            edge_index_dict=[],
+            batch_dict={},
+            num_sampled_nodes_dict={},
             # Engine reports the full schema, incl. zero-count relations whose
             # endpoint node types (``ratings`` / ``products``) were never
             # visited in this batch.
-            "num_sampled_edges_dict": [
-                {
-                    "edge_type": {
-                        "src": "users",
-                        "rel": "u_to_r",
-                        "dst": "ratings",
-                    },
-                    "counts": pa.array([0, 0], type=pa.uint64()),
-                },
-                {
-                    "edge_type": {
-                        "src": "ratings",
-                        "rel": "r_to_p",
-                        "dst": "products",
-                    },
-                    "counts": pa.array([0, 0], type=pa.uint64()),
-                },
+            num_sampled_edges_dict=[
+                RuntimeEdgeCounts(
+                    edge_type=RuntimeEdgeType(
+                        src="users",
+                        rel="u_to_r",
+                        dst="ratings",
+                    ),
+                    counts=pa.array([0, 0], type=pa.uint64()),
+                ),
+                RuntimeEdgeCounts(
+                    edge_type=RuntimeEdgeType(
+                        src="ratings",
+                        rel="r_to_p",
+                        dst="products",
+                    ),
+                    counts=pa.array([0, 0], type=pa.uint64()),
+                ),
             ],
-            "metadata": {},
-        }
+        )
     }
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table")
@@ -684,26 +658,25 @@ def test_grouped_lp_batch_missing_rhs_has_empty_rhs_block() -> None:
     must still expose ``node_id_dict['products']`` as an EMPTY block, so
     ``shallow_rhs``/``hybrid`` ``forward`` can read it without a guard."""
     batch = _empty_batch(n_inputs=2)
-    batch["graphs"] = {
-        "main": {
-            "node_ids": {
+    batch.graphs = {
+        "main": RuntimeGraph(
+            node_ids={
                 "users": pa.array([0, 1], type=pa.uint64()),
             },
-            "edge_index_dict": [],
-            "batch_dict": {},
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [
-                {
-                    "edge_type": {
-                        "src": "ratings",
-                        "rel": "r_to_p",
-                        "dst": "products",
-                    },
-                    "counts": pa.array([0, 0], type=pa.uint64()),
-                },
+            edge_index_dict=[],
+            batch_dict={},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[
+                RuntimeEdgeCounts(
+                    edge_type=RuntimeEdgeType(
+                        src="ratings",
+                        rel="r_to_p",
+                        dst="products",
+                    ),
+                    counts=pa.array([0, 0], type=pa.uint64()),
+                ),
             ],
-            "metadata": {},
-        }
+        )
     }
     hetero, _, _ = runtime_batch_to_hetero(
         batch,
@@ -724,9 +697,10 @@ def test_partial_optional_columns_are_skipped() -> None:
     not surfaced on the seed block — the caller should validate
     upstream rather than inferring from a half-populated tensor."""
     batch = _empty_batch(n_inputs=3)
-    batch["task"]["seed_timestamps"] = pa.array(
-        [1_700_000_000, None, 1_700_600_000], type=pa.int64())
-    batch["task"]["weight"] = pa.array([0.5, None, 1.5], type=pa.float64())
+    batch.task.seed_timestamps = pa.array(
+        [1_700_000_000, None, 1_700_600_000], type=pa.int64()
+    )
+    batch.task.weight = pa.array([0.5, None, 1.5], type=pa.float64())
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table")
     seed = hetero["train_table"]
@@ -744,20 +718,14 @@ def _user_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
     }
 
 
-def _user_feature_schema() -> dict[str, Any]:
+def _user_feature_schema() -> FeatureSchema:
     return {
         "node_types": {
             "User": {
                 "feature_columns": ["age"],
-                "time_column": None,
-                "pkey_column": None,
                 "mapper_key": "users_v1",
             }
         },
-        "edge_types": {},
-        "raw_feature_format": "arrow_columnar_v1",
-        "provenance_mode": "node_id_time_keyed_v1",
-        "metadata": {},
     }
 
 
@@ -795,7 +763,7 @@ def test_runtime_batch_to_hetero_attaches_tf_when_mapper_bank_passed() -> None:
         [pa.array([41, 22, 35, 19], type=pa.int64())],
         schema=pa.schema([("age", pa.int64())]),
     )
-    batch["raw_features"]["User"]["record_batches"] = [age_only]
+    batch.raw_features["User"].record_batches = [age_only]
 
     hetero, _, _ = runtime_batch_to_hetero(
         batch,
@@ -826,8 +794,12 @@ def test_record_batch_to_tf_uses_arrow_mapper_contract(
 
     monkeypatch.setattr(runtime_adapter, 'get_tf', fake_get_tf)
 
-    assert runtime_adapter._record_batch_to_tf(record_batch,
-                                               {'age': object()}) is expected
+    assert (
+        runtime_adapter._record_batch_to_tf(
+            record_batch, _user_mapper_bank()["users_v1"]
+        )
+        is expected
+    )
     assert len(calls) == 1
 
 
@@ -939,23 +911,23 @@ def test_backfilled_type_with_mapper_gets_empty_shaped_tf() -> None:
     # Batch samples NOTHING in the graph: User is reachable only via the schema
     # edge, so it is back-filled empty. No raw features for User.
     batch = _empty_batch(n_inputs=1)
-    batch["graphs"] = {
-        "main": {
-            "node_ids": {},
-            "edge_index_dict": [],
-            "batch_dict": {},
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [{
-                "edge_type": {
-                    "src": "User",
-                    "rel": "self",
-                    "dst": "User",
-                },
-                "counts":
-                pa.array([0, 0], type=pa.uint64()),
-            }],
-            "metadata": {},
-        }
+    batch.graphs = {
+        "main": RuntimeGraph(
+            node_ids={},
+            edge_index_dict=[],
+            batch_dict={},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[
+                RuntimeEdgeCounts(
+                    edge_type=RuntimeEdgeType(
+                        src="User",
+                        rel="self",
+                        dst="User",
+                    ),
+                    counts=pa.array([0, 0], type=pa.uint64()),
+                )
+            ],
+        )
     }
     hetero, _, _ = runtime_batch_to_hetero(
         batch,
@@ -970,7 +942,7 @@ def test_backfilled_type_with_mapper_gets_empty_shaped_tf() -> None:
     # The encoder iterates feat_dict stypes; the mapper-shaped empty TF must
     # carry them (numerical, from the `age` numerical mapper) at zero rows.
     assert len(tf.feat_dict) > 0
-    for stype, feat in tf.feat_dict.items():
+    for feat in tf.feat_dict.values():
         assert feat.shape[0] == 0
 
 
@@ -978,16 +950,13 @@ def test_forecasting_aliases_seed_stage_features_to_train_table_tf() -> None:
     batch = _populated_batch()
     future = pa.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
                       type=pa.list_(pa.float64()))
-    batch["raw_features"]["train_seeds"] = {
-        "key":
-        "train_seeds",
-        "num_rows":
-        3,
-        "columns": [FUTURE_LABELS_COL],
-        "metadata": {},
-        "record_batches":
-        [pa.RecordBatch.from_arrays([future], names=[FUTURE_LABELS_COL])],
-    }
+    batch.raw_features["train_seeds"] = RuntimeFeatureBlock(
+        key="train_seeds",
+        num_rows=3,
+        record_batches=[
+            pa.RecordBatch.from_arrays([future], names=[FUTURE_LABELS_COL])
+        ],
+    )
     feature_schema = _user_feature_schema()
     feature_schema["node_types"]["train_table"] = {
         "feature_columns": [FUTURE_LABELS_COL],
@@ -1043,13 +1012,10 @@ def test_attach_tensor_frames_skips_namespace_without_mapper_key() -> None:
                                    schema=schema)
     }
     hetero = HeteroData()
-    feature_schema = {
+    feature_schema: FeatureSchema = {
         "node_types": {
             "edge_namespace": {
                 "feature_columns": ["x"],
-                "time_column": None,
-                "pkey_column": None,
-                "mapper_key": None,  # no mapper -> skip
             }
         }
     }
@@ -1070,12 +1036,10 @@ def test_attach_tensor_frames_raises_on_unknown_mapper_key() -> None:
                                    schema=schema)
     }
     hetero = HeteroData()
-    feature_schema = {
+    feature_schema: FeatureSchema = {
         "node_types": {
             "User": {
                 "feature_columns": ["age"],
-                "time_column": None,
-                "pkey_column": None,
                 "mapper_key": "missing_v1",
             }
         }
@@ -1109,40 +1073,28 @@ def test_multi_channel_runtime_uses_requested_channel() -> None:
     schema = pa.schema([("x", pa.int64())])
     rb = pa.RecordBatch.from_arrays([pa.array([1], pa.int64())], schema=schema)
     batch = _empty_batch(n_inputs=1)
-    batch["graphs"] = {
-        "lhs": {
-            "node_ids": {
-                "User": pa.array([10], type=pa.uint64())
-            },
-            "edge_index_dict": [],
-            "batch_dict": {
-                "User": pa.array([0], type=pa.uint32())
-            },
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [],
-            "metadata": {},
-        },
-        "rhs": {
-            "node_ids": {
-                "Item": pa.array([99], type=pa.uint64())
-            },
-            "edge_index_dict": [],
-            "batch_dict": {
-                "Item": pa.array([0], type=pa.uint32())
-            },
-            "num_sampled_nodes_dict": {},
-            "num_sampled_edges_dict": [],
-            "metadata": {},
-        },
+    batch.graphs = {
+        "lhs": RuntimeGraph(
+            node_ids={"User": pa.array([10], type=pa.uint64())},
+            edge_index_dict=[],
+            batch_dict={"User": pa.array([0], type=pa.uint32())},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[],
+        ),
+        "rhs": RuntimeGraph(
+            node_ids={"Item": pa.array([99], type=pa.uint64())},
+            edge_index_dict=[],
+            batch_dict={"Item": pa.array([0], type=pa.uint32())},
+            num_sampled_nodes_dict={},
+            num_sampled_edges_dict=[],
+        ),
     }
-    batch["raw_features"] = {
-        "User": {
-            "key": "User",
-            "num_rows": 1,
-            "columns": ["x"],
-            "metadata": {},
-            "record_batches": [rb],
-        }
+    batch.raw_features = {
+        "User": RuntimeFeatureBlock(
+            key="User",
+            num_rows=1,
+            record_batches=[rb],
+        )
     }
 
     lhs, _, lhs_row_ids = runtime_batch_to_hetero(
@@ -1168,32 +1120,30 @@ def test_two_tower_lp_expands_seed_time_to_rhs_seed_layout() -> None:
     (positives keep the anchor time; each anchor-major negative repeats its
     anchor's time). Without it ``seed_time[batch]`` is out of bounds."""
     B, M = 2, 2
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101], type=pa.uint64()),
-            "seed_timestamps": pa.array([1_700, 1_800], type=pa.int64()),
-            "target": pa.array([1.0, 1.0], type=pa.float64()),
-            "amount_m": M,
-            "num_positives": B,
-            "rhs_seed_type": "Item",
-            "neg_mask": pa.array([True] * (B * M), type=pa.bool_()),
-        },
-        "graphs": {
-            "main": {
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101], type=pa.uint64()),
+            seed_timestamps=pa.array([1_700, 1_800], type=pa.int64()),
+            target=pa.array([1.0, 1.0], type=pa.float64()),
+            amount_m=M,
+            num_positives=B,
+            rhs_seed_type="Item",
+            neg_mask=pa.array([True] * (B * M), type=pa.bool_()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
                 # B + B*M == 6 RHS seeds, batch == engine seed_index in [0, 6).
-                "node_ids": {
+                node_ids={
                     "Item": pa.array(list(range(6)), type=pa.uint64()),
                 },
-                "batch_dict": {
+                batch_dict={
                     "Item": pa.array(list(range(6)), type=pa.uint32()),
                 },
-                "metadata": {},
-            }
+            )
         },
-        "raw_features": {},
-        "metadata": {},
-    }
+        raw_features={},
+    )
 
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table",
@@ -1242,30 +1192,28 @@ def test_attach_lp_exclude_present_fields() -> None:
     """A static-LP batch carrying ``lp_exclude_*`` attaches expanded
     ``exclude_(lhs_batch, rhs_index)`` to the entity + seed blocks."""
     B = 3
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0, 1, 2], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101, 102], type=pa.uint64()),
-            "target": pa.array([1.0, 1.0, 1.0], type=pa.float64()),
-            "lp_exclude_counts": pa.array([2, 0, 1], type=pa.uint32()),
-            "lp_exclude_rhs_global": pa.array([10, 11, 42], type=pa.int64()),
-        },
-        "graphs": {
-            "main": {
-                "node_ids": {
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1, 2], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101, 102], type=pa.uint64()),
+            target=pa.array([1.0, 1.0, 1.0], type=pa.float64()),
+            lp_exclude_counts=pa.array([2, 0, 1], type=pa.uint32()),
+            lp_exclude_rhs_global=pa.array([10, 11, 42], type=pa.int64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={
                     "User": pa.array(list(range(B)), type=pa.uint64()),
                     "Item": pa.array(list(range(B)), type=pa.uint64()),
                 },
-                "batch_dict": {
+                batch_dict={
                     "User": pa.array(list(range(B)), type=pa.uint32()),
                     "Item": pa.array(list(range(B)), type=pa.uint32()),
                 },
-                "metadata": {},
-            }
+            )
         },
-        "raw_features": {},
-        "metadata": {},
-    }
+        raw_features={},
+    )
 
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table",
@@ -1281,28 +1229,26 @@ def test_attach_lp_exclude_absent_fields_no_attribute() -> None:
     """Without ``lp_exclude_*`` (train / pred / temporal / legacy), the exclude
     attributes are not attached to the blocks."""
     B = 2
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101], type=pa.uint64()),
-            "target": pa.array([1.0, 1.0], type=pa.float64()),
-        },
-        "graphs": {
-            "main": {
-                "node_ids": {
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101], type=pa.uint64()),
+            target=pa.array([1.0, 1.0], type=pa.float64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={
                     "User": pa.array(list(range(B)), type=pa.uint64()),
                     "Item": pa.array(list(range(B)), type=pa.uint64()),
                 },
-                "batch_dict": {
+                batch_dict={
                     "User": pa.array(list(range(B)), type=pa.uint32()),
                     "Item": pa.array(list(range(B)), type=pa.uint32()),
                 },
-                "metadata": {},
-            }
+            )
         },
-        "raw_features": {},
-        "metadata": {},
-    }
+        raw_features={},
+    )
 
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table",
@@ -1324,17 +1270,15 @@ def test_attach_lp_exclude_absent_fields_no_attribute() -> None:
 
 def test_seed_time_normalized_to_ns_default_seconds_unit() -> None:
     """Default engine unit is seconds; seed_timestamps must come out in ns."""
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101], type=pa.uint64()),
-            "seed_timestamps": pa.array([1700, 1701], type=pa.int64()),
-        },
-        "graphs": {
-            "main": {}
-        },
-        "raw_features": {},
-    }
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101], type=pa.uint64()),
+            seed_timestamps=pa.array([1700, 1701], type=pa.int64()),
+        ),
+        graphs={"main": RuntimeGraph()},
+        raw_features={},
+    )
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table",
                                            task_type="temporal_link_prediction")
@@ -1347,24 +1291,21 @@ def test_seed_time_normalized_to_ns_default_seconds_unit() -> None:
 
 def test_seed_time_ns_unit_is_passthrough() -> None:
     """When the engine unit is already ns, no scaling is applied."""
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids":
-            pa.array([0], type=pa.uint64()),
-            "seed_node_ids":
-            pa.array([100], type=pa.uint64()),
-            "seed_timestamps":
-            pa.array([1_700_000_000_000_000_000], type=pa.int64()),
-        },
-        "graphs": {
-            "main": {}
-        },
-        "raw_features": {},
-    }
-    hetero, _, _ = runtime_batch_to_hetero(batch,
-                                           train_table_name="train_table",
-                                           task_type="temporal_link_prediction",
-                                           index_np_time_unit="ns")
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0], type=pa.uint64()),
+            seed_node_ids=pa.array([100], type=pa.uint64()),
+            seed_timestamps=pa.array([1_700_000_000_000_000_000], type=pa.int64()),
+        ),
+        graphs={"main": RuntimeGraph()},
+        raw_features={},
+    )
+    hetero, _, _ = runtime_batch_to_hetero(
+        batch,
+        train_table_name="train_table",
+        task_type="temporal_link_prediction",
+        index_np_time_unit="ns",
+    )
     assert hetero["train_table"].seed_time.tolist() == [
         1_700_000_000_000_000_000
     ]
@@ -1372,17 +1313,15 @@ def test_seed_time_ns_unit_is_passthrough() -> None:
 
 def test_seed_time_ms_unit_scaled_to_ns() -> None:
     """Millisecond engine unit -> ns via the manifest-driven factor (1e6)."""
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0], type=pa.uint64()),
-            "seed_node_ids": pa.array([100], type=pa.uint64()),
-            "seed_timestamps": pa.array([1700], type=pa.int64()),
-        },
-        "graphs": {
-            "main": {}
-        },
-        "raw_features": {},
-    }
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0], type=pa.uint64()),
+            seed_node_ids=pa.array([100], type=pa.uint64()),
+            seed_timestamps=pa.array([1700], type=pa.int64()),
+        ),
+        graphs={"main": RuntimeGraph()},
+        raw_features={},
+    )
     hetero, _, _ = runtime_batch_to_hetero(batch,
                                            train_table_name="train_table",
                                            task_type="temporal_link_prediction",
@@ -1410,34 +1349,32 @@ def test_neighbor_node_time_normalized_to_ns_int64_seconds() -> None:
         schema=pa.schema([("user_id", pa.uint64()),
                           ("event_time", pa.int64())]),
     )
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101], type=pa.uint64()),
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101], type=pa.uint64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={"User": pa.array([100, 101], type=pa.uint64())},
+                batch_dict={"User": pa.array([0, 1], type=pa.uint32())},
+            )
         },
-        "graphs": {
-            "main": {
-                "node_ids": {
-                    "User": pa.array([100, 101], type=pa.uint64())
-                },
-                "batch_dict": {
-                    "User": pa.array([0, 1], type=pa.uint32())
-                },
-            }
+        raw_features={
+            "User": RuntimeFeatureBlock(
+                key="User",
+                num_rows=2,
+                node_ids=pa.array([100, 101], type=pa.uint64()),
+                record_batches=[features],
+            )
         },
-        "raw_features": {
-            "User": {
-                "key": "User",
-                "num_rows": 2,
-                "node_ids": pa.array([100, 101], type=pa.uint64()),
-                "record_batches": [features],
-            }
-        },
-    }
-    hetero, _, _ = runtime_batch_to_hetero(batch,
-                                           train_table_name="train_table",
-                                           task_type="binary_classification",
-                                           time_col_dict={"User": "event_time"})
+    )
+    hetero, _, _ = runtime_batch_to_hetero(
+        batch,
+        train_table_name="train_table",
+        task_type="binary_classification",
+        time_col_dict={"User": "event_time"},
+    )
     assert hetero["User"].time.tolist() == [
         1700 * 1_000_000_000, 1701 * 1_000_000_000
     ]
@@ -1455,38 +1392,36 @@ def test_neighbor_node_time_timestamp_resolution_normalized_to_ns() -> None:
         schema=pa.schema([("user_id", pa.uint64()),
                           ("event_time", pa.timestamp("s"))]),
     )
-    batch: dict[str, Any] = {
-        "task": {
-            "input_ids": pa.array([0], type=pa.uint64()),
-            "seed_node_ids": pa.array([100], type=pa.uint64()),
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0], type=pa.uint64()),
+            seed_node_ids=pa.array([100], type=pa.uint64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={"User": pa.array([100], type=pa.uint64())},
+                batch_dict={"User": pa.array([0], type=pa.uint32())},
+            )
         },
-        "graphs": {
-            "main": {
-                "node_ids": {
-                    "User": pa.array([100], type=pa.uint64())
-                },
-                "batch_dict": {
-                    "User": pa.array([0], type=pa.uint32())
-                },
-            }
+        raw_features={
+            "User": RuntimeFeatureBlock(
+                key="User",
+                num_rows=1,
+                node_ids=pa.array([100], type=pa.uint64()),
+                record_batches=[features],
+            )
         },
-        "raw_features": {
-            "User": {
-                "key": "User",
-                "num_rows": 1,
-                "node_ids": pa.array([100], type=pa.uint64()),
-                "record_batches": [features],
-            }
-        },
-    }
-    hetero, _, _ = runtime_batch_to_hetero(batch,
-                                           train_table_name="train_table",
-                                           task_type="binary_classification",
-                                           time_col_dict={"User": "event_time"})
+    )
+    hetero, _, _ = runtime_batch_to_hetero(
+        batch,
+        train_table_name="train_table",
+        task_type="binary_classification",
+        time_col_dict={"User": "event_time"},
+    )
     assert hetero["User"].time.tolist() == [SEC * 1_000_000_000]
 
 
-def _ttng_nodepred_batch_with_seed_supervision_relation() -> dict[str, Any]:
+def _ttng_nodepred_batch_with_seed_supervision_relation() -> RuntimeBatch:
     """Node-prediction runtime batch as the TT-NG engine emits it: the sampled
     graph node_ids cover only the real schema types (``products``), but the
     engine's ``num_sampled_edges_dict`` reports a per-relation count for the
@@ -1496,64 +1431,58 @@ def _ttng_nodepred_batch_with_seed_supervision_relation() -> dict[str, Any]:
     parity back-fill must not introduce blocks for them."""
     seed_ns = "gen-traintable-job-deadbeef/train_seeds"
     test_seed_ns = "gen-traintable-job-deadbeef/test_seeds"
-    return {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101], type=pa.uint64()),
-            "target": pa.array([1.0, 0.0], type=pa.float64()),
-        },
-        "graphs": {
-            "main": {
-                "node_ids": {
+    return RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101], type=pa.uint64()),
+            target=pa.array([1.0, 0.0], type=pa.float64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={
                     "products": pa.array([100, 101], type=pa.uint64()),
                 },
-                "edge_index_dict": [],
-                "batch_dict": {
+                edge_index_dict=[],
+                batch_dict={
                     "products": pa.array([0, 1], type=pa.uint32()),
                 },
-                "num_sampled_nodes_dict": {
+                num_sampled_nodes_dict={
                     "products": pa.array([2], type=pa.uint64()),
                 },
-                "num_sampled_edges_dict": [
-                    {
-                        "edge_type": {
-                            "src": seed_ns,
-                            "rel": "supervises",
-                            "dst": "products",
-                        },
-                        "counts": pa.array([0], type=pa.uint64()),
-                    },
-                    {
-                        "edge_type": {
-                            "src": test_seed_ns,
-                            "rel": "supervises",
-                            "dst": "products",
-                        },
-                        "counts": pa.array([0], type=pa.uint64()),
-                    },
+                num_sampled_edges_dict=[
+                    RuntimeEdgeCounts(
+                        edge_type=RuntimeEdgeType(
+                            src=seed_ns,
+                            rel="supervises",
+                            dst="products",
+                        ),
+                        counts=pa.array([0], type=pa.uint64()),
+                    ),
+                    RuntimeEdgeCounts(
+                        edge_type=RuntimeEdgeType(
+                            src=test_seed_ns,
+                            rel="supervises",
+                            dst="products",
+                        ),
+                        counts=pa.array([0], type=pa.uint64()),
+                    ),
                 ],
-                "metadata": {},
-            }
+            )
         },
-        "raw_features": {
-            "products": {
-                "key":
-                "products",
-                "num_rows":
-                2,
-                "columns": ["age"],
-                "metadata": {},
-                "node_ids":
-                pa.array([100, 101], type=pa.uint64()),
-                "record_batches": [
+        raw_features={
+            "products": RuntimeFeatureBlock(
+                key="products",
+                num_rows=2,
+                node_ids=pa.array([100, 101], type=pa.uint64()),
+                record_batches=[
                     pa.RecordBatch.from_arrays(
                         [pa.array([10, 20], type=pa.int64())],
-                        schema=pa.schema([("age", pa.int64())])),
+                        schema=pa.schema([("age", pa.int64())]),
+                    ),
                 ],
-            }
+            )
         },
-        "metadata": {},
-    }
+    )
 
 
 def test_ttng_seed_supervision_relation_not_backfilled_as_node_type() -> None:
@@ -1567,7 +1496,7 @@ def test_ttng_seed_supervision_relation_not_backfilled_as_node_type() -> None:
     mapper_bank = {
         "products": {"age": NumericalTensorMapper()},
     }
-    feature_schema = {
+    feature_schema: FeatureSchema = {
         "node_types": {
             "products": {
                 "mapper_key": "products"
@@ -1699,36 +1628,32 @@ def _txn_record_batch(columns: list[str]) -> pa.RecordBatch:
     return pa.RecordBatch.from_arrays([all_columns[c] for c in columns], names=columns)
 
 
-def _txn_batch(columns: list[str]) -> dict[str, Any]:
+def _txn_batch(columns: list[str]) -> RuntimeBatch:
     batch = _populated_batch()
-    batch["graphs"]["main"]["node_ids"]["Transaction"] = pa.array(
+    batch.graphs["main"].node_ids["Transaction"] = pa.array(
         [200, 201, 202, 203], type=pa.uint64()
     )
-    batch["graphs"]["main"]["batch_dict"]["Transaction"] = pa.array(
+    batch.graphs["main"].batch_dict["Transaction"] = pa.array(
         [0, 1, 2, 0], type=pa.uint32()
     )
-    batch["graphs"]["main"]["num_sampled_nodes_dict"]["Transaction"] = pa.array(
+    batch.graphs["main"].num_sampled_nodes_dict["Transaction"] = pa.array(
         [3, 1], type=pa.uint64()
     )
-    batch["raw_features"]["Transaction"] = {
-        "key": "Transaction",
-        "num_rows": 4,
-        "columns": columns,
-        "metadata": {},
-        "node_ids": pa.array([200, 201, 202, 203], type=pa.uint64()),
-        "record_batches": [_txn_record_batch(columns)],
-    }
+    batch.raw_features["Transaction"] = RuntimeFeatureBlock(
+        key="Transaction",
+        num_rows=4,
+        node_ids=pa.array([200, 201, 202, 203], type=pa.uint64()),
+        record_batches=[_txn_record_batch(columns)],
+    )
     return batch
 
 
-def _txn_feature_schema() -> dict[str, Any]:
+def _txn_feature_schema() -> FeatureSchema:
     schema = _user_feature_schema()
     schema["node_types"]["Transaction"] = {
         # `created_at` is the time column and is deliberately absent here:
         # pquery excludes the time column from the encoder feature set.
         "feature_columns": ["amount"],
-        "time_column": "created_at",
-        "pkey_column": "txn_id",
         "mapper_key": "txns_v1",
     }
     return schema
@@ -1757,33 +1682,27 @@ def _to_hetero_with_txns(
     return hetero
 
 
-def _link_batch() -> dict[str, Any]:
+def _link_batch() -> RuntimeBatch:
     """A batch where `Ownership` is SAMPLED but emits NO raw_features block.
 
     This is exactly what the engine produces for a type requested as `[]`:
     topology and node ids are present, the feature block is simply absent.
     """
     batch = _populated_batch()
-    batch["graphs"]["main"]["node_ids"]["Ownership"] = pa.array(
-        [300, 301], type=pa.uint64()
-    )
-    batch["graphs"]["main"]["batch_dict"]["Ownership"] = pa.array(
-        [0, 1], type=pa.uint32()
-    )
-    batch["graphs"]["main"]["num_sampled_nodes_dict"]["Ownership"] = pa.array(
+    batch.graphs["main"].node_ids["Ownership"] = pa.array([300, 301], type=pa.uint64())
+    batch.graphs["main"].batch_dict["Ownership"] = pa.array([0, 1], type=pa.uint32())
+    batch.graphs["main"].num_sampled_nodes_dict["Ownership"] = pa.array(
         [2], type=pa.uint64()
     )
     return batch
 
 
-def _link_feature_schema() -> dict[str, Any]:
+def _link_feature_schema() -> FeatureSchema:
     schema = _user_feature_schema()
     # A pure link table: no encoder columns, no time column. pquery emits
     # exactly this for a join table.
     schema["node_types"]["Ownership"] = {
         "feature_columns": [],
-        "time_column": None,
-        "pkey_column": "ownership_id",
         "mapper_key": "links_v1",
     }
     return schema
@@ -1793,12 +1712,10 @@ def _link_feature_schema() -> dict[str, Any]:
 def test_skipped_namespace_still_gets_a_tensor_frame(num_nodes: int) -> None:
     """Skipped featureless types preserve sampled and empty topology row counts."""
     batch = _link_batch()
-    main = batch["graphs"]["main"]
-    main["node_ids"]["Ownership"] = pa.array(range(num_nodes), type=pa.uint64())
-    main["batch_dict"]["Ownership"] = pa.array(range(num_nodes), type=pa.uint32())
-    main["num_sampled_nodes_dict"]["Ownership"] = pa.array(
-        [num_nodes], type=pa.uint64()
-    )
+    main = batch.graphs["main"]
+    main.node_ids["Ownership"] = pa.array(range(num_nodes), type=pa.uint64())
+    main.batch_dict["Ownership"] = pa.array(range(num_nodes), type=pa.uint32())
+    main.num_sampled_nodes_dict["Ownership"] = pa.array([num_nodes], type=pa.uint64())
     hetero, raw_features, _ = runtime_batch_to_hetero(
         batch,
         train_table_name="train_table",
@@ -1847,10 +1764,10 @@ def test_featureless_train_predict_encoder_parity(
         attach_pkeys=False,
     )
     batch = _link_batch()
-    batch["raw_features"]["Ownership"] = {
-        "node_ids": pa.array([300, 301], type=pa.uint64()),
-        "record_batches": [pa.record_batch({"ownership_id": [7, 8]})],
-    }
+    batch.raw_features["Ownership"] = RuntimeFeatureBlock(
+        node_ids=pa.array([300, 301], type=pa.uint64()),
+        record_batches=[pa.record_batch({"ownership_id": [7, 8]})],
+    )
     predict, _, _ = runtime_batch_to_hetero(
         batch,
         train_table_name="train_table",
@@ -2024,15 +1941,13 @@ def test_forecasting_alias_matching_survives_a_narrowed_batch() -> None:
 
     for columns in (_PROJECTION_STORED_COLUMNS, ["amount", "created_at", "txn_id"]):
         batch = _txn_batch(columns)
-        batch["raw_features"]["train_seeds"] = {
-            "key": "train_seeds",
-            "num_rows": 3,
-            "columns": [FUTURE_LABELS_COL],
-            "metadata": {},
-            "record_batches": [
+        batch.raw_features["train_seeds"] = RuntimeFeatureBlock(
+            key="train_seeds",
+            num_rows=3,
+            record_batches=[
                 pa.RecordBatch.from_arrays([future], names=[FUTURE_LABELS_COL])
             ],
-        }
+        )
 
         hetero, _, _ = runtime_batch_to_hetero(
             batch,
@@ -2050,3 +1965,28 @@ def test_forecasting_alias_matching_survives_a_narrowed_batch() -> None:
             tf.feat_dict["sequence"].values,
             torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]),
         )
+
+
+@pytest.mark.parametrize("has_target", [False, True])
+def test_normalize_task_preserves_ragged_labels_without_copying(
+    has_target: bool,
+) -> None:
+    """Carry ragged LP labels independently of scalar target availability."""
+    task = RuntimeTask(
+        target=pa.array([1]) if has_target else None,
+        lp_pos_counts=pa.array([1], type=pa.uint32()),
+        lp_pos_rhs_global=pa.array([7], type=pa.uint64()),
+        lp_pos_mask=pa.array([False]),
+        lp_pos_weight=pa.array([0.5]),
+        lp_exclude_counts=pa.array([1], type=pa.uint32()),
+        lp_exclude_rhs_global=pa.array([3], type=pa.uint64()),
+    )
+
+    normalized = runtime_adapter._normalize_task_payload(task)
+
+    assert normalized.lp_pos_counts is task.lp_pos_counts
+    assert normalized.lp_pos_rhs_global is task.lp_pos_rhs_global
+    assert normalized.lp_pos_mask is task.lp_pos_mask
+    assert normalized.lp_pos_weight is task.lp_pos_weight
+    assert normalized.lp_exclude_counts is task.lp_exclude_counts
+    assert normalized.lp_exclude_rhs_global is task.lp_exclude_rhs_global

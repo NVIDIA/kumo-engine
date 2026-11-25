@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import resource
 import sys
@@ -30,7 +29,6 @@ from typing import Any
 import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
-from diskgraph import RuntimeIndex
 from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
@@ -229,8 +227,8 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
     t0 = time.perf_counter()
     n = 0
     for batch in iterator:
-        edges = batch["graphs"]["main"]["edge_index_dict"]
-        edge_counts.append(sum(len(e["src"]) for e in edges))
+        edges = batch.graphs["main"].edge_index_dict
+        edge_counts.append(sum(len(e.src) for e in edges))
         n += 1
         if n >= n_iter:
             break
