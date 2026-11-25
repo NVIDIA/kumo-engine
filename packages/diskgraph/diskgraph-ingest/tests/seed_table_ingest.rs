@@ -52,6 +52,7 @@ fn users_pk_int64_table(parquet_path: &str) -> TableSpec {
     TableSpec {
         name: "users".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "user_id".to_string(),
             source_dtype: None,
             ingested_dtype: IngestedType::Int64,
@@ -87,6 +88,7 @@ fn orders_table(parquet_path: &str) -> TableSpec {
         name: "orders".to_string(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "order_id".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Int64,
@@ -99,6 +101,7 @@ fn orders_table(parquet_path: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "user_id".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Int64,
@@ -136,6 +139,7 @@ fn seed_table_spec(parquet_path: &str) -> TableSpec {
         name: "train_seeds".to_string(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "ENTITY1".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Int64,
@@ -148,6 +152,7 @@ fn seed_table_spec(parquet_path: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "TIMESTAMP".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Timestamp,
@@ -160,6 +165,7 @@ fn seed_table_spec(parquet_path: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "TARGET1".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Float64,
@@ -174,6 +180,7 @@ fn seed_table_spec(parquet_path: &str) -> TableSpec {
             // Synthetic resolution column: filled at ingest by resolving
             // ENTITY1 → users (never written into the seed parquet).
             ColumnSpec {
+                source_name: None,
                 name: "entity_node_id".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::UInt64,
@@ -431,6 +438,7 @@ fn ingest_tiny_parent_index_impl(
     let table = TableSpec {
         name: table_name.to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "user_id".to_string(),
             source_dtype: None,
             ingested_dtype: pk_dtype.clone(),
@@ -795,6 +803,7 @@ fn ingest_users_orders_parent_index(parent_root: &Path, n_users: i64) -> Result<
     let mut orders = orders_table(orders_pq.to_str().unwrap());
     // Add order_time as a column on the orders TableSpec.
     orders.columns.push(ColumnSpec {
+        source_name: None,
         name: "order_time".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Timestamp,
@@ -1628,6 +1637,7 @@ fn test_sample_runtime_batch_seed_topology_excluded_features_preserved() {
     seed_table.columns.insert(
         seed_table.columns.len() - 1,
         ColumnSpec {
+            source_name: None,
             name: "FEAT1".to_string(),
             source_dtype: None,
             ingested_dtype: IngestedType::Float64,
@@ -1826,6 +1836,7 @@ fn test_sample_runtime_batch_excludes_all_sibling_stage_seed_namespaces() {
     // seed_columns() is ENTITY1/TIMESTAMP/TARGET1; add FEAT1 so it's ingested.
     let mut columns = seed_columns();
     columns.push(ColumnSpec {
+        source_name: None,
         name: "FEAT1".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Float64,
@@ -2639,6 +2650,7 @@ fn ingest_one_extension_with_weight(
     seed_table.columns.insert(
         seed_table.columns.len() - 1,
         ColumnSpec {
+            source_name: None,
             name: "WEIGHT".to_string(),
             source_dtype: None,
             ingested_dtype: IngestedType::Float64,
@@ -2841,6 +2853,7 @@ fn test_sample_runtime_batch_no_weight_column_keeps_weight_none() {
 fn pred_columns() -> Vec<ColumnSpec> {
     vec![
         ColumnSpec {
+            source_name: None,
             name: "ENTITY1".to_string(),
             source_dtype: None,
             ingested_dtype: IngestedType::Int64,
@@ -2853,6 +2866,7 @@ fn pred_columns() -> Vec<ColumnSpec> {
             multicategorical_delimiter: None,
         },
         ColumnSpec {
+            source_name: None,
             name: "TIMESTAMP".to_string(),
             source_dtype: None,
             ingested_dtype: IngestedType::Timestamp,
@@ -2873,6 +2887,7 @@ fn pred_columns() -> Vec<ColumnSpec> {
 fn seed_columns() -> Vec<ColumnSpec> {
     let mut cols = pred_columns();
     cols.push(ColumnSpec {
+        source_name: None,
         name: "TARGET1".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Float64,

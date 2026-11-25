@@ -40,7 +40,7 @@ from kumo.pytorch.column_stats import (
     read_column_stats,
     token_lengths_file,
 )
-from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
+from kumo.pytorch.contract.batch import EntitySource, EventSource, Fields, Input, Tokens
 from kumo.pytorch.contract.dtypes import (
     DType,
     _arrow_scalar_value,
@@ -99,6 +99,42 @@ __all__ = ["DiskGraphEngine"]
 def _refusal(code: str, path: str, message: str) -> ValidationIssue:
     entry = DISKGRAPH_UNSUPPORTED[code]
     return ValidationIssue(path, message, entry.next_step, code)
+
+
+def _token_budget_aliases(contract: DataLoaderSpec) -> list[ValidationIssue]:
+    policy = contract.batch.batching
+    if policy.max_tokens is None and not policy.bucket_by_length:
+        return []
+    spec = contract.batch.inputs.get(policy.length_input)
+    if (
+        spec is None
+        or not isinstance(spec.source, EventSource)
+        or spec.source.collection != "history"
+        or not isinstance(spec.representation, Fields)
+        or not isinstance(spec.representation.row, Tokens)
+    ):
+        return []
+    issues = []
+    for name in spec.source.events:
+        event = contract.sample.events.get(name)
+        if event is None:
+            continue  # General contract validation reports unknown components.
+        seen = {}
+        for use in spec.representation.fields:
+            field = use.field.removeprefix(f"events/{name}/")
+            value = event.fields.get(field)
+            if isinstance(value, Field) and not value.path:
+                first = seen.setdefault(value.column, field)
+                if first != field:
+                    issues.append(
+                        _refusal(
+                            "DG-TOKEN-LENGTH-ALIAS",
+                            f"batch.inputs.{policy.length_input}",
+                            f"Event {name!r} fields {first!r} and {field!r} alias column "
+                            f"{value.column!r}, which token length planning counts only once",
+                        )
+                    )
+    return issues
 
 
 def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationIssue]:
@@ -342,6 +378,7 @@ class DiskGraphEngine:
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
         issues = _sample_refusals(contract.sample)
+        issues.extend(_token_budget_aliases(contract))
         tables = {table.name: table for table in contract.schema.tables}
         relations = {relation.name: relation for relation in contract.schema.relations}
         for index, relation in enumerate(contract.schema.relations):
@@ -773,7 +810,12 @@ class DiskGraphSource:
 
     def materialize_scalar_batches(self, sample, anchors, batch_size):
         """Scan native TT batches and evaluate scalar arrays without SampleRequests."""
-        from kumo.pytorch.engines.parquet_anchors import _anchor_key_array, _files, _physical
+        from kumo.pytorch.engines.parquet_anchors import (
+            _anchor_key_array,
+            _entity_ids,
+            _files,
+            _physical,
+        )
 
         physical = _physical(anchors)
         compiled = _TemporalPlanCompiler(self).compile(sample)
@@ -781,13 +823,16 @@ class DiskGraphSource:
             sample.entity.table, json.dumps(self._aggregate_plan(sample, compiled.plan))
         )
         entity = self._tables[sample.entity.table]
+        key_dtype = entity.columns[entity.primary_key]
         for path in _files(anchors.source.path):
             for batch in self._diskgraph.read_custom_tt_parquet_batches(
                 path, columns=sorted(set(physical.values())), batch_size=batch_size
             ):
                 started = time.perf_counter_ns()
                 columns = {name: batch.column(column) for name, column in physical.items()}
-                key_dtype = entity.columns[entity.primary_key]
+                columns[anchors.entity_id] = _entity_ids(
+                    columns[anchors.entity_id], key_dtype, path
+                )
                 keys = _anchor_key_array(columns[anchors.entity_id], key_dtype)
                 roots = self._sampler.lookup_node_ids(sample.entity.table, keys)
                 if any(root is None for root in roots):
@@ -2012,9 +2057,9 @@ class DiskGraphSource:
                 type=self._pa.int64(),
             )
             event_cutoffs = self._pc.take(self._pa.array(cutoffs), owners)
-            elapsed = self._pc.subtract(event_cutoffs, timestamps)
+            elapsed = self._pc.subtract_checked(event_cutoffs, timestamps)
             return self._pc.divide(
-                self._pc.cast(elapsed, self._pa.float64()),
+                arrow_float64(elapsed),
                 self._pa.scalar(
                     field.seconds_per_unit * 1000000000 / self._tick_nanos, type=self._pa.float64()
                 ),

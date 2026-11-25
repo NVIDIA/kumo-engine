@@ -26,6 +26,7 @@ from kumo.pytorch.anchors import (
 )
 from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
+from kumo.pytorch.dataset import _can_coerce_to_int64, _MissingParquetColumns
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.spec import ValidationIssue
 
@@ -41,9 +42,7 @@ def _files(path: str) -> list[str]:
 def _physical(table: AnchorTable) -> dict[str, str]:
     """Logical anchor column -> physical Parquet column (honouring `Parquet.columns` renames)."""
 
-    logical_of = dict(getattr(table.source, "columns", {}) or {})
-    physical_of = {logical: physical for physical, logical in logical_of.items()}
-    return {name: physical_of.get(name, name) for name in table.columns}
+    return table.source._bind_columns(tuple(table.columns))
 
 
 def _anchor_key_array(values: Any, dtype: DType) -> Any:
@@ -57,6 +56,39 @@ def _anchor_key_array(values: Any, dtype: DType) -> Any:
         [dtype.normalize(value, path="anchors.entity_id") for value in values.to_pylist()],
         type=arrow_type,
     )
+
+
+def _entity_id_type(physical: Any, key: DType) -> Any:
+    """The Arrow type that entity ids stored as ``physical`` are read as, for this key.
+
+    An ``int64`` key reads narrower signed integers and scale-zero decimals as
+    ``int64``, the same physical types a declared ``int64`` table column
+    accepts. Every other type is kept, and its values are checked one by one.
+    """
+
+    try:
+        coerced = _can_coerce_to_int64(DType.from_arrow(physical), key)
+    except (TypeError, ValueError):
+        return physical
+    return key.to_arrow() if coerced else physical
+
+
+def _entity_ids(values: Any, key: DType, file: str) -> Any:
+    """Read one batch of entity ids as `_entity_id_type` says, refusing values outside the key."""
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    target = _entity_id_type(values.type, key)
+    if target == values.type:
+        return values
+    try:
+        return pc.cast(values, target, safe=True)
+    except pa.ArrowInvalid as error:
+        raise ValueError(
+            f"anchors.entity_id in {file!r}: a {values.type} id is outside the "
+            f"{key.name} primary key's range ({error})"
+        ) from error
 
 
 def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
@@ -77,25 +109,27 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
     if "://" in table.source.path:
         return ()  # DiskGraphEngine.check_sources refuses it (DG-REMOTE-PARQUET)
     try:
-        files = _files(table.source.path)
+        _files(table.source.path)
     except (FileNotFoundError, ValueError) as error:
         return (ValidationIssue("anchors.source.path", str(error), "point at local Parquet files"),)
-    import pyarrow.parquet as pq
-
-    required = _physical(table)
-    for file in files:
-        present = set(pq.read_schema(file).names)
-        missing = sorted(
-            logical for logical, physical in required.items() if physical not in present
+    try:
+        _physical(table)
+    except _MissingParquetColumns as error:
+        return (
+            ValidationIssue(
+                "anchors.columns",
+                f"anchor Parquet file {error.path!r} lacks columns {error.columns}",
+                "write those columns or rename them through Parquet(columns=...)",
+            ),
         )
-        if missing:
-            return (
-                ValidationIssue(
-                    "anchors.columns",
-                    f"anchor Parquet file {file!r} lacks columns {missing}",
-                    "write those columns or rename them through Parquet(columns=...)",
-                ),
-            )
+    except (ValueError, OSError) as error:
+        return (
+            ValidationIssue(
+                "anchors.columns",
+                f"anchor Parquet {error}",
+                "write those columns or rename them through Parquet(columns=...)",
+            ),
+        )
     return ()
 
 

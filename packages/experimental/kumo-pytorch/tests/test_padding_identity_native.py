@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -187,14 +188,12 @@ def test_native_graph_padding_preserves_identity(
     requests = tuple(api.SampleRequest(name, 1, 10 + index) for index, name in enumerate(names))
     task = graph_plan.materialize(requests)
     from_table = graph_plan.materialize(_anchor_table(tmp_path / "anchors.parquet", names))
-    for source, selected_task, explicit in (
-        ("explicit requests", task, requests),
-        ("materialized requests", task, None),
-        ("materialized AnchorTable", from_table, None),
+    for source, deliver in (
+        ("explicit requests", partial(task.request_batches, requests)),
+        ("materialized AnchorTable", from_table.batches),
     ):
         for output_format in ("inspectable", "model"):
-            batches = selected_task.batches(
-                explicit,
+            batches = deliver(
                 batch_size=3,
                 rank=rank,
                 world_size=world_size,

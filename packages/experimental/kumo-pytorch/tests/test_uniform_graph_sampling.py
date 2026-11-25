@@ -89,7 +89,10 @@ def contract(schema, strategy=None, fanout=5, names=("graph",)):
 
 def selections(task, requests=None, **options):
     result = {}
-    for batch in task.batches(requests, **options):
+    batches = (
+        task.batches(**options) if requests is None else task.request_batches(requests, **options)
+    )
+    for batch in batches:
         for name, graph in batch.inputs.items():
             if isinstance(graph, api.ColumnarGraph):
                 nodes = graph.nodes["events"]

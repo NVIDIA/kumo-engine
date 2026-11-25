@@ -152,6 +152,7 @@ DIMENSIONS: tuple[Dimension, ...] = (
         "contract.strategy",
         Group.CONTRACT,
         (
+            "column_rename",
             "comparison",
             "derived",
             "invalid_unknown_column",
@@ -168,7 +169,6 @@ DIMENSIONS: tuple[Dimension, ...] = (
             "dated_values",
             "non_direct_field",
             # Accepted at check(), then refused later on DiskGraph (KNOWN_GAPS).
-            "column_rename",
             "duplicate_layer_relation",
             "int64_clock",
             "max_tokens_world_size",
@@ -444,14 +444,6 @@ KNOWN_GAPS: tuple[KnownGap, ...] = (
             symptom,
         )
         for strategy, engine, stage, reason, repro, symptom in (
-            (
-                "column_rename",
-                "diskgraph",
-                "prepare()",
-                "Parquet(columns=...) renames are refused by the materializer",
-                "repro-347e53900d7b9027",
-                "requires matching physical column names",
-            ),
             (
                 "unsupported_type",
                 "diskgraph",

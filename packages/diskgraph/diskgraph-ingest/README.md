@@ -138,6 +138,8 @@ Notes:
 ```
 
 Fields:
+- `name` (required): column name in the index.
+- `source_name` (optional): Parquet column to read, when it differs from `name`.
 - `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float16_array|float32_array|float64_array|int8_array|int16_array|int32_array|int64_array|string_array`
 - `fixed_len` (optional): only valid for `string`/`bytes` and numeric array types.
 - `timestamp_format` (optional): format string for string timestamps.
