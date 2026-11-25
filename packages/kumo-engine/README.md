@@ -89,7 +89,15 @@ When training completes, the example prints the first five predictions:
 
 `result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. The prediction time defaults to the latest `order_time` in the snapshot, so predictions cover the 30 days after it. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
 
-`graph.snapshot()` writes the graph to a scratch directory, `~/.cache/kumo-engine` by default, which also holds training runs, model bundles, and predictions. If your home directory is on a network volume, such as an Amazon EBS boot volume, call `kumo.engine.configure(scratch_dir=...)` before taking the snapshot to use a directory on a local NVMe SSD instead.
+`graph.snapshot()` writes the graph to a scratch directory, `~/.cache/kumo-engine` by default, which also holds training runs, model bundles, and predictions. If your home directory is on a network volume, such as an Amazon EBS boot volume, call `kumo.engine.configure(scratch_dir=...)` before snapshotting to use a directory on a local NVMe SSD instead. Each snapshot call uses the current scratch root, including calls on an existing `Graph`.
+
+ID-only monitoring lookups and `GraphSnapshot.load_from_connector()` also use
+the current scratch root. After changing roots, pass existing handles as
+`snapshot=` and `training_snapshot=` to `score_drift()` to read their original
+local statistics, or provide an MLOps root holding their exports. Loading an
+export imports it into the current root; `graph=` compares its schema and
+sources, not its destination root. Kumo manages local snapshot storage;
+export locations and logical snapshot IDs remain stable.
 
 ## Next Steps
 

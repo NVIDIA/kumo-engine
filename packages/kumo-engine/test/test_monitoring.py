@@ -1264,3 +1264,54 @@ def test_feature_drift_reads_the_training_snapshot_of_a_derived_model(
     features = _compare(trainer, after, None, reasons)
     assert reasons == {}
     assert features['users']['AGE']['standardized_mean_shift'] > 2
+
+
+@pytest.mark.parametrize('storage', ['legacy', 'managed', 'both'])
+@pytest.mark.parametrize('short_id', [False, True])
+def test_local_index_resolves_snapshot_storage(
+        tmp_path, monkeypatch, storage, short_id):
+    import json
+
+    from kumo.engine import _monitoring
+
+    monkeypatch.setattr('kumo.engine._scratch._root', tmp_path)
+    version = '0123456789abcdef' * 4
+    logical = tmp_path / 'snapshots' / 'graph' / version
+    if storage != 'legacy':
+        index = tmp_path / 'indexes' / 'build'
+        logical.parent.mkdir(parents=True)
+        logical.with_suffix('.index.json').write_text(
+            json.dumps({'index_build_id': 'build'}))
+    else:
+        index = logical
+
+    def complete(path):
+        from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
+
+        path.mkdir(parents=True)
+        (path / 'index_metadata.json').write_text(
+            json.dumps({'index_build_id': 'build'}))
+        (path / 'col_stats.json').write_text('{}')
+        (path / 'ingest_stats.json').write_text('{}')
+        (path / 'kumo_col_stats').mkdir()
+        (path / '_SUCCESS').write_text(
+            DiskgraphIngestResult.for_index(path).to_json())
+        (path / '_MANIFEST.json').write_text(json.dumps({
+            'schema_version': 1,
+            'files': [{'rel_path': name, 'size_bytes': (path / name).stat().st_size}
+                      for name in ('index_metadata.json', 'col_stats.json',
+                                   'ingest_stats.json')],
+        }))
+
+    complete(index)
+    if storage == 'both':
+        complete(logical)
+
+    snapshot_id = 'graph@' + (version[:16] if short_id else version)
+    assert _monitoring._local_index(snapshot_id) == index
+    assert _monitoring._local_index('graph@missing') is None
+    assert _monitoring._local_index('invalid') is None
+    if short_id:
+        other = logical.with_name(version[:16] + '-other')
+        complete(other)
+        assert _monitoring._local_index(snapshot_id) is None

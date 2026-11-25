@@ -49,7 +49,7 @@ PACKAGES=(
 
 # Module names deptry can't infer correctly from the distribution name.
 # pkg=a|b means the distribution provides multiple top-level modules.
-MODULE_MAP="azure-core=azure,azure-identity=azure,azure-storage-file-datalake=azure,kumo-api=kumoapi,kumo-pql=kumopql,pytorch-frame=torch_frame,faiss-cpu=faiss,faiss-gpu=faiss,pytorch-lightning=pytorch_lightning|lightning_fabric,antlr4-python3-runtime=antlr4,pyyaml=yaml,python-dateutil=dateutil"
+MODULE_MAP="azure-core=azure,azure-identity=azure,azure-storage-file-datalake=azure,kumo-api=kumoapi,kumo-settings=kumo,kumo-pql=kumopql,pytorch-frame=torch_frame,faiss-cpu=faiss,faiss-gpu=faiss,pytorch-lightning=pytorch_lightning|lightning_fabric,antlr4-python3-runtime=antlr4,pyyaml=yaml,python-dateutil=dateutil"
 
 overall_status=0
 

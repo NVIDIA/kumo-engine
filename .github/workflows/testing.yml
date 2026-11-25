@@ -605,7 +605,7 @@ jobs:
           path: dist
       - name: Install the wheels with pyarrow${{ matrix.pyarrow }}
         run: |
-          for package in kumo-api kumo-pql kumo-core kumo-adls; do
+          for package in kumo-api kumo-pql kumo-settings kumo-core kumo-adls; do
             uv build --wheel --out-dir dist "packages/$package"
           done
           core=(dist/kumo_core-*.whl)
@@ -614,7 +614,7 @@ jobs:
           uv export --locked --no-emit-workspace --no-hashes --no-header \
             --no-annotate --extra cpu | grep -v '^pyarrow==' > "$constraints"
           uv pip install -c "$constraints" --torch-backend cpu dist/diskgraph-*.whl \
-            dist/kumo_api-*.whl dist/kumo_pql-*.whl "${core[0]}[test]" \
+            dist/kumo_api-*.whl dist/kumo_pql-*.whl dist/kumo_settings-*.whl "${core[0]}[test]" \
             "${adls[0]}[test]" "pyarrow${{ matrix.pyarrow }}" "setuptools>=77" \
             setuptools_scm
           python -c 'import pyarrow; print(pyarrow.__version__)'

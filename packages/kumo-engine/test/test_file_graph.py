@@ -76,7 +76,15 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
         assert actual.to_pydict() == expected.to_pydict()
         assert actual.schema.field('value').type == pa.int64()
         ingested.append(graph_config)
-        return DiskgraphIngestResult.for_index(spec.output_dir)
+        path = Path(spec.output_dir)
+        (path / 'index_metadata.json').write_text(
+            '{"index_build_id": "test-build"}')
+        (path / 'col_stats.json').write_text('{}')
+        (path / 'ingest_stats.json').write_text('{}')
+        (path / 'kumo_col_stats').mkdir()
+        result = DiskgraphIngestResult.for_index(path)
+        (path / '_SUCCESS').write_text(result.to_json())
+        return result
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)
@@ -125,7 +133,15 @@ def test_graph_aliases_preserve_object_source_acquisition(
             assert pq.read_table(
                 spec.source_paths[alias]).to_pydict() == frame.to_pydict()
         ingested.append(config)
-        return DiskgraphIngestResult.for_index(spec.output_dir)
+        path = Path(spec.output_dir)
+        (path / 'index_metadata.json').write_text(
+            '{"index_build_id": "test-build"}')
+        (path / 'col_stats.json').write_text('{}')
+        (path / 'ingest_stats.json').write_text('{}')
+        (path / 'kumo_col_stats').mkdir()
+        result = DiskgraphIngestResult.for_index(path)
+        (path / '_SUCCESS').write_text(result.to_json())
+        return result
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)

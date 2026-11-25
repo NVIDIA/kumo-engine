@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast, get_args
 
@@ -23,9 +24,8 @@ CLOCKS = get_args(TimestampPrecision)
 
 
 @pytest.fixture
-def ingests(tmp_path, monkeypatch):
+def ingests(tmp_path, monkeypatch, completed_diskgraph_ingest):
     import kumo_core.diskgraph.ingest as ingest
-    import kumo_core.diskgraph.snapshot as snapshots
 
     import kumo.engine._scratch as scratch
 
@@ -33,14 +33,11 @@ def ingests(tmp_path, monkeypatch):
     monkeypatch.setattr(Graph, 'id', 'graph-key')
     monkeypatch.setattr(Graph, '_graph_config', {'tables': []})
     monkeypatch.setattr(Graph, 'validate', lambda self: None)
-    monkeypatch.setattr(snapshots, 'check_diskgraph_output', lambda path: None)
-    monkeypatch.setattr(snapshots.DiskgraphIngestResult, 'for_index',
-                        lambda path: SimpleNamespace(to_json=lambda: '{}'))
     specs = []
 
     def execute(graph_config, spec):
         specs.append(spec)
-        return SimpleNamespace(index_path=spec.output_dir)
+        return completed_diskgraph_ingest(graph_config, spec)
 
     monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', execute)
     return specs
@@ -63,8 +60,15 @@ def _graph():
 
 @pytest.mark.parametrize('clock', CLOCKS)
 def test_snapshot_ingests_in_the_requested_clock(ingests, clock):
-    _graph().snapshot(timestamp_precision=clock)
+    snapshot = _graph().snapshot(timestamp_precision=clock)
     assert [spec.timestamp_precision for spec in ingests] == [clock]
+    metadata = json.loads((snapshot.index_path / 'index_metadata.json').read_text())
+    assert snapshot.index_path.name == metadata['index_build_id']
+    assert snapshot.index_path.parent.name == 'indexes'
+    assert metadata['timestamp_unit'] == clock
+    marker = json.loads((snapshot.index_path / '_SUCCESS').read_text())
+    assert marker['index_path'] == str(snapshot.index_path)
+    assert not Path(ingests[0].output_dir).exists()
 
 
 def test_seconds_snapshot_keeps_the_existing_cache_key(ingests):
@@ -75,8 +79,15 @@ def test_seconds_snapshot_keeps_the_existing_cache_key(ingests):
 
 
 def test_each_clock_has_its_own_snapshot(ingests):
-    ids = {_graph().snapshot(timestamp_precision=clock).id for clock in CLOCKS}
-    assert len(ids) == len(CLOCKS)
+    graph = _graph()
+    snapshots = [graph.snapshot(timestamp_precision=clock) for clock in CLOCKS]
+    assert len({snapshot.id for snapshot in snapshots}) == len(CLOCKS)
+    assert len({snapshot.index_path for snapshot in snapshots}) == len(CLOCKS)
+    for clock, previous in zip(CLOCKS, snapshots):
+        reused = graph.snapshot(timestamp_precision=clock)
+        assert reused.id == previous.id
+        assert reused.index_path == previous.index_path
+    assert len(ingests) == len(CLOCKS)
 
 
 def test_unknown_clock_is_rejected():

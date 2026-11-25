@@ -1,0 +1,237 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import json
+import threading
+from contextlib import nullcontext
+from contextvars import ContextVar
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+import kumo.engine as kumo
+from kumo.engine._scratch import get_scratch_dir, scoped_scratch_dir
+
+
+@pytest.fixture
+def source_graph(tmp_path, monkeypatch):
+    from kumo import settings
+
+    previous = settings.scratch_dir()
+    monkeypatch.setattr('kumo.engine._scratch._root', None)
+    kumo.configure(scratch_dir=tmp_path / 'producer')
+    data = tmp_path / 'data'
+    data.mkdir()
+    pq.write_table(pa.table({'id': [1, 2, 3], 'value': [1., 2., 3.]}),
+                   data / 'events.parquet')
+    connector = kumo.FileConnector(root_dir=str(data))
+    graph = kumo.Graph({'events': kumo.Table.from_source_table(
+        connector['events.parquet'], primary_key='id')})
+    try:
+        yield graph
+    finally:
+        kumo.configure(scratch_dir=previous)
+
+
+def test_existing_graph_uses_the_current_root_and_reuses_it(
+        tmp_path, source_graph, monkeypatch):
+    import kumo_core.diskgraph.ingest as ingest
+
+    producer = tmp_path / 'producer'
+    other = tmp_path / 'other'
+    execute = ingest.execute_diskgraph_ingest
+    outputs = []
+
+    def record(graph_config, spec):
+        outputs.append(Path(spec.output_dir))
+        assert Path(spec.data_persist_dir).is_relative_to(other)
+        return execute(graph_config, spec)
+
+    monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', record)
+    kumo.configure(scratch_dir=other)
+    first = source_graph.snapshot()
+    assert first.index_path.is_relative_to(other / 'indexes')
+    assert source_graph.snapshot() == first
+    assert len(outputs) == 1
+    assert get_scratch_dir() == other
+    assert not producer.exists()
+
+
+def test_id_only_monitoring_uses_current_root_but_handles_keep_their_paths(
+        tmp_path, source_graph):
+    from kumo.engine._monitoring import _local_index, _reader
+
+    snapshot = source_graph.snapshot()
+    stats = json.loads((snapshot.index_path / 'col_stats.json').read_text())
+    assert _local_index(snapshot.id) == snapshot.index_path
+
+    other = tmp_path / 'other'
+    kumo.configure(scratch_dir=other)
+    assert _local_index(snapshot.id) is None
+    assert _reader(None, snapshot.id, None)('col_stats.json') is None
+    assert _reader(snapshot, snapshot.id, None)('col_stats.json') == stats
+    current = source_graph.snapshot()
+    assert current.id == snapshot.id
+    assert current.index_path.is_relative_to(other)
+    assert _local_index(snapshot.id) == current.index_path
+    assert snapshot.index_path.is_dir()
+    assert get_scratch_dir() == other
+
+
+def test_loading_and_existing_graph_use_current_root(
+        tmp_path, source_graph):
+    snapshot = source_graph.snapshot()
+    exports = kumo.FileConnector(root_dir=str(tmp_path / 'exports'))
+    location = snapshot.export(kumo.SnapshotOutputConfig(exports, 'snapshot'))
+    before = {path.relative_to(snapshot.index_path): path.read_bytes()
+              for path in snapshot.index_path.rglob('*') if path.is_file()}
+    build_id = json.loads(before[Path('index_metadata.json')])['index_build_id']
+
+    other = tmp_path / 'other'
+    kumo.configure(scratch_dir=other)
+    loaded = kumo.GraphSnapshot.load_from_connector(
+        exports, path=location, graph=source_graph)
+    assert loaded.index_path.is_relative_to(other)
+    assert loaded.index_path != snapshot.index_path
+    assert loaded.id == snapshot.id
+    assert json.loads((loaded.index_path / 'index_metadata.json').read_text())[
+        'index_build_id'] == build_id
+    assert {path.relative_to(snapshot.index_path): path.read_bytes()
+            for path in snapshot.index_path.rglob('*') if path.is_file()} == before
+    assert source_graph.snapshot() == loaded
+    assert get_scratch_dir() == other
+
+
+def test_callback_configuration_cannot_split_snapshot_paths(
+        tmp_path, source_graph, monkeypatch):
+    import kumo_core.diskgraph.ingest as ingest
+
+    producer = tmp_path / 'producer'
+    other = tmp_path / 'other'
+    execute = ingest.execute_diskgraph_ingest
+    validations = []
+    validate = kumo.FileConnector.validate_scratch_dir
+
+    def validate_root(connector, path):
+        validations.append(path)
+        return validate(connector, path)
+
+    def execute_in_root(graph_config, spec):
+        assert Path(spec.output_dir).is_relative_to(producer)
+        assert Path(spec.data_persist_dir).is_relative_to(producer)
+        assert (producer / 'snapshots' / source_graph.id /
+                'source_tables.lock').is_file()
+        assert not other.exists()
+        return execute(graph_config, spec)
+
+    def configure_other(event):
+        if event.name == 'snapshot_started':
+            kumo.configure(scratch_dir=other)
+
+    monkeypatch.setattr(kumo.FileConnector, 'validate_scratch_dir', validate_root)
+    monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', execute_in_root)
+    first = source_graph.snapshot(callbacks=[configure_other])
+    assert validations == [producer]
+    assert first.index_path.is_relative_to(producer / 'indexes')
+    assert get_scratch_dir() == other
+    assert not other.exists()
+    monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', execute)
+    second = source_graph.snapshot()
+    assert second.id == first.id
+    assert second.index_path.is_relative_to(other)
+    assert first.index_path.is_dir()
+
+
+def test_failed_snapshot_restores_the_callers_root(
+        tmp_path, source_graph, monkeypatch):
+    import kumo_core.diskgraph.ingest as ingest
+
+    other = tmp_path / 'other'
+
+    def configure_other(event):
+        if event.name == 'snapshot_started':
+            kumo.configure(scratch_dir=other)
+
+    def fail_ingest(graph_config, spec):
+        assert Path(spec.output_dir).is_relative_to(caller_root)
+        raise RuntimeError('ingest interrupted')
+
+    monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', fail_ingest)
+    caller_root = tmp_path / 'caller'
+    with scoped_scratch_dir(caller_root):
+        with pytest.raises(RuntimeError, match='ingest interrupted'):
+            source_graph.snapshot(callbacks=[configure_other])
+        assert get_scratch_dir() == caller_root
+    assert get_scratch_dir() == other
+    assert caller_root.exists()
+    assert not other.exists()
+
+
+def test_snapshot_transfer_workers_keep_the_callers_spool_root(
+        tmp_path, monkeypatch):
+    from kumo_core.chunked_fs import ChunkedFileHandler
+    from kumo_core.sources import object_store
+    from pyarrow.fs import PyFileSystem
+
+    from kumo import settings
+    from kumo.engine import _snapshot_io
+
+    class ChunkedExport(ChunkedFileHandler):
+        def __init__(self):
+            self.objects = {}
+            self.spooled = []
+
+        def get_type_name(self):
+            return 'test-snapshot-export'
+
+        def _size(self, path):
+            data = self.objects.get(path)
+            return None if data is None else len(data)
+
+        def _list(self, directory):
+            return {path: len(data) for path, data in self.objects.items()
+                    if path.startswith(directory + '/')}
+
+        def _put(self, local, path):
+            self.spooled.append(Path(local).parent.parent)
+            self.objects[path] = Path(local).read_bytes()
+
+    previous = settings.scratch_dir()
+    producer, other = tmp_path / 'producer', tmp_path / 'other'
+    handler = ChunkedExport()
+    filesystem = PyFileSystem(handler)
+    monkeypatch.setattr(_snapshot_io, '_location',
+                        lambda connector, path: (filesystem, path))
+    monkeypatch.setattr(object_store, 'copies', lambda items: nullcontext(2))
+    together = threading.Barrier(2)
+    worker_state = ContextVar('snapshot-transfer-test', default='outside')
+    token = worker_state.set('caller')
+    initial_states = {}
+
+    def upload(filesystem, item, stop):
+        initial_states[item] = worker_state.get()
+        worker_state.set(item)
+        with filesystem.open_output_stream(f'exports/{item}') as writer:
+            together.wait(timeout=10)
+            assert worker_state.get() == item
+            writer.write(b'abc')
+        return item
+
+    try:
+        kumo.configure(scratch_dir=other)
+        with scoped_scratch_dir(producer):
+            assert _snapshot_io._transfer(
+                None, 'exports', [0, 1], [3, 3], upload, 'store') == [0, 1]
+            assert worker_state.get() == 'caller'
+        assert get_scratch_dir() == other
+    finally:
+        worker_state.reset(token)
+        kumo.configure(scratch_dir=previous)
+    assert handler.objects == {'exports/0': b'abc', 'exports/1': b'abc'}
+    assert handler.spooled == [producer / 'spool'] * 2
+    assert initial_states == {0: 'caller', 1: 'caller'}
+    assert not list((producer / 'spool').iterdir())
+    assert not other.exists()
