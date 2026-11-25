@@ -46,12 +46,24 @@ async function hoverTooltip(page, graph, svg, table, column) {
   const row = svg.locator(
     `[data-kumo-table="${table}"][data-kumo-column="${column}"]`,
   );
-  const box = await row.boundingBox();
+  let box = await row.boundingBox();
   requireThat(
     box && box.width > 0 && box.height > 0,
     "Tooltip row is not rendered",
   );
-  await row.hover({ timeout: 10000 });
+  let intercepted = false;
+  try {
+    await row.hover({ timeout: 10000 });
+  } catch (error) {
+    if (error.name !== "TimeoutError" ||
+        !error.message.includes("intercepts pointer events")) throw error;
+    intercepted = true;
+    // Use browser-level pointer coordinates for the nested notebook iframe.
+    // The tooltip below must still show the exact row that received the pointer.
+    box = await row.boundingBox();
+    requireThat(box && box.width > 0 && box.height > 0, "Tooltip row is no longer rendered");
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  }
   const tooltip = graph.getByRole("tooltip");
   const deadline = Date.now() + 5000;
   do {
@@ -63,7 +75,9 @@ async function hoverTooltip(page, graph, svg, table, column) {
       return tooltip.innerText();
     await page.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new VerificationError("Visible tooltip is not bound to the expected schema row");
+  throw new VerificationError(intercepted
+    ? "Graph schema row pointer was intercepted and the expected tooltip did not open"
+    : "Visible tooltip is not bound to the expected schema row");
 }
 
 function displayedSample(value) {
