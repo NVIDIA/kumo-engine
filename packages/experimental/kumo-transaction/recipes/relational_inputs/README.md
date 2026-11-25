@@ -12,7 +12,7 @@ Intermediate context features belong to the graph view.
 The sequence variant uses the existing profile/event causal decoder. Graph uses
 Kumo Engine's GNN, and hybrid uses a selected frozen GNN to condition that same
 sequence stack. Graph warm-up and downstream stages use the existing trainer
-and validation-loss selection. Raw and embedding logistic probes accompany the
+and validation-loss selection. Raw, embedding and combined raw-plus-embedding logistic probes accompany the
 binary task head. Hybrid also trains a sequence-only control with identical
 initial sequence weights, binary batches, settings and validation selection;
 that control transfers history only. These are mechanics checks, not quality results.
@@ -82,3 +82,7 @@ a graph/hybrid config, set `runtime.stage: downstream` and
 train their binary head; hybrid trains its sequence stack with the encoder frozen.
 The checkpoint records the imported encoder manifest and byte hash. Retain that
 encoder file for managed reuse of downstream runs.
+
+Inference arrays keep label positions aligned with sample IDs. Unknown labels
+are NaN with a false `<split>_labels_valid` mask; explicit all-negative label
+sources remain valid and use the existing constant-probability probe fallback.

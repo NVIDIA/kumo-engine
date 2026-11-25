@@ -87,6 +87,28 @@ def retrieve_histories(
     return tuple(replace(window, events=selected[i]) for i, window in enumerate(windows))
 
 
+def anchor_chunks(
+    items: Sequence[RelationalAnchor], size: int, shared: bool
+) -> Iterator[tuple[RelationalAnchor, ...]]:
+    """Preserve order while respecting label-cutoff and shared-graph clocks."""
+    if size < 1:
+        raise ValueError("batch_size must be positive")
+    chunk: list[RelationalAnchor] = []
+    for item in items:
+        if chunk and (
+            len(chunk) == size
+            or item.label_cutoff != chunk[0].label_cutoff
+            or shared
+            and (item.anchor.cutoff, item.anchor.observation_start)
+            != (chunk[0].anchor.cutoff, chunk[0].anchor.observation_start)
+        ):
+            yield tuple(chunk)
+            chunk = []
+        chunk.append(item)
+    if chunk:
+        yield tuple(chunk)
+
+
 class RelationalBatches:
     """Reusable inputs with graph allocation only for graph-consuming modes.
 
@@ -168,27 +190,6 @@ class RelationalBatches:
             max_events=self.max_events,
         )
 
-    @staticmethod
-    def _chunks(
-        items: Sequence[RelationalAnchor], size: int, shared: bool
-    ) -> Iterator[tuple[RelationalAnchor, ...]]:
-        if size < 1:
-            raise ValueError("batch_size must be positive")
-        chunk: list[RelationalAnchor] = []
-        for item in items:
-            if chunk and (
-                len(chunk) == size
-                or item.label_cutoff != chunk[0].label_cutoff
-                or shared
-                and (item.anchor.cutoff, item.anchor.observation_start)
-                != (chunk[0].anchor.cutoff, chunk[0].anchor.observation_start)
-            ):
-                yield tuple(chunk)
-                chunk = []
-            chunk.append(item)
-        if chunk:
-            yield tuple(chunk)
-
     @torch.inference_mode(False)
     @torch.no_grad()
     def batches(
@@ -228,7 +229,7 @@ class RelationalBatches:
             else {history.sequence_id: history for history in self.histories(split)}
         )
         result: list[RelationalBatch] = []
-        for chunk in self._chunks(items, batch_size, sharing == "shared" and mode != "sequence"):
+        for chunk in anchor_chunks(items, batch_size, sharing == "shared" and mode != "sequence"):
             anchors = tuple(item.anchor for item in chunk)
             labelled = all(item.target is not None for item in chunk)
             labels = (

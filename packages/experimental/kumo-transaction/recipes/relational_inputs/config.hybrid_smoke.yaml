@@ -10,8 +10,8 @@ data:
   relational:
     history_paths:
       activity:
-      - owns
-      - activity
+        - owns
+        - activity
     label_cutoffs:
       test: '2024-01-18'
       train: '2024-01-16'
@@ -21,7 +21,7 @@ data:
       horizon_days: 2
       label_delay_days: 1
       root_columns:
-      - owner
+        - owner
       table: outcomes
       target: outcome
       timestamp: cutoff

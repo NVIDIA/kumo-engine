@@ -91,3 +91,22 @@ only. Non-finite numeric profile values are missing; root keys/clocks never
 become attributes. Intermediate context attributes remain graph features.
 Canonical identity ordering is lexicographic on the typed JSON encoding,
 including composite keys; it is not numeric sorting of raw integer keys.
+
+Declared FK columns must exist on every child row. An explicit `None` denotes
+an optional link; omitting the column is a schema error. A version log replaces
+the whole role and must cover every child with a non-null fixed binding.
+
+A root/cutoff pair cannot belong to different splits, whether anchors come from
+labels, configured cutoffs or replay. Repeated prediction instances within one
+split and the same root at different cutoffs remain supported.
+
+Graph window exemptions apply to the root identity and strict intermediate
+tables reached by history paths. A history terminal remains windowed even if
+another path also traverses its table; the root identity is always exempt from
+the lower bound. Timed tables not reached by any history path are windowed.
+Every row and link still obeys the upper availability cutoff.
+
+Inference exports one label position per sample ID. Unknown labels are NaN and
+`<split>_labels_valid` marks which entries are known; unknown never means zero.
+Managed checkpoint and encoder manifests record ordered allowlists explicitly,
+so same-width feature reordering cannot silently reuse incompatible weights.

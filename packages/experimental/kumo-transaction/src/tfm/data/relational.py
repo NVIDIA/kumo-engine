@@ -190,6 +190,12 @@ class RelationalSource:
             parent = self.tables[relation.parent]
             if len(relation.columns) != len(parent.key):
                 raise SchemaError(f"Path {relation.name}: FK and primary-key arity differ")
+            for row in dataset.rows[relation.child]:
+                missing = [column for column in relation.columns if column not in row]
+                if missing:
+                    raise SchemaError(
+                        f"Path {relation.name}: declared FK columns are absent from {relation.child}: {missing}; use explicit None for an optional link"
+                    )
             bindings = []
             if relation.name in versioned:
                 if not relation.ownership:
@@ -516,6 +522,8 @@ class RelationalSource:
                     f"Graph path {role}: event-time versioned ownership requires version-expanded topology; fixed projection is unsupported"
                 )
         terminals = {path[-1][2] for path in self.paths.values()}
+        intermediate = {table for path in self.paths.values() for _, _, table in path[:-1]}
+        structural = {self.task.root} | (intermediate - terminals)
         tables, rows, links, relations = [], [], [], []
         for name, table in self.tables.items():
             if name in excluded:
@@ -533,7 +541,7 @@ class RelationalSource:
                     features,
                     () if table.immutable else tuple(f"raw:{alias}" for alias in table.numeric),
                     immutable=table.immutable,
-                    windowed=name in terminals,
+                    windowed=name not in structural,
                 )
             )
             for token, row in self.rows[name].items():
@@ -699,7 +707,14 @@ class RelationalSource:
         ids = [item.anchor.sample_id for item in anchors]
         if not ids or len(ids) != len(set(ids)):
             raise SchemaError("Task anchors must be nonempty and have unique sample IDs")
+        split_by_root_cutoff: dict[tuple[str, int], str] = {}
         for item in anchors:
+            pair = item.anchor.entity_id, utc_us(item.anchor.cutoff)
+            previous = split_by_root_cutoff.setdefault(pair, item.split)
+            if previous != item.split:
+                raise SchemaError(
+                    f"Task root/cutoff appears in more than one split ({previous!r}, {item.split!r})"
+                )
             if self.dataset.observed_through is not None and utc_us(item.anchor.cutoff) > utc_us(
                 self.dataset.observed_through
             ):

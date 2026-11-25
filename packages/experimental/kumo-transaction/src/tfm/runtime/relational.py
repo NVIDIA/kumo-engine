@@ -38,7 +38,7 @@ from tfm.contracts.tokenizers import StatefulSequenceTokenizer, UsesProfiles
 from tfm.data.adapters.registry import load_adapter_events
 from tfm.data.graph import FutureTargetTransform, future_subgraph_targets
 from tfm.data.relational import RelationalSource, timestamp
-from tfm.data.relational_batches import RelationalBatch, RelationalBatches
+from tfm.data.relational_batches import RelationalBatch, RelationalBatches, anchor_chunks
 from tfm.data.splits.temporal import parse_duration
 from tfm.evaluation.fraud.baselines import fit_predict_probe
 from tfm.evaluation.fraud.metrics import classification_metrics
@@ -138,7 +138,7 @@ def _predictions(
         vectors.append(output.embeddings.detach().float().cpu().numpy())
         probabilities.append(output.predictions["binary"].detach().float().cpu().numpy())
         labels = getattr(original, "labels", None)
-        targets.extend([] if labels is None else labels.tolist())
+        targets.extend([math.nan] * len(output.embeddings) if labels is None else labels.tolist())
         if isinstance(
             original, (GraphHistoryBatch, SequenceSupervisedBatch, SequencePredictionBatch)
         ):
@@ -262,6 +262,12 @@ def run_command(
             "ownership": task.ownership,
             "target_level": "entity",
             "graph_features": "numeric_value_and_presence_v1",
+            "feature_order": {
+                table.name: {
+                    kind: list(getattr(table, kind)) for kind in ("numeric", "categorical", "text")
+                }
+                for table in source.dataset.tables
+            },
         }
         identity_config = config.model_dump_resolved()
         identity_config["runtime"].pop("device", None)
@@ -319,7 +325,8 @@ def run_command(
                 boundary = utc_us(timestamp(config.data.pretrain_end, "data.pretrain_end"))
                 transform = None
                 for split in ("train", "validation"):
-                    anchors = tuple(item.anchor for item in inputs.anchors if item.split == split)
+                    selected = tuple(item for item in inputs.anchors if item.split == split)
+                    anchors = tuple(item.anchor for item in selected)
                     raw = future_subgraph_targets(
                         inputs.sampler,
                         anchors,
@@ -333,8 +340,13 @@ def run_command(
                         transform = FutureTargetTransform.fit(raw)
                     normalized = transform.apply(raw)
                     batches = []
-                    for start in range(0, len(anchors), config.training.batch_size):
-                        stop = start + config.training.batch_size
+                    start = 0
+                    for chunk in anchor_chunks(
+                        selected,
+                        config.training.batch_size,
+                        split == "train" and config.data.training_graphs == "shared",
+                    ):
+                        stop = start + len(chunk)
                         target = replace(
                             normalized,
                             anchors=normalized.anchors[start:stop],
@@ -349,6 +361,7 @@ def run_command(
                             hop_trim=gran.trim,
                         )
                         batches.append(GraphTrainingBatch(graph, target))
+                        start = stop
                     target_batches[split] = batches
                 assert transform is not None
                 target_transform = _plain(transform)
@@ -554,8 +567,8 @@ def run_command(
             arrays[f"{split}_entity_ids"] = np.asarray(
                 [item.anchor.entity_id for item in inputs.anchors if item.split == split]
             )
-            if len(values[2]):
-                arrays[f"{split}_labels"] = values[2]
+            arrays[f"{split}_labels"] = values[2]
+            arrays[f"{split}_labels_valid"] = np.isfinite(values[2])
             arrays[f"{split}_sample_ids"] = np.asarray(
                 [item.anchor.sample_id for item in inputs.anchors if item.split == split]
             )
@@ -572,17 +585,20 @@ def run_command(
         if "train" not in evaluation or "test" not in evaluation:
             raise SchemaError("Evaluation needs train and test anchors")
         train, test = evaluation["train"], evaluation["test"]
-        if len(np.unique(train[2])) != 2:
-            raise SchemaError("Binary probe training requires both classes")
-        metrics = {
-            "task_head": classification_metrics(test[2], test[1]),
-            "raw_logistic": classification_metrics(
-                test[2], fit_predict_probe(train[3], train[2], test[3], seed=config.seed)
+        metrics = {"task_head": classification_metrics(test[2], test[1])}
+        for name, train_features, test_features in (
+            ("raw", train[3], test[3]),
+            ("embedding", train[0], test[0]),
+            (
+                "combined",
+                np.concatenate((train[3], train[0]), axis=1),
+                np.concatenate((test[3], test[0]), axis=1),
             ),
-            "embedding_logistic": classification_metrics(
-                test[2], fit_predict_probe(train[0], train[2], test[0], seed=config.seed)
-            ),
-        }
+        ):
+            metrics[name] = classification_metrics(
+                test[2],
+                fit_predict_probe(train_features, train[2], test_features, seed=config.seed),
+            )
         if control_evaluation:
             control_train, control_test = control_evaluation["train"], control_evaluation["test"]
             metrics["sequence_control_task_head"] = classification_metrics(

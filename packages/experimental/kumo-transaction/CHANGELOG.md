@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bind managed model identity to ordered features; retain known-negative labels
+  and aligned unknown-label inference masks. Validate FK columns and split
+  separation, constrain graph window exemptions and group shared future batches
+  at clock boundaries. Include the combined logistic evaluation arm.
+
 - Add a bounded adapter declaration and generated/replayed prediction anchors
   shared by sequence, graph and hybrid reference recipes.
 - Preserve event/observation clocks, point-in-time history ownership, canonical

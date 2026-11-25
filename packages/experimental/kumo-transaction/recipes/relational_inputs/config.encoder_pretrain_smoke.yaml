@@ -10,8 +10,8 @@ data:
   relational:
     history_paths:
       activity:
-      - owns
-      - activity
+        - owns
+        - activity
     root: entities
     cutoffs:
       train: '2024-01-11'

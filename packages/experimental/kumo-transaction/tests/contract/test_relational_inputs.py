@@ -226,6 +226,7 @@ def six_hop_declaration():
         {"id": "old", "marker": 12.0, "fk1": "root", "at": day(1), "known": day(1)},
         {"id": "unavailable", "marker": 13.0, "fk1": "root", "at": day(29), "known": day(40)},
     )
+    neighbors = tuple({"fk2": None, **row} for row in neighbors)
     rows = {"level0": ({"id": "root"},), "level1": neighbors}
     for i in range(2, 7):
         row = {"id": f"chain{i}", "marker": float(20 + i), "at": day(1), "known": day(5)}
@@ -583,3 +584,124 @@ def test_partial_version_logs_cannot_silently_drop_fixed_children():
     )
     with pytest.raises(SchemaError, match="owns: version records must cover every child"):
         RelationalSource(replace(dataset, rows=rows), source().task)
+
+
+@pytest.mark.parametrize("one_row", [False, True])
+def test_missing_fk_columns_are_not_silent_optional_links(one_row):
+    from tfm.contracts.errors import SchemaError
+
+    dataset = declaration()
+    rows = dict(dataset.rows)
+    rows["activity"] = tuple(
+        {key: value for key, value in row.items() if key != "container"}
+        if not one_row or i == 0
+        else dict(row)
+        for i, row in enumerate(rows["activity"])
+    )
+    with pytest.raises(SchemaError, match="activity.*FK columns are absent"):
+        RelationalSource(replace(dataset, rows=rows), source().task)
+
+
+def test_explicit_null_fk_remains_a_valid_optional_link():
+    dataset = declaration()
+    rows = dict(dataset.rows)
+    rows["activity"] = ({**rows["activity"][0], "container": None}, *rows["activity"][1:])
+    resolved = RelationalSource(replace(dataset, rows=rows), source().task)
+    assert amounts(resolved, "a", day(7)) == [2.0]
+
+
+def test_window_exemption_is_limited_to_root_and_path_intermediates():
+    from tfm.data.graph import GraphSampler
+
+    dataset = RelationalDataset(
+        (
+            RelationalTable("entities", ("id",), event_time="created", available_at="known"),
+            RelationalTable(
+                "activity",
+                ("id",),
+                numeric={"amount": "value"},
+                event_time="at",
+                available_at="known",
+            ),
+            RelationalTable(
+                "refunds",
+                ("id",),
+                numeric={"amount": "value"},
+                event_time="at",
+                available_at="known",
+            ),
+        ),
+        (
+            RelationalForeignKey("activity", "entities", "activity", ("owner",)),
+            RelationalForeignKey("refunds", "entities", "refunds", ("owner",)),
+        ),
+        {
+            "entities": ({"id": "a", "created": day(0), "known": day(1)},),
+            "activity": (
+                {"id": "event", "owner": "a", "at": day(7), "known": day(7), "value": 1.0},
+            ),
+            "refunds": (
+                {"id": "old", "owner": "a", "at": day(2), "known": day(2), "value": 11.0},
+                {"id": "recent", "owner": "a", "at": day(8), "known": day(8), "value": 22.0},
+            ),
+        },
+    )
+    task = RelationalTaskConfig(
+        root="entities",
+        history_paths={"activity": ("activity",)},
+        cutoffs={"predict": day(10).isoformat()},
+    )
+    graph = RelationalSource(dataset, task).graph()
+    anchor = GraphAnchor("s", key_token(("a",)), day(10), observation_start=day(5))
+    batch = GraphSampler(graph, depth=1, fanout=10).sample((anchor,), task.root)
+    assert batch.window_exempt_types == frozenset({"entities"})
+    assert batch.node_features["refunds"][:, 0].tolist() == [22.0]
+    assert len(batch.node_features["entities"]) == 1
+
+
+def test_label_root_cutoff_cannot_cross_splits():
+    from pathlib import Path
+
+    from tfm.config import load_recipe_config
+    from tfm.contracts.errors import SchemaError
+    from tfm.data.adapters.registry import load_adapter_events
+
+    config = load_recipe_config(Path("recipes/relational_inputs/config.smoke.yaml"))
+    dataset = load_adapter_events(config, flat_fields=False).relational
+    rows = dict(dataset.rows)
+    rows["outcomes"] = (
+        *rows["outcomes"],
+        {**rows["outcomes"][0], "id": "duplicate", "split": "validation"},
+    )
+    with pytest.raises(SchemaError, match="root/cutoff appears in more than one split"):
+        RelationalSource(replace(dataset, rows=rows), config.data.relational).anchors()
+
+
+def test_generated_and_replayed_splits_cannot_repeat_root_cutoff(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from tfm.contracts.errors import SchemaError
+
+    resolved = source()
+    task = resolved.task.model_copy(
+        update={"cutoffs": {"train": day(10).isoformat(), "validation": day(10).isoformat()}}
+    )
+    with pytest.raises(SchemaError, match="more than one split"):
+        RelationalSource(declaration(), task).anchors()
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {"sample_id": split, "id": "a", "cutoff": day(10), "split": split}
+                for split in ("train", "test")
+            ]
+        ),
+        path,
+    )
+    with pytest.raises(SchemaError, match="more than one split"):
+        RelationalSource(declaration(), task.model_copy(update={"anchors": str(path)})).anchors()
+    different = task.model_copy(
+        update={"cutoffs": {"train": day(7).isoformat(), "validation": day(10).isoformat()}}
+    )
+    assert len(RelationalSource(declaration(), different).anchors()) == 4
