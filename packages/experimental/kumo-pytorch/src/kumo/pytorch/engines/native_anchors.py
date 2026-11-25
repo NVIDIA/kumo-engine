@@ -30,6 +30,8 @@ from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
 from kumo.pytorch.engines.parquet_anchors import (
     _anchor_key_array,
+    _entity_id_type,
+    _entity_ids,
     _files,
     _physical,
     check_parquet_anchors,
@@ -109,6 +111,10 @@ class NativeAnchors:
         projected = sorted(set(physical.values()))
         snapshot = hashlib.sha256(pa.schema([schema.field(name) for name in projected]).serialize())
         self._types = {name: schema.field(column).type for name, column in physical.items()}
+        entity = self._source._tables[self._sample.entity.table]
+        key = entity.columns[entity.primary_key]
+        # Roles sharing the entity id column (metadata, sample ID) see the converted ids too.
+        self._types[table.entity_id] = _entity_id_type(self._types[table.entity_id], key)
         self._aliases = {name: f"anchor_col_{i}" for i, name in enumerate(table.columns)}
         # RowPack has no struct/map/list scalar. Carry those metadata values in
         # standard one-row Arrow IPC, not a second Python-owned table or pickle.
@@ -133,9 +139,9 @@ class NativeAnchors:
                         writer.write_batch(batch)
                     snapshot.update(sink.getvalue())
                     columns = {name: batch.column(column) for name, column in physical.items()}
-                    entity = self._source._tables[self._sample.entity.table]
-                    dtype = entity.columns[entity.primary_key]
-                    entities = _anchor_key_array(columns[table.entity_id], dtype)
+                    # Files may differ in physical type, so each batch is read on its own.
+                    columns[table.entity_id] = _entity_ids(columns[table.entity_id], key, file)
+                    entities = _anchor_key_array(columns[table.entity_id], key)
                     dense = self._source._sampler.lookup_node_ids(
                         self._sample.entity.table, entities
                     )

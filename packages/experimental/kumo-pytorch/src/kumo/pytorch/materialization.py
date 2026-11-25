@@ -24,6 +24,7 @@ from kumo.pytorch.dataset import (
     Dataset,
     Parquet,
     _can_coerce_to_int64,
+    _float_integer_hint,
     _local_parquet_files,
     _MissingParquetColumns,
 )
@@ -292,6 +293,7 @@ def _compile_diskgraph_config(
                     raise ValueError(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}; supply matching typed data"
+                        + _float_integer_hint(resolved, declared)
                     )
                 source_types[table.name][path][name] = str(actual)
         configs[table.name] = {
