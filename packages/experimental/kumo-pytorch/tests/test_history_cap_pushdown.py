@@ -328,3 +328,55 @@ def test_budgeted_batches_cross_read_chunks(
                         expected_nodes = expected_batch.inputs["graph"]["nodes"]["events"]
                         assert nodes["ids"].equal(expected_nodes["ids"])
                         assert nodes["batch"].equal(expected_nodes["batch"])
+
+
+@pytest.mark.parametrize("bucket", [False, True], ids=["ordered", "bucketed"])
+def test_multisplit_next_token_budget_counts_emitted_slots(tmp_path, bucket):
+    from tests.test_target_layouts import _text
+
+    contract, dataset = _history_case(tmp_path, "last", "ascending", api.Packed(), False)
+    event = replace(
+        contract.sample.events["events"], fields={"word": api.Constant("ab", api.DType("string"))}
+    )
+    sample = replace(contract.sample, events={"events": event})
+    history = api.Input(
+        api.EventSource(("events",), max_events=1),
+        api.Fields(
+            (api.Encode("word", _text(), "tokens"),),
+            row=api.Tokens(),
+            history=api.Flatten(4, before="bos", after="eos"),
+        ),
+        api.Packed(),
+    )
+    roles = ("pad", "unknown", "missing", "mask", "bos", "eos")
+    batch = api.BatchSpec(
+        {"history": history},
+        targets={"answer": api.NextTokenTarget("history")},
+        id_spaces={"tokens": api.IdSpace({role: role for role in roles})},
+        batching=api.Batching(
+            max_samples=2, max_tokens=6, length_input="history", bucket_by_length=bucket
+        ),
+    )
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table({"user": [1] * 4, "at": [60] * 4, "split": ["train", "train", "val", "val"]}),
+        path,
+    )
+    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at", split="split")
+    engine = api.DiskGraphEngine(num_threads=1)
+    with api.prepare(api.DataLoaderSpec(contract.schema, sample, batch), dataset, engine) as plan:
+        with plan.materialize(anchors, fit_split="train") as task:
+            trained = list(
+                task.batches(split=api.ALL_ANCHORS, drop_last=True, output_format="model")
+            )
+            assert [list(item.metadata["sample_ids"]) for item in trained] == [[0, 1], [2, 3]]
+            for item in trained:
+                # BOS, a, b are inputs; a, b, EOS are next-token labels.
+                assert item.inputs["history"]["value_ids"].tolist() == [4, 6, 7] * 2
+                assert item.targets["answer"]["values"].tolist() == [6, 7, 5] * 2
+            fitted = task.fitted_state
+        with plan.materialize(anchors, fitted=fitted, inference=True) as task:
+            scored = list(task.batches(split=api.ALL_ANCHORS, output_format="model"))
+            assert [list(item.metadata["sample_ids"]) for item in scored] == [[0], [1], [2], [3]]
+            for item in scored:
+                assert item.inputs["history"]["value_ids"].tolist() == [4, 6, 7, 5]

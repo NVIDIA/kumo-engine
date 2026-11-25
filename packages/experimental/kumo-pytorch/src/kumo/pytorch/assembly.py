@@ -2400,7 +2400,13 @@ class PreparedBatchPlan:
                 self.spaces[space_name].roles,
                 packer=getattr(self._source, "pack_token_stream", None) if model else None,
             )
-            return dict(enumerate(int(length) for length in np.diff(tokens.boundaries)))
+            lengths = np.diff(tokens.boundaries)
+            if any(
+                isinstance(target, NextTokenTarget) and target.input == input_name
+                for target in self._emitted.targets.values()
+            ):
+                lengths = np.maximum(lengths - 1, 0)
+            return dict(enumerate(int(length) for length in lengths))
         lengths = np.diff(tokens.boundaries)
         if isinstance(prepared.spec.source, EntitySource):
             return dict(enumerate(int(length) for length in lengths))
