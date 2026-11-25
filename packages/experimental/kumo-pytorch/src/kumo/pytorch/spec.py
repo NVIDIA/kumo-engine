@@ -32,6 +32,7 @@ from kumo.pytorch.contract.sample import (
     ExternalTarget,
     Field,
     GroupBy,
+    NeighborhoodSpec,
     RowFilter,
     Rows,
     RowTarget,
@@ -731,6 +732,7 @@ class _Validator:
             endpoints: dict[str, set[str]] = {}
             edge_sets = set(self.relations)
             frontier = {sample.entity.table}
+            node_tables = set(frontier)
             for layer_index, layer in enumerate(neighborhood.layers):
                 destinations = set()
                 for index, traversal in enumerate(layer.samples):
@@ -795,6 +797,25 @@ class _Validator:
                             "declare TableSpec.time_column or use strategy='uniform'",
                         )
                 frontier = destinations
+                node_tables.update(destinations)
+            for table, values in neighborhood.node_values.items():
+                node_path = f"{location}.node_values.{table}"
+                if table not in self.tables:
+                    self.add(node_path, f"unknown graph node table {table!r}")
+                    continue
+                if table not in node_tables:
+                    self.add(node_path, f"table {table!r} is not reachable in this neighborhood")
+                    continue
+                for column in sorted(self.tables[table].columns.keys() & values.keys()):
+                    self.add(
+                        f"{node_path}.{column}", "node value name conflicts with a stored column"
+                    )
+                for field, value in values.items():
+                    if isinstance(value, Field) and value.selection == "all":
+                        self.add(
+                            f"{node_path}.{field}", "graph node fields require one value per node"
+                        )
+                self._scope(values, table, node_path, event=False)
             for set_name, candidates in draws.items():
                 draw = candidates.draw
                 assert isinstance(draw, DrawNeighbors)
@@ -841,6 +862,8 @@ def _encode(value: Any) -> Any:
         arguments = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
         if isinstance(value, DType) and not value.shape:
             del arguments["shape"]
+        if isinstance(value, NeighborhoodSpec) and not value.node_values:
+            del arguments["node_values"]
         if isinstance(value, NeighborhoodSource) and value.candidates is None:
             del arguments["candidates"]
         if isinstance(value, CandidateSetSpec) and not value.neighborhoods:

@@ -447,6 +447,22 @@ and walk work. The JSON reports both batch latency distributions and
 `candidate_draw_p50_ms`, the median time spent selecting IDs per batch.
 For scored draws this timer starts after the query walk has run.
 
+### Timing point-in-time node degree
+
+From `packages/experimental/kumo-pytorch`, run the degree benchmark on query
+graphs alone or with four score-weighted positive graphs per anchor.
+
+```bash
+python -m tests.e2e.node_degree_throughput
+python -m tests.e2e.node_degree_throughput --positives 4
+```
+
+Both runs compare identical sampled Pin and Board occurrences with and
+without their degree feature. An untimed pass verifies degrees against the
+source membership timestamps. Warm passes alternate execution order and
+report p50 and p95 batch latency, anchors per second and nodes per second.
+Use `--output-format columnar` for Arrow output.
+
 ### Timing array feature delivery
 
 From `packages/experimental/kumo-pytorch`, run both layouts with the same

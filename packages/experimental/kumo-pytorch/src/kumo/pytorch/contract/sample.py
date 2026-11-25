@@ -859,15 +859,27 @@ class NeighborhoodSpec:
     Columnar relations output can retain repeated pairs unless
     ``deduplicate_edges=True``. ``Graph(topology="sampled")`` retains native
     directed edge occurrences, discovery order and hop counts.
-    Node attributes are chosen in ``BatchSpec`` through
-    a ``Graph`` representation, not here.
+    :param node_values: DiskGraph values by node table and value name. Each
+        declaration starts at the node and uses its owning anchor's prediction
+        time. Select stored columns and computed values through ``Graph.node_fields``.
     """
 
     layers: tuple[GraphLayer, ...]
+    node_values: Mapping[str, Mapping[str, EntityValue]] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.layers:
             raise ValueError("neighborhood requires at least one layer")
+        for table, values in self.node_values.items():
+            if not isinstance(table, str) or not table:
+                raise ValueError("node value tables must have nonempty names")
+            if any(not isinstance(name, str) or not name for name in values):
+                raise ValueError("node values must have nonempty names")
+        object.__setattr__(
+            self,
+            "node_values",
+            _mapping({table: _mapping(v) for table, v in self.node_values.items()}),
+        )
 
 
 @dataclass(frozen=True)
@@ -1507,6 +1519,10 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
                     replace(layer, samples=tuple(traversal(item) for item in layer.samples))
                     for layer in neighborhood.layers
                 ),
+                node_values={
+                    table: scope(values, table)
+                    for table, values in neighborhood.node_values.items()
+                },
             )
             for name, neighborhood in declarations.items()
         }
@@ -1543,6 +1559,16 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
 def _scope_types(schema: DataSchema, table: str, values: Mapping[str, Any]) -> dict[str, DType]:
     order = _value_evaluation_order(values)
     return {name: value_dtype(schema, table, values[name], values) for name in order}
+
+
+def graph_node_dtype(
+    schema: DataSchema, neighborhood: NeighborhoodSpec, table: str, field: str
+) -> DType:
+    """Resolve a graph input field within its own neighborhood and node table."""
+    values = neighborhood.node_values.get(table, {})
+    if field in values:
+        return value_dtype(schema, table, values[field], values)
+    return next(t for t in schema.tables if t.name == table).columns[field]
 
 
 def sample_value_types(schema: DataSchema, sample: SampleSpec) -> dict[str, DType]:

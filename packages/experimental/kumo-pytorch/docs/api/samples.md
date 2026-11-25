@@ -535,7 +535,10 @@ Draw distinct destinations from an already sampled query neighborhood.
 *class* · `kumo.pytorch.NeighborhoodSpec`
 
 ```python
-class NeighborhoodSpec(layers: tuple[GraphLayer, ...])
+class NeighborhoodSpec(
+    layers: tuple[GraphLayer, ...],
+    node_values: Mapping[str, Mapping[str, EntityValue]] = {},
+)
 ```
 
 Rows belonging to one sampled neighborhood around the entity.
@@ -545,8 +548,10 @@ per sample/row and deduplicates edge pairs in model and inspectable output.
 Columnar relations output can retain repeated pairs unless
 `deduplicate_edges=True`. `Graph(topology="sampled")` retains native
 directed edge occurrences, discovery order and hop counts.
-Node attributes are chosen in `BatchSpec` through
-a `Graph` representation, not here.
+
+**Parameters**
+
+- `node_values`: DiskGraph values by node table and value name. Each declaration starts at the node and uses its owning anchor's prediction time. Select stored columns and computed values through `Graph.node_fields`.
 
 ### `GraphLayer`
 

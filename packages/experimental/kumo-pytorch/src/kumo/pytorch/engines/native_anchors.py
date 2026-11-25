@@ -1307,7 +1307,11 @@ class NativeAnchors:
             }
             for graph in graph_inputs.get(neighborhood_name, ()):
                 for table, group in graph.node_fields.items():
-                    fields[table].extend(use.field for use in group.fields)
+                    fields[table].extend(
+                        use.field
+                        for use in group.fields
+                        if use.field in source._tables[table].columns
+                    )
             return {table: list(dict.fromkeys(names)) for table, names in fields.items()}
 
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None

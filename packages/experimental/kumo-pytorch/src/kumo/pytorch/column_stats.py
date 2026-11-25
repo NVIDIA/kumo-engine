@@ -34,7 +34,7 @@ from kumo.pytorch.contract.batch import (
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
 from kumo.pytorch.contract.dtypes import DType
-from kumo.pytorch.contract.sample import Constant, Field, destination_table
+from kumo.pytorch.contract.sample import Constant, Field, destination_table, graph_node_dtype
 from kumo.pytorch.encoding import (
     TEXT_RECIPE,
     FittedEncoder,
@@ -363,16 +363,23 @@ def table_column_encoders(
             None if known is None or columns is None else known | columns,
         )
 
-    tables = {table.name: table for table in schema.tables}
     for name, value in sorted(spec.inputs.items()):
         if isinstance(value.representation, Graph):
+            scope = (
+                sample
+                if value.source.candidates is None
+                else sample.candidate_sets[value.source.candidates]
+            )
+            neighborhood = scope.neighborhoods[value.source.name]
             for table, group in value.representation.node_fields.items():
                 for use in group.fields:
                     add(
                         _graph_encoder_identity(name, table, use),
                         use.encoding,
-                        tables[table].columns[use.field],
-                        {(table, use.field)},
+                        graph_node_dtype(schema, neighborhood, table, use.field),
+                        None
+                        if use.field in neighborhood.node_values.get(table, {})
+                        else {(table, use.field)},
                     )
             continue
         if not isinstance(value.representation, Fields):

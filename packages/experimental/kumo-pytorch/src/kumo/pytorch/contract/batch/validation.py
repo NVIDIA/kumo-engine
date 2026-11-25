@@ -38,11 +38,13 @@ from kumo.pytorch.contract.batch import (
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import (
     Field,
+    NeighborhoodSpec,
     RowTarget,
     WalkSample,
     dated_value_types,
     destination_table,
     event_value_types,
+    graph_node_dtype,
     sample_value_types,
     value_dtype,
 )
@@ -225,7 +227,12 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
             layout(value.fields, f"{path}.fields")
             layout(value.events, f"{path}.events")
 
-    def group(input_name: str, fields: Fields, path: str, table: str | None = None) -> None:
+    def group(
+        input_name: str,
+        fields: Fields,
+        path: str,
+        graph: tuple[NeighborhoodSpec, str] | None = None,
+    ) -> None:
         seen = set()
         identities = selections.setdefault(input_name, set())
         for index, use in enumerate(fields.fields):
@@ -233,13 +240,11 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
             try:
                 matches = (
                     resolved_fields(contract, input_name, use.field)
-                    if table is None
+                    if graph is None
                     else (
                         (
-                            ("graph", table, use.field),
-                            next(
-                                item for item in contract.schema.tables if item.name == table
-                            ).columns[use.field],
+                            ("graph", graph[1], use.field),
+                            graph_node_dtype(contract.schema, *graph, use.field),
                             "scalar",
                         ),
                     )
@@ -308,7 +313,8 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
                         f"{path}.node_fields.{table}",
                         f"table {table!r} is not reachable in this neighborhood",
                     )
-                group(name, fields, f"{path}.node_fields.{table}", table)
+                if neighborhood is not None:
+                    group(name, fields, f"{path}.node_fields.{table}", (neighborhood, table))
         else:
             if isinstance(value.source, OccurrencesOf):
                 if any(not isinstance(use.encoding, Raw) for use in value.representation.fields):

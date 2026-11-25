@@ -326,6 +326,40 @@ The model reads `graph["edges"]["activity.items"]`, whose `index`, `score`, and
 Use relations topology for training and batch inference with walks. The online
 serving row planner does not implement walks.
 
+### Point-in-time degree on graph nodes
+
+Declare degree on the node table in `NeighborhoodSpec.node_values`, then select
+it in `Graph.node_fields`. In the shop example, an item reached through a user’s
+history receives the number of purchase rows for that item through the user’s
+prediction time. This count includes eligible rows outside the sampled fanout.
+
+```python
+item_degree = api.Aggregate(
+    api.Rows(("item_purchases",), time=api.TimeWindow("at", stop=0)), "count"
+)
+shop_graph = api.NeighborhoodSpec(
+    neighborhood.layers,
+    node_values={"items": {"degree": item_degree}},
+)
+degree_input = api.Input(
+    api.NeighborhoodSource("bought"),
+    api.Graph({"items": api.Fields((api.Encode("degree", api.Raw()),))}),
+    None,
+)
+```
+
+DiskGraph returns one degree per item occurrence in node order. A purchase
+exactly at the cutoff counts. An item with no eligible purchases has a valid
+degree of zero. If the same item appears under two anchors, each occurrence
+uses its own anchor. Nodes in a positive’s graph use the parent prediction
+time, including when a later purchase selected the positive.
+
+Computed names are local to the neighborhood and must be distinct from
+stored columns. Other supported entity-value expressions can refer to rows
+starting at the node’s table or to declared operands on the same table.
+The count uses the rows retained in the DiskGraph index. For historical graph
+membership as well, use the default or recent strategy on hops to timed tables.
+
 ### Fixed-shape node features
 
 DiskGraph can store a Pin image embedding in a single Parquet `list<float32>`

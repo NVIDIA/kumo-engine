@@ -62,6 +62,7 @@ from kumo.pytorch.contract.sample import (
     SampleRequest,
     SampleSpec,
     _normalize_supplied_targets,
+    graph_node_dtype,
 )
 from kumo.pytorch.data.masking import mask_event_values
 from kumo.pytorch.data.model import ModelSourceBatch
@@ -705,12 +706,17 @@ def _fit_inputs(
         value = spec.inputs[name]
         if not isinstance(value.representation, Fields):
             graph_fields[name] = {}
-            tables = {table.name: table for table in contract.schema.tables}
+            scope = (
+                sample
+                if value.source.candidates is None
+                else sample.candidate_sets[value.source.candidates]
+            )
+            neighborhood = scope.neighborhoods[value.source.name]
             for table, group in value.representation.node_fields.items():
                 graph_fields[name][table] = {}
                 for use in group.fields:
                     identity = _graph_encoder_identity(name, table, use)
-                    dtype = tables[table].columns[use.field]
+                    dtype = graph_node_dtype(contract.schema, neighborhood, table, use.field)
                     config = (
                         spec.encodings[use.encoding.name]
                         if isinstance(use.encoding, UseEncoding)

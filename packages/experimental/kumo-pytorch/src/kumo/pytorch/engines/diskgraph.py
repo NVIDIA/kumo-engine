@@ -147,6 +147,13 @@ def _token_budget_aliases(contract: DataLoaderSpec) -> list[ValidationIssue]:
     return issues
 
 
+def _value_scopes(sample, path):
+    yield sample.entity.table, sample.entity_values, f"{path}.entity_values"
+    for name, neighborhood in sample.neighborhoods.items():
+        for table, values in neighborhood.node_values.items():
+            yield table, values, f"{path}.neighborhoods.{name}.node_values.{table}"
+
+
 def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationIssue]:
     """Refusals that need only the sample declaration, in contract order."""
 
@@ -200,22 +207,24 @@ def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationI
                     )
                 )
 
-    for name, value in spec.entity_values.items():
-        location = f"{path}.entity_values.{name}"
-        if isinstance(value, Aggregate):
-            source(value.source, f"{location}.source")
-        elif isinstance(value, Compare):
-            source(value.left.source, f"{location}.source")
-        elif (
-            isinstance(value, Field) and (value.path or value.time_column is not None)
-        ) or not isinstance(value, (Field, Constant, Derived)):
-            issues.append(
-                _refusal(
-                    "DG-ENTITY-VALUE-KIND",
-                    location,
-                    f"DiskGraph entity value {name!r} must be an aggregate or a direct root field",
+    for _, values, scope in _value_scopes(spec, path):
+        for name, value in values.items():
+            location = f"{scope}.{name}"
+            if isinstance(value, Aggregate):
+                source(value.source, f"{location}.source")
+            elif isinstance(value, Compare):
+                source(value.left.source, f"{location}.source")
+            elif (
+                isinstance(value, Field) and (value.path or value.time_column is not None)
+            ) or not isinstance(value, (Field, Constant, Derived)):
+                issues.append(
+                    _refusal(
+                        "DG-ENTITY-VALUE-KIND",
+                        location,
+                        f"DiskGraph entity value {name!r} must be an aggregate "
+                        "or a direct root field",
+                    )
                 )
-            )
     for name, event in spec.events.items():
         location = f"{path}.events.{name}"
         rows(event.rows, f"{location}.rows")
@@ -422,8 +431,8 @@ class DiskGraphEngine:
     def _check_sample_paths(sample, sample_path, schema, tables, relations):
         issues = []
 
-        def check_rows(rows: Rows, path: str) -> None:
-            current = sample.entity.table
+        def check_rows(rows: Rows, path: str, root: str = sample.entity.table) -> None:
+            current = root
             for index, relation_name in enumerate(rows.path):
                 relation = relations.get(relation_name)
                 if relation is None:
@@ -444,11 +453,11 @@ class DiskGraphEngine:
                     )
                 current = destination
 
-        def check_source(source: Rows | GroupBy, path: str) -> None:
+        def check_source(source: Rows | GroupBy, path: str, root: str) -> None:
             if isinstance(source, Rows):
-                check_rows(source, path)
+                check_rows(source, path, root)
             else:
-                check_source(source.source, f"{path}.source")
+                check_source(source.source, f"{path}.source", root)
 
         def check_reduction(reduction: Any, path: str, columns: Mapping[str, DType]) -> None:
             source = columns.get(reduction.column) if reduction.column is not None else None
@@ -459,28 +468,30 @@ class DiskGraphEngine:
                 )
                 issues.append(_refusal("DG-REDUCTION-OPERAND", path, message))
 
-        def check_aggregate(value: Aggregate, path: str) -> None:
-            check_source(value.source, f"{path}.source")
+        def check_aggregate(value: Aggregate, path: str, root: str = sample.entity.table) -> None:
+            check_source(value.source, f"{path}.source", root)
             try:
-                columns = source_column_types(schema, sample.entity.table, value.source)
+                columns = source_column_types(schema, root, value.source)
             except (KeyError, ValueError, StopIteration):
                 return
             check_reduction(value, path, columns)
             source = value.source
             location = f"{path}.source"
             while isinstance(source, GroupBy):
-                columns = source_column_types(schema, sample.entity.table, source.source)
+                columns = source_column_types(schema, root, source.source)
                 for name, reduction in source.values.items():
                     check_reduction(reduction, f"{location}.values.{name}", columns)
                 source = source.source
                 location += ".source"
 
-        for name, value in sample.entity_values.items():
-            if isinstance(value, (Aggregate, Compare)):
-                check_aggregate(
-                    value.left if isinstance(value, Compare) else value,
-                    f"{sample_path}.entity_values.{name}",
-                )
+        for table, values, scope in _value_scopes(sample, sample_path):
+            for name, value in values.items():
+                if isinstance(value, (Aggregate, Compare)):
+                    check_aggregate(
+                        value.left if isinstance(value, Compare) else value,
+                        f"{scope}.{name}",
+                        table,
+                    )
         for name, event in sample.events.items():
             check_rows(event.rows, f"{sample_path}.events.{name}.rows")
         for name, candidates in sample.candidate_sets.items():
@@ -637,6 +648,9 @@ class DiskGraphSource:
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
+        self._ingested_foreign_keys = (
+            artifact.manifest.get("artifact_kind") == "diskgraph_base_index"
+        )
         self._diskgraph = diskgraph
         self.pack_token_stream = diskgraph.pack_token_stream
         self.merge_event_streams = getattr(diskgraph, "merge_event_streams", None)
@@ -1522,20 +1536,29 @@ class DiskGraphSource:
     ) -> Mapping[tuple[str, str], tuple[Any, ...]]:
         if not spec.node_fields:
             return {}
-        _neighborhood, events, _physical_relations = self._sample_graph_events(
+        neighborhood, events, _physical_relations = self._sample_graph_events(
             sample,
             spec.source,
             roots,
         )
         global_ids: dict[str, list[int]] = defaultdict(list)
+        owners: dict[str, list[int]] = defaultdict(list)
+        ticks = [root.cutoff for root in roots] if neighborhood.node_values else None
         for event in events:
             if event["type"] == "node":
                 table = self._node_types[event["type_id"]]
                 global_ids[table].extend(self._column(event["batch"], "id_b"))
+                if table in neighborhood.node_values:
+                    owners[table].extend(self._column(event["batch"], "id_a"))
         values = {}
         for table, fields in spec.node_fields.items():
-            fetched = self._feature_arrays(
-                table, global_ids.get(table, ()), tuple(use.field for use in fields.fields)
+            fetched = self._graph_node_arrays(
+                neighborhood,
+                table,
+                tuple(use.field for use in fields.fields),
+                global_ids[table],
+                owners[table],
+                ticks,
             )
             for use in fields.fields:
                 field = use.field
@@ -1577,6 +1600,7 @@ class DiskGraphSource:
             spec.node_fields,
             state,
             stages,
+            root_ticks=[root.cutoff for root in roots] if neighborhood.node_values else None,
         )
         self._last_graph_profile = {
             "samples": len(roots),
@@ -1614,7 +1638,13 @@ class DiskGraphSource:
                 sample, spec.source, selected
             )
             return self._graph_output(
-                sample.entity.table, neighborhood, events, relations, spec.node_fields, state
+                sample.entity.table,
+                neighborhood,
+                events,
+                relations,
+                spec.node_fields,
+                state,
+                root_ticks=selected["task"].get("seed_timestamps"),
             )
         finally:
             self._runtime_batch = previous
@@ -1717,7 +1747,14 @@ class DiskGraphSource:
                 name: pa.array(stats["nodes_per_type"][i] if roots else [0] * (hops + 1))
                 for i, name in enumerate(self._node_types)
             }
-        output = self._columnar_graph(sample, spec, graph, None, deduplicate_edges)
+        output = self._columnar_graph(
+            sample,
+            spec,
+            graph,
+            None,
+            deduplicate_edges,
+            [root.cutoff for root in roots] if neighborhood.node_values else None,
+        )
         if tensor_state is not None:
             output = self._sampled_graph_output(output, tensor_state)
         self._last_graph_profile = {
@@ -1730,10 +1767,51 @@ class DiskGraphSource:
     def columnar_graph_batch(self, sample, spec, runtime, *, deduplicate_edges=False):
         runtime = self._graph_runtime(spec.source, runtime)
         return self._columnar_graph(
-            sample, spec, runtime["graphs"]["main"], runtime["raw_features"], deduplicate_edges
+            sample,
+            spec,
+            runtime["graphs"]["main"],
+            runtime["raw_features"],
+            deduplicate_edges,
+            runtime["task"].get("seed_timestamps"),
         )
 
-    def _columnar_graph(self, sample, spec, graph, projections, deduplicate_edges):
+    def _graph_node_arrays(
+        self, neighborhood, table, names, ids, owners, root_ticks, projections=None
+    ):
+        """Gather stored columns and evaluate requested virtual columns in occurrence order."""
+        declarations = getattr(neighborhood, "node_values", {}).get(table, {})
+        computed = tuple(name for name in names if name in declarations) if declarations else ()
+        physical = tuple(name for name in names if name not in declarations) if computed else names
+        if not physical:
+            columns = {}
+        elif projections is None:
+            # The native feature reader accepts Python dense IDs.
+            stored_ids = (
+                ids.to_pylist() if isinstance(ids, (self._pa.Array, self._pa.ChunkedArray)) else ids
+            )
+            columns = self._feature_arrays(table, stored_ids, physical)
+        elif len(ids):
+            raw = projections.get(table)
+            if raw is None:
+                raise RuntimeError(f"missing native columnar features for {table!r}")
+            data = self._pa.Table.from_batches(raw["record_batches"])
+            if len(data) != len(ids):
+                raise RuntimeError(f"native columnar node/feature alignment mismatch: {table}")
+            columns = {name: data[name] for name in physical}
+        else:
+            columns = {
+                name: self._pa.array([], type=self._tables[table].columns[name].to_arrow())
+                for name in physical
+            }
+        if computed:
+            from kumo.pytorch.engines.node_values import computed_node_arrays
+
+            columns.update(
+                computed_node_arrays(self, neighborhood, table, computed, ids, owners, root_ticks)
+            )
+        return columns
+
+    def _columnar_graph(self, sample, spec, graph, projections, deduplicate_edges, root_ticks):
         """Expose sampled Arrow buffers without per-node Python or tensor assembly."""
         from kumo.pytorch.contract.batch import ColumnarEdges, ColumnarGraph, ColumnarNodes
 
@@ -1761,27 +1839,12 @@ class DiskGraphSource:
             )
             if len(owners) != len(ids):
                 raise RuntimeError(f"native columnar node/owner alignment mismatch: {table}")
-            if len(ids) and requested:
-                if projections is None:
-                    data = self._feature_arrays(table, ids.to_pylist(), requested)
-                else:
-                    raw = projections.get(table)
-                    if raw is None:
-                        raise RuntimeError(f"missing native columnar features for {table!r}")
-                    data = pa.Table.from_batches(raw["record_batches"])
-                    if len(data) != len(ids):
-                        raise RuntimeError(
-                            f"native columnar node/feature alignment mismatch: {table}"
-                        )
-                columns = {
-                    name: self._typed_array(data[name], definition.columns[name])
-                    for name in requested
-                }
-            else:
-                columns = {
-                    name: pa.array([], type=definition.columns[name].to_arrow())
-                    for name in requested
-                }
+            columns = self._graph_node_arrays(
+                neighborhood, table, requested, ids, owners, root_ticks, projections
+            )
+            for name in requested:
+                if name in definition.columns:
+                    columns[name] = self._typed_array(columns[name], definition.columns[name])
             nodes[table] = ColumnarNodes(
                 ids=columns[definition.primary_key] if definition.primary_key else ids,
                 owners=owners,
@@ -2604,6 +2667,10 @@ class DiskGraphSource:
         return {}
 
     @cached_property
+    def _node_value_programs(self):
+        return {}
+
+    @cached_property
     def _graph_layouts(self):
         return {}
 
@@ -2756,6 +2823,8 @@ class DiskGraphSource:
         node_fields: Mapping[str, Mapping[str, Any]],
         encoders: Mapping[str, Mapping[str, Any]],
         profile: dict[str, int] | None = None,
+        *,
+        root_ticks=None,
     ) -> dict[str, Any]:
         decode_started = time.perf_counter_ns()
         global_ids: dict[str, list[np.ndarray]] = defaultdict(list)
@@ -2801,21 +2870,18 @@ class DiskGraphSource:
             ids = np.concatenate(global_ids[table]).tolist() if global_ids[table] else []
             primary_key = self._tables[table].primary_key
             started = time.perf_counter_ns()
-            feature_arrays = self._feature_arrays(
+            batch = np.concatenate(owners[table]) if owners[table] else np.empty(0, dtype=np.int64)
+            names = (use.field for use in node_fields[table].fields) if table in node_fields else ()
+            requested = tuple(
+                dict.fromkeys((*(() if primary_key is None else (primary_key,)), *names))
+            )
+            feature_arrays = self._graph_node_arrays(
+                neighborhood,
                 table,
+                requested,
                 ids,
-                tuple(
-                    dict.fromkeys(
-                        (
-                            *(() if primary_key is None else (primary_key,)),
-                            *(
-                                (use.field for use in node_fields[table].fields)
-                                if table in node_fields
-                                else ()
-                            ),
-                        )
-                    )
-                ),
+                batch,
+                root_ticks,
             )
             feature_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
@@ -2828,13 +2894,12 @@ class DiskGraphSource:
             started = time.perf_counter_ns()
             nodes[table] = {
                 "ids": node_ids,
-                "batch": torch.from_numpy(
-                    np.concatenate(owners[table]) if owners[table] else np.empty(0, dtype=np.int64)
-                ),
+                "batch": torch.from_numpy(batch),
                 "features": {
                     field: encoder.encode_arrow(
                         self._typed_array(feature_arrays[field], self._tables[table].columns[field])
-                        if self._tables[table].columns[field].name == "timestamp"
+                        if field in self._tables[table].columns
+                        and self._tables[table].columns[field].name == "timestamp"
                         else feature_arrays[field]
                     )
                     for field, encoder in encoders.get(table, {}).items()

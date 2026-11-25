@@ -56,6 +56,13 @@ class InMemoryEngine:
                         )
                     )
         for name, neighborhood in contract.sample.neighborhoods.items():
+            if neighborhood.node_values:
+                issues.append(
+                    ValidationIssue(
+                        f"sample.neighborhoods.{name}.node_values",
+                        "computed graph node values require DiskGraphEngine",
+                    )
+                )
             if any(
                 isinstance(hop, WalkSample)
                 for layer in neighborhood.layers
