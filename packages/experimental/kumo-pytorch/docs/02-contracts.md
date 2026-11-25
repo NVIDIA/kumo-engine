@@ -317,7 +317,7 @@ edge types: ('item_purchases', 'user_purchases')
   when traversed in reverse.
 
 DiskGraph can also rank neighbors with a random walk with restart. For example,
-`api.WalkSample("activity", edges=("purchases",), keep={"items": 5},
+`kp.WalkSample("activity", edges=("purchases",), keep={"items": 5},
 restart=0.2, budget=1000)` treats each complete purchase row as an undirected
 user–item edge. Each user in the entering frontier starts an independent walk.
 Only rows visible at the sample cutoff contribute to its scores and degrees.
@@ -334,16 +334,16 @@ history receives the number of purchase rows for that item through the user’s
 prediction time. This count includes eligible rows outside the sampled fanout.
 
 ```python
-item_degree = api.Aggregate(
-    api.Rows(("item_purchases",), time=api.TimeWindow("at", stop=0)), "count"
+item_degree = kp.Aggregate(
+    kp.Rows(("item_purchases",), time=kp.TimeWindow("at", stop=0)), "count"
 )
-shop_graph = api.NeighborhoodSpec(
+shop_graph = kp.NeighborhoodSpec(
     neighborhood.layers,
     node_values={"items": {"degree": item_degree}},
 )
-degree_input = api.Input(
-    api.NeighborhoodSource("bought"),
-    api.Graph({"items": api.Fields((api.Encode("degree", api.Raw()),))}),
+degree_input = kp.Input(
+    kp.NeighborhoodSource("bought"),
+    kp.Graph({"items": kp.Fields((kp.Encode("degree", kp.Raw()),))}),
     None,
 )
 ```
@@ -367,12 +367,12 @@ column. Declare its width on the table and select the column once in the
 graph input.
 
 ```python
-image = api.DType("float32", shape=(1024,))
-pins = api.TableSpec(
-    "pins", "id", {"id": api.DType("int64"), "image_emb": image},
-    time_column=api.NON_TEMPORAL,
+image = kp.DType("float32", shape=(1024,))
+pins = kp.TableSpec(
+    "pins", "id", {"id": kp.DType("int64"), "image_emb": image},
+    time_column=kp.NON_TEMPORAL,
 )
-pin_graph = api.Graph({"pins": api.Fields((api.Encode("image_emb", api.Raw()),))})
+pin_graph = kp.Graph({"pins": kp.Fields((kp.Encode("image_emb", kp.Raw()),))})
 ```
 
 For `N` sampled Pin occurrences, `graph["nodes"]["pins"]["features"]["image_emb"]`
@@ -501,16 +501,16 @@ names an existing query neighborhood and its walk output. This example keeps
 the first five ranks and draws up to two distinct items, weighted by score.
 
 ```python
-activity = api.NeighborhoodSpec((api.GraphLayer((
-    api.WalkSample("activity", edges=("purchases",), keep={"items": 5}, restart=0.2, budget=1000),
+activity = kp.NeighborhoodSpec((kp.GraphLayer((
+    kp.WalkSample("activity", edges=("purchases",), keep={"items": 5}, restart=0.2, budget=1000),
 )),))
-ranked_items = api.DrawNeighbors(
+ranked_items = kp.DrawNeighbors(
     "history", ("activity.items",), count=2, weight="score", ranks=(0, 5)
 )
-ranked_sample = api.SampleSpec(
-    entity=api.EntitySpec("users"),
+ranked_sample = kp.SampleSpec(
+    entity=kp.EntitySpec("users"),
     neighborhoods={"history": activity},
-    candidate_sets={"items": api.CandidateSetSpec(api.EntitySpec("items"), draw=ranked_items)},
+    candidate_sets={"items": kp.CandidateSetSpec(kp.EntitySpec("items"), draw=ranked_items)},
 )
 ```
 
@@ -519,16 +519,16 @@ the purchase rows. Here the lower bound excludes the anchor time and the upper
 bound includes purchases exactly seven days later.
 
 ```python
-bought_next_week = api.DrawRows(
-    api.Rows(("user_purchases",), time=api.TimeWindow("at", start=0, stop=7 * DAY)),
+bought_next_week = kp.DrawRows(
+    kp.Rows(("user_purchases",), time=kp.TimeWindow("at", start=0, stop=7 * DAY)),
     column="item_id",
     count=2,
 )
-positives = api.CandidateSetSpec(
-    api.EntitySpec("items"),
+positives = kp.CandidateSetSpec(
+    kp.EntitySpec("items"),
     draw=bought_next_week,
-    neighborhoods={"purchases": api.NeighborhoodSpec((
-        api.GraphLayer((api.GraphSample("item_purchases", 5),)),
+    neighborhoods={"purchases": kp.NeighborhoodSpec((
+        kp.GraphLayer((kp.GraphSample("item_purchases", 5),)),
     ))},
 )
 ```
