@@ -5,6 +5,7 @@
 """Global history caps bound every native component before payload decoding."""
 
 import json
+import sqlite3
 from dataclasses import replace
 
 import pyarrow as pa
@@ -330,6 +331,42 @@ def test_budgeted_batches_cross_read_chunks(
                         expected_nodes = expected_batch.inputs["graph"]["nodes"]["events"]
                         assert nodes["ids"].equal(expected_nodes["ids"])
                         assert nodes["batch"].equal(expected_nodes["batch"])
+
+
+def test_task_close_releases_suspended_bucket_sorts(tmp_path, monkeypatch):
+    contract, dataset = _history_case(tmp_path, "last", "ascending", api.Packed(), False)
+    batching = api.Batching(
+        max_samples=2, max_tokens=6, length_input="history", bucket_by_length=True
+    )
+    contract = replace(contract, batch=replace(contract.batch, batching=batching))
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.table({"user": [1] * 8, "at": [60] * 8, "split": ["train", "val"] * 4}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at", split="split")
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            connections = []
+            connect = sqlite3.connect
+
+            def capture_connection(*args, **kwargs):
+                db = connect(*args, **kwargs)
+                connections.append(db)
+                return db
+
+            monkeypatch.setattr(sqlite3, "connect", capture_connection)
+            passes = [
+                task.batches(split=api.ALL_ANCHORS, chunk_batches=1, output_format="model")
+                for _ in range(2)
+            ]
+            for batches in passes:
+                next(batches)
+            scratch = task._anchors.path
+            assert len(list(scratch.glob("*/order.sqlite"))) == len(passes)
+
+        assert not scratch.exists()
+        assert len(connections) == len(passes)
+        for db in connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                db.execute("SELECT 1")
 
 
 def test_multisplit_bucketed_token_budget_rejects_multiple_ranks(tmp_path):

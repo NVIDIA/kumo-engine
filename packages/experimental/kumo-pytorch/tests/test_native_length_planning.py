@@ -964,6 +964,42 @@ def _text_history_contract(schema, field, layout, target, budget, *, missing="om
     return api.DataLoaderSpec(schema, sample, batch)
 
 
+def test_cross_split_budget_rejects_legacy_cursor_and_resumes_current(tmp_path):
+    from dataclasses import replace
+
+    from tests.test_history_cap_pushdown import _history_case
+
+    contract, dataset = _history_case(tmp_path, "last", "ascending", api.Packed(), False)
+    budget = api.Batching(max_samples=2, max_tokens=6, length_input="history")
+    contract = replace(contract, batch=replace(contract.batch, batching=budget))
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table({"entity": [1, 1, 1], "at": [100, 61, 50], "split": ["train", "val", "val"]}),
+        path,
+    )
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at", split="split")
+    with (
+        api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan,
+        plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
+    ):
+        stream = task.batches(output_format="model")
+        assert next(stream).metadata["sample_ids"] == (0, 1)
+        cursor = stream.state_dict()
+        resumed = task.batches(output_format="model")
+        resumed.load_state_dict(cursor)
+        assert [b.metadata["sample_ids"] for b in resumed] == [(2,)]
+
+        # The previous scheduler emitted only anchor 0 in its first batch.
+        cursor["config"].pop("length_schedule", None)
+        with pytest.raises(ValueError, match="different length-based batching schedule"):
+            task.batches(output_format="model").load_state_dict(cursor)
+
+        requests = task._anchors.fetch(api.ALL_ANCHORS, range(3))
+        assert "length_schedule" not in task.request_batches(requests).state_dict()["config"]
+        assert "length_schedule" not in task.batches(drop_last=False).state_dict()["config"]
+        assert "length_schedule" in task.batches(drop_last=True).state_dict()["config"]
+
+
 @pytest.mark.parametrize("layout", [api.Packed(), api.Padded()], ids=["packed", "padded"])
 def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, layout):
     schema, dataset, _, _ = history_data
@@ -981,6 +1017,11 @@ def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, l
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             (result,) = task.batches(output_format="model")
             assert task._anchors._last_length_planning_stats == (1, 0)
+            requests = task._anchors.fetch(api.ALL_ANCHORS, [0])
+            cursor = task.request_batches(requests).state_dict()
+            cursor["config"].pop("length_schedule", None)
+            with pytest.raises(ValueError, match="different length-based batching schedule"):
+                task.request_batches(requests).load_state_dict(cursor)
             inputs, labels = result.inputs["history"], result.targets["answer"]
             # The six source tokens are BOS, a, b, a, b, EOS.
             assert inputs["value_ids"].flatten().tolist() == [4, 6, 7, 6, 7]

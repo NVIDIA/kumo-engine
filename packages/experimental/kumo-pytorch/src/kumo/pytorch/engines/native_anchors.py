@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
 from typing import Any
+from weakref import WeakSet
 
 from diskgraph import SamplingPlan
 
@@ -94,6 +95,7 @@ class NativeAnchors:
         )
         self.path = Path(self._scratch.name)
         self._closed = False
+        self._bucketed_passes = WeakSet()
         self._length_caches = {}
         self._last_length_planning_stats = (0, 0)
         try:
@@ -1016,7 +1018,10 @@ class NativeAnchors:
 
         # The primary key keeps equal-length anchors in pass order, including for shuffles.
         with tempfile.TemporaryDirectory(dir=self.path) as directory:
-            with closing(sqlite3.connect(Path(directory) / "order.sqlite")) as db:
+            # A task may release this suspended pass from another thread.
+            with closing(
+                sqlite3.connect(Path(directory) / "order.sqlite", check_same_thread=False)
+            ) as db:
                 db.execute(
                     "CREATE TABLE anchors (length INTEGER, ordinal INTEGER, position INTEGER, "
                     "PRIMARY KEY (length, ordinal)) WITHOUT ROWID"
@@ -1033,9 +1038,11 @@ class NativeAnchors:
                     )
                     ordinal += len(positions)
                 db.commit()
-                ordered = db.execute("SELECT position FROM anchors ORDER BY length, ordinal")
-                while chunk := ordered.fetchmany(size):
-                    yield self.fetch(selection, [position for (position,) in chunk])
+                with closing(
+                    db.execute("SELECT position FROM anchors ORDER BY length, ordinal")
+                ) as ordered:
+                    while chunk := ordered.fetchmany(size):
+                        yield self.fetch(selection, [position for (position,) in chunk])
 
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
         pa = self._pa
@@ -1153,6 +1160,8 @@ class NativeAnchors:
     def close(self) -> None:
         if not getattr(self, "_closed", True):
             self._closed = True
+            for chunks in list(self._bucketed_passes):
+                chunks.close()
             sampler = getattr(self, "_history_engine", None)
             self._source._release_sampler(sampler)
             self._runtime = None
@@ -1438,13 +1447,13 @@ class NativeAnchors:
                 offset += stage["count"]
 
         if output_format == "model" and policy.max_tokens is not None and len(stages) > 1:
-            chunks = (
-                self._bucketed_request_chunks(
+            if policy.bucket_by_length:
+                chunks = self._bucketed_request_chunks(
                     stages, assembler, selection, size=size, seed=seed, epoch=epoch, shuffle=shuffle
                 )
-                if policy.bucket_by_length
-                else (requests for _, requests in streams())
-            )
+                self._bucketed_passes.add(chunks)
+            else:
+                chunks = (requests for _, requests in streams())
             for batch in assembler._budgeted_model_batches(
                 chunks,
                 maximum=maximum,

@@ -38,7 +38,7 @@ from kumo.pytorch.anchors import (
 )
 from kumo.pytorch.artifact import Artifact, FitRecord, FittedState
 from kumo.pytorch.assembly import PreparedBatchPlan, PreviewResult, _fingerprint, preview_plan
-from kumo.pytorch.contract.batch import Batch
+from kumo.pytorch.contract.batch import Batch, NextTokenTarget
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.engine import AnchorTask
 from kumo.pytorch.spec import DataLoaderSpec
@@ -94,7 +94,7 @@ class TaskBatches(Iterator[Batch]):
         """Continue after the batches ``state`` records, before iteration starts.
 
         :raises ValueError: when iteration has started, or the state belongs to
-            another task, split, seed, epoch, rank or batch configuration.
+            another task, split, seed, epoch, rank, batch configuration or scheduling revision.
         """
         if self._iterator is not None:
             raise ValueError("load_state_dict must be called before iteration starts")
@@ -106,6 +106,10 @@ class TaskBatches(Iterator[Batch]):
         if self._config.get("requests") is not None:
             # The old explicit-request path accepted chunk_batches but never used it.
             config.pop("chunk_batches", None)
+        if config.get("length_schedule") != self._config.get("length_schedule"):
+            raise ValueError(
+                "this state was saved under a different length-based batching schedule"
+            )
         if config != self._config:
             raise ValueError(
                 "this state was saved under a different batch configuration "
@@ -331,7 +335,7 @@ class Task:
                 deduplicate_edges=deduplicate_edges,
             )
 
-        return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
+        return self._batch_iterator(produce, config)
 
     def request_batches(
         self,
@@ -392,6 +396,27 @@ class Task:
                 output_format=output_format,
             )
 
+        return self._batch_iterator(produce, config)
+
+    def _batch_iterator(
+        self, produce: Callable[[], Iterator[Batch]], config: dict[str, Any]
+    ) -> TaskBatches:
+        policy = self.contract.batch.batching
+        if policy.max_tokens is not None or policy.bucket_by_length:
+            drop_last = policy.drop_last if config["drop_last"] is None else config["drop_last"]
+            native_budget = (
+                policy.max_tokens is not None
+                and config["requests"] is None
+                and callable(getattr(self._anchors, "batches", None))
+                and (config["output_format"] == "model" or drop_last)
+            )
+            shifted_budget = not self.inference and any(
+                isinstance(target, NextTokenTarget) and target.input == policy.length_input
+                for target in self.contract.batch.targets.values()
+            )
+            # A consumed-batch count is meaningful only under the schedule that produced it.
+            if native_budget or shifted_budget:
+                config["length_schedule"] = 2
         return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
 
     def _validate_batch_rank(self, rank: int, world_size: int) -> None:

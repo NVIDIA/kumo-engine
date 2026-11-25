@@ -552,7 +552,7 @@ Continue after the batches `state` records, before iteration starts.
 
 **Raises**
 
-- `ValueError`: when iteration has started, or the state belongs to another task, split, seed, epoch, rank or batch configuration.
+- `ValueError`: when iteration has started, or the state belongs to another task, split, seed, epoch, rank, batch configuration or scheduling revision.
 
 ### `PreviewResult`
 
