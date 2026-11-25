@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kumo.pytorch.contract.sample import BuiltSample
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,8 @@ class ModelSourceBatch:
     merged_events: Mapping[Any, Any] = field(default_factory=dict)
     runtime_batch: Any = None
     timestamp_unit: str = "seconds"
+    # One inner sequence per owning anchor, in caller-supplied candidate order.
+    candidates: Mapping[str, tuple[tuple[BuiltSample, ...], ...]] = field(default_factory=dict)
 
     @property
     def batch_size(self) -> int:

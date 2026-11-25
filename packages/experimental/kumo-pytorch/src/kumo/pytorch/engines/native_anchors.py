@@ -30,6 +30,7 @@ from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
 from kumo.pytorch.engines.parquet_anchors import (
     _anchor_key_array,
+    _candidate_row,
     _entity_id_type,
     _entity_ids,
     _files,
@@ -404,10 +405,8 @@ class NativeAnchors:
             iterator.with_length_planning(cache, length_contract, token_lengths)
         return iterator
 
-    def _batch_values(self, stage, runtime):
-        """Retain typed label/value columns and adapt only public identity metadata."""
-        from kumo.pytorch.data.model import ModelSourceBatch
-
+    def _payload_columns(self, stage, runtime):
+        """Recover declared Arrow types, including nested columns staged as IPC."""
         pa = self._pa
         key = next(k for k in runtime["raw_features"] if k.endswith("/" + stage["name"]))
         data = pa.Table.from_batches(runtime["raw_features"][key]["record_batches"])
@@ -415,15 +414,23 @@ class NativeAnchors:
         for name, alias in self._aliases.items():
             values = data[alias]
             if name in self._ipc:
-                values = pa.array(
-                    [pa.ipc.open_stream(v.as_py()).read_all()["value"][0].as_py() for v in values],
+                values = pa.chunked_array(
+                    [pa.ipc.open_stream(v.as_py()).read_next_batch().column(0) for v in values],
                     type=self._types[name],
                 )
             else:
                 values = values.cast(self._types[name])
             columns[name] = values
+        return data["anchor_position"], columns
+
+    def _batch_values(self, stage, runtime, sample):
+        """Retain typed label/value columns and adapt only public identity metadata."""
+        from kumo.pytorch.data.model import ModelSourceBatch
+
+        pa = self._pa
+        positions, columns = self._payload_columns(stage, runtime)
         table = self._table
-        n = data.num_rows
+        n = len(positions)
         bound = getattr(self._source, "_materialized_values", None)
         internal = {
             *getattr(bound, "features", {}).values(),
@@ -442,10 +449,24 @@ class NativeAnchors:
                 # External integer labels use declared ticks, not graph-clock ticks.
                 values = values.cast(pa.int64()).cast(dtype.to_arrow())
             targets[name] = self._source._typed_array(values, dtype).combine_chunks()
+        sample_ids = tuple(
+            columns[table.sample_id].to_pylist() if table.sample_id else positions.to_pylist()
+        )
+        candidates = {}
+        if sample.candidate_sets:
+            requests = [
+                _candidate_row(table, columns, i, position)
+                for i, position in enumerate(positions.to_pylist())
+            ]
+            as_of_times = (
+                _column_values(pa, columns[table.as_of_time], self._types[table.as_of_time])
+                if table.as_of_time
+                else (0,) * n
+            )
+            candidates = self._source.build_candidates(sample, requests, as_of_times, sample_ids)
         return ModelSourceBatch(
-            sample_ids=tuple(columns[table.sample_id].to_pylist())
-            if table.sample_id
-            else tuple(data["anchor_position"].to_pylist()),
+            candidates=candidates,
+            sample_ids=sample_ids,
             entity_ids=tuple(columns[table.entity_id].to_pylist()),
             evaluation_times=tuple(runtime["task"]["seed_timestamps"].to_pylist())
             if table.as_of_time
@@ -832,7 +853,8 @@ class NativeAnchors:
         from dataclasses import replace
 
         from kumo.pytorch.anchors import PADDING_KEY
-        from kumo.pytorch.contract.batch import EventSource
+        from kumo.pytorch.contract.batch import EventSource, NeighborhoodSource
+        from kumo.pytorch.contract.sample import WalkSample
         from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
         from kumo.pytorch.task import _padding_sample_ids, _surface_padding
 
@@ -840,6 +862,21 @@ class NativeAnchors:
             assembler._validate_model_contract()
         source = self._source
         sample = assembler._model_sample
+
+        def has_walk(hood):
+            return any(
+                isinstance(traversal, WalkSample)
+                for layer in hood.layers
+                for traversal in layer.samples
+            )
+
+        has_root_walks = any(has_walk(hood) for hood in sample.neighborhoods.values())
+        has_candidate_walks = any(
+            has_walk(sample.candidate_sets[binding.candidates].neighborhoods[binding.name])
+            for prepared in assembler._prepared_inputs.values()
+            if isinstance(binding := prepared.spec.source, NeighborhoodSource)
+            and binding.candidates is not None
+        )
         orders = {}
         selections = {}
         for prepared in assembler._prepared_inputs.values():
@@ -941,7 +978,7 @@ class NativeAnchors:
                 )
 
         for runtime, padded, runtime_stage in runtime_batches():
-            anchors = self._batch_values(runtime_stage, runtime)
+            anchors = self._batch_values(runtime_stage, runtime, sample)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
             if sample.entity.available_from is not None:
@@ -960,55 +997,57 @@ class NativeAnchors:
                         for meta, flag in zip(anchors.request_metadata, flags, strict=True)
                     ),
                 )
-            if output_format == "columnar":
-                yield _surface_padding(
-                    assembler._collate(
-                        replace(anchors, runtime_batch=runtime),
-                        epoch=epoch,
-                        seed=seed,
-                        model=True,
-                        columnar=True,
-                        deduplicate_edges=deduplicate_edges,
-                    )
-                )
-                continue
+            if has_candidate_walks:
+                runtime["_candidate_walk_stats"] = {"walk_pushes": 0, "walk_decoded_entries": 0}
             with runtime_features(source, runtime):
-                values = source.build_model_batch(sample, runtime, anchors, compiled)
-                values = replace(
-                    values,
-                    merged_events={
-                        key: runtime["history_merges"][str(i)] for i, key in enumerate(merge_keys)
-                    },
-                )
-                batch = _surface_padding(
-                    # For graphs, model=True selects typed source buffers; Raw
-                    # fields keep the same Arrow representation as inspection.
-                    assembler._collate(
-                        values,
-                        epoch=epoch,
-                        seed=seed,
-                        model=True,
-                        encoding_model=output_format == "model",
+                if output_format == "columnar":
+                    batch = _surface_padding(
+                        assembler._collate(
+                            replace(anchors, runtime_batch=runtime),
+                            epoch=epoch,
+                            seed=seed,
+                            model=True,
+                            columnar=True,
+                            deduplicate_edges=deduplicate_edges,
+                        )
                     )
-                )
+                else:
+                    values = source.build_model_batch(sample, runtime, anchors, compiled)
+                    values = replace(
+                        values,
+                        merged_events={
+                            key: runtime["history_merges"][str(i)]
+                            for i, key in enumerate(merge_keys)
+                        },
+                    )
+                    batch = _surface_padding(
+                        # For graphs, model=True selects typed source buffers; Raw
+                        # fields keep the same Arrow representation as inspection.
+                        assembler._collate(
+                            values,
+                            epoch=epoch,
+                            seed=seed,
+                            model=True,
+                            encoding_model=output_format == "model",
+                        )
+                    )
+            if has_root_walks or has_candidate_walks:
+                totals = {
+                    key: runtime.get("_candidate_walk_stats", {}).get(key, 0)
+                    + sum(graph.get(key, 0) for graph in runtime["graphs"].values())
+                    for key in ("walk_pushes", "walk_decoded_entries")
+                }
+                batch = replace(batch, metadata={**batch.metadata, **totals})
             yield batch
 
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
-        pa = self._pa
-        key = next(name for name in runtime["raw_features"] if name.endswith("/" + stage["name"]))
-        data = pa.Table.from_batches(runtime["raw_features"][key]["record_batches"])
-        columns = {}
-        for name, alias in self._aliases.items():
-            values = data[alias]
-            if name in self._ipc:
-                columns[name] = [
-                    _arrow_scalar_value(pa.ipc.open_stream(value.as_py()).read_all()["value"][0])
-                    for value in values
-                ]
-            else:
-                columns[name] = _column_values(pa, values, self._types[name])
-        original_positions = data["anchor_position"].to_pylist()
+        positions, payload = self._payload_columns(stage, runtime)
+        original_positions = positions.to_pylist()
         table = self._table
+        columns = {
+            name: _column_values(self._pa, payload[name], self._types[name])
+            for name in set(table._scalar_columns).intersection(payload)
+        }
         return [
             SampleRequest(
                 sample_id=columns[table.sample_id][i] if table.sample_id else original_positions[i],
@@ -1020,6 +1059,7 @@ class NativeAnchors:
                 ),
                 split=stage["split"],
                 metadata={name: columns[name][i] for name in table.metadata},
+                candidates=_candidate_row(table, payload, i, original_positions[i]),
             )
             for i in range(len(original_positions))
         ]
@@ -1133,8 +1173,8 @@ class NativeAnchors:
             or assembler._source is not self._source
         ):
             raise ValueError(
-                "columnar output requires one graph-only input, fixed-size batching, "
-                "and no targets, entity filters or availability"
+                "columnar output requires graph-only inputs with at most one root graph, "
+                "fixed-size batching, and no targets, entity filters or availability"
             )
         for prepared in assembler._prepared_inputs.values():
             for fields in prepared.spec.representation.node_fields.values():
@@ -1146,12 +1186,11 @@ class NativeAnchors:
         from kumo.pytorch.contract.batch import Graph
 
         sample = assembler.sample
+        inputs = [prepared.spec for prepared in assembler._prepared_inputs.values()]
         return (
-            len(assembler._prepared_inputs) == 1
-            and all(
-                isinstance(prepared.spec.representation, Graph)
-                for prepared in assembler._prepared_inputs.values()
-            )
+            bool(inputs)
+            and all(isinstance(item.representation, Graph) for item in inputs)
+            and sum(item.source.candidates is None for item in inputs) <= 1
             and "split" not in self._table.metadata
             and not any(
                 (
@@ -1160,7 +1199,6 @@ class NativeAnchors:
                     sample.events,
                     sample.current_events,
                     sample.targets,
-                    sample.candidate_sets,
                     sample.entity.filters,
                     sample.entity.available_from,
                     assembler.spec.targets,
@@ -1207,12 +1245,15 @@ class NativeAnchors:
         ]
         policy = assembler.spec.batching
         fixed = policy.max_tokens is None and not policy.bucket_by_length
-        sampled = any(
-            isinstance(prepared.spec.representation, Graph)
-            and prepared.spec.representation.topology == "sampled"
+        sampled = [
+            prepared.spec.source
             for prepared in assembler._prepared_inputs.values()
-        )
-        if sampled and (not fixed or assembler._source is not self._source):
+            if isinstance(prepared.spec.representation, Graph)
+            and prepared.spec.representation.topology == "sampled"
+        ]
+        if any(binding.candidates is None for binding in sampled) and (
+            not fixed or assembler._source is not self._source
+        ):
             raise ValueError(
                 "sampled graph topology requires fixed-size native AnchorTable batches"
             )
@@ -1226,6 +1267,7 @@ class NativeAnchors:
             prepared.spec.source.name
             for prepared in assembler._prepared_inputs.values()
             if isinstance(prepared.spec.representation, Graph)
+            and prepared.spec.source.candidates is None
         }
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
         plan = None
@@ -1233,7 +1275,10 @@ class NativeAnchors:
         if name is not None:
             plan, _ = source._sampling_plan(self._sample.neighborhoods[name])
             for prepared in assembler._prepared_inputs.values():
-                if isinstance(prepared.spec.representation, Graph):
+                if (
+                    isinstance(prepared.spec.representation, Graph)
+                    and prepared.spec.source.candidates is None
+                ):
                     for table, fields in prepared.spec.representation.node_fields.items():
                         projections[table].extend(field.field for field in fields.fields)
             # Identity is required by the existing graph assembler, even for
@@ -1265,6 +1310,7 @@ class NativeAnchors:
                 for prepared in assembler._prepared_inputs.values():
                     if (
                         isinstance(prepared.spec.representation, Graph)
+                        and prepared.spec.source.candidates is None
                         and prepared.spec.source.name == name
                     ):
                         for table, group in prepared.spec.representation.node_fields.items():
@@ -1391,6 +1437,7 @@ class NativeAnchors:
                     for request in requests
                 )
                 runtime["_anchor_neighborhood"] = name
+                runtime["_anchor_sample"] = self._sample
             if not pending and len(requests) == size:
                 yield from assemble(requests, runtime, False)
             else:

@@ -47,6 +47,7 @@ from kumo.pytorch.contract.sample import (
     SampleSpec,
     TargetValue,
     TimeWindow,
+    WalkSample,
 )
 from kumo.pytorch.contract.schema import (
     NON_TEMPORAL,
@@ -98,6 +99,7 @@ __all__ = [
     "Field",
     "GraphLayer",
     "GraphSample",
+    "WalkSample",
     "GroupBy",
     "MapValues",
     "NeighborhoodSpec",

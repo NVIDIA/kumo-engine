@@ -270,7 +270,7 @@ than selecting a group or the fallback.
 class EventTimeDelta(
     unit: Literal['seconds', 'minutes', 'hours', 'days'] = 'seconds',
     *,
-    dtype: DType = DType(name='float64', unit=None, timezone=None, precision=None, scale=None),
+    dtype: DType = DType(name='float64', unit=None, timezone=None, precision=None, scale=None, shape=()),
 )
 ```
 
@@ -390,7 +390,7 @@ class Compare(
     operation: ComparisonOperation,
     right: Scalar,
     *,
-    dtype: DType = DType(name='bool', unit=None, timezone=None, precision=None, scale=None),
+    dtype: DType = DType(name='bool', unit=None, timezone=None, precision=None, scale=None, shape=()),
 )
 ```
 
@@ -457,6 +457,7 @@ class CandidateSetSpec(
     entity: EntitySpec,
     values: Mapping[str, EntityValue] = {},
     targets: Mapping[str, Aggregate | Compare | RowTarget | ExternalTarget] = {},
+    neighborhoods: Mapping[str, NeighborhoodSpec] = {},
 )
 ```
 
@@ -464,11 +465,12 @@ Point-in-time values and optional generated targets for named candidates.
 
 Each candidate uses the primary request's time, and its values and targets
 follow the same typed sampling rules as the entity's. Candidate generation
-is the caller's. The DiskGraph engine doesn't support candidate sets yet;
-see the limitations page.
+is the caller's. A candidate neighborhood is rooted at that candidate and
+sampled at the parent request's cutoff.
 
 **Parameters**
 
+- `neighborhoods`: graphs sampled for each supplied candidate. Ordinary hops to a timed table must use the default or explicit recent strategy.
 - `entity`: what a candidate *is*; candidates are supplied per request, not selected here.
 
 #### `CandidateSetSpec.sample_spec`
@@ -502,7 +504,7 @@ a `Graph` representation, not here.
 *class* · `kumo.pytorch.GraphLayer`
 
 ```python
-class GraphLayer(samples: tuple[GraphSample, ...])
+class GraphLayer(samples: tuple[GraphSample | WalkSample, ...])
 ```
 
 Relationship traversals performed from one neighborhood frontier.
@@ -534,6 +536,36 @@ the native traversal direction instead.
 - `relation`: the declared relation followed.
 - `strategy`: `None` selects `"recent"` when the destination table declares a clock, otherwise `"uniform"`. Recent keeps the newest rows at or before the anchor and requires a declared clock. Uniform samples without replacement, ignoring the real-time anchor even on timed tables. Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 - `time_column`: overrides the destination table's declared clock.
+
+### `WalkSample`
+
+*class* · `kumo.pytorch.api.WalkSample`
+
+```python
+class WalkSample(
+    name: str,
+    edges: tuple[str | tuple[str, str], ...],
+    keep: Mapping[str, int],
+    restart: float,
+    budget: int,
+)
+```
+
+Score an undirected neighborhood by personalized random walk with restart.
+
+Each frontier node is an independent start. A relation names a direct edge.
+A link table (or a pair of its FK relations) supplies one logical edge per
+complete link row. Only edges visible at the sample cutoff contribute to
+the walk or its degrees. Each `name.table` output holds up to the declared
+quota of destinations, excluding the start, with a float32 score and a
+zero-based int64 rank. Equally scored destinations may tie at the cutoff.
+A walk edge set has a single source table, so exactly one table of the
+entering frontier must participate in the walk's edges.
+
+**Parameters**
+
+- `restart`: restart probability, strictly between zero and one.
+- `budget`: inverse residual threshold. Push when residual mass is at least the visible degree divided by this positive 32-bit budget.
 
 ### `ExternalTarget`
 

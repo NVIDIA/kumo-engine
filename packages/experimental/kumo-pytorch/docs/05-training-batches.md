@@ -410,6 +410,40 @@ and reused.
 
 Next: [inference and serving](06-inference-and-serving.md).
 
+### Timing caller-supplied candidate graphs
+
+From `packages/experimental/kumo-pytorch`, run the same Pin workload with and
+without positives to measure the extra loader time per batch.
+
+```bash
+python -m tests.e2e.scored_walk_throughput --batches 24 --repeats 5
+python -m tests.e2e.scored_walk_throughput --batches 24 --repeats 5 --positives 4
+```
+
+Both commands sample the query graph. The second also samples four Pin graphs
+per anchor at that anchor's cutoff. The JSON reports warm batch p50 and p95,
+anchors per second, and a separate first pass. Candidate runs also report
+candidate graphs per second, median time collecting the candidate sampler's
+events, and median time producing the candidate graph, including sampling.
+Use `--positives 0` for the cost of empty candidate lists, `--mode hop` for
+ordinary relation traversal, or `--output-format columnar` for Arrow batches.
+
+### Timing array feature delivery
+
+From `packages/experimental/kumo-pytorch`, run both layouts with the same
+feature width. Each run verifies the model tensor against the sampled Pin IDs
+before timing warm batches.
+
+```bash
+python -m tests.e2e.array_feature_throughput --storage array --width 1024
+python -m tests.e2e.array_feature_throughput --storage scalar --width 1024
+```
+
+The timer covers fetching the sampled batch and producing the dense float32
+tensor, including stacking the scalar columns in the second run. The report
+gives p50 and p95 batch latency, vectors per second, and feature MiB per
+second. Setup and the first pass have separate timings.
+
 ## Arrow graphs for foundation-model payloads
 
 For consumers that build their own model representation, a materialized
@@ -491,8 +525,11 @@ Native buffers are shared where compatible; restoring declared types may
 allocate. All buffers remain valid after iteration and task closure, and
 `Batch.to(...)` keeps them as CPU Arrow values.
 
-The default relations format supports one graph-only input, explicit Raw encodings,
-fixed sample counts, and selections across split stages. It refuses
+Columnar batches can include up to one root graph and any number of candidate
+graphs. A candidate graph's node owners index candidate occurrences, and its
+`candidate_offsets` delimit each anchor's candidates in caller order. The
+default relations format supports explicit Raw encodings, fixed sample counts,
+and selections across split stages. It refuses
 request-backed tasks, non-DiskGraph engines, other sample values, targets,
 entity filters, and availability checks before iteration. Shuffle, rank sharding,
 padding, drop-last, and iterator resume use the native stage-local behavior below.
@@ -507,8 +544,11 @@ unless `deduplicate_edges=True`. Sampling direction and hop provenance are not
 part of that graph.
 
 Use `Graph(node_fields=..., topology="sampled")` for a GNN consuming sampled
-message-passing topology. The current implementation supports DiskGraph
-AnchorTables with fixed-size batching. Topology describes the output layout;
+message-passing topology. For root graphs, DiskGraph supports this on
+AnchorTables with fixed-size batching. Candidate neighborhoods of ordinary
+relation hops also support sampled topology when supplied in requests or in
+anchor tables. Their counts, edge order and node owners come from the same
+native sampler, with each candidate occurrence as a seed. Topology describes the output layout;
 native iteration is the currently supported delivery path, rather than an
 intrinsic requirement of sampled graphs. During native iteration, refit may
 select several splits; each stage shuffles and batches
@@ -544,7 +584,7 @@ rename the corresponding reverse relation without recomputing topology.
 
 Columnar sampled graphs expose the same counts as tuples on `ColumnarGraph`,
 preserving Arrow edge buffers. `deduplicate_edges=True` is refused in sampled topology:
-coalescing would invalidate its hop accounting. Requests built in Python,
+coalescing would invalidate its hop accounting. For root graphs, requests built in Python,
 length-aware graph batching and the in-memory engine do not implement this
 topology; they refuse it instead of silently reconstructing it. Existing
 relation graphs and saved default contracts keep their behavior and identity.

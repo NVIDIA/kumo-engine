@@ -508,7 +508,7 @@ their primary keys, or by source occurrence ordinal for a keyless table.
 InMemoryEngine.check_contract(contract)
 ```
 
-Refuse declared subsecond clocks, which this reference cannot retain.
+Check the capabilities of the Python row sampler before opening the dataset.
 
 #### `InMemoryEngine.check_sources`
 

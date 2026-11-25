@@ -28,7 +28,7 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`RelationSpec`](schema.md#relationspec) | `kumo.pytorch` | Columns connecting two tables. A relation can be followed either way. |
 | [`NON_TEMPORAL`](schema.md#non_temporal) | `kumo.pytorch` | The `NonTemporal` marker: pass it as `TableSpec(time_column=NON_TEMPORAL)` for a table whose rows have no time semantics. |
 | [`NonTemporal`](schema.md#nontemporal) | `kumo.pytorch` | Declares that a table has no time semantics at all. |
-| [`DType`](schema.md#dtype) | `kumo.pytorch` | The stored scalar type, independent of its eventual model encoding. |
+| [`DType`](schema.md#dtype) | `kumo.pytorch` | The stored type, independent of its eventual model encoding. |
 | [`SampleSpec`](samples.md#samplespec) | `kumo.pytorch` | Named raw data components belonging to one entity at one point in time. |
 | [`EntitySpec`](samples.md#entityspec) | `kumo.pytorch` | The table each sample is about, identified by its schema primary key. |
 | [`Rows`](samples.md#rows) | `kumo.pytorch` | Rows reached by following relationships from the sample entity. |
@@ -51,6 +51,7 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`NeighborhoodSpec`](samples.md#neighborhoodspec) | `kumo.pytorch` | Rows belonging to one sampled neighborhood around the entity. |
 | [`GraphLayer`](samples.md#graphlayer) | `kumo.pytorch` | Relationship traversals performed from one neighborhood frontier. |
 | [`GraphSample`](samples.md#graphsample) | `kumo.pytorch` | One bounded relationship traversal used to select neighboring rows. |
+| [`WalkSample`](samples.md#walksample) | `kumo.pytorch` | Score an undirected neighborhood by personalized random walk with restart. |
 | [`ExternalTarget`](samples.md#externaltarget) | `kumo.pytorch` | The type of a caller-supplied label; an absent label remains missing. |
 | [`RowTarget`](samples.md#rowtarget) | `kumo.pytorch` | Select one future row and expose configured fields as one target event. |
 | [`SampleRequest`](samples.md#samplerequest) | `kumo.pytorch` | One requested entity/time pair and any already-derived target values. |

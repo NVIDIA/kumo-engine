@@ -27,7 +27,6 @@ from kumo.pytorch.anchors import (
 from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
 from kumo.pytorch.dataset import _can_coerce_to_int64, _MissingParquetColumns
-from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.spec import ValidationIssue
 
 __all__ = ["ParquetAnchors", "check_parquet_anchors"]
@@ -96,24 +95,21 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
 
     if getattr(table.source, "kind", None) != "parquet":
         return ()  # DiskGraphEngine.check_sources refuses it (DG-SOURCE-KIND)
-    if table.candidates:
-        entry = DISKGRAPH_UNSUPPORTED["DG-CANDIDATE-SETS"]
-        return (
-            ValidationIssue(
-                "anchors.candidates",
-                "the Parquet anchor reader does not serve candidate sets yet",
-                entry.next_step,
-                entry.code,
-            ),
-        )
     if "://" in table.source.path:
         return ()  # DiskGraphEngine.check_sources refuses it (DG-REMOTE-PARQUET)
     try:
-        _files(table.source.path)
+        files = _files(table.source.path)
     except (FileNotFoundError, ValueError) as error:
         return (ValidationIssue("anchors.source.path", str(error), "point at local Parquet files"),)
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     try:
-        _physical(table)
+        schemas = {file: pq.read_schema(file) for file in files}
+        required = table.source._bind_columns(
+            tuple(table.columns),
+            file_columns={file: schema.names for file, schema in schemas.items()},
+        )
     except _MissingParquetColumns as error:
         return (
             ValidationIssue(
@@ -130,7 +126,46 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
                 "write those columns or rename them through Parquet(columns=...)",
             ),
         )
+    for file, schema in schemas.items():
+        for name, binding in table.candidates.items():
+            dtype = schema.field(required[binding.column]).type
+            if not (
+                (
+                    pa.types.is_list(dtype)
+                    or pa.types.is_large_list(dtype)
+                    or pa.types.is_fixed_size_list(dtype)
+                )
+                and pa.types.is_struct(dtype.value_type)
+                and all(field in dtype.value_type.names for field in binding.fields)
+            ):
+                return (
+                    ValidationIssue(
+                        f"anchors.candidates.{name}",
+                        f"{binding.column!r} in {file!r} must be a list of structs "
+                        f"with fields {binding.fields}, got {dtype}",
+                        "supply the candidate ID and bound label fields in each struct",
+                    ),
+                )
     return ()
+
+
+def _candidate_row(table, columns, index, position):
+    """Decode nested IDs/labels field by field to preserve nanosecond Arrow scalars."""
+    result = {}
+    for name, binding in table.candidates.items():
+        value = columns[binding.column][index]
+        entries = (
+            (
+                {field: _arrow_scalar_value(entry[field]) for field in binding.fields}
+                if entry.is_valid
+                else None
+                for entry in value.values
+            )
+            if value.is_valid
+            else None
+        )
+        result[name] = binding._requests(entries, position)
+    return result
 
 
 class ParquetAnchors(PositionalAnchors):
@@ -202,10 +237,11 @@ class ParquetAnchors(PositionalAnchors):
         if not selected:
             return []
         indices = pa.array(selected, type=pa.int64())
-        columns = {
-            name: _arrow_values(values.take(indices)) for name, values in self._columns.items()
-        }
+        selected_columns = {name: values.take(indices) for name, values in self._columns.items()}
         table = self._table
+        columns = {
+            name: _arrow_values(selected_columns[name]) for name in set(table._scalar_columns)
+        }
         targets = sorted(table.targets.items())
         return [
             SampleRequest(
@@ -215,6 +251,7 @@ class ParquetAnchors(PositionalAnchors):
                 targets=tuple(
                     TargetValue(name, columns[column][index]) for name, column in targets
                 ),
+                candidates=_candidate_row(table, selected_columns, index, row),
                 split=columns[table.split][index] if table.split else None,
                 metadata={name: columns[name][index] for name in table.metadata},
             )
@@ -251,6 +288,7 @@ class ParquetAnchors(PositionalAnchors):
                 TargetValue(name, self._value(column, row))
                 for name, column in sorted(table.targets.items())
             ),
+            candidates=_candidate_row(table, self._columns, row, row),
             split=self._value(table.split, row) if table.split else None,
             metadata={name: self._value(name, row) for name in table.metadata},
         )

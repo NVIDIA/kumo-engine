@@ -39,6 +39,7 @@ from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import (
     Field,
     RowTarget,
+    WalkSample,
     dated_value_types,
     destination_table,
     event_value_types,
@@ -191,6 +192,9 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
                     f"got {previous} and {dtype}",
                 )
             config = batch.encodings[config.name]
+        if dtype.shape and not isinstance(config, Raw):
+            add(path, "array features require Raw encoding")
+            return config
         if isinstance(config, (ZScore, Buckets)) and not dtype.numeric:
             add(path, f"{type(config).__name__} requires a numerical dtype, not {dtype.name}")
         elif isinstance(config, Text) and dtype.name != "string":
@@ -259,7 +263,7 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
                     add(location, f"forbidden field {use.field!r} is selected")
                 config = encoding(use.encoding, dtype, location, space=use.id_space)
                 if isinstance(fields.row, Composite) and (
-                    isinstance(config, Text) or cardinality != "scalar"
+                    isinstance(config, Text) or cardinality != "scalar" or dtype.shape
                 ):
                     add(location, "Composite requires scalar components and does not accept Text")
                 if isinstance(fields.row, Tokens) and isinstance(config, (Raw, ZScore)):
@@ -269,14 +273,26 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
         path = f"batch.inputs.{name}"
         layout(value.layout, f"{path}.layout")
         if isinstance(value.representation, Graph):
-            if value.source.name not in contract.sample.neighborhoods:
+            scope = contract.sample
+            if value.source.candidates is not None:
+                candidate = scope.candidate_sets.get(value.source.candidates)
+                if candidate is None:
+                    add(f"{path}.source", f"unknown candidate set {value.source.candidates!r}")
+                    continue
+                scope = candidate.sample_spec()
+            if value.source.name not in scope.neighborhoods:
                 add(f"{path}.source", f"unknown neighborhood {value.source.name!r}")
-            reachable = {contract.sample.entity.table}
-            neighborhood = contract.sample.neighborhoods.get(value.source.name)
+            reachable = {scope.entity.table}
+            neighborhood = scope.neighborhoods.get(value.source.name)
             if neighborhood is not None:
                 relations = {item.name: item for item in contract.schema.relations}
                 for layer_value in neighborhood.layers:
                     for traversal in layer_value.samples:
+                        if isinstance(traversal, WalkSample):
+                            if value.representation.topology != "relations":
+                                add(path, "walk sampling requires relations topology")
+                            reachable.update(traversal.keep)
+                            continue
                         relation = relations.get(traversal.relation)
                         if relation:
                             reachable.update((relation.left_table, relation.right_table))
@@ -360,7 +376,7 @@ def validate_batch(contract: Any) -> tuple[Any, ...]:
                     matches = resolved_fields(contract, target.input, label.field)
                     if any(not dtype.numeric for _identity, dtype, _shape in matches):
                         add(f"{path}.derived", "threshold labels require numerical source values")
-                    if any(shape != "scalar" for _identity, _dtype, shape in matches):
+                    if any(dtype.shape or shape != "scalar" for _identity, dtype, shape in matches):
                         add(f"{path}.derived", "threshold labels require scalar source values")
                     label.dtype.normalize(label.below, path=f"{path}.below")
                     label.dtype.normalize(label.above, path=f"{path}.above")

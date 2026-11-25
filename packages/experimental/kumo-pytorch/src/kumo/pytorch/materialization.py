@@ -169,7 +169,7 @@ def ensure_diskgraph_index(
             "config_fingerprint": hashlib.sha256(config_json.encode()).hexdigest(),
             "relation_mapping": relation_mapping,
             "column_types": {
-                table.name: {name: asdict(dtype) for name, dtype in table.columns.items()}
+                table.name: {name: dtype.to_dict() for name, dtype in table.columns.items()}
                 for table in sorted(schema.tables, key=lambda value: value.name)
             },
             "source_types": source_types,
@@ -273,11 +273,11 @@ def _compile_diskgraph_config(
             for name, declared in table.columns.items():
                 actual = physical.field(binding[name]).type
                 try:
-                    resolved = DType.from_arrow(actual)
+                    resolved = DType.from_arrow(actual, shape=declared.shape)
                 except (ValueError, TypeError) as error:
                     raise DISKGRAPH_UNSUPPORTED["DG-NESTED-COLUMN"].error(
                         f"bind {table.name}.{name} in {path!r}: "
-                        f"unsupported physical type {actual}; "
+                        f"unsupported physical type {actual} ({error}); "
                         f"provide a column matching {declared!r}"
                     ) from error
                 if declared.temporal and pa.types.is_integer(actual):
@@ -302,7 +302,7 @@ def _compile_diskgraph_config(
                 {
                     "name": name,
                     **({"source_name": binding[name]} if binding[name] != name else {}),
-                    **_diskgraph_dtype(pa, dtype.to_arrow()),
+                    **_feature_dtype(pa, dtype),
                 }
                 for name, dtype in sorted(table.columns.items())
             ],
@@ -404,6 +404,19 @@ def _time_direction(table: Any) -> dict[str, Any] | None:
     }
 
 
+def _feature_dtype(pa: Any, declared: DType) -> dict[str, Any]:
+    dtype = declared.to_arrow()
+    if declared.shape:
+        # The equal-width signed rowpack codec preserves the bits of unsigned elements.
+        native = declared.name.removeprefix("u")
+        return {
+            "ingested_dtype": f"{native}_array",
+            "fixed_len": dtype.list_size,
+            "semantic_type": "tensor",
+        }
+    return _diskgraph_dtype(pa, dtype)
+
+
 def _diskgraph_dtype(pa: Any, dtype: Any) -> dict[str, Any]:
     simple = (
         (pa.int8(), "int8"),
@@ -447,7 +460,7 @@ def _schema_payload(schema: DataSchema) -> dict[str, Any]:
             {
                 "name": table.name,
                 "primary_key": table.primary_key,
-                "columns": {name: asdict(dtype) for name, dtype in sorted(table.columns.items())},
+                "columns": {name: dtype.to_dict() for name, dtype in sorted(table.columns.items())},
                 "time_column": table_clock(table),
             }
             for table in sorted(schema.tables, key=lambda value: value.name)

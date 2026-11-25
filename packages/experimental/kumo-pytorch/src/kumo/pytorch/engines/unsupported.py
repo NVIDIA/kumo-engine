@@ -106,13 +106,6 @@ _ENTRIES = (
         "read the event through an ordinary historical event input",
     ),
     Unsupported(
-        "DG-CANDIDATE-SETS",
-        "Candidate sets, in `SampleSpec.candidate_sets` or as candidate columns of "
-        "an anchor table, are refused.",
-        "build the candidates' features with a second contract whose entity is the "
-        "candidate table, anchored at the same times, and pair them in your own code",
-    ),
-    Unsupported(
         "DG-GRAPH-CLOCK-OVERRIDE",
         "The DiskGraph engine doesn't support a graph traversal `time_column` other "
         "than the destination table's clock yet.",
@@ -140,10 +133,9 @@ _ENTRIES = (
     ),
     Unsupported(
         "DG-NESTED-COLUMN",
-        "Parquet columns of list, struct or map type are refused; every declared "
-        "column must be stored as a scalar.",
-        "flatten the values into scalar columns, or into rows of their own table, "
-        "before writing the Parquet files",
+        "Nested Parquet features must be flat numeric lists with a fixed declared shape "
+        "or a matching fixed-size list type.",
+        "declare a shaped numeric feature or flatten other nested values into scalar columns",
         refused_at="prepare()",
     ),
     Unsupported(

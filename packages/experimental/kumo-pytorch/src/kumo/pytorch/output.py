@@ -32,7 +32,11 @@ def layout_array(values: Any, boundaries: np.ndarray, layout: Any, *, fill: Any 
     positions = np.arange(int(boundaries[-1])) - np.repeat(boundaries[:-1], lengths)
     if isinstance(values, torch.Tensor):
         result = torch.full((len(lengths), width, *values.shape[1:]), fill, dtype=values.dtype)
-        result[torch.from_numpy(owners), torch.from_numpy(positions)] = values
+        if values.dtype in (torch.uint16, torch.uint32, torch.uint64):
+            # PyTorch's CPU index_put does not implement these unsigned dtypes.
+            result.numpy()[owners, positions] = values.numpy()
+        else:
+            result[torch.from_numpy(owners), torch.from_numpy(positions)] = values
         return result
     if isinstance(values, pa.ChunkedArray):
         values = values.combine_chunks()

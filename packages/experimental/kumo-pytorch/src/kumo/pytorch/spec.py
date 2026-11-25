@@ -17,11 +17,12 @@ from typing import Any
 
 from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
-from kumo.pytorch.contract.batch import BatchSpec, Fields, Graph, UseEncoding
+from kumo.pytorch.contract.batch import BatchSpec, Fields, Graph, NeighborhoodSource, UseEncoding
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import (
     ActiveInterval,
     Aggregate,
+    CandidateSetSpec,
     Compare,
     Constant,
     Derived,
@@ -34,12 +35,15 @@ from kumo.pytorch.contract.sample import (
     RowTarget,
     SampleSpec,
     TimeWindow,
+    WalkSample,
     _value_evaluation_order,
     destination_table,
     reduction_dtype,
     resolve_sample_types,
     source_column_types,
     value_dtype,
+    walk_paths,
+    walk_start,
 )
 from kumo.pytorch.contract.schema import DataSchema, table_clock
 from kumo.pytorch.dataset import Dataset
@@ -442,7 +446,7 @@ class _Validator:
         self.issues.extend(validate_batch(self.contract))
         return tuple(self.issues)
 
-    def _sample(self, sample: SampleSpec, path: str) -> None:
+    def _sample(self, sample: SampleSpec, path: str, *, candidate: bool = False) -> None:
         entity = sample.entity
         if entity.table not in self.tables:
             self.add(f"{path}.entity.table", f"unknown table {entity.table!r}")
@@ -488,8 +492,8 @@ class _Validator:
                 )
         for name, candidates in sample.candidate_sets.items():
             location = f"{path}.candidate_sets.{name}"
-            self._sample(candidates.sample_spec(), location)
-        self._graph(sample, path)
+            self._sample(candidates.sample_spec(), location, candidate=True)
+        self._graph(sample, path, candidate=candidate)
 
     def _scope(self, values: Mapping[str, Any], table: str, path: str, *, event: bool) -> None:
         try:
@@ -545,6 +549,13 @@ class _Validator:
         for index, condition in enumerate(filters):
             location = f"{path}[{index}]"
             dtype = self._column(table, condition.column, f"{location}.column")
+            if (
+                dtype is not None
+                and dtype.shape
+                and condition.operation not in {"is_null", "not_null"}
+            ):
+                self.add(f"{location}.column", "value comparisons require a scalar column")
+                continue
             if dtype is None or condition.operation in {"is_null", "not_null"}:
                 continue
             literals = (
@@ -660,6 +671,11 @@ class _Validator:
             if key not in columns:
                 self.add(f"{path}.keys", f"unknown source column {key!r}")
                 return None
+            if columns[key].shape:
+                self.add(
+                    f"{path}.keys", f"grouping requires a scalar key, got array column {key!r}"
+                )
+                return None
             result[key] = columns[key]
         for name, reduction in source.values.items():
             location = f"{path}.values.{name}"
@@ -673,14 +689,37 @@ class _Validator:
                 return None
         return result
 
-    def _graph(self, sample: SampleSpec, path: str) -> None:
+    def _graph(self, sample: SampleSpec, path: str, *, candidate: bool) -> None:
         for name, neighborhood in sample.neighborhoods.items():
             location = f"{path}.neighborhoods.{name}"
+            edge_sets = set(self.relations)
             frontier = {sample.entity.table}
             for layer_index, layer in enumerate(neighborhood.layers):
                 destinations = set()
                 for index, traversal in enumerate(layer.samples):
                     item = f"{location}.layers[{layer_index}].samples[{index}]"
+                    if isinstance(traversal, WalkSample):
+                        try:
+                            paths = walk_paths(traversal, self.schema)
+                            start = walk_start(paths, frontier)
+                        except ValueError as error:
+                            self.add(item, str(error))
+                            continue
+                        reachable = {start}
+                        while True:
+                            expanded = reachable | {b for a, _, b in paths if a in reachable}
+                            if expanded == reachable:
+                                break
+                            reachable = expanded
+                        for table in traversal.keep:
+                            if table not in reachable:
+                                self.add(item, f"walk cannot reach kept table {table!r}")
+                            key = f"{traversal.name}.{table}"
+                            if key in edge_sets:
+                                self.add(item, f"duplicate walk edge set {key!r}")
+                            edge_sets.add(key)
+                        destinations.update(traversal.keep)
+                        continue
                     relation = self.relations.get(traversal.relation)
                     if relation is None:
                         self.add(f"{item}.relation", f"unknown relation {traversal.relation!r}")
@@ -699,7 +738,18 @@ class _Validator:
                     destinations.add(end)
                     if traversal.time_column:
                         self._time(end, traversal.time_column, f"{item}.time_column")
-                    if traversal.strategy == "recent" and table_clock(self.tables[end]) is None:
+                    clock = table_clock(self.tables[end])
+                    if (
+                        candidate
+                        and traversal.strategy == "uniform"
+                        and (clock or traversal.time_column)
+                    ):
+                        self.add(
+                            f"{item}.strategy",
+                            f"uniform sampling of timed table {end!r} ignores the candidate anchor",
+                            "use recent sampling on timed candidate hops",
+                        )
+                    if traversal.strategy == "recent" and clock is None:
                         self.add(
                             f"{item}.strategy",
                             f"'recent' sampling of {end!r} has no time column to order by",
@@ -724,6 +774,12 @@ def _encode(value: Any) -> Any:
 
     if is_dataclass(value) and not isinstance(value, type):
         arguments = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, DType) and not value.shape:
+            del arguments["shape"]
+        if isinstance(value, NeighborhoodSource) and value.candidates is None:
+            del arguments["candidates"]
+        if isinstance(value, CandidateSetSpec) and not value.neighborhoods:
+            del arguments["neighborhoods"]
         if isinstance(value, Graph) and value.topology == "relations":
             # Keep existing artifacts and default graph fingerprints unchanged.
             del arguments["topology"]

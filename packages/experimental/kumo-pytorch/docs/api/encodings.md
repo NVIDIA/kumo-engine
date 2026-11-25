@@ -36,6 +36,8 @@ class Raw()
 
 Preserve the sampled value's declared type, without casting.
 
+A fixed-shape numeric column yields a tensor of shape `[N, *shape]`.
+A NULL row yields zeros and a false entry in the row validity mask.
 Accepts every scalar dtype. Inspectable output keeps strings, bytes, dates,
 timestamps and decimals as Arrow arrays; `output_format="model"` refuses
 them before fetching a batch.

@@ -226,7 +226,11 @@ class Dataset:
                     try:
                         metadata = pq.read_schema(path)
                         for name, expected in columns.items():
-                            actual = DType.from_arrow(metadata.field(binding[name]).type)
+                            declared = declared_columns.get(name)
+                            actual = DType.from_arrow(
+                                metadata.field(binding[name]).type,
+                                shape=declared.shape if declared else (),
+                            )
                             if expected is None:
                                 columns[name] = actual
                             elif actual != expected and (
@@ -260,9 +264,13 @@ class Dataset:
 
 def _can_coerce_to_int64(physical: DType, declared: DType) -> bool:
     """DiskGraph widens signed integers and checks scale-zero decimals during ingest."""
-    return declared.name == "int64" and (
-        physical.name in {"int8", "int16", "int32"}
-        or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
+    return (
+        not (physical.shape or declared.shape)
+        and declared.name == "int64"
+        and (
+            physical.name in {"int8", "int16", "int32"}
+            or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
+        )
     )
 
 

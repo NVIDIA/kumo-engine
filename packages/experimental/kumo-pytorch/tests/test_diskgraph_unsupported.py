@@ -20,8 +20,6 @@ from kumo.pytorch.api import (
     AnchorTable,
     Batching,
     BatchSpec,
-    CandidateColumn,
-    CandidateSetSpec,
     Columns,
     DataLoaderSpec,
     DataSchema,
@@ -229,10 +227,6 @@ CHECK_CASES: dict[str, Callable[[], tuple[DataLoaderSpec, Dataset]]] = {
         ),
         PARQUET,
     ),
-    "DG-CANDIDATE-SETS": lambda: (
-        _sample(candidate_sets={"accounts": CandidateSetSpec(EntitySpec("accounts"))}),
-        PARQUET,
-    ),
     "DG-REMOTE-PARQUET": lambda: (
         BASE,
         Dataset({**PARQUET.tables, "accounts": Parquet("s3://bucket/accounts")}),
@@ -427,12 +421,6 @@ BATCHES_CASES: dict[str, Callable[[Path], None]] = {
 
 #: Variants refused at check() through an anchor table.
 ANCHOR_CASES: dict[str, AnchorTable] = {
-    "DG-CANDIDATE-SETS": AnchorTable(
-        Parquet("/warehouse/anchors"),
-        "user_id",
-        "at",
-        candidates={"accounts": CandidateColumn(column="accounts", entity_id="account_id")},
-    ),
     "DG-REMOTE-PARQUET": AnchorTable(Parquet("s3://bucket/anchors"), "user_id", "at"),
 }
 

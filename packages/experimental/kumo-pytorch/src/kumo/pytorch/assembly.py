@@ -133,6 +133,8 @@ def _jsonable(value: Any) -> Any:
             "dtype": str(value.dtype).removeprefix("torch."),
             "values": value.tolist(),
         }
+    if isinstance(value, DType):
+        return _jsonable(value.to_dict())
     if is_dataclass(value) and not isinstance(value, type):
         return {item.name: _jsonable(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, Mapping):
@@ -304,6 +306,15 @@ def _model_rows(source: Any, values: ModelSourceBatch, declarations: Mapping[str
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    if isinstance(source, CandidateSource):
+        groups = values.candidates[source.name]
+        records = [record for group in groups for record in group]
+        rows = _record_rows(EntitySource(), records, declarations)
+        return replace(
+            rows,
+            boundaries=offsets([len(group) for group in groups]),
+            sources=np.full(len(records), source.name, dtype=object),
+        )
     if isinstance(source, EntitySource):
         return _Rows(
             boundaries=np.arange(values.batch_size + 1, dtype=np.int64),
@@ -768,16 +779,40 @@ def _fit_inputs(
     for name, value in spec.inputs.items():
         graph_slots = [slot for slot in observed if slot[0] == name]
         if isinstance(value.representation, Graph) and graph_slots:
-            graph = SimpleNamespace(
-                source=value.source.name, node_fields=value.representation.node_fields
-            )
+            # Raw embeddings do not contribute observations to fitted graph encoders.
+            needed = {(table, field) for _, table, field in graph_slots}
+            fields = {}
+            for table, declaration in value.representation.node_fields.items():
+                selected = tuple(use for use in declaration.fields if (table, use.field) in needed)
+                if selected:
+                    fields[table] = replace(declaration, fields=selected)
+            graph = SimpleNamespace(source=value.source.name, node_fields=fields)
             graph_cutoff = getattr(source, "_cutoff", cutoff_to_epoch)
-            roots = [
-                GraphRoot(request.sample_id, request.entity_id, graph_cutoff(request.as_of_time))
-                for requests in _chunks(values_for(None))
-                for request in requests
-            ]
-            found = source.fit_graph_fields(sample, graph, roots)
+            candidate_set = value.source.candidates
+            graph_sample = (
+                sample
+                if candidate_set is None
+                else sample.candidate_sets[candidate_set].sample_spec()
+            )
+            requests = (request for chunk in _chunks(values_for(None)) for request in chunk)
+            if candidate_set is None:
+                roots = [
+                    GraphRoot(
+                        request.sample_id, request.entity_id, graph_cutoff(request.as_of_time)
+                    )
+                    for request in requests
+                ]
+            else:
+                roots = [
+                    GraphRoot(
+                        f"{request.sample_id}:{candidate_set}:{position}",
+                        candidate.entity_id,
+                        graph_cutoff(request.as_of_time),
+                    )
+                    for request in requests
+                    for position, candidate in enumerate(request.candidates.get(candidate_set, ()))
+                ]
+            found = source.fit_graph_fields(graph_sample, graph, roots)
             for slot in graph_slots:
                 observe(slot, found[slot[1:]])
     builds = composites or any(
@@ -994,10 +1029,10 @@ def _occurrence_rows(
     )
 
 
-def _encoded_column(binding: OutputBinding, column: Any, *, model=False) -> dict[str, Any]:
-    import pyarrow as pa
-
-    if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
+def _encoded_column(
+    binding: OutputBinding, column: Any, *, repeated: bool, model=False
+) -> dict[str, Any]:
+    if repeated:
         result = binding.encode_arrow(column.flatten(), model=model)
         result["occurrence_offsets"] = torch.tensor(
             column.offsets.to_numpy(zero_copy_only=False), dtype=torch.long
@@ -1028,7 +1063,8 @@ def _column_output(
     group = prepared.spec.representation
     field_space = state.spaces.get(group.field_space) if state is not None else None
     for field, binding in prepared.state.items():
-        encoded = _encoded_column(binding, rows.columns[field], model=model)
+        repeated = any(item[2] == "repeated" for item in prepared.declarations[field])
+        encoded = _encoded_column(binding, rows.columns[field], repeated=repeated, model=model)
         value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
         if group.field_names is not None:
             if state is None:
@@ -1162,7 +1198,7 @@ def _token_rows(
                 np.zeros(len(row_ids), dtype=bool),
                 np.zeros(len(row_ids), dtype=np.int64),
             )
-        encoded = _encoded_column(binding, column, model=model)
+        encoded = _encoded_column(binding, column, repeated=repeated, model=model)
         scalar_valid = encoded["valid"].numpy()
         present = np.ones(len(row_ids), dtype=bool)
         declared = prepared.declarations[use.field]
@@ -1441,6 +1477,9 @@ class _TargetState:
 def _raw_targets(
     values: Any, source: str, *, field: str | None = None, candidate: str | None = None
 ):
+    if isinstance(values, ModelSourceBatch) and candidate is not None:
+        values = [record for group in values.candidates[candidate] for record in group]
+        candidate = None
     if isinstance(values, ModelSourceBatch):
         if field is not None:
             return _arrow_values(values.row_targets[source].fields[field])
@@ -2180,10 +2219,6 @@ class PreparedBatchPlan:
                 "the typed model source does not expose their occurrences"
             )
         for name, value in self._prepared_inputs.items():
-            if isinstance(value.spec.source, CandidateSource):
-                raise ValueError(
-                    f"input {name!r}: candidate model output is not supported; use inspectable"
-                )
             bindings = (
                 value.state.values()
                 if isinstance(value.spec.representation, Fields)
@@ -2246,14 +2281,53 @@ class PreparedBatchPlan:
         entity_ids = (
             values.entity_ids if model else tuple(_history(value).entity_id for value in values)
         )
+        candidate_sets = (
+            values.candidates
+            if model
+            else {
+                name: tuple(value.candidates.get(name, ()) for value in values)
+                for name in self.sample.candidate_sets
+            }
+        )
         result, targets = {}, {}
         for name, prepared in self._prepared_inputs.items():
             if isinstance(prepared.spec.representation, Graph):
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
+                    candidates=prepared.spec.source.candidates,
                     node_fields=prepared.spec.representation.node_fields,
                     topology=prepared.spec.representation.topology,
                 )
+                candidate_set = prepared.spec.source.candidates
+                if candidate_set is not None:
+                    group = candidate_sets[candidate_set]
+                    candidate_sample = self.sample.candidate_sets[candidate_set].sample_spec()
+                    roots = [
+                        GraphRoot(
+                            record.sample_id,
+                            record.history.entity_id,
+                            record.history.evaluation_time,
+                        )
+                        for candidates in group
+                        for record in candidates
+                    ]
+                    boundaries = offsets([len(candidates) for candidates in group])
+                    if columnar:
+                        import pyarrow as pa
+
+                        sampled = self._source.columnar_candidate_graph(
+                            candidate_sample, graph, roots, deduplicate_edges=deduplicate_edges
+                        )
+                        result[name] = replace(sampled, candidate_offsets=pa.array(boundaries))
+                    else:
+                        sampled = self._source.sample_graph(
+                            candidate_sample, graph, prepared.state, roots, seed, epoch
+                        )
+                        result[name] = {
+                            **sampled,
+                            "candidate_offsets": torch.from_numpy(boundaries),
+                        }
+                    continue
                 if columnar:
                     result[name] = self._source.columnar_graph_batch(
                         self.sample,
@@ -2356,15 +2430,10 @@ class PreparedBatchPlan:
         )
         if all(type(value) is int and -(2**63) <= value < 2**63 for value in entity_ids):
             metadata["entity_ids"] = torch.tensor(entity_ids, dtype=torch.long)
-        if not model and self.sample.candidate_sets:
+        if candidate_sets:
             metadata["candidate_entity_ids"] = {
-                name: tuple(
-                    tuple(
-                        candidate.history.entity_id for candidate in value.candidates.get(name, ())
-                    )
-                    for value in values
-                )
-                for name in self.sample.candidate_sets
+                name: tuple(tuple(item.history.entity_id for item in group) for group in owners)
+                for name, owners in candidate_sets.items()
             }
         return Batch(
             inputs=kernel_metadata(result), targets=kernel_metadata(targets), metadata=metadata

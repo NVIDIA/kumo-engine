@@ -60,6 +60,7 @@ from kumo.pytorch.contract.sample import (
     RowTarget,
     SampleSpec,
     TimeWindow,
+    WalkSample,
 )
 from kumo.pytorch.contract.schema import RelationSpec, TableSpec, table_clock
 from kumo.pytorch.spec import DataLoaderSpec, sample_without_targets
@@ -573,6 +574,8 @@ class _Reads:
             following: list[_Route] = []
             origin = f"neighborhoods.{name} hop {depth}"
             for traversal in layer.samples:
+                if isinstance(traversal, WalkSample):
+                    raise ValueError("serving rows do not support scored walk sampling")
                 if traversal.strategy is None:
                     raise ValueError("resolve GraphSample.strategy before deriving serving rows")
                 relation = self.relations[traversal.relation]
@@ -893,6 +896,10 @@ def _route_join(route: _Route, pk: str | None) -> RowsJoin:
 def _derive(contract: DataLoaderSpec) -> ServingRowsSpec:
     contract = contract.resolve()
     sample = contract.sample
+    if any(dtype.shape for table in contract.schema.tables for dtype in table.columns.values()):
+        raise ValueError("array feature columns require DiskGraphEngine")
+    if any(candidate.neighborhoods for candidate in sample.candidate_sets.values()):
+        raise ValueError("candidate neighborhoods require DiskGraphEngine")
     names = _BatchNames(sample, contract.batch)
     serving = _collect(contract, sample_without_targets(sample), names)
     targets = _target_reads(contract, names)

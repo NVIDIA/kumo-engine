@@ -12,9 +12,8 @@ beats simply recommending the most popular products.
 
 The data comes from the retail generator in `kumo.pytorch.datasets`, which makes
 synthetic data modeled on the public H&M fashion-retail dataset, at its
-smallest size. It runs on the in-memory engine for now, because the
-DiskGraph engine doesn't support candidate lists yet, and takes under a minute
-on a laptop CPU.
+smallest size. It runs on the in-memory engine and takes under a minute on a
+laptop CPU.
 
 ## Running it
 

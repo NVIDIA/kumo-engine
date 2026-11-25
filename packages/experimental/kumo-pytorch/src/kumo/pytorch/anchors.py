@@ -35,7 +35,12 @@ from dataclasses import field as dataclass_field
 from itertools import chain
 from typing import Any, TypeAlias
 
-from kumo.pytorch.contract.sample import ExternalTarget, SampleRequest
+from kumo.pytorch.contract.sample import (
+    CandidateRequest,
+    ExternalTarget,
+    SampleRequest,
+    TargetValue,
+)
 from kumo.pytorch.dataset import InMemoryRows, Parquet, TableSource
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
 
@@ -148,6 +153,30 @@ class CandidateColumn:
 
         return (self.entity_id, *sorted(self.targets.values()))
 
+    def _requests(self, entries: Any, position: int) -> tuple[CandidateRequest, ...]:
+        """Preserve the caller's candidate order and its positional labels."""
+        if entries is None:
+            return ()
+        requests = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                raise ValueError(f"candidate {index} of anchor row {position} must be a struct")
+            missing = [field for field in self.fields if field not in entry]
+            if missing:
+                raise ValueError(
+                    f"candidate {index} of anchor row {position} is missing {sorted(missing)}"
+                )
+            requests.append(
+                CandidateRequest(
+                    entity_id=entry[self.entity_id],
+                    targets=tuple(
+                        TargetValue(name, entry[field])
+                        for name, field in sorted(self.targets.items())
+                    ),
+                )
+            )
+        return tuple(requests)
+
 
 @dataclass(frozen=True)
 class AnchorTable:
@@ -222,16 +251,19 @@ class AnchorTable:
         object.__setattr__(self, "candidates", candidates)
 
     @property
-    def columns(self) -> tuple[str, ...]:
-        """Every column this binding reads, in a stable order."""
-
+    def _scalar_columns(self) -> tuple[str, ...]:
         declared = (self.entity_id, self.as_of_time, self.sample_id, self.split)
         return (
             *(name for name in declared if name),
             *sorted(self.targets.values()),
             *self.metadata,
-            *sorted(value.column for value in self.candidates.values()),
         )
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """Every column this binding reads, in a stable order."""
+
+        return (*self._scalar_columns, *sorted(value.column for value in self.candidates.values()))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-compatible form; refused for in-memory rows, which are not a storage reference."""

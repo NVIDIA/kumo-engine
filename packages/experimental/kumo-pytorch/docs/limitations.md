@@ -18,14 +18,14 @@ meet one yet. The [API reference](api/README.md) covers each declaration.
 | Encodings, fitting, layouts, targets, previews | Implemented |
 | Artifacts, inference mode, serving from caller-supplied rows | Implemented. Serving builds batches in Python, the same way the in-memory engine does |
 | `DiskGraphEngine` over local Parquet | Graphs with node features, event sequences, aggregates, generated labels and columnar model batches; see [DiskGraph](#diskgraph) |
-| `InMemoryEngine` over `InMemoryRows` | Implemented, for trying things out on tiny data |
+| `InMemoryEngine` over `InMemoryRows` | Implemented for small datasets. Scored walks, candidate-rooted neighborhoods and fixed-shape array features require `DiskGraphEngine`. |
 | Streaming, prefetch, caching, remote storage | Not implemented |
 | Artifact and schema migration | Not implemented: an artifact loads only in the version that wrote it |
 
 kumo-pytorch doesn't provide the following:
 
-- Array, list and struct columns, or parsing of multi-category values stored as
-  strings.
+- Ragged feature lists, struct and map feature columns, and parsing of
+  multi-category values stored as strings.
 - UUID and IP address types.
 - Fitted calculations other than the encoders, and choosing or weighting which
   observations an encoder is fitted on, other than `fit_split` and `encoder_cutoff`.
@@ -70,12 +70,11 @@ both `check` and `prepare` before any data is read; the others are refused while
 | `DG-JOINED-FIELD` | Event and row-target fields must read the event row itself; a field with a relation path or its own time column is refused. | `check()` | Precompute the joined column onto the event table before writing the Parquet files. |
 | `DG-DATED-ENTITY-VALUES` | The DiskGraph engine doesn't support `SampleSpec.dated_entity_values` yet. | `check()` | Declare an event input (`EventSpec`) over the same `Rows` instead. |
 | `DG-CURRENT-EVENTS` | The DiskGraph engine doesn't support `SampleSpec.current_events` yet. | `check()` | Read the event through an ordinary historical event input. |
-| `DG-CANDIDATE-SETS` | Candidate sets, in `SampleSpec.candidate_sets` or as candidate columns of an anchor table, are refused. | `check()` | Build the candidates' features with a second contract whose entity is the candidate table, anchored at the same times, and pair them in your own code. |
 | `DG-GRAPH-CLOCK-OVERRIDE` | The DiskGraph engine doesn't support a graph traversal `time_column` other than the destination table's clock yet. | `check()` | Use the destination table's declared clock. |
 | `DG-REDUCTION-OPERAND` | Reductions over decimal or bytes columns are refused; direct decimal field reads are supported. | `check()` | Cast decimals to float64 or integer units, and bytes to a string or integer key, before writing the Parquet files. |
 | `DG-TOKEN-LENGTH-ALIAS` | For token budgets or length bucketing, two fields of one event component in the length input can't alias the same stored column. | `check()` | Select the column once in the length input, or batch by sample count alone. |
 | `DG-INT64-CLOCK` | A column declared as a timestamp must be stored as a Parquet timestamp; an int64 column of epoch values is refused. | `prepare()` | Write the column as a Parquet timestamp in the declared unit. |
-| `DG-NESTED-COLUMN` | Parquet columns of list, struct or map type are refused; every declared column must be stored as a scalar. | `prepare()` | Flatten the values into scalar columns, or into rows of their own table, before writing the Parquet files. |
+| `DG-NESTED-COLUMN` | Nested Parquet features must be flat numeric lists with a fixed declared shape or a matching fixed-size list type. | `prepare()` | Declare a shaped numeric feature or flatten other nested values into scalar columns. |
 | `DG-DUPLICATE-LAYER-RELATION` | A graph layer can't sample the same relation twice, including two relations that resolve to the same stored relation. | `batches()` | Sample the relation once in the layer, with the combined fanout. |
 <!-- end of generated list -->
 
@@ -90,9 +89,10 @@ Every column has a type (`DType`). With Parquet you can leave types out and
 they're read from the files; with `InMemoryRows` you must give them. Supported
 scalar types are
 booleans, signed/unsigned integers, float32/64, strings, bytes, date32,
-whole-second UTC timestamps, and decimal128/256. Arrays and structs are not
-supported scalar column declarations. Every table names its time column (its
-clock) or declares `NON_TEMPORAL`.
+UTC timestamps and decimal128/256. A positive `shape` on an integer or floating-point
+type declares a fixed-shape feature for `Raw()`. DiskGraph accepts up to
+1,000,000 elements per array. Each element must be present within a non-null array. Every table names its time column (its clock) or declares
+`NON_TEMPORAL`.
 
 Entity and candidate lookup require the chosen table's declared primary key.
 Other tables may set `primary_key=None`; identical source rows remain separate
@@ -280,7 +280,7 @@ reserved replacement IDs and deterministic sample/field coordinates.
 
 Candidate labels follow the candidate order you provide. Pair-specific
 attributes and candidate generation aren't implemented. DiskGraph doesn't
-support current events, dated values or candidate sets yet.
+support current events or dated values yet.
 
 ## Fitting, saved state, and batching
 

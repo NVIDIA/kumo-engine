@@ -76,6 +76,7 @@ API_PAGES: tuple[Page, ...] = (
             "NeighborhoodSpec",
             "GraphLayer",
             "GraphSample",
+            "WalkSample",
             "ExternalTarget",
             "RowTarget",
             "SampleRequest",

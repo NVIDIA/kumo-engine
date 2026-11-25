@@ -50,7 +50,7 @@ from kumo.pytorch.column_stats import (
     token_length_columns,
 )
 from kumo.pytorch.contract.batch.encodings import Text
-from kumo.pytorch.contract.sample import Aggregate, Compare, SampleRequest
+from kumo.pytorch.contract.sample import Aggregate, Compare, SampleRequest, sample_value_types
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import (
@@ -317,6 +317,14 @@ class Plan:
                     isinstance(target, (Aggregate, Compare))
                     for target in self.contract.sample.targets.values()
                 )
+            )
+            # The enriched scalar table does not carry caller-supplied candidate
+            # lists or shaped values. The native iterator gathers those arrays
+            # from the indexed root table and evaluates aggregates in the batch.
+            and not anchors.candidates
+            and not any(
+                dtype.shape
+                for dtype in sample_value_types(self.contract.schema, self.contract.sample).values()
             )
         ):
             from pathlib import Path
