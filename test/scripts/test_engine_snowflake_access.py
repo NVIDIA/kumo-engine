@@ -27,18 +27,19 @@ def environment_guard(monkeypatch):
     return guard, environment, policies
 
 
-def test_existing_maintainer_environment_is_sufficient(environment_guard):
+@pytest.mark.parametrize('admin_bypass', [False, True])
+def test_maintainer_environment_is_accepted(environment_guard, admin_bypass):
     guard, environment, policies = environment_guard
+    environment['can_admins_bypass'] = admin_bypass
     guard.validate(environment, policies)
 
 
 @pytest.mark.parametrize(
-    'change', ['bypass', 'reviewer', 'branch', 'no-reviewer', 'self-review'])
+    'change', ['reviewer', 'branch', 'no-reviewer', 'self-review'])
 def test_unprotected_environment_is_rejected(environment_guard, change):
     guard, environment, policies = environment_guard
-    if change == 'bypass':
-        environment['can_admins_bypass'] = True
-    elif change == 'reviewer':
+    environment['can_admins_bypass'] = True
+    if change == 'reviewer':
         environment['protection_rules'][0]['reviewers'][0]['reviewer'][
             'id'] = 123
     elif change == 'no-reviewer':
