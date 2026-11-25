@@ -936,25 +936,18 @@ def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
     return api.AnchorTable(api.Parquet(str(path)), "entity", "at")
 
 
-@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()], ids=["packed", "padded"])
-def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, layout):
+def _text_history_contract(schema, field, layout, target, budget, *, missing="omit"):
     from tests.test_target_layouts import _text
 
-    schema, dataset, _, _ = history_data
-    orders = pq.read_table(dataset.tables["orders"].path).slice(0, 1)
-    path = tmp_path / "words.parquet"
-    orders = orders.set_column(orders.schema.get_field_index("kind"), "kind", pa.array(["abab"]))
-    pq.write_table(orders, path)
-    dataset = api.Dataset({**dataset.tables, "orders": api.Parquet(str(path))})
     rows = api.Rows(("orders",), api.TimeWindow("at"))
     sample = api.SampleSpec(
-        api.EntitySpec("users"), events={"orders": api.EventSpec(rows, {"text": api.Field("kind")})}
+        api.EntitySpec("users"), events={"orders": api.EventSpec(rows, {"text": field})}
     )
     history = api.Input(
         api.EventSource(("orders",)),
         api.Fields(
             (api.Encode("text", _text(), "tokens"),),
-            row=api.Tokens(),
+            row=api.Tokens(missing=missing),
             history=api.Flatten(6, before="bos", after="eos"),
         ),
         layout,
@@ -962,13 +955,27 @@ def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, l
     roles = ("pad", "unknown", "missing", "mask", "bos", "eos")
     batch = api.BatchSpec(
         {"history": history},
-        targets={"answer": api.NextTokenTarget("history")},
+        targets={"answer": target},
         id_spaces={"tokens": api.IdSpace({role: role for role in roles})},
-        batching=api.Batching(max_samples=1, max_tokens=5, length_input="history"),
+        batching=api.Batching(max_samples=1, max_tokens=budget, length_input="history"),
+    )
+    return api.DataLoaderSpec(schema, sample, batch)
+
+
+@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()], ids=["packed", "padded"])
+def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, layout):
+    schema, dataset, _, _ = history_data
+    orders = pq.read_table(dataset.tables["orders"].path).slice(0, 1)
+    path = tmp_path / "words.parquet"
+    orders = orders.set_column(orders.schema.get_field_index("kind"), "kind", pa.array(["abab"]))
+    pq.write_table(orders, path)
+    dataset = api.Dataset({**dataset.tables, "orders": api.Parquet(str(path))})
+    contract = _text_history_contract(
+        schema, api.Field("kind"), layout, api.NextTokenTarget("history"), 5
     )
     engine = api.DiskGraphEngine(num_threads=1)
     anchors = _review_anchors(tmp_path, entities=(1,))
-    with api.prepare(api.DataLoaderSpec(schema, sample, batch), dataset, engine) as plan:
+    with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             (result,) = task.batches(output_format="model")
             assert task._anchors._last_length_planning_stats == (1, 0)
@@ -981,6 +988,37 @@ def test_native_next_token_budget_counts_emitted_slots(history_data, tmp_path, l
         with plan.materialize(anchors, fitted=fitted, inference=True) as task:
             with pytest.raises(diskgraph.DiskgraphConfigError, match="one sample exceeds"):
                 next(task.batches(output_format="model"))
+
+
+@pytest.mark.parametrize("constant,label", [("a", 6), (None, 2)])
+@pytest.mark.parametrize("budget", [None, 12, 4])
+def test_native_text_budget_preserves_typed_constant_supervision(
+    history_data, tmp_path, monkeypatch, constant, label, budget
+):
+    schema, dataset, _, _ = history_data
+    mask = api.MaskedValuesTarget(
+        "history", token_probability=1.0, event_probability=0.0, key_probability=0.0
+    )
+    field = api.Constant(constant, api.DType("string"))
+    contract = _text_history_contract(schema, field, api.Packed(), mask, budget, missing="emit")
+    engine = api.DiskGraphEngine(num_threads=1)
+    with (
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(_review_anchors(tmp_path, (1,), cutoff=2)) as task,
+    ):
+        monkeypatch.setattr(task._anchors, "_requests", lambda *_: pytest.fail("Python fallback"))
+        batches = task.batches(output_format="model")
+        if budget == 4:
+            with pytest.raises(diskgraph.DiskgraphConfigError, match="one sample exceeds"):
+                next(batches)
+            return
+        (result,) = batches
+    source, target = result.inputs["history"], result.targets["answer"]
+    assert source["value_ids"].tolist() == [4, 3, 3, 3, 5]
+    assert source["valid"].all() and source["offsets"].tolist() == [0, 5]
+    assert target["values"].tolist() == [-100, label, label, label, -100]
+    assert target["valid"].tolist() == [False, True, True, True, False]
+    _equal(target["corruption"], target["valid"])
 
 
 def _reference_batches(task):

@@ -684,7 +684,7 @@ class NativeAnchors:
                     if (
                         not composite
                         and isinstance(value, Constant)
-                        and value.value is not None
+                        and (value.value is not None or row.missing == "emit")
                         and isinstance(binding.encoder.config, Text)
                     ):
                         # One frozen constant cost at iterator attachment, not encoding
