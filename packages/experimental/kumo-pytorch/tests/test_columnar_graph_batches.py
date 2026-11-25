@@ -148,8 +148,8 @@ def test_unsupported_columnar_contract_fails_before_iteration(graph_task, monkey
 
 
 def test_columnar_rejects_requests(graph_task):
-    with pytest.raises(ValueError, match="materialized DiskGraph anchors"):
-        graph_task.batches(requests=[], output_format="columnar")
+    with pytest.raises(ValueError, match="output_format"):
+        graph_task.request_batches([], output_format="columnar")
 
 
 @pytest.mark.parametrize("deduplicate_edges", [False, True])

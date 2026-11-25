@@ -111,6 +111,7 @@ def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
         ),
     )
     cutoff = 1709251200  # 2024-03-01 00:00 UTC
+    requests = tuple(api.SampleRequest(str(i), i, cutoff) for i in ids)
     if parquet_anchors:
         path = tmp_path / "anchors.parquet"
         pq.write_table(
@@ -124,11 +125,16 @@ def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
         )
         anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
     else:
-        anchors = tuple(api.SampleRequest(str(i), i, cutoff) for i in ids)
+        anchors = requests
     dataset = api.Dataset({"users": api.Parquet(str(source))})
     engine = api.DiskGraphEngine(num_threads=1)
     with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
-        values = next(task.batches(batch_size=len(ids), shuffle=False)).inputs["entity"]
+        batches = (
+            task.batches(batch_size=len(ids))
+            if parquet_anchors
+            else task.request_batches(requests, batch_size=len(ids))
+        )
+        values = next(batches).inputs["entity"]
     assert values["time"]["values"].equals(times)
     for part, wanted in expected.items():
         result = values[part]
@@ -916,7 +922,8 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
             }
         ),
     )
-    anchors = [api.SampleRequest("one", 1, 2)]
+    requests = [api.SampleRequest("one", 1, 2)]
+    anchors = requests
     if native_anchors:
         path = tmp_path / "anchors.parquet"
         pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
@@ -941,7 +948,12 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
         engine,
     ) as plan:
         with plan.materialize(anchors) as task:
-            batch = next(iter(task.batches(batch_size=1, output_format="model", shuffle=False)))
+            batches = (
+                task.batches(batch_size=1, output_format="model")
+                if native_anchors
+                else task.request_batches(requests, batch_size=1, output_format="model")
+            )
+            batch = next(batches)
             nodes = batch.inputs["graph"]["nodes"]["events"]
             assert dict(
                 zip(
@@ -969,7 +981,12 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
     with api.prepare(contract=contract, engine=reopened) as plan:
         assert plan.contract.fingerprint == fingerprint
         with plan.materialize(anchors, fitted=fitted) as task:
-            batch = next(task.batches(batch_size=1, output_format="model", shuffle=False))
+            batches = (
+                task.batches(batch_size=1, output_format="model")
+                if native_anchors
+                else task.request_batches(requests, batch_size=1, output_format="model")
+            )
+            batch = next(batches)
             nodes = batch.inputs["graph"]["nodes"]["events"]
             assert dict(
                 zip(

@@ -222,10 +222,9 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
         engine=api.DiskGraphEngine(),
     ) as plan:
         saved = plan.contract.to_json()
-        with plan.materialize(
-            anchors=(api.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
-        ) as task:
-            assert next(task.batches(batch_size=1)).inputs["values"]["value"][
+        requests = (api.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
+        with plan.materialize(requests) as task:
+            assert next(task.request_batches(requests, batch_size=1)).inputs["values"]["value"][
                 "values"
             ].tolist() == [1.5]
     pq.write_table(pa.table({"id": [1], "value": [2]}), path)
@@ -279,6 +278,28 @@ def test_partial_parquet_resolution_preserves_explicit_int64(tmp_path):
         assert api.check(contract, dataset, engine) == ()
         resolved = contract.resolve(dataset=dataset)
     assert resolved.schema.tables[0].columns == {"id": int64, "value": int64}
+
+
+@pytest.mark.parametrize(
+    "values,hinted",
+    [
+        (pa.array([42.0, None], type=pa.float64()), True),
+        (pa.array([42.0, None], type=pa.float32()), True),
+        (pa.array(["42", None]), False),
+        (pa.array([42, None], type=pa.uint64()), False),
+    ],
+    ids=["float64", "float32", "string", "uint64"],
+)
+def test_check_names_pandas_when_a_declared_integer_is_stored_as_float(tmp_path, values, hinted):
+    pq.write_table(pa.table({"id": [1, 2], "value": values}), tmp_path / "users.parquet")
+    dataset = api.Dataset({"users": api.Parquet(str(tmp_path))})
+    contract = _source_contract({"id": None, "value": api.DType("int64")})
+    (issue,) = api.check(contract, dataset, api.DiskGraphEngine())
+    assert "declared DType(name='int64'" in issue.message
+    assert ("pandas stores an integer column that contains NULLs as float64" in issue.message) is (
+        hinted
+    )
+    assert ("DataFrame.to_arrow()" in issue.message) is hinted
 
 
 def test_inferred_int64_requires_matching_types_across_files(tmp_path):
@@ -405,7 +426,7 @@ def test_inferred_calculations_have_the_same_saved_contract_and_output(case_id, 
     ):
         assert plan.contract == explicit
         with plan.materialize(anchors=case.requests) as task:
-            next(task.batches(batch_size=len(case.requests)))
+            next(task.request_batches(case.requests, batch_size=len(case.requests)))
 
 
 def test_fixed_result_operations_and_grouped_reductions_infer_without_values():
@@ -564,8 +585,8 @@ def test_numeric_promotion_and_overflow_match_in_both_output_forms(
     ):
         formats = ("inspectable", "model") if engine_name == "diskgraph" else ("inspectable",)
         for output_format in formats:
-            output = next(task.batches(batch_size=1, output_format=output_format)).inputs["values"][
-                "result"
-            ]
+            output = next(
+                task.request_batches(case.requests, batch_size=1, output_format=output_format)
+            ).inputs["values"]["result"]
             assert output["values"].tolist() == [expected]
             assert output["valid"].tolist() == [True]

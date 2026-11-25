@@ -8,7 +8,7 @@ The contract, validation, preparation, anchors, fitting, batch iteration and pre
 
 ### `DataLoaderSpec`
 
-*class* · `kumo.pytorch.api.DataLoaderSpec`
+*class* · `kumo.pytorch.DataLoaderSpec`
 
 ```python
 class DataLoaderSpec(
@@ -139,7 +139,7 @@ A readable multi-line summary of the contract.
 
 ### `check`
 
-*function* · `kumo.pytorch.api.check`
+*function* · `kumo.pytorch.check`
 
 ```python
 def check(
@@ -164,7 +164,7 @@ The whole contract must still be well formed.
 
 ### `prepare`
 
-*function* · `kumo.pytorch.api.prepare`
+*function* · `kumo.pytorch.prepare`
 
 ```python
 def prepare(
@@ -192,7 +192,7 @@ not the targets can score the contract. Its tasks are inference tasks.
 
 ### `preview`
 
-*function* · `kumo.pytorch.api.preview`
+*function* · `kumo.pytorch.preview`
 
 ```python
 def preview(
@@ -220,7 +220,7 @@ Called as `preview(task, requests)` or
 
 ### `Plan`
 
-*class* · `kumo.pytorch.api.Plan`
+*class* · `kumo.pytorch.Plan`
 
 ```python
 class Plan(
@@ -263,8 +263,9 @@ Plan.materialize(
 
 Bind anchors, fit what is still unfitted, and return the task.
 
-`anchors` is an `AnchorTable` when the anchors exist as data, or
-`SampleRequest` values built in code.
+Bind an `AnchorTable` to iterate its rows with `Task.batches`.
+A sequence of `SampleRequest` values can supply fitting examples.
+To batch Python requests, pass them explicitly to `Task.request_batches`.
 
 `fit_split` says which anchors fitting may read, and is never implied
 when the anchors carry splits — so held-out or unassigned anchors cannot
@@ -306,7 +307,7 @@ Close live tasks, then release the engine binding. Idempotent.
 
 ### `Task`
 
-*class* · `kumo.pytorch.api.Task`
+*class* · `kumo.pytorch.Task`
 
 ```python
 class Task(
@@ -385,7 +386,6 @@ Anchors in `split`: a name, a set of names, or every anchor when omitted.
 
 ```python
 Task.batches(
-    requests: Sequence[SampleRequest] | None = None,
     *,
     split: str | Collection[str | None] | AllAnchors | None = None,
     batch_size: int | None = None,
@@ -401,14 +401,14 @@ Task.batches(
 ) -> TaskBatches
 ```
 
-Emit batches over this task's anchors, or over requests built in code.
+Emit batches over this task's materialized `AnchorTable`.
 
-Without `requests`, iterates the materialized anchors of `split` — a
-name, a set of names (`None` selects anchors with no split), or every
-anchor when omitted — reading them a chunk at a time
-so memory follows batch size rather than anchor count. With
-`requests`, serves exactly those — the path a request handler or a
-preview has — through the same fitted state.
+`split` is a name, a set of names (`None` in the set selects anchors
+with no split), or every anchor when omitted. Rows are read in chunks.
+For production loading and benchmarks, use DiskGraph with a Parquet
+`AnchorTable` and `output_format="model"` to select native model iteration
+for eligible contracts. Use `Task.request_batches` for Python requests,
+including requests originally supplied for fitting.
 
 Every rank gets the same number of anchors: a short rank is topped up by
 repeating one of its own anchors, and `Batch.metadata["is_padding"]`
@@ -449,6 +449,35 @@ may repeat across native chunks. `deduplicate_edges=True` is available
 only for columnar output: it allocates edge arrays to retain the first
 occurrence of each pair per relation, preserving example isolation.
 
+#### `Task.request_batches`
+
+```python
+Task.request_batches(
+    requests: Sequence[SampleRequest],
+    *,
+    batch_size: int | None = None,
+    epoch: int = 0,
+    seed: int = 0,
+    shuffle: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    drop_last: bool | None = None,
+    output_format: Literal['inspectable', 'model'] = 'inspectable',
+) -> TaskBatches
+```
+
+Batch explicitly supplied Python requests using this task's fitted state.
+
+Use this for debugging, tests, or small sets of requests supplied at
+runtime. Requests must be supplied on every call, including when they
+were used for fitting. Filter the sequence yourself to select a split.
+This path bypasses native AnchorTable iteration. For population loading
+and benchmarks, materialize a Parquet `AnchorTable` with DiskGraph and
+use `Task.batches` with `output_format="model"`.
+
+Without shuffling or length bucketing, requests are visited in the order
+supplied (within each rank), subject to padding and `drop_last`.
+
 #### `Task.preview`
 
 ```python
@@ -487,7 +516,7 @@ Release the materialized anchors. The plan's binding stays open.
 
 ### `TaskBatches`
 
-*class* · `kumo.pytorch.api.TaskBatches`
+*class* · `kumo.pytorch.TaskBatches`
 
 ```python
 class TaskBatches(
@@ -527,7 +556,7 @@ Continue after the batches `state` records, before iteration starts.
 
 ### `PreviewResult`
 
-*class* · `kumo.pytorch.api.PreviewResult`
+*class* · `kumo.pytorch.PreviewResult`
 
 ```python
 class PreviewResult(
@@ -555,7 +584,7 @@ JSON-compatible form of the whole result.
 
 ### `PreparedBatchPlan`
 
-*class* · `kumo.pytorch.api.PreparedBatchPlan`
+*class* · `kumo.pytorch.PreparedBatchPlan`
 
 ```python
 class PreparedBatchPlan(
@@ -658,7 +687,7 @@ Encode `values` into batches under the frozen state; see `Task.batches`.
 
 ### `prepare_batch_spec`
 
-*function* · `kumo.pytorch.api.prepare_batch_spec`
+*function* · `kumo.pytorch.prepare_batch_spec`
 
 ```python
 def prepare_batch_spec(
@@ -680,7 +709,7 @@ The lower-level path behind `Plan.materialize`.
 
 ### `AnchorTable`
 
-*class* · `kumo.pytorch.api.AnchorTable`
+*class* · `kumo.pytorch.AnchorTable`
 
 ```python
 class AnchorTable(
@@ -707,12 +736,12 @@ are a nested column per named set, which is the relational form of
 **Parameters**
 
 - `source`: where the anchor rows are; the same source kinds `Dataset` binds.
-- `entity_id`: input column holding each entity's primary-key value; this maps request data, not the entity table's lookup column.
+- `entity_id`: input column holding each entity's primary-key value; this maps request data, not the entity table's lookup column. When the key is `int64`, `Plan.materialize` on the DiskGraph engine reads Parquet `int8`/`int16`/`int32` and scale-zero `decimal128`/`decimal256` ids as `int64`, and refuses a value outside its range. Every role bound to this column, including metadata and `sample_id`, sees the `int64` values.
 - `as_of_time`: column holding the prediction time. Required when any table in the contract declares a clock and refused, rather than ignored, when none does — see `DataLoaderSpec.requires_anchor_time`.
 - `sample_id`: column identifying each anchor. Omit to use the anchor's position in the table, which is stable because the order is.
 - `split`: column to filter on, so one table can hold every split.
 - `targets`: typed external target name to the column supplying it. Declare its dtype with `ExternalTarget` in `SampleSpec.targets`. A name also computed by the sample is refused, not resolved by precedence.
-- `metadata`: columns carried through to `Batch.metadata` untouched. Declared rather than free-form, so the table has one schema.
+- `metadata`: columns carried through to `Batch.metadata` untouched, apart from the `entity_id` column's `int64` reading described above. Declared rather than free-form, so the table has one schema.
 - `candidates`: candidate-set name to the nested column holding it.
 
 #### `AnchorTable.columns`
@@ -731,7 +760,7 @@ JSON-compatible form; refused for in-memory rows, which are not a storage refere
 
 ### `CandidateColumn`
 
-*class* · `kumo.pytorch.api.CandidateColumn`
+*class* · `kumo.pytorch.CandidateColumn`
 
 ```python
 class CandidateColumn(column: str, entity_id: str, targets: Mapping[str, str] = {})
@@ -763,7 +792,7 @@ Struct fields this binding reads, in a stable order.
 
 ### `ALL_ANCHORS`
 
-*constant* · `kumo.pytorch.api.ALL_ANCHORS`
+*constant* · `kumo.pytorch.ALL_ANCHORS`
 
 ```python
 ALL_ANCHORS: AllAnchors
@@ -773,7 +802,7 @@ The `AllAnchors` selector: pass it as `fit_split` or `split` to select every anc
 
 ### `AllAnchors`
 
-*class* · `kumo.pytorch.api.AllAnchors`
+*class* · `kumo.pytorch.AllAnchors`
 
 ```python
 class AllAnchors()
@@ -786,7 +815,7 @@ than a string such as `"all"`, which could be a real split name.
 
 ### `shard_positions`
 
-*function* · `kumo.pytorch.api.shard_positions`
+*function* · `kumo.pytorch.shard_positions`
 
 ```python
 def shard_positions(
@@ -816,7 +845,7 @@ table, seed, epoch and rank.
 
 ### `padded_positions`
 
-*function* · `kumo.pytorch.api.padded_positions`
+*function* · `kumo.pytorch.padded_positions`
 
 ```python
 def padded_positions(
@@ -837,7 +866,7 @@ repeat trains on that anchor twice.
 
 ### `ValidationError`
 
-*exception* · `kumo.pytorch.api.ValidationError`
+*exception* · `kumo.pytorch.ValidationError`
 
 All problems found before opening an engine's data source.
 
@@ -850,7 +879,7 @@ the same issues without raising.
 
 ### `ValidationIssue`
 
-*class* · `kumo.pytorch.api.ValidationIssue`
+*class* · `kumo.pytorch.ValidationIssue`
 
 ```python
 class ValidationIssue(

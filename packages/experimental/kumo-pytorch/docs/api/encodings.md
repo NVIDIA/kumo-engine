@@ -8,7 +8,7 @@ Explicit value encoders, shared encoders, final ID spaces and field-name IDs.
 
 ### `ValueEncoding`
 
-*type alias* · `kumo.pytorch.api.ValueEncoding`
+*type alias* · `kumo.pytorch.ValueEncoding`
 
 ```python
 ValueEncoding = Raw | Vocabulary | ZScore | Buckets | Text | UseEncoding
@@ -18,7 +18,7 @@ One of: `Raw`, `Vocabulary`, `ZScore`, `Buckets`, `Text`, `UseEncoding`.
 
 ### `ScalarEncoding`
 
-*type alias* · `kumo.pytorch.api.ScalarEncoding`
+*type alias* · `kumo.pytorch.ScalarEncoding`
 
 ```python
 ScalarEncoding = Raw | Vocabulary | ZScore | Buckets | Text
@@ -28,7 +28,7 @@ One of: `Raw`, `Vocabulary`, `ZScore`, `Buckets`, `Text`.
 
 ### `Raw`
 
-*class* · `kumo.pytorch.api.Raw`
+*class* · `kumo.pytorch.Raw`
 
 ```python
 class Raw()
@@ -42,7 +42,7 @@ them before fetching a batch.
 
 ### `ZScore`
 
-*class* · `kumo.pytorch.api.ZScore`
+*class* · `kumo.pytorch.ZScore`
 
 ```python
 class ZScore(
@@ -67,7 +67,7 @@ decimals may round.
 
 ### `Buckets`
 
-*class* · `kumo.pytorch.api.Buckets`
+*class* · `kumo.pytorch.Buckets`
 
 ```python
 class Buckets(
@@ -88,7 +88,7 @@ binary64. Learned cuts interpolate linearly and drop duplicates.
 
 ### `Vocabulary`
 
-*class* · `kumo.pytorch.api.Vocabulary`
+*class* · `kumo.pytorch.Vocabulary`
 
 ```python
 class Vocabulary(
@@ -118,7 +118,7 @@ not reserved.
 
 ### `Text`
 
-*class* · `kumo.pytorch.api.Text`
+*class* · `kumo.pytorch.Text`
 
 ```python
 class Text(
@@ -143,7 +143,7 @@ pieces; NULL is a separate invalid value.
 
 ### `UseEncoding`
 
-*class* · `kumo.pytorch.api.UseEncoding`
+*class* · `kumo.pytorch.UseEncoding`
 
 ```python
 class UseEncoding(name: str)
@@ -162,7 +162,7 @@ object, are never shared.
 
 ### `IdSpace`
 
-*class* · `kumo.pytorch.api.IdSpace`
+*class* · `kumo.pytorch.IdSpace`
 
 ```python
 class IdSpace(specials: Mapping[str, str] = {}, special_ids: Mapping[str, int] = {})
@@ -185,7 +185,7 @@ never collide with roles. Only discrete encoders can join.
 
 ### `FieldNames`
 
-*class* · `kumo.pytorch.api.FieldNames`
+*class* · `kumo.pytorch.FieldNames`
 
 ```python
 class FieldNames()

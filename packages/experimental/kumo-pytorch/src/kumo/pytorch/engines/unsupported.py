@@ -132,13 +132,6 @@ _ENTRIES = (
         "select the column once in the length input, or batch by sample count alone",
     ),
     Unsupported(
-        "DG-COLUMN-RENAME",
-        "`Parquet(columns=...)` renames in a table binding are refused; physical "
-        "column names must match the declared ones. Anchor tables accept renames.",
-        "rename the columns in the Parquet files to the declared names",
-        refused_at="prepare()",
-    ),
-    Unsupported(
         "DG-INT64-CLOCK",
         "A column declared as a timestamp must be stored as a Parquet timestamp; an "
         "int64 column of epoch values is refused.",

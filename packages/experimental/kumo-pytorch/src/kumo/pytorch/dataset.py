@@ -19,7 +19,8 @@ A `Dataset` names no engine and, apart from in-memory rows, is serializable.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from glob import glob, has_magic
 from pathlib import Path
@@ -35,6 +36,21 @@ __all__ = [
     "Parquet",
     "TableSource",
 ]
+
+
+class _MissingParquetColumns(ValueError):
+    """Missing logical columns in one physical file."""
+
+    def __init__(self, path: str, columns: list[str], available: Collection[str]) -> None:
+        self.path = path
+        self.columns = columns
+        suggestion = _column_name_suggestion(columns, available)
+        super().__init__(
+            f"is missing columns {columns}"
+            + (f", {suggestion}" if suggestion else "")
+            + (" " if suggestion and suggestion.endswith("?") else ". ")
+            + "Use the stored names in the contract, or rename the stored columns."
+        )
 
 
 @dataclass(frozen=True)
@@ -60,6 +76,57 @@ class Parquet:
         if len(set(renames.values())) != len(renames):
             raise ValueError(f"Parquet column renames collide: {sorted(renames.values())}")
         object.__setattr__(self, "columns", renames)
+
+    def _bind_columns(
+        self,
+        selected: Sequence[str] | None = None,
+        *,
+        file_columns: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str, str]:
+        """Resolve logical names to physical fields consistently across every file.
+
+        With no selection, discover all logical columns. Renames apply simultaneously;
+        ambiguity is refused only for selected columns. Physical field names must be unique.
+        """
+        import pyarrow.parquet as pq
+
+        binding = None
+        for path in _local_parquet_files(self.path) if file_columns is None else file_columns:
+            try:
+                names = pq.read_schema(path).names if file_columns is None else file_columns[path]
+                duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+                if duplicates:
+                    raise ValueError(f"duplicate physical column names {duplicates}")
+                candidates: dict[str, list[str]] = {}
+                for name in names:
+                    candidates.setdefault(self.columns.get(name, name), []).append(name)
+                if selected is None and binding is not None and set(binding) != set(candidates):
+                    raise ValueError(
+                        "column names differ across Parquet files; "
+                        "select shared columns explicitly with TableSpec.columns"
+                    )
+                missing = sorted(set(selected) - candidates.keys()) if selected is not None else []
+                if missing:
+                    raise _MissingParquetColumns(path, missing, candidates)
+                current = {}
+                for logical in candidates if selected is None else selected:
+                    physical = candidates.get(logical, [])
+                    if len(physical) != 1:
+                        raise ValueError(
+                            f"ambiguous logical column {logical!r}: physical columns {physical}"
+                        )
+                    current[logical] = physical[0]
+                if binding is not None and current != binding:
+                    raise ValueError(
+                        f"column binding differs across Parquet files: {current!r} != {binding!r}"
+                    )
+                binding = current
+            except _MissingParquetColumns:
+                raise
+            except (ValueError, OSError) as error:
+                raise ValueError(f"in {path!r}: {error}") from error
+        assert binding is not None
+        return binding
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-compatible form of this storage reference."""
@@ -142,50 +209,45 @@ class Dataset:
                 tables.append(table)
                 continue
             source = self.tables.get(table.name)
-            path = source.path if isinstance(source, Parquet) else None
+            if not isinstance(source, Parquet):
+                errors.append(
+                    f"schema.tables.{table.name}.columns: type inference requires Parquet "
+                    "metadata; declare every DType for InMemoryRows"
+                )
+                tables.append(table)
+                continue
             try:
-                if not isinstance(source, Parquet):
-                    raise ValueError(
-                        f"schema.tables.{table.name}.columns: type inference requires Parquet "
-                        "metadata; declare every DType for InMemoryRows"
-                    )
-                columns = None if table.columns is None else dict(table.columns)
+                binding = source._bind_columns(
+                    None if table.columns is None else tuple(table.columns)
+                )
+                columns = dict.fromkeys(binding) if table.columns is None else dict(table.columns)
                 declared_columns = table.columns or {}
                 for path in _local_parquet_files(source.path):
-                    metadata = pq.read_schema(path)
-                    physical = {
-                        source.columns.get(field.name, field.name): field.type for field in metadata
-                    }
-                    if columns is None:
-                        columns = dict.fromkeys(physical)
-                    missing = sorted(set(columns) - set(physical))
-                    if missing:
-                        suggestion = _column_name_suggestion(missing, physical)
-                        raise ValueError(
-                            f"is missing columns {missing}"
-                            + (f", {suggestion}" if suggestion else "")
-                            + (" " if suggestion and suggestion.endswith("?") else ". ")
-                            + "Use the stored names in the contract, or rename the stored columns."
-                        )
-                    if table.columns is None and set(columns) != set(physical):
-                        raise ValueError(
-                            "column names differ across Parquet files; "
-                            "select shared columns explicitly with TableSpec.columns"
-                        )
-                    for name, expected in columns.items():
-                        actual = DType.from_arrow(physical[name])
-                        if expected is None:
-                            columns[name] = actual
-                        elif actual != expected and (
-                            declared_columns.get(name) is None
-                            or not _can_coerce_to_int64(actual, expected)
-                        ):
-                            raise ValueError(
-                                f"declared {expected!r}, physical type resolves to {actual!r}"
-                            )
-                tables.append(replace(table, columns=columns))
-            except (KeyError, ValueError, OSError) as error:
-                errors.append(f"bind {table.name} in {path!r}: {error}")
+                    try:
+                        metadata = pq.read_schema(path)
+                        for name, expected in columns.items():
+                            actual = DType.from_arrow(metadata.field(binding[name]).type)
+                            if expected is None:
+                                columns[name] = actual
+                            elif actual != expected and (
+                                declared_columns.get(name) is None
+                                or not _can_coerce_to_int64(actual, expected)
+                            ):
+                                raise ValueError(
+                                    f"declared {expected!r}, physical type resolves to {actual!r}"
+                                    + _float_integer_hint(actual, expected)
+                                )
+                    except (KeyError, ValueError, OSError) as error:
+                        raise ValueError(f"in {path!r}: {error}") from error
+                try:
+                    tables.append(replace(table, columns=columns))
+                except ValueError as error:
+                    raise ValueError(f"in {path!r}: {error}") from error
+            except _MissingParquetColumns as error:
+                errors.append(f"bind {table.name} in {error.path!r}: {error}")
+                tables.append(table)
+            except (ValueError, OSError) as error:
+                errors.append(f"bind {table.name} {error}")
                 tables.append(table)
         try:
             schema = replace(schema, tables=tuple(tables))
@@ -202,6 +264,20 @@ def _can_coerce_to_int64(physical: DType, declared: DType) -> bool:
         physical.name in {"int8", "int16", "int32"}
         or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
     )
+
+
+def _float_integer_hint(physical: DType, declared: DType) -> str:
+    """Name the usual source of float data for an integer column, and how to avoid it.
+
+    A float column is never read as an integer: float64 is exact only up to 2**53.
+    """
+    if declared.integer and physical.name in {"float32", "float64"}:
+        return (
+            "; pandas stores an integer column that contains NULLs as float64 (Snowpark's "
+            "to_pandas() does this), so read the data through Arrow instead, for example "
+            "with DataFrame.to_arrow()"
+        )
+    return ""
 
 
 def _local_parquet_files(value: str) -> list[str]:

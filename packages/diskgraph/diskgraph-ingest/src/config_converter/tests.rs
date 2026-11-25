@@ -1433,6 +1433,7 @@ fn test_detect_timestamp_formats_from_parquet() {
             name: "events".to_string(),
             columns: vec![
                 ColumnSpec {
+                    source_name: None,
                     name: "id".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::String,
@@ -1445,6 +1446,7 @@ fn test_detect_timestamp_formats_from_parquet() {
                     multicategorical_delimiter: None,
                 },
                 ColumnSpec {
+                    source_name: None,
                     name: "created_at".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::Timestamp,
@@ -1457,6 +1459,7 @@ fn test_detect_timestamp_formats_from_parquet() {
                     multicategorical_delimiter: None,
                 },
                 ColumnSpec {
+                    source_name: None,
                     name: "ended_at".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::Timestamp,
@@ -1565,6 +1568,7 @@ fn test_detect_timestamp_formats_allows_unrecognized_create_time_strings() {
             name: "accounts".to_string(),
             columns: vec![
                 ColumnSpec {
+                    source_name: None,
                     name: "id".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::String,
@@ -1577,6 +1581,7 @@ fn test_detect_timestamp_formats_allows_unrecognized_create_time_strings() {
                     multicategorical_delimiter: None,
                 },
                 ColumnSpec {
+                    source_name: None,
                     name: "acct_open_date".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::Date,
@@ -1654,6 +1659,7 @@ fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
         tables: vec![TableSpec {
             name: "events".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "event_time".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Timestamp,
@@ -1726,6 +1732,7 @@ fn test_detect_timestamp_formats_integer_yyyymmdd() {
         tables: vec![TableSpec {
             name: "events".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "date_col".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Timestamp,
@@ -1812,6 +1819,7 @@ fn test_detect_timestamp_formats_multi_value_sampling() {
         tables: vec![TableSpec {
             name: "events".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "date_col".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Timestamp,
@@ -1907,6 +1915,7 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
             name: "transactions".to_string(),
             columns: vec![
                 ColumnSpec {
+                    source_name: None,
                     name: "id".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::String,
@@ -1919,6 +1928,7 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
                     multicategorical_delimiter: None,
                 },
                 ColumnSpec {
+                    source_name: None,
                     name: "t_dat".to_string(),
                     source_dtype: None,
                     ingested_dtype: IngestedType::Timestamp,
@@ -2193,6 +2203,7 @@ fn test_inference_skips_columns_with_explicit_timestamp_format() {
         tables: vec![TableSpec {
             name: "events".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "ts".to_string(),
                 source_dtype: Some("string".to_string()),
                 ingested_dtype: IngestedType::Timestamp,

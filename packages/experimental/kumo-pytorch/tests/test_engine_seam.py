@@ -226,18 +226,18 @@ class TestTheInMemoryEngineRunsThroughTheSeam:
 
     def test_a_materialized_task_emits_batches(self) -> None:
         task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
-        batch = next(iter(task.batches(REQUESTS)))
+        batch = next(iter(task.request_batches(REQUESTS)))
         assert list(batch.inputs) == ["values"]
 
     def test_model_output_requires_an_engine_optimized_source(self) -> None:
         task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
         with pytest.raises(ValueError, match="does not implement"):
-            next(iter(task.batches(REQUESTS, output_format="model")))
+            next(iter(task.request_batches(REQUESTS, output_format="model")))
 
     def test_output_format_is_explicit(self) -> None:
         task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
         with pytest.raises(ValueError, match="inspectable.*model"):
-            next(iter(task.batches(REQUESTS, output_format="fast")))
+            next(iter(task.request_batches(REQUESTS, output_format="fast")))
 
     def test_preparing_twice_is_deterministic(self) -> None:
         first = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
@@ -313,7 +313,7 @@ class TestTheOpenedSourceIsOwned:
     def test_a_plan_is_a_context_manager(self) -> None:
         engine = self._Counting()
         with prepare(CONTRACT, IN_MEMORY, engine) as plan:
-            assert next(iter(plan.materialize(REQUESTS).batches(REQUESTS))) is not None
+            assert next(iter(plan.materialize(REQUESTS).request_batches(REQUESTS))) is not None
         assert engine.closed == 1
 
     def test_a_failed_materialization_leaves_the_plan_to_its_owner(self) -> None:

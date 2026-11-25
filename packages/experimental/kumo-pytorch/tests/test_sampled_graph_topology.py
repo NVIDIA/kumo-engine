@@ -257,7 +257,7 @@ def test_sampled_rejects_requests_and_deduplication(sampled_plan):
     with plan.materialize(anchors, fit_split="train") as task:
         requests = task._anchors.fetch(api.ALL_ANCHORS, [0, 1])
         with pytest.raises(ValueError, match="native AnchorTable"):
-            list(task.batches(requests, output_format="model"))
+            list(task.request_batches(requests, output_format="model"))
         with pytest.raises(ValueError, match="preserves edge occurrences"):
             list(task.batches(output_format="columnar", deduplicate_edges=True))
 
@@ -494,14 +494,16 @@ def test_sampled_enforces_entity_availability(
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(contract, plan.dataset, plan.engine) as bound:
         with bound.materialize(anchors) as task:
-            arguments = {}
             if requests:
-                arguments["requests"] = task._anchors.fetch(api.ALL_ANCHORS, [0])
+                explicit = task._anchors.fetch(api.ALL_ANCHORS, [0])
+                batches = task.request_batches(explicit, output_format=output_format)
+            else:
+                batches = task.batches(output_format=output_format)
             if cutoff <= 0:
                 with pytest.raises(ValueError, match="did not exist"):
-                    next(task.batches(output_format=output_format, **arguments))
+                    next(batches)
             else:
-                assert next(task.batches(output_format=output_format, **arguments)).inputs["graph"]
+                assert next(batches).inputs["graph"]
 
 
 def _refit_anchors(tmp_path, counts):

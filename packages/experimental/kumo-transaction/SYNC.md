@@ -21,6 +21,9 @@ location and Engine integration checks. There is no separate prerequisite PR.
 - `docs/_site/api/*.md`: use relative links that resolve within this source
   snapshot. The documentation generator adapts them in its virtual API-page
   copies to preserve links on the rendered site.
+- `examples/kumo-engine/` uses Engine's managed DiskGraph build and snapshot
+  APIs and installs the matching settings package from Engine source.
+- `CHANGELOG.md`: record the managed DiskGraph example migration.
 - `benchmarks/results/README.md`: repair the migration link and explain that
   upstream raw graph artifacts are not available from this public snapshot.
 - `benchmarks/results/graph_*.json`: replace private artifact URLs with JSON
@@ -47,7 +50,8 @@ needs repository branch-protection configuration after the workflow is available
 
 All other imported files match the pinned source byte for byte. The source
 hash inventory covers every imported file, including adapted files before
-adaptation. `UPSTREAM.json` and this guide are local additions.
+adaptation. `UPSTREAM.json`, this guide and the managed DiskGraph example smoke
+test are local additions.
 Nested GitLab CI, ownership, and governance files are source context only;
 they do not configure Kumo Engine CI, ownership, releases, or contributions.
 
