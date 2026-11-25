@@ -171,8 +171,9 @@ GitHub authenticates with OIDC as `kumo-engine-sagemaker-test-runner`. Its trust
 accepts only this repository's `sagemaker-mlops-test` environment subject and
 `sts.amazonaws.com` audience. There is no AWS access-key secret. That environment
 allows only manual dispatches from `main`, requires independent
-`NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and disables
-administrator bypass. The shared environment guard verifies these settings
+`NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and allows
+a repository admin to select **Start all waiting jobs** while deployment approval
+is pending. The shared environment guard verifies the branch and reviewer settings
 before the wheel build and again before AWS authentication. These server-side
 settings and the IAM trust enforce access; the branch-owned preflight is
 configuration lint. Trial branches, wildcards and tags are rejected.

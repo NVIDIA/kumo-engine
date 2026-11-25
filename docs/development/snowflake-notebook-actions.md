@@ -221,7 +221,7 @@ In repository **Settings → Environments**, configure `snowflake-mlops-test`:
 1. Allow only `main` under deployment branch rules. Do not allow trial
    branches, wildcard branches, or tags.
 2. Require `NVIDIA/kumo-engineers` as the only reviewer, enable
-   `prevent_self_review`, and disable administrator bypass.
+   `prevent_self_review`, and allow administrator bypass.
 3. Add these environment secrets:
 
 | Secret | Value |
@@ -237,9 +237,10 @@ Browser artifacts require the current authenticated test page; session expiry
 suppresses captures. Raw browser errors and authentication URLs are not retained.
 
 Open **Actions → Snowflake notebook platform checks → Run workflow**, select
-`main`, and choose `engine` or `graph-ui`. A maintainer other than the
-person who started the run must approve the environment before credentials are available. The workflow is
-manual-only. Lifecycle UI verification is currently a separate local command.
+`main`, and choose `engine` or `graph-ui`. A maintainer other than the person
+who started the run can approve it, or a repository admin can select
+**Start all waiting jobs** while deployment approval is pending. Lifecycle UI
+verification is currently a separate local command.
 
 ## Results
 

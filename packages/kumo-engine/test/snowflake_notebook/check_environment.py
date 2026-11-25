@@ -14,8 +14,6 @@ TEAM_ID = 19956283
 
 
 def validate(environment, policies):
-    if environment.get('can_admins_bypass') is not False:
-        raise ValueError('Administrator bypass must be disabled')
     rules = [
         rule for rule in environment.get('protection_rules', [])
         if rule.get('type') == 'required_reviewers'
@@ -62,12 +60,12 @@ def main(environment=ENVIRONMENT, branch=None):
             raise SystemExit(
                 f'Cannot inspect {environment} (HTTP {error.code}). '
                 'A repository admin must allow only main, require independent '
-                'maintainer-team approval, disable administrator bypass, '
+                'maintainer-team approval with self-review disabled, '
                 'and add the environment secrets.') from None
 
     validate(get(), get('/deployment-branch-policies?per_page=100'))
     print(
-        'Confirmed: maintainer approval, no administrator bypass, and selected branch restriction'
+        'Confirmed: maintainer approval, self-review disabled, and main-only deployments'
     )
 
 
