@@ -160,12 +160,12 @@ objects ending in `.parquet` under that prefix. For anchors, key order followed
 by row order within each part defines the input order.
 
 ```python
-remote_dataset = api.Dataset({
-    "users": api.Parquet("s3://warehouse/graph/users.parquet"),
-    "orders": api.Parquet("s3://warehouse/graph/orders/"),
+remote_dataset = kp.Dataset({
+    "users": kp.Parquet("s3://warehouse/graph/users.parquet"),
+    "orders": kp.Parquet("s3://warehouse/graph/orders/"),
 })
-remote_anchors = api.AnchorTable(
-    api.Parquet("s3://warehouse/tasks/anchors/", columns={"prediction_time": "as_of"}),
+remote_anchors = kp.AnchorTable(
+    kp.Parquet("s3://warehouse/tasks/anchors/", columns={"prediction_time": "as_of"}),
     entity_id="user_id",
     as_of_time="as_of",
     split="split",
@@ -173,8 +173,8 @@ remote_anchors = api.AnchorTable(
 ```
 
 Pass the dataset to `prepare` and the anchors to `plan.materialize` as with
-local files. Dataset columns use their physical names. Anchor bindings accept
-column renames. Local and S3 sources can be mixed in the same task. DiskGraph's
+local files. Dataset and anchor bindings both accept physical-to-logical column
+renames. Local and S3 sources can be mixed in the same task. DiskGraph's
 object-store reader ingests the dataset directly into the local index. The task
 streams projected anchor columns into its native seed index.
 
