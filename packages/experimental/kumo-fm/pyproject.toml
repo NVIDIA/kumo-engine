@@ -35,3 +35,5 @@ namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not dev'"
+markers = ["dev: larger local correctness campaigns; opt in with -m dev"]

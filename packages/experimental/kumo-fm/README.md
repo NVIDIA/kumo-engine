@@ -120,3 +120,8 @@ or in-repository HTTP consumer is supplied or exercised by this PR.
 Build and install matching DiskGraph, settings and PyTorch wheels from this
 workspace, then `uv build --wheel --package kumo-fm`. The [local SDM example](
 examples/local_sdm/README.md) documents its separate optional inference setup.
+
+## Correctness tests
+
+See [the testing guide](TESTING.md) for the fast CI suite, opt-in developer
+campaigns, and regression coverage mapped to PR #391 review findings.
