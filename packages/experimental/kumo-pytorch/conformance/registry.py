@@ -570,7 +570,7 @@ ENGINE_REFUSALS: tuple[EngineRefusal, ...] = (
             ("current_events", "DiskGraph does not build current events"),
             ("dated_values", "DiskGraph does not build dated entity values"),
             ("non_direct_field", "DiskGraph event fields read the event row only"),
-            ("object_store", "DiskGraph reads local Parquet paths only"),
+            ("object_store", "DiskGraph reads local and S3 Parquet paths"),
         )
     ),
 )

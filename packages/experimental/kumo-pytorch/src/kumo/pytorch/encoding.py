@@ -13,7 +13,7 @@ import json
 import math
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from decimal import Decimal, localcontext
 from functools import cached_property
 from typing import Any
@@ -219,7 +219,7 @@ class FittedEncoder:
 
     @property
     def description(self) -> dict[str, Any]:
-        result = {"kind": type(self.config).__name__.lower(), "dtype": asdict(self.dtype)}
+        result = {"kind": type(self.config).__name__.lower(), "dtype": self.dtype.to_dict()}
         if self.local_ids:
             result["vocabulary_size"] = max(self.local_ids) + 1
             result["roles"] = dict(self.roles)
@@ -307,7 +307,18 @@ class FittedEncoder:
         import pyarrow.compute as pc
 
         if isinstance(values, pa.ChunkedArray):
-            values = values.combine_chunks()
+            values = values.chunk(0) if values.num_chunks == 1 else values.combine_chunks()
+        if self.dtype.shape:
+            self.dtype.validate_array(values, path=f"encoder {self.identity}")
+            valid = pc.is_valid(values).to_numpy(zero_copy_only=False, writable=True)
+            # flatten() respects sliced offsets and skips hidden children of NULL rows.
+            flat = values.flatten().to_numpy(zero_copy_only=False, writable=not values.null_count)
+            rows = flat.reshape((-1, *self.dtype.shape))
+            if values.null_count:
+                filled = np.zeros((len(values), *self.dtype.shape), dtype=flat.dtype)
+                filled[valid] = rows
+                rows = filled
+            return {"values": torch.from_numpy(rows), "valid": torch.from_numpy(valid)}
         received = DType.from_arrow(values.type)
         if pa.types.is_timestamp(values.type):
             received = replace(received, unit=values.type.unit)
@@ -482,6 +493,8 @@ def fit_encoder(
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    if dtype.shape and not isinstance(config, Raw):
+        raise ValueError(f"encoder {identity}: array features require Raw encoding")
     if (
         isinstance(config, (ZScore, Buckets))
         and dtype.numeric

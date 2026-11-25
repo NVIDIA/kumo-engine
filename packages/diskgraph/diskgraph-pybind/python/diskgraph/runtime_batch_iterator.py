@@ -326,6 +326,7 @@ class RuntimeIndex:
         # Keyed here so a dataset whose stages differ still works, and still
         # opens each extension only once.
         self._indexes: dict = {}
+        self._extension_refs: dict[str, str] = {}
 
     def _resolve(self) -> None:
         if self._resolved is not None:
@@ -337,7 +338,13 @@ class RuntimeIndex:
         self._parent_root = _graph_index_path(manifest)
         self._resolved = True
 
-    def _index_for(self, extension_ref: str):
+    def _index_for(self, stage_path: str):
+        # Stage paths are fixed for the lifetime of an open manifest. Multiple
+        # stages can resolve to the same extension and share its native index.
+        extension_ref = self._extension_refs.get(stage_path)
+        if extension_ref is None:
+            extension_ref = _extension_ref_from_stage_path(self._parent_root, stage_path)
+            self._extension_refs[stage_path] = extension_ref
         idx = self._indexes.get(extension_ref)
         if idx is None:
             from ._c import RuntimeIndex as _RuntimeIndex
@@ -355,9 +362,7 @@ class RuntimeIndex:
     def sampler(self, stage: str):
         """Share the stage's combined native reader without opening another index."""
         self._resolve()
-        ref = self._tables[stage]
-        extension_ref = _extension_ref_from_stage_path(self._parent_root, ref["index_path"])
-        return self._index_for(extension_ref).sampler()
+        return self._index_for(self._tables[stage]["index_path"]).sampler()
 
     def stage_size(self, stage: str) -> int:
         self._resolve()
@@ -434,10 +439,7 @@ class RuntimeIndex:
                 f"stage {options.stage!r} not available on this dataset"
             )
 
-        extension_ref = _extension_ref_from_stage_path(
-            self._parent_root, ref["index_path"]
-        )
-        iterator = self._index_for(extension_ref).iter(
+        iterator = self._index_for(ref["index_path"]).iter(
             ref["table_name"],
             options.sampling_plan,
             int(options.num_workers),

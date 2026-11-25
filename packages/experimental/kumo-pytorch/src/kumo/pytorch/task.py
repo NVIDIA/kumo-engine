@@ -594,7 +594,9 @@ def _mark_padding(
     ids = _padding_sample_ids([request.sample_id for request in requests], padding)
     return [
         dataclass_replace(
-            request, sample_id=sample_id, metadata={**request.metadata, PADDING_KEY: True}
+            request,
+            sample_id=sample_id,
+            metadata={**request.metadata, PADDING_KEY: request.sample_id},
         )
         if is_padding
         else request
@@ -623,7 +625,7 @@ def _surface_padding(batch: Batch) -> Batch:
     """Move the internal marker to ``metadata["is_padding"]``, one flag per row."""
 
     request_metadata = batch.metadata.get("request_metadata", ())
-    flags = [bool(entry.get(PADDING_KEY, False)) for entry in request_metadata]
+    flags = [PADDING_KEY in entry for entry in request_metadata]
     metadata = dict(batch.metadata)
     metadata["request_metadata"] = tuple(
         {key: value for key, value in entry.items() if key != PADDING_KEY}

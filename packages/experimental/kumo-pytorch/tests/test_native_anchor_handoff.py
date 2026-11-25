@@ -12,9 +12,29 @@ import pytest
 import torch
 
 from kumo.pytorch import api
-from kumo.pytorch.engines.native_anchors import NativeAnchors
+from kumo.pytorch.engines.native_anchors import NativeAnchors, _stage_columns
 
 diskgraph = pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
+
+
+@pytest.mark.parametrize(
+    "dtype,native_type,requires_footer",
+    [
+        (pa.uint64(), "u_int64", False),
+        (pa.timestamp("s", tz="UTC"), "timestamp", False),
+        (pa.date64(), "int64", True),
+        (pa.dictionary(pa.int8(), pa.int32()), "int32", True),
+    ],
+)
+def test_stage_columns_match_physical_parquet(tmp_path, dtype, native_type, requires_footer):
+    batch = pa.record_batch([pa.array([0], type=dtype)], names=["value"])
+    stage = tmp_path / "stage"
+    with diskgraph.TaskParquetWriter(str(stage)) as writer:
+        writer.write_batch(batch)
+    part = stage / "part-00000.parquet" if requires_footer else tmp_path / "unused"
+    assert _stage_columns(pa, batch.schema, part) == [
+        {"name": "value", "ingested_dtype": native_type}
+    ]
 
 
 @pytest.fixture

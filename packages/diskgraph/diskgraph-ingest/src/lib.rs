@@ -30,6 +30,7 @@ pub mod stage_extension;
 pub mod stats;
 pub mod stats_publish;
 pub mod success_marker;
+mod tensor_columns;
 #[cfg(test)]
 mod tests_unit;
 pub mod ts_grouping;
@@ -3553,6 +3554,7 @@ impl SourceBatch {
 }
 
 struct SourceValidationState {
+    tensor_columns: Vec<ColumnSpec>,
     table: TableSpec,
     synthetic_columns: HashSet<String>,
     schema_validated: std::sync::Mutex<bool>,
@@ -3566,6 +3568,12 @@ struct SourceValidationState {
 impl SourceValidationState {
     fn new(table: &TableSpec, synthetic_columns: HashSet<String>) -> Arc<Self> {
         Arc::new(Self {
+            tensor_columns: table
+                .columns
+                .iter()
+                .filter(|col| col.semantic_type == Some(graph_config::SemanticType::Tensor))
+                .cloned()
+                .collect(),
             table: table.clone(),
             synthetic_columns,
             schema_validated: std::sync::Mutex::new(false),
@@ -3577,7 +3585,7 @@ impl SourceValidationState {
         })
     }
 
-    fn observe(&self, batch: &RecordBatch) -> Result<()> {
+    fn observe(&self, batch: &mut RecordBatch) -> Result<()> {
         {
             let mut validated = self
                 .schema_validated
@@ -3593,6 +3601,9 @@ impl SourceValidationState {
             }
         }
         validate_source_batch_values(&self.table, batch, &self.synthetic_columns)?;
+        if !self.tensor_columns.is_empty() {
+            tensor_columns::prepare(&self.table.name, &self.tensor_columns, batch)?;
+        }
         self.rows_seen
             .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
         let batch_bytes = batch
@@ -3669,13 +3680,13 @@ impl Iterator for EncodeBatchIter {
             self.active_retention = None;
             if let Some((reader, permit, first_batch)) = &mut self.active_parquet {
                 if let Some(SourceBatch {
-                    batch,
+                    mut batch,
                     _retention,
                     observed,
                 }) = first_batch.take()
                 {
                     if !observed {
-                        if let Err(error) = self.validation.observe(&batch) {
+                        if let Err(error) = self.validation.observe(&mut batch) {
                             return Some(Err(error));
                         }
                     }
@@ -3683,8 +3694,8 @@ impl Iterator for EncodeBatchIter {
                     return Some(Ok(batch));
                 }
                 match reader.next() {
-                    Some(Ok(batch)) => {
-                        if let Err(error) = self.validation.observe(&batch) {
+                    Some(Ok(mut batch)) => {
+                        if let Err(error) = self.validation.observe(&mut batch) {
                             return Some(Err(error));
                         }
                         self.active_retention = Some(SourceBatchRetention::ResidentParquet {
@@ -3702,12 +3713,12 @@ impl Iterator for EncodeBatchIter {
             }?;
             match work {
                 SourceWork::Batch(SourceBatch {
-                    batch,
+                    mut batch,
                     _retention,
                     observed,
                 }) => {
                     if !observed {
-                        if let Err(error) = self.validation.observe(&batch) {
+                        if let Err(error) = self.validation.observe(&mut batch) {
                             return Some(Err(error));
                         }
                     }
@@ -6163,8 +6174,8 @@ impl TableSourceStream {
         loop {
             if let Some((reader, permit, _)) = &mut self.active_context_reader {
                 match reader.next() {
-                    Some(Ok(batch)) => {
-                        if let Err(error) = self.validation.observe(&batch) {
+                    Some(Ok(mut batch)) => {
+                        if let Err(error) = self.validation.observe(&mut batch) {
                             return Some(Err(error));
                         }
                         return Some(Ok(
@@ -6177,8 +6188,8 @@ impl TableSourceStream {
             }
             if !matches!(&self.inner, TableSourceStreamInner::Parquet(_)) {
                 return self.next_batch().map(|result| {
-                    result.and_then(|batch| {
-                        self.validation.observe(&batch.batch)?;
+                    result.and_then(|mut batch| {
+                        self.validation.observe(&mut batch.batch)?;
                         Ok(batch.observed())
                     })
                 });

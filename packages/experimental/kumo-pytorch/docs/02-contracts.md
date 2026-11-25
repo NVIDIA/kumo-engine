@@ -3,7 +3,7 @@
 A contract is three declarations: `DataSchema` (what is stored), `SampleSpec`
 (what one example may read at its prediction time) and `BatchSpec` (what the
 model receives). This page builds one contract over a small shop, then extends
-it with a graph neighborhood and caller-supplied candidates. Every block runs
+it with a graph neighborhood and candidate sets. Every block runs
 in order; paste them into one Python session.
 
 These snippets use Python requests to inspect a few examples. For training,
@@ -316,12 +316,84 @@ edge types: ('item_purchases', 'user_purchases')
   reached it. Edges keep the relation's declared left-to-right orientation even
   when traversed in reverse.
 
+DiskGraph can also rank neighbors with a random walk with restart. For example,
+`kp.WalkSample("activity", edges=("purchases",), keep={"items": 5},
+restart=0.2, budget=1000)` treats each complete purchase row as an undirected
+user–item edge. Each user in the entering frontier starts an independent walk.
+Only rows visible at the sample cutoff contribute to its scores and degrees.
+The model reads `graph["edges"]["activity.items"]`, whose `index`, `score`, and
+`rank` columns align. Ranks start at zero for each start and destination type.
+Use relations topology for training and batch inference with walks. The online
+serving row planner does not implement walks.
+
+### Point-in-time degree on graph nodes
+
+Declare degree on the node table in `NeighborhoodSpec.node_values`, then select
+it in `Graph.node_fields`. In the shop example, an item reached through a user’s
+history receives the number of purchase rows for that item through the user’s
+prediction time. This count includes eligible rows outside the sampled fanout.
+
+```python
+item_degree = kp.Aggregate(
+    kp.Rows(("item_purchases",), time=kp.TimeWindow("at", stop=0)), "count"
+)
+shop_graph = kp.NeighborhoodSpec(
+    neighborhood.layers,
+    node_values={"items": {"degree": item_degree}},
+)
+degree_input = kp.Input(
+    kp.NeighborhoodSource("bought"),
+    kp.Graph({"items": kp.Fields((kp.Encode("degree", kp.Raw()),))}),
+    None,
+)
+```
+
+DiskGraph returns one degree per item occurrence in node order. A purchase
+exactly at the cutoff counts. An item with no eligible purchases has a valid
+degree of zero. If the same item appears under two anchors, each occurrence
+uses its own anchor. Nodes in a positive’s graph use the parent prediction
+time, including when a later purchase selected the positive.
+
+Computed names are local to the neighborhood and must be distinct from
+stored columns. Other supported entity-value expressions can refer to rows
+starting at the node’s table or to declared operands on the same table.
+The count uses the rows retained in the DiskGraph index. For historical graph
+membership as well, use the default or recent strategy on hops to timed tables.
+
+### Fixed-shape node features
+
+DiskGraph can store a Pin image embedding in a single Parquet `list<float32>`
+column. Declare its width on the table and select the column once in the
+graph input.
+
+```python
+image = kp.DType("float32", shape=(1024,))
+pins = kp.TableSpec(
+    "pins", "id", {"id": kp.DType("int64"), "image_emb": image},
+    time_column=kp.NON_TEMPORAL,
+)
+pin_graph = kp.Graph({"pins": kp.Fields((kp.Encode("image_emb", kp.Raw()),))})
+```
+
+For `N` sampled Pin occurrences, `graph["nodes"]["pins"]["features"]["image_emb"]`
+contains float32 `values` of shape `[N, 1024]` and a boolean `valid` of shape
+`[N]`. This also applies to query roots and positive graphs.
+A null row produces a zero tensor and a false validity bit. A stored all-zero
+vector is valid.
+
+Store each non-null vector as a flat list of integer or floating-point
+elements. A shape of `(2, 3)` consumes six elements in row-major order.
+Ordinary Parquet lists need a declared shape. An Arrow fixed-size list
+can supply its width through its schema. Length mismatches and null elements
+inside a non-null vector are errors.
+
 ## Caller-supplied candidates
 
 For ranking, the caller chooses which items to score; a `CandidateSetSpec`
 says what to read for each candidate at the request's prediction time, and
-labels align with the caller's order:
+labels align with the caller's order. Candidate-rooted graphs use DiskGraph.
 
+<!-- test: diskgraph -->
 ```python
 candidate_sample = kp.SampleSpec(
     entity=kp.EntitySpec(table="users", entity_type="user"),
@@ -338,6 +410,9 @@ candidate_sample = kp.SampleSpec(
                 ),
             },
             targets={"bought": kp.ExternalTarget(dtype=kp.DType(name="bool"))},
+            neighborhoods={"purchases": kp.NeighborhoodSpec((
+                kp.GraphLayer((kp.GraphSample("item_purchases", 5, strategy="recent"),)),
+            ))},
         )
     },
 )
@@ -352,7 +427,10 @@ candidate_batch = kp.BatchSpec(
                 )
             ),
             layout=kp.Padded(),
-        )
+        ),
+        "item_graph": kp.Input(
+            kp.NeighborhoodSource("purchases", candidates="items"), kp.Graph(), None
+        ),
     },
     targets={"bought": kp.CandidateTarget(input="candidates", source="bought", encoding=kp.Raw())},
     batching=kp.Batching(max_samples=1),
@@ -370,16 +448,30 @@ candidate_request = kp.SampleRequest(
         )
     },
 )
-# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-with (
-    kp.prepare(
-        contract=kp.DataLoaderSpec(schema=schema, sample=candidate_sample, batch=candidate_batch),
-        dataset=dataset,
-        engine=kp.InMemoryEngine(),
-    ) as plan,
-    plan.materialize(anchors=(candidate_request,)) as task,
-):
-    ranked = next(task.request_batches((candidate_request,)))
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import kumo.settings
+
+with TemporaryDirectory() as folder:
+    kumo.settings.configure(scratch_dir=Path(folder) / "scratch")
+    sources = {}
+    for table in schema.tables:
+        path = Path(folder) / f"{table.name}.parquet"
+        arrow_schema = pa.schema([(k, t.to_arrow()) for k, t in table.columns.items()])
+        pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
+        sources[table.name] = kp.Parquet(str(path))
+    with (
+        kp.prepare(
+            kp.DataLoaderSpec(schema, candidate_sample, candidate_batch),
+            kp.Dataset(sources),
+            kp.DiskGraphEngine(),
+        ) as plan,
+        plan.materialize(anchors=(candidate_request,)) as task,
+    ):
+        ranked = next(task.request_batches((candidate_request,)))
 
 print("prior_buyers:", ranked.inputs["candidates"]["prior_buyers"]["values"].tolist())
 print("bought:", ranked.targets["bought"]["values"].tolist())
@@ -394,8 +486,67 @@ candidate ids: ((10, 11, 12),)
 ```
 
 Item 12's only purchase is on day 12, so at day 10 it has no prior buyers.
-The DiskGraph engine does not run candidate sets yet (see
-[limitations](limitations.md)).
+The `item_graph` input contains one disjoint graph per supplied item, sampled at
+the user's prediction time. For ordinary hops to a timed table, use the default
+recent strategy so only rows visible at that time are eligible. A node's `batch` value (columnar `owners`) indexes
+the candidate occurrences in caller order. The graph's `candidate_offsets`
+maps each anchor to its slice of that sequence. An empty set repeats the
+previous offset. For DiskGraph Parquet anchors, bind a list-of-structs column
+with `CandidateColumn`; the entity ID in each struct becomes a graph root.
+
+## Drawing candidates with DiskGraph
+
+Set `CandidateSetSpec.draw` to select IDs inside DiskGraph. A scored draw
+names an existing query neighborhood and its walk output. This example keeps
+the first five ranks and draws up to two distinct items, weighted by score.
+
+```python
+activity = kp.NeighborhoodSpec((kp.GraphLayer((
+    kp.WalkSample("activity", edges=("purchases",), keep={"items": 5}, restart=0.2, budget=1000),
+)),))
+ranked_items = kp.DrawNeighbors(
+    "history", ("activity.items",), count=2, weight="score", ranks=(0, 5)
+)
+ranked_sample = kp.SampleSpec(
+    entity=kp.EntitySpec("users"),
+    neighborhoods={"history": activity},
+    candidate_sets={"items": kp.CandidateSetSpec(kp.EntitySpec("items"), draw=ranked_items)},
+)
+```
+
+For training positives from subsequent purchases, select the item key from
+the purchase rows. Here the lower bound excludes the anchor time and the upper
+bound includes purchases exactly seven days later.
+
+```python
+bought_next_week = kp.DrawRows(
+    kp.Rows(("user_purchases",), time=kp.TimeWindow("at", start=0, stop=7 * DAY)),
+    column="item_id",
+    count=2,
+)
+positives = kp.CandidateSetSpec(
+    kp.EntitySpec("items"),
+    draw=bought_next_week,
+    neighborhoods={"purchases": kp.NeighborhoodSpec((
+        kp.GraphLayer((kp.GraphSample("item_purchases", 5),)),
+    ))},
+)
+```
+
+Supply just the anchor for a drawn set. The selected IDs appear in
+`batch.metadata["candidate_entity_ids"]` in the order used by candidate
+inputs and graphs. A future purchase supplies the item ID. Its item features
+and graph still use the original prediction time. A candidate from a timed
+table is eligible only once its own row is visible at that time. Future-window draws are
+available during training. Historical rows and scored neighborhoods can also
+supply candidates during batch inference.
+
+Both sources draw without replacement. With no weight, every distinct ID
+has equal probability. With a weight, repeated occurrences add to the
+entity's weight. Null IDs and zero or null weights are skipped. An empty or
+undersized pool returns all eligible IDs up to `count`. A fixed
+`DiskGraphEngine(random_seed=...)` replays each anchor's draw across batch
+sizes and ordering on the same index.
 
 ## Authoring with Python objects (experimental)
 

@@ -346,6 +346,7 @@ fn make_plan(args: &Args, meta: &DatasetMetadata, seed_type: &str) -> SamplingPl
     let mut layers = Vec::new();
     for _ in 0..args.hops {
         layers.push(LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 rel_name.to_string(),
                 FanoutSpec {

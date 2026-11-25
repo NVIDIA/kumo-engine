@@ -73,14 +73,18 @@ class NeighborhoodSource:
 
     Use it with a ``Graph`` representation and ``layout=None``. A batch keeps
     each sample's graph disjoint, even when two samples reach the same stored
-    node.
+    node. Set ``candidates`` to read a neighborhood from that candidate set.
+    Candidate graphs follow caller order within each parent sample.
     """
 
     name: str
+    candidates: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("a neighborhood source requires a name")
+        if self.candidates is not None and not self.candidates:
+            raise ValueError("a candidate neighborhood requires a candidate set name")
 
 
 @dataclass(frozen=True)

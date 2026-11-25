@@ -191,14 +191,15 @@ Candidates keep the caller's order. Use columns with a `Padded` or
 *class* · `kumo.pytorch.NeighborhoodSource`
 
 ```python
-class NeighborhoodSource(name: str)
+class NeighborhoodSource(name: str, candidates: str | None = None)
 ```
 
 Read one neighborhood already declared by `SampleSpec`.
 
 Use it with a `Graph` representation and `layout=None`. A batch keeps
 each sample's graph disjoint, even when two samples reach the same stored
-node.
+node. Set `candidates` to read a neighborhood from that candidate set.
+Candidate graphs follow caller order within each parent sample.
 
 ### `Representation`
 
@@ -272,7 +273,7 @@ Node attributes use the same explicit field encodings as ordinary columns.
 
 **Parameters**
 
-- `node_fields`: table name to the `Fields` (scalar column encodings of physical columns) emitted for its nodes. Field-name IDs are not supported on graph nodes.
+- `node_fields`: table name to the `Fields` emitted for its nodes. Select stored columns or values declared in the source neighborhood's `node_values`. Field-name IDs are unsupported on graph nodes.
 - `topology`: `"relations"` keeps each declared relation's orientation; model and inspectable output deduplicate pairs, while columnar output keeps repeats unless `deduplicate_edges=True`. `"sampled"` preserves DiskGraph's directed edge occurrences, ordering and per-hop counts. It is currently implemented for fixed-size native AnchorTable batches. Selected split stages shuffle and batch independently; it does not reconstruct topology.
 
 ### `ColumnarGraph`
@@ -286,6 +287,7 @@ class ColumnarGraph(
     edges: Mapping[str, ColumnarEdges],
     num_sampled_nodes: Mapping[str, tuple[int, ...]] = {},
     num_sampled_edges: Mapping[str, tuple[int, ...]] = {},
+    candidate_offsets: Array | None = None,
 )
 ```
 
@@ -299,9 +301,12 @@ edges. Its edge values expose the logical `relation` and traversal
 `(edge.source_type, key, edge.destination_type)` without changing arrays.
 Counts use the same string keys as edges and align with
 the native node and edge ordering, not a newly computed shortest-path order.
-The first `Batch.batch_size` rows of `nodes[root_type]` are the roots,
-in batch order, including repeated entities at distinct prediction times.
-Isolated roots and empty declared node/edge types are retained.
+The roots appear first in `nodes[root_type]`, including isolated roots
+and repeated entities at distinct prediction times. An anchor graph has
+one root per sample in batch order. A candidate graph has one root per
+supplied candidate, in order within each sample. Its node owners index
+candidate occurrences and `candidate_offsets[i:i+2]` delimits the
+candidates of sample i, including empty sets.
 
 Buffers remain valid after advancing or closing the iterator/task. Treat
 them as read-only. Compatible native Arrow buffers are shared; declared
@@ -339,6 +344,8 @@ class ColumnarEdges(
     index: Table,
     relation: str | None = None,
     direction: Literal['forward', 'reverse'] | None = None,
+    score: Array | None = None,
+    rank: Array | None = None,
 )
 ```
 
@@ -360,6 +367,8 @@ on ColumnarGraph; deduplication is refused for that topology.
 Sampled edges also carry the declared logical `relation` and traversal
 `direction`. Those optional fields remain unset for relations output,
 whose logical identity is already the mapping key and orientation is normalized.
+Named walk edges carry aligned float32 scores and zero-based int64 ranks within
+each start node and destination table.
 
 ### `Columns`
 

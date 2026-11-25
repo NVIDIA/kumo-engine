@@ -3713,6 +3713,7 @@ provides-extras = ["test", "docs"]
 name = "kumo-pytorch"
 source = { editable = "packages/experimental/kumo-pytorch" }
 dependencies = [
+    { name = "boto3" },
     { name = "diskgraph" },
     { name = "kumo-settings" },
     { name = "numpy" },
@@ -3735,6 +3736,7 @@ examples = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", specifier = ">=1.34" },
     { name = "diskgraph", editable = "packages/diskgraph" },
     { name = "kumo-settings", editable = "packages/kumo-settings" },
     { name = "numpy", specifier = ">=1.26,<3" },

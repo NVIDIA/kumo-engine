@@ -63,6 +63,27 @@ class GraphRoot:
     cutoff: int
 
 
+@dataclass(frozen=True)
+class CandidateGraphRoots:
+    """Public candidate keys in owner order, sharing the anchors' identities and cutoffs."""
+
+    name: str
+    entity_ids: tuple[tuple[Any, ...], ...]
+    sample_ids: tuple[str | int, ...]
+    cutoffs: tuple[int, ...]
+
+    def root(self, owner: int, position: int, key: Any) -> GraphRoot:
+        return GraphRoot(
+            f"{self.sample_ids[owner]}:{self.name}:{position}", key, self.cutoffs[owner]
+        )
+
+    @property
+    def bounds(self):
+        from kumo.pytorch.output import offsets
+
+        return offsets([len(group) for group in self.entity_ids])
+
+
 @runtime_checkable
 class AnchorTask(Protocol):
     """An anchor table materialized once, read by split and position.

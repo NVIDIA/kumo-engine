@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from kumo.pytorch.anchors import AnchorTable, CandidateColumn, PositionalAnchors
-from kumo.pytorch.contract.sample import CandidateRequest, SampleRequest, TargetValue
+from kumo.pytorch.anchors import AnchorTable, PositionalAnchors
+from kumo.pytorch.contract.sample import SampleRequest, TargetValue
 from kumo.pytorch.dataset import InMemoryRows
 
 __all__ = ["InMemoryAnchors"]
@@ -63,38 +63,7 @@ class InMemoryAnchors(PositionalAnchors):
             split=row[table.split] if table.split else None,
             metadata={name: row[name] for name in table.metadata},
             candidates={
-                name: self._candidates(position, row, binding)
+                name: binding._requests(row[binding.column], position)
                 for name, binding in sorted(table.candidates.items())
             },
         )
-
-    @staticmethod
-    def _candidates(
-        position: int,
-        row: Mapping[str, Any],
-        binding: CandidateColumn,
-    ) -> tuple[CandidateRequest, ...]:
-        entries = row[binding.column]
-        if entries is None:
-            # A declared set with nothing for this anchor is empty, not an
-            # error: the contract already permits an empty candidate set.
-            return ()
-        requests = []
-        for index, entry in enumerate(entries):
-            missing = [field for field in binding.fields if field not in entry]
-            if missing:
-                raise ValueError(
-                    f"candidate {index} of anchor row {position} is missing {sorted(missing)}"
-                )
-            requests.append(
-                CandidateRequest(
-                    entity_id=entry[binding.entity_id],
-                    targets=tuple(
-                        TargetValue(name, entry[field])
-                        for name, field in sorted(binding.targets.items())
-                    ),
-                )
-            )
-        # Order is the column's order, not a sort: candidate labels align
-        # positionally with the candidate input.
-        return tuple(requests)

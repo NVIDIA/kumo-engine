@@ -107,12 +107,95 @@ pub struct SamplingPlan {
 }
 
 /// Configuration for a single hop in the traversal.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq)]
 pub struct LayerSpec {
+    /// Scored forward-push neighborhoods starting at this layer's frontier.
+    pub walks: Vec<WalkSpec>,
     /// Fanout configuration per edge type (e.g., "User__Click__Item").
     pub fanouts: HashMap<String, FanoutSpec>,
     /// Default fanout used if an edge type is not present in the fanouts map.
     pub default_fanout: Option<FanoutSpec>,
+}
+
+impl std::fmt::Debug for LayerSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut description = f.debug_struct("LayerSpec");
+        description
+            .field("fanouts", &self.fanouts)
+            .field("default_fanout", &self.default_fanout);
+        if !self.walks.is_empty() {
+            description.field("walks", &self.walks);
+        }
+        description.finish()
+    }
+}
+
+// Bincode encodes struct fields positionally. Preserve the deployed two-field
+// Flight ticket for ordinary hops. Walk plans use the typed API or JSON.
+impl Serialize for LayerSpec {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !serializer.is_human_readable() {
+            if !self.walks.is_empty() {
+                return Err(serde::ser::Error::custom(
+                    "walk plans require the typed sampling API or JSON",
+                ));
+            }
+            return (&self.fanouts, &self.default_fanout).serialize(serializer);
+        }
+        use serde::ser::SerializeStruct;
+        let mut layer =
+            serializer.serialize_struct("LayerSpec", 2 + usize::from(!self.walks.is_empty()))?;
+        layer.serialize_field("fanouts", &self.fanouts)?;
+        layer.serialize_field("default_fanout", &self.default_fanout)?;
+        if !self.walks.is_empty() {
+            layer.serialize_field("walks", &self.walks)?;
+        }
+        layer.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for LayerSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if !deserializer.is_human_readable() {
+            let (fanouts, default_fanout) = Deserialize::deserialize(deserializer)?;
+            return Ok(Self {
+                fanouts,
+                default_fanout,
+                walks: Vec::new(),
+            });
+        }
+        #[derive(Deserialize)]
+        struct Fields {
+            fanouts: HashMap<String, FanoutSpec>,
+            default_fanout: Option<FanoutSpec>,
+            #[serde(default)]
+            walks: Vec<WalkSpec>,
+        }
+        let Fields {
+            fanouts,
+            default_fanout,
+            walks,
+        } = Fields::deserialize(deserializer)?;
+        Ok(Self {
+            fanouts,
+            default_fanout,
+            walks,
+        })
+    }
+}
+
+/// One relation-subset walk. Paths contain one physical relation or two joining
+/// an endpoint to the opposite endpoint of a link-table row. The caller supplies
+/// both orientations of the undirected edges.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalkSpec {
+    pub name: String,
+    pub paths: Vec<Vec<String>>,
+    pub keep: HashMap<String, usize>,
+    pub restart: f64,
+    pub budget: u32,
+    /// Physical row-clock column for each temporal table touched by the walk.
+    pub clocks: HashMap<String, String>,
 }
 
 /// Fanout and selection strategy for a specific edge type at a specific layer.
@@ -175,6 +258,7 @@ mod tests {
         let plan = SamplingPlan {
             layers: vec![
                 LayerSpec {
+                    walks: Vec::new(),
                     fanouts: [(
                         "user__click__item".to_string(),
                         FanoutSpec {
@@ -187,6 +271,7 @@ mod tests {
                     default_fanout: None,
                 },
                 LayerSpec {
+                    walks: Vec::new(),
                     fanouts: [(
                         "item__click__user".to_string(),
                         FanoutSpec {
@@ -240,6 +325,32 @@ mod tests {
     }
 
     #[test]
+    fn legacy_layer_binary_tickets_and_walk_json() {
+        let old_fields = (HashMap::<String, FanoutSpec>::new(), None::<FanoutSpec>);
+        let bytes = bincode::serialize(&old_fields).unwrap();
+        let layer: LayerSpec = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(bincode::serialize(&layer).unwrap(), bytes);
+        let walk = WalkSpec {
+            name: "pins".into(),
+            paths: vec![vec!["rel".into()]],
+            keep: [("pins".into(), 1)].into(),
+            restart: 0.5,
+            budget: 50,
+            clocks: HashMap::new(),
+        };
+        let extended = LayerSpec {
+            walks: vec![walk],
+            ..layer
+        };
+        assert!(bincode::serialize(&extended)
+            .unwrap_err()
+            .to_string()
+            .contains("typed sampling API"));
+        let json = serde_json::to_string(&extended).unwrap();
+        assert_eq!(serde_json::from_str::<LayerSpec>(&json).unwrap(), extended);
+    }
+
+    #[test]
     fn test_sampling_request_bincode() {
         let request = BatchSamplingRequest {
             dataset_id: DatasetId::nil(),
@@ -248,6 +359,7 @@ mod tests {
             seed_timestamp_unit: crate::time::TimeUnit::Seconds,
             plan: SamplingPlan {
                 layers: vec![LayerSpec {
+                    walks: Vec::new(),
                     fanouts: [(
                         "user__click__item".to_string(),
                         FanoutSpec {
@@ -285,8 +397,7 @@ mod tests {
         let json = serde_json::to_value(&mode).unwrap();
         assert_eq!(json, json!("deterministic_uniform"));
 
-        let decoded: SamplingMode =
-            serde_json::from_value(json!("deterministic_uniform")).unwrap();
+        let decoded: SamplingMode = serde_json::from_value(json!("deterministic_uniform")).unwrap();
         assert!(matches!(decoded, SamplingMode::DeterministicUniform));
     }
 }

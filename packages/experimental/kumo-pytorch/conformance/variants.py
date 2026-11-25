@@ -177,7 +177,7 @@ def _renamed(dataset: Dataset, engine: Engine) -> tuple[Dataset, Engine]:
 
 
 def _remote(dataset: Dataset, engine: Engine) -> tuple[Dataset, Engine]:
-    return Dataset({**dataset.tables, "users": Parquet("s3://conformance/users")}), engine
+    return Dataset({**dataset.tables, "users": Parquet("gs://conformance/users")}), engine
 
 
 def _two_ranks(task: Task, requests: tuple[SampleRequest, ...]) -> Iterable[Batch]:

@@ -52,13 +52,21 @@ class FanoutSpec:
     @property
     def absent_key_policy(self) -> AbsentKeyPolicy: ...
 
+class WalkSpec:
+    """A scored walk over physical relation paths."""
+    def __init__(self, name: str, paths: Sequence[Sequence[str]], keep: Mapping[str, int],
+                 restart: float, budget: int, clocks: Mapping[str, str]) -> None: ...
+
 class LayerSpec:
     """Immutable native relation overrides and an optional fallback."""
     def __init__(
         self,
         fanouts: Mapping[str, FanoutSpec] | None = None,
         default_fanout: FanoutSpec | None = None,
+        walks: Sequence[WalkSpec] | None = None,
     ) -> None: ...
+    @property
+    def walks(self) -> list[WalkSpec]: ...
     @property
     def fanouts(self) -> Mapping[str, FanoutSpec]: ...
     @property

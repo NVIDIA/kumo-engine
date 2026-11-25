@@ -91,13 +91,13 @@ class Parquet(path: str = '', columns: Mapping[str, str] = {})
 
 One logical table stored as Parquet.
 
-`path` may name a file, a directory, or a glob. `columns` renames
-physical columns to the logical names the schema uses, for the common case
+`path` may name a local file, directory or glob, or an S3 object or prefix.
+`columns` renames physical columns to the logical names the schema uses, for the common case
 where a warehouse column is not called what the model calls it.
 
 **Parameters**
 
-- `path`: a file, a directory, or a glob.
+- `path`: a local file, directory or glob, or an S3 URI.
 - `columns`: physical column name to the logical name the schema uses.
 
 #### `Parquet.to_dict`
@@ -308,13 +308,13 @@ local SSDs and retrieves time-correct context for training and batch
 prediction, such as event histories and graph neighborhoods, without keeping
 the full index in RAM.
 
-The base index is built from local Parquet files and is independent of
+The base index reads local or S3 Parquet files and is independent of
 anchors, fitted encoders and output layout. Several contracts can reuse it
 through the same engine instance or a snapshot binding. Its manifest binds
-the schema, physical file metadata (not a content snapshot) and resolved
-types; every file's declared columns and physical types are checked before
-ingestion. Native ingestion rules apply: rows with
-NULL clocks and other rejected rows are dropped and counted.
+the schema, physical file metadata and resolved types. For S3 sources it
+records the object paths, sizes, ETags and available version IDs. Every
+file's declared columns and physical types are checked before ingestion.
+Native ingestion drops and counts rows with NULL clocks and other rejected rows.
 
 Supported: direct entity fields, historical event fields, typed scalar
 calculations, aggregates and comparisons, nested grouping, generated scalar
@@ -340,7 +340,7 @@ describe the engine's storage; they are not constructor selectors.
 **Parameters**
 
 - `num_threads`: native sampling threads.
-- `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
+- `random_seed`: seed for native uniform-neighbor sampling and candidate draws. Defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
 
@@ -362,7 +362,7 @@ Attach to an existing same-root Kumo snapshot by physical build identity.
 The original base stays in place. Tasks and caches use sibling managed paths
 under kumo.settings.scratch_dir(); no public work/output directories are needed.
 Cross-root imports and snapshots without a build ID are refused.
-`random_seed` controls native uniform-neighbor sampling, as on the
+`random_seed` controls native uniform-neighbor sampling and candidate draws, as on the
 dataset constructor: zero by default, or `None` for fresh randomness.
 
 #### `DiskGraphEngine.schema`
@@ -390,7 +390,7 @@ DiskGraphEngine.check_sources(
 ) -> tuple[ValidationIssue, ...]
 ```
 
-Refuse sources other than local Parquet, before any data is read.
+Refuse unsupported Parquet locations and source kinds before reading data.
 
 `sources` maps table names to their sources; an empty name means the
 source at `path` itself, such as an anchor table's.
@@ -508,7 +508,7 @@ their primary keys, or by source occurrence ordinal for a keyless table.
 InMemoryEngine.check_contract(contract)
 ```
 
-Refuse declared subsecond clocks, which this reference cannot retain.
+Check the capabilities of the Python row sampler before opening the dataset.
 
 #### `InMemoryEngine.check_sources`
 

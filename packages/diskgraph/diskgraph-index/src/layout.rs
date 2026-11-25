@@ -91,6 +91,21 @@ impl<'a> EdgeListView<'a> {
         Ok(self.parse()?.0)
     }
 
+    /// Borrow one relation's packed edges without allocating descriptors for its siblings.
+    pub fn relation_segment(&self, id: u16) -> Result<Option<RelationSegment<'a>>, std::io::Error> {
+        let mut selected = None;
+        let (edges, _) = self.walk_record(|layout, count, range| {
+            if layout.relation_id == id {
+                selected = Some((layout.clone(), count, range));
+            }
+        })?;
+        Ok(selected.map(|(layout, count, range)| RelationSegment {
+            layout,
+            count,
+            data: &edges[range],
+        }))
+    }
+
     /// Return relation segments and feature bytes with a single record walk.
     pub fn parse(&self) -> Result<(Vec<RelationSegment<'a>>, Option<&'a [u8]>), std::io::Error> {
         let mut segments = Vec::with_capacity(self.layouts.len());

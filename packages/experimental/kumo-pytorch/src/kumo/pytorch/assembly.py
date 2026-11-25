@@ -12,6 +12,7 @@ import json
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, fields, is_dataclass, replace
 from dataclasses import field as dataclass_field
 from types import MappingProxyType, SimpleNamespace
@@ -56,10 +57,12 @@ from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
 from kumo.pytorch.contract.dtypes import DType, _arrow_values
 from kumo.pytorch.contract.sample import (
     BuiltSample,
+    DrawNeighbors,
     ExternalTarget,
     SampleRequest,
     SampleSpec,
     _normalize_supplied_targets,
+    graph_node_dtype,
 )
 from kumo.pytorch.data.masking import mask_event_values
 from kumo.pytorch.data.model import ModelSourceBatch
@@ -74,7 +77,7 @@ from kumo.pytorch.encoding import (
     typed_key,
     unjson_value,
 )
-from kumo.pytorch.engine import GraphRoot
+from kumo.pytorch.engine import CandidateGraphRoots, GraphRoot
 from kumo.pytorch.output import (
     TokenRows,
     flatten_rows,
@@ -133,6 +136,8 @@ def _jsonable(value: Any) -> Any:
             "dtype": str(value.dtype).removeprefix("torch."),
             "values": value.tolist(),
         }
+    if isinstance(value, DType):
+        return _jsonable(value.to_dict())
     if is_dataclass(value) and not isinstance(value, type):
         return {item.name: _jsonable(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, Mapping):
@@ -304,6 +309,15 @@ def _model_rows(source: Any, values: ModelSourceBatch, declarations: Mapping[str
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    if isinstance(source, CandidateSource):
+        groups = values.candidates[source.name]
+        records = [record for group in groups for record in group]
+        rows = _record_rows(EntitySource(), records, declarations)
+        return replace(
+            rows,
+            boundaries=offsets([len(group) for group in groups]),
+            sources=np.full(len(records), source.name, dtype=object),
+        )
     if isinstance(source, EntitySource):
         return _Rows(
             boundaries=np.arange(values.batch_size + 1, dtype=np.int64),
@@ -692,12 +706,17 @@ def _fit_inputs(
         value = spec.inputs[name]
         if not isinstance(value.representation, Fields):
             graph_fields[name] = {}
-            tables = {table.name: table for table in contract.schema.tables}
+            scope = (
+                sample
+                if value.source.candidates is None
+                else sample.candidate_sets[value.source.candidates]
+            )
+            neighborhood = scope.neighborhoods[value.source.name]
             for table, group in value.representation.node_fields.items():
                 graph_fields[name][table] = {}
                 for use in group.fields:
                     identity = _graph_encoder_identity(name, table, use)
-                    dtype = tables[table].columns[use.field]
+                    dtype = graph_node_dtype(contract.schema, neighborhood, table, use.field)
                     config = (
                         spec.encodings[use.encoding.name]
                         if isinstance(use.encoding, UseEncoding)
@@ -765,19 +784,62 @@ def _fit_inputs(
         and isinstance(value.representation.row, Composite)
         and value.representation.row.vocabulary is None
     }
+    drawn_graph_roots = None
     for name, value in spec.inputs.items():
         graph_slots = [slot for slot in observed if slot[0] == name]
         if isinstance(value.representation, Graph) and graph_slots:
-            graph = SimpleNamespace(
-                source=value.source.name, node_fields=value.representation.node_fields
-            )
+            # Raw embeddings do not contribute observations to fitted graph encoders.
+            needed = {(table, field) for _, table, field in graph_slots}
+            fields = {}
+            for table, declaration in value.representation.node_fields.items():
+                selected = tuple(use for use in declaration.fields if (table, use.field) in needed)
+                if selected:
+                    fields[table] = replace(declaration, fields=selected)
+            graph = SimpleNamespace(source=value.source.name, node_fields=fields)
             graph_cutoff = getattr(source, "_cutoff", cutoff_to_epoch)
-            roots = [
-                GraphRoot(request.sample_id, request.entity_id, graph_cutoff(request.as_of_time))
-                for requests in _chunks(values_for(None))
-                for request in requests
-            ]
-            found = source.fit_graph_fields(sample, graph, roots)
+            candidate_set = value.source.candidates
+            graph_sample = (
+                sample
+                if candidate_set is None
+                else sample.candidate_sets[candidate_set].sample_spec()
+            )
+            requests = (request for chunk in _chunks(values_for(None)) for request in chunk)
+            if candidate_set is None:
+                roots = [
+                    GraphRoot(
+                        request.sample_id, request.entity_id, graph_cutoff(request.as_of_time)
+                    )
+                    for request in requests
+                ]
+            elif sample.candidate_sets[candidate_set].draw is not None:
+                if drawn_graph_roots is None:
+                    # Graph encoder fitting must observe the same drawn roots as delivery.
+                    drawn_graph_roots = {
+                        key: [] for key, decl in sample.candidate_sets.items() if decl.draw
+                    }
+                    for chunk in _chunks(values_for(None)):
+                        parents = [
+                            GraphRoot(r.sample_id, r.entity_id, graph_cutoff(r.as_of_time))
+                            for r in chunk
+                        ]
+                        for key, groups in source.draw_candidate_ids(sample, parents).items():
+                            drawn_graph_roots[key].extend(
+                                GraphRoot(f"{parent.sample_id}:{key}:{i}", candidate, parent.cutoff)
+                                for parent, group in zip(parents, groups, strict=True)
+                                for i, candidate in enumerate(group)
+                            )
+                roots = drawn_graph_roots[candidate_set]
+            else:
+                roots = [
+                    GraphRoot(
+                        f"{request.sample_id}:{candidate_set}:{position}",
+                        candidate.entity_id,
+                        graph_cutoff(request.as_of_time),
+                    )
+                    for request in requests
+                    for position, candidate in enumerate(request.candidates.get(candidate_set, ()))
+                ]
+            found = source.fit_graph_fields(graph_sample, graph, roots)
             for slot in graph_slots:
                 observe(slot, found[slot[1:]])
     builds = composites or any(
@@ -994,10 +1056,10 @@ def _occurrence_rows(
     )
 
 
-def _encoded_column(binding: OutputBinding, column: Any, *, model=False) -> dict[str, Any]:
-    import pyarrow as pa
-
-    if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
+def _encoded_column(
+    binding: OutputBinding, column: Any, *, repeated: bool, model=False
+) -> dict[str, Any]:
+    if repeated:
         result = binding.encode_arrow(column.flatten(), model=model)
         result["occurrence_offsets"] = torch.tensor(
             column.offsets.to_numpy(zero_copy_only=False), dtype=torch.long
@@ -1028,7 +1090,8 @@ def _column_output(
     group = prepared.spec.representation
     field_space = state.spaces.get(group.field_space) if state is not None else None
     for field, binding in prepared.state.items():
-        encoded = _encoded_column(binding, rows.columns[field], model=model)
+        repeated = any(item[2] == "repeated" for item in prepared.declarations[field])
+        encoded = _encoded_column(binding, rows.columns[field], repeated=repeated, model=model)
         value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
         if group.field_names is not None:
             if state is None:
@@ -1162,7 +1225,7 @@ def _token_rows(
                 np.zeros(len(row_ids), dtype=bool),
                 np.zeros(len(row_ids), dtype=np.int64),
             )
-        encoded = _encoded_column(binding, column, model=model)
+        encoded = _encoded_column(binding, column, repeated=repeated, model=model)
         scalar_valid = encoded["valid"].numpy()
         present = np.ones(len(row_ids), dtype=bool)
         declared = prepared.declarations[use.field]
@@ -1441,6 +1504,9 @@ class _TargetState:
 def _raw_targets(
     values: Any, source: str, *, field: str | None = None, candidate: str | None = None
 ):
+    if isinstance(values, ModelSourceBatch) and candidate is not None:
+        values = [record for group in values.candidates[candidate] for record in group]
+        candidate = None
     if isinstance(values, ModelSourceBatch):
         if field is not None:
             return _arrow_values(values.row_targets[source].fields[field])
@@ -1599,7 +1665,6 @@ def _fit_targets(
             dated_entity_values={},
             events={},
             current_events={},
-            neighborhoods={},
         )
     else:
         built = None
@@ -2180,10 +2245,6 @@ class PreparedBatchPlan:
                 "the typed model source does not expose their occurrences"
             )
         for name, value in self._prepared_inputs.items():
-            if isinstance(value.spec.source, CandidateSource):
-                raise ValueError(
-                    f"input {name!r}: candidate model output is not supported; use inspectable"
-                )
             bindings = (
                 value.state.values()
                 if isinstance(value.spec.representation, Fields)
@@ -2230,6 +2291,7 @@ class PreparedBatchPlan:
         columnar=False,
         deduplicate_edges=False,
         encoding_model=None,
+        shared_graphs=None,
     ) -> Batch:
         # Native buffers and the requested encoding surface are independent:
         # inspectable output still permits Raw values without tensor encodings.
@@ -2246,14 +2308,70 @@ class PreparedBatchPlan:
         entity_ids = (
             values.entity_ids if model else tuple(_history(value).entity_id for value in values)
         )
+        candidate_sets = (
+            values.candidates
+            if model
+            else {
+                name: tuple(value.candidates.get(name, ()) for value in values)
+                for name in self.sample.candidate_sets
+            }
+        )
+        graph_roots = getattr(values, "candidate_roots", {}) if model else {}
         result, targets = {}, {}
         for name, prepared in self._prepared_inputs.items():
             if isinstance(prepared.spec.representation, Graph):
+                if shared_graphs is not None and name in shared_graphs:
+                    result[name] = shared_graphs[name]
+                    continue
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
+                    candidates=prepared.spec.source.candidates,
                     node_fields=prepared.spec.representation.node_fields,
                     topology=prepared.spec.representation.topology,
                 )
+                candidate_set = prepared.spec.source.candidates
+                if candidate_set is not None:
+                    candidate_sample = self.sample.candidate_sets[candidate_set].sample_spec()
+                    if candidate_set in graph_roots:
+                        group = graph_roots[candidate_set]
+                        if isinstance(group, CandidateGraphRoots):
+                            roots = [
+                                group.root(owner, position, entity_id)
+                                for owner, ids in enumerate(group.entity_ids)
+                                for position, entity_id in enumerate(ids)
+                            ]
+                            boundaries = group.bounds
+                        else:
+                            roots = [root for candidates in group for root in candidates]
+                            boundaries = offsets([len(candidates) for candidates in group])
+                    else:
+                        group = candidate_sets[candidate_set]
+                        roots = [
+                            GraphRoot(
+                                record.sample_id,
+                                record.history.entity_id,
+                                record.history.evaluation_time,
+                            )
+                            for candidates in group
+                            for record in candidates
+                        ]
+                        boundaries = offsets([len(candidates) for candidates in group])
+                    if columnar:
+                        import pyarrow as pa
+
+                        sampled = self._source.columnar_candidate_graph(
+                            candidate_sample, graph, roots, deduplicate_edges=deduplicate_edges
+                        )
+                        result[name] = replace(sampled, candidate_offsets=pa.array(boundaries))
+                    else:
+                        sampled = self._source.sample_graph(
+                            candidate_sample, graph, prepared.state, roots, seed, epoch
+                        )
+                        result[name] = {
+                            **sampled,
+                            "candidate_offsets": torch.from_numpy(boundaries),
+                        }
+                    continue
                 if columnar:
                     result[name] = self._source.columnar_graph_batch(
                         self.sample,
@@ -2356,19 +2474,31 @@ class PreparedBatchPlan:
         )
         if all(type(value) is int and -(2**63) <= value < 2**63 for value in entity_ids):
             metadata["entity_ids"] = torch.tensor(entity_ids, dtype=torch.long)
-        if not model and self.sample.candidate_sets:
-            metadata["candidate_entity_ids"] = {
-                name: tuple(
-                    tuple(
-                        candidate.history.entity_id for candidate in value.candidates.get(name, ())
+        if candidate_sets or graph_roots:
+            ids = {}
+            for name in self.sample.candidate_sets:
+                if name in graph_roots:
+                    group = graph_roots[name]
+                    ids[name] = (
+                        group.entity_ids
+                        if isinstance(group, CandidateGraphRoots)
+                        else tuple(tuple(root.entity_id for root in owners) for owners in group)
                     )
-                    for value in values
-                )
-                for name in self.sample.candidate_sets
-            }
-        return Batch(
-            inputs=kernel_metadata(result), targets=kernel_metadata(targets), metadata=metadata
-        )
+                elif name in candidate_sets:
+                    ids[name] = tuple(
+                        tuple(item.history.entity_id for item in group)
+                        for group in candidate_sets[name]
+                    )
+            metadata["candidate_entity_ids"] = ids
+        if shared_graphs:
+            # Compatible DiskGraph walks contain only raw per-node values. Their sole
+            # packed boundary was annotated when candidate_offsets was constructed.
+            result.update(
+                kernel_metadata({k: v for k, v in result.items() if k not in shared_graphs})
+            )
+        else:
+            result = kernel_metadata(result)
+        return Batch(inputs=result, targets=kernel_metadata(targets), metadata=metadata)
 
     def _input_length(self, value: HistoryInput, input_name: str | None) -> int:
         if input_name is None:
@@ -2488,7 +2618,25 @@ class PreparedBatchPlan:
                 world_size=world_size,
             )
         )
-        built = self._request_builder(values) if requests and not model else values
+        drawn_neighborhoods = (
+            {
+                candidate.draw.neighborhood
+                for candidate in self.sample.candidate_sets.values()
+                if isinstance(candidate.draw, DrawNeighbors)
+            }
+            if requests
+            else set()
+        )
+        shared_draw = bool(drawn_neighborhoods) and any(
+            isinstance(value.representation, Graph)
+            and value.source.candidates is None
+            and value.source.name in drawn_neighborhoods
+            for value in self.spec.inputs.values()
+        )
+        draw_scope = self._source.reuse_draw_graphs if shared_draw else nullcontext
+        built = values
+        if requests and not model and (not shared_draw or policy.length_input is not None):
+            built = self._request_builder(values)
         if model and (policy.max_tokens is not None or policy.bucket_by_length):
             length_spec = self.spec.inputs[policy.length_input]
             native_counter = getattr(self._source, "model_lengths", None)
@@ -2530,30 +2678,41 @@ class PreparedBatchPlan:
             chunks = chunks[:-1]
         for chunk in chunks:
             started = time.perf_counter_ns()
-            if model:
-                selected_requests = [values[index] for index in chunk]
-                builder = getattr(self._source, "build_model_ordered", None)
-                orders = {}
-                for value in self.spec.inputs.values():
-                    if isinstance(value.source, EventSource):
-                        for event in value.source.events:
-                            orders.setdefault(event, set()).add(value.source.order)
-                source_values = (
-                    builder(
-                        self._model_sample,
-                        selected_requests,
-                        event_orders={
-                            name: tuple(sorted(directions)) for name, directions in orders.items()
-                        },
+            with draw_scope():
+                if model:
+                    selected_requests = [values[index] for index in chunk]
+                    builder = getattr(self._source, "build_model_ordered", None)
+                    orders = {}
+                    for value in self.spec.inputs.values():
+                        if isinstance(value.source, EventSource):
+                            for event in value.source.events:
+                                orders.setdefault(event, set()).add(value.source.order)
+                    source_values = (
+                        builder(
+                            self._model_sample,
+                            selected_requests,
+                            event_orders={
+                                name: tuple(sorted(directions))
+                                for name, directions in orders.items()
+                            },
+                        )
+                        if callable(builder)
+                        else self._source.build_model(self._model_sample, selected_requests)
                     )
-                    if callable(builder)
-                    else self._source.build_model(self._model_sample, selected_requests)
-                )
-                batch = self._collate(
-                    source_values, epoch=epoch, seed=seed, model=True, requests=selected_requests
-                )
-            else:
-                batch = self._collate([built[index] for index in chunk], epoch=epoch, seed=seed)
+                    batch = self._collate(
+                        source_values,
+                        epoch=epoch,
+                        seed=seed,
+                        model=True,
+                        requests=selected_requests,
+                    )
+                else:
+                    records = (
+                        self._request_builder([values[index] for index in chunk])
+                        if shared_draw
+                        else [built[index] for index in chunk]
+                    )
+                    batch = self._collate(records, epoch=epoch, seed=seed)
             self._last_batch_profile = {
                 "output_format": output_format,
                 "samples": len(chunk),

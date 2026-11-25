@@ -137,18 +137,17 @@ class DType(
     timezone: str | None = None,
     precision: int | None = None,
     scale: int | None = None,
+    shape: tuple[int, ...] = (),
 )
 ```
 
-The stored scalar type, independent of its eventual model encoding.
+The stored type, independent of its eventual model encoding.
 
 Supported names: `bool`; `int8`, `int16`, `int32`, `int64`;
 `uint8`, `uint16`, `uint32`, `uint64`; `float32`, `float64`;
 `string`, `bytes`; `date32`; `timestamp` (`unit="s"|"ms"|"us"|"ns"`,
 `timezone="UTC"`); `decimal128` (precision up to 38) and `decimal256`
-(precision up to 76), which require `precision` and `scale`. No
-parameters are accepted for other families. Arrays, lists and structs are
-not scalar column types. NULL is allowed for every type; it is not a dtype.
+(precision up to 76), which require `precision` and `scale`.
 
 The type describes stored values, not an encoding: values are validated,
 never converted. Numeric strings are not parsed, numbers are not
@@ -168,6 +167,10 @@ typed Arrow timestamp. Physical Parquet timestamp units may differ from
 the declared storage unit; native ingestion converts them to the graph
 clock. The finest declared timestamp unit across all tables selects that
 clock, including columns not used by a particular task.
+
+**Parameters**
+
+- `shape`: Positive dimensions of an integer or floating-point array. The default empty tuple describes a scalar. Each non-null array is a flat row-major list of exactly the product of the dimensions, with a value at every position. A null row represents a missing array.
 
 **Raises**
 
@@ -191,13 +194,27 @@ Whether `ZScore` and `Buckets` accept it: integers, floats and decimals.
 
 Whether it can be compared with an anchor time: `timestamp` or `date32`.
 
+#### `DType.element_dtype`
+
+*property*
+
+The scalar type of one array element.
+
+#### `DType.to_dict`
+
+```python
+DType.to_dict() -> dict[str, Any]
+```
+
+Storage metadata for this dtype, preserving existing scalar declarations.
+
 #### `DType.normalize`
 
 ```python
 DType.normalize(value: Any, *, path: str = 'value') -> Any
 ```
 
-Validate a scalar; only the declared storage normalization is applied.
+Validate one nullable stored value and apply its storage normalization.
 
 #### `DType.to_arrow`
 
@@ -212,7 +229,15 @@ Return the corresponding Arrow type without importing Arrow at startup.
 *classmethod*
 
 ```python
-DType.from_arrow(value: Any) -> DType
+DType.from_arrow(value: Any, *, shape: tuple[int, ...] = ()) -> DType
 ```
 
-Resolve supported physical scalar metadata to its stored type.
+Resolve Arrow metadata, using an explicit shape for variable-size lists.
+
+#### `DType.validate_array`
+
+```python
+DType.validate_array(values: Array | ChunkedArray, *, path: str = 'value') -> None
+```
+
+Check the storage type, row widths and child validity of a numeric array column.
