@@ -991,7 +991,15 @@ class DiskGraphSource:
         return draw_candidate_ids(self, sample, roots)
 
     def build_candidates(
-        self, spec, candidate_requests, as_of_times, sample_ids, entity_ids, *, cutoffs=None
+        self,
+        spec,
+        candidate_requests,
+        as_of_times,
+        sample_ids,
+        entity_ids,
+        *,
+        cutoffs=None,
+        graph_only=(),
     ):
         """Resolve candidate IDs and build each occurrence at its parent's prediction time."""
 
@@ -1027,20 +1035,24 @@ class DiskGraphSource:
                     if len({entry.entity_id for entry in supplied}) != len(supplied):
                         raise ValueError(f"candidate IDs must be unique within set {name!r}")
                     entries = ((entry.entity_id, entry.targets) for entry in supplied)
-                requests.extend(
-                    SampleRequest(f"{owner}:{name}:{pos}", key, at, targets)
-                    for pos, (key, targets) in enumerate(entries)
-                )
+                for pos, (key, targets) in enumerate(entries):
+                    identity = f"{owner}:{name}:{pos}"
+                    if name in graph_only:
+                        if targets:
+                            raise ValueError(f"unknown supplied target: {targets[0].name!r}")
+                        requests.append(GraphRoot(identity, key, cutoffs[i]))
+                    else:
+                        requests.append(SampleRequest(identity, key, at, targets))
                 offsets.append(len(requests))
-            sample = declaration.sample_spec()
-            # Materialized columns are indexed by parent anchor; candidate
-            # features/labels must be queried against their own entity instead.
-            source = (
-                self._materialized_reference.source
-                if getattr(self, "_materialized_values", None) is not None
-                else self
-            )
-            built = source._build_roots(sample, requests) if requests else []
+            built = requests
+            if requests and name not in graph_only:
+                # Materialized columns belong to the parent, not its candidates.
+                source = (
+                    self._materialized_reference.source
+                    if getattr(self, "_materialized_values", None) is not None
+                    else self
+                )
+                built = source._build_roots(declaration.sample_spec(), requests)
             groups[name] = tuple(tuple(built[a:b]) for a, b in zip(offsets, offsets[1:]))
         return groups
 
@@ -2820,7 +2832,9 @@ class DiskGraphSource:
                 schema=schema,
             )
             batches.update(dict.fromkeys(missing, empty))
-        return batches
+        # Nonempty native banks arrive independently. Keep the specification's order
+        # even when combining walk requests changes which banks have hits.
+        return {name: batches[name] for name in groups}
 
     def _graph_output(
         self,
@@ -3016,6 +3030,21 @@ class DiskGraphSource:
                 else self._pa.array([], type=columns[name].to_arrow())
                 for name in names
             }
+        cache = None if runtime is None else runtime.get("_graph_feature_cache")
+        if cache is not None:
+            types = self._tables[table].columns or {}
+            selected = [types.get(name) for name in names]
+            if all(t is not None and (t.shape or t.integer) for t in selected) and any(
+                t.shape for t in selected
+            ):
+                return cache.read(
+                    (table, tuple(names)),
+                    node_ids,
+                    lambda selected: self._read_feature_arrays(table, selected, names),
+                )
+        return self._read_feature_arrays(table, node_ids, names)
+
+    def _read_feature_arrays(self, table, node_ids, names):
         chunks: dict[str, list[Any]] = {name: [] for name in names}
         for event in self._sampler.fetch_features(
             [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]

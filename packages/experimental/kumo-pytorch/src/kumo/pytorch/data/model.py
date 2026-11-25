@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kumo.pytorch.contract.sample import BuiltSample
+    from kumo.pytorch.engine import GraphRoot
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,9 @@ class ModelSourceBatch:
     timestamp_unit: str = "seconds"
     # One inner sequence per owning anchor, in caller-supplied candidate order.
     candidates: Mapping[str, tuple[tuple[BuiltSample, ...], ...]] = field(default_factory=dict)
+
+    # Graph-only DiskGraph candidates already have an owning cutoff and no row payload.
+    candidate_roots: Mapping[str, tuple[tuple[GraphRoot, ...], ...]] = field(default_factory=dict)
 
     @property
     def batch_size(self) -> int:

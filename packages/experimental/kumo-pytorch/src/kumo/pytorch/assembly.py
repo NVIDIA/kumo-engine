@@ -2291,6 +2291,7 @@ class PreparedBatchPlan:
         columnar=False,
         deduplicate_edges=False,
         encoding_model=None,
+        shared_graphs=None,
     ) -> Batch:
         # Native buffers and the requested encoding surface are independent:
         # inspectable output still permits Raw values without tensor encodings.
@@ -2315,9 +2316,13 @@ class PreparedBatchPlan:
                 for name in self.sample.candidate_sets
             }
         )
+        graph_roots = getattr(values, "candidate_roots", {}) if model else {}
         result, targets = {}, {}
         for name, prepared in self._prepared_inputs.items():
             if isinstance(prepared.spec.representation, Graph):
+                if shared_graphs is not None and name in shared_graphs:
+                    result[name] = shared_graphs[name]
+                    continue
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
                     candidates=prepared.spec.source.candidates,
@@ -2326,17 +2331,21 @@ class PreparedBatchPlan:
                 )
                 candidate_set = prepared.spec.source.candidates
                 if candidate_set is not None:
-                    group = candidate_sets[candidate_set]
                     candidate_sample = self.sample.candidate_sets[candidate_set].sample_spec()
-                    roots = [
-                        GraphRoot(
-                            record.sample_id,
-                            record.history.entity_id,
-                            record.history.evaluation_time,
-                        )
-                        for candidates in group
-                        for record in candidates
-                    ]
+                    if candidate_set in graph_roots:
+                        group = graph_roots[candidate_set]
+                        roots = [root for candidates in group for root in candidates]
+                    else:
+                        group = candidate_sets[candidate_set]
+                        roots = [
+                            GraphRoot(
+                                record.sample_id,
+                                record.history.entity_id,
+                                record.history.evaluation_time,
+                            )
+                            for candidates in group
+                            for record in candidates
+                        ]
                     boundaries = offsets([len(candidates) for candidates in group])
                     if columnar:
                         import pyarrow as pa
@@ -2456,10 +2465,18 @@ class PreparedBatchPlan:
         )
         if all(type(value) is int and -(2**63) <= value < 2**63 for value in entity_ids):
             metadata["entity_ids"] = torch.tensor(entity_ids, dtype=torch.long)
-        if candidate_sets:
+        if candidate_sets or graph_roots:
             metadata["candidate_entity_ids"] = {
-                name: tuple(tuple(item.history.entity_id for item in group) for group in owners)
-                for name, owners in candidate_sets.items()
+                name: (
+                    tuple(tuple(root.entity_id for root in group) for group in graph_roots[name])
+                    if name in graph_roots
+                    else tuple(
+                        tuple(item.history.entity_id for item in group)
+                        for group in candidate_sets[name]
+                    )
+                )
+                for name in self.sample.candidate_sets
+                if name in candidate_sets or name in graph_roots
             }
         return Batch(
             inputs=kernel_metadata(result), targets=kernel_metadata(targets), metadata=metadata

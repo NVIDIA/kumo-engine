@@ -427,7 +427,7 @@ class NativeAnchors:
             columns[name] = values
         return data["anchor_position"], columns
 
-    def _batch_values(self, stage, runtime, sample):
+    def _batch_values(self, stage, runtime, sample, graph_only=()):
         """Retain typed label/value columns and adapt only public identity metadata."""
         from kumo.pytorch.data.model import ModelSourceBatch
 
@@ -470,11 +470,11 @@ class NativeAnchors:
                 if table.candidates
                 else ({},) * n
             )
-            as_of_times = (
-                _column_values(pa, columns[table.as_of_time], self._types[table.as_of_time])
-                if table.as_of_time
-                else (0,) * n
-            )
+            as_of_times = evaluation_times
+            if table.as_of_time and len(graph_only) != len(sample.candidate_sets):
+                as_of_times = _column_values(
+                    pa, columns[table.as_of_time], self._types[table.as_of_time]
+                )
             if any(candidate.draw for candidate in sample.candidate_sets.values()):
                 runtime["_anchor_sample"] = sample
                 runtime["_anchor_roots"] = tuple(
@@ -482,11 +482,19 @@ class NativeAnchors:
                 )
             with runtime_features(self._source, runtime):
                 candidates = self._source.build_candidates(
-                    sample, requests, as_of_times, sample_ids, entity_ids, cutoffs=evaluation_times
+                    sample,
+                    requests,
+                    as_of_times,
+                    sample_ids,
+                    entity_ids,
+                    cutoffs=evaluation_times,
+                    graph_only=graph_only,
                 )
         else:
             self._source._last_candidate_draw_profile = None
+        candidate_roots = {name: candidates.pop(name) for name in graph_only}
         return ModelSourceBatch(
+            candidate_roots=candidate_roots,
             candidates=candidates,
             sample_ids=sample_ids,
             entity_ids=entity_ids,
@@ -874,9 +882,14 @@ class NativeAnchors:
         from dataclasses import replace
 
         from kumo.pytorch.anchors import PADDING_KEY
-        from kumo.pytorch.contract.batch import EventSource, NeighborhoodSource
+        from kumo.pytorch.contract.batch import CandidateSource, EventSource, NeighborhoodSource
         from kumo.pytorch.contract.sample import WalkSample
+        from kumo.pytorch.engines.candidate_walks import (
+            compatible_walk_groups,
+            sample_candidate_walks,
+        )
         from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
+        from kumo.pytorch.engines.graph_projection import GraphProjectionCache
         from kumo.pytorch.task import _padding_sample_ids, _surface_padding
 
         if output_format == "model":
@@ -891,6 +904,19 @@ class NativeAnchors:
                 for traversal in layer.samples
             )
 
+        row_inputs = {
+            p.spec.source.name
+            for p in assembler._prepared_inputs.values()
+            if isinstance(p.spec.source, CandidateSource)
+        }
+        graph_only = {
+            name
+            for name, candidate in sample.candidate_sets.items()
+            if name not in row_inputs
+            and not candidate.values
+            and not candidate.targets
+            and candidate.entity.available_from is None
+        }
         has_root_walks = any(has_walk(hood) for hood in sample.neighborhoods.values())
         has_candidate_walks = any(
             has_walk(sample.candidate_sets[binding.candidates].neighborhoods[binding.name])
@@ -998,11 +1024,16 @@ class NativeAnchors:
                     padding_stage,
                 )
 
+        walk_groups = (
+            compatible_walk_groups(assembler, graph_only) if output_format == "model" else ()
+        )
+        graph_feature_cache = GraphProjectionCache()
         for runtime, padded, runtime_stage in runtime_batches():
+            runtime["_graph_feature_cache"] = graph_feature_cache
             runtime["_anchor_neighborhood"] = anchor_neighborhood
             if has_candidate_walks:
                 runtime["_candidate_walk_stats"] = {"walk_pushes": 0, "walk_decoded_entries": 0}
-            anchors = self._batch_values(runtime_stage, runtime, sample)
+            anchors = self._batch_values(runtime_stage, runtime, sample, graph_only)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
             if sample.entity.available_from is not None:
@@ -1036,6 +1067,13 @@ class NativeAnchors:
                         )
                     )
                 else:
+                    shared_graphs = (
+                        sample_candidate_walks(
+                            source, walk_groups, anchors.candidate_roots, seed, epoch
+                        )
+                        if walk_groups
+                        else None
+                    )
                     values = source.build_model_batch(sample, runtime, anchors, compiled)
                     values = replace(
                         values,
@@ -1053,6 +1091,7 @@ class NativeAnchors:
                             seed=seed,
                             model=True,
                             encoding_model=output_format == "model",
+                            shared_graphs=shared_graphs,
                         )
                     )
             if has_root_walks or has_candidate_walks:

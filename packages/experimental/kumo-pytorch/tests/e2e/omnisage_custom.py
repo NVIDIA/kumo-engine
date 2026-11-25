@@ -66,6 +66,43 @@ def _draw_rows(owners, ids, n, rng):
     return ids[positions < DRAW_COUNT], _offsets(np.minimum(counts, DRAW_COUNT))
 
 
+def _static_features(index, sampler, field_names, width):
+    public = {}
+    vectors = {}
+    stats = json.loads((index / "ingest_stats.json").read_text())["stats"]["node_counts"]
+    for table, field in field_names.items():
+        size = stats[table]
+        vector_width = width if table == "pins" else min(128, width)
+        ids = np.empty(size, dtype=np.int64)
+        values = np.empty((size, vector_width), dtype=np.float32)
+        for start in range(0, size, 2048):
+            stop = min(start + 2048, size)
+            offset = start
+            for e in sampler.fetch_features(
+                [
+                    {
+                        "node_type": table,
+                        "node_ids": list(range(start, stop)),
+                        "feature_names": ["id", field],
+                    }
+                ]
+            ):
+                if e["type"] != "feature":
+                    continue
+                batch = e["batch"]
+                arr = batch.column(field)
+                if arr.null_count or arr.values.null_count:
+                    raise ValueError("this benchmark uses non-null feature vectors")
+                end = offset + len(arr)
+                ids[offset:end] = batch.column("id").to_numpy()
+                values[offset:end] = arr.flatten().to_numpy().reshape(len(arr), vector_width)
+                offset = end
+            if offset != stop:
+                raise ValueError("incomplete DiskGraph static feature projection")
+        public[table], vectors[table] = ids, values
+    return public, vectors
+
+
 class CustomLoader:
     """Cache projected static columns and anchors; query the native temporal index each batch."""
 
@@ -103,39 +140,7 @@ class CustomLoader:
             stop=FUTURE_WINDOW,
         )
         self.field_names = {"pins": "image", "boards": "annotation"}
-        self.public = {}
-        self.vectors = {}
-        stats = json.loads((index / "ingest_stats.json").read_text())["stats"]["node_counts"]
-        for table, field in self.field_names.items():
-            size = stats[table]
-            vector_width = width if table == "pins" else min(128, width)
-            ids = np.empty(size, dtype=np.int64)
-            vectors = np.empty((size, vector_width), dtype=np.float32)
-            for start in range(0, size, 2048):
-                stop = min(start + 2048, size)
-                offset = start
-                for e in self.sampler.fetch_features(
-                    [
-                        {
-                            "node_type": table,
-                            "node_ids": list(range(start, stop)),
-                            "feature_names": ["id", field],
-                        }
-                    ]
-                ):
-                    if e["type"] != "feature":
-                        continue
-                    batch = e["batch"]
-                    arr = batch.column(field)
-                    if arr.null_count or arr.values.null_count:
-                        raise ValueError("this benchmark uses non-null feature vectors")
-                    end = offset + len(arr)
-                    ids[offset:end] = batch.column("id").to_numpy()
-                    vectors[offset:end] = arr.flatten().to_numpy().reshape(len(arr), vector_width)
-                    offset = end
-                if offset != stop:
-                    raise ValueError("incomplete DiskGraph static feature projection")
-            self.public[table], self.vectors[table] = ids, vectors
+        self.public, self.vectors = _static_features(index, self.sampler, self.field_names, width)
         self.lookup_order = self.public["pins"].argsort()
         self.lookup_keys = self.public["pins"][self.lookup_order]
         path = str(getattr(anchor_source, "path", anchor_source))

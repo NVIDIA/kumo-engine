@@ -6,7 +6,8 @@ use super::*;
 use diskgraph_core::indexed_time_range::{unclipped_bucket_end, IndexedTimeRange};
 use diskgraph_index::layout::EdgeListView;
 use diskgraph_rowpack::{RowPackDecodeScratch, ValueRef};
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
+use std::ops::Range;
 
 #[derive(Default)]
 struct WalkResult {
@@ -141,36 +142,74 @@ impl CompiledWalk {
 // for nodes that can actually be pushed at this residual.
 enum Degree {
     AtLeast(usize),
-    Complete(Arc<[Node]>),
+    Complete(Range<usize>),
 }
 
-fn eligible(
+struct PushNode {
     node: Node,
-    mass: f64,
-    budget: u32,
-    cache: &mut HashMap<Node, Degree>,
-    read: &mut impl FnMut(Node, usize) -> Result<Vec<Node>>,
-) -> Result<bool> {
-    let delta = |degree: usize| degree as f64 / f64::from(budget);
-    match cache.get(&node) {
-        Some(Degree::Complete(nodes)) => return Ok(!nodes.is_empty() && mass >= delta(nodes.len())),
-        Some(Degree::AtLeast(lower)) if mass < delta(*lower) => return Ok(false),
-        _ => {}
+    degree: Degree,
+    residual: f64,
+    score: f64,
+    queued: bool,
+}
+
+// Physical node IDs may be sparse. Intern only nodes reached by this root at
+// its cutoff. Once decoded, adjacency and the FIFO use compact local positions.
+#[derive(Default)]
+struct PushWorkspace {
+    positions: GxHashMap<Node, usize>,
+    nodes: Vec<PushNode>,
+    adjacent: Vec<usize>,
+}
+
+impl PushWorkspace {
+    fn position(&mut self, node: Node) -> usize {
+        *self.positions.entry(node).or_insert_with(|| {
+            let i = self.nodes.len();
+            self.nodes.push(PushNode {
+                node,
+                degree: Degree::AtLeast(0),
+                residual: 0.0,
+                score: 0.0,
+                queued: false,
+            });
+            i
+        })
     }
-    if mass < delta(1) {
-        return Ok(false);
+
+    fn eligible(
+        &mut self,
+        i: usize,
+        budget: u32,
+        read: &mut impl FnMut(Node, usize) -> Result<Vec<Node>>,
+    ) -> Result<bool> {
+        let state = &self.nodes[i];
+        let mass = state.residual;
+        let threshold = |degree: usize| degree as f64 / f64::from(budget);
+        match &state.degree {
+            Degree::Complete(range) => {
+                return Ok(!range.is_empty() && mass >= threshold(range.len()))
+            }
+            Degree::AtLeast(lower) if mass < threshold((*lower).max(1)) => return Ok(false),
+            _ => {}
+        }
+        // One extra entry resolves floating-point rounding at integral thresholds.
+        let limit = (mass * f64::from(budget)).ceil() as usize + 1;
+        let mut neighbors = read(state.node, limit)?;
+        let count = neighbors.len();
+        if count >= limit {
+            self.nodes[i].degree = Degree::AtLeast(count);
+            return Ok(false);
+        }
+        neighbors.sort_unstable();
+        let start = self.adjacent.len();
+        for neighbor in neighbors {
+            let dest = self.position(neighbor);
+            self.adjacent.push(dest);
+        }
+        self.nodes[i].degree = Degree::Complete(start..self.adjacent.len());
+        Ok(count > 0 && mass >= threshold(count))
     }
-    // One extra element covers floating-point rounding at an integral threshold.
-    let limit = (mass * f64::from(budget)).ceil() as usize + 1;
-    let mut nodes = read(node, limit)?;
-    if nodes.len() >= limit {
-        cache.insert(node, Degree::AtLeast(nodes.len()));
-        return Ok(false);
-    }
-    nodes.sort_unstable();
-    let active = !nodes.is_empty() && mass >= delta(nodes.len());
-    cache.insert(node, Degree::Complete(nodes.into()));
-    Ok(active)
 }
 
 fn forward_push(
@@ -178,35 +217,40 @@ fn forward_push(
     restart: f64,
     budget: u32,
     mut read: impl FnMut(Node, usize) -> Result<Vec<Node>>,
-) -> Result<(HashMap<Node, f64>, u64)> {
-    let mut scores = HashMap::new();
-    let mut cache = HashMap::new();
-    if !eligible(start, 1.0, budget, &mut cache, &mut read)? {
-        return Ok((scores, 0));
+) -> Result<(Vec<(Node, f64)>, u64)> {
+    let mut work = PushWorkspace::default();
+    let root = work.position(start);
+    work.nodes[root].residual = 1.0;
+    if !work.eligible(root, budget, &mut read)? {
+        return Ok((Vec::new(), 0));
     }
-    let mut residual = HashMap::from([(start, 1.0)]);
-    let mut queue = VecDeque::from([start]);
-    let mut queued = HashSet::from([start]);
+    let mut queue = VecDeque::from([root]);
     let mut pushes = 0;
-    while let Some(node) = queue.pop_front() {
+    while let Some(i) = queue.pop_front() {
         pushes += 1;
-        queued.remove(&node);
-        let mass = residual.remove(&node).unwrap();
-        *scores.entry(node).or_default() += restart * mass;
-        let Degree::Complete(neighbors) = &cache[&node] else {
+        let state = &mut work.nodes[i];
+        state.queued = false;
+        let mass = std::mem::take(&mut state.residual);
+        state.score += restart * mass;
+        let Degree::Complete(range) = &state.degree else {
             unreachable!()
         };
-        let neighbors = Arc::clone(neighbors);
-        let share = (1.0 - restart) * mass / neighbors.len() as f64;
-        for &other in neighbors.iter() {
-            let entry = residual.entry(other).or_default();
-            *entry += share;
-            if !queued.contains(&other) && eligible(other, *entry, budget, &mut cache, &mut read)? {
-                queued.insert(other);
-                queue.push_back(other);
+        let share = (1.0 - restart) * mass / range.len() as f64;
+        for edge in range.clone() {
+            let dest = work.adjacent[edge];
+            work.nodes[dest].residual += share;
+            if !work.nodes[dest].queued && work.eligible(dest, budget, &mut read)? {
+                work.nodes[dest].queued = true;
+                queue.push_back(dest);
             }
         }
     }
+    let scores = work
+        .nodes
+        .into_iter()
+        .filter(|n| n.score > 0.0)
+        .map(|n| (n.node, n.score))
+        .collect();
     Ok((scores, pushes))
 }
 
@@ -503,6 +547,7 @@ mod tests {
             Ok(vec![if n == a { b } else { a }])
         })
         .unwrap();
+        let scores: HashMap<_, _> = scores.into_iter().collect();
         assert!((scores[&a] - 1.0 / 1.75).abs() < 1e-5);
         assert!((scores[&b] - 0.75 / 1.75).abs() < 1e-5);
     }
