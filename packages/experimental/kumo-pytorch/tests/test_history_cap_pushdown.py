@@ -330,6 +330,24 @@ def test_budgeted_batches_cross_read_chunks(
                         assert nodes["batch"].equal(expected_nodes["batch"])
 
 
+def test_multisplit_bucketed_token_budget_rejects_multiple_ranks(tmp_path):
+    contract, dataset = _history_case(tmp_path, "last", "ascending", api.Packed(), False)
+    batching = api.Batching(
+        max_samples=2, max_tokens=6, length_input="history", bucket_by_length=True
+    )
+    contract = replace(contract, batch=replace(contract.batch, batching=batching))
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.table({"user": [1, 1], "at": [60, 61], "split": ["train", "val"]}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at", split="split")
+    with (
+        api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan,
+        plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task,
+    ):
+        for rank in (0, 1):
+            with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
+                task.batches(split=api.ALL_ANCHORS, rank=rank, world_size=2, output_format="model")
+
+
 @pytest.mark.parametrize("bucket", [False, True], ids=["ordered", "bucketed"])
 def test_multisplit_next_token_budget_counts_emitted_slots(tmp_path, bucket):
     from tests.test_target_layouts import _text
