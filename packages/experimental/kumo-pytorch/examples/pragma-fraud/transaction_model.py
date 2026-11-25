@@ -14,7 +14,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 WIDTH = 48
 PROFILE_FIELDS = 5
@@ -36,7 +36,7 @@ class TransactionEncoder(nn.Module):
         )
         self.history = nn.TransformerEncoder(layer, 2, enable_nested_tensor=False)
 
-    def forward(self, batch: api.Batch) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, batch: kp.Batch) -> tuple[torch.Tensor, torch.Tensor]:
         profile, history = batch.inputs["profile"], batch.inputs["history"]
         sequence = history["sequence"]
         offsets = history["field_offsets"]
@@ -67,7 +67,7 @@ class TransactionEncoder(nn.Module):
         return torch.cat((profile_context, mean, last), -1), values + context[event_of]
 
 
-def masked_value_loss(encoder: TransactionEncoder, batch: api.Batch) -> torch.Tensor:
+def masked_value_loss(encoder: TransactionEncoder, batch: kp.Batch) -> torch.Tensor:
     """Cross-entropy of each masked token's original, scored with the tied token embedding."""
 
     _, token_context = encoder(batch)
@@ -84,12 +84,12 @@ class FraudModel(nn.Module):
         self.encoder = encoder.requires_grad_(False)
         self.head = nn.Sequential(nn.Linear(SUMMARY, WIDTH), nn.GELU(), nn.Linear(WIDTH, 1))
 
-    def forward(self, batch: api.Batch) -> torch.Tensor:
+    def forward(self, batch: kp.Batch) -> torch.Tensor:
         summary, _ = self.encoder(batch)
         return self.head(summary).squeeze(-1)
 
 
-def is_fraud(batch: api.Batch) -> torch.Tensor:
+def is_fraud(batch: kp.Batch) -> torch.Tensor:
     return (batch.targets["fraud"]["values"] > 0).float()
 
 

@@ -14,7 +14,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 
 class ChurnModel(nn.Module):
@@ -39,7 +39,7 @@ class ChurnModel(nn.Module):
         width = 4 + 2 * len(numbers) + 4 * len(categories) + 16
         self.head = nn.Sequential(nn.Linear(width, 32), nn.ReLU(), nn.Linear(32, 1))
 
-    def forward(self, batch: api.Batch) -> torch.Tensor:
+    def forward(self, batch: kp.Batch) -> torch.Tensor:
         customer, history = batch.inputs["customer"], batch.inputs["history"]
         numbers = [customer[name]["values"].float().nan_to_num() for name in self.numbers]
         present = [customer[name]["valid"].float() for name in self.numbers]
@@ -70,7 +70,7 @@ class ChurnModel(nn.Module):
         return self.head(features).squeeze(-1)
 
 
-def churned(batch: api.Batch) -> torch.Tensor:
+def churned(batch: kp.Batch) -> torch.Tensor:
     """1 where the customer makes no purchase in the label window."""
 
     return (batch.targets["purchases"]["values"] == 0).float()

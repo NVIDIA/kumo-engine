@@ -6,7 +6,7 @@
 
 [API reference index](README.md)
 
-Also re-exported from `kumo.pytorch.api`: [`NON_TEMPORAL`](schema.md#non_temporal), [`Batching`](batches.md#batching).
+Also re-exported from `kumo.pytorch`: [`NON_TEMPORAL`](schema.md#non_temporal), [`Batching`](batches.md#batching).
 
 ### `Batch`
 
