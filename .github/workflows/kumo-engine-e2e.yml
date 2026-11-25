@@ -133,6 +133,7 @@ jobs:
               scale=os.environ['SCALE'], source_sha=os.environ['GITHUB_SHA'],
               requested_instance_type=os.environ['ENGINE_E2E_EXPECTED_INSTANCE_TYPE'],
               hardware=dict(instance_type=os.environ.get('ENGINE_E2E_INSTANCE_TYPE')),
+              placement=dict(region=None, zone=None), capacity_wait_seconds=None,
               capacity_deadline=deadline, error='No runner capacity before tier deadline')
           if rejected.get('state') == 'bootstrap_failed':
               result.update(phase='bootstrap', error=rejected['error'])
@@ -173,7 +174,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/e2e"
           cd "$RUNNER_TEMP/e2e"
-          test -f result.json || python3.12 -c 'import json,os; print(json.dumps(dict(status="failed", phase="setup", case=os.environ["CASE"].removesuffix("-control"), control=os.environ["CASE"].endswith("-control"), hardware=dict(instance_type=os.environ.get("ENGINE_E2E_INSTANCE_TYPE")))))' > result.json
+          test -f result.json || python3.12 -c 'import json,os; wait=os.environ.get("ENGINE_E2E_CAPACITY_WAIT_SECONDS", ""); print(json.dumps(dict(status="failed", phase="setup", case=os.environ["CASE"].removesuffix("-control"), control=os.environ["CASE"].endswith("-control"), hardware=dict(instance_type=os.environ.get("ENGINE_E2E_INSTANCE_TYPE")), placement=dict(region=os.environ.get("ENGINE_E2E_REGION"), zone=os.environ.get("ENGINE_E2E_ZONE")), capacity_wait_seconds=int(wait) if wait.isdecimal() else None)))' > result.json
           aws s3 cp result.json "${RESULTS_S3%/}/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$SCALE/$CASE.json"
           if [[ "$WRITE_REFERENCE" == true && '${{ steps.case.outcome }}' == success ]]; then
             aws s3 cp reference.json "${REFERENCES_S3%/}/$SCALE/$CASE.json"

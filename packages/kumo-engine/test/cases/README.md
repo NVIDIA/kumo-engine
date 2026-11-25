@@ -48,7 +48,7 @@ Every case and scale uses fixed validation and test budgets of 1,000 steps each.
 Payments and fraud remain at every scale. References and fitted results require finite `val_<metric>` and `test_<metric>` for every configured metric. A reference without them fails before ingest.
 Missing required metrics and any non-finite returned metric fail. Correct inadequate label support in the dataset before regenerating its reference after review.
 `training_table.splits.<split>.positive_rows` records whole-split positives, not measured positives in the capped evaluation prefix.
-Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. CI requires the declared instance type and matching reference hardware. Timings do not gate results.
+Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. In CI, `placement` records the region and zone of the VM that ran the case. `capacity_wait_seconds` records the seconds from pool creation to the boot of that VM. If the pool has fewer VMs than cases, the wait of a later VM also includes the run time of earlier cases. If clock skew makes the boot time earlier, it records 0. Local runs record null values. Results of cases that no VM ran, such as capacity and bootstrap failures, also record null values. CI requires the declared instance type and matching reference hardware. Timings do not gate results.
 Outside CI, the declared instance type does not restrict the host. Local comparisons without instance metadata retain their existing behavior.
 
 ## Configure workflows
