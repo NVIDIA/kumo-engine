@@ -5,6 +5,7 @@
 """G-GRAPH-001 rule 3: an edge appears at most once per sample."""
 
 from collections import Counter
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pyarrow as pa
@@ -22,7 +23,7 @@ EVENTS = [
 ]
 
 
-def _contract(first_fanout=4) -> api.DataLoaderSpec:
+def _contract(first_fanout=4, topology="relations") -> api.DataLoaderSpec:
     def hop(direction: str, fanout=4) -> api.GraphLayer:
         return api.GraphLayer(
             (api.GraphSample("user_events", fanout, direction=direction, strategy="recent"),)
@@ -60,7 +61,13 @@ def _contract(first_fanout=4) -> api.DataLoaderSpec:
                 )
             },
         ),
-        api.BatchSpec({"graph": api.Input(api.NeighborhoodSource("history"), api.Graph(), None)}),
+        api.BatchSpec(
+            {
+                "graph": api.Input(
+                    api.NeighborhoodSource("history"), api.Graph(topology=topology), None
+                )
+            }
+        ),
     )
 
 
@@ -116,19 +123,51 @@ def test_revisited_edges_appear_once_per_sample(engine_name):
     assert owners == Counter({0: 1, 1: 1, 2: 1})
 
 
-def test_native_revisit_with_larger_fanout(tmp_path):
-    contract = _contract(first_fanout=1)
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"revisit_nodes": False}, {"revisit_nodes": True}],
+    ids=["default", "disabled", "enabled"],
+)
+@pytest.mark.parametrize("topology", ["relations", "sampled"])
+@pytest.mark.parametrize("from_snapshot", [False, True], ids=["dataset", "snapshot"])
+def test_native_revisit_with_larger_fanout(tmp_path, options, topology, from_snapshot):
+    contract = _contract(first_fanout=2, topology=topology)
     tables = {"users": USERS, "events": [*EVENTS, {"event_id": 12, "user_id": 1, "at": 9}]}
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"id": [1], "at": [100]}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
-    with (
-        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
-        api.prepare(contract, dataset, engine) as plan,
-        plan.materialize(anchors) as task,
-        patch.object(task._assembler, "batches", side_effect=AssertionError("Python fallback")),
-    ):
-        graph = next(task.batches(batch_size=1, output_format="model")).inputs["graph"]
-    src, dst = graph["edges"]["user_events"]["index"]
-    assert graph["nodes"]["users"]["ids"][src].tolist() == [1, 1, 1]
-    assert sorted(graph["nodes"]["events"]["ids"][dst].tolist()) == [10, 11, 12]
+    with bound_tables(contract, tables, "diskgraph") as (dataset, builder):
+        if from_snapshot:
+            with api.prepare(contract, dataset, builder):
+                pass
+            snapshot = SimpleNamespace(index_path=builder.index, id="test@1", graph_config={})
+            engine = api.DiskGraphEngine.from_snapshot(snapshot, num_threads=1, **options)
+            dataset = None
+        else:
+            engine = api.DiskGraphEngine(num_threads=1, **options)
+        expected = [10, 11, 12] if options.get("revisit_nodes") else [11, 12]
+        with api.prepare(contract, dataset, engine) as plan:
+            with (
+                plan.materialize(anchors) as task,
+                patch.object(
+                    task._assembler, "batches", side_effect=AssertionError("Python fallback")
+                ),
+            ):
+                graph = next(task.batches(batch_size=1, output_format="model")).inputs["graph"]
+            assert sorted(graph["nodes"]["events"]["ids"].tolist()) == expected
+            if topology == "sampled":
+                # Two second-hop edges reach the same user. Re-expand it only once.
+                edges_per_hop = [
+                    sum(counts) for counts in zip(*graph["num_sampled_edges"].values(), strict=True)
+                ]
+                assert edges_per_hop == [2, 2, 3 if options.get("revisit_nodes") else 0]
+            else:
+                requests = [api.SampleRequest("late", 1, 100)]
+                with plan.materialize(requests) as task:
+                    direct = next(
+                        task.request_batches(requests, batch_size=1, output_format="model")
+                    )
+                for result in (graph, direct.inputs["graph"]):
+                    src, dst = result["edges"]["user_events"]["index"]
+                    assert result["nodes"]["users"]["ids"][src].tolist() == [1] * len(expected)
+                    assert sorted(result["nodes"]["events"]["ids"][dst].tolist()) == expected
