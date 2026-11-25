@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The recipe lifecycle, one path for every stack (ADR 0014).
+"""The recipe lifecycle, one path for every stack (building-block contracts).
 
 setup -> train -> infer -> evaluate -> report. The config's slots decide what
 is built; this module only sequences the stages and writes run artifacts:
@@ -29,6 +29,7 @@ from tfm.api.validation import validate_tokenizer_layout
 from tfm.config import RecipeConfig, load_recipe_config
 from tfm.contracts.errors import IncompatibleCompositionError, UnsupportedCombinationError
 from tfm.contracts.kvt import EventArrayReader
+from tfm.contracts.resources import Closable
 from tfm.contracts.tokenizers import (
     FieldVocabulary,
     FieldVocabularyTokenizer,
@@ -454,7 +455,7 @@ def run_train(artifacts: RunArtifacts) -> dict[str, float | str]:
             progress=progress,
         )
     finally:
-        if isinstance(batches, NativeSequenceBatches):
+        if isinstance(batches, Closable):
             batches.close()
     if is_primary_process():
         write_json(
@@ -595,7 +596,7 @@ def run_report(artifacts: RunArtifacts, metrics: dict[str, dict[str, float]] | N
             if experimental
             else ""
         )
-        + "Probes are entity-disjoint with per-period labels (ADR 0013); "
+        + "Probes are entity-disjoint with per-period labels (probe split rules); "
         "results are not numerically comparable to Blueprint v1's probe."
     )
     card = model_card_markdown(

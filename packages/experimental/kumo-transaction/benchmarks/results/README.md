@@ -17,13 +17,13 @@ datasets are never combined
 |---|---|---|
 | [`blueprint_v1_seeds`](blueprint_v1_seeds.md) | TabFormer | Blueprint v1 at three seeds on every test row: the single-transaction embedding lifts raw-feature XGBoost by 145–192% PR-AUC; the history embedding's lift (−1% to +42%) does not hold |
 | [`pragma_like_tabformer_seed42`](pragma_like_tabformer_seed42.md) | TabFormer | PRAGMA-like's encoder against v1's decoder on the same 250,000 test rows, seed 42: the encoder's history embedding adds nothing to raw features (−5%); v1's adds +37% |
-| [`flat_encoder_tabformer_seed42`](flat_encoder_tabformer_seed42.md) | TabFormer | ADR 0019's flat BERT-style encoder on v1's tokens and the same 250,000 rows, seed 42: its history embedding lifts raw-feature XGBoost PR-AUC by 443% (v1 +37%, PRAGMA-like −5%); one seed, 277 frauds |
+| [`flat_encoder_tabformer_seed42`](flat_encoder_tabformer_seed42.md) | TabFormer | flat-encoder guide's flat BERT-style encoder on v1's tokens and the same 250,000 rows, seed 42: its history embedding lifts raw-feature XGBoost PR-AUC by 443% (v1 +37%, PRAGMA-like −5%); one seed, 277 frauds |
 | [`blueprint_v2_seeds`](blueprint_v2_seeds.md) | pragmatiq | Blueprint v2 and PRAGMA-like at 11.5M parameters, three seeds: v2's embedding lifts raw-feature XGBoost on four of five tasks; neither reaches the hand-built aggregates |
 | [`blueprint_v2_final_sweep`](blueprint_v2_final_sweep.md) | pragmatiq | Pretraining steps (1,500 or 3,000) by LoRA rank (8 or 16), three seeds, chosen by a rule fixed in advance: 3,000 steps with rank 16 wins; its surprise arm lifts raw-feature XGBoost on all four headline tasks at every seed, and its LoRA passes the hand-built reference on churn |
 | [`blueprint_v2_hybrid_lab_kvt_seeds`](blueprint_v2_hybrid_lab_kvt_seeds.md) | pragmatiq | Blueprint v2 at 8.4M parameters, three seeds, with tuned tabular baselines: no lift that holds across seeds |
 | [`blueprint_v2_hybrid_gb10_tuning`](blueprint_v2_hybrid_gb10_tuning.md) | pragmatiq | The search behind `blueprint_v2/config.yaml`: one pretraining seed, scored on a proxy |
 | [`blueprint_v2_hybrid_lab_v1_flat_splice_seeds`](blueprint_v2_hybrid_lab_v1_flat_splice_seeds.md) | pragmatiq | v1's flat decoder on v2's rows, against the hybrid, on spliced identity theft |
-| [`pragmatiq_fraud_separability`](pragmatiq_fraud_separability.md) | pragmatiq | Why fraud is spliced: one transaction identifies the book's own fraud labels (ADR 0015) |
+| [`pragmatiq_fraud_separability`](pragmatiq_fraud_separability.md) | pragmatiq | Why fraud is spliced: one transaction identifies the book's own fraud labels (dataset strategy) |
 
 ## Systems checks
 

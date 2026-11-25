@@ -2,7 +2,7 @@
 
 Milestone 2, criterion 6, rerun with the fraud probe on the spliced
 identity-theft task
-([ADR 0015](../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md)).
+([dataset strategy](../../docs/reference/datasets.md)).
 v1's design (one flat token stream, a causal decoder with no positional
 encoding, next-token prediction) is pretrained on the same book, rows,
 schedule, and seeds as

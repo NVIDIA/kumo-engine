@@ -24,11 +24,11 @@ Before changing code, read the documents relevant to the task:
 - `CONTRIBUTING.md` for branching, commits, merge requests, releases, and
   review policy. For vulnerabilities, follow `SECURITY.md`.
 - `docs/concepts/building-blocks.md` for the five slots every component
- belongs to, and the only rules that connect them (ADR 0014).
+ belongs to, and the only rules that connect them (building-block contracts).
 - `docs/concepts/data-contract.md` for transaction/profile semantics.
 - `docs/reference/datasets.md` before adding a dataset, a task, or a result:
  each dataset has one role, and results from different datasets are never
- combined (ADR 0015).
+ combined (dataset strategy).
 - `docs/concepts/leakage-and-temporal-splits.md` before changing data, labels, or evaluation.
 - `docs/concepts/building-blocks.md` (reference architectures) before changing architecture modules.
 - `docs/concepts/evaluation-protocol.md` before changing metrics or baselines.
@@ -46,7 +46,7 @@ Do not copy status tables into `README.md` or recipe READMEs.
 - Reproduction milestone status: `docs/reference/roadmap.md`.
 - How to run a recipe: that recipe's `README.md`.
 - User-visible changes: `CHANGELOG.md`.
-- Architecture decisions: ADRs under `docs/architecture/`.
+- Public contracts and compatibility: `docs/concepts/`, `docs/reference/`, and `docs/migration/`.
 
 Adding a recipe updates the catalog, `recipes/README.md`, and the compatibility
 matrix in the same change. Recipe directories are named slugs (not a numbered
@@ -100,7 +100,7 @@ If a change might introduce temporal leakage or alter label semantics, stop and 
 
 For a breaking contract change:
 
-1. Update the applicable architecture decision record or contract documentation.
+1. Update the applicable public contract documentation.
 2. Update affected recipes and the compatibility matrix.
 3. Add migration notes.
 4. Update contract and regression tests.

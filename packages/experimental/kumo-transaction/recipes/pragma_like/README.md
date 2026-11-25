@@ -51,7 +51,7 @@ encoder). Milestone status: [the roadmap](../../docs/reference/roadmap.md).
 - Readout: the history encoder's `[USR]` slot (`usr_token`).
 
 Composed through [`tfm.experimental`](../../src/tfm/experimental.py)
-(ADR 0007), not the core `TrxFM` surface.
+(experimental composition guide), not the core `TrxFM` surface.
 
 ## Data
 
@@ -65,11 +65,11 @@ export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
 ```
 
 `max_entities` samples users, so the full book is never loaded. `config.yaml`
-replaces the book's own fraud labels with spliced identity theft (ADR 0015)
-and reads pretraining windows from a token cache (ADR 0016) shared with
+replaces the book's own fraud labels with spliced identity theft (dataset strategy)
+and reads pretraining windows from a token cache (token-cache guide) shared with
 `blueprint_v2`. `default_12m` histories are rebuilt at each row's `eval_ts`,
 so events after it are excluded. Probe train and evaluation users are disjoint
-(ADR 0013).
+(probe split rules).
 
 ## Commands
 
@@ -119,7 +119,7 @@ The S/M/L ladder has no recorded run.
 
 ## Native loader
 
-The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+Opt in with `data.loader: kumo_pytorch` to use the pinned experimental Kumo
 PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for setup, commands, temporal rules and limitations. Select `data.loader: python`
-in a copied configuration for the previous loader.
+for setup, commands, temporal rules and limitations. `data.loader: python`
+remains the default pending end-to-end performance evidence.

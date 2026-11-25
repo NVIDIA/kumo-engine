@@ -240,7 +240,7 @@ def load_pragmatiq_registered(
 def _identity_theft_splice(
     config: DataConfig, dataset: PragmatiqDataset, *, seed: int
 ) -> IdentityTheftSplice:
-    """ADR 0015's task over the sampled users, on the label windows `prepare_data` will use."""
+    """dataset strategy's task over the sampled users, on the label windows `prepare_data` will use."""
     from tfm.data.adapters.pragmatiq import fraud_positive_users
 
     if not dataset.events:

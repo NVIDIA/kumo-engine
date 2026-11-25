@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Process-group helpers shared by the data-parallel backends (ADR 0011).
+"""Process-group helpers shared by the data-parallel backends (backend contracts).
 
 `torchrun` sets the rendezvous environment but does not create the process
 group. Without `join_distributed_group`, every rank reports `world_size` 1,

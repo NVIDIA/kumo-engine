@@ -6,7 +6,7 @@ on CPU; GPUs are needed only for the scaled configs.
 ## Training backends
 
 `training.backend` selects how a model trains, not what it computes. Each
-backend declares its capabilities (`BackendCapabilities`, ADR 0011), and the
+backend declares its capabilities (`BackendCapabilities`, backend contracts), and the
 runtime refuses a config that needs something the backend does not declare,
 before any data is prepared.
 
@@ -70,7 +70,7 @@ The eager backbone and the CPU paths need neither.
 ## Optional extras
 
 GPU-specific and third-party integrations are optional extras behind
-capability checks (ADR 0006): `huggingface` (Llama backbone), `fsdp2`, `rapids`
+capability checks (optional dependency guidance): `huggingface` (Llama backbone), `fsdp2`, `rapids`
 (cuDF tokenizer), `xgboost` (probe head), `umap`. A missing extra raises a
 clear error when a config asks for it; nothing imports it by default.
 

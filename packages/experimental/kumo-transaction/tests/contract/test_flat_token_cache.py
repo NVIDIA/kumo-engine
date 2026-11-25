@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A TabFormer flat-field token cache equals the object path (ADR 0016).
+"""A TabFormer flat-field token cache equals the object path (token-cache guide).
 
 The book below holds what could make the two disagree: tied timestamps whose
 `event_id` indices sort differently as strings ("-10" before "-9"), rows out

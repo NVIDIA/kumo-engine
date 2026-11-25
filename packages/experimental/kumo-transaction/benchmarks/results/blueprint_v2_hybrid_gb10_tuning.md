@@ -113,7 +113,7 @@ learn the task from its labels. That control asks whether the pretrained
 weights help fine-tuning, not what random features score.
 
 The run directory is `outputs/proxy/stage3/causal_adr0017`: the same
-checkpoint, with the two `null` keys that ADR 0017 removed dropped from its
+checkpoint, with the two `null` keys that Blueprint v1 guide removed dropped from its
 config. Every XGBoost value matched the previous section's exactly. The last
 column is the hand-built history arm under the same fixed setting
 (`benchmarks/fixed_history_reference.py`), as context. Commit `50f4931` plus
@@ -293,7 +293,7 @@ not run. It takes the settings that transfer without a search:
 ## Limitations
 
 - **Synthetic book.** pragmatiq's personas and injected episodes are
-  simulated, and the fraud task is a splice (ADR 0015). Real transactions
+  simulated, and the fraud task is a splice (dataset strategy). Real transactions
   differ in ways this cannot show.
 - **One pretraining seed.** The three seeds vary the probe split and the
   probe's training rows, not pretraining. The 1×/3× comparison is also one

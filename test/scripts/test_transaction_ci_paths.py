@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import shlex
 import subprocess
 from pathlib import Path
@@ -101,7 +102,7 @@ def test_required_status_is_not_hidden_by_event_path_filters() -> None:
     assert resolved == root / "scripts/check_python_license_metadata.py"
 
 
-def test_native_default_uses_verified_wheels_without_resyncing_git_sources() -> None:
+def test_native_integration_uses_verified_wheels_without_resyncing_git_sources() -> None:
     root = Path(__file__).resolve().parents[2]
     workflow = yaml.safe_load((root / ".github/workflows/transaction-blueprint.yml").read_text())
     steps = workflow["jobs"]["blueprint"]["steps"]
@@ -116,3 +117,17 @@ def test_native_default_uses_verified_wheels_without_resyncing_git_sources() -> 
         for line in step.get("run", "").splitlines():
             if "uv run" in line:
                 assert "uv run --no-sync" in line
+
+
+def test_transaction_sync_excludes_standalone_adrs() -> None:
+    root = Path(__file__).resolve().parents[2]
+    package = root / "packages/experimental/kumo-transaction"
+    inventory = json.loads((package / "UPSTREAM.json").read_text())
+    assert "docs/architecture/**" in inventory["excluded_path_patterns"]
+    excluded = {path for path in inventory["upstream_sha256"]
+                if path.startswith("docs/architecture/")}
+    assert excluded
+    assert excluded <= set(inventory["excluded_files"])
+    assert not list((package / "docs/architecture").rglob("*"))
+    navigation = yaml.safe_load((package / "mkdocs.yml").read_text())["nav"]
+    assert "docs/architecture/" not in json.dumps(navigation)

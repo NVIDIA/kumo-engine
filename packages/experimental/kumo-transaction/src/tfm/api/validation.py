@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Construction-time composition validation (ADR 0014).
+"""Construction-time composition validation (building-block contracts).
 
 Four rules connect the building-block slots, and each error names the rule it
 enforces:
@@ -13,7 +13,7 @@ enforces:
 
 The remaining checks say what a structure implements, for example that the
 flat decoder carries no per-token time positions. Implementation limits of a
-training backend are checked by its capabilities (ADR 0011), not here.
+training backend are checked by its capabilities (backend contracts), not here.
 """
 
 from __future__ import annotations
@@ -309,5 +309,5 @@ def validate_tokenizer_layout(tokenizer: SequenceTokenizer, granularity: object)
         raise IncompatibleCompositionError(
             f"Tokenizer {tokenizer.name!r} emits layout {tokenizer.layout!r}, but "
             f"granularity {gran_name!r} accepts {sorted(accepted)}: each structure needs "
-            "the event boundary its layout carries (rule 4, ADR 0014)."
+            "the event boundary its layout carries (rule 4, building-block contracts)."
         )

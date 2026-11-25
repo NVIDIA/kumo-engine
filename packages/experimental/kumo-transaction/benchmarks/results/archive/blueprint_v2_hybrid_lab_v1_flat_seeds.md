@@ -48,7 +48,7 @@ seeds (churn: 2,363–2,369 rows), not between models.
 
 The fraud rows are scored on pragmatiq's own fraud labels, which one
 transaction identifies
-([ADR 0015](../../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md)).
+([dataset strategy](../../../docs/reference/datasets.md)).
 They are superseded by the spliced identity-theft task and are not a fraud
 result.
 

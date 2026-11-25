@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""FlatEncoder + MaskedFields + LastEventMeanPool contracts (ADR 0019)."""
+"""FlatEncoder + MaskedFields + LastEventMeanPool contracts (flat-encoder guide)."""
 
 import dataclasses
 from pathlib import Path

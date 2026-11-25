@@ -5,7 +5,7 @@
 
 A causal model trained with unshifted labels can see the token it is asked to
 predict, so it learns to copy its input and its training loss still looks
-healthy. That is what happened to the published v1 checkpoint (ADR 0010). The
+healthy. That is what happened to the published v1 checkpoint (Blueprint v1 objectives). The
 check that exposes it compares two cross-entropies over the same logits: one
 against the next token, which is what the model should predict, and one against
 the token at the same position, which a copying model predicts instead.

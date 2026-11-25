@@ -31,7 +31,7 @@ seed: 42
 #   uv run tfm evaluate --config benchmarks/ablations/blueprint_v2_lab.yaml \
 #     --device cuda --run-dir outputs/ablations/lab --reuse-checkpoint
 #
-# The fraud probe reads the spliced identity-theft task (ADR 0015), not the
+# The fraud probe reads the spliced identity-theft task (dataset strategy), not the
 # book's own fraud labels, which one transaction identifies. It needs the
 # local book: the generated fixture is too small to splice.
 

@@ -23,7 +23,7 @@ def native_api() -> Any:
         runtime = importlib.import_module("diskgraph")
     except ImportError as error:
         raise ExtraUnavailableError(
-            "The default loader requires kumo-pytorch and DiskGraph from the pinned "
+            "The native loader requires kumo-pytorch and DiskGraph from the pinned "
             "Kumo Engine main revision. Run `uv sync --frozen --extra dev --extra native`; see "
             "examples/kumo-engine/README.md for build prerequisites. "
             "Choose data.loader: python explicitly for the reference loader."

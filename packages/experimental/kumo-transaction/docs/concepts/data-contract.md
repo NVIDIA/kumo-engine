@@ -256,7 +256,8 @@ convention without changing stored amounts or graph missing-value masks.
 
 ## Native recipe loading
 
-The default `data.loader: kumo_pytorch` uses the pinned main-source Kumo API.
+The opt-in `data.loader: kumo_pytorch` uses the pinned main-source Kumo API.
+Python remains the default until matched end-to-end performance is established.
 Native anchors bind sample ID, owner and cutoff independently; repeated owners
 remain distinct prediction samples. Sequence row IDs resolve only to validated
 source records. Exact residual filtering preserves inclusive lower bounds and
@@ -271,3 +272,9 @@ index order rather than the Python primary-key policy. FutureSubgraph targets
 still use a separate Python reference pass. See the
 [worked guide](../../examples/kumo-engine/README.md#canonical-recipes) and
 [migration notes](../migration/native-loader-default.md).
+
+Resource-backed custom training inputs can implement
+`tfm.contracts.resources.Closable.close()` without inheriting a loader class.
+The recipe runner closes that resource after fitting or setup failure. Graph
+loaders provide `loader_manifest` and `tie_policy` metadata directly; native
+resource cleanup is registered when the loader is created.

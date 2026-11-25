@@ -21,7 +21,7 @@ def metrics_markdown(metrics: dict[str, dict[str, float]]) -> str:
 
     Rows with fewer than `MIN_TRUSTWORTHY_POSITIVES` evaluation positives are
     marked, so a rendered report cannot pass an unsupported score off as a
-    finding (ADR 0008).
+    finding (evaluation protocol).
     """
     from tfm.evaluation.fraud.metrics import MIN_TRUSTWORTHY_POSITIVES, is_supported
 

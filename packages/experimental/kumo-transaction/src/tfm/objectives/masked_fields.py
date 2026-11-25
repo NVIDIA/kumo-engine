@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""BERT-style masked field modelling over flat field-token rows (ADR 0019)."""
+"""BERT-style masked field modelling over flat field-token rows (flat-encoder guide)."""
 
 from __future__ import annotations
 

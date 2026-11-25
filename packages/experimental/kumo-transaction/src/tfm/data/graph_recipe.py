@@ -135,16 +135,16 @@ def _prepare_graph_data(
     probe_cutoff, coverage = _timestamp(data.probe_cutoff), _timestamp(data.observed_through)
     if not events or (needs_supervision and probe_cutoff > coverage):
         raise ValueError("Probe cutoff/source coverage is outside the supplied observations")
-    sampler_type = NativeGraphSampler if data.loader == "kumo_pytorch" else GraphSampler
-    sampler = sampler_type(
-        transaction_graph(
-            events, transfers, observed_through=coverage, amount_field=data.amount_field
-        ),
-        depth=g.depth,
-        fanout=g.fanout,
+    graph = transaction_graph(
+        events, transfers, observed_through=coverage, amount_field=data.amount_field
     )
-    if isinstance(sampler, NativeGraphSampler):
-        resources.callback(sampler.close)
+    sampler: GraphSampler
+    if data.loader == "kumo_pytorch":
+        native_sampler = NativeGraphSampler(graph, depth=g.depth, fanout=g.fanout)
+        resources.callback(native_sampler.close)
+        sampler = native_sampler
+    else:
+        sampler = GraphSampler(graph, depth=g.depth, fanout=g.fanout)
     owners = sorted({e.entity_id for e in events})
     if len(owners) < 12:
         raise ValueError("Graph recipe needs at least 12 observed owners from the selected source")
@@ -396,9 +396,7 @@ def _prepare_graph_data(
     ).hexdigest()
     manifest: dict[str, object] = {
         "dataset": data.adapter,
-        "input_loader": sampler.loader_manifest
-        if isinstance(sampler, NativeGraphSampler)
-        else {"name": "python"},
+        "input_loader": sampler.loader_manifest,
         "data_sha256": fingerprint,
         "probe_owners": split,
         "graph_objective": objective,
@@ -426,9 +424,7 @@ def _prepare_graph_data(
             "fanout": g.fanout,
             "target_depth": g.target_depth if objective == "future_subgraph" else None,
             "hop_trimming": g.trim,
-            "ties": "native index-local recent ties"
-            if isinstance(sampler, NativeGraphSampler)
-            else "canonical PK ascending",
+            "ties": sampler.tie_policy,
             "event_key_encoding": "json-array-v1",
         },
     }

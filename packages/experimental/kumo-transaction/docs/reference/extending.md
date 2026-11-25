@@ -171,7 +171,7 @@ objective's `name`.
 
 Backends register through `tfm.training.backends.register_backend` and declare
 `BackendCapabilities`; the runtime refuses what a backend does not declare.
-Every backend must pass the backend contract suite (ADR 0011).
+Every backend must pass the backend contract suite (backend contracts).
 
 ## Graph composition extension points
 

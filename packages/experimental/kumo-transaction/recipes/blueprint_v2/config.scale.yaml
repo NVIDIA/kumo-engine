@@ -7,7 +7,7 @@ seed: 42
 # Blueprint v2 hybrid at PRAGMA-M width on a pragmatiq Generator v2 book.
 #
 # d=512, 8 heads, profile/event/decoder depths 3/16/12: about 99M parameters
-# outside the embedding table (ADR 0012). The decoder is twice PRAGMA-M's
+# outside the embedding table (Blueprint v2 guide). The decoder is twice PRAGMA-M's
 # 6-layer history encoder, which brings the model to ~100M.
 #
 # Needs a real pragmatiq book and a GPU. The book used during development is

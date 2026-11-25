@@ -5,7 +5,7 @@
 are scored offline without re-embedding.
 
 Three sides. With `--users heldout`, users are divided as `event_entity_split`
-divides them (ADR 0013); with `--users all`, every side holds every user and
+divides them (probe split rules); with `--users all`, every side holds every user and
 only time separates them, as a production model scores existing customers.
 
 - `train`: training-window events, every fraud plus `--negatives-per-positive`

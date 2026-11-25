@@ -1,7 +1,7 @@
 # docs/AGENTS.md
 
 - Use the terminology in `docs/reference/glossary.md`.
-- Update ADRs when contracts, config composition, or support tiers change.
+- Update public contract and migration guides when contracts, config composition, or support tiers change.
 - Do not claim quality, performance, fairness, explainability, or production
   readiness without a reproducible recipe and recorded evidence.
 - Contract documentation and code must change together.
@@ -18,4 +18,4 @@ Do not copy status tables into `README.md` or recipe READMEs.
 - Reproduction milestone status: `docs/reference/roadmap.md`.
 - How to run a recipe: that recipe's `README.md`.
 - User-visible changes: `CHANGELOG.md`.
-- Architecture decisions: ADRs under `docs/architecture/`.
+- Public contracts and compatibility: `docs/concepts/`, `docs/reference/`, and `docs/migration/`.

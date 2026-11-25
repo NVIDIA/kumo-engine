@@ -4,7 +4,7 @@
 
 seed: 42
 
-# The recipe's pipeline on a generated book, with the native loader extra: an eager decoder
+# The recipe's pipeline on a generated book, with the Python loader: an eager decoder
 # (which declares no positions) instead of Llama, and the logistic arms only.
 # tests/recipe_smoke also runs it with Llama and the XGBoost arms when those
 # extras are installed.

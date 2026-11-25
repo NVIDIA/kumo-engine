@@ -1,8 +1,7 @@
 # Datasets
 
 The repository reads four kinds of data. Each has one job, and results from
-different datasets are never combined
-([ADR 0015](../architecture/0015-dataset-strategy-and-spliced-fraud.md)). If
+different datasets are never combined. If
 you are new, start with TabFormer through the `blueprint_v1` notebooks;
 use pragmatiq when you move to Blueprint v2.
 
@@ -45,7 +44,7 @@ Public synthetic card transactions ([IBM/TabFormer](https://github.com/IBM/TabFo
 one row per card transaction with user, card, time, amount, merchant, MCC,
 location, chip use, errors, and a fraud flag. It is one channel and one task.
 The v1 Blueprint was built on it, and `blueprint_v1` rebuilds v1's
-flow on it with the SDK (ADR 0017).
+flow on it with the SDK (Blueprint v1 guide).
 
 - **Get it:** download `transactions.tgz` from the IBM/TabFormer repository,
   then `uv run tfm prepare-tabformer --root ~/data/TabFormer` and
@@ -81,7 +80,7 @@ dataset here that can show one representation reused across tasks.
 - **Split:** pragmatiq issues its forecast labels on fixed dates set by the
   world config: `default_12m` on 2024-07-01 and `churn_6m` and `ltv_positive`
   on 2025-01-01. Pretraining must end before the earliest of them
-  ([ADR 0013](../architecture/0013-fraud-probe-split-integrity.md)), so the
+  ([probe split rules](../concepts/evaluation-protocol.md)), so the
   cutoffs come from that calendar, not from an 80% rule. `train_end`
   2024-06-01 and `validation_end` 2024-09-01 leave 40%, 15%, and 45% of the
   book's events in the three periods. An 80% cut would fall on 2025-02-22,
@@ -122,7 +121,7 @@ profile score at chance (0.50 ROC-AUC); history features lift it to 0.84–0.85.
 The victim's history is what gives the theft away: 80% of stolen payments go
 to a merchant the victim has never paid, against 29% of the victim's own.
 
-Leakage rules (ADR 0015, decision 5): the victim and donor are in the same
+Leakage rules (dataset strategy, decision 5): the victim and donor are in the same
 entity split; the theft day lies inside that side's label window; pretraining
 uses unspliced histories; forecast tasks are scored on unspliced histories.
 

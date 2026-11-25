@@ -5,7 +5,7 @@
 
 One path serves every tokenizer and history model: load the book, split it
 in time, build one sequence per entity at each cutoff, fit the tokenizer on
-the train side only, and collate with explicit label windows (ADR 0013).
+the train side only, and collate with explicit label windows (probe split rules).
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class Cutoffs:
 
 @dataclass(frozen=True)
 class FraudProbeData:
-    """The fraud probe's own rows when its labels are spliced (ADR 0015).
+    """The fraud probe's own rows when its labels are spliced (dataset strategy).
 
     `train_batch` holds the split's train entities at the train cutoff and
     `eval_batch` its evaluation entities at the test cutoff. `events` is the

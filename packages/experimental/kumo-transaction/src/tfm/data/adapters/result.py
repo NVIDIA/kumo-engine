@@ -25,7 +25,7 @@ class AdapterResult:
     than the event-level fraud labels already attached to events, keyed by task
     (for example `default_12m`); each row carries its own cutoff.
     `fraud_splice`, when set, holds the fraud task's spliced victim histories;
-    `events` stay unspliced (ADR 0015).
+    `events` stay unspliced (dataset strategy).
     """
 
     events: tuple[TransactionEvent, ...]

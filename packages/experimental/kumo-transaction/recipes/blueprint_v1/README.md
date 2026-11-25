@@ -12,7 +12,7 @@ recent history, and test whether those embeddings improve an XGBoost fraud
 classifier.
 
 It follows v1's flow, field tokenization, and model, and fixes v1's defects
-([ADR 0017](../../docs/architecture/0017-v1-blueprint-on-the-sdk.md)). The two
+(Blueprint v1 guide). The two
 that matter most:
 
 - **v1 trained without shifting its labels.** Its data module set
@@ -126,13 +126,13 @@ reaches 80% and 90%. Do **not** commit the data or a symlink to it. You can
 set `data.path` in the config instead of the environment variable.
 
 Sequence cutoffs are the last event time in each partition, not the YAML
-`train_end`, because the split is by row count (ADR 0004). A user's history can
+`train_end`, because the split is by row count (temporal split rules). A user's history can
 span all three partitions. When `max_entities` is below the number of users,
 the adapter prefers users with fraud so the small configs have positives.
 
 ## Commands
 
-CPU-safe smoke (synthetic, eager decoder; requires the `native` extra):
+CPU-safe smoke (synthetic, eager decoder, Python loader):
 
 ```bash
 uv run tfm smoke --recipe blueprint_v1
@@ -141,7 +141,7 @@ uv run tfm smoke --recipe blueprint_v1
 24 TabFormer users (`config.small.yaml`):
 
 ```bash
-uv sync --extra native --extra huggingface --extra baselines
+uv sync --extra huggingface --extra baselines
 export TFM_TABFORMER_ROOT=~/data/TabFormer
 uv run tfm train    --recipe blueprint_v1 --config small
 uv run tfm infer    --recipe blueprint_v1 --config small
@@ -224,7 +224,7 @@ uv run torchrun --nproc-per-node 8 -m tfm.cli.main report \
 
 The `huggingface`, `baselines`, and `umap` extras are locked in `uv.lock`.
 `uv sync` removes every extra you don't list, so name them all in one command
-(`uv sync --extra native --extra huggingface --extra baselines --extra umap`). RAPIDS is
+(`uv sync --extra huggingface --extra baselines --extra umap`). RAPIDS is
 installed with `uv pip install` and is not in `uv.lock`, so a plain `uv run`
 re-syncs the environment and removes it; use `uv run --no-sync` once it is
 installed. cuDF is CUDA-version specific and needs `numpy<2.5`; on CUDA 13:
@@ -264,7 +264,7 @@ Written under the run directory (or the smoke temp dir):
 
 ## Native loader
 
-The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+Opt in with `data.loader: kumo_pytorch` to use the pinned experimental Kumo
 PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for setup, commands, temporal rules and limitations. Select `data.loader: python`
-in a copied configuration for the previous loader.
+for setup, commands, temporal rules and limitations. `data.loader: python`
+remains the default pending end-to-end performance evidence.

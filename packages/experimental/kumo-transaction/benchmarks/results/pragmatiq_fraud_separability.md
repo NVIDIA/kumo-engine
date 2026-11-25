@@ -1,6 +1,6 @@
 # Fraud separability on a pragmatiq book
 
-Evidence for [ADR 0015](../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md).
+Evidence for [dataset strategy](../../docs/reference/datasets.md).
 How much of a fraud label one transaction gives away, for the book's own fraud
 labels and for the spliced identity-theft task. No model from this repository
 is involved: one gradient-boosted classifier is fit on three feature sets.
@@ -72,6 +72,6 @@ What the table supports:
 - The rows are the victim's card transactions in the week before and the day
   of the theft, so a quarter of them are stolen. That base rate is far above a
   real card book's; the recipe task sets it through the negative window
-  (ADR 0015).
+  (dataset strategy).
 - Donor matching uses the median amount and the home country only. It does
   not match age, income, or archetype, which the book's profiles also carry.

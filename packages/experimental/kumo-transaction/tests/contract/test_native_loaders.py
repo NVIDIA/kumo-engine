@@ -18,6 +18,9 @@ from tfm.data import native_history as native
 from tfm.data.graph import GraphLink, GraphRow, GraphSampler, GraphTable, RelationalGraph
 from tfm.data.native_graph import NativeGraphSampler
 
+pytest.importorskip("diskgraph")
+pytest.importorskip("kumo.pytorch.api")
+
 NOW = datetime(2024, 1, 2, tzinfo=UTC)
 
 
@@ -31,12 +34,6 @@ def events():
     ]
 
 
-def test_loader_default_and_explicit_reference():
-    config = load_recipe_config("recipes/blueprint_v1/config.smoke.yaml")
-    assert config.data.loader == "kumo_pytorch"
-    assert config.data.model_copy(update={"loader": "python"}).loader == "python"
-
-
 def test_histories_keep_exact_time_boundaries_and_ties():
     rows = events()
     rows.append(replace(rows[0], event_id="tied"))
@@ -44,18 +41,18 @@ def test_histories_keep_exact_time_boundaries_and_ties():
         for limit in (0, 2, 20):
             args = dict(max_events=limit, observation_window=window)
             assert native.build_entity_sequences(
-                rows, NOW, **args
+                rows, NOW, **args, loader="kumo_pytorch"
             ) == native.build_entity_sequences(rows, NOW, loader="python", **args)
     for size in (1, 3, 20):
         assert native.build_entity_windows(
-            rows, NOW, window_events=size
+            rows, NOW, window_events=size, loader="kumo_pytorch"
         ) == native.build_entity_windows(rows, NOW, window_events=size, loader="python")
     labels = [
         SimpleNamespace(entity_id=owner, timestamp=at)
         for owner, at in (("b", NOW), ("a", NOW - timedelta(seconds=1)), ("a", NOW))
     ]
     assert native.build_sequences_at_label_cutoffs(
-        rows, labels, max_events=10
+        rows, labels, max_events=10, loader="kumo_pytorch"
     ) == native.build_sequences_at_label_cutoffs(rows, labels, max_events=10, loader="python")
 
 
@@ -179,7 +176,7 @@ def test_native_anchor_fast_path_and_inference_construction(monkeypatch):
         raise AssertionError("Recipe loaders must use native AnchorTable batches")
 
     monkeypatch.setattr(NativeAnchors, "_requests", forbidden)
-    rows = native.build_entity_sequences(events(), NOW, max_events=10)
+    rows = native.build_entity_sequences(events(), NOW, max_events=10, loader="kumo_pytorch")
     tokenizer = TransactionFieldTokenizer()
     tokenizer.fit(rows)
     batches = native.NativeSequenceBatches(
@@ -203,14 +200,6 @@ def test_native_anchor_fast_path_and_inference_construction(monkeypatch):
         graph.assert_validated()
     finally:
         sampler.close()
-
-
-def test_explicit_python_loader_does_not_import_native(monkeypatch):
-    def forbidden():
-        raise AssertionError("Explicit Python loader must be usable without native imports")
-
-    monkeypatch.setattr(native, "native_api", forbidden)
-    assert native.build_entity_sequences(events(), NOW, max_events=2, loader="python")
 
 
 def test_native_and_reference_graph_model_outputs_and_gradients():
@@ -466,7 +455,12 @@ def test_forecast_missing_owner_matches_reference_error():
             native.build_sequences_at_label_cutoffs(events(), labels, max_events=10, loader=loader)
     # Existing owners with no history at their cutoff are intentionally skipped.
     labels = [SimpleNamespace(entity_id="a", timestamp=NOW - timedelta(days=1))]
-    assert native.build_sequences_at_label_cutoffs(events(), labels, max_events=10) == []
+    assert (
+        native.build_sequences_at_label_cutoffs(
+            events(), labels, max_events=10, loader="kumo_pytorch"
+        )
+        == []
+    )
 
 
 def test_native_history_binding_is_atomic_and_single_use(monkeypatch):
@@ -533,7 +527,33 @@ def test_native_graph_preparation_failure_closes_index(monkeypatch):
     monkeypatch.setattr(graph_recipe, "NativeGraphSampler", Tracked)
     monkeypatch.setattr(graph_recipe, "_require_training_amount", fail)
     config = load_recipe_config("recipes/gnn_encoder/config.smoke.yaml")
+    config = config.model_copy(
+        update={"data": config.data.model_copy(update={"loader": "kumo_pytorch"})}
+    )
     with pytest.raises(RuntimeError, match="later preparation failure"):
         graph_recipe.prepare_graph_data(config)
     assert len(created) == 1
     assert not created[0].native_root.exists()
+
+
+@pytest.mark.parametrize("loader", ["python", "kumo_pytorch"])
+def test_graph_recipe_records_selected_loader_contract(loader):
+    from tfm.contracts.resources import Closable
+    from tfm.data.graph_recipe import prepare_graph_data
+
+    config = load_recipe_config("recipes/gnn_encoder/config.smoke.yaml")
+    config = config.model_copy(
+        update={
+            "data": config.data.model_copy(update={"loader": loader}),
+            "runtime": config.runtime.model_copy(update={"stage": "pretrain"}),
+        }
+    )
+    data = prepare_graph_data(config)
+    try:
+        assert data.split_manifest["input_loader"]["name"] == loader
+        assert data.split_manifest["sampling"]["ties"] == data.sampler.tie_policy
+        for batch in data.pretrain:
+            batch.assert_validated()
+    finally:
+        if isinstance(data.sampler, Closable):
+            data.sampler.close()

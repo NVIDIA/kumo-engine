@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Readout names, specs, and modules (slot 4, ADR 0014).
+"""Readout names, specs, and modules (slot 4, building-block contracts).
 
 Every readout module takes `(states [B, S, D], attention_mask [B, S])` and
 returns `[B, D]`, so a model swaps readouts without changing its forward pass.

@@ -52,7 +52,7 @@ ROC-AUC: raw 0.916; `pragma_like` raw + history 0.917; v1 raw + history
   arms within this table only.
 - An encoder-only stack, as built in this kit for pragmatiq, does not rescue
   TabFormer's history embedding. A flat bidirectional encoder on v1's own
-  tokens ([ADR 0019](../../docs/architecture/0019-flat-bert-encoder.md),
+  tokens ([flat-encoder guide](../../recipes/blueprint_v1/README.md),
   proposed) would isolate the mask from the tokens and hierarchy, which this
   comparison changes all at once.
 

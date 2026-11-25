@@ -8,7 +8,7 @@ Export only documented names from `tfm`. The core export surface:
 
 Treat those constructors as stable. Do not add a public option solely for one recipe.
 
-Experimental PRAGMA-style names live in `tfm.experimental` (ADR 0007) and are
+Experimental PRAGMA-style names live in `tfm.experimental` (experimental composition guide) and are
 not added to `tfm.__all__`.
 
 ## Runtime layer

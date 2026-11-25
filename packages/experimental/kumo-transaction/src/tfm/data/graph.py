@@ -174,6 +174,16 @@ class GraphSampler:
                 ((t, f"rev_{role}", s), (s, link.source_id), time)
             )
 
+    @property
+    def loader_manifest(self) -> dict[str, str]:
+        """Identify this loader independently of its callers."""
+        return {"name": "python"}
+
+    @property
+    def tie_policy(self) -> str:
+        """Describe equal-time neighbor ordering for run provenance."""
+        return "canonical PK ascending"
+
     def row_time(self, key: NodeKey) -> int:
         at = self.rows[key].available_at
         return STATIC_TIME if at is None else utc_us(at)

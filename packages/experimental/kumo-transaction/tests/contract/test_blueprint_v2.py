@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Leakage and alignment contracts for the Blueprint v2 hybrid (ADR 0012)."""
+"""Leakage and alignment contracts for the Blueprint v2 hybrid (Blueprint v2 guide)."""
 
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def test_next_event_training_does_not_learn_to_copy() -> None:
     """On data where event `j+1` is a shift of event `j`, next beats same-event loss.
 
     A model that could see its target would learn the identity instead, and
-    score better from the slot after the event (ADR 0010, 0011).
+    score better from the slot after the event (Blueprint v1 objectives, 0011).
     """
     seqs = [_sequence(f"u{i}", 8, offset=i % N_STATES) for i in range(8)]
     tok = _fitted(seqs)

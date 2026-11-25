@@ -2,7 +2,7 @@
 
 Milestone 2, criterion 7. An 8.4M-parameter `blueprint_v2_hybrid` model
 pretrained on a synthetic pragmatiq book, then scored with the frozen probes,
-the history-window probe (ADR 0013), and LoRA fine-tuning. This shows the
+the history-window probe (probe split rules), and LoRA fine-tuning. This shows the
 wiring at a size where numbers stop being noise. It is not a quality claim.
 
 Superseded by
@@ -22,7 +22,7 @@ by way of the spliced rerun
 | wall clock per seed | prepare 290–298 s, train 765–791 s (about 0.26 s per step), evaluate 774–830 s; about 31 min in total, 1 h 33 min for three seeds |
 | memory | 4.86–4.92 GiB peak GPU; 48.1 GB peak host (resident set of the sweep process) |
 | loss | 51.9–60.8 at step 0, 3.99–4.01 at step 2,999 |
-| probes | logistic regression; fraud split entity-disjoint with per-side label windows (ADR 0013); LoRA rank 8 on qkv and out, 300 steps, LR 1e-3, linear head |
+| probes | logistic regression; fraud split entity-disjoint with per-side label windows (probe split rules); LoRA rank 8 on qkv and out, 300 steps, LR 1e-3, linear head |
 | raw output | [`blueprint_v2_hybrid_lab_seeds.json`](blueprint_v2_hybrid_lab_seeds.json), from `benchmarks/seed_range.py` |
 
 Reproduce (build the book first; the command is in the header of
@@ -41,7 +41,7 @@ uv run python benchmarks/seed_range.py \
 The fraud rows (`raw`, `embedding`, `combined`, `lora_fraud`, and the
 `history_window_*` and `single_event_*` arms) are scored on pragmatiq's own
 fraud labels, which one transaction identifies
-([ADR 0015](../../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md)).
+([dataset strategy](../../../docs/reference/datasets.md)).
 They are superseded by the spliced identity-theft task
 ([`blueprint_v2_hybrid_lab_splice_seeds.md`](blueprint_v2_hybrid_lab_splice_seeds.md))
 and are not a fraud result.

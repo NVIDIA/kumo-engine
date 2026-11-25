@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The token cache reproduces the object path exactly (ADR 0016).
+"""The token cache reproduces the object path exactly (token-cache guide).
 
 Every comparison here is against `load_pragmatiq_dataset`, `build_entity_*`,
 `KeyValueTimeTokenizer.fit`, and `collate_batch`: the cache is a faster route

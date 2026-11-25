@@ -57,6 +57,8 @@ def _repository_files() -> list[str]:
 
 
 def _published(path: str) -> bool:
+    if path.startswith("docs/architecture/"):
+        return False
     if path in ROOT_PAGES:
         return True
     parts = Path(path).parts

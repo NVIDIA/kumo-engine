@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A composition's position slot says what its backbone actually applies (ADR 0017)."""
+"""A composition's position slot says what its backbone actually applies (Blueprint v1 guide)."""
 
 from __future__ import annotations
 

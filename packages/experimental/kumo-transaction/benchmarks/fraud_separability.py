@@ -24,7 +24,7 @@ labelled transaction.
 Two tasks:
 
 - `--task native`: the book's own `labels/fraud.parquet`.
-- `--task splice`: the spliced identity-theft task of ADR 0015. Each victim
+- `--task splice`: the spliced identity-theft task of dataset strategy. Each victim
   receives one day of a donor user's real transactions and app sessions at
   their original timestamps; the inserted transactions are fraud, and the
   victim's own transactions in the preceding week are the negatives.

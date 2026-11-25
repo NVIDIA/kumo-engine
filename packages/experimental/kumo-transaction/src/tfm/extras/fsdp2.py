@@ -12,7 +12,7 @@ The loop, the loss, the schedule, and the sharding are all this SDK's. The loss
 in particular is the composed model's own objective (`NextEvent`), so label
 alignment is never delegated to the backend. That is the lesson of the
 Blueprint's v1 checkpoint, whose dataset and loss each assumed the other would
-shift the labels (ADR 0010).
+shift the labels (Blueprint v1 objectives).
 
 This backend never falls back to the eager loop. If CUDA or a compatible
 backbone is missing it raises. Use `training.backend: eager` for the

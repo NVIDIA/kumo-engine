@@ -12,13 +12,13 @@ recipes:
       smoke: eager decoder on generated data, CPU, about a minute
       small: 24 TabFormer users and a small Llama, CPU, minutes
       default: v1's 25.9M Llama on all of TabFormer, one GPU or ddp replicas under torchrun
-      cached: the default with pretraining windows read from a token cache (ADR 0016)
+      cached: the default with pretraining windows read from a token cache (token-cache guide)
       multi_gpu: the default model under fsdp2, several GPUs with torchrun
     notes: >
       v1's flow rebuilt on the SDK on public TabFormer data, with its
       label-shift defect fixed and each transaction scored with the customer's
       recent history. Raw-feature XGBoost against raw features plus the
-      embedding (ADR 0017).
+      embedding (Blueprint v1 guide).
 
   - id: pragma_like
     title: PRAGMA-like encoder (profile, event, and history encoders)
@@ -34,7 +34,7 @@ recipes:
       synth_1m: CPU run on a 1M-user book sample
     notes: >
       Revolut PRAGMA's encoder-only key-value-time stack with masked modelling
-      (ADR 0007). Shares its event and profile encoders with blueprint_v2.
+      (experimental composition guide). Shares its event and profile encoders with blueprint_v2.
 
   - id: blueprint_v2
     title: NVIDIA TFM Blueprint v2 (PRAGMA encoders, causal history decoder)
@@ -48,7 +48,7 @@ recipes:
     notes: >
       PRAGMA-style profile and event encoders feeding a causal history decoder,
       trained on next-event fields plus within-event MLM, scored on several
-      tasks of the same users (ADR 0012).
+      tasks of the same users (Blueprint v2 guide).
 
   - id: gnn_encoder
     title: Graph-only encoder with binary supervision or future-subgraph pretraining

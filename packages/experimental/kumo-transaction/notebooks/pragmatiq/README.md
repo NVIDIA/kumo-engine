@@ -1,7 +1,7 @@
 # pragmatiq: PRAGMA-like and Blueprint v2, slot by slot
 
-Install Python 3.12, rustup, a C/C++ compiler and Linux build tools before
-syncing the `native` extra. See the [installation guide](../../examples/kumo-engine/README.md#canonical-recipes).
+For optional native loading, install Python 3.12, rustup, a C/C++ compiler and
+Linux build tools before syncing the `native` extra. See the [installation guide](../../examples/kumo-engine/README.md#canonical-recipes).
 
 A lab on one multi-source book for two recipes:
 [`pragma_like`](../../recipes/pragma_like), Revolut PRAGMA's bidirectional
@@ -9,7 +9,7 @@ encoder, and [`blueprint_v2`](../../recipes/blueprint_v2), PRAGMA's event and
 profile encoders under a causal history decoder. Written for a training
 session on NVIDIA GPUs, it tours a pretrained Blueprint v2 model (00), then
 takes it apart slot by slot, following the kit's building-block taxonomy
-([ADR 0014](../../docs/architecture/0014-building-block-taxonomy.md)), and
+([building-block contracts](../../docs/concepts/building-blocks.md)), and
 branches at the architecture slot: 03a is the PRAGMA-like encoder, 03b the
 Blueprint v2 decoder. Every notebook plots what it teaches. The recipes, not
 these notebooks, are the canonical workflow.
@@ -33,7 +33,7 @@ Blueprint v2 track, which runs the same notebooks on SDK 2.0.0a1.
     [`blueprint_v2_final_d.yaml`](../../benchmarks/ablations/blueprint_v2_final_d.yaml)).
 
 ```bash
-uv sync --extra native --extra notebooks --extra baselines --extra umap
+uv sync --extra notebooks --extra baselines --extra umap
 uv run jupyter lab notebooks/pragmatiq/
 ```
 

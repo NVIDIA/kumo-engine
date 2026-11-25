@@ -6,7 +6,7 @@
 Parquet label books do not ship folds, so probe rows have to be divided here.
 The split is by entity and stratified by class, and the two sides never share
 an entity: overlapping them scores a probe on rows it was fit on, which is how
-a five-feature logistic regression came to report ROC-AUC 1.0 (ADR 0008).
+a five-feature logistic regression came to report ROC-AUC 1.0 (evaluation protocol).
 
 Temporal partitioning stays in `tfm.data.splits.temporal`. This module divides
 *labeled entities* for a probe and says nothing about event time; each row's

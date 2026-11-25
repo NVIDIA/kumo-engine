@@ -64,7 +64,7 @@ def sequence_label(
 ) -> float:
     """1.0 if an event's `label` available at cutoff is positive, else 0.0.
 
-    With `window`, only events inside it count (ADR 0013), so a fraud event
+    With `window`, only events inside it count (probe split rules), so a fraud event
     from an earlier period cannot make this row positive. Without it, every
     event in the history counts, which is right for a single-period table.
     """

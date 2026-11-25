@@ -9,7 +9,7 @@ result must contain. The split and label rules the arms rely on are in
 ## The headline
 
 Per task, a run reports
-([ADR 0018](../architecture/0018-one-headline-comparison.md)):
+(evaluation protocol):
 
 - `<task>_xgboost_raw`: XGBoost on the row's raw fields only, which are the last
   event's own fields (for an event-level task, the labelled transaction) and

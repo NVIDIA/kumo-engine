@@ -16,7 +16,7 @@ decoder has no TimeRoPE:
   their `KEY_` token so the model knows which field they belong to.
 - `DT_b` buckets the log gap since the previous event, `8·ln(1 + Δt/8)`, so
   every time token depends only on the past.
-- `[EVT]` is the event boundary rule 4 requires (ADR 0014).
+- `[EVT]` is the event boundary rule 4 requires (building-block contracts).
 
 Rows too long for the context keep the profile prefix and the most recent
 whole events; the oldest events are dropped.

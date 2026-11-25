@@ -3,7 +3,7 @@
 
 """Pydantic configuration for recipes (serialization of the composition API).
 
-Every key changes behavior or is rejected (ADR 0014). Unknown keys are errors,
+Every key changes behavior or is rejected (building-block contracts). Unknown keys are errors,
 and keys that were removed raise a message naming their replacement, so a
 config can never look like it chose something the runtime ignores.
 """
@@ -42,7 +42,7 @@ class TemporalSplitConfig(StrictConfig):
 
 
 class IdentityTheftConfig(StrictConfig):
-    """The spliced identity-theft task on a pragmatiq book (ADR 0015)."""
+    """The spliced identity-theft task on a pragmatiq book (dataset strategy)."""
 
     victim_fraction: float = 0.2
     """Share of each probe side's eligible users who become victims."""
@@ -91,10 +91,10 @@ class DataConfig(StrictConfig):
         "event_order_key": "Adapters map their own columns onto TransactionEvent; delete the key.",
         "pretrain_window_split_by": (
             "Pretraining windows tile each entity's whole history, as its probe histories "
-            "do (ADR 0017); delete the key."
+            "do (Blueprint v1 guide); delete the key."
         ),
         "pretrain_observation_window": (
-            "Pretraining windows use data.observation_window; widen it instead (ADR 0017)."
+            "Pretraining windows use data.observation_window; widen it instead (Blueprint v1 guide)."
         ),
     }
 
@@ -110,9 +110,9 @@ class DataConfig(StrictConfig):
     adapter: str = "synthetic"
     """A registered adapter (`synthetic`, `tabformer`, `pragmatiq`), or an
     `Adapter`'s import path, `"package.module:attribute"`."""
-    loader: Literal["kumo_pytorch", "python"] = "kumo_pytorch"
-    """Recipe history/graph retrieval backend. Native DiskGraph is the default;
-    `python` explicitly selects the deterministic reference sampler. An explicit
+    loader: Literal["kumo_pytorch", "python"] = "python"
+    """Recipe history/graph retrieval backend. Python is the default;
+    `kumo_pytorch` explicitly selects the experimental native integration. An explicit
     token cache continues to select its declared cache batch builder."""
     path: str | None = None
     """Local book root. `pragmatiq` with no path and no `TFM_PRAGMATIQ_ROOT`
@@ -141,7 +141,7 @@ class DataConfig(StrictConfig):
     """Where the fraud probe's labels come from.
 
     `native` reads the book's own event labels. `spliced_identity_theft`
-    (pragmatiq only) builds the ADR 0015 task from the unmodified book and
+    (pragmatiq only) builds the dataset strategy task from the unmodified book and
     ignores the book's fraud labels; its sample is drawn uniformly rather than
     stratified by them.
     """
@@ -252,7 +252,7 @@ class GranularityConfig(StrictConfig):
     """Registered/importable context-aware history factory; None uses the shared stack."""
     task_head: str | None = None
     """Registered/importable binary head factory; None uses a linear logit."""
-    """`flat_encoder` is the experimental bidirectional encoder on flat rows (ADR 0019)."""
+    """`flat_encoder` is the experimental bidirectional encoder on flat rows (flat-encoder guide)."""
     decoder: DecoderConfig = Field(default_factory=DecoderConfig)
     """Width and heads for every stack; `depth` is the flat decoder's, the flat
     encoder's, or the v2 history decoder's. `mask` does not apply to `flat_encoder`."""
@@ -315,7 +315,7 @@ class GranularityConfig(StrictConfig):
 
 
 class CompositionConfig(StrictConfig):
-    """One choice per building-block slot (ADR 0014). The runtime builds exactly this."""
+    """One choice per building-block slot (building-block contracts). The runtime builds exactly this."""
 
     granularity: GranularityConfig = Field(default_factory=GranularityConfig)
     position: Literal["nope", "rope", "time_rope"] = "nope"
@@ -383,7 +383,7 @@ class MlmConfig(StrictConfig):
 
 
 class MaskedFieldsConfig(StrictConfig):
-    """Masking rates for `masked_fields` (ADR 0019): BERT's 15% per token, plus
+    """Masking rates for `masked_fields` (flat-encoder guide): BERT's 15% per token, plus
     10% whole events. Chosen tokens become `<mask>`, a random same-field value,
     or stay, in BERT's 80 / 10 / 10 split."""
 
@@ -844,7 +844,7 @@ class RecipeConfig(StrictConfig):
         if supervised and self.data.fraud_labels == "spliced_identity_theft":
             problems.append(
                 "fraud_task.supervised_head trains on the pretraining corpus, which carries no "
-                "spliced labels (ADR 0015)"
+                "spliced labels (dataset strategy)"
             )
         if kind != "flat" and self.training.packing:
             problems.append("training.packing packs flat token streams only")

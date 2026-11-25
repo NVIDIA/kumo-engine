@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slot 4, adaptation: how a pretrained embedding is used for a task (ADR 0014).
+"""Slot 4, adaptation: how a pretrained embedding is used for a task (building-block contracts).
 
 Shared by every stack; nothing here knows which tokenizer or history model
 produced the embedding. Import from the submodules:

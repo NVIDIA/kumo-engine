@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Spliced identity theft: an event-level fraud task built from an unmodified book (ADR 0015).
+"""Spliced identity theft: an event-level fraud task built from an unmodified book (dataset strategy).
 
 A victim and a donor are two users of the book. On one UTC theft day, the
 donor's card transactions and app sessions are copied into the victim's
@@ -11,7 +11,7 @@ and on the day itself, are legitimate. No other event carries a label.
 
 The entity split is fixed here, before any label exists, so a victim and its
 donor are always on the same side. Each theft day lies inside the label window
-of its side (ADR 0013). The splice never touches the input events: the
+of its side (probe split rules). The splice never touches the input events: the
 pretraining corpus and the forecast tasks keep reading the unspliced book.
 """
 
@@ -269,7 +269,7 @@ def splice_identity_theft(
 ) -> IdentityTheftSplice:
     """Splice theft days into a copy of `events` and fix the probe split they belong to.
 
-    `windows` needs the `train` and `test` label windows (ADR 0013). `exclude`
+    `windows` needs the `train` and `test` label windows (probe split rules). `exclude`
     names users who may take no role and join neither side, such as users
     with the book's own fraud. Input events must not already carry `label`:
     two label sources on one event would make the task ambiguous.
@@ -286,7 +286,7 @@ def splice_identity_theft(
         if label in event.labels:
             raise SchemaError(
                 f"Event {event.event_id!r} already carries a {label!r} label; load the book "
-                "without its own fraud labels before splicing (ADR 0015)."
+                "without its own fraud labels before splicing (dataset strategy)."
             )
         by_entity[event.entity_id].append(event)
     for history in by_entity.values():

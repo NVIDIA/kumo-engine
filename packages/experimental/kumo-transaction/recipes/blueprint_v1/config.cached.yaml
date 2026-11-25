@@ -5,12 +5,12 @@
 seed: 42
 
 # config.yaml with its pretraining windows read from a token cache
-# (ADR 0016). Every other key is the same; a recipe-smoke test holds them equal.
+# (token-cache guide). Every other key is the same; a recipe-smoke test holds them equal.
 #
 # Tokenize the train split once (about 75 s with 8 workers on all of TabFormer),
 # then train without loading any event on any rank, then evaluate on one process:
 #
-#   uv sync --extra native --extra huggingface --extra baselines
+#   uv sync --extra huggingface --extra baselines
 #   export TFM_TABFORMER_ROOT=~/data/TabFormer
 #   uv run tfm cache-tokens --recipe blueprint_v1 --config cached --workers 8
 #   uv run torchrun --nproc-per-node 2 -m tfm.cli.main train \

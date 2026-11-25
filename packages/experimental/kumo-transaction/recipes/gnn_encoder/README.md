@@ -279,7 +279,7 @@ load adapter events in memory.
 
 ## Native loader
 
-The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+Opt in with `data.loader: kumo_pytorch` to use the pinned experimental Kumo
 PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for setup, commands, temporal rules and limitations. Select `data.loader: python`
-in a copied configuration for the previous loader.
+for setup, commands, temporal rules and limitations. `data.loader: python`
+remains the default pending end-to-end performance evidence.

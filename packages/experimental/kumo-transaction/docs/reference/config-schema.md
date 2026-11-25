@@ -30,7 +30,7 @@ value under another granularity.
 ## Composition: one choice per slot
 
 `model.composition` holds one choice per building-block slot (see
-[ADR 0014](../architecture/0014-building-block-taxonomy.md)). The runtime
+[building-block contracts](../concepts/building-blocks.md)). The runtime
 builds exactly that composition and runs `validate_composition` before
 training, so an invalid pairing fails with the rule it breaks.
 
@@ -306,8 +306,8 @@ that presence. Missing amounts on individual events remain supported.
 
 ## Recipe loader selection
 
-`data.loader` defaults to `kumo_pytorch` for every sequence composition and graph
-recipe. `python` selects the previous reference loader explicitly. A configured
-token cache retains its batch builder; packing retains the packer over native
+`data.loader` defaults to `python` for sequence compositions and graph recipes.
+`kumo_pytorch` explicitly selects the experimental native integration. A configured
+token cache retains its batch builder; packing retains the packer over the selected
 histories. See the [migration guide](../migration/native-loader-default.md) for
 source build requirements and graph schema/clock limitations.

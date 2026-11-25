@@ -4,7 +4,7 @@
 
 seed: 42
 
-# A flat BERT-style encoder on Blueprint v1's TabFormer rows (ADR 0019): v1's
+# A flat BERT-style encoder on Blueprint v1's TabFormer rows (flat-encoder guide): v1's
 # tokens, data, schedule, and probe, with only the attention mask, objective,
 # and readout changed, so a difference from v1 is the encoder's.
 #

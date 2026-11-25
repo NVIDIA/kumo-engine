@@ -225,7 +225,7 @@ def test_removed_pretrain_keys_explain_themselves(key: str) -> None:
 
     from tfm.config import DataConfig
 
-    with pytest.raises(ValidationError, match="ADR 0017"):
+    with pytest.raises(ValidationError, match="Blueprint v1 guide"):
         DataConfig.model_validate(
             {
                 key: "card",

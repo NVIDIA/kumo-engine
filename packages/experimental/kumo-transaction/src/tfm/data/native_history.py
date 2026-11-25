@@ -271,9 +271,9 @@ def build_entity_sequences(
     max_events: int,
     observation_window: timedelta | None = None,
     causal: bool = True,
-    loader: Loader = "kumo_pytorch",
+    loader: Loader = "python",
 ) -> list[TransactionSequence]:
-    """Retrieve histories natively by default; preserve the reference selection contract."""
+    """Select native retrieval explicitly; preserve the reference selection contract."""
     if loader not in {"python", "kumo_pytorch"}:
         raise ValueError(f"Unknown history loader {loader!r}")
     if loader == "python":
@@ -305,7 +305,7 @@ def build_entity_windows(
     window_events: int,
     observation_window: timedelta | None = None,
     causal: bool = True,
-    loader: Loader = "kumo_pytorch",
+    loader: Loader = "python",
 ) -> list[TransactionSequence]:
     """Tile the same native histories using the existing pretraining-window policy."""
     if loader not in {"python", "kumo_pytorch"}:
@@ -341,7 +341,7 @@ def build_sequences_at_label_cutoffs(
     max_events: int,
     observation_window: timedelta | None = None,
     causal: bool = True,
-    loader: Loader = "kumo_pytorch",
+    loader: Loader = "python",
 ) -> list[tuple[TransactionSequence, Any]]:
     """Retain label-row order while retrieving each history at its own prediction time."""
     if loader not in {"python", "kumo_pytorch"}:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The `ddp` backend across real processes (ADR 0011).
+"""The `ddp` backend across real processes (backend contracts).
 
 The shared backend suite runs `ddp` single-process, where it is the eager loop.
 These tests launch two Gloo ranks on CPU so gradient averaging actually runs,

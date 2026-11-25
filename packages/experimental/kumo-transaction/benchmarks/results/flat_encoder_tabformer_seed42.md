@@ -5,14 +5,14 @@ tokens, give TabFormer a history embedding that adds to raw features, where
 v1's causal decoder's does not reliably
 ([`blueprint_v1_seeds`](blueprint_v1_seeds.md)) and `pragma_like`'s does not
 at all ([`pragma_like_tabformer_seed42`](pragma_like_tabformer_seed42.md))?
-[ADR 0019](../../docs/architecture/0019-flat-bert-encoder.md)'s encoder
+[flat-encoder guide](../../recipes/blueprint_v1/README.md)'s encoder
 differs from v1 only in its attention mask, objective, and readout. One seed,
 an exploration: not a quality, fraud, or production claim.
 
 | field | value |
 |---|---|
 | config | [`benchmarks/ablations/flat_encoder_tabformer.yaml`](../ablations/flat_encoder_tabformer.yaml), seed 42, with `evaluation.history_window.max_rows: 250000` |
-| code | commit `124ab93` plus the uncommitted `flat_encoder` composition (ADR 0019) and `features.exclude_keys` |
+| code | commit `124ab93` plus the uncommitted `flat_encoder` composition (flat-encoder guide) and `features.exclude_keys` |
 | data | IBM TabFormer through `tfm prepare-tabformer`, v1's precomputed date split, all 2,000 users, 128-event probe histories, 341-event pretraining windows |
 | rows | the rows of `pragma_like_tabformer_seed42`: train side, every training-window fraud with 5 negatives each; evaluation side, a seeded sample of 250,000 test rows, **277 frauds**. The raw and hand-built arms score identically in all three runs |
 | encoder | 8 bidirectional blocks, d=512, 8 heads, GELU 2048, rotary positions by token index (base 5e5); 28.5M parameters. v1's 11 field tokens per event. Masked fields: 15% of field tokens and 10% of whole events, 80 / 10 / 10 `<mask>` / random same-field / kept, cross-entropy within the field. Readout: mean of the last (scored) event's field tokens |

@@ -408,6 +408,11 @@ class NativeGraphSampler(GraphSampler):
         )
 
     @property
+    def tie_policy(self) -> str:
+        """Native recent-fanout ties follow index-local ordering."""
+        return "native index-local recent ties"
+
+    @property
     def loader_manifest(self) -> dict[str, str]:
         """Native provenance; future targets are deliberately a separate reference pass."""
         return {

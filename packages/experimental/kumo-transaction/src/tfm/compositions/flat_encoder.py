@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental bidirectional encoder over the flat field-token stream (ADR 0019)."""
+"""Experimental bidirectional encoder over the flat field-token stream (flat-encoder guide)."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A probe is never scored on a row it was fit on (ADR 0008).
+"""A probe is never scored on a row it was fit on (evaluation protocol).
 
 This is a repository invariant, not a recipe detail: an overlapping probe
 split silently produced ROC-AUC and PR-AUC of exactly 1.0 for `default_12m`,
@@ -91,7 +91,7 @@ def test_the_refusal_names_the_threshold_and_the_reason() -> None:
 def test_a_skipped_probe_is_absent_from_metrics_rather_than_perfect(tmp_path: Path) -> None:
     """Five fixture users hold exactly one positive entity.
 
-    Before ADR 0008 that produced `default_12m_*` rows reporting 1.0. Now the
+    Before evaluation protocol that produced `default_12m_*` rows reporting 1.0. Now the
     task is skipped with a warning, so no unearned number reaches the report.
     """
     from tfm.config import load_recipe_config
@@ -112,7 +112,7 @@ def test_a_skipped_probe_is_absent_from_metrics_rather_than_perfect(tmp_path: Pa
 
 
 def test_forecast_rows_before_the_pretraining_cutoff_are_refused(tmp_path: Path) -> None:
-    """ADR 0013 decision 4: the encoder must not have seen the label horizon."""
+    """probe split rules decision 4: the encoder must not have seen the label horizon."""
     from tfm.config import load_recipe_config
     from tfm.runtime.data import prepare_data
     from tfm.runtime.evaluate import forecast_task

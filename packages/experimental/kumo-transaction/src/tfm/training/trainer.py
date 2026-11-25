@@ -225,7 +225,7 @@ def training_summary(losses: Sequence[float], grad_norms: Sequence[float]) -> di
 
 
 class Trainer(Protocol):
-    """A training backend (ADR 0011). Construct through `build_trainer`."""
+    """A training backend (backend contracts). Construct through `build_trainer`."""
 
     capabilities: BackendCapabilities
 
@@ -297,7 +297,7 @@ class EagerTrainer:
 
 
 def export_huggingface(model: nn.Module, checkpoint_dir: Path | None) -> str:
-    """Write the consolidated HF checkpoint an HF backbone owes (ADR 0011).
+    """Write the consolidated HF checkpoint an HF backbone owes (backend contracts).
 
     Returns the directory, or "" when there is no directory or no HF backbone.
     """

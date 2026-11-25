@@ -2,7 +2,7 @@
 
 Milestone 2, criterion 7, rerun with the fraud probe on the spliced
 identity-theft task
-([ADR 0015](../../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md))
+([dataset strategy](../../../docs/reference/datasets.md))
 instead of pragmatiq's own fraud labels, which one transaction identifies.
 The model, book, and schedule are those of
 [`blueprint_v2_hybrid_lab_seeds.md`](blueprint_v2_hybrid_lab_seeds.md); the

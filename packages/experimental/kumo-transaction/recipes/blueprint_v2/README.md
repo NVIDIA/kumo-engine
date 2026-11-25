@@ -13,7 +13,7 @@ function of the profile and the events up to the cutoff only, and the same
 decoder can generate future events.
 
 Design and leakage contract:
-[ADR 0012](../../docs/architecture/0012-blueprint-v2-composition.md).
+Blueprint v2 guide.
 Milestone status: [the roadmap](../../docs/reference/roadmap.md). The
 bidirectional comparison on the same rows is [`pragma_like`](../pragma_like).
 
@@ -59,7 +59,7 @@ own history. Pretraining targets are event-level; probe labels are
 sequence-level at the cutoff and never enter the objective.
 
 Fraud is spliced identity theft (`data.fraud_labels: spliced_identity_theft`,
-[ADR 0015](../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md)):
+[dataset strategy](../../docs/reference/datasets.md)):
 on the pragmatiq book, the book's own fraud can be identified from a single
 event, so it cannot show what history adds. At 10,000 users the splice makes
 about 1,390 victims per seed.
@@ -83,17 +83,17 @@ The same seed produces byte-identical output for any worker count; it took
 77 s on a DGX Spark and wrote 128.5M events, 2023-01-01 to 2025-08-01. The
 world file is pragmatiq's default stretched to 31 months, so the forecast
 labels are issued after the train cutoff; in the default 25-month world every
-`default_12m` row is before it and is skipped (ADR 0013).
+`default_12m` row is before it and is skipped (probe split rules).
 
 Profiles are cut at each sequence's cutoff: lifelong milestones dated after it
 are dropped, and the rest are timed from the cutoff. Static attributes carry
 no date, which is safe for Generator v2 because it draws them before
-simulation; other books need the same guarantee (ADR 0012).
+simulation; other books need the same guarantee (Blueprint v2 guide).
 
 Holding the book as Python objects costs about 7.7 GB per 1,000 users, so
 probes sample `max_entities` users. `config.yaml` pretrains on every
 128-event train-side window of all users from a token cache
-([ADR 0016](../../docs/architecture/0016-token-cache.md)), built once with
+([token-cache guide](../../docs/reference/config-schema.md)), built once with
 `tfm cache-tokens`. A run refuses a cache built from other settings.
 
 ## Commands
@@ -176,7 +176,7 @@ fraud, credit, or paper-fidelity claims.
 
 ## Native loader
 
-The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+Opt in with `data.loader: kumo_pytorch` to use the pinned experimental Kumo
 PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for setup, commands, temporal rules and limitations. Select `data.loader: python`
-in a copied configuration for the previous loader.
+for setup, commands, temporal rules and limitations. `data.loader: python`
+remains the default pending end-to-end performance evidence.

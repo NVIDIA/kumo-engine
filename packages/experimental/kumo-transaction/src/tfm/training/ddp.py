@@ -62,7 +62,7 @@ class _LossOnly(nn.Module):
 
 
 class DdpTrainer:
-    """Replicate the model on every rank and average gradients (ADR 0011)."""
+    """Replicate the model on every rank and average gradients (backend contracts)."""
 
     capabilities = BackendCapabilities(
         name="ddp",
