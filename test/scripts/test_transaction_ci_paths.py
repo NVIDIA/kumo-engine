@@ -110,6 +110,7 @@ def test_native_default_uses_verified_wheels_without_resyncing_git_sources() -> 
     assert build < install
     assert "--extra native" in steps[install]["run"]
     assert "--extra kumo" in steps[install]["run"]
+    assert "--extra baselines" in steps[install]["run"]
     assert "--no-deps --reinstall native-wheels/*/*.whl" in steps[install]["run"]
     for step in steps[install+1:]:
         for line in step.get("run", "").splitlines():

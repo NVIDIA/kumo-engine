@@ -63,7 +63,7 @@ jobs:
         if: steps.paths.outputs.changed == 'true'
         working-directory: packages/experimental/kumo-transaction
         run: |
-          uv sync --frozen --extra dev --extra native --extra kumo --no-install-package diskgraph --no-install-package kumo-pytorch --no-install-package kumo-settings --no-install-package kumo-core --no-install-package kumo-api --no-install-package kumo-pql
+          uv sync --frozen --extra dev --extra native --extra kumo --extra baselines --no-install-package diskgraph --no-install-package kumo-pytorch --no-install-package kumo-settings --no-install-package kumo-core --no-install-package kumo-api --no-install-package kumo-pql
           uv pip install --no-deps --reinstall native-wheels/*/*.whl
       - name: Check package style and types
         if: steps.paths.outputs.changed == 'true'

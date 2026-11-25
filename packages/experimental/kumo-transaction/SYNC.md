@@ -108,3 +108,7 @@ name the independent package directory and native build prerequisites. The
 additional `tests/recipe_smoke/test_kumo_engine_example.py` comes from #524
 (commit `dff4ff4dbcabe123e98652065e134f277b43812b`), outside the pinned source
 inventory; it verifies a fresh build and index reuse with source tables offline.
+
+Blueprint GitHub CI installs the `baselines` extra alongside `kumo`; Optuna can
+be present through Engine without XGBoost. The three tuned tabular-baseline
+contracts require both dependencies and skip cleanly when either is absent.
