@@ -197,6 +197,7 @@ pub struct MemoryBudget {
     cvar: Condvar,
     in_use: AtomicU64,
     waiters: AtomicUsize,
+    growing: AtomicU64,
 }
 
 pub struct MemoryBudgetGuard {
@@ -219,6 +220,7 @@ impl MemoryBudget {
             cvar: Condvar::new(),
             in_use: AtomicU64::new(0),
             waiters: AtomicUsize::new(0),
+            growing: AtomicU64::new(0),
         }
     }
 
@@ -300,12 +302,27 @@ impl MemoryBudget {
         }
     }
 
-    fn release(&self, bytes: u64) {
-        if bytes > 0 {
-            self.in_use.fetch_sub(bytes, Ordering::Relaxed);
-        }
+    fn grow(&self, held: u64, extra: u64) {
         let mut available = self.available.lock().unwrap();
-        *available = available.saturating_add(bytes).min(self.total);
+        if *available < extra {
+            self.waiters.fetch_add(1, Ordering::Relaxed);
+            self.growing.fetch_add(held, Ordering::Relaxed);
+            while *available < extra
+                && self.in_use.load(Ordering::Relaxed) > self.growing.load(Ordering::Relaxed)
+            {
+                available = self.cvar.wait(available).unwrap();
+            }
+            self.growing.fetch_sub(held, Ordering::Relaxed);
+            self.waiters.fetch_sub(1, Ordering::Relaxed);
+        }
+        *available = available.saturating_sub(extra);
+        self.in_use.fetch_add(extra, Ordering::Relaxed);
+    }
+
+    fn release(&self, bytes: u64) {
+        let mut available = self.available.lock().unwrap();
+        let previous = self.in_use.fetch_sub(bytes, Ordering::Relaxed);
+        *available = self.total.saturating_sub(previous.saturating_sub(bytes));
         self.cvar.notify_all();
     }
 
@@ -331,6 +348,15 @@ impl Drop for MemoryBudgetGuard {
 }
 
 impl MemoryBudgetGuard {
+    pub fn resize(&mut self, bytes: u64) {
+        if bytes > self.bytes {
+            self.budget.grow(self.bytes, bytes - self.bytes);
+        } else if bytes < self.bytes {
+            self.budget.release(self.bytes - bytes);
+        }
+        self.bytes = bytes;
+    }
+
     fn into_bytes(mut self) -> u64 {
         let bytes = self.bytes;
         self.bytes = 0;

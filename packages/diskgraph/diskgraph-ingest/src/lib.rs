@@ -9957,42 +9957,15 @@ impl IngestContext {
                         } else {
                             0
                         };
-                        let estimate = estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
-                        // Track this task's estimate so we can compare the
-                        // sum-of-estimates vs the actual peak RSS at end of pk_map.
-                        estimate_sum.fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);
                         // Sample current RSS at task entry — gives a cheap
                         // proxy for the high-water mark across the phase.
                         update_atomic_max(&peak_rss, rss_anon_diag_bytes());
-                        let _budget_guard = if let Some(budget) = pk_map_budget.as_ref() {
-                            let budget_total = budget.snapshot().total;
-                            if budget_total == 0 || estimate == 0 {
-                                None
-                            } else {
-                                // A single shard whose PK-map estimate exceeds the whole
-                                // budget cannot be made to fit by halving threads (threads
-                                // don't shrink a shard), so retrying the same shard is
-                                // futile. Surface a permanent, actionable anyhow error
-                                // (rc=1 → ingest_runner classifies as "fatal"/
-                                // non-retryable) instead of letting `acquire` fail via
-                                // `panic!` (rc=134), which the runner would treat as
-                                // OOM-class and retry with halved threads to exhaustion.
-                                // With cgroup-aware shard sizing this should be rare.
-                                if estimate > budget_total {
-                                    anyhow::bail!(
-                                        "single-shard PK-map estimate {estimate} B exceeds \
-                                         memory budget {budget_total} B; increase num_shards \
-                                         (re-run infer or raise num_shards) — halving threads \
-                                         cannot reduce a single shard"
-                                    );
-                                }
-                                // Normal case (fits): keep the existing per-shard acquire
-                                // semantics, which block until the budget frees up.
-                                Some(budget.acquire(estimate)?)
-                            }
-                        } else {
-                            None
-                        };
+                        let mut reservation = crate::scratch::PkMapReservation::acquire(
+                            pk_map_budget.as_ref(),
+                            reserve_rows,
+                            key_type,
+                            avg_var_bytes,
+                        )?;
                         let scratch = &mut std::mem::take(scratch);
                         let mut fkey_bitmaps: Vec<memmap2::MmapMut> = Vec::new();
                         for rel in relationships.iter().filter(|r| r.src_table == table_name) {
@@ -10083,12 +10056,14 @@ impl IngestContext {
                                                 let mut data = row;
                                                 let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Int(v) = key {
+                                                    reservation.cover(seen.len() as u64 + 1)?;
                                                     seen.entry(v).or_insert(INVALID_LOCAL_ID);
                                                 }
                                                 Ok(())
                                             })?;
                                         }
                                     }
+                                    reservation.fit((pkmap.seen_u64.len() as u64).max(reserve_rows))?;
                                     let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_u64);
                                     let mphf =
@@ -10227,6 +10202,7 @@ impl IngestContext {
                                                 let mut data = row;
                                                 let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Bytes(bytes) = key {
+                                                    reservation.cover(seen.len() as u64 + 1)?;
                                                     seen.entry(bytes).or_insert(INVALID_LOCAL_ID);
                                                 }
                                                 Ok(())
@@ -10245,6 +10221,7 @@ impl IngestContext {
                                             );
                                         }
                                     }
+                                    reservation.fit((pkmap.seen_bytes.len() as u64).max(reserve_rows))?;
                                     let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_bytes);
                                     tracing::info!(
@@ -10381,12 +10358,14 @@ impl IngestContext {
                                                 let mut data = row;
                                                 let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Uuid(uuid) = key {
+                                                    reservation.cover(seen.len() as u64 + 1)?;
                                                     seen.entry(uuid).or_insert(INVALID_LOCAL_ID);
                                                 }
                                                 Ok(())
                                             })?;
                                         }
                                     }
+                                    reservation.fit((pkmap.seen_uuid.len() as u64).max(reserve_rows))?;
                                     let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_uuid);
                                     let mphf =
@@ -10501,12 +10480,14 @@ impl IngestContext {
                                                 let mut data = row;
                                                 let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Uuid256(uuid) = key {
+                                                    reservation.cover(seen.len() as u64 + 1)?;
                                                     seen.entry(uuid).or_insert(INVALID_LOCAL_ID);
                                                 }
                                                 Ok(())
                                             })?;
                                         }
                                     }
+                                    reservation.fit((pkmap.seen_uuid256.len() as u64).max(reserve_rows))?;
                                     let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_uuid256);
                                     let mphf =
@@ -10621,12 +10602,14 @@ impl IngestContext {
                                                 let mut data = row;
                                                 let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Ip(ip) = key {
+                                                    reservation.cover(seen.len() as u64 + 1)?;
                                                     seen.entry(ip).or_insert(INVALID_LOCAL_ID);
                                                 }
                                                 Ok(())
                                             })?;
                                         }
                                     }
+                                    reservation.fit((pkmap.seen_ip.len() as u64).max(reserve_rows))?;
                                     let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_ip);
                                     let mphf =
@@ -10672,6 +10655,7 @@ impl IngestContext {
                             }
                         }?;
                         update_atomic_max(&peak_rss, rss_anon_diag_bytes());
+                        estimate_sum.fetch_add(reservation.bytes(), std::sync::atomic::Ordering::Relaxed);
                         if duplicate_count > 0 {
                             let key = format!("{}:shard-{:05}", table_name, shard);
                             duplicate_counts

@@ -4,6 +4,7 @@
 
 use super::builder::*;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[test]
 fn edge_buffer_pool_reuses_budget() {
@@ -203,4 +204,33 @@ fn delta_encode_offsets_into_correctness() {
     buf.clear();
     delta_encode_offsets_into(&[], &mut buf, 2).unwrap();
     assert!(buf.is_empty());
+}
+
+#[test]
+fn guard_resize_waits_for_room_unless_every_holder_waits_to_grow() {
+    let budget = Arc::new(MemoryBudget::new(100));
+    let mut first = budget.acquire(60).unwrap();
+    let mut second = budget.acquire(40).unwrap();
+    let (first_tx, first_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        first.resize(80);
+        first_tx.send(first).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !budget.has_waiters() {
+        assert!(Instant::now() < deadline, "the grow did not wait");
+        std::thread::yield_now();
+    }
+    assert_eq!(budget.snapshot().in_use, 100);
+    let (second_tx, second_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        second.resize(70);
+        second_tx.send(second).unwrap();
+    });
+    let mut second = second_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(budget.snapshot().in_use, 130);
+    second.resize(10);
+    let _first = first_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(budget.snapshot().in_use, 90);
+    assert!(budget.try_acquire(11).is_none());
 }

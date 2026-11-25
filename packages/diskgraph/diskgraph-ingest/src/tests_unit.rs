@@ -7,6 +7,7 @@ use super::{
     RowPackRowLens,
 };
 use crate::graph_config::{ColumnSpec, DataSource, IngestedType};
+use crate::{mapping::KeyType, scratch::PkMapReservation};
 use arrow_array::{ArrayRef, Decimal128Array, Decimal256Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_rowpack::{BinaryStringHint, RowAccess, RowAccessHints, RowAccessStats};
@@ -656,6 +657,45 @@ fn pk_map_estimate_varbytes_respects_avg_len() {
     let small = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 8);
     let large = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 64);
     assert!(large > small);
+}
+
+fn int64_estimate(rows: u64) -> u64 {
+    crate::scratch::estimate_pk_map_bytes(rows, KeyType::Int64, 0)
+}
+
+#[test]
+fn pk_map_reservation_grows_by_doubling_and_fits_the_final_rows() {
+    let budget = Arc::new(super::MemoryBudget::new(1 << 30));
+    let mut empty = PkMapReservation::acquire(Some(&budget), 0, KeyType::Int64, 0).unwrap();
+    assert_eq!(budget.snapshot().in_use, 0);
+    empty.cover(1).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1));
+    drop(empty);
+    let mut reservation =
+        PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
+    reservation.cover(1_100).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_100));
+    reservation.cover(1_101).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(2_200));
+    reservation.fit(1_500).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_500));
+    assert_eq!(reservation.bytes(), int64_estimate(1_500));
+    drop(reservation);
+    assert_eq!(budget.snapshot().in_use, 0);
+}
+
+#[test]
+fn pk_map_reservation_fails_only_when_the_rows_exceed_the_budget() {
+    let budget = Arc::new(super::MemoryBudget::new(int64_estimate(1_500)));
+    assert!(PkMapReservation::acquire(Some(&budget), 1_501, KeyType::Int64, 0).is_err());
+    assert_eq!(budget.snapshot().in_use, 0);
+    let mut reservation =
+        PkMapReservation::acquire(Some(&budget), 1_100, KeyType::Int64, 0).unwrap();
+    reservation.cover(1_101).unwrap();
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_101));
+    let err = reservation.cover(1_501).unwrap_err().to_string();
+    assert!(err.contains("single-shard PK-map estimate"), "{err}");
+    assert_eq!(budget.snapshot().in_use, int64_estimate(1_101));
 }
 
 #[test]
