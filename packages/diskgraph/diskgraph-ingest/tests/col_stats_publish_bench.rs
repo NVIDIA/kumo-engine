@@ -44,6 +44,7 @@ fn splitmix(mut x: u64) -> u64 {
 
 fn spec(name: String, dtype: IngestedType, stype: SemanticType, delim: Option<&str>) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name,
         source_dtype: None,
         ingested_dtype: dtype,

@@ -53,6 +53,7 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
 
 fn int64_col(name: &str) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name: name.to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Int64,
@@ -175,6 +176,7 @@ fn stage_table_spec(parquet_path: &str) -> TableSpec {
         columns: vec![
             int64_col("ENTITY1"),
             ColumnSpec {
+                source_name: None,
                 name: "TIMESTAMP".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Timestamp,
@@ -187,6 +189,7 @@ fn stage_table_spec(parquet_path: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "TARGET1".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Int64Array,
@@ -199,6 +202,7 @@ fn stage_table_spec(parquet_path: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "entity_node_id".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::UInt64,
@@ -211,6 +215,7 @@ fn stage_table_spec(parquet_path: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "target_node_ids".to_string(),
                 source_dtype: None,
                 ingested_dtype: IngestedType::Int64Array,
@@ -654,6 +659,7 @@ fn ingest_exclude_resolution(
     let mut table = stage_table_spec(stage_parquet.to_str().unwrap());
     table.name = "val_seeds".to_string();
     table.columns.push(ColumnSpec {
+        source_name: None,
         name: "exclude_target_keys".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Int64Array,
@@ -666,6 +672,7 @@ fn ingest_exclude_resolution(
         multicategorical_delimiter: None,
     });
     table.columns.push(ColumnSpec {
+        source_name: None,
         name: "exclude_node_ids".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Int64Array,

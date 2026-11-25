@@ -778,6 +778,7 @@ const MULTICAT_MAX_FILES: usize = 15;
 
 struct ExplicitMulticatCandidate {
     name: String,
+    source_name: String,
     declared: String,
     total: usize,
     hits: usize,
@@ -815,6 +816,7 @@ impl ExplicitMulticatDelimiterValidator {
                         .as_deref()
                         .map(|declared| ExplicitMulticatCandidate {
                             name: column.name.clone(),
+                            source_name: column.source_column().to_string(),
                             declared: declared.to_string(),
                             total: 0,
                             hits: 0,
@@ -846,7 +848,7 @@ impl ExplicitMulticatDelimiterValidator {
             if candidate.total >= MULTICAT_EXPLICIT_MAX_SAMPLES {
                 continue;
             }
-            let Ok(array_index) = batch.schema().index_of(&candidate.name) else {
+            let Ok(array_index) = batch.schema().index_of(&candidate.source_name) else {
                 continue;
             };
             let array = batch.column(array_index);
