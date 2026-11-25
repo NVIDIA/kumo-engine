@@ -2529,7 +2529,8 @@ class DiskGraphSource:
             if (
                 (
                     isinstance(values, (self._pa.ListArray, self._pa.LargeListArray))
-                    or isinstance(values, self._pa.FixedSizeListArray) and values.type == target
+                    or isinstance(values, self._pa.FixedSizeListArray)
+                    and values.type == target
                 )
                 and values.type.value_type == target.value_type
                 and values.values.null_count == 0
