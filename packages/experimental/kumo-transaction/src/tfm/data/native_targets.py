@@ -10,7 +10,6 @@ retains a corpus of sampled input graphs or exposes future rows to the model.
 
 from __future__ import annotations
 
-import json
 import math
 import sqlite3
 from collections import deque
@@ -24,7 +23,7 @@ import torch
 
 from tfm.contracts.graph import STATIC_TIME, FutureSubgraphTargets, GraphAnchor, utc_us
 from tfm.data.graph import STATISTICS, FutureTargetTransform
-from tfm.data.native_source import NativeSourceFiles, source_entity_id
+from tfm.data.native_source import NativeSourceFiles, source_entity_id, source_key_values
 
 
 class NativeFutureTargets(AbstractContextManager["NativeFutureTargets"]):
@@ -246,7 +245,7 @@ class NativeFutureTargets(AbstractContextManager["NativeFutureTargets"]):
             if (
                 row is None
                 or row[3] * 1_000_000 != utc_us(anchor.cutoff)
-                or source_entity_id(tuple(json.loads(row[4]))) != anchor.entity_id
+                or source_entity_id(source_key_values(row[4])) != anchor.entity_id
             ):
                 raise ValueError("Future target cache is missing the exact requested anchor")
             # Copy read-only persisted bytes before exposing a tensor. PyTorch
@@ -276,7 +275,7 @@ class NativeFutureTargets(AbstractContextManager["NativeFutureTargets"]):
             anchors = tuple(
                 GraphAnchor(
                     sid,
-                    source_entity_id(tuple(json.loads(code))),
+                    source_entity_id(source_key_values(code)),
                     datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=cutoff),
                 )
                 for sid, code, cutoff in rows

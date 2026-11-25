@@ -508,3 +508,51 @@ def test_six_hop_triangle_expands_both_fk_directions_in_one_layer(tmp_path):
         assert graph.num_sampled_nodes["middle"][2] == 1
         assert graph.num_sampled_nodes["activity"][2] == 1
         assert graph.num_sampled_nodes["roots"][3] == 1
+
+
+def test_generated_anchors_preserve_date_key_types_and_utc_date_clocks(tmp_path):
+    from datetime import date
+
+    from tfm.config import RelationalTaskConfig
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_source import source_entity_id
+
+    day = date(2024, 1, 1)
+    pq.write_table(pa.table({"id": [1], "day": [day]}), tmp_path / "owners.parquet")
+    pq.write_table(
+        pa.table({"id": [1], "owner": [1], "day": [day], "amount": [2.0]}),
+        tmp_path / "activity.parquet",
+    )
+    source = TableSource(
+        (
+            RelationalTable("owners", ("id", "day"), immutable=True),
+            RelationalTable(
+                "activity",
+                ("id",),
+                numeric={"amount": "amount"},
+                event_time="day",
+                available_at="day",
+            ),
+        ),
+        (RelationalForeignKey("activity", "owners", "activity", ("owner", "day")),),
+        {name: tmp_path / f"{name}.parquet" for name in ("owners", "activity")},
+    )
+    task = RelationalTaskConfig(
+        root="owners",
+        history_paths={"activity": ("activity",)},
+        cutoffs={"train": "2024-01-02"},
+    )
+    with NativeInputs(
+        source,
+        root=task.root,
+        history_paths=task.history_paths,
+        task=task,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+    ) as inputs:
+        with inputs.batches("train", mode="sequence") as batches:
+            batch = next(iter(batches))
+            batch.assert_validated()
+            assert batch.anchors[0].entity_id == source_entity_id((1, day))
+            assert batch.history.event_mask.tolist() == [[True]]

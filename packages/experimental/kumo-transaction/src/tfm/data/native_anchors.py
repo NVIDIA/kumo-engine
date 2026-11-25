@@ -19,7 +19,7 @@ from tfm.config import RelationalTaskConfig
 from tfm.contracts.errors import SchemaError
 from tfm.contracts.graph import utc_us
 from tfm.contracts.table_source import TableSource
-from tfm.data.native_source import NativeSourceFiles
+from tfm.data.native_source import NativeSourceFiles, source_entity_id, source_key_values
 from tfm.data.relational import timestamp
 
 
@@ -107,10 +107,10 @@ def task_anchors(source: NativeSourceFiles, task: RelationalTaskConfig, output: 
                 ):
                     if known is not None and known > utc_us(cutoff):
                         continue
-                    key = tuple(json.loads(encoded))
+                    key = source_key_values(encoded)
                     yield {
                         **dict(zip(root.key, key, strict=True)),
-                        "sample_id": _identity((_identity(key), cutoff.isoformat(), split)),
+                        "sample_id": _identity((source_entity_id(key), cutoff.isoformat(), split)),
                         "cutoff": cutoff,
                         "split": split,
                     }
@@ -119,11 +119,11 @@ def task_anchors(source: NativeSourceFiles, task: RelationalTaskConfig, output: 
                 "SELECT i.source_key,l.cutoff,l.split FROM task_labels l JOIN identities i ON i.table_name=? AND i.code=l.root ORDER BY l.rowid",
                 (task.root,),
             ):
-                key = tuple(json.loads(encoded))
+                key = source_key_values(encoded)
                 cutoff = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=at)
                 yield {
                     **dict(zip(root.key, key, strict=True)),
-                    "sample_id": _identity((_identity(key), cutoff.isoformat(), split)),
+                    "sample_id": _identity((source_entity_id(key), cutoff.isoformat(), split)),
                     "cutoff": cutoff,
                     "split": split,
                 }

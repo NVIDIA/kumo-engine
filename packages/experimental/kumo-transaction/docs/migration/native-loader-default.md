@@ -146,6 +146,9 @@ join their external outcomes after embedding extraction. Their pretraining-cutof
 exclusions and separate task identities remain intact; no input-time label
 availability clock is invented for a legacy outcome row.
 
+Date-valued and timestamp-valued composite keys retain their scalar types,
+including when anchors are generated or replayed. Declared Arrow date clocks
+mean midnight UTC and are stored as explicit UTC timestamps for the index.
 The pinned native runtime requires whole-second UTC event and cutoff clocks.
 A sequence path needs equivalent event and availability clocks. A fixed forward
 projection through timed intermediates is supported only when every row and

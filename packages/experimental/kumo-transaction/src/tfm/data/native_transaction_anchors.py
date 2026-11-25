@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 from tfm.config import RecipeConfig
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.graph import utc_us
-from tfm.data.native_source import NativeSourceFiles, source_entity_id
+from tfm.data.native_source import NativeSourceFiles, source_entity_id, source_key_values
 from tfm.data.splits.temporal import parse_timestamp
 
 SSL_TRAIN = ("future_train_0", "future_train_1", "future_train_2")
@@ -33,7 +33,7 @@ def graph_anchors(source: NativeSourceFiles, config: RecipeConfig, path: Path) -
     """
     db, data = source.connection, config.data
     owners = [
-        (source_entity_id(tuple(json.loads(key))), code)
+        (source_entity_id(source_key_values(key)), code)
         for key, code in db.execute(
             "SELECT source_key,code FROM identities WHERE table_name='users'"
         )
@@ -248,7 +248,7 @@ def sequence_anchors(source: NativeSourceFiles, config: RecipeConfig, path: Path
                         "history_paths.events: truncated sequence label boundary has tied event clocks; stable native secondary ordering is unsupported"
                     )
                 retained = retained[: data.sequence_length]
-                owner = source_entity_id(tuple(json.loads(key)))
+                owner = source_entity_id(source_key_values(key))
                 # Absence of a label source must never become an all-negative
                 # scored dataset. Unsupervised training can omit it explicitly.
                 available = [row for row in retained if row[1] is not None and row[2] <= now]

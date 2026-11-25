@@ -139,3 +139,38 @@ def test_original_key_fk_and_clock_columns_cannot_hide_behind_normalization(tmp_
     with pytest.raises(SchemaError, match="keys, clocks.*cannot be model inputs"):
         NativeSourceFiles(source, tmp_path / "normalized")
     assert not (tmp_path / "normalized/keys.sqlite").exists()
+
+
+def test_date_composite_keys_roundtrip_without_aliasing_strings(tmp_path):
+    from datetime import date
+
+    from tfm.data.native_source import _key, source_key_values
+
+    day = date(2024, 1, 1)
+    assert _key((1, day), "test") != _key((1, day.isoformat()), "test")
+    assert source_key_values(_key((1, day, START), "test")) == (1, day, START)
+    pq.write_table(pa.table({"id": [1], "day": [day]}), tmp_path / "owners.parquet")
+    pq.write_table(
+        pa.table({"id": [1], "owner": [1], "day": [day], "amount": [2.0]}),
+        tmp_path / "activity.parquet",
+    )
+    source = TableSource(
+        (
+            RelationalTable("owners", ("id", "day"), immutable=True),
+            RelationalTable(
+                "activity",
+                ("id",),
+                numeric={"amount": "amount"},
+                event_time="day",
+                available_at="day",
+            ),
+        ),
+        (RelationalForeignKey("activity", "owners", "activity", ("owner", "day")),),
+        {name: tmp_path / f"{name}.parquet" for name in ("owners", "activity")},
+    )
+    with NativeSourceFiles(source, tmp_path / "normalized", block_size=1) as normalized:
+        assert normalized.code("owners", (1, day)) == 0
+        actual = pq.read_table(normalized.source.files["activity"])
+        assert actual["__tfm_fk_0"].to_pylist() == [0]
+        assert actual[EVENT_US].to_pylist() == [1704067200000000]
+        assert actual.schema.field("day").type == pa.timestamp("us", tz="UTC")

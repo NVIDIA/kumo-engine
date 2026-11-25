@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ import pyarrow.compute as arrow_compute
 import pyarrow.parquet as pq
 
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
+from tfm.contracts.schema import ensure_utc
 from tfm.contracts.table_source import TableSource
 from tfm.data.validation.schema import PROHIBITED_INPUT_KEYS
 
@@ -38,14 +40,36 @@ pc: Any = arrow_compute
 
 
 def _key(values: tuple[Any, ...], path: str) -> str:
-    if any(value is None for value in values):
+    if not values or any(value is None for value in values):
         raise SchemaError(f"{path}: primary/foreign key contains a null component")
+    encoded = []
+    for value in values:
+        if isinstance(value, datetime):
+            value = {"__tfm_datetime__": ensure_utc(value).isoformat()}
+        elif isinstance(value, date):
+            value = {"__tfm_date__": value.isoformat()}
+        elif not isinstance(value, (str, bool, int, float)):
+            raise UnsupportedCombinationError(f"{path}: unsupported source key scalar")
+        encoded.append(value)
     try:
-        return json.dumps(values, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    except (TypeError, ValueError) as error:
-        raise UnsupportedCombinationError(
-            f"{path}: native source keys require finite string/bool/integer/float scalars"
-        ) from error
+        return json.dumps(encoded, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except ValueError as error:
+        raise UnsupportedCombinationError(f"{path}: source keys require finite scalars") from error
+
+
+def source_key_values(encoded: str) -> tuple[Any, ...]:
+    """Decode persisted identity metadata, preserving date and timestamp types."""
+    values = []
+    for value in json.loads(encoded):
+        if isinstance(value, dict):
+            if set(value) == {"__tfm_date__"}:
+                value = date.fromisoformat(value["__tfm_date__"])
+            elif set(value) == {"__tfm_datetime__"}:
+                value = ensure_utc(datetime.fromisoformat(value["__tfm_datetime__"]))
+            else:
+                raise SchemaError("Invalid persisted source identity scalar")
+        values.append(value)
+    return tuple(values)
 
 
 def file_sha256(path: Path) -> str:
@@ -59,11 +83,13 @@ def file_sha256(path: Path) -> str:
 
 def source_entity_id(values: tuple[Any, ...]) -> str:
     """Display raw root keys consistently in native anchor and target metadata."""
-    return str(values[0]) if len(values) == 1 else json.dumps(values, separators=(",", ":"))
+    return str(values[0]) if len(values) == 1 else _key(values, "root.key")
 
 
 def _clocks(batch: pa.RecordBatch, column: str, path: str) -> pa.Array:
     values = batch.column(column)
+    if pa.types.is_date(values.type):
+        values = pc.cast(values, pa.timestamp("us", tz="UTC"))
     if values.null_count or not pa.types.is_timestamp(values.type):
         raise SchemaError(f"{path}: clocks must be non-null UTC timestamps")
     if values.type.tz not in {"UTC", "+00:00"}:
@@ -269,8 +295,14 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
                         (table.event_time, EVENT_US),
                     ):
                         if column is not None:
-                            projected = projected.append_column(
-                                output, _clocks(block, column, f"{table.name}.{column}")
+                            micros = _clocks(block, column, f"{table.name}.{column}")
+                            projected = projected.append_column(output, micros)
+                            # Date clocks mean UTC midnight in the shared contract.
+                            # Native indexes require timestamp storage explicitly.
+                            projected = projected.set_column(
+                                projected.schema.get_field_index(column),
+                                column,
+                                pc.cast(micros, pa.timestamp("us", tz="UTC")),
                             )
                     if (
                         not table.immutable
