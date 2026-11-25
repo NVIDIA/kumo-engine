@@ -40,7 +40,7 @@ does not regenerate an existing training table.
 
 ## Where to look first
 
-When the user asks why a suggested plan underperforms, check labels, evaluation and graph coverage
+This section is tuning guidance, not a package fact: present it as typical effects. When the user asks why a suggested plan underperforms, check labels, evaluation and graph coverage
 in [training diagnostics](../../kumo-training-diagnostics/SKILL.md) before proposing settings: a
 missing relationship or a poor encoder usually costs more than any field below. Then, in order of
 typical effect:
@@ -48,10 +48,11 @@ typical effect:
 1. `neighbor_sampling.num_neighbors`: hops and fanouts decide which rows the model can see. For
    the GNN, hop count is also the number of message-passing layers.
 2. `num_experiments`, `max_epochs`: too small a budget undertrains or leaves the search unexplored.
-3. `base_lr`, `channels`, `batch_size`: stability and capacity. Learning rate is usually the most
+3. `base_lr`, model `channels`, `batch_size`: stability and capacity. Learning rate is usually the most
    sensitive optimization setting; search it on a multiplicative scale.
 4. `loss`, `tune_metric`, class balancing: what is optimized and how a trial is selected.
-5. `dropout`, `weight_decay`, `aggregation`, normalization, MLP layers: usually smaller effects.
+5. Model `dropout`, `weight_decay`, GNN `aggregation`, normalization, MLP layers: usually smaller
+   effects.
 
 These are hypotheses to test on validation under the same protocol, not promised improvements.
 Read learning curves to separate overfitting from undertraining before raising capacity or
@@ -108,7 +109,8 @@ to hide source type errors or remove task-required label columns.
 To give one relationship more or less context than the hop default, use `NumNeighborsConfig`
 with one `HopConfig` per hop. Keys are `"<table>.<column>-><table>.<column>"` with the graph's
 table names and actual key columns; each direction is a separate key, and unlisted relationships
-use the hop's `default`.
+use the hop's `default`. Assigning `num_neighbors` replaces the suggested value, including its
+data-derived `"inferred"` hop-1 entry; say so, or keep that entry in the new `hop1`.
 
 ```python
 from kumoapi.model_plan import HopConfig, NumNeighborsConfig
@@ -122,14 +124,14 @@ plan.neighbor_sampling.num_neighbors = [
 
 Hops are consecutive from `hop1`, at most six. `0` samples none and `-1` samples all, which can
 exhaust GPU memory on high-degree relationships. `"inferred"` is valid only on the
-target-to-entity connection in `hop1`, where suggested plans put it. More than three hops raises
-a GPU-memory warning.
+target-to-entity connection in `hop1`, where suggested plans put it. With `adaptive_sampling`
+off, more than three hops raises a GPU-memory warning.
 
 ## Reproducibility and pruning
 
-`training_job.manual_seed` seeds training and trial search so a run can be repeated with the
-same data, plan and environment; it does not make scores identical across devices or library
-versions. To estimate run-to-run noise, fix every candidate list to one value and repeat with
+`training_job.manual_seed` fixes random initialization, sampling and trial selection. GPU kernels
+are not forced to be deterministic, so identical runs can still differ slightly, and more so
+across devices or library versions. To estimate run-to-run noise, fix every candidate list to one value and repeat with
 different seeds: differences smaller than that spread are ties. The search selects one model; it
 does not ensemble trials.
 
@@ -151,12 +153,25 @@ Valid values, not recommended capacity:
 | `optimization.min_steps_per_epoch` | 1–4000 |
 | `optimization.target_fraction`, `overlap_ratio` | candidates in [0, 1]; static link prediction |
 | `HopConfig.default` / a named relationship | −1–128 / −1–512, or `"inferred"` as above |
-| `model_architecture.channels` | even candidates up to 512 |
+| `GNNModelPlan` / `GraphTransformerModelPlan` `channels` | even candidates up to 512 |
 | `model_architecture.num_pre_message_passing_layers` | 0–4 |
 | `model_architecture.num_post_message_passing_layers` | 1–8 |
-| `model_architecture.output_embedding_dim` | 1–256 |
+| `model_architecture.output_embedding_dim` | 1–256; link prediction only |
 | `GraphTransformerModelPlan.num_layers` | 1–12 |
-| `dropout` | in [0, 1) |
+| `GNNModelPlan` / `GraphTransformerModelPlan` `dropout` | in [0, 1) |
+
+Set `channels` and `aggregation` on the model candidates in `model_architecture.model`, not on
+`model_architecture` itself: the top-level fields are deprecated, accept assignment, and silently
+override every candidate's value.
+
+`optimization.loss` takes a list of candidates: loss strings, or config objects whose `name`
+argument is required.
+
+```python
+from kumoapi.model_plan import FocalLossConfig
+
+plan.optimization.loss = [FocalLossConfig(name="focal", alpha=0.25)]
+```
 
 Losses by task (strings, or the named config class):
 
@@ -165,22 +180,26 @@ Losses by task (strings, or the named config class):
 | Binary, multilabel classification | `binary_cross_entropy`, `focal` (`FocalLossConfig`) |
 | Multiclass classification, multilabel ranking | `cross_entropy`, `ordinal_log` (`OrdinalLogLossConfig`) |
 | Link prediction | `cross_entropy`, `binary_cross_entropy` |
-| Regression, forecasting | `mae`, `mse`, `huber` (`HuberLossConfig`), `wape`, `normal_distribution`, `negative_binomial_distribution`, `log_normal_distribution`, `multi_quantile`, `QuantileLossConfig` |
+| Regression, forecasting | `mae`, `mse`, `huber` (`HuberLossConfig`), `wape`, `normal_distribution`, `negative_binomial_distribution`, `log_normal_distribution`, `multi_quantile`, `QuantileLossConfig(name="quantile", q=...)` (there is no `"quantile"` string) |
 
 Pick the loss that matches the metric the user reports: a mismatched loss can lower that metric
 even when training converges.
 
-Validation rejects these combinations:
+Validation rejects combinations including:
 
 - `GraphTransformerModelPlan` on any link-prediction task.
 - Graph Transformer `channels` not divisible by every `num_heads` candidate.
 - `optimization.weight_mode` other than `[None]` unless the task is binary classification or the
-  training table has a weight column; weighted link prediction allows only `"weighted_loss"` or
-  `None`.
-- A numeric `majority_sampling_ratio` candidate while any `weight_mode` candidate is `None`.
+  training table has a weight column; never for forecasting; weighted link prediction allows only
+  `"weighted_loss"` or `None`.
+- `majority_sampling_ratio` on any task but binary classification, or a numeric candidate while
+  any `weight_mode` candidate is `None`.
+- The `context` or `pairwise` link-prediction `module` on static link prediction.
 - `adaptive_sampling=True` with a `-1` fanout.
 - `handle_new_target_entities=True` with a `"lookup"` or `"fusion"` `target_embedding_mode` on the
-  `shallow_rhs` or `context` link-prediction modules.
+  `shallow_rhs` or `context` link-prediction modules. Suggested link-prediction plans use
+  `["lookup"]`, so set `target_embedding_mode = ["feature"]` (or `["shallow_feature"]`) together
+  with it.
 
 ## Metrics and refits
 
