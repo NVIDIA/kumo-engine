@@ -40,7 +40,8 @@ def test_core_source_has_no_platform_imports() -> None:
             else:
                 continue
             for module in imported_modules:
-                if module.split(".", maxsplit=1)[0] in FORBIDDEN_IMPORT_ROOTS:
+                if (module != "kumo._managed_paths"
+                        and module.split(".", maxsplit=1)[0] in FORBIDDEN_IMPORT_ROOTS):
                     violations.append(
                         f"{source_file.relative_to(source_root)}:{node.lineno}: {module}"
                     )

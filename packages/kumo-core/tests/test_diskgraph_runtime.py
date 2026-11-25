@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ import kumo_core.diskgraph.runner as diskgraph_runner
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph import DiskgraphCorruptionError, DiskgraphSystemError
 from kumo_core.diskgraph.ingest import (
     DiskgraphIngestSpec,
     execute_diskgraph_ingest,
@@ -28,6 +30,7 @@ from kumo_core.diskgraph.snapshot import (
     DiskgraphSnapshotError,
     DiskgraphSnapshotHandle,
     LocalSnapshotStore,
+    write_diskgraph_success_marker,
 )
 from kumo_core.io.filesystem import makedirs, open_file
 from kumoapi.typing import TimestampPrecision
@@ -656,44 +659,44 @@ def test_typed_no_space_diagnostic_names_output_path(
     assert "private path canary" not in str(caught.value)
 
 
-def test_local_snapshot_paths_listing_verify_and_restore(
-        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_local_snapshot_paths_listing_verify_and_restore(tmp_path: Path) -> None:
     local_root = tmp_path / "local"
     durable_root = tmp_path / "durable"
     handle = DiskgraphSnapshotHandle("graph", "v1")
-    store = LocalSnapshotStore(DiskgraphLocalConfig(str(local_root)))
-    result = DiskgraphIngestResult.for_index(store.path(handle))
-    marker = result.to_json()
-    markers: dict[str, str] = {}
+    store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(local_root)))
+    local = local_root / "snapshots/graph/v1"
+    assert store.path(handle) == str(local)
+    result = DiskgraphIngestResult.for_index(local)
+    source = Path(store.durable_path(handle, str(durable_root)))
+    source.mkdir(parents=True)
+    (source / "_SUCCESS").write_text(result.to_json())
+    (source / "index_metadata.json").write_text('{}')  # Old ID-less export.
+    (source / "col_stats.json").write_text('{}')
+    (source / "ingest_stats.json").write_text('{}')
+    (source / "kumo_col_stats").mkdir()
+    (source / "_MANIFEST.json").write_text(json.dumps({
+        "schema_version": 1,
+        "files": [{"rel_path": name, "size_bytes": (source / name).stat().st_size}
+                  for name in ("index_metadata.json", "col_stats.json", "ingest_stats.json")],
+    }))
 
-    def verify(path):
-        assert path == store.path(handle)
-
-    fake_diskgraph = SimpleNamespace(
-        verify_snapshot_integrity=verify,
-        read_success_marker=lambda path: markers.get(path),
-        touch_success_marker=lambda path: None,
-        write_success_marker=lambda path, value: markers.__setitem__(
-            path, value),
-    )
-    monkeypatch.setitem(sys.modules, "diskgraph", fake_diskgraph)
-
-    source = store.durable_path(handle, str(durable_root))
-
-    def copy_tree(_source, destination):
-        assert _source == source
-        Path(destination).mkdir(parents=True)
-        markers[destination] = marker
+    def copy_tree(origin, destination):
+        assert origin == str(source)
+        assert destination == str(local)
+        shutil.copytree(origin, destination)
 
     restored = store.restore(
         handle,
         str(durable_root),
-        exists=lambda path: path == source + "/_SUCCESS",
+        exists=lambda path: Path(path).exists(),
         copy_tree=copy_tree,
     )
 
     assert restored == result
+    assert store.verify(handle) == result
     assert store.list_ready() == [handle]
+    assert store.resolve_version_prefix("graph", "v") == str(local)
+    assert not (local_root / "indexes").exists()
     assert store.diskgraph_durable_path(
         handle, "abfss://container@account.dfs.core.windows.net/root"
     ) == "az://account/container/root/diskgraph_snapshots/graph/v1"
@@ -710,6 +713,8 @@ def test_checkpoint_stages_then_atomically_publishes(
         sys.modules,
         "diskgraph",
         SimpleNamespace(
+            DiskgraphCorruptionError=DiskgraphCorruptionError,
+            DiskgraphSystemError=DiskgraphSystemError,
             verify_snapshot_integrity=lambda path: None,
             read_success_marker=lambda path: markers.get(path),
         ),
@@ -741,6 +746,8 @@ def test_checkpoint_stages_then_atomically_publishes(
 def test_verify_rejects_missing_success_after_integrity_pass(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_diskgraph = SimpleNamespace(
+        DiskgraphCorruptionError=DiskgraphCorruptionError,
+        DiskgraphSystemError=DiskgraphSystemError,
         verify_snapshot_integrity=lambda path: None,
         read_success_marker=lambda path: None,
     )
@@ -804,29 +811,78 @@ def test_cached_discarded_time_parse_failures_remain_allowed(tmp_path):
     validate_cached_source_times(str(tmp_path))
 
 
+@pytest.fixture(scope="module")
+def native_time_snapshot(tmp_path_factory):
+    _require_ingest_binary()
+    root = tmp_path_factory.mktemp("native-time-snapshot")
+    source = root / "events"
+    source.mkdir()
+    pq.write_table(pa.table({
+        "id": [1, 2, 3],
+        "ts": pa.array([10, 20, 30], type=pa.timestamp("s")),
+    }), source / "part.parquet")
+    result = execute_diskgraph_ingest(
+        {"name": "events", "tables": [{
+            "table_name": "events", "source_table_name": "events",
+            "connector_id": "native",
+            "pkey": {"name": "id", "dtype": "int64", "stype": "ID"},
+            "time_col": {"name": "ts", "dtype": "date", "stype": "timestamp"},
+            "cols": [], "fkeys": [],
+        }]},
+        DiskgraphIngestSpec(
+            data_persist_dir=str(root / "persist"),
+            table_data_versions={"events": "1"},
+            source_paths={"events": str(source)},
+            output_dir=str(root / "index"),
+            execution=diskgraph_runner.IngestExecutionConfig(
+                success_marker_content=DiskgraphIngestResult.for_index(root / "index").to_json()),
+        ),
+    )
+    LocalSnapshotStore._verify_path(result.index_path)
+    return Path(result.index_path)
+
+
+def _copy_runtime_snapshot(source, destination):
+    shutil.copytree(source, destination)
+    write_diskgraph_success_marker(
+        str(destination), DiskgraphIngestResult.for_index(destination))
+
+
+def _empty_required_time_table(path):
+    from diskgraph import verify_snapshot_integrity
+
+    metadata_path = path / "index_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    table, = metadata["node_types"]
+    assert table["name"] == "events"
+    assert table["create_time_col"] == "ts"
+    assert any(shard["max_id"] >= shard["min_id"] for shard in table["shards"])
+    for shard in table["shards"]:
+        shard.update(min_id=1, max_id=0)
+    metadata_path.write_text(json.dumps(metadata))
+    # Keep the manifest consistent so native verification reaches the later
+    # semantic guard, reproducing an old cache with an empty required-time table.
+    manifest_path = path / "_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry, = [entry for entry in manifest["files"]
+              if entry["rel_path"] == "index_metadata.json"]
+    entry["size_bytes"] = metadata_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest))
+    verify_snapshot_integrity(str(path))
+
+
 @pytest.mark.parametrize("operation", ["restore", "checkpoint"])
 def test_snapshot_store_rejects_empty_required_time_table(
-        monkeypatch, tmp_path, operation):
-    import shutil
-
+        native_time_snapshot, tmp_path, operation):
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path / "local")))
     handle = DiskgraphSnapshotHandle("graph", "v1")
     durable_root = str(tmp_path / "durable")
     source = Path(store.durable_path(handle, durable_root)
                   if operation == "restore" else store.path(handle))
-    source.mkdir(parents=True)
-    marker = DiskgraphIngestResult.for_index(str(source)).to_json()
-    (source / "_SUCCESS").write_text(marker)
-    (source / "index_metadata.json").write_text(json.dumps({
-        "node_types": [{
-            "name": "events", "create_time_col": "ts",
-            "shards": [{"min_id": 1, "max_id": 0}],
-        }],
-    }))
-    monkeypatch.setitem(sys.modules, "diskgraph", SimpleNamespace(
-        verify_snapshot_integrity=lambda path: None,
-        read_success_marker=lambda path: (Path(path) / "_SUCCESS").read_text(),
-    ))
+    _copy_runtime_snapshot(native_time_snapshot, source)
+    _empty_required_time_table(source)
+    before = {p.relative_to(source): p.read_bytes()
+              for p in source.rglob("*") if p.is_file()}
     with pytest.raises(DiskgraphSnapshotError, match="no usable rows"):
         if operation == "restore":
             store.restore(handle, durable_root, exists=lambda p: Path(p).exists(),
@@ -837,37 +893,146 @@ def test_snapshot_store_rejects_empty_required_time_table(
                 copy_tree=shutil.copytree, replace_tree=shutil.move)
     if operation == "checkpoint":
         assert not Path(durable_root).exists()
-    assert (source / "_SUCCESS").read_text() == marker
+    else:
+        assert not Path(store.staging_path(handle)).exists()
+        assert not store._reference(handle).exists()
+        assert not (tmp_path / "local" / "indexes").exists()
+    assert {p.relative_to(source): p.read_bytes()
+            for p in source.rglob("*") if p.is_file()} == before
 
 
 @pytest.mark.parametrize("invalid_first", [True, False])
+@pytest.mark.parametrize("damage", ["empty_required_time", "missing_artifact", "non_utf8_marker"])
 def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
-        monkeypatch, tmp_path, invalid_first):
+        native_time_snapshot, tmp_path, invalid_first, damage):
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path)))
-    versions = ["invalid", "valid"] if invalid_first else ["valid", "invalid"]
-    markers = {}
-    for version in versions:
-        path = Path(store.path(DiskgraphSnapshotHandle("graph", version)))
-        path.mkdir(parents=True)
-        markers[str(path)] = DiskgraphIngestResult.for_index(str(path)).to_json()
-        (path / "index_metadata.json").write_text(json.dumps({
-            "node_types": [{
-                "name": "events", "create_time_col": "ts",
-                "shards": [{"min_id": 1,
-                            "max_id": 0 if version == "invalid" else 1}],
-            }],
-        }))
-    touched = []
-    monkeypatch.setitem(sys.modules, "diskgraph", SimpleNamespace(
-        read_success_marker=lambda path: markers.get(path),
-        touch_success_marker=touched.append,
-        verify_snapshot_integrity=lambda path: None,
-    ))
-    assert store.list_ready() == [DiskgraphSnapshotHandle("graph", "valid")]
-    assert touched == [store.path(DiskgraphSnapshotHandle("graph", "valid"))]
-    with pytest.raises(DiskgraphSnapshotError, match="no usable rows"):
-        store.verify(DiskgraphSnapshotHandle("graph", "invalid"))
-    assert Path(store.path(DiskgraphSnapshotHandle("graph", "invalid"))).exists()
+    invalid = DiskgraphSnapshotHandle("graph", "a-invalid" if invalid_first else "z-invalid")
+    valid = DiskgraphSnapshotHandle("graph", "z-valid" if invalid_first else "a-valid")
+    invalid_path = Path(store.path(invalid))
+    valid_path = Path(store.path(valid))
+    for path in (invalid_path, valid_path):
+        _copy_runtime_snapshot(native_time_snapshot, path)
+        os.utime(path / "_SUCCESS", ns=(1_000_000_000, 1_000_000_000))
+    error = DiskgraphSnapshotError
+    message = "no usable rows"
+    if damage == "empty_required_time":
+        _empty_required_time_table(invalid_path)
+    elif damage == "missing_artifact":
+        (invalid_path / "col_stats.json").unlink()
+        error, message = DiskgraphCorruptionError, "1 missing file"
+    else:
+        (invalid_path / "_SUCCESS").write_bytes(bytes([255, 254]))
+        error, message = DiskgraphSystemError, "valid UTF-8"
+    invalid_mtime = (invalid_path / "_SUCCESS").stat().st_mtime_ns
+    valid_mtime = (valid_path / "_SUCCESS").stat().st_mtime_ns
+    before = {p.relative_to(invalid_path): p.read_bytes()
+              for p in invalid_path.rglob("*") if p.is_file()}
+
+    assert store.list_ready() == [valid]
+    assert (valid_path / "_SUCCESS").stat().st_mtime_ns > valid_mtime
+    assert (invalid_path / "_SUCCESS").stat().st_mtime_ns == invalid_mtime
+    with pytest.raises(error, match=message):
+        store.verify(invalid)
+    assert {p.relative_to(invalid_path): p.read_bytes()
+            for p in invalid_path.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("layout", ["legacy", "managed", "managed_with_legacy"])
+@pytest.mark.parametrize("failure", ["non_utf8", "unreadable"])
+def test_marker_encoding_damage_is_distinct_from_read_permissions(
+        native_time_snapshot, tmp_path, layout, failure):
+    from diskgraph import read_success_marker, verify_snapshot_integrity
+
+    store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path)))
+    handle = DiskgraphSnapshotHandle("graph", "version")
+    legacy = Path(store.staging_path(handle))
+    _copy_runtime_snapshot(native_time_snapshot, legacy)
+    index = legacy
+    if layout != "legacy":
+        index = Path(store.publish(handle, DiskgraphIngestResult.for_index(legacy)).index_path)
+    fallback = None
+    if layout == "managed_with_legacy":
+        _copy_runtime_snapshot(native_time_snapshot, legacy)
+        fallback = legacy
+    assert store._ready_candidate(str(index))
+    marker = index / "_SUCCESS"
+    permissions = marker.stat().st_mode
+    if failure == "non_utf8":
+        marker.write_bytes(bytes([255, 254]))
+    before = {p.relative_to(tmp_path): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+
+    lookups = [
+        (lambda: store._ready_candidate(str(index)), False),
+        (store.list_ready, [handle] if fallback else []),
+        (lambda: store.resolve_version_prefix(handle.graph_key, "ver"),
+         str(fallback) if fallback else None),
+    ]
+
+    try:
+        if failure == "unreadable":
+            marker.chmod(0)
+            try:
+                marker.read_bytes()
+            except PermissionError:
+                pass
+            else:
+                pytest.skip("this user or platform bypasses file permission bits")
+        # Both files pass native manifest verification. The native marker reader
+        # exposes the two distinct failures through the same exception class.
+        verify_snapshot_integrity(str(index))
+        with pytest.raises(DiskgraphSystemError):
+            read_success_marker(str(index))
+        for lookup, expected in lookups:
+            if failure == "unreadable":
+                with pytest.raises((PermissionError, DiskgraphSystemError), match="[Pp]ermission denied|Access is denied"):
+                    lookup()
+            else:
+                assert lookup() == expected
+    finally:
+        marker.chmod(permissions)
+    assert {p.relative_to(tmp_path): p.read_bytes()
+            for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file descriptor limits")
+def test_marker_descriptor_exhaustion_propagates(native_time_snapshot):
+    import subprocess
+
+    script = """
+import errno
+import resource
+import sys
+from pathlib import Path
+
+from diskgraph import DiskgraphSystemError, read_success_marker
+from kumo_core.diskgraph.snapshot import DiskgraphLocalConfig, LocalSnapshotStore
+
+path = sys.argv[1]
+store = LocalSnapshotStore(DiskgraphLocalConfig(root=str(Path(path).parent)))
+assert store._ready_candidate(path)
+limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+try:
+    resource.setrlimit(resource.RLIMIT_NOFILE, (0, limit[1]))
+    try:
+        read_success_marker(path)
+    except DiskgraphSystemError:
+        pass
+    else:
+        raise AssertionError("native marker read must fail with no descriptors")
+    try:
+        store._ready_candidate(path)
+    except OSError as error:
+        assert error.errno == errno.EMFILE, error
+    else:
+        raise AssertionError("descriptor exhaustion must not become a cache miss")
+finally:
+    resource.setrlimit(resource.RLIMIT_NOFILE, limit)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(native_time_snapshot)],
+        capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 @pytest.mark.parametrize("clock", get_args(TimestampPrecision))

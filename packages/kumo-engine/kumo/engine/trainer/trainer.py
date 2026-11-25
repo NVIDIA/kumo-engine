@@ -1948,6 +1948,11 @@ class Trainer:
     ) -> 'DriftReport':
         r"""Compare a run's scores with the holdout and a previous run.
 
+        Snapshot IDs in manifests resolve under the current scratch root,
+        then the MLOps artifact root when supplied. After reconfiguring scratch,
+        pass ``snapshot`` and ``training_snapshot`` handles to read their
+        original local paths.
+
         Args:
             previous: An earlier run, for run-over-run statistics.
             snapshot: The snapshot the run scored; by default the one its

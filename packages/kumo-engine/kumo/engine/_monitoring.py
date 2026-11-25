@@ -968,15 +968,11 @@ def _missing(what: str, sides: Mapping[str, Mapping[str, Any]],
 
 
 def _local_index(snapshot_id: str) -> Optional[Path]:
-    from kumo.engine._scratch import get_scratch_dir
+    from kumo.engine.graph import _store
 
     graph_key, _, version = snapshot_id.partition('@')
-    if not graph_key or not version:
-        return None
-    root = get_scratch_dir() / 'snapshots' / graph_key
-    found = sorted(path for path in root.glob(f'{version}*')
-                   if (path / 'col_stats.json').is_file())
-    return found[0] if len(found) == 1 else None
+    path = _store().resolve_version_prefix(graph_key, version)
+    return Path(path) if path is not None else None
 
 
 def _used_columns(result: Any) -> Optional[Dict[str, set]]:

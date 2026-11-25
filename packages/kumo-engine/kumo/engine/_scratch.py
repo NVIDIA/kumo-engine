@@ -18,7 +18,9 @@ so scratch-directory names must be collision-free on their own:
   version is what lets `Graph.snapshot()` reuse an existing build instead
   of re-ingesting.
 
-The root all of these nest under is `kumo.settings.scratch_dir()`.
+The configured root is `kumo.settings.scratch_dir()`. Each snapshot operation
+scopes its work to the root active when the call starts; later calls use the
+current configuration.
 """
 
 import hashlib
@@ -31,6 +33,7 @@ from typing import Iterator, Optional
 from kumo_core.chunked_fs import set_spool_dir
 
 import kumo.settings
+from kumo._managed_paths import _SnapshotPaths
 
 # Tests pin the root by patching this.
 _root: Optional[Path] = None
@@ -81,10 +84,10 @@ def snapshot_scratch_dir(graph_key: str) -> Path:
     r"""Scratch space for one `Graph`, keyed by `Graph.id` alone (not the
     data version) -- used only for staging raw source-table reads before
     ingest (`Graph.snapshot()`'s `persist_dir`). The materialized index
-    itself is keyed by `(graph_key, data_version)` via `kumo_core.diskgraph.
-    snapshot.LocalSnapshotStore`, nested under this same root.
+    itself is published under `indexes/<index_build_id>`. A graph/version
+    reference in this directory preserves reuse of the completed build.
     """
-    return get_scratch_dir() / "snapshots" / graph_key
+    return _SnapshotPaths.for_root(get_scratch_dir()).graph_dir(graph_key)
 
 
 def train_table_scratch_dir(run_id: str) -> Path:

@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -113,8 +114,10 @@ def _transfer(connector: Any, path: str, items: Sequence[Any],
             progress.add(size)
             return result
 
+        # Separate caller contexts preserve scoped spool paths in concurrent jobs.
         return run_in_parallel(
-            [partial(run, item, size) for item, size in zip(items, sizes)],
+            [partial(copy_context().run, run, item, size)
+             for item, size in zip(items, sizes)],
             workers=workers, stop=stop)
 
 
@@ -441,6 +444,16 @@ def _index_files(
     except FileNotFoundError:
         snapshot_manifest = None
     return index_manifest, files, snapshot_manifest
+
+
+def exported_build_id(connector: Any, path: str, root: str) -> Optional[str]:
+    """Read native identity to find an already imported build before copying."""
+    filesystem, _ = _location(connector, path)
+    try:
+        metadata = json.loads(_read_bytes(filesystem, f'{root}/index/index_metadata.json'))
+    except ValueError:
+        return None  # The normal load reports the native compatibility error.
+    return metadata.get('index_build_id') if isinstance(metadata, dict) else None
 
 
 def load_into(connector: Any, path: str, root: str, manifest: dict,

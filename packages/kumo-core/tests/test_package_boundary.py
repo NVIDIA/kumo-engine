@@ -4,7 +4,6 @@
 import ast
 from pathlib import Path
 
-
 FORBIDDEN_IMPORT_ROOTS = {
     "kumo",
     "kumo" + "ml",
@@ -22,11 +21,15 @@ def test_kumo_core_has_no_monolith_or_legacy_imports() -> None:
         tree = ast.parse(path.read_text(encoding="utf8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                roots = {alias.name.partition(".")[0] for alias in node.names}
+                modules = {alias.name for alias in node.names}
             elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                roots = {(node.module or "").partition(".")[0]}
+                modules = {node.module or ""}
             else:
                 continue
+            # kumo-settings owns this shared module; other kumo imports
+            # still belong to the monolith.
+            roots = {module.partition(".")[0] for module in modules
+                     if module != "kumo._managed_paths"}
             forbidden = roots & FORBIDDEN_IMPORT_ROOTS
             if forbidden:
                 violations.append(

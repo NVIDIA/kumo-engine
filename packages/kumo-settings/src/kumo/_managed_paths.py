@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Private Kumo layout for a DiskGraph build under the configured root."""
+"""Private Kumo layout for local snapshots and DiskGraph builds."""
 
 from __future__ import annotations
 
@@ -40,3 +40,50 @@ class _ManagedIndexPaths:
     @property
     def cache_dir(self) -> Path:
         return self.managed_root / "cache" / self.index_build_id
+
+
+@dataclass(frozen=True)
+class _SnapshotPaths:
+    """Derive local snapshot names from one explicit Kumo root."""
+
+    root: Path
+    _reference_suffix = ".index.json"
+
+    @classmethod
+    def for_root(cls, root: Path) -> _SnapshotPaths:
+        return cls(root)
+
+    @property
+    def data_root(self) -> Path:
+        return self.root / "snapshots"
+
+    def graph_dir(self, graph_key: str) -> Path:
+        return self.data_root / _component(graph_key, "graph_key")
+
+    def version_dir(self, graph_key: str, version: str) -> Path:
+        return self.graph_dir(graph_key) / _component(version, "snapshot version")
+
+    def import_dir(self, graph_key: str, import_id: str) -> Path:
+        return (self.data_root / ".imports" / _component(graph_key, "graph_key")
+                / _component(import_id, "import_id"))
+
+    def reference(self, graph_key: str, version: str) -> Path:
+        path = self.version_dir(graph_key, version)
+        return path.with_name(path.name + self._reference_suffix)
+
+    def publication_reference(self, graph_key: str, version: str) -> Path:
+        if version.endswith(self._reference_suffix):
+            raise ValueError("managed snapshot versions must not end with "
+                             + self._reference_suffix)
+        return self.reference(graph_key, version)
+
+    @classmethod
+    def reference_version(cls, name: str) -> str | None:
+        """Return the logical version encoded by a reference filename."""
+        if not name.endswith(cls._reference_suffix):
+            return None
+        version = name.removesuffix(cls._reference_suffix)
+        try:
+            return _component(version, "snapshot version")
+        except ValueError:
+            return None
