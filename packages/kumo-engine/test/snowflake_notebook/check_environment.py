@@ -10,10 +10,11 @@ import urllib.request
 REPOSITORY = 'NVIDIA/kumo-engine'
 ENVIRONMENT = 'snowflake-mlops-test'
 MAIN_BRANCH = 'main'
+SAGEMAKER_BYOM_BRANCH = 'egu/byom-mlops-lifecycle'
 TEAM_ID = 19956283
 
 
-def validate(environment, policies):
+def validate(environment, policies, *, required_branches=(MAIN_BRANCH, )):
     rules = [
         rule for rule in environment.get('protection_rules', [])
         if rule.get('type') == 'required_reviewers'
@@ -30,18 +31,21 @@ def validate(environment, policies):
             protected_branches=False, custom_branch_policies=True):
         raise ValueError('Environment must use selected deployment branches')
     branches = policies.get('branch_policies', [])
-    if (len(branches) != 1 or policies.get('total_count', len(branches)) != 1
-            or branches[0].get('name') != MAIN_BRANCH
-            or branches[0].get('type') != 'branch'):
-        raise ValueError('Environment must allow only main; trial branches, '
-                         'wildcards and tags are forbidden')
+    if (len(branches) != len(required_branches)
+            or policies.get('total_count', len(branches)) != len(required_branches)
+            or {rule.get('name') for rule in branches} != set(required_branches)
+            or any(rule.get('type') != 'branch' for rule in branches)):
+        raise ValueError('Environment must allow only ' + ', '.join(required_branches)
+                         + '; additional branches, wildcards and tags are forbidden')
 
 
-def main(environment=ENVIRONMENT, branch=None):
-    """Require main; accept the unused branch keyword from older platform wrappers."""
+def main(environment=ENVIRONMENT, branch=None, *, sagemaker_byom_trial=False):
+    """Require main unless dispatching the temporary SageMaker BYOM matrix."""
     ref = os.environ.get('GITHUB_REF', '')
+    trial = (sagemaker_byom_trial and environment == 'sagemaker-mlops-test'
+             and ref == 'refs/heads/' + SAGEMAKER_BYOM_BRANCH)
     if (os.environ.get('GITHUB_REPOSITORY') != REPOSITORY
-            or ref != 'refs/heads/' + MAIN_BRANCH
+            or not (ref == 'refs/heads/' + MAIN_BRANCH or trial)
             or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
         raise SystemExit('Notebook checks require manual dispatch on main')
     base = f'https://api.github.com/repos/{REPOSITORY}/environments/{environment}'
@@ -63,9 +67,11 @@ def main(environment=ENVIRONMENT, branch=None):
                 'maintainer-team approval with self-review disabled, '
                 'and add the environment secrets.') from None
 
-    validate(get(), get('/deployment-branch-policies?per_page=100'))
+    required_branches = (MAIN_BRANCH, SAGEMAKER_BYOM_BRANCH) if trial else (MAIN_BRANCH, )
+    validate(get(), get('/deployment-branch-policies?per_page=100'),
+             required_branches=required_branches)
     print(
-        'Confirmed: maintainer approval, self-review disabled, and main-only deployments'
+        'Confirmed: maintainer approval, self-review disabled, and allowed deployment branches'
     )
 
 

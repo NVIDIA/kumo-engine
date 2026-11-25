@@ -62,7 +62,9 @@ jobs:
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main'
+      (github.ref == 'refs/heads/main' ||
+       (github.ref == 'refs/heads/egu/byom-mlops-lifecycle' &&
+        inputs.platform == 'sagemaker' && inputs.accelerator == 'gpu'))
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
@@ -98,7 +100,7 @@ jobs:
           cases = []
           for platform in platforms:
               environment = platform + '-mlops-test'
-              main(environment=environment)
+              main(environment=environment, sagemaker_byom_trial=True)
               cases.extend(dict(platform=platform, accelerator=a, environment=environment) for a in accelerators)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('matrix=' + json.dumps({'include': cases}) + '\n')
@@ -146,7 +148,7 @@ jobs:
           import os, sys
           sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
           from check_environment import main
-          main(environment=os.environ['TEST_ENVIRONMENT'])
+          main(environment=os.environ['TEST_ENVIRONMENT'], sagemaker_byom_trial=True)
           PYTHON
       - name: Install SageMaker submission tools
         if: matrix.platform == 'sagemaker'

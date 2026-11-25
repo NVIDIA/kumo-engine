@@ -263,3 +263,45 @@ def test_actions_dispatch_stages_bundled_pytorch_and_native_workload(tmp_path, s
     else:
         assert '--pytorch' not in stage
         assert '--workload' not in prepare
+
+
+@pytest.mark.parametrize('platform,opt_in,outcome', [
+    ('sagemaker', True, 'accepted'),
+    ('sagemaker', False, 'rejected'),
+    ('databricks', True, 'rejected'),
+    ('snowflake', True, 'rejected'),
+])
+def test_only_sagemaker_byom_can_use_the_trial_branch(
+        environment_guard, monkeypatch, platform, opt_in, outcome):
+    import io
+
+    guard, environment, policies = environment_guard
+    policies['branch_policies'].append(
+        dict(name=guard.SAGEMAKER_BYOM_BRANCH, type='branch'))
+    monkeypatch.setenv('GITHUB_REPOSITORY', guard.REPOSITORY)
+    monkeypatch.setenv('GITHUB_REF', 'refs/heads/' + guard.SAGEMAKER_BYOM_BRANCH)
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'workflow_dispatch')
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    requests = []
+
+    def get(request, timeout):
+        requests.append(request.full_url)
+        result = policies if 'deployment-branch-policies' in request.full_url else environment
+        return io.BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
+    selected = dict(environment=platform + '-mlops-test', sagemaker_byom_trial=opt_in)
+    if outcome == 'accepted':
+        guard.main(**selected)
+        assert len(requests) == 2
+        environment['protection_rules'][0]['prevent_self_review'] = False
+        with pytest.raises(ValueError, match='self-review'):
+            guard.main(**selected)
+        environment['protection_rules'][0]['prevent_self_review'] = True
+        policies['branch_policies'].append(dict(name='feature/*', type='branch'))
+        with pytest.raises(ValueError, match='wildcards'):
+            guard.main(**selected)
+    else:
+        with pytest.raises(SystemExit, match='manual dispatch'):
+            guard.main(**selected)
+        assert not requests
