@@ -592,6 +592,7 @@ class PreparedBatchPlan(
     contract: Any = None,
     schema_fingerprint=None,
     contract_fingerprint=None,
+    revisit_nodes: bool | None = None,
     inference=False,
 )
 ```

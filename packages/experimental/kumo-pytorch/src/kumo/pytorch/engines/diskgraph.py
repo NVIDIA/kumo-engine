@@ -266,6 +266,8 @@ class DiskGraphEngine:
         reaches it, using that hop's fanout. A node reached more than once in
         the same hop enters the next frontier once. Large fanouts on cyclic
         graphs can substantially increase the number of sampled edges.
+        Fitted models bind this choice when a graph input can expand a previously
+        reached node. Reuse the same setting when materializing their inputs.
     :param num_threads: native sampling threads.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
         ``None`` uses fresh randomness. A fixed seed repeats selections for the
@@ -644,6 +646,11 @@ class DiskGraphSource:
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+
+    @property
+    def revisit_nodes(self) -> bool:
+        """Whether this bound sampler expands nodes again on later hops."""
+        return self._revisit_nodes
 
     def new_task_directory(self, task_id: str | None = None):
         verify_managed_roots(self._paths, self._index_path)
