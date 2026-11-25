@@ -705,3 +705,101 @@ def test_generated_and_replayed_splits_cannot_repeat_root_cutoff(tmp_path):
         update={"cutoffs": {"train": day(7).isoformat(), "validation": day(10).isoformat()}}
     )
     assert len(RelationalSource(declaration(), different).anchors()) == 4
+
+
+@pytest.mark.parametrize("field", ["valid_from", "known_from"])
+def test_ownership_interval_starts_require_datetimes(field):
+    values = dict(
+        relation="owns", parent_key=("a",), child_key=("g",), valid_from=day(0), known_from=day(0)
+    )
+    values[field] = None
+    with pytest.raises(ValueError, match=f"Ownership {field} must be a datetime"):
+        OwnershipVersion(**values)
+
+
+@pytest.mark.parametrize("stage", ["training", "sequence_training"])
+@pytest.mark.parametrize("size", [0, -1])
+def test_relational_batch_sizes_must_be_positive(stage, size):
+    from pathlib import Path
+
+    import yaml
+
+    from tfm.config import RecipeConfig
+
+    config = yaml.safe_load(Path("recipes/relational_inputs/config.smoke.yaml").read_text())
+    config.setdefault(stage, {})["batch_size"] = size
+    with pytest.raises(ValueError, match="positive steps and batch sizes"):
+        RecipeConfig.model_validate(config)
+
+
+@pytest.mark.parametrize("objective", ["binary", "next_event"])
+def test_relational_graph_only_objectives_must_agree(objective):
+    from pathlib import Path
+
+    import yaml
+
+    from tfm.config import RecipeConfig
+
+    config = yaml.safe_load(Path("recipes/relational_inputs/config.graph_smoke.yaml").read_text())
+    config["training"]["objective"] = "future_subgraph"
+    config["model"]["composition"]["objective"] = objective
+    with pytest.raises(ValueError, match="model and training objectives must agree"):
+        RecipeConfig.model_validate(config)
+
+
+def test_native_relational_cleanup_closes_all_snapshots_after_failure():
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    from tfm.data.native_relational_graph import NativeRelationalGraphSampler
+
+    sampler = object.__new__(NativeRelationalGraphSampler)
+    closed = []
+
+    def close(name, fail=False):
+        assert sampler.closed and not sampler.snapshots
+        closed.append(name)
+        if fail:
+            raise OSError("cleanup failed")
+
+    sampler.closed = False
+    sampler.snapshots = OrderedDict(
+        [
+            ((1, 0), SimpleNamespace(close=lambda: close("first"))),
+            ((2, 0), SimpleNamespace(close=lambda: close("second", fail=True))),
+        ]
+    )
+    with pytest.raises(OSError, match="cleanup failed"):
+        sampler.close()
+    assert closed == ["second", "first"]
+    sampler.close()
+
+
+@pytest.mark.parametrize("failure", ["write", "binding"])
+def test_native_anchor_file_is_removed_after_setup_failure(failure, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from tfm.data import native_relational_graph as module
+
+    snapshot = object.__new__(module._Snapshot)
+    snapshot.root = tmp_path
+    snapshot.calls = 0
+    snapshot.cutoff = 0
+    snapshot.relations = (("a", "edge", "b"),)
+    snapshot.codes = {"a": {"root": 0}}
+    monkeypatch.setattr(module._Snapshot, "_plan", lambda *args: None)
+
+    def bind(*args, **kwargs):
+        raise ValueError("binding failed")
+
+    snapshot.api = SimpleNamespace(Parquet=lambda path: path, AnchorTable=bind)
+    if failure == "write":
+
+        def write(table, path):
+            path.write_bytes(b"partial")
+            raise ValueError("write failed")
+
+        monkeypatch.setattr(module.pq, "write_table", write)
+    with pytest.raises(ValueError, match=f"{failure} failed"):
+        snapshot.neighbors(("a", "edge", "b"), ("root",))
+    assert list(tmp_path.iterdir()) == []

@@ -101,10 +101,11 @@ class OwnershipVersion:
         object.__setattr__(self, "child_key", tuple(self.child_key))
         for name in ("valid_from", "known_from", "valid_until", "known_until"):
             value = getattr(self, name)
-            if value is not None:
-                if not isinstance(value, datetime):
-                    raise ValueError(f"Ownership {name} must be a datetime")
-                object.__setattr__(self, name, ensure_utc(value))
+            if value is None and name in {"valid_until", "known_until"}:
+                continue
+            if not isinstance(value, datetime):
+                raise ValueError(f"Ownership {name} must be a datetime")
+            object.__setattr__(self, name, ensure_utc(value))
 
 
 @dataclass(frozen=True)

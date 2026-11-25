@@ -220,24 +220,24 @@ class _Snapshot:
         anchors = tuple(GraphAnchor(f"candidate-{i}", root, at) for i, root in enumerate(roots))
         path = self.root / f"anchors{self.calls}.parquet"
         self.calls += 1
-        pq.write_table(
-            pa.table(
-                {
-                    "sample_id": [a.sample_id for a in anchors],
-                    "owner": pa.array(ids, type=pa.int64()),
-                    "at": pa.array([at] * len(roots), type=pa.timestamp("us", tz="UTC")),
-                    "split": ["train"] * len(roots),
-                }
-            ),
-            path,
-        )
-        binding = api.AnchorTable(
-            api.Parquet(str(path)),
-            entity_id="owner",
-            sample_id="sample_id",
-            split="split",
-        )
         try:
+            pq.write_table(
+                pa.table(
+                    {
+                        "sample_id": [a.sample_id for a in anchors],
+                        "owner": pa.array(ids, type=pa.int64()),
+                        "at": pa.array([at] * len(roots), type=pa.timestamp("us", tz="UTC")),
+                        "split": ["train"] * len(roots),
+                    }
+                ),
+                path,
+            )
+            binding = api.AnchorTable(
+                api.Parquet(str(path)),
+                entity_id="owner",
+                sample_id="sample_id",
+                split="split",
+            )
             with plan.materialize(binding, fit_split="train") as task:
                 batches = iter(
                     task.batches(
@@ -378,10 +378,12 @@ class NativeRelationalGraphSampler(GraphSampler):
 
     def close(self) -> None:
         """Release cached plans and indexes; safe after a partial sampling failure."""
-        for snapshot in self.snapshots.values():
-            snapshot.close()
-        self.snapshots.clear()
         self.closed = True
+        snapshots = tuple(self.snapshots.values())
+        self.snapshots.clear()
+        with ExitStack() as cleanup:
+            for snapshot in snapshots:
+                cleanup.callback(snapshot.close)
 
     def _snapshot(self, cutoff: int, start: int) -> _Snapshot:
         key = cutoff, start

@@ -69,6 +69,8 @@ def test_relational_future_pretraining_and_full_downstream(variant, tmp_path):
         (Path("recipes/relational_inputs") / f"config.{variant}.yaml").read_text()
     )
     config["training"]["objective"] = "future_subgraph"
+    if variant == "graph_smoke":
+        config["model"]["composition"]["objective"] = "future_subgraph"
     path = tmp_path / "future.yaml"
     path.write_text(yaml.safe_dump(config))
     out = run_command("smoke", config_path=path, run_dir=tmp_path / "run", device="cpu")

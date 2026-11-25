@@ -950,6 +950,8 @@ class RecipeConfig(StrictConfig):
             )
         if self.model.composition.position not in {"nope", "time_rope"}:
             raise ValueError("Relational histories support nope or time_rope")
+        if kind == "gnn_encoder" and self.model.composition.objective != self.training.objective:
+            raise ValueError("Relational graph-only model and training objectives must agree")
         if self.model.composition.objective != "binary" and not (
             kind == "gnn_encoder" and self.training.objective == "future_subgraph"
         ):
@@ -978,9 +980,14 @@ class RecipeConfig(StrictConfig):
             if self.data.relational.labels is None:
                 raise ValueError("Supervised relational recipes require an entity label table")
         for settings in (self.training, self.sequence_training):
-            if settings.backend != "eager" or settings.packing or settings.max_steps < 1:
+            if (
+                settings.backend != "eager"
+                or settings.packing
+                or settings.max_steps < 1
+                or settings.batch_size < 1
+            ):
                 raise ValueError(
-                    "Relational stages require eager unpacked training and positive steps"
+                    "Relational stages require eager unpacked training, positive steps and batch sizes"
                 )
         if self.evaluation.surprise or self.fraud_task.supervised_head.enabled:
             raise ValueError(

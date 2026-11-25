@@ -22,7 +22,7 @@ availability checks. Observation-window bounds are inclusive.
 
 Versioned ownership declares two half-open intervals: effective ownership
 `[valid_from, valid_until)` and knowledge `[known_from, known_until)`. Open ends
-are explicit. Default historical ownership is evaluated at the terminal event's
+are explicit; both interval starts must be datetimes. Default historical ownership is evaluated at the terminal event's
 time using only relationship versions known at prediction cutoff. Explicit
 `prediction_time` ownership evaluates effective intervals at prediction cutoff.
 Overlapping effective and knowledge intervals for the same child and role are
