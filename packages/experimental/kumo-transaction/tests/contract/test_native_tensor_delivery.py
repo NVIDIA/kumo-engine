@@ -432,3 +432,79 @@ def test_native_prefix_views_reuse_training_encodings_and_preserve_boundary_time
         assert training.time_log[0, 0] == 0
         assert training.elapsed_log[0, 0] == 0
         assert inputs.manifest()["fit_view"] == "train"
+
+
+def test_six_hop_triangle_expands_both_fk_directions_in_one_layer(tmp_path):
+    """A non-bipartite frontier needs both physical directions of one FK."""
+    from tfm.data.native_inputs import NativeInputs
+
+    records = {
+        "roots": {"id": [0, 1], "value": [10.0, 20.0]},
+        "middle": {"id": [0, 1], "owner": [0, 1], "value": [30.0, 40.0]},
+        "activity": {
+            "id": [0, 1],
+            "owner": [0, 1],
+            "middle": [1, 0],
+            "value": [50.0, 60.0],
+            "at": [START, START + timedelta(seconds=1)],
+        },
+    }
+    for name, columns in records.items():
+        pq.write_table(pa.table(columns), tmp_path / f"{name}.parquet")
+    source = TableSource(
+        (
+            RelationalTable("roots", ("id",), numeric={"value": "value"}, immutable=True),
+            RelationalTable("middle", ("id",), numeric={"value": "value"}, immutable=True),
+            RelationalTable(
+                "activity",
+                ("id",),
+                numeric={"amount": "value"},
+                event_time="at",
+                available_at="at",
+            ),
+        ),
+        (
+            RelationalForeignKey("owns_middle", "roots", "middle", ("owner",)),
+            RelationalForeignKey("owns_activity", "roots", "activity", ("owner",)),
+            RelationalForeignKey("middle_activity", "middle", "activity", ("middle",)),
+        ),
+        {name: tmp_path / f"{name}.parquet" for name in records},
+    )
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "sample_id": ["triangle"],
+                "id": [0],
+                "cutoff": [START + timedelta(seconds=2)],
+                "split": ["train"],
+            }
+        ),
+        anchors,
+    )
+    with NativeInputs(
+        source,
+        root="roots",
+        history_paths={"events": ("owns_activity",)},
+        anchors=anchors,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        depth=6,
+        fanout=10,
+    ) as inputs:
+        with inputs.batches("train", mode="graph") as batches:
+            actual = list(batches)
+        assert len(actual) == 1
+        graph = actual[0]
+        graph.assert_validated()
+        assert {name: len(values) for name, values in graph.node_features.items()} == {
+            "roots": 2,
+            "middle": 2,
+            "activity": 2,
+        }
+        assert sum(edges.shape[1] for edges in graph.edge_index.values()) == 12
+        # At layer two, middle -> activity and activity -> middle must both run.
+        assert graph.num_sampled_nodes["middle"][2] == 1
+        assert graph.num_sampled_nodes["activity"][2] == 1
+        assert graph.num_sampled_nodes["roots"][3] == 1

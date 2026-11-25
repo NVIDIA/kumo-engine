@@ -517,10 +517,6 @@ def with_graph(
                 directions.append(("forward", role.child))
             if role.child in frontier:
                 directions.append(("reverse", role.parent))
-            if len(directions) > 1:
-                raise UnsupportedCombinationError(
-                    f"graph.hop[{hop + 1}].{role.name}: native plan cannot traverse one FK role in both directions in one layer"
-                )
             for direction, destination in directions:
                 table = tables[destination]
                 complete = direction == "reverse" or (
