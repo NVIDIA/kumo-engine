@@ -58,13 +58,21 @@ def inputs():
             'created': 0
         } for i in range(32)])
     })
-    requests = [
-        api.SampleRequest(
-            str(i), i, 1, split='train' if i < 24 else 'validation',
-            targets=(api.TargetValue('label', 2.0 * math.log1p(i) + 1), ))
-        for i in range(32)
-    ]
-    return contract, dataset, requests
+    anchors = api.AnchorTable(
+        api.InMemoryRows([{
+            'sample_id': str(i),
+            'user_id': i,
+            'as_of': 1,
+            'split': 'train' if i < 24 else 'validation',
+            'label': 2.0 * math.log1p(i) + 1,
+        } for i in range(32)]),
+        entity_id='user_id',
+        as_of_time='as_of',
+        sample_id='sample_id',
+        split='split',
+        targets={'label': 'label'},
+    )
+    return contract, dataset, anchors
 
 
 def features(batch, device='cpu'):
@@ -155,11 +163,11 @@ def train(root, profile):
     from kumo.pytorch import api
 
     with tracking(root, profile) as (client, name):
-        contract, dataset, requests = inputs()
+        contract, dataset, anchors = inputs()
         versions = []
         selected_devices = devices(profile)
         with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
-            with plan.materialize(requests, fit_split='train') as task:
+            with plan.materialize(anchors, fit_split='train') as task:
                 centered = torch.cat(
                     [features(batch) for batch in task.batches(split='train')])
                 require(
@@ -199,7 +207,7 @@ def train(root, profile):
                         model.eval()
                         api.save_weights(directory / 'weights.pt',
                                          model.state_dict(), task.fitted_state)
-                        with plan.materialize(requests,
+                        with plan.materialize(anchors,
                                               fitted=task.fitted_state,
                                               inference=True) as scoring:
                             expected = predictions(scoring, model)
@@ -236,7 +244,7 @@ def reload(root, profile):
         require(state['model'] == name and state['devices'] == list(selected_devices)
                 and len(state['versions']) == 2 * len(selected_devices),
                 'Recovered another or incomplete registry model lifecycle')
-        _, dataset, requests = inputs()
+        _, dataset, anchors = inputs()
         checks = []
         for expected in state['versions']:
             version, device = expected['version'], expected['device']
@@ -287,7 +295,7 @@ def reload(root, profile):
                     'MLflow loaded the native model onto another device')
             with api.prepare(artifact.contract, dataset, api.InMemoryEngine(),
                              inference=True) as plan:
-                with plan.materialize(requests, fitted=artifact.fitted_state,
+                with plan.materialize(anchors, fitted=artifact.fitted_state,
                                       inference=True) as task:
                     for actual in (predictions(task, model),
                                    predictions(task, published)):

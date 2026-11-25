@@ -140,12 +140,12 @@ def train(root, profile):
 
     shared = recipe()
     cfg, session, registry, tracking = native(profile)
-    contract, dataset, requests = shared.inputs()
+    contract, dataset, anchors = shared.inputs()
     versions = []
     selected_devices = devices(profile)
     python_version = f'{sys.version_info.major}.{sys.version_info.minor}'
     with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
-        with plan.materialize(requests, fit_split='train') as task:
+        with plan.materialize(anchors, fit_split='train') as task:
             centered = torch.cat(
                 [shared.features(b) for b in task.batches(split='train')])
             require(
@@ -191,7 +191,7 @@ def train(root, profile):
                              customer_version=version))
                     api.save_weights(directory / 'weights.pt',
                                      model.state_dict(), task.fitted_state)
-                    with plan.materialize(requests, fitted=task.fitted_state,
+                    with plan.materialize(anchors, fitted=task.fitted_state,
                                           inference=True) as scoring:
                         write(directory / 'expected.json',
                               shared.predictions(scoring, model))
@@ -253,7 +253,7 @@ def reload(root, profile):
             and state['execution']['devices'] == list(selected_devices)
             and state['execution']['torch_distribution'] == package_version('torch'),
             'Recovered another or incomplete customer model lifecycle')
-    _, dataset, requests = shared.inputs()
+    _, dataset, anchors = shared.inputs()
     checks = []
     for expected in state['versions']:
         version, device = expected['version'], expected['device']
@@ -301,7 +301,7 @@ def reload(root, profile):
                 'Native registry loaded the model onto another device')
         with api.prepare(artifact.contract, dataset, api.InMemoryEngine(),
                          inference=True) as plan:
-            with plan.materialize(requests, fitted=artifact.fitted_state,
+            with plan.materialize(anchors, fitted=artifact.fitted_state,
                                   inference=True) as task:
                 for actual in (shared.predictions(task, model),
                                shared.predictions(task, published.eval())):
