@@ -304,6 +304,8 @@ impl DiskGraphEngine {
     }
 
     // Return true to continue, false when the caller has established its degree limit.
+    // Each recursive hop shares the walk settings, decode scratch and work counter.
+    #[allow(clippy::too_many_arguments)]
     fn walk_path(
         &self,
         node: Node,

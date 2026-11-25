@@ -165,7 +165,9 @@ class NativeAnchors:
                         snapshot.update(sink.getvalue())
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     # Files may differ in physical type, so each batch is read on its own.
-                    columns[table.entity_id] = _entity_ids(columns[table.entity_id], key, file["path"])
+                    columns[table.entity_id] = _entity_ids(
+                        columns[table.entity_id], key, file["path"]
+                    )
                     entities = _anchor_key_array(columns[table.entity_id], key)
                     dense = self._source._sampler.lookup_node_ids(
                         self._sample.entity.table, entities

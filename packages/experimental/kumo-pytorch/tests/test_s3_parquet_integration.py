@@ -122,7 +122,9 @@ def test_s3_parquet_index_and_anchor_revisions(tmp_path):
                 assert train_outputs(task) == expected
                 assert task.fingerprints == fingerprints
             replacement = data.slice(0, 2).set_column(
-                data.schema.get_field_index("remote_split"), "remote_split", pa.array(["test", "train"])
+                data.schema.get_field_index("remote_split"),
+                "remote_split",
+                pa.array(["test", "train"]),
             )
             put("anchors/day=1/part-0.parquet", parquet_bytes(replacement))
             with plan.materialize(remote, fit_split="train") as changed:
