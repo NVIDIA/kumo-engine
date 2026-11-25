@@ -61,10 +61,9 @@ Previous local trial artifacts remain in their original volume; moving to these
 names requires seeding the wheel and fixture into the new volume once.
 The runner never silently falls back to the old namespace or customer resources.
 
-Use the GitHub environment `databricks-mlops-test`, with no required deployment
-reviewers, administrator bypass disabled, and exact deployment branches `main`
-and `egu/byom-mlops-lifecycle`. Wildcards, tags and other branches are rejected.
-Its required secrets are
+Use the GitHub environment `databricks-mlops-test`, require approval from
+`NVIDIA/kumo-engineers`, enable `prevent_self_review`, allow administrator
+bypass, and allow only `main`. Trial branches, wildcard rules and tags are rejected. Its required secrets are
 `KUMO_DATABRICKS_TEST_PAT`, containing the dedicated test identity's PAT, and
 `KUMO_DATABRICKS_TEST_HOST`, containing its HTTPS workspace origin.
 Both jobs require `KUMO_DATABRICKS_TEST_USER`, identifying the expected PAT
@@ -72,9 +71,11 @@ principal. Retention checks the authenticated identity before writing or recover
 control records; the lifecycle checks it again inside every fresh worker.
 The PAT identity needs Jobs submission/export, workspace notebook import and
 read/write access to the dedicated Unity Catalog volume. GitHub's built-in token
-checks the environment policy before building and again before consuming the PAT.
-The graph/UI workflow accepts manual dispatch only on `main`; the shared customer-model
-matrix also admits the exact BYOM development branch. Push and pull-request events do not launch cloud jobs.
+checks environment protections before approval and again before consuming the PAT.
+The cloud jobs accept manual dispatch only on `main`. A maintainer other than
+the person who started the run can approve it, or a repository admin can select
+**Start all waiting jobs** while deployment approval is pending.
+Push and pull-request events do not launch cloud jobs.
 
 Every scenario requires `--cluster-id ID` for an existing dedicated single-node
 `KUMO_TEST_` x86 cluster using `i3.xlarge` or `i3.2xlarge`, with attach and Volume

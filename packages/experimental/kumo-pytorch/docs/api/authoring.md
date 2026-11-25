@@ -6,7 +6,7 @@
 
 [API reference index](README.md)
 
-Also re-exported from `kumo.pytorch.api`: [`NON_TEMPORAL`](schema.md#non_temporal), [`Batching`](batches.md#batching).
+Also re-exported from `kumo.pytorch`: [`NON_TEMPORAL`](schema.md#non_temporal), [`Batching`](batches.md#batching).
 
 ### `Batch`
 
@@ -24,6 +24,10 @@ class Batch(
 ```
 
 Named inputs and the same shared resources as BatchSpec.
+
+The iteration order of `inputs` and `targets` is not specified and may differ
+between a built contract and one read by `Artifact.load`. Look entries up by name;
+do not depend on order, e.g. `torch.cat(list(batch.inputs.values()), -1)`.
 
 #### `Batch.lower`
 

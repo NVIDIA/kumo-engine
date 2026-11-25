@@ -16,12 +16,20 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 import torch
 from diskgraph import SamplingPlan
+from kumo._managed_paths import _ManagedIndexPaths
 
+from kumo.pytorch._storage import (
+    ColumnCache,
+    TaskDirectory,
+    managed_paths,
+    managed_root,
+    verify_managed_roots,
+)
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
@@ -32,7 +40,7 @@ from kumo.pytorch.column_stats import (
     read_column_stats,
     token_lengths_file,
 )
-from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
+from kumo.pytorch.contract.batch import EntitySource, EventSource, Fields, Input, Tokens
 from kumo.pytorch.contract.dtypes import (
     DType,
     _arrow_scalar_value,
@@ -81,6 +89,7 @@ from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
+from kumo.pytorch.index_binding import IndexBinding, open_index
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
 
@@ -90,6 +99,42 @@ __all__ = ["DiskGraphEngine"]
 def _refusal(code: str, path: str, message: str) -> ValidationIssue:
     entry = DISKGRAPH_UNSUPPORTED[code]
     return ValidationIssue(path, message, entry.next_step, code)
+
+
+def _token_budget_aliases(contract: DataLoaderSpec) -> list[ValidationIssue]:
+    policy = contract.batch.batching
+    if policy.max_tokens is None and not policy.bucket_by_length:
+        return []
+    spec = contract.batch.inputs.get(policy.length_input)
+    if (
+        spec is None
+        or not isinstance(spec.source, EventSource)
+        or spec.source.collection != "history"
+        or not isinstance(spec.representation, Fields)
+        or not isinstance(spec.representation.row, Tokens)
+    ):
+        return []
+    issues = []
+    for name in spec.source.events:
+        event = contract.sample.events.get(name)
+        if event is None:
+            continue  # General contract validation reports unknown components.
+        seen = {}
+        for use in spec.representation.fields:
+            field = use.field.removeprefix(f"events/{name}/")
+            value = event.fields.get(field)
+            if isinstance(value, Field) and not value.path:
+                first = seen.setdefault(value.column, field)
+                if first != field:
+                    issues.append(
+                        _refusal(
+                            "DG-TOKEN-LENGTH-ALIAS",
+                            f"batch.inputs.{policy.length_input}",
+                            f"Event {name!r} fields {first!r} and {field!r} alias column "
+                            f"{value.column!r}, which token length planning counts only once",
+                        )
+                    )
+    return issues
 
 
 def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationIssue]:
@@ -188,10 +233,11 @@ class DiskGraphEngine:
     the full index in RAM.
 
     The base index is built from local Parquet files and is independent of
-    anchors, fitted encoders and output layout, so several contracts can reuse
-    it. Its manifest binds the schema, physical file metadata (not a content
-    snapshot) and resolved types; every file's declared columns and physical
-    types are checked before ingestion. Native ingestion rules apply: rows with
+    anchors, fitted encoders and output layout. Several contracts can reuse it
+    through the same engine instance or a snapshot binding. Its manifest binds
+    the schema, physical file metadata (not a content snapshot) and resolved
+    types; every file's declared columns and physical types are checked before
+    ingestion. Native ingestion rules apply: rows with
     NULL clocks and other rejected rows are dropped and counted.
 
     Supported: direct entity fields, historical event fields, typed scalar
@@ -201,7 +247,20 @@ class DiskGraphEngine:
     `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
     step, before any data is read.
 
-    :param index: directory of the base index.
+    Configure storage once with ``kumo.settings.configure(scratch_dir=...)``.
+    Each engine keeps the root configured at its construction. Kumo allocates
+    build IDs and paths internally. Reuse this engine with its dataset, or
+    consume a completed snapshot with ``from_snapshot(snapshot)``.
+    Fresh dataset engines ingest independently, even for identical data. Base
+    indexes and derived caches persist after task cleanup; no automatic garbage
+    collection removes unused builds.
+
+    Kumo populates ``index`` with the resolved ``Path`` of the base; for a fresh
+    dataset engine, that directory may not exist until ``prepare()`` builds it.
+    ``index_build_id`` is the physical build identity as a ``str``, allocated
+    internally for a dataset engine or read from its snapshot. These attributes
+    describe the engine's storage; they are not constructor selectors.
+
     :param num_threads: native sampling threads.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
         ``None`` uses fresh randomness. A fixed seed repeats selections for the
@@ -209,9 +268,6 @@ class DiskGraphEngine:
         seed used by ``Task.batches`` for anchor shuffling. Rebuilding an index
         can change selections because native sampling uses physical node IDs.
     :param num_shards: index shards.
-    :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
-        requires an existing one. A mismatching manifest is an error, never
-        permission to reuse.
     :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
     """
 
@@ -222,18 +278,35 @@ class DiskGraphEngine:
     def __init__(
         self,
         *,
-        index: str | Path,
         num_threads: int | None = None,
         random_seed: int | None = 0,
         num_shards: int = 1,
-        ingest: Literal["if_missing", "never"] = "if_missing",
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
     ):
-        if ingest not in {"if_missing", "never"}:
-            raise ValueError("ingest must be 'if_missing' or 'never'")
+        self._initialize(
+            managed_paths(),
+            num_threads=num_threads,
+            random_seed=random_seed,
+            num_shards=num_shards,
+            encoder_cutoffs=encoder_cutoffs,
+        )
+
+    def _initialize(
+        self,
+        paths: _ManagedIndexPaths,
+        *,
+        num_threads: int | None = None,
+        random_seed: int | None = 0,
+        num_shards: int = 1,
+        encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
+        binding: IndexBinding | None = None,
+    ) -> None:
         if isinstance(encoder_cutoffs, str):
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
-        self.index = Path(index)
+        self._paths = paths
+        self.index = paths.index_dir if binding is None else Path(binding.artifact.path)
+        self.index_build_id = paths.index_build_id
+        self._binding = binding
         self.num_threads = num_threads
         if random_seed is not None and (
             type(random_seed) is not int or not 0 <= random_seed < 2**64
@@ -241,14 +314,71 @@ class DiskGraphEngine:
             raise ValueError("random_seed must be None or an unsigned 64-bit integer")
         self.random_seed = random_seed
         self.num_shards = num_shards
-        self.ingest = ingest
         self.encoder_cutoffs = tuple(
             dict.fromkeys(cutoff_nanos(value) for value in encoder_cutoffs)
         )
 
+    @classmethod
+    def from_snapshot(
+        cls, snapshot: Any, *, num_threads: int | None = None, random_seed: int | None = 0
+    ) -> DiskGraphEngine:
+        """Attach to an existing same-root Kumo snapshot by physical build identity.
+
+        The original base stays in place. Tasks and caches use sibling managed paths
+        under kumo.settings.scratch_dir(); no public work/output directories are needed.
+        Cross-root imports and snapshots without a build ID are refused.
+        ``random_seed`` controls native uniform-neighbor sampling, as on the
+        dataset constructor: zero by default, or ``None`` for fresh randomness.
+        """
+        base = Path(snapshot.index_path).resolve()
+        root = managed_root()
+        if not base.is_relative_to(root):
+            raise ValueError(
+                "snapshot must belong to the configured Kumo root; cross-root import is unsupported"
+            )
+        binding = open_index(base, snapshot_id=snapshot.id)
+        result = cls.__new__(cls)
+        result._initialize(
+            managed_paths(binding.identity, root=root),
+            num_threads=num_threads,
+            random_seed=random_seed,
+            binding=binding,
+        )
+        verify_managed_roots(result._paths, base)
+        return result
+
+    @property
+    def schema(self) -> DataSchema:
+        """Resolved stored schema for a from_snapshot engine."""
+        if self._binding is None:
+            raise AttributeError("schema is available on from_snapshot engines")
+        return self._binding.schema
+
+    def _resolve_index_schema(self, schema: DataSchema) -> DataSchema:
+        if self._binding is None:
+            raise ValueError("dataset is required unless the engine binds an existing index")
+        return self._binding.resolve(schema)[0]
+
+    def _check_binding(self, dataset: Dataset | None, schema: DataSchema):
+        if self._binding is not None and dataset is not None:
+            return (
+                ValidationIssue(
+                    "dataset",
+                    "an existing-index engine does not accept Dataset",
+                    "omit dataset; the index supplies the table binding",
+                ),
+            )
+        if dataset is None:
+            try:
+                self._resolve_index_schema(schema)
+            except ValueError as error:
+                return (ValidationIssue("schema", str(error)),)
+        return ()
+
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
         issues = _sample_refusals(contract.sample)
+        issues.extend(_token_budget_aliases(contract))
         tables = {table.name: table for table in contract.schema.tables}
         relations = {relation.name: relation for relation in contract.schema.relations}
         for index, relation in enumerate(contract.schema.relations):
@@ -391,11 +521,27 @@ class DiskGraphEngine:
 
     def open(
         self,
-        dataset: Dataset,
+        dataset: Dataset | None,
         schema: DataSchema,
         *,
         column_stats: Sequence[StatRequest] = (),
     ) -> SampleSource:
+        verify_managed_roots(self._paths, self.index)
+        if self._binding is not None:
+            if dataset is not None:
+                raise ValueError("an existing-index engine does not accept Dataset")
+            self._binding.validate_files()
+            schema, artifact = self._binding.resolve(schema)
+            return DiskGraphSource(
+                artifact,
+                schema,
+                num_threads=self.num_threads,
+                paths=self._paths,
+                identity=self._binding.identity,
+                random_seed=self.random_seed,
+            )
+        if dataset is None:
+            raise ValueError("dataset is required for source ingestion")
         ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
@@ -403,13 +549,15 @@ class DiskGraphEngine:
             self.index,
             num_shards=self.num_shards,
             num_threads=self.num_threads,
-            if_missing=self.ingest == "if_missing",
             column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
+            index_build_id=self.index_build_id,
         )
         return DiskGraphSource(
             artifact,
             schema,
             num_threads=self.num_threads,
+            paths=self._paths,
+            identity=self.index_build_id,
             random_seed=self.random_seed,
         )
 
@@ -428,6 +576,8 @@ class DiskGraphSource:
         schema: DataSchema,
         *,
         num_threads: int | None,
+        paths: _ManagedIndexPaths,
+        identity: str | None = None,
         random_seed: int | None = 0,
     ) -> None:
         try:
@@ -444,6 +594,10 @@ class DiskGraphSource:
 
         self.schema = schema
         self._index_path = artifact.path
+        self.artifact_identity = identity
+        self._paths = paths
+        self._column_cache = ColumnCache(artifact.path, paths.cache_dir)
+        self._cache_root = self._column_cache.root
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
@@ -466,6 +620,10 @@ class DiskGraphSource:
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+
+    def new_task_directory(self, task_id: str | None = None):
+        verify_managed_roots(self._paths, self._index_path)
+        return TaskDirectory(self._paths, task_id)
 
     @property
     def _sampler(self):
@@ -652,7 +810,12 @@ class DiskGraphSource:
 
     def materialize_scalar_batches(self, sample, anchors, batch_size):
         """Scan native TT batches and evaluate scalar arrays without SampleRequests."""
-        from kumo.pytorch.engines.parquet_anchors import _files, _physical
+        from kumo.pytorch.engines.parquet_anchors import (
+            _anchor_key_array,
+            _entity_ids,
+            _files,
+            _physical,
+        )
 
         physical = _physical(anchors)
         compiled = _TemporalPlanCompiler(self).compile(sample)
@@ -660,20 +823,17 @@ class DiskGraphSource:
             sample.entity.table, json.dumps(self._aggregate_plan(sample, compiled.plan))
         )
         entity = self._tables[sample.entity.table]
+        key_dtype = entity.columns[entity.primary_key]
         for path in _files(anchors.source.path):
             for batch in self._diskgraph.read_custom_tt_parquet_batches(
                 path, columns=sorted(set(physical.values())), batch_size=batch_size
             ):
                 started = time.perf_counter_ns()
                 columns = {name: batch.column(column) for name, column in physical.items()}
-                key_dtype = entity.columns[entity.primary_key]
-                keys = self._pa.array(
-                    [
-                        key_dtype.normalize(v, path="anchors.entity_id")
-                        for v in columns[anchors.entity_id].to_pylist()
-                    ],
-                    type=key_dtype.to_arrow(),
+                columns[anchors.entity_id] = _entity_ids(
+                    columns[anchors.entity_id], key_dtype, path
                 )
+                keys = _anchor_key_array(columns[anchors.entity_id], key_dtype)
                 roots = self._sampler.lookup_node_ids(sample.entity.table, keys)
                 if any(root is None for root in roots):
                     raise ValueError("anchor table contains an unknown graph entity")
@@ -1128,7 +1288,14 @@ class DiskGraphSource:
             if cutoff is None
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
-        return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
+        return read_column_stats(
+            self._index_path,
+            requests,
+            ticks,
+            self._clock,
+            self._num_threads,
+            cache_root=self._cache_root,
+        )
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
         ticks = (
@@ -1137,7 +1304,7 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = encoder.tokenizer_file(ticks, self._clock)
-        path = Path(self._index_path, "col_stats", name)
+        path = self._column_cache.resolve(name)
         if path.is_file():
             try:
                 document = json.loads(path.read_text())
@@ -1186,17 +1353,19 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = token_lengths_file(table, columns, required, ticks, self._clock)
-        path = Path(self._index_path, "col_stats", name)
+        path = self._column_cache.resolve(name)
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
             self._diskgraph.token_lengths(
                 self._index_path,
                 table,
                 list(columns),
-                str(path),
+                str(temporary),
                 required=list(required),
                 num_threads=self._num_threads,
             )
+            temporary.replace(path)
         return name
 
     def fit_graph_fields(
@@ -1888,9 +2057,9 @@ class DiskGraphSource:
                 type=self._pa.int64(),
             )
             event_cutoffs = self._pc.take(self._pa.array(cutoffs), owners)
-            elapsed = self._pc.subtract(event_cutoffs, timestamps)
+            elapsed = self._pc.subtract_checked(event_cutoffs, timestamps)
             return self._pc.divide(
-                self._pc.cast(elapsed, self._pa.float64()),
+                arrow_float64(elapsed),
                 self._pa.scalar(
                     field.seconds_per_unit * 1000000000 / self._tick_nanos, type=self._pa.float64()
                 ),

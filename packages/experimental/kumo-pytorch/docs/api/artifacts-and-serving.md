@@ -8,7 +8,7 @@ Saving and loading fitted state, model weights, and serving from caller-supplied
 
 ### `Artifact`
 
-*class* · `kumo.pytorch.api.Artifact`
+*class* · `kumo.pytorch.Artifact`
 
 ```python
 class Artifact(
@@ -72,7 +72,7 @@ contract's declared encodings.
 
 ### `FittedState`
 
-*class* · `kumo.pytorch.api.FittedState`
+*class* · `kumo.pytorch.FittedState`
 
 ```python
 class FittedState(
@@ -139,7 +139,7 @@ The fitted values, as `Artifact.save` writes them beside `fit`.
 
 ### `FitRecord`
 
-*class* · `kumo.pytorch.api.FitRecord`
+*class* · `kumo.pytorch.FitRecord`
 
 Where one half of a fitted state was fitted.
 
@@ -156,7 +156,7 @@ drops, `None` without either.
 
 ### `save_weights`
 
-*function* · `kumo.pytorch.api.save_weights`
+*function* · `kumo.pytorch.save_weights`
 
 ```python
 def save_weights(
@@ -179,7 +179,7 @@ The file is an ordinary `torch.save` of `{"format_version", "contract_fingerprin
 
 ### `load_weights`
 
-*function* · `kumo.pytorch.api.load_weights`
+*function* · `kumo.pytorch.load_weights`
 
 ```python
 def load_weights(
@@ -198,7 +198,7 @@ refused rather than silently misread.
 
 ### `ServingAssembler`
 
-*class* · `kumo.pytorch.api.ServingAssembler`
+*class* · `kumo.pytorch.ServingAssembler`
 
 ```python
 class ServingAssembler(artifact: Artifact)
@@ -253,7 +253,7 @@ request whose entity (or candidate) has no row. A table or column
 
 ### `ServingRowsSpec`
 
-*class* · `kumo.pytorch.api.ServingRowsSpec`
+*class* · `kumo.pytorch.ServingRowsSpec`
 
 ```python
 class ServingRowsSpec(

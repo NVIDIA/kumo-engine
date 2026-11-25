@@ -13,7 +13,17 @@ name: kumo-pytorch DiskGraph
 on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
+      - 'pyproject.toml'
       - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/experimental/kumo-transaction/examples/kumo-engine/**'
+      - 'packages/experimental/kumo-transaction/pyproject.toml'
+      - 'packages/experimental/kumo-transaction/recipes/blueprint_v2/config.smoke.yaml'
+      - 'packages/experimental/kumo-transaction/tests/recipe_smoke/test_kumo_engine_example.py'
+      - 'packages/kumo-engine/**'
+      - 'packages/kumo-core/**'
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-pql/**'
+      - 'packages/kumo-settings/**'
       - 'packages/diskgraph/**'
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -22,7 +32,17 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
     paths:
+      - 'pyproject.toml'
       - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/experimental/kumo-transaction/examples/kumo-engine/**'
+      - 'packages/experimental/kumo-transaction/pyproject.toml'
+      - 'packages/experimental/kumo-transaction/recipes/blueprint_v2/config.smoke.yaml'
+      - 'packages/experimental/kumo-transaction/tests/recipe_smoke/test_kumo_engine_example.py'
+      - 'packages/kumo-engine/**'
+      - 'packages/kumo-core/**'
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-pql/**'
+      - 'packages/kumo-settings/**'
       - 'packages/diskgraph/**'
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -63,6 +83,30 @@ jobs:
         run: |
           python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
           python -m pytest -q --require-imports
+
+  transaction-smoke:
+    name: kumo-transaction-diskgraph-smoke
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Install Transaction in the native test environment
+        run: uv pip install -e packages/experimental/kumo-transaction
+      - name: Smoke test the Transaction example with the native wheel
+        working-directory: packages/experimental/kumo-transaction
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          python -c 'import diskgraph; import kumo.pytorch.api'
+          python -m pytest -q tests/recipe_smoke/test_kumo_engine_example.py
 
   notebooks:
     name: kumo-pytorch-notebooks

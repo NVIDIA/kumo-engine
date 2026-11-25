@@ -309,10 +309,10 @@ def _unclear_refusal(original):
     ((_ranks_ignored, "delivered before refusing"), (_unclear_refusal, "refused unclearly")),
 )
 def test_refusal_timing_requires_a_declared_late_refusal(wrap, expected):
-    """max_tokens with world_size > 1 is a batches() argument: refused there, clearly."""
+    """Explicit-request delivery refuses max_tokens with world_size > 1."""
 
     position, case = _case(**{"contract.strategy": "max_tokens_world_size"})
-    with _patched(Task, "batches", wrap), pytest.raises(PropertyFailure, match=expected):
+    with _patched(Task, "request_batches", wrap), pytest.raises(PropertyFailure, match=expected):
         PROPERTIES["refusal_timing"].check(case, "in_memory", position)
     PROPERTIES["refusal_timing"].check(case, "in_memory", position)
 

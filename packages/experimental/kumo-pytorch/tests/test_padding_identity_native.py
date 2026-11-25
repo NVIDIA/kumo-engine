@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -13,13 +14,13 @@ import pytest
 from kumo.pytorch import api
 
 
-@pytest.fixture(scope="module")
-def graph_plan(tmp_path_factory):
-    """Open one real native index for all tiny request and AnchorTable controls."""
+@pytest.fixture
+def graph_plan(tmp_path):
+    """Open a native index under this test's configured scratch root."""
     pytest.importorskip("diskgraph")
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
-    root = tmp_path_factory.mktemp("padding-native")
+    root = tmp_path
     accounts = pa.table({"account_id": [1]})
     transactions = pa.table(
         {
@@ -74,7 +75,7 @@ def graph_plan(tmp_path_factory):
     )
     # The same public saved contract drives both inspectable and model delivery.
     contract = api.DataLoaderSpec.from_json(contract.to_json())
-    engine = api.DiskGraphEngine(index=root / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     with api.prepare(contract, api.Dataset(sources), engine) as plan:
         yield plan
 
@@ -187,14 +188,12 @@ def test_native_graph_padding_preserves_identity(
     requests = tuple(api.SampleRequest(name, 1, 10 + index) for index, name in enumerate(names))
     task = graph_plan.materialize(requests)
     from_table = graph_plan.materialize(_anchor_table(tmp_path / "anchors.parquet", names))
-    for source, selected_task, explicit in (
-        ("explicit requests", task, requests),
-        ("materialized requests", task, None),
-        ("materialized AnchorTable", from_table, None),
+    for source, deliver in (
+        ("explicit requests", partial(task.request_batches, requests)),
+        ("materialized AnchorTable", from_table.batches),
     ):
         for output_format in ("inspectable", "model"):
-            batches = selected_task.batches(
-                explicit,
+            batches = deliver(
                 batch_size=3,
                 rank=rank,
                 world_size=world_size,

@@ -180,9 +180,10 @@ The suite uses account `926922431314`, region `us-west-2`, the existing
 GitHub authenticates with OIDC as `kumo-engine-sagemaker-test-runner`. Its trust
 accepts only this repository's `sagemaker-mlops-test` environment subject and
 `sts.amazonaws.com` audience. There is no AWS access-key secret. That environment
-allows manual dispatches from `main` and the explicitly approved
-`egu/byom-mlops-lifecycle` test branch, with no required deployment reviewers.
-Administrator bypass remains disabled. The shared environment guard verifies these settings
+allows only manual dispatches from `main`, requires independent
+`NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and allows
+a repository admin to select **Start all waiting jobs** while deployment approval
+is pending. The shared environment guard verifies the branch and reviewer settings
 before the wheel build and again before AWS authentication. These server-side
 settings and the IAM trust enforce access; the branch-owned preflight is
 configuration lint. Other branches, wildcards and tags are rejected.
@@ -367,14 +368,6 @@ native Studio and native MLflow UI qualification unverified.
 In Actions, select `workload=pytorch`, `scenario=engine` and
 `engine_checks_only=true`. The dispatch uses the bundled Engine wheel. Published phase results include
 `platform-prerequisite`, `train` and `reload`.
-
-The branch exception is limited to `egu/byom-mlops-lifecycle` in this workflow
-and the `sagemaker-mlops-test` environment. Its reviewer gate is disabled so
-manual test dispatches can run directly. Administrator-bypass restrictions and
-environment-only OIDC trust remain required. Remove the exact branch rule and guard exception when branch
-testing finishes. Older main-only, reviewer-gated guard revisions reject this environment policy
-until the guard update is merged.
-
 
 ## Shared CPU/GPU customer-model test
 

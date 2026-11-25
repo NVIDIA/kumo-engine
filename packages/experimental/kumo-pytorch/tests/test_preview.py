@@ -155,7 +155,7 @@ def test_prepared_preview_returns_the_exact_normal_batch_without_mutating_state(
     plan = prepare(contract, _dataset(tables), InMemoryEngine()).materialize(request)
     before = plan.manifest["fitted_state_fingerprint"]
     result = preview(plan, request, seed=7)
-    normal = next(plan.batches(request, batch_size=1, seed=7))
+    normal = next(plan.request_batches(request, batch_size=1, seed=7))
     _equal(result.batch.inputs, normal.inputs)
     _equal(result.batch.targets, normal.targets)
     assert plan.manifest["fitted_state_fingerprint"] == before
@@ -190,7 +190,7 @@ def test_contract_preview_temporarily_fits_encodings_and_returns_one_batch() -> 
     dataset = _dataset(tables)
     result = preview(contract, dataset, InMemoryEngine(), request)
     with prepare(contract, dataset, InMemoryEngine()).materialize(request) as expected:
-        normal = next(expected.batches(request, batch_size=1))
+        normal = next(expected.request_batches(request, batch_size=1))
     _equal(result.batch.inputs, normal.inputs)
     _equal(result.batch.targets, normal.targets)
     assert result.encoding_summary["history"]["summary"]["kind"]["entries"] == [
@@ -225,7 +225,7 @@ def test_preview_puts_every_request_in_one_batch_regardless_of_normal_policy() -
     contract = replace(contract, batch=replace(contract.batch, batching=Batching(max_samples=1)))
     requests = tuple(SampleRequest(f"s{index}", 1, 100) for index in range(3))
     plan = prepare(contract, _dataset(tables), InMemoryEngine()).materialize(requests)
-    assert len(list(plan.batches(requests))) == 3
+    assert len(list(plan.request_batches(requests))) == 3
     result = preview(plan, requests)
     assert len(result.samples) == 3
     assert result.batch.metadata["entity_ids"].shape == (3,)

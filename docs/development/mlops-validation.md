@@ -225,16 +225,14 @@ GRANT USAGE ON COMPUTE POOL KUMO_TEST_GPU_POOL TO ROLE KUMO_SNOWFLAKE_TEST_ROLE;
 ```
 
 For one Actions run, open **SageMaker notebook platform checks**, select the
-reviewed branch, set `platform_matrix=true`, `platform=all` and
+`main`, set `platform_matrix=true`, `platform=all` and
 `accelerator=all`, and supply both Databricks cluster IDs. This existing entrypoint
 calls the [customer-model matrix](../../.github/workflows/kumo-engine-byom-platforms.yml),
 which builds the candidate wheel once and executes all six platform/device cases.
 `platform` or `accelerator` can select a smaller diagnostic run. Manual dispatch,
 exact branch admission and environment-specific identities remain enforced.
-The three test environments admit `main` and `egu/byom-mlops-lifecycle`, have no
-required deployment reviewers, and disable administrator bypass. Remove the
-exact development-branch exception after testing. Older main-only/reviewer-gated
-guard revisions reject this policy until the update is merged.
+Each test environment requires an independent `NVIDIA/kumo-engineers` approval.
+A repository admin can select **Start all waiting jobs** for a pending deployment.
 
 The same test can run locally with already configured platform credentials:
 

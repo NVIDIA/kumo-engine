@@ -50,6 +50,7 @@ from e2e.flows.common import (
     batch_inference,
     dataset,
     fit_classifier,
+    managed_engine,
     oracle_auroc,
     purchases,
     read_predictions,
@@ -67,7 +68,6 @@ from kumo.pytorch.api import (
     CalendarPart,
     DataLoaderSpec,
     Derived,
-    DiskGraphEngine,
     DType,
     Encode,
     EntitySource,
@@ -308,7 +308,7 @@ def pretrain(data: Path, work: Path, seed: int, epochs: int = PRETRAIN_EPOCHS) -
     torch.manual_seed(seed)
     clock = Stopwatch()
     history = []
-    engine = DiskGraphEngine(index=work / "index")
+    engine = managed_engine(work)
     with prepare(pretraining_contract(), dataset(data), engine) as plan:
         with plan.materialize(anchors(data), fit_split="train") as task:
             clock.lap("materialize")
@@ -341,7 +341,7 @@ def finetune(data: Path, work: Path, seed: int, epochs: int = FINETUNE_EPOCHS) -
     torch.manual_seed(seed)
     clock = Stopwatch()
     pretrained = Artifact.load(work / "pretrained")
-    engine = DiskGraphEngine(index=work / "index")
+    engine = managed_engine(work)
     with prepare(finetuning_contract(pretrained), dataset(data), engine) as plan:
         with plan.materialize(anchors(data), fit_split="train") as task:
             clock.lap("materialize")

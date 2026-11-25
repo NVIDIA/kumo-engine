@@ -8,7 +8,7 @@ What one example may read at its prediction time: rows, values, calculations, hi
 
 ### `SampleSpec`
 
-*class* · `kumo.pytorch.api.SampleSpec`
+*class* · `kumo.pytorch.SampleSpec`
 
 ```python
 class SampleSpec(
@@ -44,7 +44,7 @@ see `DataLoaderSpec.requires_anchor_time`.
 
 ### `EntitySpec`
 
-*class* · `kumo.pytorch.api.EntitySpec`
+*class* · `kumo.pytorch.EntitySpec`
 
 ```python
 class EntitySpec(
@@ -70,7 +70,7 @@ lookup column.
 
 ### `Rows`
 
-*class* · `kumo.pytorch.api.Rows`
+*class* · `kumo.pytorch.Rows`
 
 ```python
 class Rows(
@@ -97,7 +97,7 @@ with the historical window ending at the sample time.
 
 ### `TimeWindow`
 
-*class* · `kumo.pytorch.api.TimeWindow`
+*class* · `kumo.pytorch.TimeWindow`
 
 ```python
 class TimeWindow(column: str, start: int | None = None, stop: int | None = 0)
@@ -117,7 +117,7 @@ every column compared with an anchor time, must be a `timestamp` or
 
 ### `RowFilter`
 
-*class* · `kumo.pytorch.api.RowFilter`
+*class* · `kumo.pytorch.RowFilter`
 
 ```python
 class RowFilter(column: str, operation: FilterOperation, value: Any = None)
@@ -139,7 +139,7 @@ Whether `row` passes this filter; the row must hold the column.
 
 ### `ActiveInterval`
 
-*class* · `kumo.pytorch.api.ActiveInterval`
+*class* · `kumo.pytorch.ActiveInterval`
 
 ```python
 class ActiveInterval(start_column: str, end_column: str)
@@ -153,7 +153,7 @@ is absent or strictly after it. Both columns must be `timestamp` or
 
 ### `Field`
 
-*class* · `kumo.pytorch.api.Field`
+*class* · `kumo.pytorch.Field`
 
 ```python
 class Field(
@@ -180,7 +180,7 @@ see the limitations page.
 
 ### `Constant`
 
-*class* · `kumo.pytorch.api.Constant`
+*class* · `kumo.pytorch.Constant`
 
 ```python
 class Constant(value: Scalar | None, dtype: DType)
@@ -193,7 +193,7 @@ against `dtype`, never converted.
 
 ### `Derived`
 
-*class* · `kumo.pytorch.api.Derived`
+*class* · `kumo.pytorch.Derived`
 
 ```python
 class Derived(
@@ -224,7 +224,7 @@ rounding and overflow, including infinity.
 
 ### `CalendarPart`
 
-*class* · `kumo.pytorch.api.CalendarPart`
+*class* · `kumo.pytorch.CalendarPart`
 
 ```python
 class CalendarPart(
@@ -240,7 +240,7 @@ result is `int64`. `date32` inputs accept date components only.
 
 ### `MapValues`
 
-*class* · `kumo.pytorch.api.MapValues`
+*class* · `kumo.pytorch.MapValues`
 
 ```python
 class MapValues(
@@ -264,7 +264,7 @@ than selecting a group or the fallback.
 
 ### `EventTimeDelta`
 
-*class* · `kumo.pytorch.api.EventTimeDelta`
+*class* · `kumo.pytorch.EventTimeDelta`
 
 ```python
 class EventTimeDelta(
@@ -291,7 +291,7 @@ Seconds in one `unit`.
 
 ### `Aggregate`
 
-*class* · `kumo.pytorch.api.Aggregate`
+*class* · `kumo.pytorch.Aggregate`
 
 ```python
 class Aggregate(
@@ -335,7 +335,7 @@ negative zero differ. DiskGraph refuses reductions over bytes and decimals.
 
 ### `GroupBy`
 
-*class* · `kumo.pytorch.api.GroupBy`
+*class* · `kumo.pytorch.GroupBy`
 
 ```python
 class GroupBy(
@@ -359,7 +359,7 @@ counts without adding a model-specific feature class.
 
 ### `Reduce`
 
-*class* · `kumo.pytorch.api.Reduce`
+*class* · `kumo.pytorch.Reduce`
 
 ```python
 class Reduce(
@@ -382,7 +382,7 @@ Takes the same operations, result types and missing-value rules as
 
 ### `Compare`
 
-*class* · `kumo.pytorch.api.Compare`
+*class* · `kumo.pytorch.Compare`
 
 ```python
 class Compare(
@@ -400,7 +400,7 @@ The result is a typed boolean; a missing aggregate stays missing.
 
 ### `DatedEntityValue`
 
-*class* · `kumo.pytorch.api.DatedEntityValue`
+*class* · `kumo.pytorch.DatedEntityValue`
 
 ```python
 class DatedEntityValue(
@@ -424,7 +424,7 @@ The DiskGraph engine doesn't support this yet; see the limitations page.
 
 ### `EventSpec`
 
-*class* · `kumo.pytorch.api.EventSpec`
+*class* · `kumo.pytorch.EventSpec`
 
 ```python
 class EventSpec(
@@ -450,7 +450,7 @@ emitted only when declared as fields.
 
 ### `CandidateSetSpec`
 
-*class* · `kumo.pytorch.api.CandidateSetSpec`
+*class* · `kumo.pytorch.CandidateSetSpec`
 
 ```python
 class CandidateSetSpec(
@@ -481,7 +481,7 @@ Use normal sample construction for each caller-supplied candidate.
 
 ### `NeighborhoodSpec`
 
-*class* · `kumo.pytorch.api.NeighborhoodSpec`
+*class* · `kumo.pytorch.NeighborhoodSpec`
 
 ```python
 class NeighborhoodSpec(layers: tuple[GraphLayer, ...])
@@ -499,7 +499,7 @@ a `Graph` representation, not here.
 
 ### `GraphLayer`
 
-*class* · `kumo.pytorch.api.GraphLayer`
+*class* · `kumo.pytorch.GraphLayer`
 
 ```python
 class GraphLayer(samples: tuple[GraphSample, ...])
@@ -509,7 +509,7 @@ Relationship traversals performed from one neighborhood frontier.
 
 ### `GraphSample`
 
-*class* · `kumo.pytorch.api.GraphSample`
+*class* · `kumo.pytorch.GraphSample`
 
 ```python
 class GraphSample(
@@ -537,7 +537,7 @@ the native traversal direction instead.
 
 ### `ExternalTarget`
 
-*class* · `kumo.pytorch.api.ExternalTarget`
+*class* · `kumo.pytorch.ExternalTarget`
 
 ```python
 class ExternalTarget(dtype: DType)
@@ -551,7 +551,7 @@ external label alone does not make a contract temporal.
 
 ### `RowTarget`
 
-*class* · `kumo.pytorch.api.RowTarget`
+*class* · `kumo.pytorch.RowTarget`
 
 ```python
 class RowTarget(
@@ -571,7 +571,7 @@ Select one future row and expose configured fields as one target event.
 
 ### `SampleRequest`
 
-*class* · `kumo.pytorch.api.SampleRequest`
+*class* · `kumo.pytorch.SampleRequest`
 
 ```python
 class SampleRequest(
@@ -599,7 +599,7 @@ One requested entity/time pair and any already-derived target values.
 
 ### `CandidateRequest`
 
-*class* · `kumo.pytorch.api.CandidateRequest`
+*class* · `kumo.pytorch.CandidateRequest`
 
 ```python
 class CandidateRequest(entity_id: int, targets: tuple[TargetValue, ...] = ())
@@ -614,7 +614,7 @@ One caller-chosen candidate and any label already known for it.
 
 ### `TargetValue`
 
-*class* · `kumo.pytorch.api.TargetValue`
+*class* · `kumo.pytorch.TargetValue`
 
 ```python
 class TargetValue(name: str, value: Any)
@@ -629,7 +629,7 @@ A target carried beside a sample and never inserted into its inputs.
 
 ### `BuiltSample`
 
-*class* · `kumo.pytorch.api.BuiltSample`
+*class* · `kumo.pytorch.BuiltSample`
 
 ```python
 class BuiltSample(

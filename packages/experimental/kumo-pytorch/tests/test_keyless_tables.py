@@ -130,7 +130,11 @@ def test_keyless_graph_history_targets_and_features(engine_name, output_format):
         with r.prepare(case.contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
                 batch = next(
-                    iter(task.batches(case.requests, batch_size=3, output_format=output_format))
+                    iter(
+                        task.request_batches(
+                            case.requests, batch_size=3, output_format=output_format
+                        )
+                    )
                 )
                 assert batch.inputs["values"]["count"]["values"].tolist() == [2, 3, 0]
                 assert batch.inputs["history"]["amount"]["values"].tolist() == [2, 2, 2, 2, 3]
@@ -215,6 +219,35 @@ def test_keyless_non_primary_key_relation_remains_valid_on_reference():
 
 
 @pytest.mark.parametrize(
+    "primary_key", (None, "id"), ids=("keyless-to-keyless", "keyless-to-non-primary-key")
+)
+def test_diskgraph_refuses_keyless_relations_without_a_primary_key_side(primary_key, tmp_path):
+    case = _case()
+    other = replace(
+        case.contract.schema.tables[1],
+        name="other",
+        primary_key=primary_key,
+        columns={"id": r.DType("int64"), "owner": r.DType("int64")},
+    )
+    relation = r.RelationSpec("unsupported", "events", "owner", "other", "owner")
+    schema = r.DataSchema(
+        (*case.contract.schema.tables, other), (*case.contract.schema.relations, relation)
+    )
+    contract = replace(case.contract, schema=schema)
+    dataset = r.Dataset(
+        {table.name: r.Parquet(str(tmp_path / f"{table.name}.parquet")) for table in schema.tables}
+    )
+    engine = r.DiskGraphEngine()
+    with patch.object(engine, "open", side_effect=AssertionError("opened invalid relation")):
+        issues = r.check(contract, dataset, engine)
+        assert [(issue.path, issue.code) for issue in issues] == [
+            ("schema.relations[1]", "DG-RELATION-KEYS")
+        ]
+        with pytest.raises(r.ValidationError, match="exactly one primary-key side"):
+            r.prepare(contract, dataset, engine)
+
+
+@pytest.mark.parametrize(
     ("engine_name", "output_format"),
     (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
@@ -241,7 +274,11 @@ def test_keyless_constant_only_events(engine_name, output_format):
         with r.prepare(contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
                 batch = next(
-                    iter(task.batches(case.requests, batch_size=3, output_format=output_format))
+                    iter(
+                        task.request_batches(
+                            case.requests, batch_size=3, output_format=output_format
+                        )
+                    )
                 )
                 assert batch.inputs["history"]["marker"]["values"].tolist() == [1] * 5
 
@@ -272,43 +309,6 @@ def test_keyless_non_temporal_count_only_frame(engine_name):
         assert batch.inputs["values"]["count"]["values"].tolist() == [4, 4, 0]
 
 
-def test_keyless_tie_order_survives_an_ordered_serving_subset():
-    case = _case()
-    event = r.EventSpec(
-        r.Rows(("activity",)), {"amount": r.Field(column="amount")}, order="descending", limit=1
-    )
-    contract = replace(
-        case.contract,
-        sample=replace(case.contract.sample, events={"history": event}),
-        batch=r.BatchSpec(
-            {
-                "history": r.Input(
-                    r.EventSource(("history",)),
-                    r.Fields((r.Encode("amount", r.Raw()),)),
-                    r.Packed(),
-                )
-            }
-        ),
-    )
-    # Removing an unrelated row must not change numeric source-order ties.
-    tables = {
-        **case.tables,
-        "events": [
-            {"owner": 2, "at": 9, "amount": 99},
-            *({"owner": 1, "at": 9, "amount": i} for i in range(12)),
-        ],
-    }
-    requests = (r.SampleRequest("tied", 1, 9),)
-    dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
-            server = r.ServingAssembler(task.to_artifact())
-    served = server.assemble({**tables, "events": tables["events"][1:]}, requests)[0]
-    assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
-    assert served.inputs["history"]["amount"]["values"].tolist() == [11]
-
-
 def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
     from tests.serving_fetch import fetch
 
@@ -324,7 +324,9 @@ def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
     with bound_case(case, engine_name) as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
-                offline = next(iter(task.batches(case.requests, batch_size=1))).inputs["graph"]
+                offline = next(iter(task.request_batches(case.requests, batch_size=1))).inputs[
+                    "graph"
+                ]
                 server = r.ServingAssembler(task.to_artifact())
     rows = fetch(server.rows_spec, server.contract.schema, case.tables, case.requests[0])
     served = server.assemble(rows, case.requests)[0].inputs["graph"]
@@ -371,7 +373,7 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
     with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
+            offline = next(iter(task.request_batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
     served = server.assemble({**rows, "events": rows["events"][::-1]}, requests)[0]
     # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.

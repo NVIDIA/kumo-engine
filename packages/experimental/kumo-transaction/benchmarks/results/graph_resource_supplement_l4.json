@@ -1,0 +1,1584 @@
+{
+  "recorded_at": "2026-11-20T21:34:09.401999+00:00",
+  "driver_revision": "828d785",
+  "scope": "New resource supplement on exact historical source revisions. Separate runs from the historical latency campaigns; not retroactive historical peak measurements. Same fixed inputs/config, five warmup/twenty measured cycles, three runs per source. Peak values are PyTorch CUDA allocator memory, not host RSS or total device usage.",
+  "command": "PYTHONPATH=<historical-source>/src:<driver-checkout> OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONHASHSEED=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 <environment>/bin/python <driver-checkout>/benchmarks/ablations/graph_backends/conversion.py --deterministic --warmup 5 --steps 20 --output <run>.json",
+  "parity": "Inputs, initial weights, loss histories and embeddings match the historical run for every source/workload. Constructor sources also match historical final model/buffer and gradient hashes. All repetitions for each source/workload match each other.",
+  "summary": [
+    {
+      "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+      "arm": "gnn_training",
+      "effective_settings": {
+        "root_count": 29,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 832,
+      "edges": 1964,
+      "throughput": {
+        "value": 963.1849108176623,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 66.52294921875,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          66.52294921875,
+          66.52294921875
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+      "arm": "sequence_training",
+      "effective_settings": {
+        "root_count": 32,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 1163,
+      "edges": 3208,
+      "throughput": {
+        "value": 1272.0977738980228,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 84.10205078125,
+        "reserved_mib": 92.0,
+        "allocated_range_mib": [
+          84.10205078125,
+          84.10205078125
+        ],
+        "reserved_range_mib": [
+          92.0,
+          92.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+      "arm": "validation",
+      "effective_settings": {
+        "root_count": 12,
+        "model_mode": "eval",
+        "optimizer": null,
+        "max_grad_norm": null,
+        "optimizer_steps": 0
+      },
+      "repetitions": 3,
+      "nodes": 852,
+      "edges": 2232,
+      "throughput": {
+        "value": 662.8166962610874,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 65.96484375,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          65.96484375,
+          65.96484375
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+      "arm": "gnn_training",
+      "effective_settings": {
+        "root_count": 29,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 832,
+      "edges": 1964,
+      "throughput": {
+        "value": 968.9875760073286,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 66.52294921875,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          66.52294921875,
+          66.52294921875
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+      "arm": "sequence_training",
+      "effective_settings": {
+        "root_count": 32,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 1163,
+      "edges": 3208,
+      "throughput": {
+        "value": 1244.816971810215,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 84.10205078125,
+        "reserved_mib": 92.0,
+        "allocated_range_mib": [
+          84.10205078125,
+          84.10205078125
+        ],
+        "reserved_range_mib": [
+          92.0,
+          92.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+      "arm": "validation",
+      "effective_settings": {
+        "root_count": 12,
+        "model_mode": "eval",
+        "optimizer": null,
+        "max_grad_norm": null,
+        "optimizer_steps": 0
+      },
+      "repetitions": 3,
+      "nodes": 852,
+      "edges": 2232,
+      "throughput": {
+        "value": 661.7038357982138,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 65.96484375,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          65.96484375,
+          65.96484375
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "1e73e843f749c7ec98b6dab3571bc81af26bc6c5",
+      "arm": "gnn_training",
+      "effective_settings": {
+        "root_count": 29,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 832,
+      "edges": 1964,
+      "throughput": {
+        "value": 968.2891580112232,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 66.52294921875,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          66.52294921875,
+          66.52294921875
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "1e73e843f749c7ec98b6dab3571bc81af26bc6c5",
+      "arm": "sequence_training",
+      "effective_settings": {
+        "root_count": 32,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 1163,
+      "edges": 3208,
+      "throughput": {
+        "value": 1253.2843542479336,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 84.11279296875,
+        "reserved_mib": 92.0,
+        "allocated_range_mib": [
+          84.11279296875,
+          84.11279296875
+        ],
+        "reserved_range_mib": [
+          92.0,
+          92.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "1e73e843f749c7ec98b6dab3571bc81af26bc6c5",
+      "arm": "validation",
+      "effective_settings": {
+        "root_count": 12,
+        "model_mode": "eval",
+        "optimizer": null,
+        "max_grad_norm": null,
+        "optimizer_steps": 0
+      },
+      "repetitions": 3,
+      "nodes": 852,
+      "edges": 2232,
+      "throughput": {
+        "value": 652.3175237564865,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 65.9677734375,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          65.9677734375,
+          65.9677734375
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "85f47bb0c666360cd870aadd00f9113943f98aba",
+      "arm": "gnn_training",
+      "effective_settings": {
+        "root_count": 29,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 832,
+      "edges": 1964,
+      "throughput": {
+        "value": 924.7884657630278,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 66.560546875,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          66.560546875,
+          66.560546875
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "85f47bb0c666360cd870aadd00f9113943f98aba",
+      "arm": "sequence_training",
+      "effective_settings": {
+        "root_count": 32,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 1163,
+      "edges": 3208,
+      "throughput": {
+        "value": 1205.8633963608233,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 84.16748046875,
+        "reserved_mib": 92.0,
+        "allocated_range_mib": [
+          84.16748046875,
+          84.16748046875
+        ],
+        "reserved_range_mib": [
+          92.0,
+          92.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "85f47bb0c666360cd870aadd00f9113943f98aba",
+      "arm": "validation",
+      "effective_settings": {
+        "root_count": 12,
+        "model_mode": "eval",
+        "optimizer": null,
+        "max_grad_norm": null,
+        "optimizer_steps": 0
+      },
+      "repetitions": 3,
+      "nodes": 852,
+      "edges": 2232,
+      "throughput": {
+        "value": 644.7310765672395,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 66.0078125,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          66.0078125,
+          66.0078125
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+      "arm": "gnn_training",
+      "effective_settings": {
+        "root_count": 29,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 832,
+      "edges": 1964,
+      "throughput": {
+        "value": 966.5451734511909,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 66.52294921875,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          66.52294921875,
+          66.52294921875
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+      "arm": "sequence_training",
+      "effective_settings": {
+        "root_count": 32,
+        "model_mode": "train",
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.003,
+          "weight_decay": 0.01,
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": 1.0,
+        "optimizer_steps": 25
+      },
+      "repetitions": 3,
+      "nodes": 1163,
+      "edges": 3208,
+      "throughput": {
+        "value": 1274.5398995277665,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward+backward+clipping+AdamW",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 84.10205078125,
+        "reserved_mib": 92.0,
+        "allocated_range_mib": [
+          84.10205078125,
+          84.10205078125
+        ],
+        "reserved_range_mib": [
+          92.0,
+          92.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    },
+    {
+      "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+      "arm": "validation",
+      "effective_settings": {
+        "root_count": 12,
+        "model_mode": "eval",
+        "optimizer": null,
+        "max_grad_norm": null,
+        "optimizer_steps": 0
+      },
+      "repetitions": 3,
+      "nodes": 852,
+      "edges": 2232,
+      "throughput": {
+        "value": 654.5150823761253,
+        "unit": "roots/s",
+        "scope": "constructor+transfer+forward",
+        "statistic": "median of three independently measured run throughputs"
+      },
+      "peak_memory": {
+        "allocated_mib": 65.96484375,
+        "reserved_mib": 68.0,
+        "allocated_range_mib": [
+          65.96484375,
+          65.96484375
+        ],
+        "reserved_range_mib": [
+          68.0,
+          68.0
+        ],
+        "scope": "PyTorch CUDA allocator peak after warmup across measured cycles; includes model, optimizer and live batch tensors",
+        "statistic": "median of three post-warmup run peaks"
+      },
+      "historical_input_and_output_parity_verified": true
+    }
+  ],
+  "manifest_schema": "tfm.graph-resource-supplement.v1",
+  "raw_artifact": {
+    "url": null,
+    "sha256": "78a7574f3cd5144d34124c31f35bb6e0549c5b6550589f6a2163361970008a2c",
+    "bytes": 1437749,
+    "media_type": "application/json"
+  },
+  "conditions": [
+    {
+      "source_revision": "0602c5c83361b49f550f9544e4b5f243eaae1e02",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "4686109424e93a19f0b0b877d5408e106c701dbb6bd0f77f66952c8d1a699ec8",
+      "contract_sha256": "7c78bfba21a69149d959d742407329808f20ce411527969e264b9ab7e1b7aa02",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    },
+    {
+      "source_revision": "dafe31f458618f3dfc3010426683a834fe3f2f06",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "4686109424e93a19f0b0b877d5408e106c701dbb6bd0f77f66952c8d1a699ec8",
+      "contract_sha256": "16cb574107a0a15d41ec692f27a257a6074cf352726c635edf4788d1148551f9",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    },
+    {
+      "source_revision": "05ba7d722cbe82014767ce5cfddd6923f9b30c8a",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "4686109424e93a19f0b0b877d5408e106c701dbb6bd0f77f66952c8d1a699ec8",
+      "contract_sha256": "16cb574107a0a15d41ec692f27a257a6074cf352726c635edf4788d1148551f9",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    },
+    {
+      "source_revision": "85f47bb0c666360cd870aadd00f9113943f98aba",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "4686109424e93a19f0b0b877d5408e106c701dbb6bd0f77f66952c8d1a699ec8",
+      "contract_sha256": "29e579442da7ded29d2fba9920992cc346969b5c8172a6f54406eab38914d93b",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    },
+    {
+      "source_revision": "1e73e843f749c7ec98b6dab3571bc81af26bc6c5",
+      "source_dirty": false,
+      "driver_sha256": "3286bb1926f0ab19949ee2a61f75d805852a514d26f95f4130631e96aa753213",
+      "execution_driver_sha256": "4686109424e93a19f0b0b877d5408e106c701dbb6bd0f77f66952c8d1a699ec8",
+      "contract_sha256": "43998cacf1de73fcc2da2ee128d3782bc399e9ac90a415e30fc0fc949753de9d",
+      "config": {
+        "recipe_family": "graph",
+        "seed": 42,
+        "data": {
+          "adapter": "synthetic",
+          "path": null,
+          "training_graphs": "shared",
+          "n_entities": 64,
+          "events_per_entity": 100,
+          "pretrain_end": "2024-03-01T00:00:00Z",
+          "observed_through": "2024-04-01T00:00:00Z",
+          "probe_cutoff": "2024-03-10T00:00:00Z",
+          "horizon_days": 7,
+          "label_delay_days": 0,
+          "history_events": 8,
+          "max_tokens": 16
+        },
+        "model": {
+          "composition": {
+            "granularity": {
+              "type": "gnn_sequence",
+              "hidden_size": 32,
+              "depth": 4,
+              "fanout": 10,
+              "target_depth": 2,
+              "trim": true,
+              "decoder": {
+                "depth": 1,
+                "mask": "causal",
+                "hidden_size": 32,
+                "num_heads": 4,
+                "dropout": 0.0,
+                "max_seq_len": 64,
+                "ffn_size": null
+              },
+              "profile_depth": 1,
+              "event_depth": 1
+            },
+            "objective": "binary",
+            "attention": "sdpa"
+          }
+        },
+        "training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.003,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          },
+          "objective": "future_subgraph"
+        },
+        "sequence_training": {
+          "max_steps": 3,
+          "log_every": null,
+          "batch_size": 32,
+          "learning_rate": 0.001,
+          "precision": "fp32",
+          "backend": "eager",
+          "packing": false,
+          "shuffle": true,
+          "optimizer": {
+            "name": "adamw",
+            "muon": {
+              "learning_rate": 0.02,
+              "momentum": 0.95,
+              "adjust_lr": "original"
+            },
+            "max_grad_norm": null,
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 0.0,
+            "lr_schedule": "constant",
+            "warmup_steps": 0,
+            "min_learning_rate": 0.0,
+            "schedule_steps": null
+          }
+        },
+        "runtime": {
+          "device": "cpu"
+        }
+      },
+      "python": "3.14.6",
+      "torch": "2.13.0+cu130",
+      "kumo_engine": "1.0.1",
+      "gpu": "NVIDIA L4",
+      "tf32": false,
+      "deterministic_algorithms": true,
+      "pythonhashseed": "0",
+      "cublas_workspace_config": ":4096:8",
+      "warmup": 5,
+      "steps": 20,
+      "repetitions": 3,
+      "workloads": [
+        {
+          "arm": "gnn_training",
+          "nodes": 832,
+          "edges": 1964,
+          "initial_state_sha256": "9cebf4608ccc3705d822f7378d39cd60a2feaa6a5d399a989e820ad83b53e050",
+          "input_sha256": "073a3bfbff1432f8ab61843becfff94591213d29a6d8e42f42668476d7977600",
+          "effective_settings": {
+            "root_count": 29,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 29
+        },
+        {
+          "arm": "sequence_training",
+          "nodes": 1163,
+          "edges": 3208,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "64e1eda173b51347e5fd07de8a293cc384ebf082252b8e389a1405ec2663fb8e",
+          "effective_settings": {
+            "root_count": 32,
+            "model_mode": "train",
+            "optimizer": {
+              "name": "AdamW",
+              "lr": 0.003,
+              "weight_decay": 0.01,
+              "betas": [
+                0.9,
+                0.999
+              ],
+              "eps": 1e-08,
+              "amsgrad": false
+            },
+            "max_grad_norm": 1.0,
+            "optimizer_steps": 25
+          },
+          "root_count": 32
+        },
+        {
+          "arm": "validation",
+          "nodes": 852,
+          "edges": 2232,
+          "initial_state_sha256": "61a35d8e5f01fe89b43d4ed83c9d6a1a6082c4706112d2f35f9f684c5bf59cc2",
+          "input_sha256": "1f3903af0ff1fdaee4871dbe2931dd9096b7d32b399da717ba790b254ff5a577",
+          "effective_settings": {
+            "root_count": 12,
+            "model_mode": "eval",
+            "optimizer": null,
+            "max_grad_norm": null,
+            "optimizer_steps": 0
+          },
+          "root_count": 12
+        }
+      ]
+    }
+  ],
+  "run_count": 15
+}

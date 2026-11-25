@@ -45,30 +45,30 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(
+        kp.TableSpec(
             name="users",
             primary_key="user_id",
-            columns={"user_id": api.DType(name="int64")},
-            time_column=api.NON_TEMPORAL,
+            columns={"user_id": kp.DType(name="int64")},
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="orders",
             primary_key="order_id",
             columns={
-                "order_id": api.DType(name="int64"),
-                "user_id": api.DType(name="int64"),
-                "occurred_at": api.DType(name="timestamp", unit="s", timezone="UTC"),
-                "amount": api.DType(name="float64"),
+                "order_id": kp.DType(name="int64"),
+                "user_id": kp.DType(name="int64"),
+                "occurred_at": kp.DType(name="timestamp", unit="s", timezone="UTC"),
+                "amount": kp.DType(name="float64"),
             },
             time_column="occurred_at",
         ),
     ),
     relations=(
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_orders",
             left_table="users",
             left_key="user_id",
@@ -77,30 +77,28 @@ schema = api.DataSchema(
         ),
     ),
 )
-history = api.Rows(path=("user_orders",), time=api.TimeWindow(column="occurred_at", stop=0))
-contract = api.DataLoaderSpec(
+history = kp.Rows(path=("user_orders",), time=kp.TimeWindow(column="occurred_at", stop=0))
+contract = kp.DataLoaderSpec(
     schema=schema,
-    sample=api.SampleSpec(
-        entity=api.EntitySpec(table="users", entity_type="user"),
-        entity_values={"spend": api.Aggregate(source=history, operation="sum", column="amount")},
-        events={
-            "orders": api.EventSpec(rows=history, fields={"amount": api.Field(column="amount")})
-        },
+    sample=kp.SampleSpec(
+        entity=kp.EntitySpec(table="users", entity_type="user"),
+        entity_values={"spend": kp.Aggregate(source=history, operation="sum", column="amount")},
+        events={"orders": kp.EventSpec(rows=history, fields={"amount": kp.Field(column="amount")})},
     ),
-    batch=api.BatchSpec(
+    batch=kp.BatchSpec(
         inputs={
-            "user": api.Input(
-                source=api.EntitySource(),
-                representation=api.Fields(fields=(api.Encode(field="spend", encoding=api.Raw()),)),
-                layout=api.Separate(),
+            "user": kp.Input(
+                source=kp.EntitySource(),
+                representation=kp.Fields(fields=(kp.Encode(field="spend", encoding=kp.Raw()),)),
+                layout=kp.Separate(),
             ),
-            "orders": api.Input(
-                source=api.EventSource(events=("orders",)),
-                representation=api.Fields(fields=(api.Encode(field="amount", encoding=api.Raw()),)),
-                layout=api.Padded(),
+            "orders": kp.Input(
+                source=kp.EventSource(events=("orders",)),
+                representation=kp.Fields(fields=(kp.Encode(field="amount", encoding=kp.Raw()),)),
+                layout=kp.Padded(),
             ),
         },
-        batching=api.Batching(max_samples=1),
+        batching=kp.Batching(max_samples=1),
     ),
 )
 
@@ -121,21 +119,21 @@ orders_schema = pa.schema(
     ]
 )
 pq.write_table(pa.Table.from_pylist(orders, schema=orders_schema), root / "orders.parquet")
-parquet = api.Dataset(
+parquet = kp.Dataset(
     tables={
-        "users": api.Parquet(path=str(root / "users.parquet")),
-        "orders": api.Parquet(path=str(root / "orders.parquet")),
+        "users": kp.Parquet(path=str(root / "users.parquet")),
+        "orders": kp.Parquet(path=str(root / "orders.parquet")),
     }
 )
-request = api.SampleRequest(
-    sample_id="user-1-jan-10", entity_id=1, as_of_time=datetime(2024, 1, 10)
-)
+request = kp.SampleRequest(sample_id="user-1-jan-10", entity_id=1, as_of_time=datetime(2024, 1, 10))
 ```
 
 Each table in the schema is bound to one Parquet source, which can be a single
 file, a directory or a glob. A dataset binds exactly the contract's tables, and
 it doesn't name an engine. The DiskGraph engine reads `Parquet` sources, and the
 in-memory engine reads `InMemoryRows`, which we'll come to below.
+
+When the stored column names differ from the contract's, such as the upper-case names of a Snowflake export, `columns` maps them: `kp.Parquet(path=..., columns={"USER_ID": "user_id"})` reads `USER_ID` as `user_id`. Everything after that, including the DiskGraph index, uses the contract's names.
 
 You don't have to repeat column types that the files already record. With
 Parquet, you can omit `TableSpec.columns`, or give a column's type as `None`,
@@ -149,6 +147,12 @@ For a declared `int64` column, DiskGraph also accepts Parquet `int8`,
 The contract and batches use `int64`. Ingest fails if any decimal value
 falls outside the signed 64-bit range.
 
+The entity ID column of a Parquet `AnchorTable` accepts the same types when the entity table's primary key is `int64`. `Plan.materialize` reads those IDs as `int64`, so requests, batches and materialized anchors carry `int64` IDs, and an ID outside the signed 64-bit range fails with an error that names `anchors.entity_id`. Snowflake's Parquet unload, for example, writes `INT` and `BIGINT` columns as scale-zero decimals.
+
+A declared integer column never accepts a float column, because `float64` represents integers exactly only up to 2^53. pandas stores an integer column that contains NULLs as `float64`, so an integer column read through pandas, for example with Snowpark's `DataFrame.to_pandas()`, arrives as floats. Read it through Arrow instead: Snowpark's `DataFrame.to_arrow()` keeps a nullable integer column as integers.
+
+Column names are case-sensitive; when column names or types are omitted, resolution reports every table whose stored columns do not match, with close-match suggestions. Fully declared tables are checked when DiskGraph prepares the data.
+
 ## The DiskGraph engine
 
 The DiskGraph engine is built on kumo-engine's DiskGraph, which the
@@ -157,17 +161,22 @@ The DiskGraph engine is built on kumo-engine's DiskGraph, which the
 ### Building and reusing the index
 
 The first time `prepare` runs, `DiskGraphEngine` builds an index from the
-Parquet files in the directory you give it. Later runs find the index there and
-reuse it.
+Parquet files in the dataset. By default it allocates a physical build ID and
+writes the base under the configured Kumo scratch root at
+`indexes/<index_build_id>`. Reuse the engine instance across preparations, or
+consume a completed core snapshot with `from_snapshot(snapshot)`.
 
 <!-- test: diskgraph -->
 ```python
-engine = api.DiskGraphEngine(index=root / "index", ingest="if_missing", num_shards=1)
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=root)
+engine = kp.DiskGraphEngine(num_shards=1)
 with (
-    api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
+    kp.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=(request,)) as task,
 ):
-    batch = next(task.batches(output_format="model"))
+    batch = next(task.request_batches((request,), output_format="model"))
 print("spend:", batch.inputs["user"]["spend"]["values"].tolist())
 print("amounts:", batch.inputs["orders"]["amount"]["values"].tolist())
 ```
@@ -182,22 +191,106 @@ The January 12 order is after the January 10 prediction time, so it is not
 read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
-fitted encoders, so several contracts over the same tables can share one index.
-Fitting keeps the column statistics of encoders over stored columns in
-`col_stats/`, so it needs the index directory to be writable. Each encoder
-cutoff has one directory there, with a `<table>.col_stats.json` file per table.
-A later fit at the same cutoff computes only the columns and statistics those
-files lack, and adds them. Ingest computes the statistics for the cutoffs in
-`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
-tokenizer is trained on the first fit at its cutoff and kept beside them as
-`<table>.<column>.text-<settings>.tokenizer.json`.
-Its manifest records the schema, the files and their resolved types. If the
-manifest doesn't match the dataset and schema you pass, `prepare` refuses the
-index rather than reusing it, and it never overwrites it. The shard count isn't
-part of that check: an index opened with a different `num_shards` is reused as
-it was built. With
-`ingest="never"`, `prepare` requires an index that already exists, which is
-what you usually want in a scoring job.
+fitted encoders, so several contracts can share one base through the same engine
+instance or snapshot binding. The managed layout is:
+
+```text
+<scratch_root>/indexes/<index_build_id>/
+<scratch_root>/tasks/<index_build_id>/<task_id>/
+<scratch_root>/cache/<index_build_id>/
+```
+
+The build ID identifies one physical ingest, independently of schema and data
+version. Each fresh dataset engine allocates a different ID and ingests its own
+base, even for identical data. There is no automatic reuse across engines by
+graph or data version, so each adds ingestion time and disk usage. Reuse a core
+`Graph.snapshot()` through `DiskGraphEngine.from_snapshot(snapshot)` to share
+the producer's base across engines or processes. Kumo allocates IDs and chooses
+index, task and cache paths internally; callers configure only the process-wide
+scratch root.
+
+Before native task ingest and runtime handoff, Kumo validates the task manifest
+against the engine's captured root: the graph path must match its bound base,
+and every stage path must match the task's allocated directory. Relative paths,
+traversal and symlink redirects are rejected. Snapshot bases retain their
+producer's layout within that root. DiskGraph checks parent build identity.
+
+Fitting reads any statistics already stored under the base's `col_stats/` and
+writes missing statistics, tokenizers and token lengths under the managed
+`cache/<index_build_id>/col_stats/`. Each encoder cutoff has a directory with a
+`<table>.col_stats.json` file per table. A later fit at the same cutoff computes
+only missing columns or statistics. Ingest computes statistics for the cutoffs
+in `DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
+tokenizer is trained on the first fit at its cutoff and saved beside them.
+
+The manifest binds the schema, source files and resolved types. If it differs
+from the dataset and schema you pass, `prepare` refuses reuse. The shard count
+is not part of that check; an existing index keeps the shard count it was built
+with. Use `DiskGraphEngine.from_snapshot(snapshot)` to prepare an existing index
+without source ingestion.
+
+The removed `ingest="never"` option guarded against unexpected ingestion: `prepare`
+refused a missing base instead of ingesting it. Dataset engine construction no
+longer exposes that guard; its first `prepare` ingests the dataset. Migrate
+callers requiring an existing base to `DiskGraphEngine.from_snapshot(snapshot)`
+and omit the Dataset from `prepare`. Snapshot binding validates the completed
+base and refuses missing or incompatible state without rebuilding it or reading
+the original source tables.
+
+### Storage lifetime and cleanup
+
+Closing a plan or task keeps `indexes/<index_build_id>/` and
+`cache/<index_build_id>/`. Close tasks explicitly or use context managers for
+prompt cleanup. Closing a plan closes its live tasks before releasing the engine
+binding. Unclosed tasks also release their native readers and remove their task
+and scratch directories on collection or normal Python exit; empty parent
+directories can remain. There is no automatic garbage collection
+for unused bases, caches or abandoned builds, so repeated runs accumulate disk
+usage.
+
+For a managed build you no longer need, manually remove its matching index,
+cache and leftover task directories only after all engines, tasks and processes
+using it have stopped and no retained snapshot needs its base. Keep builds and
+caches needed for later reuse.
+
+### Open an existing snapshot
+
+`DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. The loader opens `snapshot.index_path` in place and writes tasks and caches under the configured root at `tasks/<index_build_id>/` and `cache/<index_build_id>/`. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
+
+<!-- test: skip (snapshot, sample_spec, batch_spec and anchors belong to the caller) -->
+```python
+engine = kp.DiskGraphEngine.from_snapshot(snapshot)
+contract = kp.DataLoaderSpec(
+    schema=engine.schema,
+    sample=sample_spec,
+    batch=batch_spec,
+)
+with kp.prepare(contract=contract, engine=engine) as plan:
+    with plan.materialize(anchors) as task:
+        for batch in task.batches(output_format="columnar"):
+            graph = batch.inputs["graph"]
+```
+
+`SampleSpec` and `BatchSpec` describe sampling and output encoding. `engine.schema` restores recorded column types and derives keys, clocks and relationships from native config and metadata. PyTorch-produced indexes expose logical relation aliases; core snapshots use native FK names. A compatible schema projection may rename those relations: binding checks endpoints, FK columns and direction. `prepare` rejects a Dataset alongside an existing-index engine. Anchors select entity/time requests; neighborhoods are sampled during iteration.
+
+Use `DiskGraphEngine.from_snapshot(snapshot, random_seed=7)` to select a native
+uniform-neighbor sampling seed. The default is zero; `None` uses fresh randomness.
+This is independent of the seed used to shuffle anchors in `Task.batches`.
+
+PyTorch-produced indexes restore every column's logical type from
+`index_manifest.json`, including each timestamp field's declared unit. Core
+snapshots without that manifest derive types from native metadata, so timestamps
+use the index clock and UTC. Declared types must match the recorded types; omit a
+column's type to resolve it from the index.
+
+The base may be read-only. Task extensions and scalar-materialization scratch are temporary; closing a task removes them. Derived caches remain for reuse. The loader writes no new base metadata. Native extension metadata records the parent build ID, so opening a task against a different base is refused. Statistics may contain diagnostic paths to reused base files; those paths are not needed to restore fitted encoders. Concurrent requests may duplicate computation but do not discard published keys. Install DiskGraph from the matching kumo-engine revision for managed build and external cache support.
+
+Opening requires the resolved `diskgraph_config.json` and the producer's completion metadata. Core snapshots use native inventory/integrity checks; PyTorch indexes use their manifest, published after ingest. Artifacts missing resolved config are refused. Native edge-table layouts, end-time validity and unsupported stored types (including lists) are refused explicitly.
+
+For source ingestion and reuse, keep the same engine instance with the dataset.
+The manifest checks source paths, file sizes and modification times; a changed
+source or schema refuses reuse. To use a producer-managed snapshot after
+sources move, open it with `from_snapshot(snapshot)` without a dataset.
 
 `output_format="model"` lets the DiskGraph engine build the batch's tensors
 column by column, without building a Python record per event. It refuses raw types
@@ -220,17 +313,23 @@ refusal](#choosing-an-engine-and-early-refusal).
 An anchor is one example to build: an entity ID, a prediction time, and
 optionally a split, labels, candidates and tracing metadata. For production
 training, evaluation, offline scoring, and benchmarks, materialize a Parquet
-`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`
-without an explicit request argument. This selects native model iteration for
-eligible contracts. Benchmarks of that iterator should verify the execution
-route because some contracts still use Python assembly.
+`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`.
+This selects native model iteration for eligible contracts. Benchmarks of
+that iterator should verify the execution route because some contracts
+fall back to reconstructing requests.
 
 Use Python `SampleRequest` objects for tests, debugging, or small sets of
-requests supplied at runtime. `task.batches(requests=...)` uses explicit
-request batching, even on a task materialized from an `AnchorTable`. A task
-materialized from a Python request sequence also stays request-backed when
-you call `task.batches(split=...)`. DiskGraph can still sample the data for
-these requests, but these calls bypass native AnchorTable batch iteration.
+requests supplied at runtime. Pass them to `task.request_batches(requests)`
+even if they were used to fit the task. This method can use DiskGraph sampling
+and bypasses native AnchorTable iteration. `task.batches()` requires a task
+materialized from an `AnchorTable`.
+
+When migrating, rename `task.batches(requests=...)` to `task.request_batches(...)`.
+Resume an explicit-request checkpoint with the same requests and batching options,
+omitting the old `chunk_batches` option because it had no effect on requests.
+If you relied on `batches(split=...)` after materializing Python requests,
+pass your selected requests explicitly or bind the population as an `AnchorTable`.
+Start a fresh iterator when migrating a paused request-backed split pass.
 
 This example shows how to bind a Parquet anchor table and select its splits:
 
@@ -249,15 +348,15 @@ anchor_schema = pa.schema(
     ]
 )
 pq.write_table(pa.Table.from_pylist(anchor_rows, schema=anchor_schema), root / "anchors.parquet")
-anchors = api.AnchorTable(
-    source=api.Parquet(path=str(root / "anchors.parquet")),
+anchors = kp.AnchorTable(
+    source=kp.Parquet(path=str(root / "anchors.parquet")),
     entity_id="user_id",
     as_of_time="as_of",
     sample_id="sample_id",
     split="split",
 )
 with (
-    api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
+    kp.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=anchors, fit_split="train") as task,
 ):
     for split in ("train", "valid", "test"):
@@ -278,10 +377,10 @@ Encoders over stored columns instead fit on every table row created at or
 before the encoder cutoff (by default the latest anchor time `fit_split`
 selects), whichever split that row's entity belongs to; a non-temporal table
 contributes every row. When anchors carry splits, `fit_split` is required.
-It can name one split, a set of splits, or `api.ALL_ANCHORS`. Anchor tables can
+It can name one split, a set of splits, or `kp.ALL_ANCHORS`. Anchor tables can
 also carry your own labels (`targets={"label": "column"}`), metadata columns
 that are passed through to the batch, and nested candidate lists
-(`api.CandidateColumn`).
+(`kp.CandidateColumn`).
 
 For graph-neighborhood and sequence tasks, DiskGraph materializes only the anchors into a
 task-owned native seed extension. The base graph stays unchanged. TT-NG then
@@ -336,7 +435,7 @@ features and generated labels once before fitting or iteration:
 
 <!-- test: diskgraph -->
 ```python
-with api.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
+with kp.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
     with plan.materialize(anchors, fit_split="train") as task:
         for batch in task.batches(split="train", output_format="model"):
             pass  # Supply these tensors to the model.
@@ -365,15 +464,15 @@ It reads `InMemoryRows` rather than Parquet. Python rows carry no type
 metadata, so every column needs an explicit type in the schema.
 
 ```python
-in_memory = api.Dataset(
-    tables={"users": api.InMemoryRows(rows=users), "orders": api.InMemoryRows(rows=orders)}
+in_memory = kp.Dataset(
+    tables={"users": kp.InMemoryRows(rows=users), "orders": kp.InMemoryRows(rows=orders)}
 )
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(contract=contract, dataset=in_memory, engine=api.InMemoryEngine()) as plan,
+    kp.prepare(contract=contract, dataset=in_memory, engine=kp.InMemoryEngine()) as plan,
     plan.materialize(anchors=(request,)) as task,
 ):
-    batch = next(task.batches())
+    batch = next(task.request_batches((request,)))
 print("spend:", batch.inputs["user"]["spend"]["values"].tolist())
 print("amounts:", batch.inputs["orders"]["amount"]["values"].tolist())
 ```
@@ -386,7 +485,7 @@ amounts: [[20.0, 35.0]]
 
 The batch is the same one the DiskGraph engine built from the Parquet files
 above. Anchor tables work the same way on the in-memory engine, with
-`api.InMemoryRows` as their source.
+`kp.InMemoryRows` as their source.
 
 ## Choosing an engine, and early refusal
 
@@ -396,8 +495,8 @@ do. When the choice comes from a configuration file or an environment variable,
 you can resolve a registered name to the same class instead:
 
 ```python
-print("engines:", api.available_engines())
-configured = api.engine_from_name("diskgraph", index=root / "index", ingest="never")
+print("engines:", kp.available_engines())
+configured = kp.engine_from_name("diskgraph")
 print(type(configured).__name__)
 ```
 
@@ -416,21 +515,21 @@ behind an aggregate, which the DiskGraph engine doesn't support:
 ```python
 from dataclasses import replace
 
-large_orders = api.Rows(
+large_orders = kp.Rows(
     path=("user_orders",),
-    time=api.TimeWindow(column="occurred_at", stop=0),
-    filters=(api.RowFilter(column="amount", operation="greater_than", value=30.0),),
+    time=kp.TimeWindow(column="occurred_at", stop=0),
+    filters=(kp.RowFilter(column="amount", operation="greater_than", value=30.0),),
 )
 filtered = replace(
     contract,
     sample=replace(
         contract.sample,
         entity_values={
-            "spend": api.Aggregate(source=large_orders, operation="sum", column="amount")
+            "spend": kp.Aggregate(source=large_orders, operation="sum", column="amount")
         },
     ),
 )
-for issue in api.check(contract=filtered, dataset=parquet, engine=engine):
+for issue in kp.check(contract=filtered, dataset=parquet, engine=engine):
     print(issue.path, issue.code)
     print("   ", issue.message)
     print("   ", issue.suggestion)

@@ -8,7 +8,7 @@ Where table bytes live, which engine executes the contract, and what it supports
 
 ### `Dataset`
 
-*class* · `kumo.pytorch.api.Dataset`
+*class* · `kumo.pytorch.Dataset`
 
 ```python
 class Dataset(tables: Mapping[str, TableSource])
@@ -58,7 +58,7 @@ Fill omitted types from Parquet metadata, without reading rows.
 
 ### `InMemoryRows`
 
-*class* · `kumo.pytorch.api.InMemoryRows`
+*class* · `kumo.pytorch.InMemoryRows`
 
 ```python
 class InMemoryRows(rows: Sequence[Mapping[str, Any]] = ())
@@ -83,7 +83,7 @@ Always refused: in-memory rows are the data, not a reference to it.
 
 ### `Parquet`
 
-*class* · `kumo.pytorch.api.Parquet`
+*class* · `kumo.pytorch.Parquet`
 
 ```python
 class Parquet(path: str = '', columns: Mapping[str, str] = {})
@@ -110,7 +110,7 @@ JSON-compatible form of this storage reference.
 
 ### `Engine`
 
-*class* · `kumo.pytorch.api.Engine`
+*class* · `kumo.pytorch.Engine`
 
 ```python
 class Engine(*args, **kwargs)
@@ -153,7 +153,7 @@ anchor-to-graph edges — and fixes the canonical row order.
 
 ### `SampleSource`
 
-*class* · `kumo.pytorch.api.SampleSource`
+*class* · `kumo.pytorch.SampleSource`
 
 ```python
 class SampleSource(*args, **kwargs)
@@ -216,7 +216,7 @@ Release whatever the binding holds. Must tolerate repeat calls.
 
 ### `AnchorTask`
 
-*class* · `kumo.pytorch.api.AnchorTask`
+*class* · `kumo.pytorch.AnchorTask`
 
 ```python
 class AnchorTask(*args, **kwargs)
@@ -289,16 +289,14 @@ Release whatever the task holds. Must tolerate repeat calls.
 
 ### `DiskGraphEngine`
 
-*class* · `kumo.pytorch.api.DiskGraphEngine`
+*class* · `kumo.pytorch.DiskGraphEngine`
 
 ```python
 class DiskGraphEngine(
     *,
-    index: str | Path,
     num_threads: int | None = None,
     random_seed: int | None = 0,
     num_shards: int = 1,
-    ingest: Literal['if_missing', 'never'] = 'if_missing',
     encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
 )
 ```
@@ -311,10 +309,11 @@ prediction, such as event histories and graph neighborhoods, without keeping
 the full index in RAM.
 
 The base index is built from local Parquet files and is independent of
-anchors, fitted encoders and output layout, so several contracts can reuse
-it. Its manifest binds the schema, physical file metadata (not a content
-snapshot) and resolved types; every file's declared columns and physical
-types are checked before ingestion. Native ingestion rules apply: rows with
+anchors, fitted encoders and output layout. Several contracts can reuse it
+through the same engine instance or a snapshot binding. Its manifest binds
+the schema, physical file metadata (not a content snapshot) and resolved
+types; every file's declared columns and physical types are checked before
+ingestion. Native ingestion rules apply: rows with
 NULL clocks and other rejected rows are dropped and counted.
 
 Supported: direct entity fields, historical event fields, typed scalar
@@ -324,14 +323,53 @@ and row labels, recent or uniform graph neighborhoods with node fields, and colu
 `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
 step, before any data is read.
 
+Configure storage once with `kumo.settings.configure(scratch_dir=...)`.
+Each engine keeps the root configured at its construction. Kumo allocates
+build IDs and paths internally. Reuse this engine with its dataset, or
+consume a completed snapshot with `from_snapshot(snapshot)`.
+Fresh dataset engines ingest independently, even for identical data. Base
+indexes and derived caches persist after task cleanup; no automatic garbage
+collection removes unused builds.
+
+Kumo populates `index` with the resolved `Path` of the base; for a fresh
+dataset engine, that directory may not exist until `prepare()` builds it.
+`index_build_id` is the physical build identity as a `str`, allocated
+internally for a dataset engine or read from its snapshot. These attributes
+describe the engine's storage; they are not constructor selectors.
+
 **Parameters**
 
-- `index`: directory of the base index.
 - `num_threads`: native sampling threads.
 - `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
-- `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
+
+#### `DiskGraphEngine.from_snapshot`
+
+*classmethod*
+
+```python
+DiskGraphEngine.from_snapshot(
+    snapshot: Any,
+    *,
+    num_threads: int | None = None,
+    random_seed: int | None = 0,
+) -> DiskGraphEngine
+```
+
+Attach to an existing same-root Kumo snapshot by physical build identity.
+
+The original base stays in place. Tasks and caches use sibling managed paths
+under kumo.settings.scratch_dir(); no public work/output directories are needed.
+Cross-root imports and snapshots without a build ID are refused.
+`random_seed` controls native uniform-neighbor sampling, as on the
+dataset constructor: zero by default, or `None` for fresh randomness.
+
+#### `DiskGraphEngine.schema`
+
+*property*
+
+Resolved stored schema for a from_snapshot engine.
 
 #### `DiskGraphEngine.check_contract`
 
@@ -369,7 +407,7 @@ Issues with a Parquet anchor table's binding, without reading its rows.
 
 ### `available_engines`
 
-*function* · `kumo.pytorch.api.available_engines`
+*function* · `kumo.pytorch.available_engines`
 
 ```python
 def available_engines() -> tuple[str, ...]
@@ -379,7 +417,7 @@ Registered engine names, sorted.
 
 ### `engine_from_name`
 
-*function* · `kumo.pytorch.api.engine_from_name`
+*function* · `kumo.pytorch.engine_from_name`
 
 ```python
 def engine_from_name(name: str, **config: Any) -> Engine
@@ -387,8 +425,8 @@ def engine_from_name(name: str, **config: Any) -> Engine
 
 Resolve a registered name to a class and construct it.
 
-`engine_from_name("diskgraph", index=...)` is exactly
-`DiskGraphEngine(index=...)`. Nothing is opened, connected or
+`engine_from_name("diskgraph", num_threads=4)` is exactly
+`DiskGraphEngine(num_threads=4)`. Nothing is opened, connected or
 initialized — construction is inert, and resources are acquired by
 `Engine.open`. The two are named differently on purpose.
 
@@ -397,7 +435,7 @@ resolves to the same class explicit construction would give.
 
 ### `register_engine`
 
-*function* · `kumo.pytorch.api.register_engine`
+*function* · `kumo.pytorch.register_engine`
 
 ```python
 def register_engine(name: str, factory: type) -> None
@@ -411,7 +449,7 @@ engine without editing this module.
 
 ### `Unsupported`
 
-*class* · `kumo.pytorch.api.Unsupported`
+*class* · `kumo.pytorch.Unsupported`
 
 ```python
 class Unsupported(
@@ -445,7 +483,7 @@ The refusal raised outside `check`, naming the code and the next step.
 
 ### `InMemoryEngine`
 
-*class* · `kumo.pytorch.api.InMemoryEngine`
+*class* · `kumo.pytorch.InMemoryEngine`
 
 ```python
 class InMemoryEngine()

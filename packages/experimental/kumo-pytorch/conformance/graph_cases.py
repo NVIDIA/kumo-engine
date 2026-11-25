@@ -295,9 +295,7 @@ def _bound(
 
     with bound_tables(contract, tables, engine, parts=parts) as (dataset, bound):
         if shards is not None and isinstance(bound, DiskGraphEngine):
-            bound = DiskGraphEngine(
-                index=bound.index, num_threads=bound.num_threads, num_shards=shards
-            )
+            bound.num_shards = shards
         yield dataset, bound
 
 
@@ -321,7 +319,7 @@ def graph_answer(
 
 def collect_graphs(task: Task, requests: Sequence[SampleRequest]) -> GraphAnswer:
     result: GraphAnswer = {}
-    for batch in task.batches(requests):
+    for batch in task.request_batches(requests):
         graph = batch.inputs[NEIGHBORHOOD]
         sample_ids = [str(sample_id) for sample_id in batch.metadata["sample_ids"]]
         require(not any(batch.metadata["is_padding"].tolist()), "padding in a request batch")

@@ -294,6 +294,19 @@ jobs:
           ../pytorch-env/bin/python -m pytest -p no:cacheprovider -m notebook --require-imports -q \
             --durations=0 tests/test_notebooks.py
 
+      - name: Copy the connector snapshot integration test
+        run: cp packages/kumo-engine/test/test_pytorch_snapshot.py "$RUNNER_TEMP/stage/tests/"
+      - name: Connector snapshot to columnar batches, from the installed wheel
+        working-directory: ${{ runner.temp }}/stage
+        run: |
+          ../pytorch-env/bin/python -I -c '
+          import pathlib, sys
+          import diskgraph, kumo.engine, kumo.pytorch, kumo_core, kumoapi, kumopql, kumo.settings
+          for module in (diskgraph, kumo.engine, kumo.pytorch, kumo_core, kumoapi, kumopql, kumo.settings):
+              assert pathlib.Path(module.__file__).is_relative_to(sys.prefix), module.__file__
+          '
+          ../pytorch-env/bin/python -m pytest -p no:cacheprovider -q --require-imports tests/test_pytorch_snapshot.py
+
   gpu:
     name: kumo-engine-pr-gpu
     needs: wheel

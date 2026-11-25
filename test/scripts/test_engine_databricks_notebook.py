@@ -308,7 +308,7 @@ def test_extra_receipt_is_rejected(evidence):
         collect_fake(evidence)
 
 
-def test_workflow_secrets_stay_scoped_to_the_native_test_environment(
+def test_workflow_secrets_are_available_only_after_native_environment_approval(
 ):
     workflow = yaml.safe_load(
         (ROOT /
@@ -316,7 +316,7 @@ def test_workflow_secrets_stay_scoped_to_the_native_test_environment(
     assert set(workflow[True]) == {'workflow_dispatch'}
     gate = next(
         step for step in workflow['jobs']['configuration']['steps']
-        if step.get('name') == 'Verify test environment policy')
+        if step.get('name') == 'Verify maintainer-protected environment')
     job = workflow['jobs']['notebook-ui']
     assert job['environment'] == 'databricks-mlops-test'
     assert job['steps'][1] == gate
@@ -414,21 +414,21 @@ def test_cloud_jobs_require_manual_main_dispatch(
 
 
 @pytest.mark.parametrize('ref', [
-    'refs/heads/main', 'refs/heads/egu/byom-mlops-lifecycle',
-    'refs/heads/egu/databricks-ui-validation'
+    'refs/heads/main', 'refs/heads/egu/databricks-ui-validation'
 ])
-def test_production_guard_admits_only_main_and_the_approved_test_branch(
+def test_production_guard_requires_main_and_the_databricks_environment(
         monkeypatch, ref):
     import io
     import runpy
     import urllib.request
 
     environment = dict(
-        can_admins_bypass=False, protection_rules=[],
-        deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
-    policies = dict(branch_policies=[
-        dict(name='main', type='branch'),
-        dict(name='egu/byom-mlops-lifecycle', type='branch')])
+        can_admins_bypass=True, protection_rules=[
+            dict(type='required_reviewers', prevent_self_review=True,
+                 reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
+        ], deployment_branch_policy=dict(protected_branches=False,
+                                         custom_branch_policies=True))
+    policies = dict(branch_policies=[dict(name='main', type='branch')])
     calls = []
 
     def get(request, timeout):
@@ -442,7 +442,7 @@ def test_production_guard_admits_only_main_and_the_approved_test_branch(
                            GITHUB_EVENT_NAME='workflow_dispatch',
                            GITHUB_TOKEN='test-token').items():
         monkeypatch.setenv(key, value)
-    if ref in ('refs/heads/main', 'refs/heads/egu/byom-mlops-lifecycle'):
+    if ref == 'refs/heads/main':
         runpy.run_path(str(DIRECTORY / 'check_environment.py'),
                        run_name='__main__')
         assert len(calls) == 2

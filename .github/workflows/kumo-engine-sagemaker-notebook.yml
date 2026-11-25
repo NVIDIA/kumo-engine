@@ -55,7 +55,7 @@ jobs:
       !inputs.platform_matrix &&
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
@@ -68,7 +68,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - &check-environment
-        name: Verify test environment policy
+        name: Verify maintainer-protected environment
         env:
           GITHUB_TOKEN: ${{ github.token }}
           WORKLOAD: ${{ inputs.workload }}
@@ -96,7 +96,7 @@ jobs:
       !inputs.platform_matrix &&
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     environment: sagemaker-mlops-test
