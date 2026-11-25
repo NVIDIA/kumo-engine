@@ -3,9 +3,10 @@
 For a dataset supplied as keyed tables and relationships, use the
 [shared relational recipe](../../recipes/relational_inputs/README.md). It shows
 one declaration for sequence, GNN and hybrid, including generated anchors,
-independent availability clocks and timed intermediate tables. Its bounded
-native graph path resolves canonical ties by retrieving complete candidate sets;
-see that recipe's explicit projection and performance limits.
+explicit availability clocks and timed intermediate tables. Native execution
+checks whether those rules can be expressed by the pinned backend; unsupported
+clock, ownership or capped tie rules fail before training. Python implements the
+broader reference contract. See the recipe's capability limits.
 
 ## Canonical recipes
 
@@ -49,7 +50,7 @@ uv run --no-sync tfm smoke --recipe blueprint_v1 --config outputs/python-loader/
 A Python-only sequence installation can use `uv sync --extra dev` instead.
 Graph models still need the `kumo` extra for their GNN regardless of loader.
 The runner performs preparation in either path. See
-[memory, preparation and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation)
+[memory, preparation and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs)
 before choosing a loader or increasing anchors, history, fanout or depth. The
 default is not a universal speed or memory guarantee.
 
@@ -61,41 +62,34 @@ published and source native packages. See the
 [migration notes](../../docs/migration/native-loader-default.md) for installation
 and checkpoint compatibility. A cold native build can take tens of minutes.
 
-### Sequence retrieval
+### Source-native sequence, graph and hybrid inputs
 
-[NativeHistories](../../src/tfm/data/native_history.py) writes a bounded validated
-corpus of event keys, owner keys and clocks into a temporary DiskGraph index.
-An `AnchorTable` binds each sample ID, owner and exact cutoff. Native batches
-retrieve row IDs; the existing TFM selection and tokenizer paths retain window
-membership, tied-event ordering, labels, masks and train-only fitting.
-`NativeSequenceBatches` retrieves each indexed training minibatch through the
-native task iterator. Explicit caches and packing retain their batch builders.
-This path supports every sequence tokenizer/composition, rather than replacing
-their vocabularies with native encodings.
+The canonical CLI uses [NativeInputs](../../src/tfm/data/native_inputs.py) over a
+file-backed [TableSource](../../src/tfm/contracts/table_source.py), with explicit
+keys, FK roles, clocks and feature allowlists. Adapter hooks expose source tables
+without constructing a Python event corpus. Native encoders fit selected train
+anchors and deliver encoded feature tensors directly.
 
-### Graphs and hybrid histories
+[NativeBatches](../../src/tfm/data/native_batches.py) owns a continuous native
+iterator per epoch and temporal stage, plus one adapted CPU lookahead batch.
+Native seed/epoch ordering replaces indexed minibatch retrieval. The
+[tensor adapter](../../src/tfm/data/native_tensors.py) copies delivered features,
+clocks and masks into owned model tensors; it performs no event lookup or Python
+tokenization. It is also used by the advanced example below.
 
-[NativeGraphSampler](../../src/tfm/data/native_graph.py) writes the declared
-user/event/transfer FK schema, samples historical neighborhoods using DiskGraph,
-and calls [from_kumo_graph](../../src/tfm/data/adapters/kumo_graph.py) with explicit
-sample IDs, canonical integer root IDs, numeric features and availability clocks.
-Native graph tensors are copied before the task closes. Disjoint graphs are
-validated before any intentional same-cutoff union for shared training. Hop
-counts are built on CPU. The hybrid aligns its natively retrieved history to
-the graph anchors using the existing validated hybrid batch contract.
+Graph layers expand from the preceding frontier's table types in both FK
+directions. Native deliveries pass `from_kumo_graph` and the graph contracts,
+including ownership, temporal checks, duplicate rejection, mutation guards and
+hybrid alignment. Evaluation uses disjoint graphs; shared training unions only
+same-cutoff samples. Neither canonical native runner retains a split of prepared
+input graphs. FutureSubgraph has a separate disk-backed compact target cache.
 
-The worked graph path requires static users, one-parent user-to-event FK roles,
-whole-second events/cutoffs, event availability equal to event time and no
-explicit observation-start bound. Unsupported settings raise an error naming
-the Python control. Empty optional tables remain declared empty tensors in the model batch; the
-native index requires at least one populated referenced event table. Reverse
-traversal to a single immutable FK parent uses `uniform`, with no temporal rows
-or alternative parents to select. Temporal event sampling uses native `recent` fanout; tied fanout membership
-follows the native index and need not match Python primary-key ordering.
-FutureSubgraph targets remain a separate Python reference traversal over the
-future window. They never enter the historical input graph. Native aggregate
-parity and full-book throughput are not claimed. The canonical runners still
-import objects and materialize bounded batches, targets and probes in memory.
+Unsupported time, ownership, tie, window or training rules fail explicitly before
+training. The Python reference path and explicitly prepared token caches remain
+available. Read the [migration and capability guide](../../docs/migration/native-loader-default.md)
+for whole-second clock requirements, native encoder/checkpoint identity, memory
+tradeoffs and currently unsupported extensions. This integration makes no
+unmeasured throughput or dataset-capacity claim.
 
 ## Advanced Blueprint example with native feature encoders
 

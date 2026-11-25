@@ -86,11 +86,11 @@ def test_embedded_metadata_is_validated_before_any_state_installation(
     elif corruption == "schema":
         payload["metadata"]["graph_schema"]["hidden_size"] += 1
     elif corruption == "split":
-        payload["metadata"]["split"]["probe_owners"]["train"] = ["wrong_owner"]
+        payload["metadata"]["input_loader"]["anchors_sha256"] = "wrong_anchor_identity"
     elif corruption == "engine":
         payload["metadata"]["kumo_engine_version"] = "wrong_engine"
     elif corruption == "event_key_encoding":
-        payload["metadata"]["split"]["sampling"].pop("event_key_encoding")
+        payload["metadata"]["input_loader"]["tasks"]["history"]["fitted_state"] = "wrong_encoding"
     else:
         payload.pop("metadata")
     torch.save(payload, out / "model.pt")
@@ -100,7 +100,8 @@ def test_embedded_metadata_is_validated_before_any_state_installation(
 
     monkeypatch.setattr(torch.nn.Module, "load_state_dict", forbidden)
     with pytest.raises(
-        ValueError, match="Unsupported checkpoint format|graph_schema|split|kumo_engine_version"
+        ValueError,
+        match="Unsupported checkpoint format|graph_schema|metadata|kumo_engine_version|identity|fitted artifact",
     ):
         run_command(
             "infer", config_path=config_path, run_dir=out, device="cpu", reuse_checkpoint=True
@@ -130,6 +131,7 @@ def test_future_hybrid_retains_historical_and_matched_supervised_controls(tmp_pa
     from tfm.runtime import graph as runtime
 
     config = yaml.safe_load(Path("recipes/gnn_sequence/config.pretrain_smoke.yaml").read_text())
+    config["data"]["loader"] = "python"
     config["training"]["max_steps"] = config["sequence_training"]["max_steps"] = 1
     path = tmp_path / "future.yaml"
     path.write_text(yaml.safe_dump(config))

@@ -181,6 +181,7 @@ Kumo Engine's experimental PyTorch/DiskGraph loader is the default
 `--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
 provides setup, commands and temporal/schema limits. Set `data.loader: python`
 in a copied configuration to use the reference loader. Both retain preparation
-costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
-The current runners still ingest bounded object corpora, so this default does
-not establish out-of-core training or a universal speed/memory advantage.
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native CLI streams source-table feature tensors and retains active/prefetched
+model batches. Source validation, index preparation, targets and evaluation arrays
+still have costs; see the guide's explicit capability and checkpoint limits.

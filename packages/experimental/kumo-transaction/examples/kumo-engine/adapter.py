@@ -3,9 +3,6 @@
 
 """Convert the declared Kumo outputs into Blueprint's KeyValueTimeBatch."""
 
-from collections.abc import Mapping
-from typing import Any
-
 import torch
 from kumo.pytorch import api
 from torch import Tensor
@@ -17,6 +14,7 @@ from contract import (
     TIME_FIELDS,
 )
 from tfm.contracts.kvt import KeyValueTimeBatch
+from tfm.data.native_tensors import event_grid
 
 
 def pad_events(value: Tensor) -> Tensor:
@@ -28,25 +26,8 @@ class KumoToKVT:
     def __init__(self, task: api.Task) -> None:
         self.vocab_size = task.spaces["model"].size
 
-    @staticmethod
-    def event_grid(
-        history: Mapping[str, Any],
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        event_mask = history["sequence"]["valid"].bool()
-        values = history["value_ids"]
-        if not values.numel():
-            zero = values.new_zeros((event_mask.shape[0], max(event_mask.shape[1], 1), 1))
-            return zero, zero.clone(), zero.clone(), zero.bool(), pad_events(event_mask)
-        indices = history["sequence"]["event_indices"].masked_fill(~event_mask, 0)
-        token_mask = history["valid"][indices].bool() & event_mask.unsqueeze(-1)
-        arrays = tuple(
-            history[name][indices].masked_fill(~token_mask, 0)
-            for name in ("field_ids", "value_ids", "position_ids")
-        )
-        return *arrays, token_mask, event_mask
-
     def __call__(self, batch: api.Batch) -> KeyValueTimeBatch:
-        keys, values, positions, token_mask, event_mask = self.event_grid(batch.inputs["history"])
+        keys, values, positions, token_mask, event_mask = event_grid(batch.inputs["history"])
         auxiliary = batch.inputs["history_aux"]
         times = {name: pad_events(auxiliary[name]["values"]) for name in TIME_FIELDS}
         ages = times["age_seconds"].to(torch.float64)

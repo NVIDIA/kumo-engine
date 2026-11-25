@@ -77,11 +77,15 @@ history and anchors; it supports inference without manufacturing zero labels.
 The graph projection currently supports fixed FKs and numeric allowlists with
 finite-value masks. It rejects versioned topology and categorical/text graph
 encoding explicitly; point-in-time history traversal supports versioned ownership.
-The native graph implementation builds at most two availability/window-filtered
-snapshots, reopens their completed index for one-hop directional plans, and
-retrieves all eligible candidates before canonical recent fanout. These physical
-reads are larger than logical fanout where degree exceeds the cap. It is a
-bounded correctness integration, not a full-book streaming or speed claim.
+The canonical native runner indexes validated source tables and streams encoded
+tensors from native tasks. It does not implement the whole reference contract.
+Whole-second clocks, fixed ownership and backend-expressible observation rules
+are required. A capped canonical tie, independent history availability clock,
+unsupported timed projection, versioned ownership rule or meaningful per-hop
+lookback fails before training rather than changing the contract. See the
+[native capability and migration guide](../migration/native-loader-default.md#supported-boundaries).
+Legacy object-based candidate adapters remain available to direct callers;
+they are not the source-native recipe implementation.
 
 Structural tables reached along history paths are observation-window exempt:
 they retain their original creation/availability clocks even when created before
@@ -122,3 +126,33 @@ Relational recipes reject nonempty `objective.auxiliary`: these stages apply
 only their declared primary/binary objectives. Sequence/hybrid decoder widths
 and head counts must be positive and produce an even integral head dimension;
 configuration validation rejects incompatible dimensions before data preparation.
+
+
+## File-backed adapters and native encoding
+
+`TableSource` supplies the same keyed-table, relationship, clock and allowlist
+metadata over local scalar Parquet files. Register its factory with the data
+adapter's `table_source` hook. Native recipe runners call that hook instead of
+loading an object corpus. A missing hook is an unsupported capability, not a
+reason to fall back silently.
+
+Source keys are normalized through a disk-backed identity registry, including
+composite keys. All declared rows, keys, FK bindings and clocks are validated
+before native feature fitting. Labels stay outside the model input schema.
+Only whole-second UTC native clocks are currently accepted. A source declaration
+can describe broader rules; the backend must reject rules it cannot express.
+
+Native feature encoders fit selected training anchors, not all source rows
+before a date. Static root attributes and separately dated profile facts have
+distinct inputs. Trained weights bind source-content hashes, ordered schema,
+replay anchors, native contract and fitted-encoding fingerprints. Embedded
+checkpoint metadata is authoritative; sidecars cannot authorize different
+weights or encodings.
+
+Continuous native iterators own shuffling by seed and epoch. Temporal stages
+keep separate iterator tails so shared graphs never combine different cutoffs.
+A CPU producer adapts delivered tensors into owned batches and prefetches one
+batch, closing before source/index teardown even after an error or early stop.
+Model batching does not reconstruct events or tokenize Python histories.
+FutureSubgraph target vectors and optional Python reference-baseline features
+are separate from this historical model-input path.

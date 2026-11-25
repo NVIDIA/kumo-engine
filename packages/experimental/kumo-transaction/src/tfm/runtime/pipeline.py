@@ -130,10 +130,17 @@ def default_config_path(recipe: str = DEFAULT_RECIPE, variant: str | None = "smo
 
 
 def build_model(
-    config: RecipeConfig, vocab_size: int, *, tokenizer: SequenceTokenizer | None = None
+    config: RecipeConfig,
+    vocab_size: int,
+    *,
+    tokenizer: SequenceTokenizer | None = None,
+    vocabulary: FieldVocabulary | None = None,
 ) -> nn.Module:
     """The model every `model.composition` slot names. `flat_encoder` masks by the
-    field layout of `tokenizer` (the fitted one), else of a tokenizer built from `config`."""
+    field layout of `tokenizer` (the fitted one), else of a tokenizer built from `config`.
+    `vocabulary` supplies already fitted backend-neutral field ranges, including
+    ranges assigned by native feature encoders.
+    """
     head_objectives = [
         SupervisedHead(
             head=name,
@@ -148,7 +155,7 @@ def build_model(
         vocab_size=vocab_size,
         backbone=build_backbone(config, vocab_size),
         head_objectives=head_objectives,
-        vocabulary=_field_vocabulary(config, tokenizer),
+        vocabulary=vocabulary if vocabulary is not None else _field_vocabulary(config, tokenizer),
     )
 
 

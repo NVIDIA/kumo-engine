@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import fields, is_dataclass, replace
 from datetime import date
 from decimal import Decimal
@@ -128,7 +128,11 @@ def _history_controls(values: Sequence[RelationalBatch]) -> list[SequenceSupervi
 
 @torch.no_grad()
 def _predictions(
-    model: nn.Module, batches: Sequence[RelationalBatch], device: torch.device
+    model: nn.Module,
+    batches: Iterable[RelationalBatch],
+    device: torch.device,
+    *,
+    binary_required: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
     vectors, probabilities, targets, raw = [], [], [], []
@@ -136,7 +140,14 @@ def _predictions(
         original.assert_validated()
         output = model(move_batch_for_execution(original, device), compute_loss=False)
         vectors.append(output.embeddings.detach().float().cpu().numpy())
-        probabilities.append(output.predictions["binary"].detach().float().cpu().numpy())
+        binary = output.predictions.get("binary")
+        if binary is None and binary_required:
+            raise ValueError("Binary evaluation requires binary model predictions")
+        probabilities.append(
+            np.full(len(output.embeddings), np.nan)
+            if binary is None
+            else binary.detach().float().cpu().numpy()
+        )
         labels = getattr(original, "labels", None)
         targets.extend([math.nan] * len(output.embeddings) if labels is None else labels.tolist())
         if isinstance(
@@ -171,6 +182,17 @@ def run_command(
     reuse_checkpoint: bool = False,
 ) -> Path:
     """Train, evaluate or infer with generated/replayed aligned relational anchors."""
+    if config.data.loader == "kumo_pytorch":
+        from tfm.runtime.native import run_command as run_native
+
+        return run_native(
+            command,
+            config=config,
+            config_path=config_path,
+            run_dir=run_dir,
+            device=device,
+            reuse_checkpoint=reuse_checkpoint,
+        )
     del config_path
     if device is not None:
         config = config.model_copy(

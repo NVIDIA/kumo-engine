@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -16,6 +16,7 @@ from torch import Tensor, nn
 from tfm.config import OptimizerConfig
 from tfm.contracts.capabilities import BackendCapabilities
 from tfm.contracts.errors import UnsupportedCombinationError
+from tfm.contracts.resources import Closable
 from tfm.contracts.training import TrainableBatch as TrainableBatch
 from tfm.training.optim import build_optimizers, set_schedule_factor
 from tfm.training.progress import TrainingProgress
@@ -49,7 +50,7 @@ def epoch_order(n: int, *, seed: int, epoch: int, shuffle: bool) -> list[int]:
 
 def iterate_batches[BatchT: TrainableBatch](
     batches: BatchSource[BatchT], *, seed: int = 0, shuffle: bool = False
-) -> Iterator[BatchT]:
+) -> Generator[BatchT, None, None]:
     if not len(batches):
         raise ValueError("Training requires at least one batch")
     if shuffle and not isinstance(batches, Sequence):
@@ -61,9 +62,14 @@ def iterate_batches[BatchT: TrainableBatch](
                 yield batches[index]
         else:
             emitted = False
-            for batch in batches:
-                emitted = True
-                yield batch
+            source = iter(batches)
+            try:
+                for batch in source:
+                    emitted = True
+                    yield batch
+            finally:
+                if isinstance(source, Closable):
+                    source.close()
             if not emitted:
                 raise ValueError("Training loaders must return a fresh iterator each epoch")
         epoch += 1
@@ -150,46 +156,51 @@ def train_model[BatchT: TrainableBatch](
     # Per-step loss and gradient norm stay on the device; read once, after the last step.
     record = torch.zeros(max_steps, 2, device=device)
     stepper = iterate_batches(batches, seed=seed, shuffle=shuffle)
-    if progress is not None:
-        progress.start(max_steps=max_steps, batches_per_epoch=len(batches), world_size=world_size)
-    for step in range(max_steps):
-        rate = lr_at_step(
-            step, max_steps=max_steps, learning_rate=learning_rate, optimizer=settings
-        )
-        set_schedule_factor(optimizers, rate / learning_rate if learning_rate else 0.0)
-        batch = move_batch_for_execution(next(stepper), device)
-        for opt in optimizers:
-            opt.zero_grad(set_to_none=True)
-        masked_only = not batch.has_supervision
-        training_mode = model.training
-        if masked_only:
-            # No state update includes BatchNorm running statistics, not only
-            # optimizer parameters. Keep a differentiable zero loss in eval mode.
-            model.eval()
-        try:
-            with torch.autocast(
-                device_type=device.type, dtype=compute_dtype, enabled=compute_dtype is not None
-            ):
-                output = model(batch, compute_loss=True)
-        finally:
-            if masked_only:
-                model.train(training_mode)
-        assert output.loss is not None
-        output.loss.backward()
-        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-        if batch.has_supervision:
-            for opt in optimizers:
-                opt.step()
-        record[step, 0] = output.loss.detach()
-        record[step, 1] = norm.detach()
+    try:
         if progress is not None:
-            progress.step(
-                step + 1,
-                loss=record[step, 0],
-                lr=rate,
-                grad_norm=record[step, 1],
-                tokens=real_tokens(batch),
+            progress.start(
+                max_steps=max_steps, batches_per_epoch=len(batches), world_size=world_size
             )
+        for step in range(max_steps):
+            rate = lr_at_step(
+                step, max_steps=max_steps, learning_rate=learning_rate, optimizer=settings
+            )
+            set_schedule_factor(optimizers, rate / learning_rate if learning_rate else 0.0)
+            batch = move_batch_for_execution(next(stepper), device)
+            for opt in optimizers:
+                opt.zero_grad(set_to_none=True)
+            masked_only = not batch.has_supervision
+            training_mode = model.training
+            if masked_only:
+                # No state update includes BatchNorm running statistics, not only
+                # optimizer parameters. Keep a differentiable zero loss in eval mode.
+                model.eval()
+            try:
+                with torch.autocast(
+                    device_type=device.type, dtype=compute_dtype, enabled=compute_dtype is not None
+                ):
+                    output = model(batch, compute_loss=True)
+            finally:
+                if masked_only:
+                    model.train(training_mode)
+            assert output.loss is not None
+            output.loss.backward()
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            if batch.has_supervision:
+                for opt in optimizers:
+                    opt.step()
+            record[step, 0] = output.loss.detach()
+            record[step, 1] = norm.detach()
+            if progress is not None:
+                progress.step(
+                    step + 1,
+                    loss=record[step, 0],
+                    lr=rate,
+                    grad_norm=record[step, 1],
+                    tokens=real_tokens(batch),
+                )
+    finally:
+        stepper.close()
     if progress is not None:
         progress.finish()
     values = record.tolist()
@@ -232,7 +243,7 @@ class Trainer(Protocol):
     def fit(
         self,
         model: nn.Module,
-        batches: Sequence[TrainableBatch],
+        batches: BatchSource[TrainableBatch],
         *,
         max_steps: int,
         learning_rate: float,

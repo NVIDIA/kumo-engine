@@ -31,6 +31,17 @@ def run_command(
             device=device,
             reuse_checkpoint=reuse_checkpoint,
         )
+    if config.data.loader == "kumo_pytorch" and config.data.token_cache is None:
+        from tfm.runtime.native_sequence import run_command as run_native
+
+        return run_native(
+            command,
+            config=config,
+            config_path=config_path,
+            run_dir=run_dir,
+            device=device,
+            reuse_checkpoint=reuse_checkpoint,
+        )
     from tfm.runtime import pipeline
     from tfm.runtime.common import is_primary_process, stage
 

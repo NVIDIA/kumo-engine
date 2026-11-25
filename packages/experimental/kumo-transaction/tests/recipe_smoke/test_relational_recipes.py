@@ -34,8 +34,15 @@ def test_relational_recipe_and_checkpoint_reuse(variant, loader, tmp_path):
     metadata = json.loads((out / "model.manifest.json").read_text())
     assert metadata["schema"]["target_level"] == "entity"
     split = json.loads((out / "split_manifest.json").read_text())
-    assert len(split["anchors"]) == 8
-    assert split["loader"]["name"] == loader
+    if loader == "python":
+        assert len(split["anchors"]) == 8
+        assert split["loader"]["name"] == loader
+    else:
+        import pyarrow.parquet as pq
+
+        assert pq.ParquetFile(out / "anchors.parquet").metadata.num_rows == 8
+        assert sum(split["counts"].values()) == 8
+        assert split["input_loader"]["name"] == loader
     before = dict(np.load(out / "embeddings.npz"))
     # The embedded identity is authoritative and repairs a corrupt sidecar.
     (out / "model.manifest.json").write_text("broken")
@@ -127,7 +134,10 @@ def test_reuse_rejects_same_width_feature_reordering_before_state_installation(
         return replace(loaded, relational=replace(dataset, tables=tables, rows=rows))
 
     monkeypatch.setattr(relational, "load_adapter_events", adapter)
-    config = Path("recipes/relational_inputs/config.graph_smoke.yaml")
+    raw = yaml.safe_load(Path("recipes/relational_inputs/config.graph_smoke.yaml").read_text())
+    raw["data"]["loader"] = "python"
+    config = tmp_path / "python.yaml"
+    config.write_text(yaml.safe_dump(raw))
     out = run_command("train", config_path=config, run_dir=tmp_path / "run", device="cpu")
     reverse = True
 
@@ -155,9 +165,13 @@ def test_explicit_all_negative_entity_labels_remain_valid_for_evaluation(monkeyp
         return replace(loaded, relational=replace(loaded.relational, rows=rows))
 
     monkeypatch.setattr(relational, "load_adapter_events", adapter)
+    raw = yaml.safe_load(Path("recipes/relational_inputs/config.smoke.yaml").read_text())
+    raw["data"]["loader"] = "python"
+    config = tmp_path / "python.yaml"
+    config.write_text(yaml.safe_dump(raw))
     out = run_command(
         "evaluate",
-        config_path=Path("recipes/relational_inputs/config.smoke.yaml"),
+        config_path=config,
         run_dir=tmp_path,
         device="cpu",
     )
@@ -194,9 +208,13 @@ def test_shared_future_batches_group_different_input_cutoffs(monkeypatch, tmp_pa
 
     monkeypatch.setattr(relational, "load_adapter_events", adapter)
     monkeypatch.setattr(GraphSampler, "sample", sample_at_one_clock)
+    values = yaml.safe_load(Path("recipes/relational_inputs/config.future_smoke.yaml").read_text())
+    values["data"]["loader"] = "python"
+    path = tmp_path / "python.yaml"
+    path.write_text(yaml.safe_dump(values))
     run_command(
         "smoke",
-        config_path=Path("recipes/relational_inputs/config.future_smoke.yaml"),
+        config_path=path,
         run_dir=tmp_path,
         device="cpu",
     )
@@ -251,6 +269,7 @@ def test_partial_inference_labels_keep_sample_alignment(monkeypatch, tmp_path):
     replay = tmp_path / "anchors.parquet"
     pq.write_table(pa.Table.from_pylist(anchors), replay)
     values = yaml.safe_load(source.read_text())
+    values["data"]["loader"] = "python"
     values["data"]["relational"]["anchors"] = str(replay)
     values["data"]["relational"]["label_cutoffs"]["predict"] = "2024-01-21"
     path = tmp_path / "infer.yaml"

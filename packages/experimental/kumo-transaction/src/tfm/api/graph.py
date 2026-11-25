@@ -33,6 +33,7 @@ class GraphBuildContext:
     sequence: ProfileEventDecoder | None = None
     target_columns: tuple[str, ...] = ()
     encoder: nn.Module | None = None
+    target_level: Literal["sequence", "entity"] = "sequence"
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ def encoder_from_config(config: RecipeConfig, context: GraphBuildContext) -> GNN
     return GNNEncoderModel(
         context.graph,
         context.target_columns,
-        objective=None if future else Binary(),
+        objective=None if future else Binary(target_level=context.target_level),
         head=task_head(config.model.composition.granularity.task_head, context.graph.hidden_size)
         if not future
         else None,
@@ -150,6 +151,7 @@ def hybrid_from_config(config: RecipeConfig, context: GraphBuildContext) -> GNNS
         ),
         position=position,
         head=task_head(gran.task_head, context.sequence.hidden_size),
+        target_level=context.target_level,
     )
 
 

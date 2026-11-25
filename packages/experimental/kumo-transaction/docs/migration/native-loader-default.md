@@ -1,135 +1,183 @@
-# Kumo Engine as the recipe loader default
+# Source-table native recipe loading
 
 Sequence, graph and hybrid recipes default to Kumo Engine's experimental
-PyTorch/DiskGraph loader, `data.loader: kumo_pytorch`. This is an integration
-choice, not a claim that it is faster or uses less memory for every workload.
-The Python reference loader remains available:
+PyTorch/DiskGraph loader, `data.loader: kumo_pytorch`. The native recipe path is:
+
+```text
+source tables and explicit schema
+  → source validation and DiskGraph index
+  → generated or supplied AnchorTable
+  → continuous native iterator with train-fitted feature encoders
+  → owned, prefetched CPU tensor adapter
+  → model / trainer
+```
+
+An anchor identifies a prediction sample, its root and its cutoff. Repeated
+roots at different cutoffs remain different samples. Labels and their
+availability clocks travel separately from input features.
+
+The Python reference implementation is an explicit alternative:
 
 ```yaml
 data:
   loader: python
 ```
 
-Copy the recipe configuration, set that field, and pass its path with
-`tfm <stage> --recipe <slug> --config <path>`. Loader selection is independent
-of model architecture and tokenizer. Existing direct library history helpers
-keep their Python defaults; recipe runners pass the resolved setting explicitly.
-There is no automatic fallback if native dependencies or schema capabilities
-are unavailable.
+Copy a recipe configuration, set that field, and pass the copy with
+`tfm <stage> --recipe <slug> --config <path>`. There is no automatic fallback
+when the native runtime or a required schema capability is unavailable.
 
-## Install and migrate
+## Install and run
 
-From `packages/experimental/kumo-transaction`, install the native loader for
-sequence recipes:
+Start in the Transaction package directory:
 
 ```bash
+cd packages/experimental/kumo-transaction
 uv sync --frozen --extra dev --extra native
 uv run --no-sync tfm smoke --recipe blueprint_v1
+uv run --no-sync tfm smoke --recipe blueprint_v2
 ```
 
-Graph and hybrid models also need `--extra kumo`. The lockfile pins matching
-Kumo Engine source packages at
-`5c3a22cacc43e8de99531693e3b6612f0b34d637`, including the unpublished
-`kumo-pytorch` package and DiskGraph runtime. Install rustup, a C/C++ compiler
+Graph and hybrid computation also require `--extra kumo`:
+
+```bash
+cd packages/experimental/kumo-transaction
+uv sync --frozen --extra dev --extra native --extra kumo
+uv run --no-sync tfm smoke --recipe gnn_encoder
+uv run --no-sync tfm smoke --recipe gnn_sequence
+```
+
+The lockfile pins matching Kumo Engine packages, including the unpublished
+`kumo-pytorch` package and DiskGraph runtime, at
+`5c3a22cacc43e8de99531693e3b6612f0b34d637`. Install rustup, a C/C++ compiler
 and Linux build tools first. A cold native build can take tens of minutes.
 Do not install the older published `kumo-engine==1.0.1` bundle over these
-packages: it also owns the `diskgraph` namespace. The GNN uses the matching
-`kumo-core` source package.
+packages: it also owns the `diskgraph` namespace.
 
-Sequence runs explicitly selecting Python need no native extra. Their
-preparation is performed by the runner; users do not need to hand-build
-sequences. Keep `data.loader: python` in a copied configuration to reproduce
-the prior loader choice. Changing the resolved loader changes checkpoint
-identity: use a new run directory rather than reusing a managed checkpoint
-under a different configuration.
+The standalone [worked loader example](../../examples/kumo-engine/README.md)
+also accepts an existing completed index through `--index`. The canonical
+recipe CLI owns temporary source indexes for its run and persists replay
+anchors and fitted native encoders with its checkpoint.
 
-A configured token cache retains its existing batch builder. Packing retains
-the existing packer over histories from the selected loader. Neither setting
-changes the tokenizer or fits native vocabularies. Native training collation
-pads within each minibatch rather than retaining a whole-corpus padding width;
-valid tokens, masks and labels retain their meaning. Fresh training trajectories
-need not be bitwise identical across loaders.
+## What changes
 
-## Materialization, memory and preparation
+The native path indexes source rows, rather than a prepared copy of every
+requested window. Built-in map-valued books receive a bounded scalar Parquet
+projection. Custom adapters can supply scalar tables directly through their
+`table_source` hook. Keys, relationships, clocks and feature allowlists belong
+in that declaration; the recipe chooses the root, history paths and task.
+See the [relational input contract](../contracts/relational-inputs.md) and
+[shared recipe](../../recipes/relational_inputs/README.md).
 
-A label or prediction anchor identifies a sample at a particular cutoff; label
-values never become input features. Many anchors for the same entity can have
-overlapping histories or neighborhoods. Materializing all of those inputs can
-duplicate substantial data even when the underlying source tables are modest.
+Native encoders fit on the selected training anchors. Their fitted vocabulary,
+bucket boundaries, field IDs and shared token namespace are persisted and
+checked on checkpoint reuse. Native IDs need not match a Python tokenizer's
+IDs. **Use a new run directory when changing loaders.** Checkpoints and
+preprocessing artifacts from the former prepared-window implementation are
+not interchangeable with source-native runs.
 
-| Concern | Python reference path | Kumo Engine path |
+A training epoch opens a continuous native iterator, rather than reopening it
+for each requested batch index. Native seed and epoch control anchor shuffling.
+FutureSubgraph's distinct temporal training stages have one iterator per stage
+and epoch, preserving the shared-graph requirement that one batch has a single
+cutoff. A producer adapts one owned CPU lookahead batch while the consumer runs
+the model. It closes on completion, early stopping or error, before index
+resources are released.
+
+The tensor adapter consumes delivered features, masks and clocks directly. It
+does not look up Python events or invoke a Python tokenizer during model
+batching. Native graph deliveries still pass the graph contracts, including
+temporal validation, duplicate rejection, sample alignment and mutation guards.
+CPU validation metadata remains separate from the tensors needed for execution.
+
+Undated profile attributes retain their static contract. Dated milestones are
+retrieved separately at the prediction cutoff and carry their own ages. They
+are independent of transaction history truncation; the native profile stream
+keeps the first 64 chronological dated facts. Native flat financial inputs use
+the existing fixed scalar feature definitions and native vocabulary delivery.
+Their nonoverlapping pretraining groups add one fixed FK per original source
+event, rather than copying events for each requested history.
+
+## Preparation and memory tradeoffs
+
+| Concern | Python reference path | Source-native recipe path |
 |---|---|---|
-| Retrieval | Select histories and sample neighborhoods with in-process reference code | Retrieve historical rows or graph candidates through a native index |
-| Preparation | Validate source data, fit train-only encoders and construct reference batches/caches | Validate data, fit train-only encoders and additionally build/open native indexes |
-| Repeated sequence use | Eager sequence recipes can reuse already-collated tensors; explicit token caches have their own preparation/storage costs | Native sequence training retrieves and collates each indexed minibatch; repeated tokenization can add CPU work |
-| Graphs | Samples neighborhoods on demand, but canonical graph runners retain prepared batch lists | Uses native sampling, but those runners still retain prepared graph batches; switching the backend alone does not remove them |
-| Small inputs | Avoids native build/index setup | Native setup and conversion overhead can dominate |
+| Source ingestion | Constructs an in-process event corpus | Scans and validates file-backed scalar source tables in bounded blocks |
+| Feature preparation | Fits the selected Python tokenizer on training histories | Fits native feature encoders on training anchors |
+| Sequence training | Prepares histories and tensors, or uses an explicitly prepared token cache | Retrieves and encodes requested source histories per native batch |
+| Graph training | Canonical reference runners retain prepared sampled batch lists | Retrieves neighborhoods per batch; does not retain a split of input graphs |
+| CPU/GPU overlap | Depends on the caller/cache pipeline | One owned adapted CPU lookahead batch, plus native retrieval buffering |
+| Repeated epochs | Can amortize eager preparation and token-cache work | Repeats retrieval and tensor adaptation; retains fitted encoders and index state |
 
-On-demand materialization can bound the **derived input working set** to active
-and prefetched batches instead of retaining every padded sequence or sampled
-subgraph. This can be valuable with many label timestamps, long histories,
-multiple paths, or deep/high-fanout neighborhoods. The Python graph sampler
-also constructs individual neighborhoods on demand; this technique is not
-exclusive to a particular backend.
+On-demand loading bounds the **derived model-input working set** to active and
+prefetched batches instead of every padded history or sampled neighborhood.
+This matters when many prediction timestamps reuse overlapping source rows,
+especially for deep, wide neighborhoods, and also for repeated sequence
+histories. The Python graph sampler can sample one neighborhood at a time too;
+it is retention by the caller that determines whether those graphs accumulate.
 
-Both paths still pay for source ingestion, validation, feature fitting and
-indexes or caches. Precomputing more inputs spends time, memory and storage
-up front and can amortize that work over repeated epochs. Computing inputs
-per minibatch reduces retention only when callers release them, and can repeat
-retrieval, tokenization and collation work each epoch. Large fanout/depth or
-aggressive prefetch can exhaust memory even with on-demand loading; bound batch
-size, history length, neighborhoods and retained caches.
+Both approaches pay preparation costs. Native validation, scalar projection,
+key/FK normalization, train-only fitting and index construction take time and
+disk space. Python histories, sampled graphs and token caches also cost time,
+memory and storage to prepare. Precomputing inputs can amortize repeated work
+when the materialized corpus fits the available resources.
 
-**Current limit:** these reference runners import a bounded Python object
-corpus for validation, tokenization, targets and probes. Native indexed windows
-can duplicate event occurrences across anchors, and graph runners still eagerly
-retain batches. A disk-backed retrieval backend alone does not make this pipeline
-out of core. Do not infer unlimited dataset capacity or a measured memory,
-preparation-time or throughput advantage from the default selection. Full-book
-streaming requires a separate ingestion/encoding/batching integration.
+This is not an unlimited-memory or performance guarantee. Source indexes,
+anchor metadata, the model, optimizer, target vectors, and derived evaluation
+arrays still consume resources. FutureSubgraph builds a separate disk-backed
+cache of compact future target vectors. Optional hand-engineered reference
+baselines make bounded Python history reads **after** model inference; those
+reads do not feed model training or tokenization. Embedding and baseline feature
+matrices remain proportional to the number of scored samples. Large individual
+batches, fanout, depth or prefetch queues can still exhaust memory.
 
-## Temporal and backend compatibility
+No throughput, preparation-time, memory or quality advantage is claimed merely
+from selecting a native backend. Small inputs and repeated short runs can favor
+the Python path because native index setup is additional work.
 
-Native anchors bind sample ID, owner and cutoff independently; repeated owners
-remain distinct samples. Sequence selection preserves inclusive observation
-starts, microsecond cutoffs and tied-event order before the existing tokenizer.
-Train-only fitting, label availability, masks and explicit window membership
-remain authoritative.
+## Supported boundaries
 
-Native training indexes each declared window independently and reads its exact
-members, including repeated event IDs and tied timestamps. One physical anchor
-stage serves indexed minibatches through positional sharding; the final batch
-discards only explicitly added selection padding. This window index is still
-bounded and does not eliminate source/window preparation.
+All loader paths preserve explicit label windows and availability. A missing
+binary label source is rejected, and non-finite per-event amounts remain
+missing values. Source-native training requires a finite amount on an eligible
+training event. Historical inputs and future-window targets remain separate.
+Legacy timestamped-outcome probes make label-free native history requests and
+join their external outcomes after embedding extraction. Their pretraining-cutoff
+exclusions and separate task identities remain intact; no input-time label
+availability clock is invented for a legacy outcome row.
 
-The legacy event-adapter native graph sampler requires static user roots,
-whole-second event/cutoff clocks, one-parent user-to-event FK roles,
-event-time availability and no explicit observation-start bound. Native recent
-fanout ties follow index order, which can differ from Python primary-key order.
-Select Python explicitly for sources outside that native contract. Native
-inputs pass through the backend-neutral graph validation and ownership checks.
-FutureSubgraph targets remain a separate Python reference traversal and never
-enter historical inputs.
+The pinned native runtime requires whole-second UTC event and cutoff clocks.
+A sequence path needs equivalent event and availability clocks. A fixed forward
+projection through timed intermediates is supported only when every row and
+link along the ownership path was observable by the terminal event time.
+Versioned ownership, late-known projections and unsupported reverse/fan-in
+intermediate paths fail before training with the affected rule.
 
-The [shared relational recipe](../../recipes/relational_inputs/README.md)
-provides one table/key/relationship/clock/allowlist declaration for sequence,
-GNN and hybrid, with generated or supplied anchors. Its fixed-FK native graph
-path supports timed intermediates, both FK directions, exact cutoff snapshots
-and canonical fanout ties by retrieving complete eligible candidate sets before
-capping. Physical reads can therefore exceed logical fanout. Numeric graph
-features are supported; versioned graph topology and categorical/text graph
-features fail explicitly. Sequence histories support point-in-time ownership
-traversal. See the [input contract](../contracts/relational-inputs.md) and
-[worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes).
+Graph hops follow the types reached by the preceding hop, in either FK
+direction. Unsupported independent availability/ranking clocks are rejected
+when fanout could truncate eligible candidates. Native recent ties follow
+index order. A task requiring canonical primary-key ties is refused when that
+order cannot be guaranteed at a capped boundary. Explicit graph lookbacks are
+accepted only when source coverage proves the lower bound immaterial; otherwise
+select the Python reference path. These checks prevent silently changing
+ownership, availability or fanout semantics.
 
-## Comparing loaders for a workload
+The source-native CLI currently supports single-process training. DDP's
+single-process eager behavior accepts a native stream; distributed native
+padding/loss handling and FSDP streaming are not yet supported. Native packing,
+KVT pretraining-window groups, spliced task generation, fine-tuning and surprise
+extensions need their existing explicit Python/token-cache workflow. Unsupported
+combinations are rejected. A configured token cache keeps its existing cache
+builder and fitted tokenizer; it is a separate prepared-input workflow, not
+source-native encoding.
 
-Compare identical inputs/anchors, clocks, model, optimizer, seed, precision,
-batch sizes, optimizer-step counts and hardware. Verify temporal correctness
-and input/output alignment; account for different graph fanout tie policies.
-Report preparation/index time, input-to-first-batch time, steady training
-throughput, total wall time and peak host/device memory. Include preprocessing,
-collation, targets, evaluation and artifact writes consistently. Separate
-fresh-index construction from index reuse, synchronize device work at timing
-boundaries and repeat runs. Different early-stopping epoch counts are different
-amounts of work. Select the backend and cache strategy that fit the workload.
+## Compare loaders for your workload
+
+Match inputs/anchors, clock and tie rules, model, optimizer, seed, precision,
+batch size, optimizer-step count and hardware. Verify sample/label alignment.
+Measure source preparation/index time, input-to-first-batch time, steady training
+throughput, total wall time and peak host/device memory. Account for target
+construction, evaluation and artifact writes consistently. Separate fresh-index
+construction from index reuse, synchronize device work at timing boundaries,
+and repeat runs. Different early-stopping epoch counts are different amounts of
+work.

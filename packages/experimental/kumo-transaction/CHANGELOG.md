@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replace canonical native recipes' prepared-window/indexed-batch path with
+  source-table DiskGraph indexes, train-fitted native encoders, continuous
+  seed/epoch iterators and owned CPU tensor prefetch. Stream graph and hybrid
+  batches instead of retaining split-wide graph lists. Preserve explicit Python
+  and token-cache workflows; document native limits and checkpoint migration.
+
 - Bind managed model identity to ordered features; retain known-negative labels
   and aligned unknown-label inference masks. Validate FK columns and split
   separation, constrain graph window exemptions and group shared future batches
@@ -18,7 +24,7 @@
 
 - Preserve the advanced native example’s completed-index reuse (`--index`) and print its index path; validate reuse with source tables offline. Cache native graph edge clocks once per sampler.
 
-- Make the pinned experimental Kumo PyTorch/DiskGraph integration the default for sequence, graph and hybrid recipe loading. Keep explicit `data.loader: python` reference selection and document preparation/materialization tradeoffs without a speed or out-of-core claim; preserve existing tokenizers and separate FutureSubgraph targets. Add native graph/hybrid wiring, installation/migration guidance and executable integration checks.
+- Make the pinned experimental Kumo PyTorch/DiskGraph integration the default for sequence, graph and hybrid recipe loading. Keep explicit `data.loader: python` reference selection and document preparation/materialization tradeoffs without an unmeasured speed or memory claim; keep separate FutureSubgraph targets. Add native graph/hybrid wiring, installation/migration guidance and executable integration checks.
 
 ## 2.0.0a4
 

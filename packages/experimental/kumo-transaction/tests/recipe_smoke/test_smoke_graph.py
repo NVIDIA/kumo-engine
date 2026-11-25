@@ -39,7 +39,7 @@ def test_graph_recipe_complete_and_reusable(
     assert {"sequence_supervised_embedding", "sequence_supervised_task_head"} <= set(metrics)
     identity = json.loads((out / "checkpoint_manifest.json").read_text())
     assert identity["architecture"] == name
-    assert identity["format"] == "tfm.graph-experiment.v1"
+    assert identity["format"] == "tfm.source-native-experiment.v1"
     assert identity["graph_objective"] == mode
     assert identity["hop_trimming"] is True
     assert identity["sequence_attention"] == "sdpa"
@@ -47,15 +47,21 @@ def test_graph_recipe_complete_and_reusable(
     if mode == "binary" or name == "gnn_sequence":
         assert "task_head" in metrics
     assert identity["kumo_engine_version"]
-    assert identity["split"]["training_graphs"] == sharing
-    assert identity["split"]["validation_graphs"] == "disjoint"
-    assert identity["stages"]["graph"]["best_step"] > 0
+    stage = "graph_binary" if mode == "binary" else "future_subgraph"
+    assert identity["stages"][stage]["best_step"] > 0
     splits = json.loads((out / "split_manifest.json").read_text())
     assert splits["input_loader"]["name"] == "kumo_pytorch"
     assert splits["input_loader"]["target_builder"] == "python_reference"
-    assert set(splits["ssl_train_owners"]).isdisjoint(splits["ssl_validation_owners"])
-    owners = splits["probe_owners"]
-    assert set(owners["train"]).isdisjoint(owners["test"])
+    import pyarrow.parquet as pq
+
+    anchors = pq.read_table(out / "anchors.parquet").to_pylist()
+    groups = {
+        side: {row["id"] for row in anchors if row["split"] == side}
+        for side in ("train", "test", "future_validation")
+    }
+    ssl = {row["id"] for row in anchors if row["split"].startswith("future_train_")}
+    assert groups["train"].isdisjoint(groups["test"])
+    assert ssl.isdisjoint(groups["future_validation"])
     original = dict(np.load(out / "embeddings.npz"))
     run_command("evaluate", config_path=config, run_dir=out, device="cpu", reuse_checkpoint=True)
     for key, values in dict(np.load(out / "embeddings.npz")).items():

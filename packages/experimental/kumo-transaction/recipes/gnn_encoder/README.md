@@ -17,7 +17,7 @@ model. The [data contract](../../docs/concepts/data-contract.md) defines graph c
 The optional `kumo` extra supplies the actual Engine implementation. The default
 input sampler uses DiskGraph through `from_kumo_graph`; the Python sampler
 remains an explicit correctness control. Future targets use a separate Python
-reference pass. See the [native guide](../../examples/kumo-engine/README.md#graphs-and-hybrid-histories)
+reference pass. See the [native guide](../../examples/kumo-engine/README.md#source-native-sequence-graph-and-hybrid-inputs)
 for the supported schema, clock limits and tie policy.
 
 ## Task and data assumptions
@@ -284,6 +284,7 @@ Kumo Engine's experimental PyTorch/DiskGraph loader is the default
 `--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
 provides setup, commands and temporal/schema limits. Set `data.loader: python`
 in a copied configuration to use the reference loader. Both retain preparation
-costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
-The current runners still ingest bounded object corpora, so this default does
-not establish out-of-core training or a universal speed/memory advantage.
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native CLI streams source-table feature tensors and retains active/prefetched
+model batches. Source validation, index preparation, targets and evaluation arrays
+still have costs; see the guide's explicit capability and checkpoint limits.

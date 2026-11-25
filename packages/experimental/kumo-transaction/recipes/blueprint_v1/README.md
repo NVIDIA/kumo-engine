@@ -208,6 +208,10 @@ files, `label_delay`, and the tokenizer's fields; a run refuses a cache built
 for anything else. `tfm report` without `--reuse-checkpoint` also works on N
 GPUs, but then every rank loads events first.
 
+The source-native, no-cache CLI currently supports one process. For distributed
+training, use a compatible prepared cache or explicitly select `data.loader: python`
+in a local configuration.
+
 `config.multi_gpu.yaml` shards parameters across GPUs with `fsdp2` instead. It
 requires CUDA, `model.backbone: huggingface`, and `training.precision: bf16`,
 and raises rather than training eager. Each rank prepares data independently,
@@ -269,6 +273,7 @@ Kumo Engine's experimental PyTorch/DiskGraph loader is the default
 `--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
 provides setup, commands and temporal/schema limits. Set `data.loader: python`
 in a copied configuration to use the reference loader. Both retain preparation
-costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
-The current runners still ingest bounded object corpora, so this default does
-not establish out-of-core training or a universal speed/memory advantage.
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native CLI streams source-table feature tensors and retains active/prefetched
+model batches. Source validation, index preparation, targets and evaluation arrays
+still have costs; see the guide's explicit capability and checkpoint limits.

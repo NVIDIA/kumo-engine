@@ -256,22 +256,21 @@ convention without changing stored amounts or graph missing-value masks.
 
 ## Native recipe loading
 
-The default `data.loader: kumo_pytorch` uses the pinned main-source Kumo API.
-Select `data.loader: python` explicitly for reference retrieval. Both retain
-preparation costs and bounded in-memory ingestion; see the
-[loader tradeoffs](../migration/native-loader-default.md#materialization-memory-and-preparation).
-Native anchors bind sample ID, owner and cutoff independently; repeated owners
-remain distinct prediction samples. Sequence row IDs resolve only to validated
-source records. Exact residual filtering preserves inclusive lower bounds and
-microsecond cutoffs before tokenization. Existing train-only tokenizer fits,
-label availability and window membership remain authoritative.
+The default `data.loader: kumo_pytorch` uses source-table native recipe streams
+with the pinned Kumo API. Select `data.loader: python` for the object-based
+reference path. Both retain preparation costs; see the
+[loader tradeoffs](../migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+Native encoders fit selected training anchors and deliver tensors without
+Python event reconstruction or tokenization during model batching. Continuous
+seed/epoch iterators retain active/prefetched inputs, not whole-split model
+batches. Optional hand-engineered reference baselines read one history at a time
+after native model inference.
 
-The legacy event-adapter native graph sampler requires whole-second clocks, static user roots,
-one-parent event/transfer FK roles and event-time availability. It copies native
-tensors, validates disjoint ownership and temporal bounds, and then optionally
-unions same-cutoff samples for shared training. Native recent-fanout ties use
-index order rather than the Python primary-key policy. FutureSubgraph targets
-still use a separate Python reference pass. See the
+Source-native clocks must be whole-second UTC timestamps. Unsupported ownership,
+independent history availability, canonical capped ties and per-hop lookbacks
+are rejected before training. Historical inputs, labels and future target
+vectors remain separate. Old object-based native helpers remain available to
+library callers but are not the source-native recipe pipeline. See the
 [worked guide](../../examples/kumo-engine/README.md#canonical-recipes) and
 [migration notes](../migration/native-loader-default.md).
 
@@ -286,9 +285,8 @@ The opt-in shared relational declaration has a separate
 [contract and worked recipe](../contracts/relational-inputs.md). It preserves
 row/link observation clocks through timed intermediate tables, generates or
 replays complete prediction anchors and identifies entity labels explicitly.
-Its native fixed-FK graph path filters cutoff snapshots before candidate
-retrieval and canonical fanout, with structural rows exempt from activity-window
-lower bounds while retaining real availability clocks. It overfetches candidates
-for deterministic ties and makes no performance claim. Unsupported projections
-fail before fitting or training; these limits differ from the legacy user/event
-adapter above.
+Its native source-table path checks backend capabilities before feature fitting
+or training, and streams neighborhoods and encoded histories at the same
+anchors. The Python implementation retains the broader point-in-time traversal
+contract. Unsupported native projections identify their path and rule; native
+selection alone makes no performance claim.

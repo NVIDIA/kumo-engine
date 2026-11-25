@@ -7,7 +7,7 @@ tracked in [docs/reference/roadmap.md](docs/reference/roadmap.md).
 ## Setup
 
 Default recipes require the native source integration. Install rustup and
-C/C++ build tools first; see the [loader installation guide](docs/migration/native-loader-default.md#install-and-migrate).
+C/C++ build tools first; see the [loader installation guide](docs/migration/native-loader-default.md#install-and-run).
 
 ```bash
 uv sync --extra native --extra dev

@@ -309,13 +309,16 @@ that presence. Missing amounts on individual events remain supported.
 `data.loader` defaults to `kumo_pytorch` for sequence, graph and hybrid recipes.
 Set `python` explicitly for reference retrieval. Native dependencies are required
 unless a configured cache bypasses history retrieval; there is no automatic fallback. A configured
-token cache retains its batch builder; packing retains the packer over the selected
-histories. See the [migration guide](../migration/native-loader-default.md) for
+token cache retains its existing prepared-batch workflow. Without a cache, native
+recipes stream source-table tensors and use fitted native encoders; native packing
+is currently unsupported and raises before training. See the [migration guide](../migration/native-loader-default.md) for
 source build requirements and graph schema/clock limitations.
 
 ## Shared relational tasks
 
-`data.relational` selects the adapter's bounded `RelationalDataset` declaration.
+`data.relational` selects the adapter's declaration: a file-backed `TableSource`
+from `table_source` for native loading, or a bounded `RelationalDataset` for the
+explicit Python reference path.
 It declares `root`, named `history_paths`, cutoff- or label-generated anchors,
 and optional replay `anchors`. `labels` declares the separate entity-level binary
 source, horizon, delay and split fitting cutoffs. Labels-role tables never become

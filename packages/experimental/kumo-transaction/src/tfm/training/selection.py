@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import copy
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import torch
@@ -21,14 +21,20 @@ from tfm.contracts.graph import (
     SequenceSupervisedBatch,
 )
 from tfm.contracts.kvt import KeyValueTimeBatch
+from tfm.contracts.resources import Closable
 from tfm.objectives.next_event_fields import next_event_targets
 from tfm.training.progress import TrainingProgress
-from tfm.training.trainer import TrainableBatch, build_trainer, move_batch_for_execution
+from tfm.training.trainer import (
+    BatchSource,
+    TrainableBatch,
+    build_trainer,
+    move_batch_for_execution,
+)
 
 
 @torch.no_grad()
 def validation_loss(
-    model: nn.Module, batches: Sequence[TrainableBatch], device: torch.device
+    model: nn.Module, batches: BatchSource[TrainableBatch], device: torch.device
 ) -> float:
     """Weight future entries, binary samples, or next-event target tokens.
 
@@ -38,8 +44,9 @@ def validation_loss(
     training = model.training
     model.eval()
     total, count = 0.0, 0
+    source = iter(batches)
     try:
-        for original in batches:
+        for original in source:
             if (
                 isinstance(original, (GraphTrainingBatch, GraphHistoryBatch, GraphSupervisedBatch))
                 and original.graph.sharing != "disjoint"
@@ -64,6 +71,8 @@ def validation_loss(
             total += float(output.loss) * weight
             count += weight
     finally:
+        if isinstance(source, Closable):
+            source.close()
         model.train(training)
     if not count:
         raise ValueError("Validation split has no valid target entries")
@@ -74,7 +83,7 @@ class _SelectionProgress(TrainingProgress):
     def __init__(
         self,
         model: nn.Module,
-        batches: Sequence[TrainableBatch],
+        batches: BatchSource[TrainableBatch],
         device: torch.device,
         *,
         log_every: int | None = None,
@@ -97,10 +106,31 @@ class _SelectionProgress(TrainingProgress):
             self.best_state = copy.deepcopy(self.model.state_dict())
 
 
+class _ObservedBatches:
+    """Observe supervision during streaming, without consuming a fitting epoch."""
+
+    def __init__(self, batches: BatchSource[TrainableBatch]) -> None:
+        self.batches = batches
+        self.supervised = False
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
+    def __iter__(self) -> Iterator[TrainableBatch]:
+        source = iter(self.batches)
+        try:
+            for batch in source:
+                self.supervised |= batch.has_supervision
+                yield batch
+        finally:
+            if isinstance(source, Closable):
+                source.close()
+
+
 def fit_selected(
     model: nn.Module,
-    train: Sequence[TrainableBatch],
-    validation: Sequence[TrainableBatch],
+    train: BatchSource[TrainableBatch],
+    validation: BatchSource[TrainableBatch],
     settings: TrainingConfig,
     *,
     seed: int,
@@ -113,21 +143,24 @@ def fit_selected(
     """
     if settings.backend != "eager" or settings.packing or settings.max_steps < 1:
         raise ValueError("Graph stages currently require eager, unpacked, positive-step training")
-    if not any(batch.has_supervision for batch in train):
+    if isinstance(train, Sequence) and not any(batch.has_supervision for batch in train):
         raise ValueError("Training split has no valid target entries")
+    observed = None if isinstance(train, Sequence) else _ObservedBatches(train)
     progress = _SelectionProgress(model, validation, device, log_every=settings.log_every)
     stats = build_trainer("eager").fit(
         model,
-        train,
+        train if observed is None else observed,
         max_steps=settings.max_steps,
         learning_rate=settings.learning_rate,
         seed=seed,
         device=device,
         optimizer=settings.optimizer,
-        shuffle=settings.shuffle,
+        shuffle=settings.shuffle if isinstance(train, Sequence) else False,
         precision=settings.precision,
         progress=progress,
     )
+    if observed is not None and not observed.supervised:
+        raise ValueError("Training split has no valid target entries")
     if progress.best_state is None:
         raise ValueError("No validation checkpoint selected")
     model.load_state_dict(progress.best_state)

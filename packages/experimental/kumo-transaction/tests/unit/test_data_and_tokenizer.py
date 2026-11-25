@@ -253,3 +253,26 @@ def test_percentile_edges_from_counts_match_repeated_readings(seed: int) -> None
     want = PercentileBinner(buckets).fit(np.repeat(values, counts)).edges
     got = PercentileBinner(buckets).fit(values, counts).edges
     assert want.tobytes() == got.tobytes()
+
+
+def test_financial_projection_preserves_custom_merchant_key_hook():
+    from datetime import UTC, datetime
+
+    from tfm.contracts.schema import TransactionEvent
+    from tfm.features.tokenizers.financial import TransactionFieldTokenizer, _stable_hash
+
+    class CustomMerchant(TransactionFieldTokenizer):
+        @staticmethod
+        def merchant_key(event):
+            return "CUSTOM MERCHANT"
+
+    tokenizer = CustomMerchant(fields=("MERCH",))
+    event = TransactionEvent(
+        entity_id="owner",
+        event_id="event",
+        event_timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        categorical={"merchant_name": "other"},
+    )
+    assert tokenizer.event_tokens(event) == [
+        f"MERCH_{_stable_hash('CUSTOM MERCHANT', tokenizer.merchant_hash_size)}"
+    ]

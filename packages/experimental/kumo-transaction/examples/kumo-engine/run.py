@@ -8,8 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,56 +20,12 @@ from kumo.pytorch import api
 from contract import make_anchors, make_contract, make_dataset
 from tfm.api.builders import profile_event_decoder_from_config
 from tfm.config import load_recipe_config
-from tfm.contracts.kvt import KeyValueTimeBatch
+from tfm.data.native_batches import NativeBatches
 from tfm.data.splits.temporal import parse_timestamp
 from tfm.training import EagerTrainer, seed_everything
 from tfm.training.progress import TrainingProgress
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-class KumoBatches:
-    """Let Kumo order native anchor batches; prefetch one adapted CPU batch."""
-
-    def __init__(
-        self,
-        task: api.Task,
-        adapter: KumoToKVT,
-        worker: ThreadPoolExecutor,
-        batch_size: int,
-        seed: int,
-        shuffle: bool,
-    ) -> None:
-        self.task, self.adapter, self.worker = task, adapter, worker
-        self.batch_size, self.seed, self.shuffle = batch_size, seed, shuffle
-        self.samples, self.epoch = task.count("train"), 0
-
-    def __len__(self) -> int:
-        return (self.samples + self.batch_size - 1) // self.batch_size
-
-    def __iter__(self) -> Iterator[KeyValueTimeBatch]:
-        source = iter(
-            self.task.batches(
-                split="train",
-                batch_size=self.batch_size,
-                seed=self.seed,
-                epoch=self.epoch,
-                shuffle=self.shuffle,
-                drop_last=False,
-                output_format="model",
-            )
-        )
-        self.epoch += 1
-
-        def fetch() -> KeyValueTimeBatch | None:
-            batch = next(source, None)
-            return None if batch is None else self.adapter(batch)
-
-        pending = self.worker.submit(fetch)
-        while (batch := pending.result()) is not None:
-            # Build the next CPU batch while the trainer processes this one.
-            pending = self.worker.submit(fetch)
-            yield batch
 
 
 def main() -> None:
@@ -117,14 +71,14 @@ def main() -> None:
         task = stack.enter_context(plan.materialize(anchors, fit_split="train"))
         adapter = KumoToKVT(task)
         # Close the producer before the task/index, including when training fails.
-        worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
-        batches = KumoBatches(
-            task,
-            adapter,
-            worker,
-            config.training.batch_size,
-            config.seed,
-            config.training.shuffle,
+        batches = stack.enter_context(
+            NativeBatches(
+                task,
+                adapter,
+                batch_size=config.training.batch_size,
+                seed=config.seed,
+                shuffle=config.training.shuffle,
+            )
         )
         model = profile_event_decoder_from_config(config, vocab_size=adapter.vocab_size)
         # Preserve the configured learning-rate schedule when overriding duration.

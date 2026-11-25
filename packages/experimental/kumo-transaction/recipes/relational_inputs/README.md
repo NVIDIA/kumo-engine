@@ -37,19 +37,20 @@ A reuse request validates embedded metadata before loading any state.
 
 Kumo Engine is the default (`data.loader: kumo_pytorch`). To use the Python
 reference path, copy a config, set `data.loader: python`, and pass its path with
-`--config`. See [preparation and memory tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
-The native graph
-reference implementation filters row/link availability into cutoff snapshots,
-retrieves complete one-hop candidate sets, and applies canonical recent fanout.
-Logical fanout is ten per frontier and directed role; physical candidate reads
-can be larger. This ensures exact boundary ties, and is not an efficiency claim.
-Snapshots and prepared plans close when the command exits.
+`--config`. See [preparation and memory tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native runner indexes source tables once, fits native feature encoders on
+training anchors and streams owned model-ready tensors. It keeps one adapted
+CPU lookahead batch and no split-wide input graph list. Native seed and epoch
+control sample ordering. Resources close after producers finish or stop early.
 
 ## Adapting another dataset
 
-Return `AdapterResult(relational=RelationalDataset(...))` from an adapter selected
-by `data.adapter`. Declare tables, composite keys, explicit clocks, feature
-allowlists, FK roles and label-only tables once. Configure `data.relational.root`,
+Register a `table_source` factory on an adapter selected by `data.adapter`.
+Return `TableSource(tables=..., relationships=..., files=...)`: scalar Parquet
+files plus one declaration of tables, keys, clocks, feature allowlists, FK roles
+and label-only tables. The source hook does not construct Python event objects.
+The same schema can also back a Python adapter returning
+`AdapterResult(relational=RelationalDataset(...))` for the reference path. Configure `data.relational.root`,
 `history_paths`, and either label timestamps or cutoff-generated anchors. A
 Parquet `anchors` table is optional for exact replay and custom predictions in a
 new run. Checkpoint reuse requires the identical complete anchor table, including
@@ -68,19 +69,28 @@ mode allocates no graph and transfers only history inputs.
 
 ## Limitations
 
-Inputs and projected histories are bounded in memory. Native sequence projection
-can duplicate events across anchors; native graph retrieval deliberately
-overfetches candidates for deterministic ties. Graph features currently support
-numeric allowlists with presence masks and bias-only identity tables; declared
-categorical/text graph inputs are rejected. Versioned ownership is resolved by
-point-in-time history traversal, but graph projection rejects it explicitly.
-Unsupported rules name their affected path before fitting or training.
+Native ingestion scans scalar source tables in bounded blocks; native model
+inputs are retrieved and adapted per batch. Fixed projections through timed
+intermediates preserve one terminal row per source path, not one copy per
+anchor. The pinned backend requires whole-second UTC clocks, equivalent event
+and availability clocks for histories, and fixed ownership observable by event
+time for projected paths. Multiple paths to the same history terminal,
+versioned ownership and unsupported timed fan-in/reverse projections are
+rejected. The Python reference retains the broader data-contract traversal.
+
+Graph features support numeric allowlists with missing-value masks. Native
+fanout is applied at each reached table type and directed FK role. Independent
+ranking/availability clocks, meaningful per-hop lookbacks and canonical capped
+ties are refused when the backend cannot preserve the requested rule. The
+[migration guide](../../docs/migration/native-loader-default.md#supported-boundaries)
+describes these fail-before-training checks. A six-hop/fanout-ten configuration
+does not imply support for every possible schema or clock policy.
 
 The shared runner currently accepts the profile/event decoder, GNN and hybrid,
-with single-process eager training. Other sequence compositions retain their
-existing event-adapter loading paths. This example does not establish full-book
-streaming, native future-target aggregation, quality, or a performance gain.
-FutureSubgraph targets remain a separate Python pass with declared source
+with single-process eager training. Stock transaction sequence recipes also have source-native CLI streams.
+This example does not establish native future-target aggregation, quality, or
+a measured performance gain. FutureSubgraph targets use a separate disk-backed
+Python reference traversal with declared source
 coverage and a full available horizon; the original graph recipes document
 pretrain/downstream encoder workflows. To use a standalone export here, copy
 a graph/hybrid config, set `runtime.stage: downstream` and

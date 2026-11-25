@@ -35,7 +35,7 @@ from tfm.training.distributed import (
     shard_batches,
 )
 from tfm.training.progress import TrainingProgress
-from tfm.training.trainer import TrainableBatch, export_huggingface, train_model
+from tfm.training.trainer import BatchSource, TrainableBatch, export_huggingface, train_model
 
 
 @dataclass
@@ -83,7 +83,7 @@ class DdpTrainer:
     def fit(
         self,
         model: nn.Module,
-        batches: Sequence[TrainableBatch],
+        batches: BatchSource[TrainableBatch],
         *,
         max_steps: int,
         learning_rate: float,
@@ -94,6 +94,28 @@ class DdpTrainer:
         precision: str = "fp32",
         progress: TrainingProgress | None = None,
     ) -> dict[str, float | str]:
+        launch_world_size, local_rank = launcher_topology()
+        if not isinstance(batches, Sequence) and launch_world_size == 1:
+            stats = train_model(
+                model,
+                batches,
+                max_steps=max_steps,
+                learning_rate=learning_rate,
+                seed=seed,
+                device=device,
+                optimizer=optimizer,
+                shuffle=shuffle,
+                precision=precision,
+                progress=progress,
+            )
+            return {
+                **stats,
+                "backend": self.capabilities.name,
+                "world_size": 1.0,
+                "rank": 0.0,
+                "batches_per_rank": float(len(batches)),
+                "hf_checkpoint": export_huggingface(model, self.checkpoint_dir),
+            }
         if not isinstance(batches, Sequence):
             raise UnsupportedCombinationError(
                 "training.backend: ddp gives each rank every world_size-th batch by index, but "
@@ -102,7 +124,6 @@ class DdpTrainer:
             )
         if not batches:
             raise UnsupportedCombinationError("training.backend: ddp received no batches.")
-        launch_world_size, local_rank = launcher_topology()
         if launch_world_size > 1 and device.type == "cuda":
             # Every rank resolved runtime.device independently and would otherwise
             # pile onto the same GPU.

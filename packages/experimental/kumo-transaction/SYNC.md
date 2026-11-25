@@ -98,7 +98,7 @@ package-local setup commands and `native` / `kumo` extras. The model, cutoff,
 label and target contracts are unchanged; native inputs remain experimental,
 and FutureSubgraph targets retain their separate Python reference pass.
 
-The advanced example startup overlaps the narrower work proposed in #524.
+The advanced example retains the startup and reuse work merged in #524.
 This broader sync also updates canonical sequence and graph/hybrid
 runners. It also carries forward #524's completed-index reuse interface and
 its offline-source regression smoke, while retaining this package's dependency pin.
@@ -121,8 +121,13 @@ Canonical sequence, graph and hybrid recipes default to Kumo Engine retrieval.
 Python remains explicitly selectable; direct library helpers retain their Python
 defaults. This integration choice makes no universal performance, memory or
 out-of-core claim. The public migration guide describes preparation and
-materialization tradeoffs, current bounded object ingestion and retained graph
-batches. All ADRs imported from the
+materialization tradeoffs and the remaining anchor, index, target and evaluation
+state. Canonical no-cache runners consume source-table native tensor streams
+with one owned CPU lookahead; they do not retain Python histories or graph
+batch lists. Native encoders, source/anchor hashes and ordered declarations
+bind the new managed checkpoint namespace. Explicit token caches retain their
+existing prepared workflow. Unsupported native clock, ownership, tie and
+distributed rules fail before training. All ADRs imported from the
 standalone Transaction repository are excluded from the public package. A
 structural close capability handles resource-backed batches, graph cleanup is registered where
 the native loader is created, and each graph loader provides provenance and

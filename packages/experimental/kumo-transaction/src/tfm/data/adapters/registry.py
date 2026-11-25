@@ -11,13 +11,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from tfm.config import DataConfig, RecipeConfig
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.registries import Registry
 from tfm.contracts.schema import TransactionEvent, TransferEdge, ensure_utc
 from tfm.contracts.sources import ColumnarSource
+from tfm.contracts.table_source import TableSource
 from tfm.data.adapters.paths import ADAPTER_ENV, entity_cap, resolve_data_path, sample_seed
 from tfm.data.adapters.result import AdapterResult
 from tfm.data.labels.windows import side_label_windows
@@ -33,6 +34,12 @@ if TYPE_CHECKING:
     from tfm.data.adapters.pragmatiq import PragmatiqDataset
 
 
+class TableSourceFactory(Protocol):
+    """Read source-table metadata/project files without building model histories."""
+
+    def __call__(self, config: DataConfig, *, seed: int, fixture_dir: Path) -> TableSource: ...
+
+
 @dataclass(frozen=True)
 class Adapter:
     """A book's loader, and optionally its columnar source.
@@ -44,6 +51,8 @@ class Adapter:
     """`(data_config, *, seed, flat_fields, fixture_dir) -> AdapterResult`."""
     columnar_source: Callable[[DataConfig], ColumnarSource[Any]] | None = None
     """The book a token cache is built from; must pickle, its class importable."""
+    table_source: TableSourceFactory | None = None
+    """Optional source files/schema for direct native encoding and retrieval."""
 
 
 _ADAPTERS: Registry[Adapter] = Registry("adapter")
@@ -53,11 +62,12 @@ def register_adapter(
     name: str,
     *,
     columnar_source: Callable[[DataConfig], ColumnarSource[Any]] | None = None,
+    table_source: TableSourceFactory | None = None,
 ) -> Callable[[Callable[..., AdapterResult]], Callable[..., AdapterResult]]:
     """Register an adapter; `columnar_source` gives the book a token cache is built from."""
 
     def decorator(fn: Callable[..., AdapterResult]) -> Callable[..., AdapterResult]:
-        _ADAPTERS.register(name, Adapter(fn, columnar_source))
+        _ADAPTERS.register(name, Adapter(fn, columnar_source, table_source))
         return fn
 
     return decorator
@@ -78,6 +88,22 @@ def _adapter(config: DataConfig) -> Adapter:
     return adapter
 
 
+def table_source(config: DataConfig, *, seed: int, fixture_dir: Path) -> TableSource:
+    """Bind the adapter's source files, without calling its object loader.
+
+    A custom adapter supplies ``Adapter(load=..., table_source=...)``. Missing
+    capability is explicit; native training never falls back to prebuilt
+    Python histories or a source-window index.
+    """
+    factory = _adapter(config).table_source
+    if factory is None:
+        raise UnsupportedCombinationError(
+            f"data.adapter {config.adapter!r} supplies no table_source; provide a "
+            "TableSource factory for native loading or select data.loader: python"
+        )
+    return factory(config, seed=seed, fixture_dir=fixture_dir)
+
+
 def columnar_source(config: DataConfig) -> ColumnarSource[Any]:
     """The configured book as a token cache reads it."""
     factory = _adapter(config).columnar_source
@@ -90,7 +116,13 @@ def columnar_source(config: DataConfig) -> ColumnarSource[Any]:
     return factory(config)
 
 
-@register_adapter("synthetic")
+def _synthetic_tables(config: DataConfig, *, seed: int, fixture_dir: Path) -> TableSource:
+    from tfm.data.adapters.native_transactions import synthetic_tables
+
+    return synthetic_tables(config, seed=seed, fixture_dir=fixture_dir)
+
+
+@register_adapter("synthetic", table_source=_synthetic_tables)
 def load_synthetic_adapter(
     config: DataConfig,
     *,
@@ -131,7 +163,13 @@ def load_synthetic_adapter(
     )
 
 
-@register_adapter("tabformer")
+def _tabformer_tables(config: DataConfig, *, seed: int, fixture_dir: Path) -> TableSource:
+    from tfm.data.adapters.native_transactions import tabformer_tables
+
+    return tabformer_tables(config, seed=seed, fixture_dir=fixture_dir)
+
+
+@register_adapter("tabformer", table_source=_tabformer_tables)
 def load_tabformer_registered(
     config: DataConfig,
     *,
@@ -152,7 +190,13 @@ def _pragmatiq_columns(config: DataConfig) -> ColumnarSource[Any]:
     return PragmatiqColumns(resolve_data_path(config))
 
 
-@register_adapter("pragmatiq", columnar_source=_pragmatiq_columns)
+def _pragmatiq_tables(config: DataConfig, *, seed: int, fixture_dir: Path) -> TableSource:
+    from tfm.data.adapters.native_transactions import pragmatiq_tables
+
+    return pragmatiq_tables(config, seed=seed, fixture_dir=fixture_dir)
+
+
+@register_adapter("pragmatiq", columnar_source=_pragmatiq_columns, table_source=_pragmatiq_tables)
 def load_pragmatiq_registered(
     config: DataConfig,
     *,

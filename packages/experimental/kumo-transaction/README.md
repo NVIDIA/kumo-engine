@@ -44,7 +44,7 @@ Python 3.12+ and [uv](https://docs.astral.sh/uv/). Sequence, graph and hybrid
 recipes default to Kumo Engine's PyTorch/DiskGraph loader. Install its pinned
 source dependencies and build prerequisites as described in the
 [loader guide](examples/kumo-engine/README.md#canonical-recipes). The
-[loader tradeoffs](docs/migration/native-loader-default.md#materialization-memory-and-preparation)
+[loader tradeoffs](docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs)
 explain preparation, memory limits and explicit `data.loader: python` selection.
 Run the generated CPU smoke:
 

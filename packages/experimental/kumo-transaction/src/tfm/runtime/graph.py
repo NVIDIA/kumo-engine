@@ -216,6 +216,17 @@ def run_command(
             device=device,
             reuse_checkpoint=reuse_checkpoint,
         )
+    if config.data.loader == "kumo_pytorch":
+        from tfm.runtime.native import run_command as run_native
+
+        return run_native(
+            command,
+            config=config,
+            config_path=config_path,
+            run_dir=run_dir,
+            device=device,
+            reuse_checkpoint=reuse_checkpoint,
+        )
     if device is not None:
         config = config.model_copy(
             update={"runtime": config.runtime.model_copy(update={"device": device})}
