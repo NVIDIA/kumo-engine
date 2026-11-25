@@ -50,7 +50,8 @@ pub use crate::parser::{
 pub(crate) const ROWPACK_VERSION: u8 = 3;
 pub(crate) const MAX_INPUT_STRING_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FIELD_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MAX_ARRAY_LEN: usize = 1_000_000;
+/// Maximum element count a rowpack array decoder accepts.
+pub const MAX_ARRAY_LEN: usize = 1_000_000;
 const ALPHABET_MAX_CHARS: usize = 64;
 const ALPHABET_MIN_COVERAGE: f32 = 0.95;
 const ALPHABET_INVALID: u8 = u8::MAX;
