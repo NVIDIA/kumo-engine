@@ -117,9 +117,11 @@ of training samples is not retained in Python memory.
 ## Run
 
 Use Python 3.12 with PyTorch 2.9+, Kumo's PyTorch/DiskGraph packages and Pragmatiq
-1.1.0 in the project environment. From the repository root:
+1.1.0 in the project environment. From the Kumo Engine repository root, enter
+the Transaction package directory before installing and running the example:
 
 ```bash
+cd packages/experimental/kumo-transaction
 uv pip install --upgrade-package diskgraph --upgrade-package kumo-pytorch \
   --upgrade-package kumo-settings \
   -e ".[pragmatiq]" -r examples/kumo-engine/requirements.txt
