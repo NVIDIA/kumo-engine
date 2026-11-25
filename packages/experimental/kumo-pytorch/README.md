@@ -275,3 +275,14 @@ The S3 integration tests start a loopback S3-compatible endpoint. Install
 from this package directory. The tests use fixture credentials and a temporary
 bucket. Run `python -m tests.e2e.s3_parquet_throughput` for paired local and
 S3 timings covering index construction, reuse, anchor staging and batch iteration.
+
+Run `python -m pytest -q tests/test_omnisage_end_to_end.py` for the combined
+DiskGraph workload. Set `OMNISAGE_MODEL_FILE` to a local Pinterest
+`atg-research/omnisage/model.py` to include an optimizer step for both loaders.
+
+To compare the public loader with the specialized native DiskGraph loader, run
+`python -m tests.e2e.omnisage_throughput --model-file /path/to/omnisage/model.py`.
+Both consume the same index and projected feature columns. The custom loader caches
+the static vectors and anchor columns in RAM and recomputes temporal samples per
+batch. The command reports setup, loader-only and training timings, cache size
+and per-process peak memory. Use `--storage local` for local Parquet.
