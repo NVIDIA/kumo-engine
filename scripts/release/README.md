@@ -10,6 +10,52 @@ development or documentation validation.
 For PR preparation and change-map requirements, read the
 [review guide](../../docs/development/review.md).
 
+## Publish images from NVIDIA/kumo-engine
+
+The [image-set workflow](../../.github/workflows/_docker-kumo3-images-custom.yml)
+runs from `main`. It builds and promotes CPU, GPU, and UI images together.
+Use a full commit SHA to publish an immutable image set.
+
+Before publication, an administrator must configure these GitHub environments
+and their scoped AWS roles:
+
+- `gha-kumo3-image-set-ecr-read`
+- `gha-kumo3-image-set-promote`
+- `gha-kumo-backend-cpu-publish`
+- `gha-kumo-backend-gpu-publish`
+- `gha-kumo-ui-image-publish`
+
+Restrict each environment to `main`. The workflows name the required AWS roles.
+Each role must trust its exact
+`repo:NVIDIA/kumo-engine:environment:<ENVIRONMENT>` identity, not a fork or the
+old repository. This code does not create environments or change cloud trust.
+The nightly workflow also calls this publisher. Review its schedule before
+enabling publication credentials.
+
+For customer ACR publication, configure `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, and `ACR_LOGIN_SERVER` in
+`gha-kumo3-image-set-ecr-read`. The Azure identity must trust that environment
+and have permission to push to the approved registry.
+
+Do not run the following command before approval of the source commit and
+publication destination. It publishes all three images to ECR.
+
+```bash
+gh workflow run _docker-kumo3-images-custom.yml \
+  --repo NVIDIA/kumo-engine --ref main \
+  -f kumo_repo_ref=FULL_COMMIT_SHA -f images=all -f bake_glove_level=basic
+```
+
+Add `-f publish_to_acr=true` only for the approved customer registry.
+Record the published image digests and scan those exact images before deployment.
+The Python build helper also selects this repository and defaults to `main`.
+Its optional legacy mirror additionally needs `gha-kumo-image-sync-ecr-read`
+and the target registry credentials named by the sync workflow.
+
+The branch/tag helpers below still assume `master` and existing `v3.x` release
+refs. Do not use them to cut a release from this repository's `main` branch.
+Their migration is separate from image publication.
+
 How to perform a hotfix
 ------------------------
 

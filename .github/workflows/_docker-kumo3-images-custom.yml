@@ -102,20 +102,21 @@ concurrency:
 
 jobs:
   guard:
-    name: Require workflow from master
+    name: Require workflow from main
     runs-on: ubuntu-22.04
     steps:
-      # The AWS environments used below allow only the master branch. Keep
+      # Configure the AWS environments below to allow only main. Keep
       # this check outside those environments so an invalid dispatch fails
       # immediately instead of waiting for an environment deployment gate.
       - name: Validate workflow ref
-        if: ${{ github.ref != 'refs/heads/master' }}
         env:
           WORKFLOW_REF: ${{ github.ref }}
         run: |
-          echo "::error::Kumo 3 image publication must use the workflow from master"
-          echo "::error::workflow ref was ${WORKFLOW_REF}"
-          exit 1
+          if [[ "${WORKFLOW_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Kumo 3 image publication must use the workflow from main"
+            echo "::error::workflow ref was ${WORKFLOW_REF}"
+            exit 1
+          fi
 
   plan:
     name: Plan image set
@@ -191,8 +192,8 @@ jobs:
               echo "::error::publish_to_acr requires a full Git SHA or a Kumo 3 release ref"
               exit 1
             fi
-            if [[ "${GITHUB_REF}" != "refs/heads/master" ]]; then
-              echo "::error::publish_to_acr must use the workflow from master"
+            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "::error::publish_to_acr must use the workflow from main"
               exit 1
             fi
           fi
@@ -311,7 +312,7 @@ jobs:
     needs: [plan, cpu, gpu, ui]
     # Runs when a builder was skipped (the cached path), but not when one
     # failed or was cancelled. It also requires plan success so a failed
-    # master-ref guard cannot flow through plan=skipped into promotion.
+    # main-ref guard cannot flow through plan=skipped into promotion.
     if: >-
       ${{ always() && !cancelled()
           && needs.plan.result == 'success'
@@ -516,7 +517,7 @@ jobs:
         # Azure prerequisite: the AZURE_CLIENT_ID service principal must have
         # a federated identity credential with:
         #   issuer:   https://token.actions.githubusercontent.com
-        #   subject:  repo:kumo-ai/kumo:environment:gha-kumo3-image-set-ecr-read
+        #   subject:  repo:NVIDIA/kumo-engine:environment:gha-kumo3-image-set-ecr-read
         #   audience: api://AzureADTokenExchange
         # It also needs permission to push to the ACR named by ACR_NAME.
         if: ${{ inputs.publish_to_acr }}
@@ -605,7 +606,7 @@ jobs:
         run: |
           set -uo pipefail
           if [[ "${GUARD}" == "failure" ]]; then
-            summary="did not publish — workflow must run from master"
+            summary="did not publish: workflow must run from main"
           elif [[ "${VERIFY}" == "failure" ]]; then
             # promote ran and left the set incomplete: the tags are live.
             summary="published an incomplete set — DO NOT DEPLOY this ref"

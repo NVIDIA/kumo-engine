@@ -24,6 +24,7 @@ from typing import Optional
 from packaging.version import Version
 
 SCRIPT_DIR = Path(__file__).parent
+GITHUB_REPOSITORY = "NVIDIA/kumo-engine"
 MIN_GH_VERSION = Version("2.28.0")
 GH_RUN_DETAILS_VERSION = Version("2.87.0")
 
@@ -59,7 +60,7 @@ def application_from_ref(kumo_branch: str) -> Optional[Application]:
     Which product line a ref belongs to, or None when the ref does not say.
 
     v3.0+ is kumo3 (kumo-backend-cpu, kumo-backend-gpu, kumo-ui). v1.x/v2.x
-    images are no longer built from master.
+    images are no longer built from main.
 
     :param kumo_branch: the ref whose contents are being built.
     :return: the application the ref implies, or None to leave it to the caller.
@@ -70,7 +71,7 @@ def application_from_ref(kumo_branch: str) -> Optional[Application]:
         return None
     if int(match.group(1)) < 3:
         raise ValueError(f"{kumo_branch} is a v1.x/v2.x release; only Kumo 3 "
-                         f"images can be built from master")
+                         f"images can be built from main")
     return Application.KUMO3
 
 
@@ -252,7 +253,8 @@ def timestamp_as_dt(timestamp: str) -> datetime:
 
 def _latest_run(workflow_name: str, user: str) -> tuple[datetime, int]:
     command_list = [
-        "gh", "run", "list", "--json=createdAt,databaseId", f"--user={user}",
+        "gh", "run", "list", "--repo", GITHUB_REPOSITORY,
+        "--json=createdAt,databaseId", f"--user={user}",
         f"--workflow={workflow_name}"
     ]
     proc_list = subprocess.run(command_list, check=True, stdout=subprocess.PIPE,
@@ -293,12 +295,12 @@ def get_run_id(workflow_name: str, user: str,
 
 
 def get_run_url(run_id: int) -> str:
-    return (f"https://github.com/kumo-ai/kumo/"
+    return (f"https://github.com/{GITHUB_REPOSITORY}/"
             f"actions/runs/{run_id}")
 
 
 def get_workflow_url(spec: WorkflowSpec) -> str:
-    return (f"https://github.com/kumo-ai/kumo/"
+    return (f"https://github.com/{GITHUB_REPOSITORY}/"
             f"actions/workflows/{spec.workflow.value}")
 
 
@@ -324,8 +326,9 @@ def run_workflow(spec: WorkflowSpec, user: str,
     # flags k:v, ... -> ["-f", "k=v", ...]
 
     command = [
-        "gh", "workflow", "run", spec.workflow.value, "--ref",
-        spec.workflow_branch, "-f", f"kumo_repo_ref={spec.kumo_branch}"
+        "gh", "workflow", "run", spec.workflow.value, "--repo",
+        GITHUB_REPOSITORY, "--ref", spec.workflow_branch, "-f",
+        f"kumo_repo_ref={spec.kumo_branch}"
     ] + prefixed_flags
     try:
         proc = subprocess.run(
@@ -358,7 +361,8 @@ def duration_workflow_run(run_id: int) -> timedelta:
     Compute the runtime of a completed workflow
     """
     command_time = [
-        "gh", "run", "view", "--json=startedAt,updatedAt",
+        "gh", "run", "view", "--repo", GITHUB_REPOSITORY,
+        "--json=startedAt,updatedAt",
         str(run_id)
     ]
     proc_time = subprocess.run(command_time, check=True, stdout=subprocess.PIPE,
@@ -375,7 +379,10 @@ def attach_workflow_run(description: str, run_id: int):
     Aborts the process with nonzero exit code if the run fails.
     """
     print("awaiting", description, "run", run_id)
-    command_watch = ["gh", "run", "watch", "--exit-status", str(run_id)]
+    command_watch = [
+        "gh", "run", "watch", "--repo", GITHUB_REPOSITORY, "--exit-status",
+        str(run_id)
+    ]
     proc = subprocess.run(command_watch, capture_output=True, cwd=SCRIPT_DIR)
     if proc.returncode != 0:
         print("Build Failed, see", get_run_url(run_id))
@@ -480,10 +487,10 @@ if __name__ == "__main__":
         "kumo_branch", help=("the Git SHA or tag of the Kumo "
                              "repository that you want to build."))
     parser.add_argument(
-        "--workflow_branch", required=False, default=None,
+        "--workflow_branch", required=False, default="main",
         help=("the branch or tag of Kumo that will "
               "be used to fetch the scripts which "
-              "generate individual container images. Defaults to master."))
+              "generate individual container images. Defaults to main."))
     parser.add_argument(
         "--app", type=Application, choices=list(Application), required=False,
         default=None,
@@ -516,9 +523,6 @@ if __name__ == "__main__":
     # reject v1.x/v2.x release refs.
     args.app = resolve_application(args.app, args.kumo_branch)
 
-    if args.workflow_branch is None:
-        args.workflow_branch = "master"
-
     if args.publish_to_acr:
         release_app = application_from_ref(args.kumo_branch)
         is_full_sha = re.fullmatch(r"[0-9a-f]{40}", args.kumo_branch)
@@ -527,8 +531,8 @@ if __name__ == "__main__":
         if is_full_sha is None and release_app != Application.KUMO3:
             parser.error("--publish_to_acr requires a full Git SHA or a "
                          "Kumo 3 release ref")
-        if args.workflow_branch != "master":
-            parser.error("--publish_to_acr requires --workflow_branch master")
+        if args.workflow_branch != "main":
+            parser.error("--publish_to_acr requires --workflow_branch main")
 
     validate_branch_or_tag(args.workflow_branch)
     gh_supports_run_details = check_github_cli()

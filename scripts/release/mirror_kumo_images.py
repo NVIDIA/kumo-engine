@@ -47,6 +47,7 @@ from typing import Optional
 from build_kumo_images import (
     _ECR_IMAGE_NAMES,
     CLOUD_REGISTRIES,
+    GITHUB_REPOSITORY,
     SCRIPT_DIR,
     CloudRegistry,
     WorkflowFile,
@@ -80,8 +81,8 @@ def trigger_sync_workflow(
     ]
     prefixed_flags = [x for flag in flag_list for x in ("-f", flag)]
     command = [
-        "gh", "workflow", "run", SYNC_WORKFLOW,
-        "--ref", "master",
+        "gh", "workflow", "run", SYNC_WORKFLOW, "--repo", GITHUB_REPOSITORY,
+        "--ref", "main"
     ] + prefixed_flags
     try:
         subprocess.run(command, capture_output=True, check=True, cwd=SCRIPT_DIR)
