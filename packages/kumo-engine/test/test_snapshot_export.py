@@ -140,7 +140,7 @@ def test_export_load_round_trip_relocates_and_is_reused(
 @pytest.mark.parametrize('operation', ['snapshot', 'import'])
 @pytest.mark.parametrize('damage', ['missing_metadata', 'malformed_metadata', 'artifact'])
 def test_damaged_index_is_rebuilt_or_reloaded(
-        tmp_path, scratch, graph, exports, operation, damage):
+        tmp_path, scratch, graph, exports, caplog, operation, damage):
     snapshot = graph.snapshot()
     location, _ = _export(snapshot, exports, tmp_path)
     expected = _index_files(snapshot.index_path)
@@ -155,8 +155,8 @@ def test_damaged_index_is_rebuilt_or_reloaded(
     from kumo.engine._monitoring import _local_index
     assert _local_index(snapshot.id) is None
     if operation == 'snapshot':
-        with pytest.warns(UserWarning, match='Reloading the damaged'):
-            rebuilt = graph.snapshot()
+        rebuilt = graph.snapshot()
+        assert 'Skipping invalid snapshot' in caplog.text
         assert rebuilt.id == snapshot.id
         assert rebuilt.index_path != snapshot.index_path
         assert (rebuilt.index_path / 'col_stats.json').read_bytes() == expected['col_stats.json']
@@ -164,8 +164,8 @@ def test_damaged_index_is_rebuilt_or_reloaded(
         assert _local_index(rebuilt.id) == rebuilt.index_path
         return
 
-    with pytest.warns(UserWarning, match='Reloading the damaged'):
-        loaded = _load(exports, location)
+    loaded = _load(exports, location)
+    assert 'Skipping invalid snapshot' in caplog.text
     assert loaded.index_path == snapshot.index_path
     assert _index_files(loaded.index_path) == expected
     assert not list((tmp_path / 'cpu').rglob('.damaged'))
@@ -180,7 +180,7 @@ def test_damaged_index_is_rebuilt_or_reloaded(
 
 @pytest.mark.parametrize('failure', ['transfer', 'integrity'])
 def test_failed_import_keeps_a_damaged_build_until_replacement_is_verified(
-        tmp_path, scratch, graph, exports, monkeypatch, failure):
+        tmp_path, scratch, graph, exports, monkeypatch, caplog, failure):
     from diskgraph import DiskgraphCorruptionError
 
     snapshot = graph.snapshot()
@@ -198,9 +198,9 @@ def test_failed_import_keeps_a_damaged_build_until_replacement_is_verified(
         (Path(args[-1]) / 'col_stats.json').write_text('truncated')
 
     monkeypatch.setattr(snapshot_io, 'load_into', load)
-    with pytest.warns(UserWarning, match='Reloading the damaged'):
-        with pytest.raises(OSError if failure == 'transfer' else DiskgraphCorruptionError):
-            _load(exports, location)
+    with pytest.raises(OSError if failure == 'transfer' else DiskgraphCorruptionError):
+        _load(exports, location)
+    assert 'Skipping invalid snapshot' in caplog.text
     assert (_index_files(snapshot.index_path), reference.read_bytes()) == before
     assert not list((tmp_path / 'cpu').rglob('.damaged'))
 
@@ -1360,3 +1360,91 @@ def test_a_different_idless_export_cannot_replace_a_healthy_legacy_fallback(
     assert {name: (legacy / name).stat().st_ino for name in before[0]} == inodes
     assert _local_index(retained.id) == legacy
     assert graph.snapshot().index_path == legacy
+
+
+@pytest.mark.parametrize('layout', ['managed', 'legacy'])
+@pytest.mark.parametrize('operation', ['snapshot', 'import'])
+@pytest.mark.parametrize('failure', ['non_utf8', 'unreadable'])
+def test_snapshot_marker_damage_recovers_but_io_errors_propagate(
+        scratch, graph, exports, monkeypatch, layout, operation, failure):
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        DiskgraphSnapshotHandle,
+        write_diskgraph_success_marker,
+    )
+
+    from kumo.engine.graph import _store
+
+    snapshot = graph.snapshot()
+    location = _put(snapshot, exports)
+    store = _store()
+    handle = DiskgraphSnapshotHandle(snapshot._graph_key, snapshot._data_version)
+    index = snapshot.index_path
+    build_id = index.name
+    if layout == 'legacy':
+        legacy = Path(store.staging_path(handle))
+        index.rename(legacy)
+        index = legacy
+        store._reference(handle).unlink()
+        write_diskgraph_success_marker(str(index), DiskgraphIngestResult.for_index(index))
+    marker = index / '_SUCCESS'
+    permissions = marker.stat().st_mode
+    if failure == 'non_utf8':
+        marker.write_bytes(b'\xff\xfe')
+    before = _index_files(index), marker.read_bytes()
+    try:
+        if failure == 'unreadable':
+            marker.chmod(0)
+            try:
+                marker.read_bytes()
+            except PermissionError:
+                pass
+            else:
+                pytest.skip('this user bypasses filesystem permission bits')
+        if layout == 'managed':
+            if failure == 'non_utf8':
+                assert store.existing_build(build_id) is None
+            else:
+                with pytest.raises(PermissionError):
+                    store.existing_build(build_id)
+        if failure == 'unreadable':
+            monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                                Mock(side_effect=AssertionError('must not ingest')))
+            monkeypatch.setattr(snapshot_io, 'load_into',
+                                Mock(side_effect=AssertionError('must not import')))
+            with pytest.raises(PermissionError):
+                graph.snapshot() if operation == 'snapshot' else _load(exports, location)
+        else:
+            loaded = graph.snapshot() if operation == 'snapshot' else _load(exports, location)
+            assert loaded.id == snapshot.id
+            assert graph.snapshot() == loaded
+    finally:
+        if marker.exists():
+            marker.chmod(permissions)
+    if failure == 'unreadable':
+        assert (_index_files(index), marker.read_bytes()) == before
+
+
+def test_cached_snapshot_verifies_and_touches_once(scratch, graph, monkeypatch):
+    import diskgraph
+
+    snapshot = graph.snapshot()
+    calls = {}
+
+    def count(name):
+        original = getattr(diskgraph, name)
+
+        def run(*args, **kwargs):
+            calls[name] = calls.get(name, 0) + 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(diskgraph, name, run)
+
+    for name in ('verify_snapshot_integrity', 'read_success_marker', 'touch_success_marker'):
+        count(name)
+    assert graph.snapshot() == snapshot
+    assert calls == {
+        'verify_snapshot_integrity': 1,
+        'read_success_marker': 2,
+        'touch_success_marker': 1,
+    }

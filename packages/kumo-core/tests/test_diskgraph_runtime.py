@@ -703,37 +703,26 @@ def test_local_snapshot_paths_listing_verify_and_restore(tmp_path: Path) -> None
 
 
 def test_checkpoint_stages_then_atomically_publishes(
-        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        native_time_snapshot, tmp_path: Path) -> None:
     store = LocalSnapshotStore(DiskgraphLocalConfig(str(tmp_path / "local")))
     handle = DiskgraphSnapshotHandle("graph", "v2")
     local = store.path(handle)
-    marker = DiskgraphIngestResult.for_index(local).to_json()
-    markers = {local: marker}
-    monkeypatch.setitem(
-        sys.modules,
-        "diskgraph",
-        SimpleNamespace(
-            DiskgraphCorruptionError=DiskgraphCorruptionError,
-            DiskgraphSystemError=DiskgraphSystemError,
-            verify_snapshot_integrity=lambda path: None,
-            read_success_marker=lambda path: markers.get(path),
-        ),
-    )
+    _copy_runtime_snapshot(native_time_snapshot, Path(local))
     copied: list[tuple[str, str]] = []
     replaced: list[tuple[str, str]] = []
 
     def copy_tree(source: str, staging: str) -> None:
         copied.append((source, staging))
-        markers[staging] = marker
+        shutil.copytree(source, staging)
 
     def replace_tree(staging: str, target: str) -> None:
         replaced.append((staging, target))
-        markers[target] = markers.pop(staging)
+        Path(staging).rename(target)
 
     target = store.checkpoint(
         handle,
         str(tmp_path / "volume"),
-        exists=lambda path: path.removesuffix("/_SUCCESS") in markers,
+        exists=lambda path: Path(path).exists(),
         copy_tree=copy_tree,
         replace_tree=replace_tree,
     )
@@ -741,6 +730,7 @@ def test_checkpoint_stages_then_atomically_publishes(
     assert copied[0][0] == local
     assert copied[0][1].startswith(target + ".tmp-")
     assert replaced == [(copied[0][1], target)]
+    assert LocalSnapshotStore._verify_path(target).index_path == local
 
 
 def test_verify_rejects_missing_success_after_integrity_pass(
@@ -922,7 +912,7 @@ def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
         error, message = DiskgraphCorruptionError, "1 missing file"
     else:
         (invalid_path / "_SUCCESS").write_bytes(bytes([255, 254]))
-        error, message = DiskgraphSystemError, "valid UTF-8"
+        error, message = UnicodeDecodeError, "utf-8"
     invalid_mtime = (invalid_path / "_SUCCESS").stat().st_mtime_ns
     valid_mtime = (valid_path / "_SUCCESS").stat().st_mtime_ns
     before = {p.relative_to(invalid_path): p.read_bytes()
@@ -1023,7 +1013,7 @@ try:
     try:
         store._ready_candidate(path)
     except OSError as error:
-        assert error.errno == errno.EMFILE, error
+        assert error.errno == errno.EMFILE or "os error 24" in str(error), error
     else:
         raise AssertionError("descriptor exhaustion must not become a cache miss")
 finally:
