@@ -117,7 +117,10 @@ def task_request(config, path, attempt, client, timeout=1800):
                 timeout_seconds=timeout, max_retries=0)
     payload = dict(run_name='kumo-test-notebook-ui-' + attempt,
                    timeout_seconds=timeout, tasks=[task])
-    admit_cluster(client, config['cluster_id'])
+    if config.get('accelerator', 'cpu') == 'cpu':
+        admit_cluster(client, config['cluster_id'])
+    else:
+        admit_cluster(client, config['cluster_id'], config['accelerator'])
     task['existing_cluster_id'] = config['cluster_id']
     return payload
 

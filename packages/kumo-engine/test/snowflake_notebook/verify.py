@@ -15,9 +15,14 @@ def verdict(report):
     if report.get('status') not in ('passed', 'blocked'):
         raise ValueError('Notebook runner did not complete cleanly')
     checks = report.get('engine_checks') or {}
+    custom = checks.get('workload')
+    if custom is not None:
+        from launch import workload_files
+        workload_files(custom)
+    phases = {'platform-prerequisite', *custom['phases']} if custom else PHASES
     if checks.get('status') != 'passed' or checks.get(
-            'phases') != dict.fromkeys(PHASES, 'passed'):
-        raise ValueError('All four engine phases must pass')
+            'phases') != dict.fromkeys(phases, 'passed'):
+        raise ValueError('All selected engine phases must pass')
     stages = report.get('stages', {})
     if stages.get('preflight', {}).get('status') != 'passed':
         raise ValueError('Installed-wheel notebook preflight must pass')
@@ -29,8 +34,9 @@ def verdict(report):
                 for name in ('error', 'close_error', 'collection_error')):
             raise ValueError('Runner, collection, or cleanup error remains')
     gaps = checks.get('remaining_requirements', {})
-    if set(gaps) != KNOWN_GAPS:
-        raise ValueError('Both unverified requirements must remain explicit')
+    expected_gaps = {'ui_review'} if custom else KNOWN_GAPS
+    if set(gaps) != expected_gaps:
+        raise ValueError('Unverified requirements must remain explicit')
     if report['status'] == 'blocked' and not gaps:
         raise ValueError('Unexplained blocked result')
     return dict(engine_checks='passed', full_qualification='incomplete',

@@ -6,6 +6,31 @@ name: SageMaker notebook platform checks
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
+      platform_matrix:
+        description: Run the shared customer PyTorch platform/device matrix
+        type: boolean
+        default: false
+      platform:
+        description: Platform matrix selection
+        type: choice
+        default: all
+        options: [all, databricks, sagemaker, snowflake]
+      accelerator:
+        description: Platform matrix device coverage
+        type: choice
+        default: all
+        options: [all, cpu, gpu]
+      cpu_cluster_id:
+        description: Dedicated KUMO_TEST_ CPU Databricks cluster for the matrix
+        type: string
+      gpu_cluster_id:
+        description: Dedicated KUMO_TEST_ GPU Databricks cluster for the matrix
+        type: string
+      workload:
+        description: Engine lifecycle workload (PyTorch requires engine mode/checks only)
+        type: choice
+        default: kumo
+        options: [kumo, pytorch]
       scenario:
         description: Notebook scenario
         type: choice
@@ -27,6 +52,7 @@ jobs:
   configuration:
     name: Check protected SageMaker environment
     if: >-
+      !inputs.platform_matrix &&
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main'
@@ -45,7 +71,15 @@ jobs:
         name: Verify maintainer-protected environment
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 packages/kumo-engine/test/sagemaker_notebook/check_environment.py
+          WORKLOAD: ${{ inputs.workload }}
+          SCENARIO: ${{ inputs.scenario }}
+          ENGINE_ONLY: ${{ inputs.engine_checks_only }}
+        run: |
+          if [[ "$WORKLOAD" == pytorch && ( "$SCENARIO" != engine || "$ENGINE_ONLY" != true ) ]]; then
+            echo 'PyTorch requires scenario=engine and engine_checks_only=true' >&2
+            exit 1
+          fi
+          python3 packages/kumo-engine/test/sagemaker_notebook/check_environment.py
   wheel:
     needs: configuration
     uses: ./.github/workflows/kumo-engine-pr.yml
@@ -59,6 +93,7 @@ jobs:
   notebook:
     needs: [configuration, wheel]
     if: >-
+      !inputs.platform_matrix &&
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main'
@@ -127,6 +162,7 @@ jobs:
         env:
           SCENARIO: ${{ inputs.scenario }}
           ENGINE_ONLY: ${{ inputs.engine_checks_only }}
+          WORKLOAD: ${{ inputs.workload }}
         run: |
           python - <<'PY'
           import json
@@ -142,10 +178,16 @@ jobs:
                      '--wheel', str(temp / 'sagemaker-wheel' / candidate['wheel_file']),
                      '--fixture', str(temp / 'pr172-inputs-v1.tar.gz'),
                      '--output-dir', str(temp / 'sagemaker-notebook')]
+          if os.environ['WORKLOAD'] == 'pytorch':
+              command.extend(['--workload', str(base.parent / 'wheel_mlops_pytorch.py')])
           if os.environ['ENGINE_ONLY'] == 'true':
               command.append('--engine-checks-only')
           raise SystemExit(subprocess.call(command))
           PY
+      - name: Recover owned SageMaker attempt resources
+        if: always()
+        timeout-minutes: 12
+        run: python packages/kumo-engine/test/sagemaker_notebook/cleanup.py --output-dir "$RUNNER_TEMP/sagemaker-notebook"
       - name: Prepare public aggregate results
         if: always()
         env:
@@ -163,3 +205,24 @@ jobs:
           path: ${{ runner.temp }}/sagemaker-public/
           if-no-files-found: warn
           retention-days: 7
+
+  byom-platforms:
+    if: inputs.platform_matrix
+    uses: ./.github/workflows/kumo-engine-byom-platforms.yml
+    secrets:
+      KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+      KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+      KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+      SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
+      SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+    with:
+      platform: ${{ inputs.platform }}
+      accelerator: ${{ inputs.accelerator }}
+      cpu_cluster_id: ${{ inputs.cpu_cluster_id }}
+      gpu_cluster_id: ${{ inputs.gpu_cluster_id }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write

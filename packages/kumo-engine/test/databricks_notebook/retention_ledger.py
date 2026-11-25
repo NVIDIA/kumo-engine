@@ -97,6 +97,8 @@ class ControlRecord:
         }
         if lifecycle:
             self.spec['experiment'] = spec['experiment']
+            if 'model_version_limit' in spec:
+                self.spec['model_version_limit'] = spec['model_version_limit']
         self.kind = 'lifecycle' if lifecycle else 'graph'
         self.path = file_path(config, spec['attempt'])
         self.previous = None
@@ -220,16 +222,29 @@ def records(client, config):
 def save_cursor(client, config, token, previous):
     path = cursor_path(config)
     endpoint = '/api/2.0/fs/files' + quote(path, safe='/')
-    if previous is not None and read(client, path) != previous:
-        raise ValueError('Retention inventory cursor changed during sweep')
+    try:
+        current = read(client, path)
+    except RuntimeError as error:
+        if str(error) != 'Databricks API HTTP 404':
+            raise
+        current = None
+    if current != previous:
+        return
     if token:
         value = dict(version=1, config=scope(config), page_token=token)
         raw = json.dumps(
             dict(payload=value, hmac_sha256=signature(client, value))).encode()
         if len(raw) > MAX_BYTES:
             raise ValueError('Retention cursor exceeds its byte budget')
-        client.api(endpoint + '?overwrite=' + str(previous is not None).lower(),
-                   'PUT', raw=raw)
+        try:
+            client.api(endpoint + '?overwrite=' + str(previous is not None).lower(),
+                       'PUT', raw=raw)
+        except RuntimeError as error:
+            # A competing sweep can create or remove the cursor after our read.
+            conflict = str(error) == 'Databricks API HTTP 409'
+            removed = previous is not None and str(error) == 'Databricks API HTTP 404'
+            if not (conflict or removed):
+                raise
     elif previous is not None:
         client.api(endpoint, 'DELETE')
 

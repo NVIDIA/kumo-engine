@@ -322,3 +322,62 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer PyTorch lifecycle
+
+The native [customer workload](../../packages/kumo-engine/test/wheel_mlops_pytorch_snowflake.py)
+uses `kumo-pytorch` batches, a user-owned `torch.nn.Linear`, Snowflake Experiment
+Tracking and the native Model Registry. It logs MSE/RMSE over two epochs,
+registers two PyTorch versions and uploads preprocessing state, weights and
+expected predictions with a SHA-256 inventory. After producer scratch is removed,
+a fresh process downloads those artifacts, checks native metric/run identities,
+promotes the registry alias and compares all 32 predictions through both the
+custom weight loader and native `ModelVersion.load`. It never uses Engine's
+`Trainer` loader. This fixture checks the small in-memory batch engine, not
+DiskGraph execution, model quality or a deployed inference endpoint.
+
+Stage the candidate Engine wheel with `--pytorch` to resolve the bundled
+PyTorch extra for offline notebook installation.
+
+```sh
+python packages/kumo-engine/test/snowflake_notebook/staging.py \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --source-ref "$(git rev-parse HEAD)" \
+  --pytorch --output /tmp/customer-snowflake-candidate.json
+python packages/kumo-engine/test/snowflake_notebook/prepare.py \
+  --candidate /tmp/customer-snowflake-candidate.json \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch_snowflake.py \
+  --workload-helper packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --output-dir /tmp/customer-snowflake-payload
+```
+
+Workloads declare a top-level literal `PHASES` tuple/list, which preparation reads
+without importing the customer module. Workload/helper files must be committed,
+regular Python files with distinct basenames. The manifest pins their bytes,
+phase declaration and dependency-wheel inventory. The shared admission helper
+is included in every prepared payload.
+
+Run the existing launcher against this payload's `preflight` and `lifecycle`
+directories and `manifest.json`. Preflight installs and checks all identified
+wheels; only lifecycle mode dispatches the customer workload. A standalone
+negative run still uses the built-in permission probe. Custom lifecycle evidence
+must contain `platform-prerequisite` plus every declared phase, with matching
+workload and candidate hashes and successful worker exits. `verify.py` accepts
+those selected engine checks while retaining the separate native UI review gap.
+The default Kumo scenario retains its four phases and existing qualification gaps.
+
+
+
+In Actions, select `workload=pytorch` and `mode=engine`. The dispatch resolves
+the candidate Engine wheel with the PyTorch extra and selects the
+native Snowflake customer workload plus its shared helper. Published phase
+results include `platform-prerequisite`, `train` and `reload`.
+
+For CPU and GPU coverage, use the
+[shared customer-model matrix](mlops-validation.md#cpu-and-gpu-platform-matrix).
+The GPU case uses `V2.9-GPU-PY3.12` on the separate single-node
+`KUMO_TEST_GPU_POOL` and preserves the official CUDA-tagged PyTorch dependency
+through offline staging. Each case registers two versions on its selected device and validates native
+reload on that device; it does not disable dependency checks or claim
+GPU serving-endpoint qualification.

@@ -604,3 +604,52 @@ def test_short_inventory_page_keeps_page_size_across_continuation(
                              now_ms=10**15)
     assert second['cleaned'] == 2 and second['inventory_has_more'] is False
     assert sizes == [[str(retention.MAX_ATTEMPTS)]] * 2
+
+
+def test_custom_model_version_bound_is_retained_in_signed_control_record(setup, tmp_path):
+    retention, cleanup, config, cloud = setup
+    folder = '/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
+    attempt = 'a' * 12
+    spec = dict(attempt=attempt, experiment=folder + '/KUMO_TEST_MLOPS',
+                notebook_path=folder + '/kumo-test-lifecycle-' + attempt,
+                output=config['volume'] + '/lifecycle/runs/' + attempt + '/outputs',
+                model_version_limit=20)
+    cleanup.AttemptResources(cloud, config, spec, tmp_path,
+                             lifecycle=True).__enter__()
+    saved = retention.read(cloud, retention.file_path(config, attempt))
+    assert saved['spec']['model_version_limit'] == 20
+    recovered = tmp_path / 'recovered'
+    recovered.mkdir()
+    (recovered / 'resources.json').write_text(json.dumps(saved['ledger']))
+    resumed = cleanup.AttemptResources(cloud, config, saved['spec'], recovered,
+                                       lifecycle=True, resume=True)
+    assert resumed.model_version_limit == 20
+
+
+def test_stale_sweep_leaves_newer_cursor_in_place(setup):
+    retention, _, config, cloud = setup
+    retention.save_cursor(cloud, config, 'newer-page', None)
+    path = retention.cursor_path(config)
+    before = cloud.files[path]
+    retention.save_cursor(cloud, config, 'older-page', None)
+    assert cloud.files[path] == before
+
+
+@pytest.mark.parametrize('status', [404, 409, 403])
+def test_cursor_save_handles_only_competing_writer_errors(setup, monkeypatch, status):
+    retention, _, config, cloud = setup
+    retention.save_cursor(cloud, config, 'first', None)
+    previous = retention.read(cloud, retention.cursor_path(config))
+    api = cloud.api
+
+    def competing(path, method='GET', **kwargs):
+        if method == 'PUT':
+            raise RuntimeError(f'Databricks API HTTP {status}')
+        return api(path, method, **kwargs)
+
+    monkeypatch.setattr(cloud, 'api', competing)
+    if status == 403:
+        with pytest.raises(RuntimeError, match='HTTP 403'):
+            retention.save_cursor(cloud, config, 'second', previous)
+    else:
+        retention.save_cursor(cloud, config, 'second', previous)

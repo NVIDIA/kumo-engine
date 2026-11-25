@@ -540,3 +540,52 @@ def test_recovery_resumes_after_notebook_deleted_before_cleanup_completed(
     client.api = api
     cleanup.recover(root, client, config)
     assert json.loads((root / 'cleanup.json').read_text())['status'] == 'passed'
+
+
+def test_custom_workload_cleans_more_than_two_owned_versions(registered_model):
+    resource, provider, model = registered_model
+    spec = dict(resource.spec, model_version_limit=20)
+    # Recreate the attempt so the expanded bound is included in its saved scope.
+    resource = cleanup.AttemptResources(provider, resource.config, spec,
+                                        resource.root, lifecycle=True)
+    provider.versions['3'] = dict(provider.versions['2'], version=3, id='version-3')
+    resource.remove_model(model)
+    assert provider.model is None and not provider.versions
+
+
+def test_custom_cleanup_still_rejects_foreign_or_unbounded_versions(registered_model):
+    resource, provider, model = registered_model
+    resource = cleanup.AttemptResources(
+        provider, resource.config, dict(resource.spec, model_version_limit=20),
+        resource.root, lifecycle=True)
+    provider.versions['3'] = dict(provider.versions['2'], version=21, id='version-21')
+    with pytest.raises(ValueError, match='owned test attempt'):
+        resource.remove_model(model)
+    assert all(method == 'GET' for _, method in provider.calls)
+    provider.versions['3'].update(version=3, created_by='another-user')
+    with pytest.raises(ValueError, match='owned test attempt'):
+        resource.remove_model(model)
+    assert all(method == 'GET' for _, method in provider.calls)
+
+
+def test_custom_cleanup_limit_survives_resume_and_cannot_be_changed(registered_model):
+    resource, provider, model = registered_model
+    spec = dict(resource.spec, model_version_limit=20)
+    resource = cleanup.AttemptResources(provider, resource.config, spec,
+                                        resource.root, lifecycle=True)
+    resumed = cleanup.AttemptResources(provider, resource.config, spec,
+                                       resource.root, lifecycle=True, resume=True)
+    assert resumed.model_version_limit == 20
+    with pytest.raises(ValueError, match='scope differs'):
+        cleanup.AttemptResources(provider, resource.config,
+                                 dict(spec, model_version_limit=19),
+                                 resource.root, lifecycle=True, resume=True)
+
+
+@pytest.mark.parametrize('limit', [0, 21, True, '20'])
+def test_custom_cleanup_rejects_invalid_version_limit(registered_model, limit):
+    resource, provider, model = registered_model
+    with pytest.raises(ValueError, match='version limit'):
+        cleanup.AttemptResources(provider, resource.config,
+                                 dict(resource.spec, model_version_limit=limit),
+                                 resource.root, lifecycle=True)

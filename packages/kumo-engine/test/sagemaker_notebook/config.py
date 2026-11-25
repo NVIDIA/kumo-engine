@@ -24,6 +24,10 @@ PUBLIC_IMAGE = ('public.ecr.aws/sagemaker/sagemaker-distribution@sha256:'
 IMAGE = (f'{ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com/'
          'kumo-mlops-validation@' + PUBLIC_IMAGE.split('@')[1])
 INSTANCE = 'ml.m5.2xlarge'
+GPU_INSTANCE = 'ml.g5.xlarge'
+GPU_IMAGE = (f'{ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com/'
+             'kumo-mlops-validation@sha256:'
+             '210e9ad32983c8a3837e0f935fbe127b04fed5339f19750416c8c43179d430ae')
 
 
 def role(name):
@@ -36,8 +40,10 @@ def role(name):
     return f'arn:aws:iam::{ACCOUNT}:role/{names[name]}'
 
 
-def configuration():
-    return dict(
+def configuration(accelerator='cpu'):
+    if accelerator not in ('cpu', 'gpu'):
+        raise ValueError('Select a CPU or GPU notebook instance')
+    result = dict(
         account=ACCOUNT, region=REGION, bucket=BUCKET, root=ROOT,
         execution_role=role('EXECUTION'), pipeline_role=role('PIPELINE'),
         tracking_role=role('MLFLOW'), runner_role=role('RUNNER'),
@@ -49,6 +55,9 @@ def configuration():
         tracking_artifact_root=f's3://{BUCKET}/{ROOT}/mlflow-artifacts-final',
         artifact_root=f's3://{BUCKET}/{ROOT}/artifacts',
         denied_artifact_root=f's3://{BUCKET}/{DENIED_ROOT}')
+    if accelerator == 'gpu':
+        result.update(accelerator=accelerator, instance=GPU_INSTANCE, image=GPU_IMAGE)
+    return result
 
 
 def execution_identity(identity, expected_role):

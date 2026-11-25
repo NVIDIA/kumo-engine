@@ -84,7 +84,7 @@ The runner validates the cluster ID, name, worker count, node type and effective
 driver type before assets and again before submission. It accepts running,
 starting, restarting or terminated test compute. [Databricks Jobs automatically
 starts terminated assigned compute](https://docs.databricks.com/aws/en/compute/clusters-manage#compute-autostart-for-jobs-and-jdbcodbc-queries),
-so the cluster’s idle shutdown does not require a manual restart after approval.
+so the cluster’s idle shutdown does not require a manual restart between runs.
 The existing bounded Job/task deadlines cover startup and execution. The runner
 never creates, resizes or stops supplied compute and calls no cluster-start API.
 Actions allows 110 minutes for graph checks and 130 minutes for the lifecycle,
@@ -138,7 +138,7 @@ Existing assets are hash-verified and reused without upload. The test helpers ar
 uploaded only when their contents change. Asset bytes are checked before installation
 and again inside the notebook; installed graph modules must match the test revision.
 
-GitHub Actions runs this same command after environment approval. It requires the
+GitHub Actions runs this same command after manual dispatch. It requires the
 protected PAT and host secrets. Select `main` after the squash merge; resource
 names come from the code. Feature-branch dispatches are intentionally skipped,
 so final-head live validation must run after merging.
@@ -324,3 +324,52 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer model lifecycle
+
+The lifecycle launcher accepts `--workload` for a committed module implementing
+[the workload interface](mlops-validation.md#customer-models-and-kumo-pytorch).
+The module declares its phases in one top-level literal `PHASES` list or tuple
+and owns its model, metrics and registry loader. The submission client reads
+that declaration without importing customer code; top-level model imports are
+resolved only in the prepared notebook environment. Computed phase declarations
+are refused before cloud access.
+The notebook installs additional wheels supplied with repeated
+`--workload-wheel` arguments and runs the selected phases in isolated processes.
+The permission prerequisite, installed Engine checksum, runtime identity,
+`pip check`, source admission, evidence collection and attempt cleanup remain
+required. The custom workload's phases and SHA-256 are checked on readback.
+Native UI review remains separate. Custom workloads may publish versions 1–20
+of the supplied attempt-scoped model. Cleanup retains the ownership, creation-time
+and concurrency checks, with this bound included in the signed recovery record.
+The default Kumo scenario keeps its two-version bound.
+
+The candidate Engine wheel bundles `kumo.pytorch` and DiskGraph. The launcher
+installs the `pytorch` extra for customer workloads.
+The launcher rejects dependency wheels that overwrite any candidate Engine
+file with different bytes, including members relocated from wheel `purelib`
+or `platlib` directories and conflicting dependency wheels. Additional wheels
+must install their files into site-packages; prefix-level `data`, `scripts`, and
+`headers` layouts are refused because their destinations vary with the runtime.
+
+```sh
+python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+  --execute --engine-checks-only --cluster-id DEDICATED_TEST_CLUSTER_ID \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --candidate /absolute/path/candidate.json \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --output-dir /tmp/databricks-customer-model-001
+```
+
+This example checks two registered PyTorch versions, MSE/RMSE history,
+preprocessing/weight fingerprints, alias promotion and identical predictions
+after removing producer scratch. It uses the in-memory batch engine and does
+not qualify DiskGraph execution, model quality or native registry UI.
+
+
+For CPU and GPU customer-model coverage, use the
+[shared platform matrix](mlops-validation.md#cpu-and-gpu-platform-matrix).
+Its GPU case admits only dedicated single-node `g5.xlarge` or `g4dn.xlarge`
+clusters with a GPU runtime. The legacy graph/UI scenario retains its CPU
+cluster restrictions. Both routes keep source, wheel and attempt-ownership checks.

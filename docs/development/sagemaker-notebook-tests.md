@@ -12,7 +12,7 @@ The initialization script creates a clean virtual environment, installs the
 selected complete wheel with `[sagemaker]`, checks its dependencies, and registers the
 notebook kernel. Kernel tools are installed separately from the product.
 The runner caches inputs in S3 by SHA256 and checks S3 checksums before reuse.
-The container is the unchanged AWS SageMaker Distribution 3.6.1 CPU image,
+The default CPU case uses the unchanged AWS SageMaker Distribution 3.6.1 CPU image,
 mirrored into the dedicated `kumo-mlops-validation` ECR repository and pinned
 by its original digest. The execution role only needs access to that repository.
 
@@ -124,8 +124,9 @@ passes between browser contexts in memory and is never saved to disk.
 Full qualification also requires nonzero drift sensitivity, active remote-writer interruption, and
 full epoch-history exports; the harness records these as outstanding. Successful
 selected checks can pass while `full_qualification` remains `incomplete`.
-`--engine-checks-only` selects execution and saved-export checks without native
-MLflow or native Studio UI verification.
+With `--scenario engine`, `--engine-checks-only` selects notebook execution
+and receipt verification. Notebook export, native MLflow UI, and native Studio
+UI verification are outside that mode.
 
 UI replay requires both private local evidence and the corresponding cloud
 state. Normal completed attempts clean that state; a replay after cleanup cannot
@@ -154,8 +155,17 @@ attempt Pipeline, model registration, S3 job/output/model prefixes, and MLflow
 artifact prefix, and soft-deletes its MLflow experiment metadata. Shared inputs
 remain cached. Cleanup refuses preexisting attempt resources, foreign tags,
 and active Pipelines, records failures, and fails an otherwise passing run.
-If a runner is cancelled before cleanup, its attempt-specific resources may
-remain; the idle shutdown bounds unattended Studio app lifetime.
+On interruption, the shared runner gives the launcher time to stop the pipeline
+and clean up. Actions also runs a recovery step using the attempt's local
+`resources.json`. To retry cleanup from a retained attempt directory, run:
+
+```sh
+python packages/kumo-engine/test/sagemaker_notebook/cleanup.py --output-dir /path/to/attempt
+```
+
+Recovery requires the dedicated SageMaker test credentials and verifies
+attempt ownership before stopping jobs or removing resources. The idle
+shutdown bounds unattended Studio app lifetime.
 
 ## Test resources and authentication
 
@@ -176,7 +186,7 @@ a repository admin to select **Start all waiting jobs** while deployment approva
 is pending. The shared environment guard verifies the branch and reviewer settings
 before the wheel build and again before AWS authentication. These server-side
 settings and the IAM trust enforce access; the branch-owned preflight is
-configuration lint. Trial branches, wildcards and tags are rejected.
+configuration lint. Other branches, wildcards and tags are rejected.
 
 Account provisioning and IAM policy changes are administrator prerequisites
 managed outside this repository. The test runner uses existing resources; it
@@ -191,7 +201,8 @@ The required role separation is:
 - The notebook/Studio execution role accesses the dedicated S3 prefixes and
   managed MLflow server; it must not create jobs or pass roles.
 
-Account policies must limit job and Studio instances to `ml.m5.2xlarge` and job
+Account policies must limit Studio and default job instances to `ml.m5.2xlarge`;
+the explicit GPU customer-model case additionally needs `ml.g5.xlarge`. Keep job
 runtime to 3,600 seconds. The compiled NotebookJobStep independently requires
 one instance, no retries, and the same runtime cap. These bounds do not cap
 job counts or replace account quotas. Managed MLflow access should use named
@@ -312,3 +323,60 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer model lifecycle
+
+Use `--scenario engine --engine-checks-only --workload PATH` to run a committed
+customer workload in the managed notebook kernel. The module declares one
+literal top-level `PHASES` tuple/list and implements
+[the shared workload interface](mlops-validation.md#customer-models-and-kumo-pytorch).
+The client reads phase declarations without importing customer dependencies.
+Customer modules cannot use built-in helper basenames. Their committed bytes
+and SHA-256 are recorded alongside the notebook sources.
+
+Pass each additional installed dependency with `--workload-wheel PATH`.
+The candidate Engine wheel bundles `kumo.pytorch` and DiskGraph. The launcher
+installs the `pytorch` extra for customer workloads. Admission uses the same
+[dependency checks as Databricks](databricks-notebook-tests.md#customer-model-lifecycle),
+including normalized installation paths and cross-dependency conflicts.
+Initialization installs these wheels with the Engine product, separately from
+locked kernel tools, and retains `pip check` and installed-wheel identity checks.
+
+```sh
+python packages/kumo-engine/test/sagemaker_notebook/run.py \
+  --execute --scenario engine --engine-checks-only \
+  --candidate /absolute/path/candidate.json \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --output-dir /tmp/sagemaker-customer-model-001
+```
+
+The permission prerequisite runs before the workload's selected phases. Each
+worker verifies the actual notebook job/role, candidate Engine checksum and
+workload hash. Producer scratch is removed before recovery. Evidence readback
+requires every declared phase, successful worker exits, matching installed
+wheels and source identity. Existing attempt-owned model, experiment, Pipeline
+and storage cleanup applies; shared caches are retained.
+
+Engine-only checks do not stage the graph fixture or import browser/export
+verification tools. They establish execution coverage and leave notebook-export,
+native Studio and native MLflow UI qualification unverified.
+
+
+
+In Actions, select `workload=pytorch`, `scenario=engine` and
+`engine_checks_only=true`. The dispatch uses the bundled Engine wheel. Published phase results include
+`platform-prerequisite`, `train` and `reload`.
+
+## Shared CPU/GPU customer-model test
+
+Use the [platform matrix](mlops-validation.md#cpu-and-gpu-platform-matrix) to run
+this same workload alongside Databricks and Snowflake. The GPU profile selects
+`ml.g5.xlarge`, the official Distribution 3.6.1 GPU image, and the shared CUDA
+PyTorch dependency. Its immutable image digest is
+`sha256:210e9ad32983c8a3837e0f935fbe127b04fed5339f19750416c8c43179d430ae`.
+The public manifest and the digest-preserving copy in the existing dedicated
+ECR repository were verified on 2026-11-21. The execution role and notebook
+identity checks stay the same. GPU quota and the dedicated job-role policies
+must permit the selected instance. No instance or image fallback is allowed.

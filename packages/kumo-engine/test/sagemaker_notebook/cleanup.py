@@ -2,8 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Remove only resources acquired by one fresh, completed test attempt."""
+import argparse
+import json
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from botocore.exceptions import ClientError
@@ -62,19 +65,29 @@ class AttemptResources:
                     raise
             else:
                 raise ValueError('Attempt model already exists')
+        self.record()
         self.acquired = True
         return self
+
+    def record(self):
+        # Publish ownership before the first mutable request. Replacement keeps
+        # the previous record readable if cancellation interrupts a write.
+        pending = self.root / 'resources.pending.json'
+        save(pending, dict(attempt=self.spec['attempt'],
+                           source_commit=self.spec['source_commit'],
+                           experiment_id=self.experiment_id,
+                           model_created=self.model_created))
+        pending.replace(self.root / 'resources.json')
 
     def prepare_tracking(self):
         if self.spec['scenario'] == 'graph':
             return
         tracking = self.mlflow()
         self.experiment_id = str(tracking.create_experiment(self.name, tags=self.tags))
-        save(self.root / 'resources.json', dict(experiment_id=self.experiment_id))
+        self.record()
         model = tracking.create_registered_model(self.name, tags=self.tags)
         self.model_created = model.creation_timestamp
-        save(self.root / 'resources.json',
-             dict(experiment_id=self.experiment_id, model_created=self.model_created))
+        self.record()
 
     def wait_terminal(self, timeout=600):
         deadline = time.monotonic() + timeout
@@ -99,10 +112,21 @@ class AttemptResources:
                               f'{self.spec["account"]}:training-job/' + self.spec['pipeline_name'])
                     if arn != prefix and not arn.startswith(prefix + '-'):
                         raise ValueError('Cleanup pipeline references another job')
-                    job = self.client.sm.describe_training_job(TrainingJobName=arn.rsplit('/', 1)[1])
+                    name = arn.rsplit('/', 1)[1]
+                    job = self.client.sm.describe_training_job(TrainingJobName=name)
                     if job['TrainingJobArn'] != arn or job['RoleArn'] != self.spec['execution_role']:
                         raise ValueError('Cleanup job execution identity changed')
-                    pending_jobs |= job['TrainingJobStatus'] not in ('Completed', 'Stopped', 'Failed')
+                    status = job['TrainingJobStatus']
+                    pending_jobs |= status not in ('Completed', 'Stopped', 'Failed')
+                    if status == 'InProgress' and not active:
+                        # A terminal pipeline can still have a running job.
+                        try:
+                            self.client.sm.stop_training_job(TrainingJobName=name)
+                        except ClientError as error:
+                            if (error.response['Error']['Code'] != 'ValidationException'
+                                    or self.client.sm.describe_training_job(TrainingJobName=name)[
+                                        'TrainingJobStatus'] == 'InProgress'):
+                                raise
             if not active and not pending_jobs:
                 return
             for execution in active:
@@ -172,16 +196,17 @@ class AttemptResources:
                     raise
                 model = None
             if model:
-                if (self.model_created is None
-                        or model.name != self.name
-                        or model.creation_timestamp != self.model_created
+                if (model.name != self.name
+                        or (self.model_created is not None
+                            and model.creation_timestamp != self.model_created)
                         or any(model.tags.get(k) != v for k, v in self.tags.items())):
                     raise ValueError('Attempt registered model ownership changed')
                 tracking.delete_registered_model(self.name)
             experiment = tracking.get_experiment_by_name(self.name)
             if experiment:
-                if (self.experiment_id is None
-                        or str(experiment.experiment_id) != self.experiment_id
+                exp_id = str(experiment.experiment_id)
+                if (not re.fullmatch(r'[A-Za-z0-9_-]+', exp_id)
+                        or (self.experiment_id is not None and exp_id != self.experiment_id)
                         or experiment.name != self.name
                         or any(experiment.tags.get(k) != v for k, v in self.tags.items())):
                     raise ValueError('Attempt experiment ownership changed')
@@ -192,8 +217,9 @@ class AttemptResources:
                         or store.netloc != location.netloc
                         or prefix != store.path.lstrip('/') + str(experiment.experiment_id) + '/'):
                     raise ValueError('Attempt experiment has an unexpected artifact location')
-                tracking.delete_experiment(experiment.experiment_id)
                 self.remove_prefix(prefix)
+                if getattr(experiment, 'lifecycle_stage', None) != 'deleted':
+                    tracking.delete_experiment(experiment.experiment_id)
         for prefix in self.prefixes:
             self.remove_prefix(prefix)
 
@@ -207,3 +233,54 @@ class AttemptResources:
         else:
             save(self.root / 'cleanup.json',
                  dict(status='passed', mlflow_metadata='soft-deleted'))
+
+
+def recover(root, client=None):
+    """Resume cleanup using only the resources recorded for this attempt."""
+    from config import configuration
+
+    root = Path(root)
+    record = root / 'resources.json'
+    if not record.is_file():
+        return
+    ledger = json.loads(record.read_text())
+    scenario = json.loads((root / 'scenario.json').read_text())
+    attempt = scenario['attempt']
+    source = scenario['source_commit']
+    if (set(ledger) != {'attempt', 'source_commit', 'experiment_id', 'model_created'}
+            or ledger['attempt'] != attempt or ledger['source_commit'] != source
+            or not re.fullmatch(r'[0-9a-f]{40}', source)
+            or scenario['scenario'] not in ('engine', 'graph', 'all')):
+        raise ValueError('Invalid SageMaker cleanup record')
+    config = configuration()
+    for key in ('account', 'region', 'bucket', 'root', 'execution_role',
+                'pipeline_role', 'tracking_arn', 'tracking_artifact_root'):
+        if scenario.get(key) != config[key]:
+            raise ValueError('Cleanup record differs from the dedicated test configuration')
+    spec = dict(config, attempt=attempt, source_commit=source,
+                scenario=scenario['scenario'], pipeline_name=scenario['pipeline_name'])
+    outcome = root / 'cleanup.json'
+    if outcome.is_file():
+        try:
+            if json.loads(outcome.read_text()).get('status') == 'passed':
+                return
+        except json.JSONDecodeError:
+            pass  # Cancellation may have interrupted the cleanup report write.
+    if client is None:
+        from client import Client
+        client = Client(config)
+    resources = AttemptResources(client, spec, root)
+    resources.acquired = True
+    resources.experiment_id = ledger['experiment_id']
+    resources.model_created = ledger['model_created']
+    resources.__exit__(None, None, None)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    recover(parser.parse_args().output_dir)
+
+
+if __name__ == '__main__':
+    main()

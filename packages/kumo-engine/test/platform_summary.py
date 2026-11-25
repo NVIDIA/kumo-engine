@@ -8,7 +8,8 @@ import math
 from pathlib import Path
 
 STATUSES = {'passed', 'failed', 'blocked', 'incomplete', 'pending', 'running'}
-PHASES = ('fit', 'score', 'evaluate', 'negative')
+PHASES = ('fit', 'score', 'evaluate', 'negative', 'platform-prerequisite',
+          'train', 'reload')
 FILES = {
     'summary': 'summary.json',
     'engine': 'ci-verdict.json',

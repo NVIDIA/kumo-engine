@@ -23,6 +23,13 @@ from run import (
     successful_task,
 )
 
+sys.path.append(str(HERE.parent))
+from wheel_mlops_workload import (  # noqa: E402,F401
+    check_workload_wheels,
+    installed_wheel_files,
+    workload_phases,
+)
+
 
 def notebook(spec, kernel_source=None):
     if kernel_source is None:
@@ -84,6 +91,7 @@ def collect(client, run, spec, submitted, root):
             or report.get('payload') != spec['assets']
             or report.get('test_sources') != spec['test_sources']
             or report.get('denied_storage') != spec.get('denied_storage')
+            or report.get('workload') != spec.get('workload')
             or report.get('notebook_path') != spec['notebook_path']
             or report.get('identity') != spec['expected_user']
             or report.get('execution_id') != receipt['execution_id']):
@@ -96,7 +104,11 @@ def collect(client, run, spec, submitted, root):
 def engine_verdict(report):
     if report.get('lifecycle_status') not in ('passed', 'blocked'):
         raise ValueError('Lifecycle harness failed or lacks its overall status')
-    expected = {'fit', 'score', 'evaluate', 'negative'}
+    custom = report.get('workload')
+    positive_names = custom['phases'] if custom else ('fit', 'score',
+                                                      'evaluate')
+    expected = ({'platform-prerequisite', *positive_names}
+                if custom else {'fit', 'score', 'evaluate', 'negative'})
     phases = report.get('phases', {})
     states = {
         name: phases.get(name, {}).get('status', 'blocked')
@@ -108,6 +120,10 @@ def engine_verdict(report):
                 raise ValueError(
                     'Passed lifecycle receipt has a nonzero or missing worker exit code: '
                     + name)
+            if custom and phase.get('workload',
+                                    {}).get('sha256') != custom['sha256']:
+                raise ValueError(
+                    'Customer phase lacks the selected workload hash: ' + name)
             if (phase.get('environment', {}).get('sha256')
                     != report['wheel_sha256'] or phase.get('platform', {}).get(
                         'placement', {}).get('context') != 'databricks'
@@ -116,7 +132,7 @@ def engine_verdict(report):
                 raise ValueError(
                     'Passed lifecycle phase lacks installed-wheel runtime/identity evidence: '
                     + name)
-    positive = all(states[n] == 'passed' for n in ('fit', 'score', 'evaluate'))
+    positive = all(states[n] == 'passed' for n in positive_names)
     complete = set(phases) == expected and all(s == 'passed'
                                                for s in states.values())
     if (positive or complete) and report.get('pip_check_returncode') != 0:
@@ -137,9 +153,8 @@ def denied_storage(client, config):
         client.api('/api/2.0/fs/directories' + volume)
     except RuntimeError as error:
         if str(error) == 'Databricks API HTTP 404':
-            return dict(
-                status='blocked', volume=volume,
-                reason='Create TEST_DENIED and grant read access')
+            return dict(status='blocked', volume=volume,
+                        reason='Create TEST_DENIED and grant read access')
         if str(error) == 'Databricks API HTTP 403':
             return dict(
                 status='blocked', volume=volume,
@@ -160,8 +175,18 @@ def execute(args, root):
     paths += [
         HERE.parent / n
         for n in ('wheel_mlops_lifecycle.py', 'wheel_mlops_platform.py',
-                  'wheel_gpu_smoke.py')
+                  'wheel_gpu_smoke.py', 'wheel_mlops_workload.py')
     ]
+    custom_path = getattr(args, 'workload', None)
+    extra_wheels = getattr(args, 'workload_wheel', None) or []
+    if extra_wheels and custom_path is None:
+        raise ValueError('--workload-wheel requires --workload')
+    if custom_path is not None:
+        custom_path = custom_path.resolve(strict=True)
+        if custom_path.name in {path.name for path in paths}:
+            raise ValueError(
+                'Workload basename is reserved for a notebook helper')
+        paths.append(custom_path)
     committed, sources = {}, {}
     for path in paths:
         relative = path.relative_to(repo).as_posix()
@@ -174,36 +199,70 @@ def execute(args, root):
         committed[path.name] = content
         sources[relative] = digest(content)
     candidate = read_candidate(args.candidate)
+    custom = None
+    if custom_path is not None:
+        names = [custom_path.name] + [wheel.name for wheel in extra_wheels]
+        reserved = (set(committed) -
+                    {custom_path.name}) | {candidate['wheel_file']}
+        if len(set(names)) != len(names) or set(names) & reserved:
+            raise ValueError('Workload asset names must be unique')
+        custom = dict(file=custom_path.name,
+                      sha256=digest(committed[custom_path.name]),
+                      phases=workload_phases(committed[custom_path.name]),
+                      wheels=[wheel.name for wheel in extra_wheels])
+        check_workload_wheels(args.wheel, extra_wheels)
+    accelerator = getattr(args, 'accelerator', 'cpu')
+    if accelerator == 'gpu' and custom is None:
+        raise ValueError('GPU notebook validation requires a customer workload')
     config = configuration(args.cluster_id)
+    if accelerator == 'gpu':
+        config['accelerator'] = accelerator
     if not config['expected_user'].strip():
-        raise ValueError('KUMO_DATABRICKS_TEST_USER must identify the dedicated test principal')
+        raise ValueError(
+            'KUMO_DATABRICKS_TEST_USER must identify the dedicated test principal'
+        )
     client = Client(config)
-    admit_cluster(client, config['cluster_id'])
+    if accelerator == 'cpu':
+        admit_cluster(client, config['cluster_id'])
+    else:
+        admit_cluster(client, config['cluster_id'], accelerator)
     storage = denied_storage(client, config)
     assets = {}
     for name in ('wheel_mlops_lifecycle.py', 'wheel_mlops_platform.py',
-                 'wheel_gpu_smoke.py'):
+                 'wheel_gpu_smoke.py', 'wheel_mlops_workload.py'):
         local = HERE.parent / name
         assets[name], _ = asset(client, config['volume'], name,
                                 digest(committed[name]), local)
+    if custom is not None:
+        for local in (custom_path, *extra_wheels):
+            checksum = custom['sha256'] if local == custom_path else digest(
+                local.read_bytes())
+            assets[local.name], _ = asset(client, config['volume'], local.name,
+                                          checksum, local)
     attempt = uuid.uuid4().hex[:12]
     folder = '/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
     spec = dict(
         attempt=attempt, candidate=candidate, assets=assets,
-        expected_user=config['expected_user'],
-        denied_storage=storage, source_commit=commit, test_sources=sources,
+        expected_user=config['expected_user'], denied_storage=storage,
+        source_commit=commit, test_sources=sources,
         cluster_id=config['cluster_id'],
         notebook_path=folder + '/kumo-test-lifecycle-' + attempt,
         experiment=folder + '/KUMO_TEST_MLOPS',
         artifact_root=config['volume'].removesuffix('/notebook-ui') +
         '/lifecycle',
         output=config['volume'] + '/lifecycle/runs/' + attempt + '/outputs')
+    if accelerator == 'gpu':
+        spec['accelerator'] = accelerator
+    if custom is not None:
+        spec['workload'] = custom
+        spec['model_version_limit'] = 20
     if storage['status'] == 'ready':
         spec['denied_artifact_root'] = storage['artifact_root']
     save(root / 'scenario.json', spec)
     client.api('/api/2.0/workspace/mkdirs', 'POST', dict(path=folder))
     from cleanup import AttemptResources
-    with AttemptResources(client, config, spec, root, lifecycle=True) as resources:
+    with AttemptResources(client, config, spec, root,
+                          lifecycle=True) as resources:
         assets[candidate['wheel_file']], _ = asset(
             client,
             config['volume'] + '/lifecycle/runs/' + attempt + '/payload',
@@ -228,9 +287,16 @@ def main():
                         help='Runtime manifest for the selected checkout wheel')
     parser.add_argument('--engine-checks-only', action='store_true',
                         help='Require engine phases; retain UI gaps')
+    parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--cluster-id', required=True,
                         type=lambda value: configuration(value)['cluster_id'])
     parser.add_argument('--wheel', type=Path)
+    parser.add_argument(
+        '--workload', type=Path,
+        help='Committed workload module to execute in the notebook')
+    parser.add_argument(
+        '--workload-wheel', type=Path, action='append',
+        help='Additional dependency wheel; repeat for each wheel')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--timeout', type=int, default=6000)
     args = parser.parse_args()

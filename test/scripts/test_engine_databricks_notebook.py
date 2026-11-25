@@ -846,3 +846,35 @@ def test_retry_does_not_start_another_request_after_deadline(modules, monkeypatc
     with pytest.raises(RuntimeError, match='retry deadline exceeded'):
         client.api('/api/2.2/jobs/runs/get?run_id=1')
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('change,accepted', [
+    ({}, True), ({'spark_version': '17.3.x-scala2.13'}, False),
+    ({'node_type_id': 'i3.xlarge'}, False),
+    ({'cluster_name': 'customer-production'}, False), ({'num_workers': 1}, False),
+])
+def test_gpu_cluster_admission_requires_dedicated_gpu_runtime_and_nodes(modules, change, accepted):
+    client, _ = modules
+    cluster_id = '0101-010101-example'
+    record = dict(cluster_id=cluster_id, cluster_name='KUMO_TEST_GPU',
+                  node_type_id='g5.xlarge', num_workers=0, state='PENDING',
+                  spark_version='17.3.x-gpu-ml-scala2.13')
+    record.update(change)
+    fake = FakeClient({'/api/2.0/clusters/get?cluster_id=' + cluster_id: record})
+    if accepted:
+        assert client.admit_cluster(fake, cluster_id, 'gpu')['node_type_id'] == 'g5.xlarge'
+    else:
+        with pytest.raises(ValueError):
+            client.admit_cluster(fake, cluster_id, 'gpu')
+
+
+def test_gpu_job_submission_revalidates_the_selected_gpu_compute(modules):
+    _, runner = modules
+    cluster_id = '0101-010101-example'
+    fake = FakeClient({'/api/2.0/clusters/get?cluster_id=' + cluster_id:
+                       dict(cluster_id=cluster_id, cluster_name='KUMO_TEST_GPU',
+                            node_type_id='g5.xlarge', num_workers=0, state='RUNNING',
+                            spark_version='17.3.x-gpu-ml-scala2.13')})
+    payload = runner.task_request(dict(cluster_id=cluster_id, accelerator='gpu'),
+                                  '/Shared/KUMO_TEST/notebook', 'a' * 12, fake)
+    assert payload['tasks'][0]['existing_cluster_id'] == cluster_id

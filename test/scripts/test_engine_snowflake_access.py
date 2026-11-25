@@ -223,3 +223,85 @@ def test_legacy_dependency_hashes_do_not_block_new_candidates(resources, monkeyp
                                'dependency-asset.json': 'b' * 64})
     monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(value))
     assert resources.require() == resources.expected()
+
+
+@pytest.mark.parametrize('selected', ['kumo', 'pytorch'])
+def test_actions_dispatch_stages_bundled_pytorch_and_native_workload(tmp_path, selected):
+    import os
+    import subprocess
+    import sys
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / '.github/workflows/kumo-engine-snowflake-notebook.yml').read_text())
+    steps = workflow['jobs']['engine-lifecycle']['steps']
+    capture = tmp_path / 'commands.jsonl'
+    python = tmp_path / 'python'
+    python.write_text(f'#!{sys.executable}\n' +
+                      'import json, os, sys\n' +
+                      "with open(os.environ['CAPTURE'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+    python.chmod(0o755)
+    for folder, files in {'snowflake-wheel': ['engine.whl']}.items():
+        directory = tmp_path / folder
+        directory.mkdir()
+        for name in files:
+            (directory / name).touch()
+    env = dict(os.environ, WORKLOAD=selected, RUNNER_TEMP=str(tmp_path),
+               GITHUB_ENV=str(tmp_path / 'environment'), GITHUB_SHA='a' * 40,
+               GITHUB_RUN_ID='123', SNOWFLAKE_TEST_CANDIDATE=str(tmp_path / 'candidate.json'),
+               PATH=f'{tmp_path}:{os.environ["PATH"]}', CAPTURE=str(capture))
+    for title in ("Stage this dispatch's candidate", "Prepare this revision's notebook tests"):
+        script = next(s['run'] for s in steps if s.get('name') == title)
+        result = subprocess.run(['bash', '-e', '-c', script], env=env,
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    stage, prepare = [json.loads(line) for line in capture.read_text().splitlines()]
+    if selected == 'pytorch':
+        assert '--pytorch' in stage
+        assert prepare[prepare.index('--workload') + 1].endswith('/wheel_mlops_pytorch_snowflake.py')
+        assert prepare[prepare.index('--workload-helper') + 1].endswith('/wheel_mlops_pytorch.py')
+    else:
+        assert '--pytorch' not in stage
+        assert '--workload' not in prepare
+
+
+@pytest.mark.parametrize('platform,opt_in,outcome', [
+    ('sagemaker', True, 'accepted'),
+    ('sagemaker', False, 'rejected'),
+    ('databricks', True, 'rejected'),
+    ('snowflake', True, 'rejected'),
+])
+def test_only_sagemaker_byom_can_use_the_trial_branch(
+        environment_guard, monkeypatch, platform, opt_in, outcome):
+    import io
+
+    guard, environment, policies = environment_guard
+    policies['branch_policies'].append(
+        dict(name=guard.SAGEMAKER_BYOM_BRANCH, type='branch'))
+    monkeypatch.setenv('GITHUB_REPOSITORY', guard.REPOSITORY)
+    monkeypatch.setenv('GITHUB_REF', 'refs/heads/' + guard.SAGEMAKER_BYOM_BRANCH)
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'workflow_dispatch')
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    requests = []
+
+    def get(request, timeout):
+        requests.append(request.full_url)
+        result = policies if 'deployment-branch-policies' in request.full_url else environment
+        return io.BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
+    selected = dict(environment=platform + '-mlops-test', sagemaker_byom_trial=opt_in)
+    if outcome == 'accepted':
+        guard.main(**selected)
+        assert len(requests) == 2
+        environment['protection_rules'][0]['prevent_self_review'] = False
+        with pytest.raises(ValueError, match='self-review'):
+            guard.main(**selected)
+        environment['protection_rules'][0]['prevent_self_review'] = True
+        policies['branch_policies'].append(dict(name='feature/*', type='branch'))
+        with pytest.raises(ValueError, match='wildcards'):
+            guard.main(**selected)
+    else:
+        with pytest.raises(SystemExit, match='manual dispatch'):
+            guard.main(**selected)
+        assert not requests

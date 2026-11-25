@@ -102,19 +102,24 @@ class APIError(RuntimeError):
         super().__init__(f'Databricks API HTTP {status}')
 
 
-def admit_cluster(client, cluster_id):
+def admit_cluster(client, cluster_id, accelerator='cpu'):
     """Validate existing test compute; Jobs handles any required auto-start."""
     if not cluster_id:
         raise ValueError('A dedicated KUMO_TEST_ x86 cluster_id is required')
     configuration(cluster_id)
     cluster = client.api('/api/2.0/clusters/get?cluster_id=' + cluster_id)
+    if accelerator not in ('cpu', 'gpu'):
+        raise ValueError('Select a CPU or GPU test cluster')
+    nodes = ('g5.xlarge', 'g4dn.xlarge') if accelerator == 'gpu' else ('i3.xlarge', 'i3.2xlarge')
+    if accelerator == 'gpu' and 'gpu' not in cluster.get('spark_version', ''):
+        raise ValueError('GPU test compute requires a GPU Databricks runtime')
     driver = cluster.get('driver_node_type_id')
     if driver is None:
         driver = cluster.get('node_type_id')
     if (cluster.get('cluster_id') != cluster_id
             or not cluster.get('cluster_name', '').startswith('KUMO_TEST_')
-            or cluster.get('node_type_id') not in ('i3.xlarge', 'i3.2xlarge')
-            or driver not in ('i3.xlarge', 'i3.2xlarge')
+            or cluster.get('node_type_id') not in nodes
+            or driver not in nodes
             or cluster.get('num_workers') != 0):
         raise ValueError('Use a dedicated single-node x86 KUMO_TEST_ cluster')
     if cluster.get('state') not in ('RUNNING', 'PENDING', 'RESTARTING', 'TERMINATED'):

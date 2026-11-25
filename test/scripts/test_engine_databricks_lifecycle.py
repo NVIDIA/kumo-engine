@@ -192,8 +192,7 @@ def test_empty_readable_denied_volume_is_admitted_for_the_real_probe(runner):
         def api(self, path):
             calls.append(path)
             if '/unity-catalog/' in path:
-                return dict(
-                    full_name='kumo_test_denied.kumo_test.test_denied')
+                return dict(full_name='kumo_test_denied.kumo_test.test_denied')
             return dict(contents=[])
 
     result = runner.denied_storage(Client(), runner.configuration())
@@ -223,14 +222,16 @@ def test_denied_volume_metadata_cannot_substitute_another_resource(runner):
         runner.denied_storage(Client(), runner.configuration())
 
 
-def test_denied_storage_setup_cannot_be_substituted_in_collected_report(evidence):
+def test_denied_storage_setup_cannot_be_substituted_in_collected_report(
+        evidence):
     runner, spec, report, receipt, content, submitted, commands, root = evidence
     report['denied_storage'] = dict(status='ready', volume='/another/volume')
     content = json.dumps(report).encode()
     receipt['files']['lifecycle-result.json'] = runner.digest(content)
     commands[-1]['results']['data'][0]['data'] = (
         'KUMO_DATABRICKS_LIFECYCLE_RECEIPT=' + json.dumps(receipt))
-    mutated = (runner, spec, report, receipt, content, submitted, commands, root)
+    mutated = (runner, spec, report, receipt, content, submitted, commands,
+               root)
     with pytest.raises(ValueError, match='identity differs'):
         collect(mutated)
 
@@ -251,15 +252,19 @@ def test_native_worker_crash_retains_and_redacts_phase_log(
     monkeypatch.setenv('DATABRICKS_RUNTIME_VERSION', 'test-runtime')
     monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: None)
     workspace = SimpleNamespace(
-        current_user=SimpleNamespace(me=lambda: SimpleNamespace(user_name='test-user')),
-        config=SimpleNamespace(host='https://test.cloud.databricks.com',
-                               authenticate=lambda: {'Authorization': 'Bearer test-runtime-token'}))
+        current_user=SimpleNamespace(
+            me=lambda: SimpleNamespace(user_name='test-user')),
+        config=SimpleNamespace(
+            host='https://test.cloud.databricks.com', authenticate=lambda:
+            {'Authorization': 'Bearer test-runtime-token'}))
     monkeypatch.setitem(sys.modules, 'databricks.sdk',
                         SimpleNamespace(WorkspaceClient=lambda: workspace))
-    context = SimpleNamespace(notebookPath=lambda: SimpleNamespace(get=lambda: '/Shared/test'))
-    utils = SimpleNamespace(notebook=lambda: SimpleNamespace(getContext=lambda: context))
-    dbutils = SimpleNamespace(notebook=SimpleNamespace(entry_point=SimpleNamespace(
-        getDbutils=lambda: utils)))
+    context = SimpleNamespace(
+        notebookPath=lambda: SimpleNamespace(get=lambda: '/Shared/test'))
+    utils = SimpleNamespace(
+        notebook=lambda: SimpleNamespace(getContext=lambda: context))
+    dbutils = SimpleNamespace(notebook=SimpleNamespace(
+        entry_point=SimpleNamespace(getDbutils=lambda: utils)))
     source = tmp_path / 'wheel_mlops_lifecycle.py'
     source.write_text('''import json
 from pathlib import Path
@@ -280,18 +285,23 @@ def execute(command, root, log, timeout, env=None):
     ))
     wheel = tmp_path / 'candidate.whl'
     wheel.write_bytes(b'wheel')
-    assets = {p.name: dict(path=str(p), size=p.stat().st_size,
-                           sha256=hashlib.sha256(p.read_bytes()).hexdigest())
-              for p in (source, wheel)}
+    assets = {
+        p.name:
+        dict(path=str(p), size=p.stat().st_size,
+             sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+        for p in (source, wheel)
+    }
     output = tmp_path / 'output'
-    kernel.execute(dict(attempt='a' * 12, source_commit='b' * 40,
-                        candidate=dict(wheel_file=wheel.name,
-                                       wheel_sha256=assets[wheel.name]['sha256'],
-                                       expected_version='1.0'),
-                        notebook_path='/Shared/test', assets=assets, test_sources={},
-                        expected_user='test-user', cluster_id='0101-010101-test',
-                        artifact_root='/Volumes/test/models', experiment='test',
-                        output=str(output)), dbutils)
+    kernel.execute(
+        dict(
+            attempt='a' * 12, source_commit='b' * 40,
+            candidate=dict(wheel_file=wheel.name,
+                           wheel_sha256=assets[wheel.name]['sha256'],
+                           expected_version='1.0'),
+            notebook_path='/Shared/test', assets=assets, test_sources={},
+            expected_user='test-user', cluster_id='0101-010101-test',
+            artifact_root='/Volumes/test/models', experiment='test',
+            output=str(output)), dbutils)
     report = json.loads((output / 'lifecycle-result.json').read_text())
     assert report['status'] == 'failed'
     if failure == 'worker_crash':
@@ -311,19 +321,26 @@ def test_lifecycle_uses_mounted_files_but_keeps_native_tracking_registry(
     from types import SimpleNamespace
 
     module = importlib.import_module('wheel_mlops_platform')
-    config = json.loads((ROOT / 'packages/kumo-engine/test/mlops_platforms/databricks.json').read_text())
+    config = json.loads(
+        (ROOT / 'packages/kumo-engine/test/mlops_platforms/databricks.json'
+         ).read_text())
     profile = module.Mlflow(config, 'a' * 12)
     native = object()
     profile.connector = native
     monkeypatch.setattr(profile, 'placement', lambda: {})
-    kumo = SimpleNamespace(MLOps=lambda root, **kwargs: dict(root=root, **kwargs),
-                           ModelRegistryLocation=lambda name: name)
+    kumo = SimpleNamespace(
+        MLOps=lambda root, **kwargs: dict(root=root, **kwargs),
+        ModelRegistryLocation=lambda name: name)
     monkeypatch.setitem(sys.modules, 'kumo.engine', kumo)
     monkeypatch.setitem(sys.modules, 'kumo', SimpleNamespace(engine=kumo))
-    monkeypatch.setitem(sys.modules, 'mlflow', SimpleNamespace(
-        set_tracking_uri=lambda uri: None, set_registry_uri=lambda uri: None))
-    monkeypatch.setitem(sys.modules, 'kumo.engine.integrations.mlflow', SimpleNamespace(
-        MlflowTracking=lambda experiment, **kwargs: kwargs['target']))
+    monkeypatch.setitem(
+        sys.modules, 'mlflow',
+        SimpleNamespace(set_tracking_uri=lambda uri: None,
+                        set_registry_uri=lambda uri: None))
+    monkeypatch.setitem(
+        sys.modules, 'kumo.engine.integrations.mlflow',
+        SimpleNamespace(
+            MlflowTracking=lambda experiment, **kwargs: kwargs['target']))
     cfg = profile.settings(register=True)
     assert cfg['root'] == profile.artifact_root
     assert isinstance(cfg['root'], str)
@@ -337,3 +354,132 @@ def test_passed_phases_cannot_hide_a_harness_failure(runner, status):
     report['lifecycle_status'] = status
     with pytest.raises(ValueError, match='Lifecycle harness failed'):
         runner.engine_verdict(report)
+
+
+@pytest.mark.parametrize('prerequisite', ['passed', 'blocked'])
+def test_customer_workload_verdict_uses_its_own_phases(runner, prerequisite):
+    report = passed_report()
+    sample = report['phases']['fit']
+    report['workload'] = dict(sha256='c' * 64, phases=['train', 'reload'])
+    report['phases'] = {
+        name: dict(sample, workload=dict(sha256='c' * 64))
+        for name in ('train', 'reload', 'platform-prerequisite')
+    }
+    report['phases']['platform-prerequisite']['status'] = prerequisite
+    result = runner.engine_verdict(report)
+    assert result['positive_lifecycle'] == 'passed'
+    assert result['engine_checks'] == ('passed' if prerequisite == 'passed' else
+                                       'incomplete')
+    report['phases']['reload']['workload']['sha256'] = 'd' * 64
+    with pytest.raises(ValueError, match='selected workload hash'):
+        runner.engine_verdict(report)
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_workload_dependency_cannot_replace_candidate_bytes(
+        runner, tmp_path, changed):
+    import zipfile
+    engine = tmp_path / 'engine.whl'
+    dependency = tmp_path / 'diskgraph.whl'
+    with zipfile.ZipFile(engine, 'w') as archive:
+        archive.writestr('diskgraph/_c.abi3.so', b'native candidate')
+    with zipfile.ZipFile(dependency, 'w') as archive:
+        archive.writestr('diskgraph/_c.abi3.so',
+                         b'another native' if changed else b'native candidate')
+        archive.writestr('diskgraph.dist-info/METADATA', b'Name: diskgraph')
+    if changed:
+        with pytest.raises(ValueError, match='replaces candidate bytes'):
+            runner.check_workload_wheels(engine, [dependency])
+    else:
+        runner.check_workload_wheels(engine, [dependency])
+
+
+@pytest.mark.parametrize('scheme', ['purelib', 'platlib'])
+def test_relocated_workload_dependency_cannot_replace_candidate(
+        runner, tmp_path, scheme):
+    import zipfile
+    engine, dependency = tmp_path / 'engine.whl', tmp_path / 'dependency.whl'
+    with zipfile.ZipFile(engine, 'w') as archive:
+        archive.writestr('kumo/engine/trainer.py', b'candidate')
+    with zipfile.ZipFile(dependency, 'w') as archive:
+        archive.writestr(f'dependency-1.data/{scheme}/kumo/engine/trainer.py',
+                         b'other build')
+    with pytest.raises(ValueError, match='replaces candidate bytes'):
+        runner.check_workload_wheels(engine, [dependency])
+
+
+def test_workload_wheels_cannot_replace_each_other(runner, tmp_path):
+    import zipfile
+    engine, first, second = [
+        tmp_path / (name + '.whl') for name in ('engine', 'first', 'second')
+    ]
+    with zipfile.ZipFile(engine, 'w') as archive:
+        archive.writestr('kumo/engine/__init__.py', b'engine')
+    with zipfile.ZipFile(first, 'w') as archive:
+        archive.writestr('customer_model/__init__.py', b'first build')
+    with zipfile.ZipFile(second, 'w') as archive:
+        archive.writestr('second-1.data/purelib/customer_model/__init__.py',
+                         b'second build')
+    with pytest.raises(ValueError, match='another dependency'):
+        runner.check_workload_wheels(engine, [first, second])
+
+
+@pytest.mark.parametrize('name', [
+    'pkg-1.data/data/lib/python3.12/site-packages/kumo/engine/trainer.py',
+    '../kumo/engine/trainer.py',
+    '/kumo/engine/trainer.py',
+])
+def test_unmappable_dependency_install_paths_are_rejected(
+        runner, tmp_path, name):
+    import zipfile
+    wheel = tmp_path / 'dependency.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr(name, b'other build')
+    with pytest.raises(ValueError):
+        runner.installed_wheel_files(wheel)
+
+
+def test_notebook_phase_discovery_does_not_execute_customer_imports(runner):
+    source = b'import customer_model_not_installed_on_client\nPHASES = ("train", "reload")\nraise RuntimeError("must not execute on client")'
+    assert runner.workload_phases(source) == ['train', 'reload']
+    assert runner.workload_phases(b'PHASES: tuple[str, ...] = ("train",)') == [
+        'train'
+    ]
+
+
+@pytest.mark.parametrize('declaration', [
+    'PHASES = tuple(["train"])',
+    'PHASES = ()',
+    'PHASES = ("train", "train")',
+    'PHASES = ("../escape",)',
+    'PHASES = ("platform-prerequisite",)',
+    'PHASES = ("summary",)',
+    'PHASES = ("train",)\nPHASES = ("reload",)',
+])
+def test_notebook_requires_a_literal_phase_declaration(runner, declaration):
+    with pytest.raises(ValueError, match='literal PHASES'):
+        runner.workload_phases(declaration)
+
+
+@pytest.mark.parametrize('name', [
+    'wheel_mlops_lifecycle.py',
+    'wheel_mlops_platform.py',
+    'wheel_gpu_smoke.py',
+    'lifecycle_kernel.py',
+    'lifecycle_notebook.py',
+    'client.py',
+    'run.py',
+])
+def test_notebook_rejects_reserved_workload_basename_before_reading_sources(
+        runner, tmp_path, monkeypatch, name):
+    from types import SimpleNamespace
+    path = tmp_path / name
+    path.write_text('PHASES = ("train",)')
+
+    def git_output(command, **kwargs):
+        assert 'rev-parse' in command, 'Reserved workload must fail before source collection'
+        return 'a' * 40
+
+    monkeypatch.setattr(runner.subprocess, 'check_output', git_output)
+    with pytest.raises(ValueError, match='basename is reserved'):
+        runner.execute(SimpleNamespace(workload=path), tmp_path)
