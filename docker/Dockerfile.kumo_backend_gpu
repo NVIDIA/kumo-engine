@@ -182,6 +182,7 @@ RUN mkdir -p /opt/app/src/scripts
 #   - packages/kumo-api                         shared public contracts
 #   - packages/kumo-pql                         PQL parser and validator
 #   - packages/kumo-core                        shared portable implementation
+#   - packages/kumo-settings                    shared settings and managed paths
 #   - packages/kumo-snowflake                   Snowflake source reader
 #   - packages/kumo-databricks                  Databricks source reader
 #   - packages/kumo-bigquery                    BigQuery source reader
@@ -200,6 +201,8 @@ COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-pql/ \
     /opt/app/src/packages/kumo-pql/
 COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-core/ \
     /opt/app/src/packages/kumo-core/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-settings/ \
+    /opt/app/src/packages/kumo-settings/
 COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-snowflake/ \
     /opt/app/src/packages/kumo-snowflake/
 COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-databricks/ \
@@ -295,7 +298,7 @@ RUN set -- \
     fi \
  && rm -rf /tmp/requirements.txt /root/.cache/uv
 
-# Register the local API, PQL, core and source-reader packages as regular
+# Register the local API, PQL, core, settings and source-reader packages as regular
 # (non-editable) installs: the source overlay below `rm -rf`s /opt/app/src, so
 # editable installs would dangle. Their dependencies are already in the lock
 # export above. --no-sources ignores their `workspace = true` entries (e.g.
@@ -305,6 +308,7 @@ RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps --no-sources 
         /opt/app/src/packages/kumo-api \
         /opt/app/src/packages/kumo-pql \
         /opt/app/src/packages/kumo-core \
+        /opt/app/src/packages/kumo-settings \
         /opt/app/src/packages/kumo-snowflake \
         /opt/app/src/packages/kumo-databricks \
         /opt/app/src/packages/kumo-bigquery \
@@ -312,8 +316,9 @@ RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps --no-sources 
         /opt/app/src/packages/kumo-gcs \
  && rm -rf /root/.cache/uv
 
-# Validate the staged DiskGraph runtime.
-RUN python3 -c "from diskgraph import SamplerEngine; print('diskgraph import ok')" \
+# Validate the staged snapshot dependency and DiskGraph runtime.
+RUN python3 -c "from kumo_core.diskgraph.snapshot import DiskgraphIngestResult; print('snapshot import ok')" \
+ && python3 -c "from diskgraph import SamplerEngine; print('diskgraph import ok')" \
  && python3 -c "import os, diskgraph; from pathlib import Path; ingest = Path(diskgraph.__file__).parent / 'bin' / 'ingest'; assert ingest.is_file() and os.access(ingest, os.X_OK), ingest; print(f'diskgraph ingest binary ok: {ingest}')"
 
 # Signed GloVe bake. kumo-public-datasets is private, so install_glove_files
