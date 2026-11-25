@@ -4,7 +4,7 @@ recipe_family: sequence
 seed: 42
 data:
   adapter: tfm.data.adapters.synthetic_relational:adapter
-  loader: python
+  loader: kumo_pytorch
   n_entities: 8
   sequence_length: 8
   max_tokens: 16

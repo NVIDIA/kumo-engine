@@ -306,8 +306,9 @@ that presence. Missing amounts on individual events remain supported.
 
 ## Recipe loader selection
 
-`data.loader` defaults to `python` for sequence compositions and graph recipes.
-`kumo_pytorch` explicitly selects the experimental native integration. A configured
+`data.loader` defaults to `kumo_pytorch` for sequence, graph and hybrid recipes.
+Set `python` explicitly for reference retrieval. Native dependencies are required
+unless a configured cache bypasses history retrieval; there is no automatic fallback. A configured
 token cache retains its batch builder; packing retains the packer over the selected
 histories. See the [migration guide](../migration/native-loader-default.md) for
 source build requirements and graph schema/clock limitations.
@@ -322,7 +323,7 @@ inputs. Pretrain-only FutureSubgraph uses cutoff/replay anchors with
 `data.load_labels: false` and no `data.relational.labels`.
 
 See the [contract](../contracts/relational-inputs.md) and
-[worked configurations](../../recipes/relational_inputs/README.md). Python remains
-the default. Numeric fixed-FK graph projection and point-in-time sequence
+[worked configurations](../../recipes/relational_inputs/README.md). Kumo Engine is
+the default; Python remains an explicit reference option. Numeric fixed-FK graph projection and point-in-time sequence
 ownership have explicit capability checks; unsupported graph feature kinds or
 versioned topology fail before fitting or training.

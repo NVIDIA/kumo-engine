@@ -33,6 +33,7 @@ seed: 42
 # Not used by CI, and no result is recorded for it yet.
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   path: null
   observation_window: 730d

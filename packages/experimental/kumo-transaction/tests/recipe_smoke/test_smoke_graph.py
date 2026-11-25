@@ -51,6 +51,8 @@ def test_graph_recipe_complete_and_reusable(
     assert identity["split"]["validation_graphs"] == "disjoint"
     assert identity["stages"]["graph"]["best_step"] > 0
     splits = json.loads((out / "split_manifest.json").read_text())
+    assert splits["input_loader"]["name"] == "kumo_pytorch"
+    assert splits["input_loader"]["target_builder"] == "python_reference"
     assert set(splits["ssl_train_owners"]).isdisjoint(splits["ssl_validation_owners"])
     owners = splits["probe_owners"]
     assert set(owners["train"]).isdisjoint(owners["test"])

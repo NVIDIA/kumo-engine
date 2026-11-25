@@ -20,7 +20,7 @@ explain it and call the same `src/tfm` code.
 From the repository root:
 
 ```bash
-uv sync --extra dev --extra notebooks
+uv sync --extra native --extra dev --extra notebooks
 uv run jupyter notebook notebooks/blueprint_v1/
 ```
 

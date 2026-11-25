@@ -35,8 +35,10 @@ and JSON manifest, split/anchor and tokenizer manifests, embeddings, metrics,
 model card and environment provenance. Graph variants also export `encoder.pt`.
 A reuse request validates embedded metadata before loading any state.
 
-Python remains the default. To test native retrieval, copy a config, set
-`data.loader: kumo_pytorch`, and pass its path with `--config`. The native graph
+Kumo Engine is the default (`data.loader: kumo_pytorch`). To use the Python
+reference path, copy a config, set `data.loader: python`, and pass its path with
+`--config`. See [preparation and memory tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
+The native graph
 reference implementation filters row/link availability into cutoff snapshots,
 retrieves complete one-hop candidate sets, and applies canonical recent fanout.
 Logical fanout is ten per frontier and directed role; physical candidate reads

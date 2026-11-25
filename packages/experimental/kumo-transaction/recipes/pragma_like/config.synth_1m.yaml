@@ -5,6 +5,7 @@
 seed: 42
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   path: null
   observation_window: 90d

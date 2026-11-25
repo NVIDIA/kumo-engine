@@ -1,109 +1,135 @@
-# Optional native loader integration after 2.0.0a4
+# Kumo Engine as the recipe loader default
 
-`data.loader: python` remains the default for sequence and graph recipes. Native
-retrieval is experimental and opt-in; this PR does not establish an end-to-end
-performance gain. Select it explicitly in a copied recipe configuration:
+Sequence, graph and hybrid recipes default to Kumo Engine's experimental
+PyTorch/DiskGraph loader, `data.loader: kumo_pytorch`. This is an integration
+choice, not a claim that it is faster or uses less memory for every workload.
+The Python reference loader remains available:
 
 ```yaml
 data:
-  loader: kumo_pytorch
+  loader: python
 ```
 
-The data slot selects an input backend, independently of model architecture and
-tokenizer. Existing model APIs, sequence compositions, labels and objectives
-are unchanged. Native graph inputs pass through the backend-neutral batch
-contracts. Future targets remain separate from historical input graphs.
+Copy the recipe configuration, set that field, and pass its path with
+`tfm <stage> --recipe <slug> --config <path>`. Loader selection is independent
+of model architecture and tokenizer. Existing direct library history helpers
+keep their Python defaults; recipe runners pass the resolved setting explicitly.
+There is no automatic fallback if native dependencies or schema capabilities
+are unavailable.
 
-Install with `uv sync --frozen --extra dev --extra native` (add `--extra kumo` for the GNN).
-The `native` extra installs the optional external backend; the default Python
-loader works without it. The lockfile pins Kumo Engine main at
-`5c3a22cacc43e8de99531693e3b6612f0b34d637`, including its experimental
-`kumo-pytorch` package and matching DiskGraph runtime. This is a source build:
-install Rust through rustup, a C/C++ compiler and the usual Linux build tools
-first. A cold native build can take tens of minutes. The published
-`kumo-engine==1.0.1` bundle is incompatible with this loader; do not install it
-on top of the source packages, because it also owns the `diskgraph` namespace.
-The GNN extra now selects the matching `kumo-core` source package.
+## Install and migrate
 
-A configured token cache still selects its existing batch builder. Packing also
-retains the existing packer, operating on histories from the selected loader. Neither
-setting changes the tokenizer or fits native vocabularies. Run manifests name
-the selected history loader; graph manifests additionally identify the native source
-revision and separate Python future-target builder. Changing loader changes
-resolved-config identity: use a new run directory, and do not reuse an old
-managed checkpoint under a different resolved configuration.
+From `packages/experimental/kumo-transaction`, install the native loader for
+sequence recipes:
 
-Native training collation pads within each minibatch rather than retaining the
-previous whole-corpus padding width; valid tokens, masks and labels keep the
-same meaning. This can change stochastic training trajectories, so fresh runs
-are required for comparisons.
+```bash
+uv sync --frozen --extra dev --extra native
+uv run --no-sync tfm smoke --recipe blueprint_v1
+```
 
-Native sequence selection preserves the inclusive observation start and exact
-cutoff, including subsecond events and tied timestamps. Graph sampling has a
-narrower schema/clock contract and its own recent-fanout tie ordering; selecting
-`python` is required outside that contract. See the
-[worked integration guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for commands and limitations. These reference integrations still import a
-bounded object corpus for validation, tokenization, targets and probes; they do
-not establish full-book out-of-core training or native future-aggregate parity.
+Graph and hybrid models also need `--extra kumo`. The lockfile pins matching
+Kumo Engine source packages at
+`5c3a22cacc43e8de99531693e3b6612f0b34d637`, including the unpublished
+`kumo-pytorch` package and DiskGraph runtime. Install rustup, a C/C++ compiler
+and Linux build tools first. A cold native build can take tens of minutes.
+Do not install the older published `kumo-engine==1.0.1` bundle over these
+packages: it also owns the `diskgraph` namespace. The GNN uses the matching
+`kumo-core` source package.
 
-## Indexed training windows
+Sequence runs explicitly selecting Python need no native extra. Their
+preparation is performed by the runner; users do not need to hand-build
+sequences. Keep `data.loader: python` in a copied configuration to reproduce
+the prior loader choice. Changing the resolved loader changes checkpoint
+identity: use a new run directory rather than reusing a managed checkpoint
+under a different configuration.
 
-Native training indexes each declared window as a separate retrieval entity,
-so it reads only that window’s events. Repeated source event IDs remain valid,
-including distinct events with the same owner/ID and tied timestamps. Event
-occurrences retain their original order, labels and timestamps. One physical
-training anchor stage serves indexed minibatches through positional sharding;
-the final partial minibatch drops only explicitly added selection padding.
-This avoids one native storage stage per minibatch and full-owner history reads
-for every tiled window. The bounded object corpus and window index still reside
-in memory/on local disk; this is not a full-book throughput claim.
+A configured token cache retains its existing batch builder. Packing retains
+the existing packer over histories from the selected loader. Neither setting
+changes the tokenizer or fits native vocabularies. Native training collation
+pads within each minibatch rather than retaining a whole-corpus padding width;
+valid tokens, masks and labels retain their meaning. Fresh training trajectories
+need not be bitwise identical across loaders.
 
-## Evidence required before changing the default
+## Materialization, memory and preparation
 
-Changing the default requires a reproducible comparison of Python and native
-loading on representative sequence and graph or hybrid workloads. Native
-retrieval alone is insufficient: both paths still import Python objects, fit
-tokenizers and collate batches, and graph recipes materialize batches eagerly.
-No matched end-to-end results for this integration are included here.
+A label or prediction anchor identifies a sample at a particular cutoff; label
+values never become input features. Many anchors for the same entity can have
+overlapping histories or neighborhoods. Materializing all of those inputs can
+duplicate substantial data even when the underlying source tables are modest.
 
-Use identical source records and sample IDs, temporal cutoffs, model, optimizer,
-seed, precision, batch sizes, training duration and hardware. Verify valid
-inputs, outputs and gradients before timing; use uncapped or otherwise matched
-graph neighborhoods so fanout and tie-policy differences do not confound the
-comparison. Report all of:
+| Concern | Python reference path | Kumo Engine path |
+|---|---|---|
+| Retrieval | Select histories and sample neighborhoods with in-process reference code | Retrieve historical rows or graph candidates through a native index |
+| Preparation | Validate source data, fit train-only encoders and construct reference batches/caches | Validate data, fit train-only encoders and additionally build/open native indexes |
+| Repeated sequence use | Eager sequence recipes can reuse already-collated tensors; explicit token caches have their own preparation/storage costs | Native sequence training retrieves and collates each indexed minibatch; repeated tokenization can add CPU work |
+| Graphs | Samples neighborhoods on demand, but canonical graph runners retain prepared batch lists | Uses native sampling, but those runners still retain prepared graph batches; switching the backend alone does not remove them |
+| Small inputs | Avoids native build/index setup | Native setup and conversion overhead can dominate |
 
-- Input-to-first-batch time, beginning before reading input and including
-  validation, index construction/opening, tokenizer fitting and collation.
-- Training throughput in effective samples and valid events/tokens per second,
-  with the same number of optimizer steps and no padding counted as samples.
-- Total wall time from input loading through the same training and artifact
-  writing stages; include evaluation in both runs if it is part of the command.
-- Peak host resident memory and, when applicable, peak device allocated and
-  reserved memory over the entire run, including preparation.
+On-demand materialization can bound the **derived input working set** to active
+and prefetched batches instead of retaining every padded sequence or sampled
+subgraph. This can be valuable with many label timestamps, long histories,
+multiple paths, or deep/high-fanout neighborhoods. The Python graph sampler
+also constructs individual neighborhoods on demand; this technique is not
+exclusive to a particular backend.
 
-Synchronize device work at measurement boundaries. Publish commands, input
-fingerprints, resolved configs, source/dependency revisions, hardware, raw
-samples and repeated-run summaries. Separate fresh-index/cold-start runs from
-warm-index reuse, and account for preprocessing rather than excluding it from
-the native path. A future default switch must cite the reviewed results and
-explain the startup, throughput and memory tradeoffs for both workload families.
+Both paths still pay for source ingestion, validation, feature fitting and
+indexes or caches. Precomputing more inputs spends time, memory and storage
+up front and can amortize that work over repeated epochs. Computing inputs
+per minibatch reduces retention only when callers release them, and can repeat
+retrieval, tokenization and collation work each epoch. Large fanout/depth or
+aggressive prefetch can exhaust memory even with on-demand loading; bound batch
+size, history length, neighborhoods and retained caches.
 
-Full-book streaming and pipeline optimization are follow-up work: they change
-ingestion, tokenization and batching together and need their own evaluation.
+**Current limit:** these reference runners import a bounded Python object
+corpus for validation, tokenization, targets and probes. Native indexed windows
+can duplicate event occurrences across anchors, and graph runners still eagerly
+retain batches. A disk-backed retrieval backend alone does not make this pipeline
+out of core. Do not infer unlimited dataset capacity or a measured memory,
+preparation-time or throughput advantage from the default selection. Full-book
+streaming requires a separate ingestion/encoding/batching integration.
 
-## Shared relational declaration
+## Temporal and backend compatibility
 
-The [relational recipe](../../recipes/relational_inputs/README.md) shows one
-adapter supplying tables, composite keys, relationships, clocks and feature
-allowlists for sequence, graph and hybrid. Recipes select roots/history paths
-and generate anchors from labels or cutoffs; supplied anchors remain optional.
-See [ownership and label semantics](../contracts/relational-inputs.md).
+Native anchors bind sample ID, owner and cutoff independently; repeated owners
+remain distinct samples. Sequence selection preserves inclusive observation
+starts, microsecond cutoffs and tied-event order before the existing tokenizer.
+Train-only fitting, label availability, masks and explicit window membership
+remain authoritative.
 
-This new fixed-FK graph path is separate from the original user/event example.
-It handles reached table types in both directions, independent observation
-clocks, exact cutoff snapshots and canonical fanout ties. It deliberately reads
-complete eligible candidate sets before capping, so native retrieval is opt-in
-and makes no performance claim. Numeric graph features are supported; versioned
-topology and categorical/text graph feature encoding fail explicitly. Sequence
-histories support point-in-time ownership traversal through timed intermediates.
+Native training indexes each declared window independently and reads its exact
+members, including repeated event IDs and tied timestamps. One physical anchor
+stage serves indexed minibatches through positional sharding; the final batch
+discards only explicitly added selection padding. This window index is still
+bounded and does not eliminate source/window preparation.
+
+The legacy event-adapter native graph sampler requires static user roots,
+whole-second event/cutoff clocks, one-parent user-to-event FK roles,
+event-time availability and no explicit observation-start bound. Native recent
+fanout ties follow index order, which can differ from Python primary-key order.
+Select Python explicitly for sources outside that native contract. Native
+inputs pass through the backend-neutral graph validation and ownership checks.
+FutureSubgraph targets remain a separate Python reference traversal and never
+enter historical inputs.
+
+The [shared relational recipe](../../recipes/relational_inputs/README.md)
+provides one table/key/relationship/clock/allowlist declaration for sequence,
+GNN and hybrid, with generated or supplied anchors. Its fixed-FK native graph
+path supports timed intermediates, both FK directions, exact cutoff snapshots
+and canonical fanout ties by retrieving complete eligible candidate sets before
+capping. Physical reads can therefore exceed logical fanout. Numeric graph
+features are supported; versioned graph topology and categorical/text graph
+features fail explicitly. Sequence histories support point-in-time ownership
+traversal. See the [input contract](../contracts/relational-inputs.md) and
+[worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes).
+
+## Comparing loaders for a workload
+
+Compare identical inputs/anchors, clocks, model, optimizer, seed, precision,
+batch sizes, optimizer-step counts and hardware. Verify temporal correctness
+and input/output alignment; account for different graph fanout tie policies.
+Report preparation/index time, input-to-first-batch time, steady training
+throughput, total wall time and peak host/device memory. Include preprocessing,
+collation, targets, evaluation and artifact writes consistently. Separate
+fresh-index construction from index reuse, synchronize device work at timing
+boundaries and repeat runs. Different early-stopping epoch counts are different
+amounts of work. Select the backend and cache strategy that fit the workload.

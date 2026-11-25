@@ -151,9 +151,9 @@ class DataConfig(StrictConfig):
     adapter: str = "synthetic"
     """A registered adapter (`synthetic`, `tabformer`, `pragmatiq`), or an
     `Adapter`'s import path, `"package.module:attribute"`."""
-    loader: Literal["kumo_pytorch", "python"] = "python"
-    """Recipe history/graph retrieval backend. Python is the default;
-    `kumo_pytorch` explicitly selects the experimental native integration. An explicit
+    loader: Literal["kumo_pytorch", "python"] = "kumo_pytorch"
+    """Recipe history/graph retrieval backend. Kumo PyTorch/DiskGraph is the default;
+    `python` explicitly selects the in-process reference loader. An explicit
     token cache continues to select its declared cache batch builder."""
     relational: RelationalTaskConfig | None = None
     """Shared relational task; the adapter supplies its dataset declaration."""

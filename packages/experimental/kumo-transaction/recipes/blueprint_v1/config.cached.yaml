@@ -24,6 +24,7 @@ seed: 42
 # for anything else.
 
 data:
+  loader: kumo_pytorch
   adapter: tabformer
   path: null
   token_cache: ~/data/tfm_cache/tabformer_gb10

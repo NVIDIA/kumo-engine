@@ -25,8 +25,8 @@ def events():
 
 def test_loader_default_and_explicit_reference():
     config = load_recipe_config("recipes/blueprint_v1/config.smoke.yaml")
-    assert config.data.loader == "python"
-    assert config.data.model_copy(update={"loader": "kumo_pytorch"}).loader == "kumo_pytorch"
+    assert config.data.loader == "kumo_pytorch"
+    assert config.data.model_copy(update={"loader": "python"}).loader == "python"
 
 
 def test_explicit_python_loader_does_not_import_native(monkeypatch):
@@ -151,3 +151,39 @@ def test_graph_loader_supplies_provenance_and_owns_cleanup(failure, monkeypatch)
         finally:
             data.sampler.close()
         assert created[0].closed == 1
+
+
+def test_every_canonical_recipe_selects_native():
+    from pathlib import Path
+
+    for path in Path("recipes").glob("*/config*.yaml"):
+        assert load_recipe_config(path).data.loader == "kumo_pytorch", str(path)
+
+
+def test_omitted_loader_uses_native_in_typed_and_yaml_configs():
+    from pathlib import Path
+
+    import yaml
+
+    from tfm.config import DataConfig, RecipeConfig
+
+    data = yaml.safe_load(Path("recipes/blueprint_v1/config.smoke.yaml").read_text())
+    data["data"].pop("loader")
+    assert RecipeConfig.model_validate(data).data.loader == "kumo_pytorch"
+    assert DataConfig.model_validate(data["data"]).loader == "kumo_pytorch"
+
+
+def test_default_loader_missing_extra_raises_without_python_fallback(monkeypatch):
+    from tfm.contracts.errors import ExtraUnavailableError
+
+    calls = []
+
+    def unavailable():
+        calls.append(True)
+        raise ExtraUnavailableError("Native integration is unavailable")
+
+    monkeypatch.setattr(native, "native_api", unavailable)
+    config = load_recipe_config("recipes/blueprint_v1/config.smoke.yaml")
+    with pytest.raises(ExtraUnavailableError, match="Native integration is unavailable"):
+        native.build_entity_sequences(events(), NOW, max_events=2, loader=config.data.loader)
+    assert calls == [True]

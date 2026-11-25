@@ -256,8 +256,10 @@ convention without changing stored amounts or graph missing-value masks.
 
 ## Native recipe loading
 
-The opt-in `data.loader: kumo_pytorch` uses the pinned main-source Kumo API.
-Python remains the default until matched end-to-end performance is established.
+The default `data.loader: kumo_pytorch` uses the pinned main-source Kumo API.
+Select `data.loader: python` explicitly for reference retrieval. Both retain
+preparation costs and bounded in-memory ingestion; see the
+[loader tradeoffs](../migration/native-loader-default.md#materialization-memory-and-preparation).
 Native anchors bind sample ID, owner and cutoff independently; repeated owners
 remain distinct prediction samples. Sequence row IDs resolve only to validated
 source records. Exact residual filtering preserves inclusive lower bounds and

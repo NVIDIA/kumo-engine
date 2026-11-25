@@ -62,8 +62,8 @@ sample components. Hybrid views retain complete anchor identities and ordering.
 Backend parity tests must compare actual node/edge identities and ordered history
 identities, including six hops with fanout ten, delayed availability, ties,
 multiple paths and repeated roots. Native support is not implied by the data
-contract. Python remains the default; native capability and performance gates
-are separate.
+contract. Kumo Engine is the recipe default; Python remains explicitly selectable.
+Backend capability and workload performance are separate concerns.
 
 ## Binary batch compatibility
 

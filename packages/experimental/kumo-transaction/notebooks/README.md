@@ -8,7 +8,7 @@ One explanatory series per dataset. The recipes under
 the same `src/tfm` code and hold no logic of their own.
 
 ```bash
-uv sync --extra dev --extra notebooks
+uv sync --extra native --extra dev --extra notebooks
 uv run jupyter notebook notebooks/
 ```
 

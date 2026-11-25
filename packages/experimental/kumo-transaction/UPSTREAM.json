@@ -792,6 +792,7 @@
     "src/tfm/data/relational_batches.py": "Shared bounded relational declarations, aligned loaders, recipe integration and regression coverage implemented in Engine.",
     "src/tfm/runtime/relational.py": "Shared bounded relational declarations, aligned loaders, recipe integration and regression coverage implemented in Engine.",
     "tests/contract/test_relational_inputs.py": "Shared bounded relational declarations, aligned loaders, recipe integration and regression coverage implemented in Engine.",
-    "tests/recipe_smoke/test_relational_recipes.py": "Shared bounded relational declarations, aligned loaders, recipe integration and regression coverage implemented in Engine."
+    "tests/recipe_smoke/test_relational_recipes.py": "Shared bounded relational declarations, aligned loaders, recipe integration and regression coverage implemented in Engine.",
+    "tests/recipe_smoke/test_loader_default.py": "Verify native recipe defaults and explicit Python operation without native initialization."
   }
 }

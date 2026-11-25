@@ -4,12 +4,13 @@
 
 seed: 42
 
-# The recipe's pipeline on a generated book, with the Python loader: an eager decoder
+# The recipe's pipeline on a generated book, with the default Kumo Engine loader: an eager decoder
 # (which declares no positions) instead of Llama, and the logistic arms only.
 # tests/recipe_smoke also runs it with Llama and the XGBoost arms when those
 # extras are installed.
 
 data:
+  loader: kumo_pytorch
   adapter: synthetic
   split_protocol: timestamp
   observation_window: 90d

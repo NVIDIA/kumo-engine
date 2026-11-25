@@ -31,6 +31,7 @@ seed: 42
 #     --recipe blueprint_v1 --device cuda --run-dir outputs/blueprint_v1/gb10_2gpu
 
 data:
+  loader: kumo_pytorch
   adapter: tabformer
   path: null
   split_protocol: precomputed

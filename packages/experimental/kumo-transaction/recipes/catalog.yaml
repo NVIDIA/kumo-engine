@@ -89,4 +89,4 @@ recipes:
     notes: >
       One adapter declares keyed tables, FK roles, clocks and feature allowlists.
       Generated/replayed anchors share point-in-time histories and graph views.
-      Python defaults; native candidate retrieval is opt-in and bounded.
+      Kumo Engine defaults; Python is explicit and native retrieval remains bounded.

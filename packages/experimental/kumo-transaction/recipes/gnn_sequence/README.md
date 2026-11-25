@@ -230,9 +230,13 @@ shared sequence-label rule. Full and downstream runs fit or restore a tokenizer
 for their sequence arms. Graph recipes reject `data.token_cache`; they currently
 load adapter events in memory.
 
-## Native loader
+## Loader selection
 
-Opt in with `data.loader: kumo_pytorch` to use the pinned experimental Kumo
-PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for setup, commands, temporal rules and limitations. `data.loader: python`
-remains the default pending end-to-end performance evidence.
+Kumo Engine's experimental PyTorch/DiskGraph loader is the default
+(`data.loader: kumo_pytorch`). Install `--extra native` for sequences and
+`--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+provides setup, commands and temporal/schema limits. Set `data.loader: python`
+in a copied configuration to use the reference loader. Both retain preparation
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
+The current runners still ingest bounded object corpora, so this default does
+not establish out-of-core training or a universal speed/memory advantage.

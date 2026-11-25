@@ -132,7 +132,7 @@ the adapter prefers users with fraud so the small configs have positives.
 
 ## Commands
 
-CPU-safe smoke (synthetic, eager decoder, Python loader):
+CPU-safe smoke (synthetic, eager decoder, default Kumo Engine loader):
 
 ```bash
 uv run tfm smoke --recipe blueprint_v1
@@ -141,7 +141,7 @@ uv run tfm smoke --recipe blueprint_v1
 24 TabFormer users (`config.small.yaml`):
 
 ```bash
-uv sync --extra huggingface --extra baselines
+uv sync --extra native --extra huggingface --extra baselines
 export TFM_TABFORMER_ROOT=~/data/TabFormer
 uv run tfm train    --recipe blueprint_v1 --config small
 uv run tfm infer    --recipe blueprint_v1 --config small
@@ -224,7 +224,7 @@ uv run torchrun --nproc-per-node 8 -m tfm.cli.main report \
 
 The `huggingface`, `baselines`, and `umap` extras are locked in `uv.lock`.
 `uv sync` removes every extra you don't list, so name them all in one command
-(`uv sync --extra huggingface --extra baselines --extra umap`). RAPIDS is
+(`uv sync --extra native --extra huggingface --extra baselines --extra umap`). RAPIDS is
 installed with `uv pip install` and is not in `uv.lock`, so a plain `uv run`
 re-syncs the environment and removes it; use `uv run --no-sync` once it is
 installed. cuDF is CUDA-version specific and needs `numpy<2.5`; on CUDA 13:
@@ -262,9 +262,13 @@ Written under the run directory (or the smoke temp dir):
   ([datasets](../../docs/reference/datasets.md)).
 - CPU merchant hashing is not bit-identical to RAPIDS `hash_values`.
 
-## Native loader
+## Loader selection
 
-Opt in with `data.loader: kumo_pytorch` to use the pinned experimental Kumo
-PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
-for setup, commands, temporal rules and limitations. `data.loader: python`
-remains the default pending end-to-end performance evidence.
+Kumo Engine's experimental PyTorch/DiskGraph loader is the default
+(`data.loader: kumo_pytorch`). Install `--extra native` for sequences and
+`--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+provides setup, commands and temporal/schema limits. Set `data.loader: python`
+in a copied configuration to use the reference loader. Both retain preparation
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation).
+The current runners still ingest bounded object corpora, so this default does
+not establish out-of-core training or a universal speed/memory advantage.

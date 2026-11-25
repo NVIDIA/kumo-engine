@@ -15,7 +15,7 @@ milestone status is in [roadmap.md](roadmap.md).
 | `blueprint_v2` (+ `notebooks/pragmatiq`) | `experimental` | unit, contract, recipe smoke, notebooks in smoke mode | CPU / CUDA | PRAGMA encoders under a causal decoder (Blueprint v2 guide); `eager` or `ddp` |
 | `gnn_encoder` | `experimental` | unit, contract, recipe smoke | CPU checked; CUDA short check | Direct Engine GNN; binary supervision or future-subgraph pretraining; generated data; logistic probes |
 | `gnn_sequence` | `experimental` | unit, contract, recipe smoke | CPU and CUDA smoke | Selected frozen Engine GNN conditions Blueprint v2 through profile tokens; cutoff-level binary supervision |
-| `relational_inputs` | `experimental` | contract, CPU recipe smoke | CPU | One bounded fixed-FK declaration for profile/event sequence, GNN and hybrid; explicit entity labels; native opt-in candidate retrieval; see [limits](../../recipes/relational_inputs/README.md#limitations) |
+| `relational_inputs` | `experimental` | contract, CPU recipe smoke | CPU | One bounded fixed-FK declaration for profile/event sequence, GNN and hybrid; explicit entity labels; native candidate retrieval by default; see [limits](../../recipes/relational_inputs/README.md#limitations) |
 | Slot ablations (`benchmarks/ablations`) | `experimental` | recipe smoke (shared probe split asserted) | CPU | One slot swapped per variant, median [min, max] over `--seeds` |
 | 2.0.0a1 config migration (`tfm migrate-config`) | `reference` | unit (every moved key, every refusal, the lab's checkpoint config) | CPU | Rewrites 2.0.0a1 keys; refuses settings 2.0.0a2 cannot run; comments are not kept |
 
@@ -61,7 +61,7 @@ milestone status is in [roadmap.md](roadmap.md).
 | `FutureSubgraph` | `experimental` | unit, contract (oracle, masks, delay, observed-through coverage, gradients) | CPU checked | Separate future targets; window-end membership; train-only signed-log normalization |
 | Engine/shared/disjoint cost controls | `experimental` | CPU harness test; short L4 check | CPU / CUDA | [Recorded L4 check](../../benchmarks/results/graph_backends_l4_cost.md); historical untrimmed run; no native-loader/full-quality claim |
 | Kumo graph tensor adapter | `experimental` | contract (native output and invalid-binding fixtures) | CPU native integration | `from_kumo_graph`; bounded FK schema, whole-second clocks; future aggregates remain Python |
-| Kumo PyTorch recipe loaders | `experimental` | real DiskGraph history/window and graph ownership tests; recipe smokes | CPU | Opt-in for sequences and graph inputs; Python default pending matched end-to-end evidence; bounded object import, unchanged tokenizers; [guide](../../examples/kumo-engine/README.md#canonical-recipes) |
+| Kumo PyTorch recipe loaders | `experimental` | real DiskGraph history/window and graph ownership tests; recipe smokes | CPU | Default for sequence, graph and hybrid recipes; explicit Python reference option; bounded object import and eager graph batches, unchanged tokenizers; [guide](../../examples/kumo-engine/README.md#canonical-recipes) |
 | Mean readout | `experimental` | unit | CPU / CUDA | `composition.readout: mean` |
 
 ## Training

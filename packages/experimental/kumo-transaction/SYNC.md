@@ -6,7 +6,7 @@ with the native-loader delta through `c0205d98dec9d6fd918afc575dcf7a88af87e4f9`.
 The imported distribution remains `2.0.0a4`; the loader changes are unreleased.
 The source revision and hashes are recorded in `UPSTREAM.json`.
 
-This sync ports opt-in native sequence loading and graph/hybrid recipes into
+This sync ports native sequence loading and graph/hybrid recipes into
 Engine. It preserves the standalone package's pinned Kumo PyTorch dependency
 revision rather than changing the experimental runtime during migration.
 
@@ -117,9 +117,12 @@ Blueprint GitHub CI installs the `baselines` extra alongside `kumo`; Optuna can
 be present through Engine without XGBoost. The three tuned tabular-baseline
 contracts require both dependencies and skip cleanly when either is absent.
 
-Review follow-up keeps Python as the default pending matched end-to-end sequence
-and graph/hybrid timing, throughput, wall-time and memory evidence. Loader
-guidance lives in the public migration guide. All ADRs imported from the
+Canonical sequence, graph and hybrid recipes default to Kumo Engine retrieval.
+Python remains explicitly selectable; direct library helpers retain their Python
+defaults. This integration choice makes no universal performance, memory or
+out-of-core claim. The public migration guide describes preparation and
+materialization tradeoffs, current bounded object ingestion and retained graph
+batches. All ADRs imported from the
 standalone Transaction repository are excluded from the public package. A
 structural close capability handles resource-backed batches, graph cleanup is registered where
 the native loader is created, and each graph loader provides provenance and
@@ -131,7 +134,7 @@ Do not import or publish any standalone Transaction architecture decision
 records: `docs/architecture/**` is excluded from every future sync. This is a
 source-sync policy, not a per-document classification decision. The public
 package uses concept, contract, compatibility and migration guides instead;
-loader selection and its performance-evidence gate live in
+loader selection and workload comparison guidance live in
 [the public migration guide](docs/migration/native-loader-default.md).
 
 `UPSTREAM.json` records this directory rule and the 18 excluded source files.
@@ -145,5 +148,5 @@ must assess any historical exposure separately; this PR does not rewrite it.
 
 Local additions `src/tfm/contracts/resources.py` and
 `tests/contract/test_loader_resources.py` define and verify structural cleanup
-without requiring the optional native runtime. Native tests select the backend
-explicitly; default recipe/helper tests exercise Python without native imports.
+without requiring the optional native runtime. Canonical recipe tests exercise the native default; explicit Python and direct
+helper tests verify operation without native imports.

@@ -9,40 +9,49 @@ see that recipe's explicit projection and performance limits.
 
 ## Canonical recipes
 
-Python remains the default loader. Sequence, graph and hybrid recipes can opt
-into `data.loader: kumo_pytorch` in an experimental configuration. From the
-repository root, enter the Transaction project. Native loading requires Python
-3.12, rustup, a C/C++ compiler and Linux build tools:
+Kumo Engine is the default loader for sequence, graph and hybrid recipes
+(`data.loader: kumo_pytorch`). From the repository root, enter the Transaction
+project. Native loading requires Python 3.12+, rustup, a C/C++ compiler and
+Linux build tools:
 
 ```bash
 cd packages/experimental/kumo-transaction
 uv sync --frozen --extra dev --extra native --extra kumo
-mkdir -p outputs/native-loader
-uv run python - <<'PYTHON'
-from pathlib import Path
-import yaml
-for recipe in ("blueprint_v1", "blueprint_v2", "pragma_like", "gnn_encoder", "gnn_sequence"):
-    config = yaml.safe_load(Path(f"recipes/{recipe}/config.smoke.yaml").read_text())
-    config["data"]["loader"] = "kumo_pytorch"
-    Path(f"outputs/native-loader/{recipe}.yaml").write_text(yaml.safe_dump(config))
-PYTHON
-uv run tfm smoke --recipe blueprint_v1 --config outputs/native-loader/blueprint_v1.yaml
-uv run tfm smoke --recipe blueprint_v2 --config outputs/native-loader/blueprint_v2.yaml
-uv run tfm smoke --recipe pragma_like --config outputs/native-loader/pragma_like.yaml
-uv run tfm smoke --recipe gnn_encoder --config outputs/native-loader/gnn_encoder.yaml
-uv run tfm smoke --recipe gnn_sequence --config outputs/native-loader/gnn_sequence.yaml
+uv run --no-sync tfm smoke --recipe blueprint_v1
+uv run --no-sync tfm smoke --recipe blueprint_v2
+uv run --no-sync tfm smoke --recipe pragma_like
+uv run --no-sync tfm smoke --recipe gnn_encoder
+uv run --no-sync tfm smoke --recipe gnn_sequence
 ```
 
-For native FutureSubgraph pretraining, copy the recipe's `config.pretrain_smoke.yaml`
-and set the same loader field. Native retrieval has no demonstrated end-to-end
-advantage here; see the [default-switch evidence requirements](../../docs/migration/native-loader-default.md#evidence-required-before-changing-the-default).
-
-For train, evaluate and inference commands and data configuration, follow the
-[graph encoder](../../recipes/gnn_encoder/README.md#commands),
+FutureSubgraph uses the recipe's `config.pretrain_smoke.yaml` with the same
+default input loader; future targets remain separate. For train, evaluate and
+inference commands, follow the [graph encoder](../../recipes/gnn_encoder/README.md#commands),
 [hybrid](../../recipes/gnn_sequence/README.md#data-assumptions-and-commands), or
 [sequence](../../recipes/blueprint_v2/README.md) recipe. No custom loader wiring
-is required. Keep or select `data.loader: python` for the default
-reference path. Missing native dependencies fail explicitly.
+is required. Missing native dependencies and unsupported native schemas fail
+explicitly rather than falling back.
+
+To choose the Python reference path, copy a configuration and change its loader:
+
+```bash
+mkdir -p outputs/python-loader
+uv run --no-sync python - <<'PYTHON'
+from pathlib import Path
+import yaml
+config = yaml.safe_load(Path("recipes/blueprint_v1/config.smoke.yaml").read_text())
+config["data"]["loader"] = "python"
+Path("outputs/python-loader/smoke.yaml").write_text(yaml.safe_dump(config))
+PYTHON
+uv run --no-sync tfm smoke --recipe blueprint_v1 --config outputs/python-loader/smoke.yaml
+```
+
+A Python-only sequence installation can use `uv sync --extra dev` instead.
+Graph models still need the `kumo` extra for their GNN regardless of loader.
+The runner performs preparation in either path. See
+[memory, preparation and materialization tradeoffs](../../docs/migration/native-loader-default.md#materialization-memory-and-preparation)
+before choosing a loader or increasing anchors, history, fanout or depth. The
+default is not a universal speed or memory guarantee.
 
 The project pins Kumo Engine main at
 `5c3a22cacc43e8de99531693e3b6612f0b34d637`; `kumo-pytorch` still lives in

@@ -3,7 +3,7 @@
 data:
   adapter: tfm.data.adapters.synthetic_relational:adapter
   horizon_days: 2
-  loader: python
+  loader: kumo_pytorch
   max_tokens: 16
   n_entities: 8
   pretrain_end: '2024-01-21'

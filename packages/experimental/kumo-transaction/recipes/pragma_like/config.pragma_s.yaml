@@ -21,6 +21,7 @@ seed: 42
 # and config.pragma_m.yaml / config.pragma_l.yaml for the larger rungs.
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   path: null
   observation_window: 730d

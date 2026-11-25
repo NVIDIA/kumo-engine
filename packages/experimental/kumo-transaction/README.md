@@ -40,17 +40,20 @@ future-subgraph pretraining; their commands and assumptions live in the
 
 ## Start
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/). Python remains the default
-loader. The optional native source integration and its build prerequisites are
-described in the [loader guide](examples/kumo-engine/README.md#canonical-recipes).
+Python 3.12+ and [uv](https://docs.astral.sh/uv/). Sequence, graph and hybrid
+recipes default to Kumo Engine's PyTorch/DiskGraph loader. Install its pinned
+source dependencies and build prerequisites as described in the
+[loader guide](examples/kumo-engine/README.md#canonical-recipes). The
+[loader tradeoffs](docs/migration/native-loader-default.md#materialization-memory-and-preparation)
+explain preparation, memory limits and explicit `data.loader: python` selection.
 Run the generated CPU smoke:
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra native
 uv run tfm smoke --recipe blueprint_v1     # CPU, generated data, about a minute
 ```
 
-Then follow a notebook series (`uv sync --extra dev --extra notebooks`):
+Then follow a notebook series (`uv sync --extra dev --extra native --extra notebooks`):
 
 ```bash
 uv run jupyter notebook notebooks/blueprint_v1/   # the v1 Blueprint, step by step
@@ -109,5 +112,5 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities as
 [Code of Conduct](CODE_OF_CONDUCT.md). Licensed under Apache 2.0
 ([LICENSE](LICENSE)).
 
-Opt into native sequence, graph and hybrid loading using the
+Configure sequence, graph and hybrid loading using the
 [Kumo loader guide](examples/kumo-engine/README.md#canonical-recipes).

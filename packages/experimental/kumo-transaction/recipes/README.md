@@ -1,6 +1,11 @@
 # Recipes
 
 A recipe is one reference architecture: a directory of configs and a README.
+Sequence, graph and hybrid recipes default to Kumo Engine retrieval. Install the
+`native` extra (`kumo` for graph models); select `data.loader: python` explicitly
+for reference retrieval. See the [loader guide](../docs/migration/native-loader-default.md)
+for setup, preparation costs, materialization tradeoffs and current memory limits.
+
 Every stage runs through the CLI, resolved from [`catalog.yaml`](catalog.yaml):
 
 ```bash

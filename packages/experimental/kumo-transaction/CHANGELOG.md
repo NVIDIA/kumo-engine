@@ -11,14 +11,14 @@
   shared by sequence, graph and hybrid reference recipes.
 - Preserve event/observation clocks, point-in-time history ownership, canonical
   recent fanout and explicit entity-level binary label identities.
-- Add opt-in native one-hop candidate retrieval across arbitrary fixed-FK
-  frontiers; Python remains the default and unsupported projections fail early.
+- Add native one-hop candidate retrieval across arbitrary fixed-FK
+  frontiers; unsupported projections fail early.
 
 - Exclude standalone Transaction ADRs from the public source sync and replace their references with public guides. Use structural resource cleanup and loader-supplied provenance without changing graph traversal inheritance.
 
 - Preserve the advanced native example’s completed-index reuse (`--index`) and print its index path; validate reuse with source tables offline. Cache native graph edge clocks once per sampler.
 
-- Add opt-in recipe history and input-graph loading from the pinned experimental Kumo PyTorch/DiskGraph source. Keep `data.loader: python` as the default pending matched end-to-end performance evidence; preserve existing tokenizers and separate FutureSubgraph targets. Add native graph/hybrid wiring, installation/migration guidance and executable integration checks.
+- Make the pinned experimental Kumo PyTorch/DiskGraph integration the default for sequence, graph and hybrid recipe loading. Keep explicit `data.loader: python` reference selection and document preparation/materialization tradeoffs without a speed or out-of-core claim; preserve existing tokenizers and separate FutureSubgraph targets. Add native graph/hybrid wiring, installation/migration guidance and executable integration checks.
 
 ## 2.0.0a4
 

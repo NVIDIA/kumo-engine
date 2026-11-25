@@ -9,6 +9,7 @@ seed: 42
 # full-size run.
 
 data:
+  loader: kumo_pytorch
   adapter: tabformer
   path: null
   split_protocol: precomputed

@@ -13,6 +13,7 @@ seed: 42
 # window, (validation_end, test_cutoff], so the fraud probe has both classes.
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   observation_window: 90d
   sequence_length: 8

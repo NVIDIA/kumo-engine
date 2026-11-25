@@ -20,6 +20,7 @@ seed: 42
 #     --run-dir outputs/blueprint_v1/multi_gpu
 
 data:
+  loader: kumo_pytorch
   adapter: tabformer
   path: null
   split_protocol: precomputed
