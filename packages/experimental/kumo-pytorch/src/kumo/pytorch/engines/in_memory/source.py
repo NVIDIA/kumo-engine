@@ -43,11 +43,17 @@ class InMemorySource:
         self,
         schema: DataSchema,
         tables: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        revisit_nodes: bool = True,
     ):
         self.schema = schema
         self._tables = tables
         self._samples = InMemorySampleBuilder(schema, tables)
-        self._graph = InMemoryGraphSampler(schema, tables)
+        self._graph = InMemoryGraphSampler(schema, tables, revisit_nodes=revisit_nodes)
+
+    @property
+    def revisit_nodes(self) -> bool:
+        return self._graph.revisit_nodes
 
     def build(
         self,

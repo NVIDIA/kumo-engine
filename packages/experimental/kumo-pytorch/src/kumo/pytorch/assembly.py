@@ -1911,6 +1911,7 @@ class PreparedBatchPlan:
         contract: Any = None,
         schema_fingerprint=None,
         contract_fingerprint=None,
+        revisit_nodes: bool | None = None,
         inference=False,
     ):
         self.inference = inference
@@ -1987,6 +1988,8 @@ class PreparedBatchPlan:
             "inputs": {name: _input_record(value) for name, value in self._prepared_inputs.items()},
             "targets": target_states,
         }
+        if revisit_nodes is not None:
+            self.fitted_state["revisit_nodes"] = revisit_nodes
         self.manifest = {
             "format_version": 2,
             "schema_fingerprint": schema_fingerprint,
@@ -2648,6 +2651,7 @@ def fit_plan(
     contract=None,
     input_state=None,
     target_encoders=None,
+    revisit_nodes: bool | None = None,
     inference=False,
     pinned=MappingProxyType({}),
 ) -> PreparedBatchPlan:
@@ -2768,6 +2772,7 @@ def fit_plan(
         contract=contract,
         schema_fingerprint=schema_fingerprint,
         contract_fingerprint=contract_fingerprint,
+        revisit_nodes=revisit_nodes,
         inference=inference,
     )
 
@@ -2789,6 +2794,11 @@ def restore_fitted_state(
     """
 
     spec = contract.batch
+    revisit_nodes = serialized.get("revisit_nodes")
+    if "revisit_nodes" in serialized and (
+        not isinstance(revisit_nodes, bool) or not contract._can_revisit_nodes()
+    ):
+        raise ValueError("revisit_nodes must be a boolean for a graph that can revisit nodes")
     if serialized.get("format_version") != 2:
         raise ValueError(
             f"fitted-state format_version {serialized.get('format_version')!r}; "
@@ -2880,6 +2890,7 @@ def restore_fitted_state(
         contract=contract,
         schema_fingerprint=_fingerprint(contract.schema),
         contract_fingerprint=contract.fingerprint,
+        revisit_nodes=revisit_nodes,
     )
     expected = json.loads(json.dumps({"targets": {}, **serialized}, sort_keys=True))
     actual = json.loads(json.dumps(restored.fitted_state, sort_keys=True))

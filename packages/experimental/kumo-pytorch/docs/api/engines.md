@@ -296,6 +296,7 @@ class DiskGraphEngine(
     *,
     num_threads: int | None = None,
     random_seed: int | None = 0,
+    revisit_nodes: bool = False,
     num_shards: int = 1,
     encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
 )
@@ -339,6 +340,7 @@ describe the engine's storage; they are not constructor selectors.
 
 **Parameters**
 
+- `revisit_nodes`: by default, expand a node only on first discovery. Set to True to expand a previously discovered node again when a later hop reaches it, using that hop's fanout. A node reached more than once in the same hop enters the next frontier once. Large fanouts on cyclic graphs can substantially increase the number of sampled edges. Fitted models bind this choice when a graph input can expand a previously reached node. Reuse the same setting when materializing their inputs.
 - `num_threads`: native sampling threads.
 - `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
@@ -354,6 +356,7 @@ DiskGraphEngine.from_snapshot(
     *,
     num_threads: int | None = None,
     random_seed: int | None = 0,
+    revisit_nodes: bool = False,
 ) -> DiskGraphEngine
 ```
 
@@ -364,6 +367,8 @@ under kumo.settings.scratch_dir(); no public work/output directories are needed.
 Cross-root imports and snapshots without a build ID are refused.
 `random_seed` controls native uniform-neighbor sampling, as on the
 dataset constructor: zero by default, or `None` for fresh randomness.
+Set `revisit_nodes=True` to expand nodes again on later hops, as on a
+dataset-backed engine. The default expands a node only on first discovery.
 
 #### `DiskGraphEngine.schema`
 

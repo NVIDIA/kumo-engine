@@ -284,6 +284,7 @@ class NativeAnchors:
             str(path),
             rnd_seed=self._source._random_seed,
             num_threads=self._source._num_threads,
+            revisit_nodes=self._source._revisit_nodes,
         )
         if self._stages:
             # Preparation may use a base reader. The loading loop uses only the

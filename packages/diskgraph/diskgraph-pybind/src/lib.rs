@@ -743,17 +743,18 @@ fn lookup_node_ids_from_arrow(
 #[pymethods]
 impl SamplerEngine {
     #[new]
-    #[pyo3(signature = (path, random_seed=None, num_threads=None))]
+    #[pyo3(signature = (path, random_seed=None, num_threads=None, *, revisit_nodes=false))]
     #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
-    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>,
+    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>, revisit_nodes: bool,
     ) -> PyResult<Self> {
         let root = std::path::Path::new(&path);
         let reader = Arc::new(
             diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
                 .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?,
         );
-        let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
+        let mut engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
             .map_err(map_engine_err)?;
+        engine.revisit_nodes = revisit_nodes;
         info!("SamplerEngine initialized successfully");
         Ok(Self {
             reader,
@@ -1183,12 +1184,16 @@ impl SamplerEngine {
                     pyo3::exceptions::PyKeyError::new_err("missing 'node_type' in feature request")
                 })?
                 .extract()?;
-            let node_ids: Vec<u64> = dict
-                .get_item("node_ids")?
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request")
-                })?
-                .extract()?;
+            let ids = dict.get_item("node_ids")?.ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request")
+            })?;
+            let node_ids = match pyo3::buffer::PyBuffer::<u64>::get(&ids) {
+                // Unprefixed formats use native byte order; extract other sequences by value.
+                Ok(buffer) if buffer.dimensions() == 1 && buffer.format().to_bytes().len() == 1 => {
+                    buffer.to_vec(py)?
+                }
+                _ => ids.extract()?,
+            };
             let feature_names: Vec<String> = dict
                 .get_item("feature_names")?
                 .ok_or_else(|| {
@@ -1988,6 +1993,60 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
+/// First occurrence of each ordered edge pair, or None when every pair is unique.
+#[pyfunction]
+fn first_edge_indices<'py>(
+    py: Python<'py>,
+    sources: &Bound<'py, PyAny>,
+    destinations: &Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    use gxhash::HashSetExt;
+
+    let endpoints = |column: &Bound<'py, PyAny>| -> PyResult<ArrayData> {
+        let data = ArrayData::from_pyarrow_bound(column)?;
+        if !matches!(data.data_type(), DataType::Int64 | DataType::UInt64) || data.null_count() != 0
+        {
+            return Err(DiskgraphConfigError::new_err(
+                "edge endpoints must be non-null int64 or uint64 arrays",
+            ));
+        }
+        Ok(data)
+    };
+    let sources = endpoints(sources)?;
+    let destinations = endpoints(destinations)?;
+    if sources.len() != destinations.len() {
+        return Err(DiskgraphConfigError::new_err(
+            "edge endpoint arrays must have equal length",
+        ));
+    }
+    let first = py.detach(|| {
+        // Read both integer types by bit pattern, including sliced Arrow arrays.
+        let pairs = sources
+            .buffer::<u64>(0)
+            .iter()
+            .zip(destinations.buffer::<u64>(0))
+            .take(sources.len())
+            .map(|(&src, &dst)| (u128::from(src) << 64) | u128::from(dst));
+        let mut seen = gxhash::HashSet::with_capacity(sources.len());
+        let mut first = None;
+        let mut start = 0;
+        for (i, key) in pairs.enumerate() {
+            if !seen.insert(key) {
+                // Emit consecutive first occurrences together, regardless of where duplicates start.
+                first.get_or_insert_with(|| Vec::with_capacity(sources.len() - 1))
+                    .extend(start..i as i64);
+                start = i as i64 + 1;
+            }
+        }
+        let mut first = first?;
+        first.extend(start..sources.len() as i64);
+        Some(Int64Array::from(first))
+    });
+    first
+        .map(|array| array.to_data().to_pyarrow(py))
+        .transpose()
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -2041,6 +2100,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_prediction_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(first_edge_indices, m)?)?;
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PreparedAggregateQuery>()?;
     runtime_batch_iterator::register(m)?;

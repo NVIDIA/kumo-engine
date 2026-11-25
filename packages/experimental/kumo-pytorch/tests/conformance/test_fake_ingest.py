@@ -96,11 +96,13 @@ class _Source:
         paths: _ManagedIndexPaths,
         identity: str | None = None,
         random_seed: int | None = 0,
+        revisit_nodes: bool = False,
     ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
         self.artifact_identity = identity
         self._paths = paths
         self.random_seed = random_seed
+        self.revisit_nodes = revisit_nodes
 
 
 def _write(schema: DataSchema, tables: Tables, directory: Path, parts: int = 1) -> Dataset:
@@ -131,6 +133,7 @@ def _open(
         source = engine.open(dataset, schema)
     assert isinstance(source, _Source)
     assert source.random_seed == engine.random_seed
+    assert source.revisit_nodes == engine.revisit_nodes
     assert source._paths.index_dir == Path(source.artifact.path)
     assert source.artifact_identity == source._paths.index_build_id
     return source

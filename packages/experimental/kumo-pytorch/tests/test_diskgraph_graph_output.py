@@ -199,6 +199,7 @@ def _identity_graph(column):
         np.array([[-1, 2, -1], [3, 4, 3]]),
         np.array([[2**62, 0, 2**62], [1, 1, 1]]),
         np.array([[1, 2**63, 1], [0, 0, 0]], dtype=np.uint64),
+        np.array([[1, 2**63, 1], [0, 0, 0]], dtype=np.dtype("uint64").newbyteorder("S")),
         np.empty((2, 0), dtype=np.int64),
     ],
 )

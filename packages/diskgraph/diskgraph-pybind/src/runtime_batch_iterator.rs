@@ -800,26 +800,29 @@ fn map_runtime_err(error: diskgraph_runtime::RuntimeError) -> PyErr {
 #[pymethods]
 impl RuntimeIndex {
     #[new]
-    #[pyo3(signature = (parent_root, tt_id, rnd_seed=None, num_threads=None))]
+    #[pyo3(signature = (parent_root, tt_id, rnd_seed=None, num_threads=None, revisit_nodes=false))]
     pub fn new(
         parent_root: String,
         tt_id: String,
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
+        revisit_nodes: bool,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
-                .map_err(map_runtime_err)?,
+            inner: diskgraph_runtime::RuntimeIndex::new_with_revisits(
+                parent_root, tt_id, rnd_seed, num_threads, revisit_nodes,
+            ).map_err(map_runtime_err)?,
         })
     }
 
     #[staticmethod]
-    #[pyo3(signature = (parent_root, extension_path, rnd_seed=None, num_threads=None))]
+    #[pyo3(signature = (parent_root, extension_path, rnd_seed=None, num_threads=None, revisit_nodes=false))]
     fn _from_extension_path(
         parent_root: String,
         extension_path: String,
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
+        revisit_nodes: bool,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: diskgraph_runtime::RuntimeIndex::_new_with_extension_path(
@@ -827,6 +830,7 @@ impl RuntimeIndex {
                 extension_path,
                 rnd_seed,
                 num_threads,
+                revisit_nodes,
             )
             .map_err(map_runtime_err)?,
         })

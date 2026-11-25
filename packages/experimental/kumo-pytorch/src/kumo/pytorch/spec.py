@@ -17,7 +17,7 @@ from typing import Any
 
 from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
-from kumo.pytorch.contract.batch import BatchSpec, Fields, Graph, UseEncoding
+from kumo.pytorch.contract.batch import BatchSpec, Fields, Graph, NeighborhoodSource, UseEncoding
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import (
     ActiveInterval,
@@ -261,6 +261,27 @@ class DataLoaderSpec:
     def from_json(cls, value: str) -> DataLoaderSpec:
         """Rebuild a contract from ``to_json`` output."""
         return cls.from_dict(json.loads(value))
+
+    def _can_revisit_nodes(self) -> bool:
+        """Can a graph input expand a table reached before its current frontier?"""
+        if not self.sample.neighborhoods:
+            return False
+        relations = {rel.name: rel for rel in self.schema.relations}
+        for value in self.batch.inputs.values():
+            if not isinstance(value.source, NeighborhoodSource):
+                continue
+            first_hop = {self.sample.entity.table: 0}
+            for hop, layer in enumerate(self.sample.neighborhoods[value.source.name].layers):
+                for traversal in layer.samples:
+                    relation = relations[traversal.relation]
+                    start, end = relation.left_table, relation.right_table
+                    if traversal.direction == "reverse":
+                        start, end = end, start
+                    # Validation guarantees each traversal starts in this frontier.
+                    if first_hop[start] < hop:
+                        return True
+                    first_hop.setdefault(end, hop + 1)
+        return False
 
     @property
     def is_temporal(self) -> bool:

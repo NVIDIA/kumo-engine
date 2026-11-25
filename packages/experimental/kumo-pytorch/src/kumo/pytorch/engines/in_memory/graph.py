@@ -31,7 +31,10 @@ class InMemoryGraphSampler:
         self,
         schema: DataSchema,
         tables: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        revisit_nodes: bool = True,
     ):
+        self.revisit_nodes = revisit_nodes
         self._table_specs = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._tables = {
@@ -131,13 +134,15 @@ class InMemoryGraphSampler:
         # Node indices are per sample, so a repeated pair is a repeat within one sample.
         seen_edges: set[tuple[str, int, int]] = set()
 
-        def add_node(owner: int, table: str, row: dict[str, Any]) -> int:
+        def add_node(owner: int, table: str, row: dict[str, Any]) -> tuple[int, bool]:
             identity = (owner, table, self._identity(table, row))
-            if identity not in node_ids:
-                node_ids[identity] = len(node_rows[table])
-                node_rows[table].append(row)
-                node_owners[table].append(owner)
-            return node_ids[identity]
+            index = node_ids.get(identity)
+            if index is not None:
+                return index, False
+            index = node_ids[identity] = len(node_rows[table])
+            node_rows[table].append(row)
+            node_owners[table].append(owner)
+            return index, True
 
         for owner, root_spec in enumerate(roots):
             root = self._row(root_table, root_spec.entity_id)
@@ -159,9 +164,9 @@ class InMemoryGraphSampler:
                         )
                         if not neighbors:
                             continue
-                        current_index = add_node(owner, current_table, current_row)
+                        current_index, _ = add_node(owner, current_table, current_row)
                         for neighbor in neighbors:
-                            neighbor_index = add_node(owner, target_table, neighbor)
+                            neighbor_index, discovered = add_node(owner, target_table, neighbor)
                             pair = (
                                 (current_index, neighbor_index)
                                 if traversal.direction == "forward"
@@ -170,7 +175,8 @@ class InMemoryGraphSampler:
                             if (traversal.relation, *pair) not in seen_edges:
                                 seen_edges.add((traversal.relation, *pair))
                                 edge_pairs[traversal.relation].append(pair)
-                            next_frontier.append((target_table, neighbor))
+                            if self.revisit_nodes or discovered:
+                                next_frontier.append((target_table, neighbor))
                 frontier = self._deduplicate(next_frontier)
 
         return node_rows, node_owners, edge_pairs

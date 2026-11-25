@@ -1272,12 +1272,23 @@ impl RuntimeIndex {
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
     ) -> Result<Self> {
+        Self::new_with_revisits(parent_root, tt_id, rnd_seed, num_threads, false)
+    }
+
+    /// Open an index with layer-wise expansion of previously visited nodes when requested.
+    pub fn new_with_revisits(
+        parent_root: String,
+        tt_id: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+        revisit_nodes: bool,
+    ) -> Result<Self> {
         if std::path::Path::new(&tt_id).is_absolute() {
             return Err(RuntimeError::config(
                 "absolute extension paths require the managed internal API",
             ));
         }
-        Self::new_impl(parent_root, tt_id, rnd_seed, num_threads)
+        Self::new_impl(parent_root, tt_id, rnd_seed, num_threads, revisit_nodes)
     }
 
     #[doc(hidden)]
@@ -1286,11 +1297,12 @@ impl RuntimeIndex {
         extension_path: String,
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
+        revisit_nodes: bool,
     ) -> Result<Self> {
         if !std::path::Path::new(&extension_path).is_absolute() {
             return Err(RuntimeError::config("extension path must be absolute"));
         }
-        Self::new_impl(parent_root, extension_path, rnd_seed, num_threads)
+        Self::new_impl(parent_root, extension_path, rnd_seed, num_threads, revisit_nodes)
     }
 
     fn new_impl(
@@ -1298,6 +1310,7 @@ impl RuntimeIndex {
         tt_id: String,
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
+        revisit_nodes: bool,
     ) -> Result<Self> {
         let parent_path = std::path::Path::new(&parent_root);
         let extension = std::path::Path::new(&tt_id);
@@ -1323,13 +1336,12 @@ impl RuntimeIndex {
             }
         })?;
         let reader = Arc::new(reader);
-        let engine = Arc::new(
-            DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
-                .map_err(RuntimeError::from)?,
-        );
+        let mut engine = DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
+            .map_err(RuntimeError::from)?;
+        engine.revisit_nodes = revisit_nodes;
         Ok(Self {
             reader,
-            engine,
+            engine: Arc::new(engine),
             namespace,
         })
     }

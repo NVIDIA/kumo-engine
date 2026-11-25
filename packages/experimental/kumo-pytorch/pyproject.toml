@@ -29,7 +29,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-  "diskgraph>=0.2.0",
+  "diskgraph>=0.2.1",
   "kumo-settings>=0.1.0.dev1",
   "numpy>=1.26,<3",
   "pyarrow>=15,<25",

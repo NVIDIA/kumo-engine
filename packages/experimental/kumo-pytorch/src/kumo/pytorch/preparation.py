@@ -290,6 +290,7 @@ class Plan:
             raise ValueError("fit_split has nothing to fit in inference")
         cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
+        revisit_nodes = self._fitted_revisit_nodes(source, fitted)
         logical_anchors = anchors  # Scalar materialization uses a temporary Parquet path.
         directory = None
         if (
@@ -425,6 +426,7 @@ class Plan:
                 contract=self.contract,
                 input_state=input_state,
                 target_encoders=target_encoders,
+                revisit_nodes=revisit_nodes,
                 inference=inference,
                 pinned=pinned,
             )
@@ -470,6 +472,29 @@ class Plan:
         )
         self._tasks.add(task)
         return task
+
+    def _fitted_revisit_nodes(
+        self, source: SampleSource, fitted: FittedState | None
+    ) -> bool | None:
+        if not self.contract._can_revisit_nodes():
+            return None
+        requested = getattr(source, "revisit_nodes", None)
+        if not isinstance(requested, bool):
+            requested = None
+        if fitted is None:
+            return requested
+        recorded = fitted.get("revisit_nodes")
+        # An unmarked artifact predates this check. Use the receiving engine's
+        # historical default and retain the original fitted bytes for its weights.
+        expected = False if recorded is None and self.engine.name == "diskgraph" else recorded
+        if expected is not None and requested != expected:
+            detail = (
+                "the source does not declare revisit_nodes"
+                if requested is None
+                else f"the source uses revisit_nodes={requested}"
+            )
+            raise ValueError(f"fitted graph state requires revisit_nodes={expected}, but {detail}")
+        return recorded
 
     def _pinned_from_stats(
         self,

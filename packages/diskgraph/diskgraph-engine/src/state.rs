@@ -2,6 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use arrow_array::builder::BooleanBufferBuilder;
 use gxhash::{HashMap as GxHashMap, HashMapExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -258,6 +259,8 @@ pub struct SamplingState {
     pub seed_maps: Vec<GxHashMap<u64, u32>>,
     pub commit_scratch: CommitScratch,
     pub raw_edges: Vec<Vec<RawEdge>>,
+    /// One bit per local ID present at hop entry, indexed by destination type.
+    pub(crate) revisits: Vec<BooleanBufferBuilder>,
 }
 
 /// A discovered edge before it is formally committed to the SamplingState.
@@ -319,10 +322,27 @@ impl SamplingState {
             seed_maps: Vec::new(),
             commit_scratch: CommitScratch::default(),
             raw_edges: Vec::new(),
+            revisits: Vec::new(),
+        }
+    }
+
+    pub(crate) fn mark_revisit(&mut self, ty: usize, id: u32) {
+        if let Some(bits) = self.revisits.get_mut(ty) {
+            if (id as usize) < bits.len() {
+                bits.set_bit(id as usize, true);
+            }
+        }
+    }
+
+    pub(crate) fn clear_raw_edges(&mut self) {
+        let per_buffer = RESET_THRESHOLD / self.raw_edges.len().max(1);
+        for v in &mut self.raw_edges {
+            clear_and_cap(v, per_buffer);
         }
     }
 
     fn reset(&mut self) {
+        self.revisits.clear();
         // Recurse into type states
         for state in self.type_states.values_mut() {
             state.adaptive_reset(RESET_THRESHOLD);
@@ -333,10 +353,7 @@ impl SamplingState {
         self.stats.reset();
         self.seed_slot_base.clear();
         self.seed_slots = 0;
-        let per_buffer = RESET_THRESHOLD / self.raw_edges.len().max(1);
-        for v in &mut self.raw_edges {
-            clear_and_cap(v, per_buffer);
-        }
+        self.clear_raw_edges();
         let cs = &mut self.commit_scratch;
         clear_and_cap(&mut cs.bounds, RESET_THRESHOLD);
         clear_and_cap(&mut cs.cursor, RESET_THRESHOLD);

@@ -312,11 +312,10 @@ impl OutputHandler for RuntimeBatchOutput {
             // appears as topology in the emitted dict.
             return Ok(());
         }
-        let channel = self
-            .batch
-            .graphs
-            .entry(self.channel.clone())
-            .or_default();
+        let channel = match self.batch.graphs.get_mut(&self.channel) {
+            Some(channel) => channel,
+            None => self.batch.graphs.entry(self.channel.clone()).or_default(),
+        };
         let rel_idx = rel_id as usize;
         if rel_idx >= channel.edges.len() {
             channel.edges.resize(rel_idx + 1, (Vec::new(), Vec::new()));

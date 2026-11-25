@@ -134,6 +134,11 @@ or infinity; encoders that require finite observations reject them.
   or before the original anchor at every hop. Uniform samples without
   replacement and deliberately ignores real anchor dates, including on timed
   destinations.
+- On a cyclic graph, DiskGraph expands each node on first discovery by default.
+  Set `revisit_nodes=True` to expand it again when a later hop reaches it.
+  When this choice can affect the graph, new fitted states record it. Use the
+  same policy for batch inference. Online serving uses the policy in the artifact.
+  Older artifacts without a recorded policy use each backend’s historical default.
 - `DiskGraphEngine(random_seed=0)` fixes native uniform sampling by default;
   `None` permits fresh randomness. This seed is separate from batch shuffling.
   Seeded selections repeat across epochs for the same index and plan. Index

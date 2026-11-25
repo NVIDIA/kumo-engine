@@ -261,6 +261,13 @@ class DiskGraphEngine:
     internally for a dataset engine or read from its snapshot. These attributes
     describe the engine's storage; they are not constructor selectors.
 
+    :param revisit_nodes: by default, expand a node only on first discovery.
+        Set to True to expand a previously discovered node again when a later hop
+        reaches it, using that hop's fanout. A node reached more than once in
+        the same hop enters the next frontier once. Large fanouts on cyclic
+        graphs can substantially increase the number of sampled edges.
+        Fitted models bind this choice when a graph input can expand a previously
+        reached node. Reuse the same setting when materializing their inputs.
     :param num_threads: native sampling threads.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
         ``None`` uses fresh randomness. A fixed seed repeats selections for the
@@ -280,6 +287,7 @@ class DiskGraphEngine:
         *,
         num_threads: int | None = None,
         random_seed: int | None = 0,
+        revisit_nodes: bool = False,
         num_shards: int = 1,
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
     ):
@@ -287,6 +295,7 @@ class DiskGraphEngine:
             managed_paths(),
             num_threads=num_threads,
             random_seed=random_seed,
+            revisit_nodes=revisit_nodes,
             num_shards=num_shards,
             encoder_cutoffs=encoder_cutoffs,
         )
@@ -297,6 +306,7 @@ class DiskGraphEngine:
         *,
         num_threads: int | None = None,
         random_seed: int | None = 0,
+        revisit_nodes: bool = False,
         num_shards: int = 1,
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
         binding: IndexBinding | None = None,
@@ -313,6 +323,9 @@ class DiskGraphEngine:
         ):
             raise ValueError("random_seed must be None or an unsigned 64-bit integer")
         self.random_seed = random_seed
+        if not isinstance(revisit_nodes, bool):
+            raise TypeError("revisit_nodes must be a bool")
+        self.revisit_nodes = revisit_nodes
         self.num_shards = num_shards
         self.encoder_cutoffs = tuple(
             dict.fromkeys(cutoff_nanos(value) for value in encoder_cutoffs)
@@ -320,7 +333,12 @@ class DiskGraphEngine:
 
     @classmethod
     def from_snapshot(
-        cls, snapshot: Any, *, num_threads: int | None = None, random_seed: int | None = 0
+        cls,
+        snapshot: Any,
+        *,
+        num_threads: int | None = None,
+        random_seed: int | None = 0,
+        revisit_nodes: bool = False,
     ) -> DiskGraphEngine:
         """Attach to an existing same-root Kumo snapshot by physical build identity.
 
@@ -329,6 +347,8 @@ class DiskGraphEngine:
         Cross-root imports and snapshots without a build ID are refused.
         ``random_seed`` controls native uniform-neighbor sampling, as on the
         dataset constructor: zero by default, or ``None`` for fresh randomness.
+        Set ``revisit_nodes=True`` to expand nodes again on later hops, as on a
+        dataset-backed engine. The default expands a node only on first discovery.
         """
         base = Path(snapshot.index_path).resolve()
         root = managed_root()
@@ -342,6 +362,7 @@ class DiskGraphEngine:
             managed_paths(binding.identity, root=root),
             num_threads=num_threads,
             random_seed=random_seed,
+            revisit_nodes=revisit_nodes,
             binding=binding,
         )
         verify_managed_roots(result._paths, base)
@@ -539,6 +560,7 @@ class DiskGraphEngine:
                 paths=self._paths,
                 identity=self._binding.identity,
                 random_seed=self.random_seed,
+                revisit_nodes=self.revisit_nodes,
             )
         if dataset is None:
             raise ValueError("dataset is required for source ingestion")
@@ -559,6 +581,7 @@ class DiskGraphEngine:
             paths=self._paths,
             identity=self.index_build_id,
             random_seed=self.random_seed,
+            revisit_nodes=self.revisit_nodes,
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
@@ -579,6 +602,7 @@ class DiskGraphSource:
         paths: _ManagedIndexPaths,
         identity: str | None = None,
         random_seed: int | None = 0,
+        revisit_nodes: bool = False,
     ) -> None:
         try:
             import diskgraph
@@ -601,6 +625,7 @@ class DiskGraphSource:
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
+        self._revisit_nodes = revisit_nodes
         self._random_seed = random_seed
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
@@ -615,11 +640,17 @@ class DiskGraphSource:
                 artifact.path,
                 random_seed=random_seed,
                 num_threads=num_threads,
+                revisit_nodes=self._revisit_nodes,
             )
         )
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+
+    @property
+    def revisit_nodes(self) -> bool:
+        """Whether this bound sampler expands nodes again on later hops."""
+        return self._revisit_nodes
 
     def new_task_directory(self, task_id: str | None = None):
         verify_managed_roots(self._paths, self._index_path)
@@ -635,6 +666,7 @@ class DiskGraphSource:
                     self._index_path,
                     random_seed=self._random_seed,
                     num_threads=self._num_threads,
+                    revisit_nodes=self._revisit_nodes,
                 )
             )
         return self._sampler_context
@@ -1630,15 +1662,12 @@ class DiskGraphSource:
             )
             if deduplicate_edges and len(index) > 1:
                 # Opt-in materialization; the default retains native edge chunks.
-                pairs = _first_occurrences(
-                    np.stack([column.to_numpy() for column in index.columns])
+                index = index.combine_chunks()
+                first = self._diskgraph.first_edge_indices(
+                    *(column.chunk(0).cast(pa.uint64()) for column in index.columns)
                 )
-                index = pa.table(
-                    {
-                        field.name: pa.array(values, type=field.type)
-                        for field, values in zip(index.schema, pairs, strict=True)
-                    }
-                )
+                if first is not None:
+                    index = index.take(first)
             edges[name] = ColumnarEdges(
                 self._relations[name].left_table,
                 self._relations[name].right_table,
@@ -2394,8 +2423,10 @@ class DiskGraphSource:
         feature_fetch_ns = 0
         feature_encode_ns = 0
         for table in sorted(tables):
-            # Native feature lookup still accepts a list of global node IDs.
-            ids = np.concatenate(global_ids[table]).tolist() if global_ids[table] else []
+            parts = global_ids[table]
+            ids = parts[0] if parts else ()
+            if len(parts) > 1:
+                ids = np.concatenate(parts)
             primary_key = self._tables[table].primary_key
             started = time.perf_counter_ns()
             feature_arrays = self._feature_arrays(
@@ -2510,7 +2541,7 @@ class DiskGraphSource:
                     }
         if not names:
             return {}
-        if not node_ids:
+        if len(node_ids) == 0:
             columns = self._tables[table].columns or {}
             return {
                 name: self._pa.nulls(0)
@@ -2520,7 +2551,7 @@ class DiskGraphSource:
             }
         chunks: dict[str, list[Any]] = {name: [] for name in names}
         for event in self._sampler.fetch_features(
-            [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
+            [{"node_type": table, "node_ids": node_ids, "feature_names": list(names)}]
         ):
             if event["type"] == "feature":
                 batch = event["batch"]
@@ -2836,17 +2867,16 @@ def _first_occurrences(pairs: np.ndarray) -> np.ndarray:
     Node indices are disjoint per sample, so this deduplicates per sample.
     """
 
+    import pyarrow as pa
+    from diskgraph import first_edge_indices
+
+    if pairs.ndim != 2 or pairs.shape[0] != 2 or pairs.dtype.kind not in "iu":
+        raise ValueError("edge pairs must be a 2-by-N integer array")
     if pairs.shape[1] < 2:
         return pairs
-    lowest, source_max, width = int(pairs.min()), int(pairs[0].max()), int(pairs[1].max()) + 1
-    if lowest >= 0 and (source_max + 1) * width < 2**63:
-        source, destination = pairs.astype(np.int64, copy=False)
-        _, first = np.unique(source * width + destination, return_index=True)
-    else:
-        _, first = np.unique(pairs, axis=1, return_index=True)
-    if first.size == pairs.shape[1]:
-        return pairs
-    return np.ascontiguousarray(pairs[:, np.sort(first)])
+    endpoints = pairs.astype(np.uint64 if pairs.dtype.kind == "u" else np.int64, copy=False)
+    first = first_edge_indices(pa.array(endpoints[0]), pa.array(endpoints[1]))
+    return pairs if first is None else np.take(pairs, first.to_numpy(), axis=1)
 
 
 register_engine(DiskGraphEngine.name, DiskGraphEngine)

@@ -113,6 +113,7 @@ class ServingAssembler:
                 "load the training task's artifact with Artifact.load(directory)"
             )
         input_state, target_encoders = reused_state(contract, fitted, None)
+        self._revisit_nodes = fitted.get("revisit_nodes", True)
         self.contract: DataLoaderSpec = contract
         self.rows_spec: ServingRowsSpec = ServingRowsSpec.from_contract(contract)
         self._plan = fit_plan(
@@ -125,6 +126,7 @@ class ServingAssembler:
             contract=contract,
             input_state=input_state,
             target_encoders=target_encoders,
+            revisit_nodes=fitted.get("revisit_nodes"),
             inference=True,
         )
         self._declared: dict[str, dict[str, DType]] = {
@@ -161,7 +163,7 @@ class ServingAssembler:
             raise ValueError("serving needs at least one request")
         tables = self._tables(rows)
         self._require_entities(tables, requests)
-        source = InMemorySource(self.contract.schema, tables)
+        source = InMemorySource(self.contract.schema, tables, revisit_nodes=self._revisit_nodes)
         try:
             return list(
                 request_batches(
