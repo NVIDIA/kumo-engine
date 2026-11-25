@@ -16,6 +16,23 @@ pub trait OutputHandler {
         dst_local_id: u32,
     ) -> Result<()>;
 
+    /// Emit a ranked, virtual edge from a walk start to one kept node.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_walk_edge(
+        &mut self,
+        _walk: &str,
+        _source_type: &str,
+        _destination_type: &str,
+        _src_local_id: u32,
+        _dst_local_id: u32,
+        _score: f32,
+        _rank: u32,
+    ) -> Result<()> {
+        Err(crate::errors::EngineError::InvalidRequest(
+            "this output does not support walk edges".into(),
+        ))
+    }
+
     /// Called before sending feature batches to define schema.
     fn handle_schema(&mut self, schema: arrow_schema::SchemaRef) -> Result<()>;
 
@@ -35,6 +52,7 @@ pub trait OutputHandler {
 
 /// A simple in-memory accumulator for testing/benchmarking.
 pub struct InMemoryOutput {
+    pub walk_edges: WalkEdgeSets,
     pub edges: Vec<(usize, u16, u32, u32)>, // (hop, rel, src, dst)
     pub feature_batches: Vec<arrow_array::RecordBatch>,
     pub schema: Option<arrow_schema::SchemaRef>,
@@ -51,6 +69,7 @@ impl InMemoryOutput {
     pub fn new() -> Self {
         Self {
             edges: Vec::new(),
+            walk_edges: WalkEdgeSets::default(),
             feature_batches: Vec::new(),
             schema: None,
             fused_batches: Vec::new(),
@@ -67,6 +86,22 @@ impl OutputHandler for InMemoryOutput {
         dst_local_id: u32,
     ) -> Result<()> {
         self.edges.push((hop, rel_id, src_local_id, dst_local_id));
+        Ok(())
+    }
+
+    fn handle_walk_edge(
+        &mut self,
+        walk: &str,
+        source_type: &str,
+        destination_type: &str,
+        src_local_id: u32,
+        dst_local_id: u32,
+        score: f32,
+        rank: u32,
+    ) -> Result<()> {
+        self.walk_edges
+            .group(walk, source_type, destination_type)
+            .push(src_local_id, dst_local_id, score, rank);
         Ok(())
     }
 
@@ -184,9 +219,74 @@ pub struct TaskBag {
     pub lp_exclude_rhs_global: Vec<i64>,
 }
 
+/// Parallel columns for one walk and destination table, in start/rank order.
+#[derive(Debug, Default, Clone)]
+pub struct WalkEdges {
+    pub source: Vec<u32>,
+    pub destination: Vec<u32>,
+    pub score: Vec<f32>,
+    pub rank: Vec<i64>,
+}
+
+impl WalkEdges {
+    pub fn push(&mut self, source: u32, destination: u32, score: f32, rank: u32) {
+        self.source.push(source);
+        self.destination.push(destination);
+        self.score.push(score);
+        self.rank.push(i64::from(rank));
+    }
+
+    pub fn into_record_batch(self) -> Result<RecordBatch> {
+        use arrow_array::{ArrayRef, Float32Array, Int64Array, UInt32Array};
+        use std::sync::Arc;
+        RecordBatch::try_from_iter([
+            (
+                "source",
+                Arc::new(UInt32Array::from(self.source)) as ArrayRef,
+            ),
+            (
+                "destination",
+                Arc::new(UInt32Array::from(self.destination)) as ArrayRef,
+            ),
+            (
+                "score",
+                Arc::new(Float32Array::from(self.score)) as ArrayRef,
+            ),
+            ("rank", Arc::new(Int64Array::from(self.rank)) as ArrayRef),
+        ])
+        .map_err(|err| crate::errors::EngineError::Output(err.to_string()))
+    }
+}
+
+/// Maps (walk name, source type, destination type) to its ranked edges.
+#[derive(Debug, Default, Clone)]
+pub struct WalkEdgeSets(pub Vec<((String, String, String), WalkEdges)>);
+
+impl WalkEdgeSets {
+    pub fn group(&mut self, walk: &str, source: &str, destination: &str) -> &mut WalkEdges {
+        // There are typically only two or three groups. Avoid a string allocation
+        // per kept node when appending a rank to an existing group.
+        if let Some(i) = self
+            .0
+            .iter()
+            .position(|((w, s, d), _)| w == walk && s == source && d == destination)
+        {
+            return &mut self.0[i].1;
+        }
+        self.0.push((
+            (walk.to_owned(), source.to_owned(), destination.to_owned()),
+            WalkEdges::default(),
+        ));
+        &mut self.0.last_mut().expect("just appended a group").1
+    }
+}
+
 /// Per-channel graph topology, one channel for node prediction ("main").
 #[derive(Debug, Default, Clone)]
 pub struct GraphChannel {
+    pub walk_pushes: u64,
+    pub walk_decoded_entries: u64,
+    pub walk_edges: WalkEdgeSets,
     pub node_ids: HashMap<String, Vec<u64>>,
     pub edges: Vec<(Vec<u32>, Vec<u32>)>,
     pub batch_dict: HashMap<String, Vec<u32>>,
@@ -327,6 +427,27 @@ impl OutputHandler for RuntimeBatchOutput {
         Ok(())
     }
 
+    fn handle_walk_edge(
+        &mut self,
+        walk: &str,
+        source_type: &str,
+        destination_type: &str,
+        src_local_id: u32,
+        dst_local_id: u32,
+        score: f32,
+        rank: u32,
+    ) -> Result<()> {
+        let channel = match self.batch.graphs.get_mut(&self.channel) {
+            Some(channel) => channel,
+            None => self.batch.graphs.entry(self.channel.clone()).or_default(),
+        };
+        channel
+            .walk_edges
+            .group(walk, source_type, destination_type)
+            .push(src_local_id, dst_local_id, score, rank);
+        Ok(())
+    }
+
     fn handle_schema(&mut self, schema: SchemaRef) -> Result<()> {
         if let Some(ns) = &self.current_features_namespace {
             self.batch
@@ -378,6 +499,8 @@ impl OutputHandler for RuntimeBatchOutput {
             .graphs
             .entry(self.channel.clone())
             .or_default();
+        channel.walk_pushes = state.stats.walk_pushes;
+        channel.walk_decoded_entries = state.stats.walk_decoded_entries;
         channel.rel_id_to_names = self.rel_id_to_names.clone();
         for (type_id, type_state) in state.type_states.iter() {
             if self.seed_type_ids.contains(type_id) {

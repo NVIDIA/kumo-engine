@@ -507,6 +507,7 @@ impl Sampled {
 
     fn plan(fanout: u32, mode: SamplingMode) -> SamplingPlan {
         let layer = LayerSpec {
+            walks: Vec::new(),
             fanouts: HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout,

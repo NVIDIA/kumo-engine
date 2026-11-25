@@ -4,7 +4,7 @@
 
 use crate::DiskgraphConfigError;
 use diskgraph_core::sampling::{
-    AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingMode, SamplingPlan, Weighting,
+    AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingMode, SamplingPlan, WalkSpec, Weighting,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyMapping, PyTuple};
@@ -312,6 +312,68 @@ impl PyFanoutSpec {
     }
 }
 
+/// A native scored walk over one- or two-relation paths.
+#[pyclass(
+    frozen,
+    skip_from_py_object,
+    eq,
+    name = "WalkSpec",
+    module = "diskgraph._c"
+)]
+#[derive(Clone, PartialEq)]
+pub(crate) struct PyWalkSpec {
+    inner: WalkSpec,
+}
+
+#[pymethods]
+impl PyWalkSpec {
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
+    #[new]
+    fn new(
+        name: String,
+        paths: Vec<Vec<String>>,
+        keep: HashMap<String, usize>,
+        restart: f64,
+        budget: u32,
+        clocks: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            inner: WalkSpec {
+                name,
+                paths,
+                keep,
+                restart,
+                budget,
+                clocks,
+            },
+        }
+    }
+
+    fn __getnewargs__(
+        &self,
+    ) -> (
+        String,
+        Vec<Vec<String>>,
+        HashMap<String, usize>,
+        f64,
+        u32,
+        HashMap<String, String>,
+    ) {
+        let w = &self.inner;
+        (
+            w.name.clone(),
+            w.paths.clone(),
+            w.keep.clone(),
+            w.restart,
+            w.budget,
+            w.clocks.clone(),
+        )
+    }
+}
+
 /// Immutable per-relation fanouts and an optional fallback for one hop.
 ///
 /// Args:
@@ -352,10 +414,11 @@ impl PyLayerSpec {
     }
 
     #[new]
-    #[pyo3(signature = (fanouts=None, default_fanout=None))]
+    #[pyo3(signature = (fanouts=None, default_fanout=None, walks=None))]
     fn new(
         fanouts: Option<&Bound<'_, PyMapping>>,
         default_fanout: Option<PyRef<'_, PyFanoutSpec>>,
+        walks: Option<Vec<PyRef<'_, PyWalkSpec>>>,
     ) -> PyResult<Self> {
         let mut overrides =
             HashMap::with_capacity(fanouts.map(|values| values.len()).transpose()?.unwrap_or(0));
@@ -367,6 +430,11 @@ impl PyLayerSpec {
         }
         Ok(Self {
             inner: LayerSpec {
+                walks: walks
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|w| w.inner.clone())
+                    .collect(),
                 fanouts: overrides,
                 default_fanout: default_fanout.map(|spec| spec.inner.clone()),
             },
@@ -392,11 +460,21 @@ impl PyLayerSpec {
             })
     }
 
+    #[getter]
+    fn walks(&self) -> Vec<PyWalkSpec> {
+        self.inner
+            .walks
+            .iter()
+            .cloned()
+            .map(|inner| PyWalkSpec { inner })
+            .collect()
+    }
+
     fn __getnewargs__<'py>(
         &self,
         py: Python<'py>,
-    ) -> PyResult<(Bound<'py, PyDict>, Option<PyFanoutSpec>)> {
-        Ok((self.fanout_values(py)?, self.default_fanout()))
+    ) -> PyResult<(Bound<'py, PyDict>, Option<PyFanoutSpec>, Vec<PyWalkSpec>)> {
+        Ok((self.fanout_values(py)?, self.default_fanout(), self.walks()))
     }
 }
 
@@ -459,6 +537,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCustomExpression>()?;
     m.add_class::<PyWeightedSampling>()?;
     m.add_class::<PyFanoutSpec>()?;
+    m.add_class::<PyWalkSpec>()?;
     m.add_class::<PyLayerSpec>()?;
     m.add_class::<PySamplingPlan>()?;
     Ok(())

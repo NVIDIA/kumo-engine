@@ -180,7 +180,7 @@ pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
 use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags};
 use diskgraph_engine::engine::DiskGraphEngine;
-use diskgraph_engine::output::OutputHandler;
+use diskgraph_engine::output::{OutputHandler, WalkEdgeSets};
 use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
@@ -271,6 +271,7 @@ impl From<PyTimeUnit> for diskgraph_core::time::TimeUnit {
 /// Events yielded by the sampling iterator.
 #[derive(Debug)]
 enum SampleEvent {
+    WalkEdges { walk: String, source: String, destination: String, batch: RecordBatch },
     EdgeBatch { rel_id: usize, batch: RecordBatch,
     },
     NodeBatch { type_id: usize, batch: RecordBatch,
@@ -286,6 +287,7 @@ enum SampleEvent {
 /// Bridge between Rust Engine and Python Iterator.
 struct PyOutputHandler {
     sender: Sender<SampleEvent>,
+    walk_edges: WalkEdgeSets,
     edge_builders: HashMap<u16, (UInt64Builder, UInt64Builder)>,
     chunk_size: usize,
     relation_src_type: Vec<usize>,
@@ -305,6 +307,7 @@ impl PyOutputHandler {
             .unwrap_or(64 * 1024);
         Self {
             sender,
+            walk_edges: WalkEdgeSets::default(),
             edge_builders: HashMap::new(),
             chunk_size,
             relation_src_type,
@@ -386,6 +389,22 @@ impl OutputHandler for PyOutputHandler {
         Ok(())
     }
 
+    fn handle_walk_edge(
+        &mut self,
+        walk: &str,
+        source_type: &str,
+        destination_type: &str,
+        src_local_id: u32,
+        dst_local_id: u32,
+        score: f32,
+        rank: u32,
+    ) -> diskgraph_engine::errors::Result<()> {
+        self.walk_edges
+            .group(walk, source_type, destination_type)
+            .push(src_local_id, dst_local_id, score, rank);
+        Ok(())
+    }
+
     fn handle_schema(
         &mut self,
         _schema: arrow_schema::SchemaRef,
@@ -449,6 +468,14 @@ impl OutputHandler for PyOutputHandler {
             }
         }
 
+        for ((walk, source, destination), edges) in std::mem::take(&mut self.walk_edges.0) {
+            let _ = self.sender.send(SampleEvent::WalkEdges {
+                walk,
+                source,
+                destination,
+                batch: edges.into_record_batch()?,
+            });
+        }
         let rel_ids: Vec<u16> = self.edge_builders.keys().cloned().collect();
         for rel_id in rel_ids {
             self.flush_edge_builder(rel_id)?;
@@ -1285,6 +1312,20 @@ impl PySampleIterator {
         let event = py.detach(|| self.receiver.recv());
 
         match event {
+            Ok(SampleEvent::WalkEdges {
+                walk,
+                source,
+                destination,
+                batch,
+            }) => {
+                let dict = PyDict::new(py);
+                dict.set_item("type", "walk_edges")?;
+                dict.set_item("walk", walk)?;
+                dict.set_item("source_type", source)?;
+                dict.set_item("destination_type", destination)?;
+                dict.set_item("batch", batch.to_pyarrow(py)?)?;
+                Ok(Some(dict.into()))
+            }
             Ok(SampleEvent::EdgeBatch { rel_id, batch }) => {
                 let dict = PyDict::new(py);
                 dict.set_item("type", "edge")?;

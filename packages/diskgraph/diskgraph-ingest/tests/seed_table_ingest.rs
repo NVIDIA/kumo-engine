@@ -1251,6 +1251,7 @@ fn test_sample_runtime_batch_e2e() {
     let plan = SamplingPlan {
         layers: vec![
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 4,
@@ -1259,6 +1260,7 @@ fn test_sample_runtime_batch_e2e() {
                 }),
             },
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 4,
@@ -1481,6 +1483,7 @@ fn test_sample_runtime_batch_excludes_orphan_seeds() {
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -1689,6 +1692,7 @@ fn test_sample_runtime_batch_seed_topology_excluded_features_preserved() {
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -1900,6 +1904,7 @@ fn test_sample_runtime_batch_excludes_all_sibling_stage_seed_namespaces() {
     // Sample the VAL stage. The val stage has 3 seeds (entity ids 5..8).
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -2040,6 +2045,7 @@ fn test_sample_runtime_batch_hop1_temporal_filter_no_leak() {
     let plan = SamplingPlan {
         layers: vec![
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 10,
@@ -2048,6 +2054,7 @@ fn test_sample_runtime_batch_hop1_temporal_filter_no_leak() {
                 }),
             },
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 10,
@@ -2190,6 +2197,7 @@ fn run_sample_runtime_batch_with_flags(
     let plan = SamplingPlan {
         layers: vec![
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 4,
@@ -2198,6 +2206,7 @@ fn run_sample_runtime_batch_with_flags(
                 }),
             },
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 4,
@@ -2396,6 +2405,7 @@ fn test_sample_runtime_batch_swap_edge_direction_preserves_rel_name() {
     let plan = SamplingPlan {
         layers: vec![
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 4,
@@ -2404,6 +2414,7 @@ fn test_sample_runtime_batch_swap_edge_direction_preserves_rel_name() {
                 }),
             },
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 4,
@@ -2490,6 +2501,7 @@ fn test_choose_fused_mode_small_workload_picks_fused() {
     // Small batch, small fanout — working set fits L2 → fused wins.
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -2520,6 +2532,7 @@ fn test_choose_fused_mode_large_workload_picks_non_fused() {
     let plan = SamplingPlan {
         layers: vec![
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 50,
@@ -2528,6 +2541,7 @@ fn test_choose_fused_mode_large_workload_picks_non_fused() {
                 }),
             },
             LayerSpec {
+                walks: Vec::new(),
                 fanouts: std::collections::HashMap::new(),
                 default_fanout: Some(FanoutSpec {
                     fanout: 50,
@@ -2557,6 +2571,7 @@ fn test_choose_fused_mode_respects_env_threshold_override() {
         diskgraph_index::graph::GraphIndexReader::open_with_tt(&parent_root, "tt_fh3").unwrap();
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -2723,6 +2738,7 @@ fn test_sample_runtime_batch_reads_weight_column() {
     .unwrap();
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -2796,6 +2812,7 @@ fn test_sample_runtime_batch_no_weight_column_keeps_weight_none() {
     .unwrap();
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: std::collections::HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 4,
@@ -3412,6 +3429,7 @@ fn run_projected_runtime_batch(
         diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
             .unwrap();
     let layer = || LayerSpec {
+        walks: Vec::new(),
         fanouts: std::collections::HashMap::new(),
         default_fanout: Some(FanoutSpec {
             fanout: 4,

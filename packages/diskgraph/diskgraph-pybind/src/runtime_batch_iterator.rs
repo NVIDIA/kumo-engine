@@ -68,7 +68,7 @@ use diskgraph_engine::output::{GraphChannel, RawFeatureBank, RuntimeBatch, TaskB
 /// the only allocations are the Python dict scaffolding itself.
 fn runtime_batch_to_pydict<'py>(
     py: Python<'py>,
-    batch: &RuntimeBatch,
+    batch: RuntimeBatch,
 ) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
 
@@ -157,7 +157,7 @@ fn runtime_batch_to_pydict<'py>(
 
     // graphs ----
     let graphs = PyDict::new(py);
-    for (channel_name, channel) in &batch.graphs {
+    for (channel_name, channel) in batch.graphs {
         graphs.set_item(channel_name, graph_channel_to_pydict(py, channel)?)?;
     }
     dict.set_item("graphs", graphs)?;
@@ -174,7 +174,7 @@ fn runtime_batch_to_pydict<'py>(
 
 fn graph_channel_to_pydict<'py>(
     py: Python<'py>,
-    channel: &GraphChannel,
+    channel: GraphChannel,
 ) -> PyResult<Bound<'py, PyDict>> {
     let ch = PyDict::new(py);
 
@@ -215,6 +215,25 @@ fn graph_channel_to_pydict<'py>(
         edge_index_dict.append(entry)?;
     }
     ch.set_item("edge_index_dict", edge_index_dict)?;
+    if !channel.walk_edges.0.is_empty() {
+        let groups = PyList::empty(py);
+        for ((walk, source, destination), edges) in channel.walk_edges.0 {
+            let entry = PyDict::new(py);
+            entry.set_item("type", "walk_edges")?;
+            entry.set_item("walk", walk)?;
+            entry.set_item("source_type", source)?;
+            entry.set_item("destination_type", destination)?;
+            let batch = edges.into_record_batch().map_err(crate::map_engine_err)?;
+            entry.set_item("batch", batch.to_pyarrow(py)?)?;
+            groups.append(entry)?;
+        }
+        ch.set_item("walk_edges", groups)?;
+    }
+
+    if channel.walk_pushes > 0 || channel.walk_decoded_entries > 0 {
+        ch.set_item("walk_pushes", channel.walk_pushes)?;
+        ch.set_item("walk_decoded_entries", channel.walk_decoded_entries)?;
+    }
 
     // num_sampled_nodes_dict — per-type per-hop counts: {name: [hop0, hop1, ...]}.
     let num_sampled_nodes = PyDict::new(py);
@@ -981,7 +1000,7 @@ impl RuntimeBatchIterator {
                 .transpose()?;
             Ok::<_, PyErr>((batch, history))
         })?;
-        let output = runtime_batch_to_pydict(py, &batch)?;
+        let output = runtime_batch_to_pydict(py, batch)?;
         if let Some((result, orders)) = history {
             output.set_item("history", result.into_python(py, true)?)?;
             let merged = PyDict::new(py);
