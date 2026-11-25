@@ -2490,9 +2490,15 @@ class PreparedBatchPlan:
                         for group in candidate_sets[name]
                     )
             metadata["candidate_entity_ids"] = ids
-        return Batch(
-            inputs=kernel_metadata(result), targets=kernel_metadata(targets), metadata=metadata
-        )
+        if shared_graphs:
+            # Compatible DiskGraph walks contain only raw per-node values. Their sole
+            # packed boundary was annotated when candidate_offsets was constructed.
+            result.update(
+                kernel_metadata({k: v for k, v in result.items() if k not in shared_graphs})
+            )
+        else:
+            result = kernel_metadata(result)
+        return Batch(inputs=result, targets=kernel_metadata(targets), metadata=metadata)
 
     def _input_length(self, value: HistoryInput, input_name: str | None) -> int:
         if input_name is None:

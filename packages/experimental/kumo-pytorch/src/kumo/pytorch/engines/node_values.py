@@ -189,7 +189,12 @@ def computed_node_arrays(source, neighborhood, table, requested, ids, owners, ro
             return _query_lengths(source, table, nodes.tolist(), times.tolist(), lengths)
 
         counts = cache.read((table, lengths), names, node_ids, occurrence_ticks, fetch)
-        return source._entity_arrays(sample, {}, counts)
+        # These are independent count aggregates. Respect their declared dtypes
+        # without rebuilding the evaluation order for derived expressions.
+        return {
+            name: source._typed_array(counts[native], declarations[name].dtype)
+            for name, native in zip(requested, names, strict=True)
+        }
     unique_ids, cutoffs, inverse = _distinct_pairs(node_ids, occurrence_ticks)
     cutoffs = cutoffs.tolist()
     native_ids = unique_ids.tolist()

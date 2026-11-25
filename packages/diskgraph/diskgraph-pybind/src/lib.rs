@@ -1196,6 +1196,29 @@ impl SamplerEngine {
         Ok(PySampleIterator { receiver: rx })
     }
 
+    /// Read one table's projected batches inline when the caller consumes them all.
+    fn _read_feature_batches<'py>(
+        &self,
+        py: Python<'py>,
+        node_type: &str,
+        node_ids: Vec<u64>,
+        feature_names: Vec<String>,
+    ) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let type_id = *self.engine.node_type_to_id.get(node_type).ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!("Unknown node type: {node_type}"))
+        })?;
+        let batches = py
+            .detach(|| {
+                let mut output = diskgraph_engine::output::InMemoryOutput::new();
+                self.engine.fetch_features_for_type(
+                    type_id, &node_ids, &feature_names, &mut output,
+                )?;
+                Ok::<_, diskgraph_engine::errors::EngineError>(output.feature_batches)
+            })
+            .map_err(map_engine_err)?;
+        batches.iter().map(|batch| batch.to_pyarrow(py)).collect()
+    }
+
     #[tracing::instrument(level = "debug", skip(self, py, batch))]
     pub fn fetch_features(
         &self,

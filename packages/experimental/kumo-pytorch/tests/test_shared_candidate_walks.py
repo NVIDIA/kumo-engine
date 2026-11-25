@@ -42,7 +42,18 @@ def test_grouped_candidate_graphs_match_separate_walks(tmp_path, monkeypatch):
         api.prepare(task_spec, data.dataset, api.DiskGraphEngine(num_threads=1)) as plan,
         plan.materialize(data.anchors) as task,
     ):
+        cache = task._anchors._graph_feature_cache
+        read = cache.read
+        calls = []
+
+        def traced(key, *args, **kwargs):
+            calls.append(key)
+            return read(key, *args, **kwargs)
+
+        monkeypatch.setattr(cache, "read", traced)
         actual = next(task.batches(output_format="model", shuffle=False))
+        # The anchor and every compatible candidate input share one physical read per table.
+        assert [table for table, _ in calls] == ["boards", "pins"]
         monkeypatch.setattr(candidate_walks, "compatible_walk_groups", lambda *_: ())
         separate = next(task.batches(output_format="model", shuffle=False))
 
@@ -55,3 +66,4 @@ def test_grouped_candidate_graphs_match_separate_walks(tmp_path, monkeypatch):
     images = actual.inputs["supplied"]["nodes"]["pins"]["features"]["image"]["values"]
     images.fill_(-77)
     _assert_same(actual.inputs["duplicate"], separate.inputs["duplicate"])
+    _assert_same(actual.inputs["query"], separate.inputs["query"])

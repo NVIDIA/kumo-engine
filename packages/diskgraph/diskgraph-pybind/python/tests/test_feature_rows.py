@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import diskgraph
 import numpy as np
 import pytest
 from diskgraph import _gather_byte_rows
@@ -46,3 +47,29 @@ def test_gather_validates_width_rank_strides_and_dtype():
         _gather_byte_rows(buf, buf, row.astype(np.float64))
     with pytest.raises((BufferError, TypeError)):
         _gather_byte_rows(buf.view(np.uint16), buf.view(np.uint16), row)
+
+
+@pytest.mark.parametrize("count", [0, 3, 4097])
+def test_inline_feature_batches_preserve_order_and_chunks(parent_index, count):
+    engine = diskgraph.SamplerEngine(str(parent_index), num_threads=2)
+    ids = ([2, 0, 2] * ((count + 2) // 3))[:count]
+    names = ["order_time", "order_id"]
+    req = {"node_type": "orders", "node_ids": ids, "feature_names": names}
+    streamed = [
+        event["batch"]
+        for event in engine.fetch_features([req])
+        if event["type"] == "feature"
+    ]
+    batches = engine._read_feature_batches("orders", ids, names)
+    assert len(batches) == len(streamed)
+    assert all(
+        actual.equals(expected)
+        for actual, expected in zip(batches, streamed, strict=True)
+    )
+    assert sum(batch.num_rows for batch in batches) == count
+    if batches:
+        assert batches[0].schema.names == names
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="Unknown node type"):
+        engine._read_feature_batches("missing", [0], names)
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="unknown feature"):
+        engine._read_feature_batches("orders", [0], ["missing"])

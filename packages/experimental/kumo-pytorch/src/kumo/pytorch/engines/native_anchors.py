@@ -507,6 +507,7 @@ class NativeAnchors:
                     cutoffs=evaluation_times,
                     graph_only=graph_only,
                     graph_ids=graph_ids,
+                    draw_runtime=runtime,
                 )
         else:
             self._source._last_candidate_draw_profile = None
@@ -901,7 +902,8 @@ class NativeAnchors:
 
         from kumo.pytorch.anchors import PADDING_KEY
         from kumo.pytorch.contract.batch import CandidateSource, EventSource, NeighborhoodSource
-        from kumo.pytorch.contract.sample import WalkSample
+        from kumo.pytorch.contract.sample import DrawRows, WalkSample
+        from kumo.pytorch.engines.candidate_draws import candidate_row_windows
         from kumo.pytorch.engines.candidate_walks import (
             compatible_walk_groups,
             sample_candidate_walks,
@@ -955,11 +957,21 @@ class NativeAnchors:
                 selections[key] = event_source
                 for name in event_source.events:
                     orders.setdefault(name, set()).add(event_source.order)
+        windows = candidate_row_windows(
+            {
+                name: head.draw
+                for name, head in sample.candidate_sets.items()
+                if isinstance(head.draw, DrawRows)
+            }
+        )
+        model_history = source._needs_temporal_query(sample)
         compiled = (
             _TemporalPlanCompiler(source).compile(
-                sample, event_orders={k: tuple(sorted(v)) for k, v in orders.items()}
+                sample,
+                event_orders={k: tuple(sorted(v)) for k, v in orders.items()},
+                candidate_windows=windows,
             )
-            if source._needs_temporal_query(sample)
+            if model_history or windows
             else None
         )
         merges = []
@@ -1045,12 +1057,23 @@ class NativeAnchors:
             compatible_walk_groups(assembler, graph_only) if output_format == "model" else ()
         )
         for runtime, padded, runtime_stage in runtime_batches():
+            if windows:
+                runtime["_candidate_row_history"] = (windows, runtime["history"])
             runtime["_graph_feature_cache"] = self._graph_feature_cache
             runtime["_degree_cache"] = self._degree_cache
             runtime["_anchor_neighborhood"] = anchor_neighborhood
             if has_candidate_walks:
                 runtime["_candidate_walk_stats"] = {"walk_pushes": 0, "walk_decoded_entries": 0}
             anchors = self._batch_values(runtime_stage, runtime, sample, graph_only)
+            if windows:
+                # Large private draw pools can be released before candidate graph hydration.
+                del runtime["_candidate_row_history"]
+                runtime["history"] = {
+                    **runtime["history"],
+                    "sequences": [
+                        s for s in runtime["history"]["sequences"] if s["name"] not in windows
+                    ],
+                }
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
             if sample.entity.available_from is not None:
@@ -1091,7 +1114,9 @@ class NativeAnchors:
                         if walk_groups
                         else None
                     )
-                    values = source.build_model_batch(sample, runtime, anchors, compiled)
+                    values = source.build_model_batch(
+                        sample, runtime, anchors, compiled if model_history else None
+                    )
                     values = replace(
                         values,
                         merged_events={

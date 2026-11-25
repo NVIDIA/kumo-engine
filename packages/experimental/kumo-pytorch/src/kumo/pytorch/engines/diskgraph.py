@@ -994,10 +994,10 @@ class DiskGraphSource:
             [r.entity_id for r in requests],
         )
 
-    def draw_candidate_ids(self, sample, roots):
+    def draw_candidate_ids(self, sample, roots, *, runtime=None):
         from kumo.pytorch.engines.candidate_draws import draw_candidate_ids
 
-        return draw_candidate_ids(self, sample, roots)
+        return draw_candidate_ids(self, sample, roots, runtime=runtime)
 
     def build_candidates(
         self,
@@ -1010,6 +1010,7 @@ class DiskGraphSource:
         cutoffs=None,
         graph_only=(),
         graph_ids=None,
+        draw_runtime=None,
     ):
         """Resolve candidate IDs and build each occurrence at its parent's prediction time."""
 
@@ -1034,7 +1035,7 @@ class DiskGraphSource:
                 GraphRoot(owner, entity, tick)
                 for owner, entity, tick in zip(sample_ids, entity_ids, ticks, strict=True)
             ]
-            selected = self.draw_candidate_ids(spec, roots)
+            selected = self.draw_candidate_ids(spec, roots, runtime=draw_runtime)
         groups = {}
         for name, declaration in spec.candidate_sets.items():
             if name in graph_only and graph_ids is not None:
@@ -1699,6 +1700,7 @@ class DiskGraphSource:
                 spec.node_fields,
                 state,
                 root_ticks=selected["task"].get("seed_timestamps"),
+                deferred_projections=getattr(spec, "deferred_projections", None),
             )
         finally:
             self._runtime_batch = previous
@@ -2524,6 +2526,22 @@ class DiskGraphSource:
                     if isinstance(values, self._pa.ChunkedArray)
                     else values.view(viewed)
                 )
+            if (
+                (
+                    isinstance(values, (self._pa.ListArray, self._pa.LargeListArray))
+                    or isinstance(values, self._pa.FixedSizeListArray) and values.type == target
+                )
+                and values.type.value_type == target.value_type
+                and values.values.null_count == 0
+            ):
+                if values.type == target:
+                    return values
+                # Arrow's fixed-size cast checks every visible row width. Use the
+                # contract validator below to explain a malformed row on failure.
+                try:
+                    return self._pc.cast(values, target)
+                except self._pa.ArrowInvalid:
+                    pass
             dtype.validate_array(values)
             return values if values.type == target else self._pc.cast(values, target)
         if dtype.name in {"timestamp", "date32"} and self._pa.types.is_integer(values.type):
@@ -2935,9 +2953,9 @@ class DiskGraphSource:
             if deferred_projections is not None:
                 computed = neighborhood.node_values.get(table, {})
                 physical = tuple(name for name in requested if name not in computed)
-                project = self._deferred_graph_fields(table, ids, physical, encoders.get(table, {}))
+                project = self._deferred_graph_fields(table, physical, encoders.get(table, {}))
                 if project is not None:
-                    deferred_projections[table] = project
+                    deferred_projections[table] = np.asarray(ids, dtype=np.uint64), project
                     deferred = physical
                     requested = tuple(name for name in requested if name in computed)
             feature_arrays = self._graph_node_arrays(
@@ -3041,7 +3059,7 @@ class DiskGraphSource:
             profile["topology_assembly_ns"] = time.perf_counter_ns() - topology_started
         return {"nodes": nodes, "edges": edges}
 
-    def _deferred_graph_fields(self, table, ids, names, bindings):
+    def _deferred_graph_fields(self, table, names, bindings):
         """Project stored raw vectors directly in the final order of shared candidate graphs."""
         runtime = getattr(self, "_runtime_batch", None)
         cache = None if runtime is None else runtime.get("_graph_feature_cache")
@@ -3072,17 +3090,16 @@ class DiskGraphSource:
             ):
                 return None
             shapes[name] = dtype.shape
-        dense_ids = np.asarray(ids, dtype=np.uint64)
 
-        def project(indices):
-            if not len(indices):
+        def project(dense_ids):
+            if not len(dense_ids):
                 empty = self._feature_arrays(table, (), names)
                 return _graph_node_ids(empty[pk]), {
                     name: bindings[name].encode_arrow(empty[name]) for name in shapes
                 }
             arrays = cache.read(
                 (table, names),
-                dense_ids[indices],
+                dense_ids,
                 lambda selected: self._read_feature_arrays(table, selected, names),
                 dense_count=self._contiguous_node_counts.get(table, 0),
                 as_numpy=True,
@@ -3169,17 +3186,21 @@ class DiskGraphSource:
     def _read_feature_arrays(self, table, node_ids, names):
         if isinstance(node_ids, np.ndarray):
             node_ids = node_ids.tolist()
+        read_batches = getattr(self._sampler, "_read_feature_batches", None)
+        if read_batches is None:  # Older DiskGraph wheels expose the streaming interface.
+            events = self._sampler.fetch_features(
+                [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
+            )
+            batches = (event["batch"] for event in events if event["type"] == "feature")
+        else:
+            batches = read_batches(table, node_ids, names)
         chunks: dict[str, list[Any]] = {name: [] for name in names}
-        for event in self._sampler.fetch_features(
-            [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
-        ):
-            if event["type"] == "feature":
-                batch = event["batch"]
-                for name in names:
-                    index = batch.schema.get_field_index(name)
-                    if index < 0:
-                        raise RuntimeError(f"DiskGraph returned no {name!r} feature for {table!r}")
-                    chunks[name].append(batch.column(index))
+        for batch in batches:
+            for name in names:
+                index = batch.schema.get_field_index(name)
+                if index < 0:
+                    raise RuntimeError(f"DiskGraph returned no {name!r} feature for {table!r}")
+                chunks[name].append(batch.column(index))
         result = {
             name: (
                 parts[0]
@@ -3244,7 +3265,11 @@ class _TemporalPlanCompiler:
         self.aggregates: list[dict[str, Any]] = []
 
     def compile(
-        self, spec: SampleSpec, *, event_orders: Mapping[str, Sequence[str]] | None = None
+        self,
+        spec: SampleSpec,
+        *,
+        event_orders: Mapping[str, Sequence[str]] | None = None,
+        candidate_windows=None,
     ) -> _CompiledTemporalPlan:
         self.root_table = spec.entity.table
         bound = getattr(self.source, "_materialized_values", None)
@@ -3272,6 +3297,15 @@ class _TemporalPlanCompiler:
                 )
             elif isinstance(target, RowTarget):
                 self._sequence(f"target:{name}", "row_target", name, target)
+        if candidate_windows:
+            # Share unbounded model sequences. Separate capped or aggregate-only
+            # frames retain native late projection and numeric aggregation kernels.
+            unbounded = {seq["frame"] for seq in self.sequences if seq["limit"] is None}
+            for name, (event, _) in candidate_windows.items():
+                existing = self.frames_by_rows.get(event.rows)
+                if existing is not None and existing["name"] not in unbounded:
+                    del self.frames_by_rows[event.rows]
+                self._sequence(name, "draw", name, event)
         frames = [
             {
                 key: (sorted(value) if key == "columns" else value)
@@ -3300,7 +3334,7 @@ class _TemporalPlanCompiler:
     ) -> None:
         frame, destination = self._frame(spec.rows)
         primary_key = self.source._tables[destination].primary_key
-        columns = [primary_key] if primary_key is not None else []
+        columns = [primary_key] if primary_key is not None and kind != "draw" else []
         for field in spec.fields.values():
             if isinstance(field, Field) and field.column is not None:
                 self._physical_column(frame, destination, field.column)
@@ -3323,13 +3357,14 @@ class _TemporalPlanCompiler:
         )
         if output_order is not None:
             self.sequences[-1]["output_order"] = output_order
-        self.sequence_outputs[native_name] = _SequenceOutput(
-            kind,
-            logical_name,
-            spec,
-            primary_key,
-            output_order or "ascending",
-        )
+        if kind != "draw":
+            self.sequence_outputs[native_name] = _SequenceOutput(
+                kind,
+                logical_name,
+                spec,
+                primary_key,
+                output_order or "ascending",
+            )
 
     def _aggregate(self, native_name: str, spec: Aggregate) -> None:
         frame, groups, available, destination = self._source(spec.source)

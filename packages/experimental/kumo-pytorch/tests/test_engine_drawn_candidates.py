@@ -4,6 +4,7 @@
 
 """End-to-end checks for ranked neighbors and window-selected training positives."""
 
+import json
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -153,6 +154,53 @@ def test_scored_and_future_draws_expand_at_each_parent_cutoff(tmp_path, emit_que
                 verify_cutoffs(next(task.batches(output_format=fmt)))
                 for batch in task.batches(batch_size=1, shuffle=True, seed=31, output_format=fmt):
                     verify_cutoffs(batch)
+
+
+@pytest.mark.parametrize("limit", [1, None])
+def test_native_future_windows_share_iterator_execution_with_model_history(tmp_path, limit):
+    schema, rows = data()
+    requests = (api.SampleRequest("early", QUERY, 10), api.SampleRequest("late", QUERY, 20))
+    ds, anchors = write_parquet(schema, rows, requests, tmp_path)
+    past = api.Rows(("acted",), api.TimeWindow("at", stop=0))
+    spec = declared(
+        schema, {"future": future(count=3, weight="weight"), "past": api.DrawRows(past, "pin")}
+    )
+    # The public model event and the private draw intentionally have the same name.
+    history = api.EventSpec(past, {"pin": api.Field("pin")}, limit=limit)
+    spec = replace(
+        spec,
+        sample=replace(spec.sample, events={"future": history}),
+        batch=replace(
+            spec.batch,
+            inputs={
+                **spec.batch.inputs,
+                "actions": api.Input(
+                    api.EventSource(("future",)),
+                    api.Fields((api.Encode("pin", api.Raw()),)),
+                    api.Packed(),
+                ),
+            },
+        ),
+    )
+    with (
+        api.prepare(spec, ds, api.DiskGraphEngine(num_threads=1, random_seed=17)) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        direct = next(task.request_batches(requests, output_format="model"))
+        with (
+            patch.object(plan._source, "_query_values", side_effect=AssertionError("second query")),
+            patch.object(task._anchors, "_iter", wraps=task._anchors._iter) as iterator,
+        ):
+            prefetched = next(task.batches(output_format="model", shuffle=False))
+        program = json.loads(iterator.call_args.kwargs["history"][0])
+        frames = {seq["name"]: seq["frame"] for seq in program["sequences"]}
+        assert (frames["event:future"] == frames["draw:past"]) == (limit is None)
+        assert (
+            prefetched.metadata["candidate_entity_ids"] == direct.metadata["candidate_entity_ids"]
+        )
+        assert prefetched.inputs["actions"]["pin"]["values"].tolist() == (
+            direct.inputs["actions"]["pin"]["values"].tolist()
+        )
 
 
 def test_future_draw_preserves_original_nanoseconds(tmp_path):

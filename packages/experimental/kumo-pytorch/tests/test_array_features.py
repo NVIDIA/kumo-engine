@@ -17,6 +17,36 @@ from tests.test_candidate_neighborhoods import REQUESTS, contract, parquet_input
 from tests.test_scored_walks import star
 
 
+@pytest.mark.parametrize("list_type", [pa.list_, pa.large_list])
+def test_diskgraph_fixed_projection_validates_only_visible_rows(list_type):
+    import pyarrow.compute as pc
+
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    dtype = api.DType("float32", shape=(2, 2))
+    values = pa.array([[9], None, [1, 2, 3, 4]], type=list_type(pa.float32()))
+    assert source._typed_array(values.slice(1), dtype).to_pylist() == [None, [1, 2, 3, 4]]
+    with pytest.raises(ValueError, match="expected 4 elements"):
+        source._typed_array(values, dtype)
+    with pytest.raises(ValueError, match="array elements cannot be null"):
+        source._typed_array(pa.array([[1, 2, None, 4]], type=list_type(pa.float32())), dtype)
+
+
+@pytest.mark.parametrize("rows", [[], [[1, 2]]])
+def test_diskgraph_fixed_projection_rejects_mismatched_fixed_width(rows):
+    import pyarrow.compute as pc
+
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    values = pa.array(rows, type=pa.list_(pa.float32(), 2))
+    with pytest.raises(ValueError, match="width|shape"):
+        source._typed_array(values, api.DType("float32", shape=(2, 2)))
+
+
 def vector(pin):
     return None if pin == 2 else [float(pin * 10 + j) for j in range(4)]
 
@@ -191,11 +221,11 @@ def test_deferred_candidate_fields_project_only_final_occurrences(tmp_path, monk
             },
             raising=False,
         )
-        project = source._deferred_graph_fields("pins", dense_ids, names, bindings)
+        project = source._deferred_graph_fields("pins", names, bindings)
         assert project is not None and not reads
         indices = np.array([0, 2, 0, 1, 3, 1], dtype=np.int64)
         for positions in (indices, indices[::-1], indices[:0]):
-            ids, features = project(positions)
+            ids, features = project(dense_ids[positions])
             assert ids.tolist() == expected_ids.numpy()[positions].tolist()
             check_tensors(features["image"], ids.tolist())
             features["image"]["values"].fill_(99)
@@ -206,7 +236,6 @@ def test_deferred_candidate_fields_project_only_final_occurrences(tmp_path, monk
         assert (
             source._deferred_graph_fields(
                 "pins",
-                dense_ids,
                 names,
                 {"image": replace(bindings["image"], destination=object())},
             )

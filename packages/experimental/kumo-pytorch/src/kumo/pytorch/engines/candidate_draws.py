@@ -26,14 +26,15 @@ from kumo.pytorch.contract.sample import (
 from kumo.pytorch.contract.schema import table_clock
 
 
-def draw_candidate_ids(source, sample, roots):
+def draw_candidate_ids(source, sample, roots, *, runtime=None):
     """Return one group of public candidate keys per root and declared draw."""
     started = time.perf_counter_ns()
     draws = {name: spec.draw for name, spec in sample.candidate_sets.items() if spec.draw}
     row_draws = {name: draw for name, draw in draws.items() if isinstance(draw, DrawRows)}
     results = {}
     if row_draws and roots:
-        for name, pool in _row_pools(source, sample, roots, row_draws):
+        history = runtime.get("_candidate_row_history") if runtime is not None else None
+        for name, pool in _row_pools(source, sample, roots, row_draws, history):
             entity = sample.candidate_sets[name].entity
             pool = _eligible_entities(source, pool, entity, roots, native_ids=False)
             results[name] = _select(pool, roots, row_draws[name], name, source._random_seed)
@@ -45,8 +46,19 @@ def draw_candidate_ids(source, sample, roots):
             results[name] = []
         elif isinstance(draw, DrawNeighbors):
             if draw.neighborhood not in graphs:
-                _, events, physical = source._sample_graph_events(sample, draw.neighborhood, roots)
-                graphs[draw.neighborhood] = _graph_columns(source, events, physical)
+                name_in_runtime = runtime is not None and (
+                    draw.neighborhood in runtime["graphs"]
+                    or runtime.get("_anchor_neighborhood") == draw.neighborhood
+                )
+                if name_in_runtime:
+                    graph = runtime["graphs"].get(draw.neighborhood, runtime["graphs"]["main"])
+                    physical = source._sampling_plan(sample.neighborhoods[draw.neighborhood])[1]
+                    graphs[draw.neighborhood] = _native_graph_columns(graph, physical)
+                else:
+                    _, events, physical = source._sample_graph_events(
+                        sample, draw.neighborhood, roots
+                    )
+                    graphs[draw.neighborhood] = _graph_columns(source, events, physical)
             entity = sample.candidate_sets[name].entity
             table = entity.table
             pool = _neighbor_pool(*graphs[draw.neighborhood], table, draw)
@@ -69,9 +81,7 @@ def draw_candidate_ids(source, sample, roots):
     return results
 
 
-def _row_program(source, sample, draws):
-    from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
-
+def candidate_row_windows(draws):
     # One native sequence per window, including all requested keys and weights.
     # The temporal compiler pushes the exact bounds into the native traversal.
     by_rows = defaultdict(dict)
@@ -85,26 +95,35 @@ def _row_program(source, sample, draws):
             for col in (draw.column, draw.weight)
             if col
         }
-        events[next(iter(sharing))] = EventSpec(rows, fields)
-    program = _TemporalPlanCompiler(source).compile(SampleSpec(entity=sample.entity, events=events))
-    return by_rows, program
+        events[f"draw:{next(iter(sharing))}"] = (EventSpec(rows, fields), sharing)
+    return events
 
 
-def _row_pools(source, sample, roots, draws):
-    # The same immutable sample drives every batch in a materialized task.
-    cached = getattr(source, "_candidate_row_program", None)
-    if cached is None or cached[0] is not sample:
-        cached = source._candidate_row_program = (sample, *_row_program(source, sample, draws))
-    _, by_rows, program = cached
-    result = source._query_values(
-        sample,
-        source._root_ids(sample.entity.table, roots),
-        [root.cutoff for root in roots],
-        program.plan,
-        output_format="model",
-    )
+def _row_pools(source, sample, roots, draws, row_history):
+    if row_history is None:
+        from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
+
+        cached = getattr(source, "_candidate_row_program", None)
+        if cached is None or cached[0] is not sample:
+            windows = candidate_row_windows(draws)
+            program = _TemporalPlanCompiler(source).compile(
+                SampleSpec(entity=sample.entity), candidate_windows=windows
+            )
+            cached = source._candidate_row_program = (sample, windows, program)
+        _, windows, program = cached
+        result = source._query_values(
+            sample,
+            source._root_ids(sample.entity.table, roots),
+            [root.cutoff for root in roots],
+            program.plan,
+            output_format="model",
+        )
+    else:
+        windows, result = row_history
     for sequence in result["sequences"]:
-        event = program.sequences[sequence["name"]].spec
+        if sequence["name"] not in windows:
+            continue
+        event, sharing = windows[sequence["name"]]
         table = destination_table(source.schema, sample.entity.table, event.rows.path)
         offsets = sequence["offsets"].to_numpy()
         owners = np.repeat(np.arange(len(roots)), np.diff(offsets).astype(np.intp))
@@ -113,11 +132,28 @@ def _row_pools(source, sample, roots, draws):
             col: source._restore_feature_array(table, col, batch.column(col))
             for col in event.fields
         }
-        for name, draw in by_rows[event.rows].items():
+        for name, draw in sharing.items():
             columns = {"owner": owners, "id": fields[draw.column]}
             if draw.weight:
                 columns["weight"] = fields[draw.weight]
             yield name, pa.table(columns)
+
+
+def _native_graph_columns(graph, physical):
+    # The materialized iterator already exposes node IDs, owners and traversal
+    # endpoints as separate Arrow arrays. Skip the intermediate event batches.
+    nodes = {name: (graph["batch_dict"][name], ids) for name, ids in graph["node_ids"].items()}
+    edges = defaultdict(list)
+    for edge in graph["edge_index_dict"]:
+        relation = edge["edge_type"]["rel"]
+        if relation in physical:
+            edges[physical[relation]].append((edge["dst"], None))
+    for event in graph.get("walk_edges", ()):
+        batch = event["batch"]
+        edges[f"{event['walk']}.{event['destination_type']}"].append(
+            (batch.column("destination"), batch)
+        )
+    return nodes, edges
 
 
 def _graph_columns(source, events, physical):
@@ -129,29 +165,33 @@ def _graph_columns(source, events, physical):
         elif event["type"] == "edge":
             relation = source._relations_by_id[event["rel_id"]]
             if relation["name"] in physical:
-                edges[physical[relation["name"]]].append((event["batch"], "id_b"))
+                edges[physical[relation["name"]]].append((event["batch"].column("id_b"), None))
         elif event["type"] == "walk_edges":
             name = f"{event['walk']}.{event['destination_type']}"
-            edges[name].append((event["batch"], "destination"))
-    return {name: pa.Table.from_batches(batches) for name, batches in nodes.items()}, edges
+            edges[name].append((event["batch"].column("destination"), event["batch"]))
+    nodes = {name: pa.Table.from_batches(batches) for name, batches in nodes.items()}
+    return {name: (data["id_a"], data["id_b"]) for name, data in nodes.items()}, edges
 
 
 def _neighbor_pool(nodes, edges, table, draw):
     parts = []
     for name in draw.edges:
-        for batch, destination in edges.get(name, ()):
+        for destination, batch in edges.get(name, ()):
+            weights = batch.column(draw.weight) if draw.weight else None
             if draw.ranks:
                 lo, hi = draw.ranks
                 ranks = batch.column("rank")
-                batch = batch.filter(pc.and_(pc.greater_equal(ranks, lo), pc.less(ranks, hi)))
-            if not len(batch):
+                keep = pc.and_(pc.greater_equal(ranks, lo), pc.less(ranks, hi))
+                destination = destination.filter(keep)
+                if weights is not None:
+                    weights = weights.filter(keep)
+            if not len(destination):
                 continue
-            # Both forward and reverse native hops point from the traversal
-            # source to its sampled destination. Node positions carry ownership.
-            endpoints = nodes[table].take(batch.column(destination))
-            columns = {"owner": endpoints["id_a"], "id": endpoints["id_b"]}
-            if draw.weight:
-                columns["weight"] = batch.column(draw.weight)
+            # Forward and reverse hops both point at the sampled node position.
+            owners, ids = nodes[table]
+            columns = {"owner": owners.take(destination), "id": ids.take(destination)}
+            if weights is not None:
+                columns["weight"] = weights
             parts.append(pa.table(columns))
     return pa.concat_tables(parts) if parts else None
 
@@ -229,28 +269,39 @@ def _select(pool, roots, draw, name, seed):
         if isinstance(ids, np.ndarray)
         else pc.not_equal(ids.slice(1), ids.slice(0, len(ids) - 1)).to_numpy()
     )
-    first = np.flatnonzero(np.r_[True, (owners[1:] != owners[:-1]) | different_ids])
-    ids = ids.take(first)
-    owners = owners[first]
-    starts = np.flatnonzero(np.r_[True, owners[1:] != owners[:-1]])
-    sizes = np.diff(starts, append=len(owners))
-    if np.all(sizes == 1):
-        selected = ids
-    else:
-        priorities = _priorities(roots, owners[starts], sizes, name, seed)
+    distinct = (owners[1:] != owners[:-1]) | different_ids
+    first = None
+    if not distinct.all():
+        first = np.concatenate(([0], np.flatnonzero(distinct) + 1))
+        ids = ids.take(first)
+        owners = owners[first]
+    # Keys already occur in contiguous owner blocks. Sorting within these
+    # blocks preserves their boundaries, so slice the first k in each block.
+    sizes = np.bincount(owners.astype(np.intp, copy=False), minlength=len(roots))
+    if sizes.max() > 1:
+        present = np.flatnonzero(sizes)
+        priorities = _priorities(roots, present, sizes[present], name, seed)
         if draw.weight:
-            # Sum in log space, including repeated weights whose total exceeds
-            # float64. Gumbel top-k draws in proportion to remaining mass.
-            log_mass = np.logaddexp.reduceat(np.log(weights), first)
+            # Repeated weights can exceed float64 in linear space.
+            log_mass = np.log(weights)
+            if first is not None:
+                log_mass = np.logaddexp.reduceat(log_mass, first)
             priorities = log_mass - np.log(-np.log(priorities))
         ordered = np.lexsort((-priorities, owners))
-        ranks = np.arange(len(ordered)) - np.repeat(starts, sizes)
-        selected = ids.take(ordered[ranks < draw.count])
-    counts = np.zeros(len(roots), dtype=np.intp)
-    counts[owners[starts]] = np.minimum(sizes, draw.count)
-    offsets = np.r_[0, np.cumsum(counts)]
-    values = selected.tolist() if isinstance(selected, np.ndarray) else _arrow_values(selected)
-    return [tuple(values[a:b]) for a, b in zip(offsets[:-1], offsets[1:], strict=True)]
+        if sizes.max() > draw.count:
+            counts = np.minimum(sizes, draw.count)
+            skipped = sizes - counts
+            # For each retained key, skip only the excess keys in earlier blocks.
+            take = np.arange(counts.sum()) + np.repeat(skipped.cumsum() - skipped, counts)
+            ordered = ordered[take]
+            sizes = counts
+        ids = ids.take(ordered)
+    values = ids.tolist() if isinstance(ids, np.ndarray) else _arrow_values(ids)
+    position = 0
+    for owner, size in enumerate(sizes.tolist()):
+        groups[owner] = tuple(values[position : position + size])
+        position += size
+    return groups
 
 
 def _priorities(roots, owners, sizes, name, seed):

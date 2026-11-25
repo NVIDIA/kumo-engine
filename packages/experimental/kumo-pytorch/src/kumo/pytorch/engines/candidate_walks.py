@@ -12,7 +12,7 @@ import torch
 from kumo.pytorch.contract.batch import Graph, NeighborhoodSource, Raw
 from kumo.pytorch.contract.sample import WalkSample
 from kumo.pytorch.encoding import _torch_type
-from kumo.pytorch.output import offsets
+from kumo.pytorch.output import kernel_metadata, offsets
 
 
 def compatible_walk_groups(assembler, compact):
@@ -24,10 +24,14 @@ def compatible_walk_groups(assembler, compact):
             isinstance(rep, Graph)
             and rep.topology == "relations"
             and isinstance(binding, NeighborhoodSource)
-            and binding.candidates in compact
+            and (binding.candidates is None or binding.candidates in compact)
         ):
             continue
-        spec = assembler.sample.candidate_sets[binding.candidates].sample_spec()
+        spec = (
+            assembler.sample
+            if binding.candidates is None
+            else assembler.sample.candidate_sets[binding.candidates].sample_spec()
+        )
         hood = spec.neighborhoods[binding.name]
         if not (
             len(hood.layers) == 1
@@ -43,14 +47,17 @@ def compatible_walk_groups(assembler, compact):
         ):
             continue
         key = (spec.entity, hood, rep)
-        for prev, _, _, inputs in groups:
+        for prev, candidates, anchors in groups:
             if key == prev:
                 break
         else:
-            inputs = {}
-            groups.append((key, spec, prepared, inputs))
-        inputs[name] = binding.candidates
-    return [(spec, prepared, inputs) for _, spec, prepared, inputs in groups if len(inputs) > 1]
+            candidates, anchors = [], []
+            groups.append((key, candidates, anchors))
+        if binding.candidates is None:
+            anchors.append((name, spec, prepared))
+        else:
+            candidates.append((name, spec, prepared))
+    return [(candidates, anchors) for _, candidates, anchors in groups if len(candidates) > 1]
 
 
 def _take(value, indices):
@@ -102,25 +109,34 @@ def _expand(shared, inverse, root_table, edge_types, deferred_rows):
     return {"nodes": nodes, "edges": {name: edges[name] for name in shared["edges"]}}
 
 
-def _fill_projections(projections, deferred_rows, graphs):
-    # Gather directly into final occurrence order. Slices for different graphs are disjoint
-    # even when several candidates refer to the same immutable source row.
-    for table, project in projections.items():
-        rows = deferred_rows[table]
-        ids, features = project(np.concatenate(rows))
+def _fill_projections(pending):
+    # Each table is read once for all matching graphs. The slices in model outputs
+    # are disjoint, including when different anchors or candidates select the same row.
+    for project, pieces in pending.values():
+        ids, features = project(np.concatenate([rows for _, rows in pieces]))
         start = 0
-        for graph, positions in zip(graphs, rows, strict=True):
-            stop = start + len(positions)
-            node = graph["nodes"][table]
-            node["ids"] = ids[start:stop] if len(positions) else torch.empty(0, dtype=torch.long)
+        for node, rows in pieces:
+            stop = start + len(rows)
+            node["ids"] = ids[start:stop] if len(rows) else torch.empty(0, dtype=torch.long)
             for field, encoded in features.items():
                 node["features"][field] = {key: value[start:stop] for key, value in encoded.items()}
             start = stop
 
 
+def _graph_request(prepared, deferred):
+    return SimpleNamespace(
+        source=prepared.spec.source.name,
+        topology=prepared.spec.representation.topology,
+        node_fields=prepared.spec.representation.node_fields,
+        deferred_projections=deferred,
+    )
+
+
 def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
     output = {}
-    for spec, prepared, inputs in groups:
+    for candidates, anchors in groups:
+        _, spec, prepared = candidates[0]
+        inputs = {name: field.spec.source.candidates for name, _, field in candidates}
         unique, rows = {}, []
         occurrences = {}
         for candidate in dict.fromkeys(inputs.values()):
@@ -140,12 +156,7 @@ def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
         # Native sampling and point-in-time projections both run once for the shared roots.
         shared = source.sample_graph(
             spec,
-            SimpleNamespace(
-                source=prepared.spec.source.name,
-                topology=prepared.spec.representation.topology,
-                node_fields=prepared.spec.representation.node_fields,
-                deferred_projections=deferred,
-            ),
+            _graph_request(prepared, deferred),
             prepared.state,
             rows,
             seed,
@@ -159,6 +170,29 @@ def sample_candidate_walks(source, groups, candidate_roots, seed, epoch):
         for name, candidate in inputs.items():
             inverse, boundaries = occurrences[candidate]
             output[name] = _expand(shared, inverse, spec.entity.table, edge_types, deferred_rows)
-            output[name]["candidate_offsets"] = torch.from_numpy(boundaries.copy())
-        _fill_projections(deferred, deferred_rows, [output[name] for name in inputs])
+            output[name].update(
+                kernel_metadata({"candidate_offsets": torch.from_numpy(boundaries.copy())})
+            )
+        pending = {
+            table: (
+                project,
+                [
+                    (output[name]["nodes"][table], dense[indices])
+                    for name, indices in zip(inputs, deferred_rows[table], strict=True)
+                ],
+            )
+            for table, (dense, project) in deferred.items()
+        }
+        for name, anchor_spec, anchor in anchors:
+            anchor_fields = {}
+            graph = source.sample_graph_batch(
+                anchor_spec,
+                _graph_request(anchor, anchor_fields),
+                anchor.state,
+                source._runtime_batch,
+            )
+            output[name] = graph
+            for table, (dense, project) in anchor_fields.items():
+                pending.setdefault(table, (project, []))[1].append((graph["nodes"][table], dense))
+        _fill_projections(pending)
     return output
