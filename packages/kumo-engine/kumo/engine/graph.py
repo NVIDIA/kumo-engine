@@ -315,27 +315,13 @@ def _lock(graph_key: str) -> Any:
 
 
 def _loaded(store: Any, handle: Any) -> Optional[Any]:
-    from diskgraph import DiskgraphCorruptionError, read_success_marker
-    from kumo_core.diskgraph.snapshot import (
-        DiskgraphSnapshotError,
-        check_diskgraph_output,
-        rebased,
-    )
+    from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
 
-    path = store.staging_path(handle)
-    try:
-        path = store.path(handle)
-        if read_success_marker(path) is None:
-            return None
-        store.verify(handle)
-        if check_diskgraph_output(path) is None:
-            return None
-        return rebased(store, handle)
-    except (DiskgraphCorruptionError, DiskgraphSnapshotError, FileNotFoundError,
-            IsADirectoryError, NotADirectoryError, ValueError, KeyError) as error:
-        warnings.warn(f"Reloading the damaged graph index at {path}: {error}",
-                      UserWarning, stacklevel=3)
+    path = store._ready_path(handle)
+    if path is None:
         return None
+    result = DiskgraphIngestResult.for_index(path)
+    return result if not result.missing_paths() else None
 
 
 def _load_local(connector: Any, path: str, root: str,
@@ -373,8 +359,8 @@ def _load_local(connector: Any, path: str, root: str,
                         if not holds_export(Path(existing.index_path), manifest):
                             raise ValueError(f'Conflicting contents for index build {build_id}')
                         return store.publish_import(handle, existing)
-                elif target != legacy:
-                    raise ValueError('An ID-less export cannot replace a retained legacy snapshot or checkpoint')
+                elif target != legacy and store._ready_candidate(str(legacy)):
+                    raise ValueError('An ID-less export cannot replace a retained legacy snapshot')
                 load_into(connector, path, root, manifest, target)
             except FileNotFoundError:
                 newer_root, newer = read(connector, path)

@@ -216,8 +216,14 @@ class LocalSnapshotStore:
         self._verify_path(str(source))
         build_id = _read_json_object(source / "index_metadata.json").get("index_build_id")
         if build_id is None:
-            if source != Path(self.staging_path(handle)):
-                raise ValueError("Import cannot replace a completed legacy snapshot or an ingest checkpoint in place")
+            legacy = Path(self.staging_path(handle))
+            if source != legacy:
+                if self._ready_candidate(str(legacy)):
+                    raise ValueError("Import cannot replace a completed legacy snapshot in place")
+                self._discard_import_checkpoint(handle)
+                source.rename(legacy)
+                source = legacy
+                write_diskgraph_success_marker(str(source), DiskgraphIngestResult.for_index(source))
             self.use_legacy(handle)
             return DiskgraphIngestResult.for_index(source)
         if not isinstance(build_id, str) or not build_id:
@@ -233,10 +239,21 @@ class LocalSnapshotStore:
                     raise ValueError(f"Conflicting contents for index build {build_id}")
                 shutil.rmtree(source)
             self._publish_reference(handle, build_id)
+            self._discard_import_checkpoint(handle)
             return existing
         if target.exists():
             shutil.rmtree(target)
-        return self.publish(handle, result)
+        published = self.publish(handle, result)
+        self._discard_import_checkpoint(handle)
+        return published
+
+    def _discard_import_checkpoint(self, handle: DiskgraphSnapshotHandle) -> None:
+        """Retire unfinished staging after the incoming build verifies."""
+        legacy = Path(self.staging_path(handle))
+        if legacy.exists() and not self._ready_candidate(str(legacy)):
+            # Preserve permission/resource error handling before deletion.
+            self.has_resumable_staging(handle)
+            shutil.rmtree(legacy)
 
     def _publish_reference(self, handle: DiskgraphSnapshotHandle, build_id: str) -> None:
         reference = self._publication_reference(handle)
@@ -356,10 +373,6 @@ class LocalSnapshotStore:
         from diskgraph import DiskgraphCorruptionError
 
         try:
-            # The native reader reports both invalid UTF-8 and I/O failures as
-            # DiskgraphSystemError. Decode separately so only encoding damage
-            # becomes ValueError; permission and resource errors must propagate.
-            (Path(path) / "_SUCCESS").read_text(encoding="utf-8")
             self._verify_path(path)
             return check_diskgraph_output(path) is not None
         except (DiskgraphCorruptionError, DiskgraphSnapshotError,
@@ -420,6 +433,14 @@ class LocalSnapshotStore:
             if str(error).startswith("io error verifying "):
                 raise OSError(str(error)) from error
             raise
+        # The native reader conflates invalid UTF-8 with I/O failures. Decode
+        # here so every verifier treats encoding damage as ValueError while
+        # permission and resource failures propagate.
+        try:
+            (Path(path) / "_SUCCESS").read_text(encoding="utf-8")
+        except FileNotFoundError as error:
+            raise DiskgraphSnapshotError(
+                "snapshot integrity passed but _SUCCESS is missing at " + path) from error
         marker = read_success_marker(path)
         if marker is None:
             raise DiskgraphSnapshotError(

@@ -264,13 +264,18 @@ def _export_for_checkpoint(graph, tmp_path, *, idless=False):
 
 
 @pytest.mark.parametrize('reference', ['absent', 'malformed'])
-@pytest.mark.parametrize('outcome', ['success', 'failed_download', 'idless'])
-def test_import_preserves_native_ingest_checkpoints(
+@pytest.mark.parametrize('outcome', ['success', 'existing', 'failed_download', 'invalid_download', 'idless'])
+def test_import_retires_checkpoints_only_after_verified_publication(
         scratch, graph, tmp_path, monkeypatch, reference, outcome):
+    from diskgraph import DiskgraphCorruptionError
+
     import kumo.engine._snapshot_io as snapshot_io
 
     snapshot, store, handle, exports, location = _export_for_checkpoint(
         graph, tmp_path, idless=outcome == 'idless')
+    if outcome == 'existing':
+        kumo.GraphSnapshot.load_from_connector(exports, path=location)
+        store._reference(handle).unlink()
     staging = _interrupted(graph, monkeypatch)
     (staging / 'index_metadata.json').write_text('{interrupted')
     ref = store._reference(handle)
@@ -289,27 +294,32 @@ def test_import_preserves_native_ingest_checkpoints(
             target.mkdir(parents=True)
             (target / 'partial').write_bytes(b'unfinished download')
             raise OSError('download failed')
-        return load(connector, path, root, manifest, target)
+        result = load(connector, path, root, manifest, target)
+        if outcome == 'invalid_download':
+            (target / 'col_stats.json').write_bytes(b'corrupt imported statistics')
+        return result
 
     monkeypatch.setattr(snapshot_io, 'load_into', record)
-    if outcome == 'success':
+    if outcome not in ('failed_download', 'invalid_download'):
         loaded = kumo.GraphSnapshot.load_from_connector(exports, path=location)
-        assert loaded.index_path == snapshot.index_path
+        assert loaded.index_path == (staging if outcome == 'idless' else snapshot.index_path)
         assert graph.snapshot() == loaded
+        assert not (staging / '_tmp').exists()
+        if outcome != 'idless':
+            assert not staging.exists()
     else:
-        error, message = ((OSError, 'download failed') if outcome == 'failed_download'
-                          else (ValueError, 'ID-less export cannot replace'))
-        with pytest.raises(error, match=message):
+        error = OSError if outcome == 'failed_download' else DiskgraphCorruptionError
+        with pytest.raises(error):
             kumo.GraphSnapshot.load_from_connector(exports, path=location)
         assert (ref.read_bytes() if ref.exists() else None) == original_ref
-    assert _files(staging) == before
-    assert {name: (staging / name).stat().st_ino for name in before} == inodes
+        assert _files(staging) == before
+        assert {name: (staging / name).stat().st_ino for name in before} == inodes
     assert all(not path.exists() for path in targets)
     assert not list((scratch / 'snapshots/.imports').rglob('_SUCCESS'))
 
 
 @pytest.mark.parametrize('outcome', ['success', 'failed_copy', 'idless'])
-def test_generic_restore_preserves_native_ingest_checkpoints(
+def test_generic_restore_retires_checkpoints_only_after_verified_publication(
         scratch, graph, tmp_path, monkeypatch, outcome):
     import shutil
 
@@ -351,15 +361,16 @@ def test_generic_restore_preserves_native_ingest_checkpoints(
         with _lock(handle.graph_key):
             return store.restore(handle, str(durable_root),
                                  exists=lambda p: Path(p).exists(), copy_tree=copy)
-    if outcome == 'success':
-        assert call().index_path == str(snapshot.index_path)
+    if outcome != 'failed_copy':
+        assert call().index_path == str(staging if outcome == 'idless' else snapshot.index_path)
+        assert not (staging / '_tmp').exists()
+        if outcome != 'idless':
+            assert not staging.exists()
     else:
-        error, message = ((OSError, 'copy failed') if outcome == 'failed_copy' else
-                          (ValueError, 'cannot replace a completed legacy snapshot'))
-        with pytest.raises(error, match=message):
+        with pytest.raises(OSError, match='copy failed'):
             call()
-    assert _files(staging) == before
-    assert {name: (staging / name).stat().st_ino for name in before} == inodes
+        assert _files(staging) == before
+        assert {name: (staging / name).stat().st_ino for name in before} == inodes
     assert all(not path.exists() for path in targets)
 
 
