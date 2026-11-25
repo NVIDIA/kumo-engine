@@ -1062,6 +1062,51 @@ def _binary_label_index_for_stage(
     return index
 
 
+def _capped_binary_eval_node_ids(
+    runtime_manifest_path: str,
+    stage: str,
+    num_rows: int,
+    seed: int,
+) -> tuple[list[int], tuple[float, float]] | None:
+    import numpy as np
+
+    stage_ref = (_load_json(runtime_manifest_path).get("stages")
+                 or {}).get(stage)
+    index = (stage_ref.get("binary_label_index") if isinstance(
+        stage_ref, Mapping) else None)
+    if not isinstance(index, Mapping):
+        logger.warning(f"Capped {stage} evaluation reads the first {num_rows} "
+                       f"stored rows: stage {stage!r} has no "
+                       f"binary_label_index.")
+        return None
+    counts = {
+        label: int(index[f"{label}_count"])
+        for label in ("true", "false")
+    }
+    take = {"true": min(counts["true"], num_rows // 2)}
+    take["false"] = min(counts["false"], num_rows - take["true"])
+    take["true"] = min(counts["true"], num_rows - take["false"])
+    rng = np.random.default_rng(seed % 2**64)
+    node_ids = [np.empty(0, dtype=np.uint64)]
+    for label in ("true", "false"):
+        if take[label] == 0:
+            continue
+        ids = np.memmap(
+            os.path.join(stage_ref["index_path"], index[f"{label}_node_ids"]),
+            dtype="<u8", mode="r", shape=(counts[label], ))
+        if take[label] < counts[label]:
+            ids = ids[np.sort(
+                rng.choice(counts[label], take[label], replace=False,
+                           shuffle=False))]
+        node_ids.append(np.asarray(ids, dtype=np.uint64))
+    rows, total = sum(take.values()), sum(counts.values())
+    false_weight, true_weight = (
+        counts[label] * rows / (total * take[label]) if take[label] else 1.0
+        for label in ("false", "true"))
+    return (np.sort(np.concatenate(node_ids)).tolist(),
+            (false_weight, true_weight))
+
+
 def _sample_weight_index_for_stage(
     runtime_manifest_path: str,
     stage: str,
@@ -1935,6 +1980,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         self.eval_loader_kwargs: dict[str, Any] = {
             'batch_size': self.eval_batch_size,
         }
+        self.eval_class_weights: dict[str, tuple[float, float] | None] = {}
 
         # Feature access and graph schema for the explainer; populated only during
         # DiskgraphNestedTrainer.explain.
@@ -2384,13 +2430,28 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         group_by_timestamp = (is_train and self._is_link_pred
                               and self._use_lhs_node_loader
                               and self._rhs_is_temporal)
+        selected_stage_node_ids: list[int] | None = None
         if is_train:
             batch_size = self.train_batch_size
             max_batches = self._max_train_batches(num_seeds)
         else:
+            from kumoapi.task import TaskType
             batch_size = int(self.eval_loader_kwargs['batch_size'])
             max_batches = self._max_eval_batches(num_seeds, batch_size,
                                                  max_eval_steps)
+            selection = None
+            if (max_batches is not None and not capture_matches_stage
+                    and self._task_type
+                    == TaskType.BINARY_CLASSIFICATION.value):
+                selection = _capped_binary_eval_node_ids(
+                    self.task_manifest.runtime_manifest_path, stages[0],
+                    max_batches * batch_size, self.base_seed)
+            self.eval_class_weights[stages[0]] = None
+            if selection is not None:
+                selected_stage_node_ids, self.eval_class_weights[
+                    stages[0]] = selection
+                num_seeds = len(selected_stage_node_ids)
+                max_batches = None
         stage_batch_targets: dict[str, int] | None = None
         stage_num_seeds: dict[str, int] | None = None
         stage_runtime_options: dict[str, dict[str, Any]] = {}
@@ -2449,6 +2510,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             }
         runtime_options = self._seed_runtime_options(
             'predict' if 'predict' in stages else stages[0], runtime_options)
+        if selected_stage_node_ids is not None:
+            runtime_options['selected_stage_node_ids'] = selected_stage_node_ids
         if is_train and self._weighted_seed_sampling is not None:
             if self.drop_last_train:
                 raise ValueError(

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pickle
 import select
@@ -16,7 +17,7 @@ import time
 import types
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import kumo_core.diskgraph.lightning_data as dldm
 import psutil
@@ -332,6 +333,29 @@ def _manifest(
             "edge_types": []
         },
     )
+
+
+def _eval_runtime_manifest(
+    tmp_path: Path,
+    stage: str,
+    labels: list[int] | None = None,
+) -> str:
+    stage_ref: dict[str, Any] = {
+        "table_name": f"{stage}_seeds",
+        "index_path": str(tmp_path),
+    }
+    if labels is not None:
+        index: dict[str, Any] = {}
+        for name, value in (("false", 0), ("true", 1)):
+            ids = [i for i, label in enumerate(labels) if label == value]
+            (tmp_path / f"{name}.bin").write_bytes(b"".join(
+                i.to_bytes(8, "little") for i in ids))
+            index[f"{name}_node_ids"] = f"{name}.bin"
+            index[f"{name}_count"] = len(ids)
+        stage_ref["binary_label_index"] = index
+    path = tmp_path / "runtime_manifest.json"
+    path.write_text(json.dumps({"stages": {stage: stage_ref}}))
+    return str(path)
 
 
 def _runtime_batch(input_ids: list[int] | None = None) -> dict[str, Any]:
@@ -939,23 +963,27 @@ def test_val_dataloader_does_not_replay_wheel_iterator(
 
 
 @pytest.mark.parametrize("stage", ["val", "test"])
-@pytest.mark.parametrize("max_steps, num_batches, num_rows", [
-    (3, 3, 6),
-    (None, 10, 20),
+@pytest.mark.parametrize("max_steps, num_batches, num_rows, warns", [
+    (3, 3, 6, True),
+    (None, 10, 20, False),
 ])
 def test_eval_dataloader_honors_max_steps_without_replay(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     tmp_path,
     stage: str,
     max_steps: int | None,
     num_batches: int,
     num_rows: int,
+    warns: bool,
 ) -> None:
     input_ids = [[2 * i, 2 * i + 1] for i in range(10)]
     calls = _install_fake_diskgraph(monkeypatch,
                                     batch_input_ids_by_stage={stage: input_ids})
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={stage: 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={stage: 20},
+                  runtime_manifest_path=_eval_runtime_manifest(tmp_path,
+                                                               stage)),
         _mapper_bank(),
         sampling_plan=SamplingPlan(),
         train_batch_size=2,
@@ -964,13 +992,90 @@ def test_eval_dataloader_honors_max_steps_without_replay(
     )
     loader = getattr(dm, f"{stage}_dataloader")
 
-    assert len(loader()) == num_batches
+    with caplog.at_level(logging.WARNING):
+        assert len(loader()) == num_batches
     batches = list(loader())
 
     assert len(batches) == num_batches
     assert sum(batch["train_table"].input_id.numel()
                for batch in batches) == num_rows
     assert len(calls["history"]) == 1
+    assert "selected_stage_node_ids" not in calls["kwargs"]
+    assert dm.eval_class_weights[stage] is None
+    assert ("binary_label_index" in caplog.text) == warns
+
+
+@pytest.mark.parametrize("stage", ["val", "test"])
+@pytest.mark.parametrize(
+    "label_of, expected_positives, class_weights", [
+        (lambda i: i % 40 == 1, 10, (1.3, 0.1)),
+        (lambda i: i % 2 == 1, 20, (1.0, 1.0)),
+        (lambda i: i % 40 != 1, 30, (0.1, 1.3)),
+    ], ids=["few-positives", "half-positives", "few-negatives"])
+def test_capped_binary_eval_reads_seeded_rows_with_positives(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    stage: str,
+    label_of: Callable[[int], bool],
+    expected_positives: int,
+    class_weights: tuple[float, float],
+) -> None:
+    labels = [int(label_of(i)) for i in range(400)]
+    runtime_path = _eval_runtime_manifest(tmp_path, stage, labels)
+    calls = _install_fake_diskgraph(monkeypatch)
+    weights: dict[int, Any] = {}
+
+    def selected_rows(seed: int) -> list[int]:
+        dm = DiskgraphLightningDataModule(
+            _manifest(tmp_path=tmp_path, stage_counts={stage: 400},
+                      runtime_manifest_path=runtime_path),
+            _mapper_bank(),
+            sampling_plan={"layers": []},
+            train_batch_size=4,
+            eval_batch_size=4,
+            base_seed=seed,
+            **{f"max_{stage}_steps": 10},
+        )
+        loader = getattr(dm, f"{stage}_dataloader")()
+        assert len(loader) == 10
+        list(loader)
+        weights[seed] = dm.eval_class_weights[stage]
+        return calls["kwargs"]["selected_stage_node_ids"]
+
+    rows = selected_rows(1)
+
+    assert rows == sorted(set(rows)) and len(rows) == 40
+    assert sum(labels[i] for i in rows) == expected_positives
+    assert weights[1] == pytest.approx(class_weights)
+    assert selected_rows(1) == rows
+    assert selected_rows(2) != rows
+
+
+@pytest.mark.parametrize("stage", ["val", "test"])
+def test_capped_binary_explain_reads_the_first_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    stage: str,
+) -> None:
+    labels = [int(i % 40 == 1) for i in range(400)]
+    runtime_path = _eval_runtime_manifest(tmp_path, stage, labels)
+    calls = _install_fake_diskgraph(monkeypatch)
+    dm = DiskgraphLightningDataModule(
+        _manifest(tmp_path=tmp_path, stage_counts={stage: 400},
+                  runtime_manifest_path=runtime_path),
+        _mapper_bank(),
+        sampling_plan={"layers": []},
+        train_batch_size=4,
+        eval_batch_size=4,
+        **{f"max_{stage}_steps": 10},
+    )
+    dm.begin_explain_selection_capture(stage)
+
+    loader = getattr(dm, f"{stage}_dataloader")()
+    list(loader)
+
+    assert "selected_stage_node_ids" not in calls["kwargs"]
+    assert dm.eval_class_weights[stage] is None
 
 
 def test_predict_dataloader_len_counts_local_worker_shards(tmp_path) -> None:

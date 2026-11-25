@@ -1956,10 +1956,15 @@ class Trainer(PortableConfigMixin):
         if task_type == TaskType.MULTILABEL_RANKING:
             return self._top_score_counts(outputs['prob'])
         if task_type not in (TaskType.REGRESSION, TaskType.FORECASTING):
+            datamodule = getattr(self, 'datamodule', None)
+            class_weights = getattr(datamodule, 'eval_class_weights',
+                                    {}).get(TrainingStage.TEST)
+            target = outputs['target']
+            weight = None if class_weights is None else np.asarray(
+                class_weights)[np.asarray(target, dtype=np.int64).reshape(-1)]
             return evaluation_counts(task_type, prob=outputs.get('prob'),
-                                     pred=outputs.get('pred'),
-                                     target=outputs['target'],
-                                     threshold=threshold)
+                                     pred=outputs.get('pred'), target=target,
+                                     threshold=threshold, weight=weight)
         if len(edges) < 2:
             logger.warning('No holdout counts: the split statistics give no '
                            'target bins.')

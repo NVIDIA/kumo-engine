@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 from functools import reduce
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -368,6 +369,47 @@ def test_counts_allocate_far_less_than_their_input(task_type, columns):
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
     assert peak < columns.get('prob', columns.get('pred')).nbytes / 2
+
+
+def test_weighted_binary_counts_equal_counts_of_repeated_rows():
+    rng = np.random.default_rng(0)
+    p = rng.random(300)
+    y = (rng.random(p.size) < p).astype(float)
+    repeats = rng.integers(1, 5, p.size)
+
+    weighted = evaluation_counts(TaskType.BINARY_CLASSIFICATION, prob=p,
+                                 target=y, threshold=0.42,
+                                 weight=repeats.astype(float))
+    repeated = evaluation_counts(TaskType.BINARY_CLASSIFICATION,
+                                 prob=np.repeat(p, repeats),
+                                 target=np.repeat(y, repeats), threshold=0.42)
+
+    assert weighted.arrays.keys() == repeated.arrays.keys()
+    for name, array in repeated.arrays.items():
+        np.testing.assert_allclose(weighted.arrays[name], array, err_msg=name)
+
+
+@pytest.mark.parametrize('datamodule, positives, negatives', [
+    (SimpleNamespace(eval_class_weights={'test': (1.9, 0.1)}), 0.2, 3.8),
+    (SimpleNamespace(eval_class_weights={'val': (1.9, 0.1)}), 2, 2),
+    (None, 2, 2),
+])
+def test_binary_holdout_counts_weight_rows_by_the_test_class_weights(
+        datamodule, positives, negatives):
+    from kumo_core.train.trainer import Trainer
+
+    trainer = SimpleNamespace(
+        task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
+        datamodule=datamodule)
+    p = np.array([0.1, 0.4, 0.6, 0.9])
+    outputs = {'prob': np.stack([1 - p, p], axis=1),
+               'target': np.array([[0.0], [0.0], [1.0], [1.0]])}
+
+    arrays = Trainer._test_counts(trainer, outputs, None, None, ()).arrays
+
+    assert arrays['positive'].sum() == pytest.approx(positives)
+    assert arrays['negative'].sum() == pytest.approx(negatives)
+    assert float(arrays['rows']) == pytest.approx(positives + negatives)
 
 
 def test_numerical_holdout_counts_are_skipped_without_target_bins():

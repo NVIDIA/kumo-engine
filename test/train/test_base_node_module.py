@@ -123,6 +123,35 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
         'calibration/reliability_diagram_test.png')
 
 
+@pytest.mark.parametrize('class_weights, calibrated', [
+    (dict(val=(1.9, 0.1)), 0.05),
+    (dict(test=(1.9, 0.1)), 0.5),
+    ({}, 0.5),
+])
+def test_calibration_weights_rows_by_the_stage_class_weights(
+        monkeypatch, tmp_path, class_weights, calibrated):
+    monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
+    module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
+    checkpoint = tmp_path / 'version_0' / 'checkpoints' / 'best.ckpt'
+    checkpoint.parent.mkdir(parents=True)
+    torch.save({'state_dict': {}}, checkpoint)
+    module._trainer = SimpleNamespace(
+        ckpt_path=str(checkpoint),
+        state=SimpleNamespace(fn=None),
+        datamodule=SimpleNamespace(eval_class_weights=class_weights),
+    )
+    outputs = {
+        'logits': torch.zeros(4, 1),
+        'target': torch.tensor([[0.0], [0.0], [1.0], [1.0]]),
+    }
+    with patch.object(BaseLightningModule, 'evaluation_epoch_end',
+                      return_value=outputs):
+        module.evaluation_epoch_end(TrainingStage.VAL, [])
+
+    at_zero = module.calibrator(torch.zeros(1, 1)).sigmoid().item()
+    assert at_zero == pytest.approx(calibrated, abs=1e-3)
+
+
 class _StubExplainer:
     requires_grad = False
 

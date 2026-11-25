@@ -1131,9 +1131,11 @@ class AutoTrainer:
                             f"{nan_trials} completed trials.")
                 if self.tune_metric.split('_')[0] in ('auroc', 'ap', 'auprc'):
                     message += (" It is undefined when the validation rows "
-                                "contain a single class, for example when "
-                                "'max_val_steps' caps validation too low. "
-                                "Increase 'max_val_steps' or set "
+                                "contain a single class: the validation "
+                                "split has one class, or 'max_val_steps' "
+                                "caps a validation stage without a binary "
+                                "label index too low. Check the split, "
+                                "increase 'max_val_steps', or set "
                                 "'tune_metric' to 'loss'.")
             raise RuntimeError(message)
         if len(trials) < k:
