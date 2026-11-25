@@ -241,13 +241,14 @@ from shop import TRAIN_AT, ActivityModel, anchors, contract, dataset, tables
 
 workdir = Path("run-001")
 torch.manual_seed(0)
+training = anchors(TRAIN_AT, split="train")
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
-    with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
+    with plan.materialize(training, fit_split="train") as task:
         model = ActivityModel(task.output_schema)  # embedding sizes come from here
         optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
         for epoch in range(30):
-            for batch in task.batches(split="train", epoch=epoch, shuffle=True):
+            for batch in task.request_batches(training, epoch=epoch, shuffle=True):
                 labels = (batch.targets["active"]["values"] > 0).float()
                 loss = nn.functional.binary_cross_entropy_with_logits(model(batch), labels)
                 optimizer.zero_grad()
@@ -359,7 +360,7 @@ with api.prepare(artifact.contract, dataset(tables()), api.InMemoryEngine()) as 
     scoring = anchors(SCORE_AT, split=None)
     with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
         with torch.no_grad():
-            for batch in task.batches():
+            for batch in task.request_batches(scoring):
                 if not predictions:
                     for path, tensor in leaves("inputs", batch.inputs):
                         print(f"{path:<34} {tuple(tensor.shape)} {tensor.dtype}")

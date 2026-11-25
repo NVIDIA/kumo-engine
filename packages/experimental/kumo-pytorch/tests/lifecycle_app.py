@@ -183,12 +183,13 @@ def rows_for(user_id: int, as_of: int) -> Tables:
 
 def train(workdir: Path) -> None:
     torch.manual_seed(0)
+    training = anchors(TRAIN_AT, split="train")
     with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
-        with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
+        with plan.materialize(training, fit_split="train") as task:
             model = ActivityModel(task.output_schema)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
             for epoch in range(30):
-                for batch in task.batches(split="train", epoch=epoch, shuffle=True):
+                for batch in task.request_batches(training, epoch=epoch, shuffle=True):
                     labels = (batch.targets["active"]["values"] > 0).float()
                     loss = nn.functional.binary_cross_entropy_with_logits(model(batch), labels)
                     optimizer.zero_grad()
@@ -233,7 +234,7 @@ def infer(workdir: Path) -> None:
         scoring = anchors(SCORE_AT, split=None)
         with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
             with torch.no_grad():
-                for batch in task.batches():
+                for batch in task.request_batches(scoring):
                     if not predictions:
                         print("infer: first batch")
                         describe(batch)
