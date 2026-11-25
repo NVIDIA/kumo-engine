@@ -125,3 +125,14 @@ surface is a separate decision.
   independent.
 - Docs and notebooks share one vocabulary: "slot 1, event representation"
   means the same thing in the ADRs, the config reference, and the notebooks.
+
+## Native recipe input loading
+
+After 2.0.0a4 the recipe data slot defaults to the pinned experimental
+`kumo-pytorch`/DiskGraph source on main. This is an input backend choice, not an
+architecture or tokenizer choice. All sequence compositions retain their
+existing encoders; native graph inputs pass through the backend-neutral batch
+contracts. `data.loader: python` remains the explicit oracle/control. Explicit
+caches retain their own batch builder. Future targets are still constructed
+separately from historical input graphs. Installation and supported schema
+limits are documented in the [migration guide](../migration/native-loader-default.md).

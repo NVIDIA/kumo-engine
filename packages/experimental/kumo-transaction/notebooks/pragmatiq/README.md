@@ -30,7 +30,7 @@ Blueprint v2 track, which runs the same notebooks on SDK 2.0.0a1.
     [`blueprint_v2_final_d.yaml`](../../benchmarks/ablations/blueprint_v2_final_d.yaml)).
 
 ```bash
-uv sync --extra notebooks --extra baselines --extra umap
+uv sync --extra native --extra notebooks --extra baselines --extra umap
 uv run jupyter lab notebooks/pragmatiq/
 ```
 

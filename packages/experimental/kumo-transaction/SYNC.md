@@ -1,13 +1,14 @@
 # Source synchronization
 
 This directory imports the tracked source tree identified in [UPSTREAM.json](UPSTREAM.json).
-The branch name `transaction_foundation_2_2` identifies this sync; the imported
-Python distribution's version is `2.0.0a4`.
+The snapshot is based on `6331312c3e85d6ce1fc868c99b1ffffc03bc50c5`,
+with the native-loader delta through `c0205d98dec9d6fd918afc575dcf7a88af87e4f9`.
+The imported distribution remains `2.0.0a4`; the loader changes are unreleased.
+The source revision and hashes are recorded in `UPSTREAM.json`.
 
-PR #507 consolidates the initial import and the later sync previously proposed
-in #508. It advances from `8a67f98d5a7cfb4c1feeee06c0ce6383f5520671` to
-`6331312c3e85d6ce1fc868c99b1ffffc03bc50c5` while retaining the experimental
-location and Engine integration checks. There is no separate prerequisite PR.
+This sync ports native sequence-loader defaults and graph/hybrid recipes into
+Engine. It preserves the standalone package's pinned Kumo PyTorch dependency
+revision rather than changing the experimental runtime during migration.
 
 ## Local adaptations
 
@@ -30,6 +31,10 @@ location and Engine integration checks. There is no separate prerequisite PR.
   `null` while preserving source revisions, hashes, sizes and measurements.
   This import-time transformation is applied to the pinned upstream manifests;
   reapply it if those manifests are regenerated upstream.
+- `Makefile` and `scripts/run_checks.sh`: select the package-owned Pyright
+  configuration explicitly rather than inheriting Engine-wide diagnostics.
+- `scripts/setup_dev_env.sh` and `scripts/run_checks.sh`: install the native
+  loader extra required by the new recipe default.
 - `scripts/gen_doc_pages.py`: include sync/provenance files in the site and
   adapt source-relative API links for its rendered layout.
 
@@ -74,3 +79,21 @@ they do not configure Kumo Engine CI, ownership, releases, or contributions.
 
 A source sync does not publish a release or change upstream support tiers.
 The a4 graph recipes use the optional Kumo Engine backend described upstream.
+
+## Native loader integration
+
+The authoritative GitHub `transaction-blueprint` job now builds or verifies the
+six matching native dependency wheels, installs them with the package's locked
+CPU test environment, and exercises the real Engine graph models. Its cache
+validates source/build identity and wheel hashes. A cold native build needs a
+longer job budget; cache hits avoid rebuilding Rust. The nested GitLab workflow
+is retained only as imported source context.
+
+The package lockfile remains independent of the Engine workspace. Use the
+package-local setup commands and `native` / `kumo` extras. The model, cutoff,
+label and target contracts are unchanged; native inputs remain experimental,
+and FutureSubgraph targets retain their separate Python reference pass.
+
+The advanced example startup overlaps the narrower work proposed in #524.
+This broader sync also updates loader defaults and canonical graph/hybrid
+runners; it does not include #524's additional snapshot-reuse interface.

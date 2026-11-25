@@ -116,3 +116,10 @@ are synthetic, so no production, fraud, credit, or paper-fidelity claims.
 same rows, is recorded in
 [`blueprint_v2_seeds.md`](../../benchmarks/results/blueprint_v2_seeds.md).
 The S/M/L ladder has no recorded run.
+
+## Native loader
+
+The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+for setup, commands, temporal rules and limitations. Select `data.loader: python`
+in a copied configuration for the previous loader.

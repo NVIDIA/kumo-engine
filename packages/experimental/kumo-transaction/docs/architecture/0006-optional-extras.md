@@ -24,3 +24,13 @@ Accepted
 
 Recipe `decoder_fraud_baseline` stays the synthetic reference. TabFormer +
 HF lives in experimental recipe `blueprint_v1`.
+
+## Native loader source dependency
+
+After 2.0.0a4, the experimental `kumo-pytorch`/DiskGraph loader is an optional
+source integration selected by the `native` extra and required by the default
+recipe loader. The Python oracle remains
+explicitly selectable; the Engine GNN stays optional through `--extra kumo`,
+which installs matching `kumo-core` rather than the older umbrella wheel. CI
+builds one verified native wheel set for the pinned main revision and tests the
+optional GNN separately. See the [migration guide](../migration/native-loader-default.md).

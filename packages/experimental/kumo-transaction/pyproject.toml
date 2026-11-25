@@ -39,7 +39,8 @@ xgboost = ["xgboost>=2.0"]
 baselines = ["xgboost>=2.0", "optuna>=4.0"]
 huggingface = ["transformers>=4.44"]
 # Graph encoders import the actual HeteroGNN shipped by this optional distribution.
-kumo = ["kumo-engine>=1.0.1"]
+native = ["kumo-pytorch==1.0.0.dev0"]
+kumo = ["kumo-core>=0.1.0.dev1", "kumo-pytorch==1.0.0.dev0"]
 pragmatiq = ["pragmatiq==1.1.0"]
 # UMAP matches the Blueprint's notebook-04 view; PCA is the no-extra default.
 umap = ["umap-learn>=0.5"]
@@ -77,6 +78,16 @@ where = ["src"]
 
 [tool.uv]
 required-version = "==0.13.8"
+
+# One tested source snapshot for the unpublished native loader and optional GNN.
+# Avoid installing the older bundled kumo-engine wheel over DiskGraph's namespace.
+[tool.uv.sources]
+kumo-pytorch = { git = "https://github.com/NVIDIA/kumo-engine.git", rev = "5c3a22cacc43e8de99531693e3b6612f0b34d637", subdirectory = "packages/experimental/kumo-pytorch" }
+diskgraph = { git = "https://github.com/NVIDIA/kumo-engine.git", rev = "5c3a22cacc43e8de99531693e3b6612f0b34d637", subdirectory = "packages/diskgraph" }
+kumo-settings = { git = "https://github.com/NVIDIA/kumo-engine.git", rev = "5c3a22cacc43e8de99531693e3b6612f0b34d637", subdirectory = "packages/kumo-settings" }
+kumo-core = { git = "https://github.com/NVIDIA/kumo-engine.git", rev = "5c3a22cacc43e8de99531693e3b6612f0b34d637", subdirectory = "packages/kumo-core" }
+kumo-api = { git = "https://github.com/NVIDIA/kumo-engine.git", rev = "5c3a22cacc43e8de99531693e3b6612f0b34d637", subdirectory = "packages/kumo-api" }
+kumo-pql = { git = "https://github.com/NVIDIA/kumo-engine.git", rev = "5c3a22cacc43e8de99531693e3b6612f0b34d637", subdirectory = "packages/kumo-pql" }
 
 [tool.ruff]
 target-version = "py312"

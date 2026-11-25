@@ -34,7 +34,8 @@ from tfm.data.collate import collate_batch, sequence_label
 from tfm.data.graph import FutureTargetTransform, GraphSampler, future_subgraph_targets
 from tfm.data.graph_transactions import transaction_graph
 from tfm.data.labels.horizon import available_label_value
-from tfm.data.sequence_builders import build_entity_sequences
+from tfm.data.native_graph import NativeGraphSampler
+from tfm.data.native_history import build_entity_sequences
 from tfm.data.validation.schema import validate_events
 from tfm.features.tokenizers.registry import tokenizer_for
 
@@ -118,7 +119,8 @@ def prepare_graph_data(
     probe_cutoff, coverage = _timestamp(data.probe_cutoff), _timestamp(data.observed_through)
     if not events or (needs_supervision and probe_cutoff > coverage):
         raise ValueError("Probe cutoff/source coverage is outside the supplied observations")
-    sampler = GraphSampler(
+    sampler_type = NativeGraphSampler if data.loader == "kumo_pytorch" else GraphSampler
+    sampler = sampler_type(
         transaction_graph(
             events, transfers, observed_through=coverage, amount_field=data.amount_field
         ),
@@ -209,7 +211,9 @@ def prepare_graph_data(
         codec_owner_set = set(codec_owners)
         fit_sequences = [
             s
-            for s in build_entity_sequences(events, codec_cutoff, max_events=data.sequence_length)
+            for s in build_entity_sequences(
+                events, codec_cutoff, max_events=data.sequence_length, loader=data.loader
+            )
             if s.entity_id in codec_owner_set
         ]
         if len(fit_sequences) != len(codec_owners):
@@ -227,7 +231,9 @@ def prepare_graph_data(
         if not needs_supervision
         else {
             s.entity_id: s
-            for s in build_entity_sequences(events, probe_cutoff, max_events=data.sequence_length)
+            for s in build_entity_sequences(
+                events, probe_cutoff, max_events=data.sequence_length, loader=data.loader
+            )
         }
     )
     # Certify a label source for each observed owner, independently of history
@@ -324,7 +330,10 @@ def prepare_graph_data(
             histories = {
                 s.entity_id: s
                 for s in build_entity_sequences(
-                    events, target.anchors[0].cutoff, max_events=data.sequence_length
+                    events,
+                    target.anchors[0].cutoff,
+                    max_events=data.sequence_length,
+                    loader=data.loader,
                 )
             }
             for start in range(0, len(target.anchors), config.sequence_training.batch_size):
@@ -369,6 +378,9 @@ def prepare_graph_data(
     ).hexdigest()
     manifest: dict[str, object] = {
         "dataset": data.adapter,
+        "input_loader": sampler.loader_manifest
+        if isinstance(sampler, NativeGraphSampler)
+        else {"name": "python"},
         "data_sha256": fingerprint,
         "probe_owners": split,
         "graph_objective": objective,
@@ -396,7 +408,9 @@ def prepare_graph_data(
             "fanout": g.fanout,
             "target_depth": g.target_depth if objective == "future_subgraph" else None,
             "hop_trimming": g.trim,
-            "ties": "canonical PK ascending",
+            "ties": "native index-local recent ties"
+            if isinstance(sampler, NativeGraphSampler)
+            else "canonical PK ascending",
             "event_key_encoding": "json-array-v1",
         },
     }

@@ -99,3 +99,19 @@ def test_required_status_is_not_hidden_by_event_path_filters() -> None:
     checker = command[command.index("python") + 1]
     resolved = (root / wheel_step["working-directory"] / checker).resolve()
     assert resolved == root / "scripts/check_python_license_metadata.py"
+
+
+def test_native_default_uses_verified_wheels_without_resyncing_git_sources() -> None:
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/transaction-blueprint.yml").read_text())
+    steps = workflow["jobs"]["blueprint"]["steps"]
+    build = next(i for i, step in enumerate(steps) if step.get("name") == "Build or verify matching native wheels")
+    install = next(i for i, step in enumerate(steps) if step.get("name") == "Install locked package dependencies")
+    assert build < install
+    assert "--extra native" in steps[install]["run"]
+    assert "--extra kumo" in steps[install]["run"]
+    assert "--no-deps --reinstall native-wheels/*/*.whl" in steps[install]["run"]
+    for step in steps[install+1:]:
+        for line in step.get("run", "").splitlines():
+            if "uv run" in line:
+                assert "uv run --no-sync" in line

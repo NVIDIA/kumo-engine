@@ -826,27 +826,21 @@ wheels = [
 ]
 
 [[package]]
+name = "diskgraph"
+version = "0.2.0"
+source = { git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fdiskgraph&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637#5c3a22cacc43e8de99531693e3b6612f0b34d637" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pyarrow" },
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cc/28/c14e053b6762b1044f34a13aab6859bbf40456d37d23aa286ac24cfd9a5d/executing-2.2.1.tar.gz", hash = "sha256:3632cc370565f6648cc328b32435bd120a1e4ebb20c77e3fdde9a13cd1e533c4", size = 1129488, upload-time = "2025-09-01T09:48:10.866Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl", hash = "sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017", size = 28317, upload-time = "2025-09-01T09:48:08.5Z" },
-]
-
-[[package]]
-name = "faiss-gpu"
-version = "1.14.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cuda-runtime-cu12" },
-    { name = "nvidia-curand-cu12" },
-    { name = "packaging" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/de/86ad6888597025858c4694be70d861e78f77f339fdf806e048ed56316223/faiss_gpu-1.14.3-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ac72630dbfbb29e49ff6f5ac7acd293472b88679082459314603d7424d9ce8b3", size = 134915441, upload-time = "2026-06-13T02:50:50.163Z" },
 ]
 
 [[package]]
@@ -1682,14 +1676,28 @@ wheels = [
 ]
 
 [[package]]
-name = "kumo-engine"
-version = "1.0.1"
-source = { registry = "https://pypi.org/simple" }
+name = "kumo-api"
+version = "3.0.0"
+source = { git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fkumo-api&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637#5c3a22cacc43e8de99531693e3b6612f0b34d637" }
 dependencies = [
-    { name = "antlr4-python3-runtime" },
-    { name = "faiss-gpu" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "tabulate" },
+    { name = "typing-extensions" },
+]
+
+[[package]]
+name = "kumo-core"
+version = "0.1.0.dev1"
+source = { git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fkumo-core&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637#5c3a22cacc43e8de99531693e3b6612f0b34d637" }
+dependencies = [
+    { name = "diskgraph" },
     { name = "filelock" },
     { name = "fsspec" },
+    { name = "kumo-api" },
+    { name = "kumo-pql" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optuna" },
@@ -1709,9 +1717,34 @@ dependencies = [
     { name = "torchmetrics" },
     { name = "typing-extensions" },
 ]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/ae/071a87e34836dad0aead643fb7d785da67eca2727064e0d3b921f0b20e54/kumo_engine-1.0.1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:2870aa0fa930d6832e22013e9f2a0e46f031a74b0450d49b5bf83802be3e6a04", size = 34453047, upload-time = "2026-11-05T19:03:08.819Z" },
+
+[[package]]
+name = "kumo-pql"
+version = "0.1.0"
+source = { git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fkumo-pql&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637#5c3a22cacc43e8de99531693e3b6612f0b34d637" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "kumo-api" },
+    { name = "pandas" },
 ]
+
+[[package]]
+name = "kumo-pytorch"
+version = "1.0.0.dev0"
+source = { git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fexperimental%2Fkumo-pytorch&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637#5c3a22cacc43e8de99531693e3b6612f0b34d637" }
+dependencies = [
+    { name = "diskgraph" },
+    { name = "kumo-settings" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "tokenizers" },
+    { name = "torch" },
+]
+
+[[package]]
+name = "kumo-settings"
+version = "0.1.0.dev1"
+source = { git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fkumo-settings&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637#5c3a22cacc43e8de99531693e3b6612f0b34d637" }
 
 [[package]]
 name = "lark"
@@ -2550,18 +2583,6 @@ wheels = [
 ]
 
 [[package]]
-name = "nvidia-cublas-cu12"
-version = "12.9.3.13"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "nvidia-cuda-nvrtc-cu12" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b9/19/1683e1b11352d03a8b1ab8a57fccec7064bfaaf862e7206331538e7fd6a1/nvidia_cublas_cu12-12.9.3.13-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:918a8781956115d34b1db49e0e7b7befba8d101661c4b560ed4d42e0e17bebc3", size = 574997333, upload-time = "2026-10-30T21:28:11.255Z" },
-    { url = "https://files.pythonhosted.org/packages/7b/ea/9b6c36aef90766eebb4763aded157039e797ae9789c9c216e960d1d3cd47/nvidia_cublas_cu12-12.9.3.13-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:d7d51055f161b317c7105ddaae90e71eda059026074ffef93cf7cde2886bfe72", size = 581217458, upload-time = "2026-10-30T21:29:02.439Z" },
-]
-
-[[package]]
 name = "nvidia-cuda-cupti"
 version = "13.0.85"
 source = { registry = "https://pypi.org/simple" }
@@ -2580,32 +2601,12 @@ wheels = [
 ]
 
 [[package]]
-name = "nvidia-cuda-nvrtc-cu12"
-version = "12.9.86"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/85/e4af82cc9202023862090bfca4ea827d533329e925c758f0cde964cb54b7/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4", size = 89568129, upload-time = "2025-06-05T20:02:41.973Z" },
-    { url = "https://files.pythonhosted.org/packages/64/eb/c2295044b8f3b3b08860e2f6a912b702fc92568a167259df5dddb78f325e/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:096d4de6bda726415dfaf3198d4f5c522b8e70139c97feef5cd2ca6d4cd9cead", size = 44528905, upload-time = "2025-06-05T20:02:29.754Z" },
-    { url = "https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl", hash = "sha256:72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349", size = 76408187, upload-time = "2025-06-05T20:12:27.819Z" },
-]
-
-[[package]]
 name = "nvidia-cuda-runtime"
 version = "13.0.96"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/87/4f/17d7b9b8e285199c58ce28e31b5c5bbaa4d8271af06a89b6405258245de2/nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:ef9bcbe90493a2b9d810e43d249adb3d02e98dd30200d86607d8d02687c43f55", size = 2261060, upload-time = "2025-10-09T08:55:15.78Z" },
     { url = "https://files.pythonhosted.org/packages/2e/24/d1558f3b68b1d26e706813b1d10aa1d785e4698c425af8db8edc3dced472/nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548", size = 2243632, upload-time = "2025-10-09T08:55:36.117Z" },
-]
-
-[[package]]
-name = "nvidia-cuda-runtime-cu12"
-version = "12.9.79"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/e0/0279bd94539fda525e0c8538db29b72a5a8495b0c12173113471d28bce78/nvidia_cuda_runtime_cu12-12.9.79-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:83469a846206f2a733db0c42e223589ab62fd2fabac4432d2f8802de4bded0a4", size = 3515012, upload-time = "2025-06-05T20:00:35.519Z" },
-    { url = "https://files.pythonhosted.org/packages/bc/46/a92db19b8309581092a3add7e6fceb4c301a3fd233969856a8cbf042cd3c/nvidia_cuda_runtime_cu12-12.9.79-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:25bba2dfb01d48a9b59ca474a1ac43c6ebf7011f1b0b8cc44f54eb6ac48a96c3", size = 3493179, upload-time = "2025-06-05T20:00:53.735Z" },
-    { url = "https://files.pythonhosted.org/packages/59/df/e7c3a360be4f7b93cee39271b792669baeb3846c58a4df6dfcf187a7ffab/nvidia_cuda_runtime_cu12-12.9.79-py3-none-win_amd64.whl", hash = "sha256:8e018af8fa02363876860388bd10ccb89eb9ab8fb0aa749aaf58430a9f7c4891", size = 3591604, upload-time = "2025-06-05T20:11:17.036Z" },
 ]
 
 [[package]]
@@ -2648,16 +2649,6 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/72/7c2ae24fb6b63a32e6ae5d241cc65263ea18d08802aaae087d9f013335a2/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:133df5a7509c3e292aaa2b477afd0194f06ce4ea24d714d616ff36439cee349a", size = 61962106, upload-time = "2025-08-04T10:21:41.128Z" },
     { url = "https://files.pythonhosted.org/packages/a5/9f/be0a41ca4a4917abf5cb9ae0daff1a6060cc5de950aec0396de9f3b52bc5/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc", size = 59544258, upload-time = "2025-08-04T10:22:03.992Z" },
-]
-
-[[package]]
-name = "nvidia-curand-cu12"
-version = "10.3.10.19"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/1c/2a45afc614d99558d4a773fa740d8bb5471c8398eeed925fc0fcba020173/nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:de663377feb1697e1d30ed587b07d5721fdd6d2015c738d7528a6002a6134d37", size = 68292066, upload-time = "2025-05-01T19:39:13.595Z" },
-    { url = "https://files.pythonhosted.org/packages/31/44/193a0e171750ca9f8320626e8a1f2381e4077a65e69e2fb9708bd479e34a/nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:49b274db4780d421bd2ccd362e1415c13887c53c214f0d4b761752b8f9f6aa1e", size = 68295626, upload-time = "2025-05-01T19:39:38.885Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/98/1bd66fd09cbe1a5920cb36ba87029d511db7cca93979e635fd431ad3b6c0/nvidia_curand_cu12-10.3.10.19-py3-none-win_amd64.whl", hash = "sha256:e8129e6ac40dc123bd948e33d3e11b4aa617d87a583fa2f21b3210e90c743cde", size = 68774847, upload-time = "2025-05-01T19:48:52.93Z" },
 ]
 
 [[package]]
@@ -4237,7 +4228,11 @@ huggingface = [
     { name = "transformers" },
 ]
 kumo = [
-    { name = "kumo-engine" },
+    { name = "kumo-core" },
+    { name = "kumo-pytorch" },
+]
+native = [
+    { name = "kumo-pytorch" },
 ]
 notebooks = [
     { name = "ipykernel" },
@@ -4259,7 +4254,9 @@ xgboost = [
 requires-dist = [
     { name = "ipykernel", marker = "extra == 'notebooks'", specifier = ">=6.29" },
     { name = "jupyter", marker = "extra == 'notebooks'", specifier = ">=1.0" },
-    { name = "kumo-engine", marker = "extra == 'kumo'", specifier = ">=1.0.1" },
+    { name = "kumo-core", marker = "extra == 'kumo'", git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fkumo-core&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637" },
+    { name = "kumo-pytorch", marker = "extra == 'kumo'", git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fexperimental%2Fkumo-pytorch&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637" },
+    { name = "kumo-pytorch", marker = "extra == 'native'", git = "https://github.com/NVIDIA/kumo-engine.git?subdirectory=packages%2Fexperimental%2Fkumo-pytorch&rev=5c3a22cacc43e8de99531693e3b6612f0b34d637" },
     { name = "matplotlib", marker = "extra == 'notebooks'", specifier = ">=3.8" },
     { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6" },
     { name = "mkdocs-gen-files", marker = "extra == 'docs'", specifier = ">=0.5" },
@@ -4284,7 +4281,7 @@ requires-dist = [
     { name = "xgboost", marker = "extra == 'baselines'", specifier = ">=2.0" },
     { name = "xgboost", marker = "extra == 'xgboost'", specifier = ">=2.0" },
 ]
-provides-extras = ["dev", "xgboost", "baselines", "huggingface", "kumo", "pragmatiq", "umap", "notebooks", "docs", "rapids"]
+provides-extras = ["dev", "xgboost", "baselines", "huggingface", "native", "kumo", "pragmatiq", "umap", "notebooks", "docs", "rapids"]
 
 [[package]]
 name = "threadpoolctl"

@@ -141,7 +141,7 @@ uv run tfm smoke --recipe blueprint_v1
 24 TabFormer users (`config.small.yaml`):
 
 ```bash
-uv sync --extra huggingface --extra baselines
+uv sync --extra native --extra huggingface --extra baselines
 export TFM_TABFORMER_ROOT=~/data/TabFormer
 uv run tfm train    --recipe blueprint_v1 --config small
 uv run tfm infer    --recipe blueprint_v1 --config small
@@ -224,7 +224,7 @@ uv run torchrun --nproc-per-node 8 -m tfm.cli.main report \
 
 The `huggingface`, `baselines`, and `umap` extras are locked in `uv.lock`.
 `uv sync` removes every extra you don't list, so name them all in one command
-(`uv sync --extra huggingface --extra baselines --extra umap`). RAPIDS is
+(`uv sync --extra native --extra huggingface --extra baselines --extra umap`). RAPIDS is
 installed with `uv pip install` and is not in `uv.lock`, so a plain `uv run`
 re-syncs the environment and removes it; use `uv run --no-sync` once it is
 installed. cuDF is CUDA-version specific and needs `numpy<2.5`; on CUDA 13:
@@ -261,3 +261,10 @@ Written under the run directory (or the smoke temp dir):
   not combined with results on any other dataset
   ([datasets](../../docs/reference/datasets.md)).
 - CPU merchant hashing is not bit-identical to RAPIDS `hash_values`.
+
+## Native loader
+
+The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+for setup, commands, temporal rules and limitations. Select `data.loader: python`
+in a copied configuration for the previous loader.

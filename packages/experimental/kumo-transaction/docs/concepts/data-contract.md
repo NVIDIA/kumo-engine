@@ -253,3 +253,21 @@ Raw probe amount aggregates treat an omitted or non-finite event amount as zero.
 The mean still divides by the number of events, and the event count and final
 calendar features are unchanged. Object and cached aggregation use this same
 convention without changing stored amounts or graph missing-value masks.
+
+## Native recipe loading
+
+The default `data.loader: kumo_pytorch` uses the pinned main-source Kumo API.
+Native anchors bind sample ID, owner and cutoff independently; repeated owners
+remain distinct prediction samples. Sequence row IDs resolve only to validated
+source records. Exact residual filtering preserves inclusive lower bounds and
+microsecond cutoffs before tokenization. Existing train-only tokenizer fits,
+label availability and window membership remain authoritative.
+
+The experimental graph sampler requires whole-second clocks, static user roots,
+one-parent event/transfer FK roles and event-time availability. It copies native
+tensors, validates disjoint ownership and temporal bounds, and then optionally
+unions same-cutoff samples for shared training. Native recent-fanout ties use
+index order rather than the Python primary-key policy. FutureSubgraph targets
+still use a separate Python reference pass. See the
+[worked guide](../../examples/kumo-engine/README.md#canonical-recipes) and
+[migration notes](../migration/native-loader-default.md).

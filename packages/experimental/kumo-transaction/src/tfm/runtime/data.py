@@ -27,7 +27,7 @@ from tfm.contracts.tokenizers import SequenceTokenizer, UsesProfiles
 from tfm.data.adapters.registry import load_adapter_events
 from tfm.data.collate import collate_batch
 from tfm.data.labels.windows import LabelWindow, side_label_windows
-from tfm.data.sequence_builders.entity_sequences import (
+from tfm.data.native_history import (
     build_entity_sequences,
     build_entity_windows,
 )
@@ -36,6 +36,7 @@ from tfm.data.splits.temporal import SplitAssignment, TemporalSplitSpec, assign_
 from tfm.data.tasks.identity_theft import IdentityTheftSplice
 from tfm.data.token_cache.formats import PretrainRows, TokenCacheFormat, cache_format_of
 from tfm.data.validation.schema import validate_events
+from tfm.extras.kumo_pytorch import SOURCE_REVISION
 from tfm.features.tokenizers.registry import (
     tokenizer_for as tokenizer_for,
 )
@@ -185,6 +186,7 @@ def _spliced_fraud_probe(
                 cutoff,
                 max_events=config.data.sequence_length,
                 observation_window=window,
+                loader=config.data.loader,
             )
         }
         chosen = [
@@ -287,6 +289,7 @@ def prepare_data(
             cutoff,
             max_events=config.data.sequence_length,
             observation_window=window,
+            loader=config.data.loader,
         )
 
     train_seq = sequences_at(list(splits.train), cutoffs.train)
@@ -331,6 +334,7 @@ def prepare_data(
             cutoffs.train,
             window_events=window_events,
             observation_window=window,
+            loader=config.data.loader,
         )
     fraud = (
         None
@@ -351,7 +355,13 @@ def prepare_data(
         events=tuple(events),
         label_rows=dict(loaded.labels),
         profiles=tuple(loaded.profiles),
-        adapter_metadata=dict(loaded.metadata),
+        adapter_metadata={
+            **loaded.metadata,
+            "history_loader": config.data.loader,
+            "history_loader_revision": SOURCE_REVISION
+            if config.data.loader == "kumo_pytorch"
+            else None,
+        },
         fraud=fraud,
         token_cache=cache,
         cache_format=cache_format,

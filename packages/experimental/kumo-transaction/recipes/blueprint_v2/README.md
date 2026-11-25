@@ -173,3 +173,10 @@ probe sample on one machine. Trains under `eager` or `ddp`, not `fsdp2`; no
 multi-GPU run is recorded. The objective's head is given the target event's
 keys, so the loss is conditioned on which fields the event has. No production,
 fraud, credit, or paper-fidelity claims.
+
+## Native loader
+
+The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+for setup, commands, temporal rules and limitations. Select `data.loader: python`
+in a copied configuration for the previous loader.

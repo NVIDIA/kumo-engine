@@ -70,6 +70,7 @@ exclude_docs: |
 
 nav:
   - Home: README.md
+  - Native loaders: examples/kumo-engine/README.md
   - Learn:
       - Start here: notebooks/README.md
       - "Blueprint v1 on TabFormer":
@@ -113,6 +114,7 @@ nav:
       - docs/migration/2.0.0a1-to-2.0.0a2.md
       - docs/migration/2.0.0a2-to-2.0.0a3.md
       - docs/migration/2.0.0a3-to-2.0.0a4.md
+      - docs/migration/native-loader-default.md
       - docs/reference/glossary.md
   - API reference:
       - api/index.md

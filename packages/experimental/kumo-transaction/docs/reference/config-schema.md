@@ -303,3 +303,11 @@ The event schema is validated before graph feature/target construction in every
 stage. The configured amount field must have at least one finite value in
 training-owner history by a graph-training cutoff; held-out owners or future target values do not establish
 that presence. Missing amounts on individual events remain supported.
+
+## Recipe loader selection
+
+`data.loader` defaults to `kumo_pytorch` for every sequence composition and graph
+recipe. `python` selects the previous reference loader explicitly. A configured
+token cache retains its batch builder; packing retains the packer over native
+histories. See the [migration guide](../migration/native-loader-default.md) for
+source build requirements and graph schema/clock limitations.

@@ -49,7 +49,7 @@ from tfm.contracts.errors import InsufficientLabelSupportError
 from tfm.contracts.schema import TransactionSequence, ensure_utc
 from tfm.data.collate import collate_batch, raw_feature_vector
 from tfm.data.labels.horizon import available_label_value
-from tfm.data.sequence_builders.entity_sequences import build_sequences_at_label_cutoffs
+from tfm.data.native_history import build_sequences_at_label_cutoffs
 from tfm.data.sequence_builders.event_rows import build_event_history_rows
 from tfm.data.splits.entity import EntitySplit, split_entities
 from tfm.evaluation.fraud.baselines import evaluate_binary_probes
@@ -183,6 +183,7 @@ def forecast_task(
         rows,
         max_events=config.data.sequence_length,
         observation_window=parse_duration(config.data.observation_window),
+        loader=config.data.loader,
     )
     try:
         train_pairs, eval_pairs = split_label_pairs(pairs, seed=seed)

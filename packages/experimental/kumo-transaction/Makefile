@@ -9,7 +9,7 @@ lint:
 	uv run ruff format --check src tests recipes benchmarks scripts
 
 typecheck:
-	uv run pyright src/tfm
+	uv run pyright --project pyproject.toml src/tfm
 
 test-unit:
 	uv run pytest tests/unit -q
@@ -20,7 +20,7 @@ test-contract:
 test-smoke:
 	uv run pytest tests/recipe_smoke -q
 
-# Executes every notebook on CPU; needs `uv sync --extra dev --extra notebooks
+# Executes every notebook on CPU; needs `uv sync --extra dev --extra native --extra notebooks
 # --extra baselines --extra umap`. Local dataset roots are unset so notebooks run
 # on their generated fixtures, and the v2 lab series runs in smoke mode.
 test-notebooks:

@@ -229,3 +229,10 @@ pretraining still derives labels from cutoff-truncated histories using the
 shared sequence-label rule. Full and downstream runs fit or restore a tokenizer
 for their sequence arms. Graph recipes reject `data.token_cache`; they currently
 load adapter events in memory.
+
+## Native loader
+
+The default `data.loader: kumo_pytorch` uses the pinned experimental Kumo
+PyTorch/DiskGraph API. See the [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+for setup, commands, temporal rules and limitations. Select `data.loader: python`
+in a copied configuration for the previous loader.

@@ -2,7 +2,18 @@
 
 ## Unreleased
 
-- Fix the Kumo Engine Blueprint example startup with managed DiskGraph indexes. Use `--scratch-dir` to set the storage root and `--index` to reuse a completed build.
+- Add a bounded adapter declaration and generated/replayed prediction anchors
+  shared by sequence, graph and hybrid reference recipes.
+- Preserve event/observation clocks, point-in-time history ownership, canonical
+  recent fanout and explicit entity-level binary label identities.
+- Add opt-in native one-hop candidate retrieval across arbitrary fixed-FK
+  frontiers; Python remains the default and unsupported projections fail early.
+
+- Exclude standalone Transaction ADRs from the public source sync and replace their references with public guides. Use structural resource cleanup and loader-supplied provenance without changing graph traversal inheritance.
+
+- Preserve the advanced native example’s completed-index reuse (`--index`) and print its index path; validate reuse with source tables offline. Cache native graph edge clocks once per sampler.
+
+- Add opt-in recipe history and input-graph loading from the pinned experimental Kumo PyTorch/DiskGraph source. Keep `data.loader: python` as the default pending matched end-to-end performance evidence; preserve existing tokenizers and separate FutureSubgraph targets. Add native graph/hybrid wiring, installation/migration guidance and executable integration checks.
 
 ## 2.0.0a4
 
@@ -406,10 +417,10 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
   `tfm <stage> --recipe <slug> [--config <variant|path>]`:
   - `blueprint_v1`: NVIDIA's TFM Blueprint on TabFormer, with v1's label
     shift fixed and each transaction scored with the user's recent history
-    (ADR 0017).
+    (Blueprint v1 guide).
   - `pragma_like`: a PRAGMA-style profile, event, and history encoder stack
-    (ADR 0007).
-  - `blueprint_v2`: PRAGMA's encoders under a causal history decoder (ADR 0012).
+    (experimental composition guide).
+  - `blueprint_v2`: PRAGMA's encoders under a causal history decoder (Blueprint v2 guide).
 - `pragma_like/config.yaml` is matched to `blueprint_v2/config.yaml` on
   everything but the architecture, and a unit test keeps it that way.
 - `train`, `infer`, `evaluate`, and `report` each run the stages before
@@ -428,15 +439,15 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
 - `TrxFM(...)` with the core exports `Flat`, `Decoder`, `NoPE`,
   `EagerAttention`, `LastTokenPool`, `NextEvent`, and `Binary`. The
   hierarchical stacks are in `tfm.experimental`.
-- Five building-block slots (ADR 0014). Validation refuses the pairings that
+- Five building-block slots (building-block contracts). Validation refuses the pairings that
   would leak or cannot learn, before any data is prepared.
 - Event, entity, and sequence labels are distinct types. Profiles and labels
   are cut at each row's cutoff, and the fraud probe is entity-disjoint, with
-  per-side label windows (ADR 0013).
+  per-side label windows (probe split rules).
 - New `tfm.api.register_backbone` adds a `model.backbone` name for the flat
   stack. Built in: `eager`, `huggingface` (Llama, which requires
   `position: rope`), and `gru`.
-- New experimental `flat_encoder` granularity (ADR 0019, `tfm.experimental`):
+- New experimental `flat_encoder` granularity (flat-encoder guide, `tfm.experimental`):
   `FlatEncoder`, a bidirectional encoder on `transaction_field_tokenizer`
   rows, trained by the new `masked_fields` objective (`MaskedFields`) and read
   out by `last_event_mean` (`LastEventMeanPool`). The field tokenizer reports
@@ -454,7 +465,7 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
 ### Data and tokens
 
 - Adapters for generated data, TabFormer (`tfm prepare-tabformer`), and
-  pragmatiq books (ADR 0015). Each dataset has one role, and results from
+  pragmatiq books (dataset strategy). Each dataset has one role, and results from
   different datasets are never combined.
 - Spliced identity-theft fraud on pragmatiq (`data.fraud_labels:
   spliced_identity_theft`), because a single event identifies the book's own
@@ -464,7 +475,7 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
   - the `key_value_time` tokenizer, with `categorical_keys` and `hashed_keys`;
   - the `flat_key_value` and `event_fields` schemes;
   - `rapids_field_tokenizer`, an optional cuDF extra.
-- `tfm cache-tokens` writes a pragmatiq book's tokens to disk once (ADR 0016).
+- `tfm cache-tokens` writes a pragmatiq book's tokens to disk once (token-cache guide).
 - `features.exclude_keys` (`key_value_time` only) drops identity keys, such as
   TabFormer's `user`, from fitting and encoding. Tokenizer states and token
   caches without it load unchanged.
@@ -472,7 +483,7 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
 ### Training
 
 - Training backends `eager`, `ddp`, and `fsdp2` behind one contract suite
-  (ADR 0011). Under `torchrun`, `training.batch_size` is per rank, and only
+  (backend contracts). Under `torchrun`, `training.batch_size` is per rank, and only
   rank 0 evaluates and writes artifacts.
 - `training.precision: bf16` and sequence packing are available, along with
   these optimizer options: Muon, cosine schedules, and gradient clipping.
@@ -483,7 +494,7 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
 
 ### Evaluation
 
-- One headline per task (ADR 0018): XGBoost on the raw row with and without
+- One headline per task (evaluation protocol): XGBoost on the raw row with and without
   the frozen embedding, with hand-built `tabular_xgboost` as the reference.
   The model card opens with this table. One constructor,
   `xgboost_classifier`, builds every XGBoost model, on CPU or with
@@ -522,7 +533,7 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
 - `pragma_like_tabformer_seed42` scores PRAGMA-like's encoder beside v1's
   decoder on the same TabFormer rows
   (`benchmarks/ablations/pragma_like_tabformer.yaml`).
-  `flat_encoder_tabformer_seed42` scores ADR 0019's flat BERT encoder on v1's
+  `flat_encoder_tabformer_seed42` scores flat-encoder guide's flat BERT encoder on v1's
   own tokens and the same rows
   (`benchmarks/ablations/flat_encoder_tabformer.yaml`).
 - `blueprint_v2_final_sweep` tries `blueprint_v2` at 1,500 or 3,000
@@ -532,7 +543,7 @@ maps each of them; `tfm migrate-config` rewrites a 2.0.0a1 config.
   whose seed 42 is the GTC Berlin lab's checkpoint.
   `benchmarks/blueprint_v2_final_sweep.sh` reruns the sweep and
   `benchmarks/blueprint_v2_final_sweep.py` scores it.
-- A documentation site (`make docs`) renders the concepts, the ADRs,
+- A documentation site (`make docs`) renders the concepts, the contract guides,
   the notebooks, the results, and the API reference.
 
 ## 2.0.0a1 — 2026-10-15
@@ -575,7 +586,7 @@ file at tag `v2.0.0a1`. Recipe names and config keys in this section are
   rank. On all of TabFormer the cache builds once in about 75 s (8 workers,
   7.5 GB peak) against about 9 min and 48 GB per run, per rank, for the object
   path. `evaluate.py` and `report.py` still load events for their probes. The
-  cached windows equal the object path's tensor for tensor (ADR 0016).
+  cached windows equal the object path's tensor for tensor (token-cache guide).
 - New: `setup_run(..., pretraining_only=True)` and
   `tfm.runtime.prepare_pretraining`; the `train` command uses them.
 - Fix: `training.backend: ddp` failed on its second step with two or more

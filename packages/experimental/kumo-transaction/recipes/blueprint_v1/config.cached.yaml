@@ -10,7 +10,7 @@ seed: 42
 # Tokenize the train split once (about 75 s with 8 workers on all of TabFormer),
 # then train without loading any event on any rank, then evaluate on one process:
 #
-#   uv sync --extra huggingface --extra baselines
+#   uv sync --extra native --extra huggingface --extra baselines
 #   export TFM_TABFORMER_ROOT=~/data/TabFormer
 #   uv run tfm cache-tokens --recipe blueprint_v1 --config cached --workers 8
 #   uv run torchrun --nproc-per-node 2 -m tfm.cli.main train \

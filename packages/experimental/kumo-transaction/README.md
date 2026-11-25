@@ -40,14 +40,18 @@ future-subgraph pretraining; their commands and assumptions live in the
 
 ## Start
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/):
+Python 3.12+ and [uv](https://docs.astral.sh/uv/). The default native loader
+builds from pinned source and needs rustup plus C/C++ build tools; see the
+[installation guide](examples/kumo-engine/README.md#canonical-recipes). A cold
+build can take tens of minutes. After installation, the smoke itself takes
+about a minute on CPU:
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra native
 uv run tfm smoke --recipe blueprint_v1     # CPU, generated data, about a minute
 ```
 
-Then follow a notebook series (`uv sync --extra notebooks`):
+Then follow a notebook series (`uv sync --extra dev --extra native --extra notebooks`):
 
 ```bash
 uv run jupyter notebook notebooks/blueprint_v1/   # the v1 Blueprint, step by step
@@ -105,3 +109,6 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities as
 [SECURITY.md](SECURITY.md) describes. See also the
 [Code of Conduct](CODE_OF_CONDUCT.md). Licensed under Apache 2.0
 ([LICENSE](LICENSE)).
+
+Run sequence, graph and hybrid recipes with the default native loader using the
+[Kumo loader guide](examples/kumo-engine/README.md#canonical-recipes).

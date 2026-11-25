@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import importlib
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from torch import nn
@@ -21,7 +21,7 @@ def hetero_gnn(**kwargs: Any) -> nn.Module:
     except ImportError as error:
         raise ExtraUnavailableError(
             "GNNEncoder requires Kumo Engine's HeteroGNN and its PyG dependencies. "
-            "Run `uv sync --extra dev --extra kumo` (kumo-engine >=1.0.1). "
+            "Run `uv sync --extra dev --extra kumo` (pinned kumo-core source). "
             f"Import failed: {error}"
         ) from error
     return module.HeteroGNN(**kwargs)
@@ -29,4 +29,7 @@ def hetero_gnn(**kwargs: Any) -> nn.Module:
 
 def engine_version() -> str:
     """Installed distribution identity for checkpoint/benchmark provenance."""
-    return version("kumo-engine")
+    try:
+        return "kumo-core:" + version("kumo-core")
+    except PackageNotFoundError:
+        return version("kumo-engine")

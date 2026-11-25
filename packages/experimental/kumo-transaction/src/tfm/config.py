@@ -110,6 +110,10 @@ class DataConfig(StrictConfig):
     adapter: str = "synthetic"
     """A registered adapter (`synthetic`, `tabformer`, `pragmatiq`), or an
     `Adapter`'s import path, `"package.module:attribute"`."""
+    loader: Literal["kumo_pytorch", "python"] = "kumo_pytorch"
+    """Recipe history/graph retrieval backend. Native DiskGraph is the default;
+    `python` explicitly selects the deterministic reference sampler. An explicit
+    token cache continues to select its declared cache batch builder."""
     path: str | None = None
     """Local book root. `pragmatiq` with no path and no `TFM_PRAGMATIQ_ROOT`
     generates a small synthetic fixture in the run directory."""

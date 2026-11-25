@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# CPU-only merge gate. No GPU, network downloads, RAPIDS, or LFS weights.
+# CPU-only merge gate. No GPU, RAPIDS, customer data or LFS weights.
 default:
   image: python:3.12-bookworm
   # The shared Linux Docker pool rejects untagged jobs.
@@ -37,41 +37,64 @@ cache:
     - .cache/uv
 
 stages:
+  - native
   - lint
   - test
 
 .uv_setup: &uv_setup
   - python -m pip install --quiet uv==0.13.8
-  - uv sync --frozen --extra dev
+  - uv sync --frozen --extra dev --extra native --no-install-package diskgraph --no-install-package kumo-pytorch --no-install-package kumo-settings --no-install-package kumo-core --no-install-package kumo-api --no-install-package kumo-pql
+  - uv pip install --no-deps --reinstall native-wheels/*/diskgraph-*.whl native-wheels/*/kumo_pytorch-*.whl native-wheels/*/kumo_settings-*.whl
+
+# Build the unpublished CPU runtime once; cache only verified wheel bytes.
+native-wheels:
+  # Finish a cacheable cold build when follow-up commits arrive.
+  interruptible: false
+  stage: native
+  needs: []
+  tags: [perflab, os/linux, type/docker, size/large]
+  timeout: 60m
+  after_script: []
+  cache:
+    key: kumo-native-wheels-linux-amd64-python312
+    paths: [.cache/kumo-native-wheels]
+  script:
+    - python -m pip install --quiet uv==0.13.7
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+    - export PATH="$HOME/.cargo/bin:$PATH"
+    - python scripts/build_kumo_loader_wheels.py
+  artifacts:
+    paths: [native-wheels]
+    expire_in: 1 week
 
 lint:
   stage: lint
   script:
     - *uv_setup
-    - uv run ruff check src tests recipes benchmarks scripts
-    - uv run ruff format --check src tests recipes benchmarks scripts
-    - uv run pyright src/tfm
+    - uv run --no-sync ruff check src tests recipes benchmarks scripts
+    - uv run --no-sync ruff format --check src tests recipes benchmarks scripts
+    - uv run --no-sync pyright src/tfm
 
-# `needs: []` starts each test job at once instead of after lint, so a lint
+# `needs: [native-wheels]` starts each test job at once instead of after lint, so a lint
 # failure no longer hides the test results.
 unit:
   stage: test
-  needs: []
+  needs: [native-wheels]
   script:
     - *uv_setup
-    - uv run pytest tests/unit -q
+    - uv run --no-sync pytest tests/unit -q
 
 contract:
   stage: test
-  needs: []
+  needs: [native-wheels]
   script:
     - *uv_setup
-    - uv run pytest tests/contract -q
+    - uv run --no-sync pytest tests/contract -q
 
 # The other jobs run the locked torch; this one runs the lowest that pyproject.toml allows.
 torch-floor:
   stage: test
-  needs: []
+  needs: [native-wheels]
   script:
     - *uv_setup
     - uv pip install "torch==2.9.*"
@@ -79,28 +102,29 @@ torch-floor:
 
 recipe-smoke:
   stage: test
-  needs: []
+  needs: [native-wheels]
   script:
     - *uv_setup
-    - uv run pytest tests/recipe_smoke -q
+    - uv run --no-sync pytest tests/recipe_smoke -q
 
 # The actual Engine GNN runs on CPU. Core CI retains optional-dependency isolation.
 engine-graph:
   stage: test
-  needs: []
+  needs: [native-wheels]
   script:
     - python -m pip install --quiet uv==0.13.8
-    - uv sync --frozen --extra dev --extra kumo
-    - uv run python -c 'from kumo_core.modeling.gnn.hetero import HeteroGNN; print(HeteroGNN.__module__)'
+    - uv sync --frozen --extra dev --extra native --extra kumo --no-install-package diskgraph --no-install-package kumo-pytorch --no-install-package kumo-settings --no-install-package kumo-core --no-install-package kumo-api --no-install-package kumo-pql
+    - uv pip install --no-deps --reinstall native-wheels/*/*.whl
+    - uv run --no-sync python -c 'from kumo_core.modeling.gnn.hetero import HeteroGNN; print(HeteroGNN.__module__)'
     - >-
-      uv run pytest tests/contract/test_graph*.py tests/recipe_smoke/*graph*.py
-      tests/unit/test_graph_benchmark.py -q
+      uv run --no-sync pytest tests/contract/test_graph*.py tests/recipe_smoke/*graph*.py
+      tests/unit/test_graph_benchmark.py tests/contract/test_native_loaders.py -q
 
 # The Blueprint v2 lab notebooks read a downloaded book and checkpoint on a
 # GPU; TFM_NOTEBOOK_SMOKE=1 runs them on a generated book on CPU instead.
 notebooks:
   stage: test
-  needs: []
+  needs: [native-wheels]
   # These smokes retain the lab model's dimensions, unlike tiny unit fixtures.
   tags: [perflab, os/linux, type/docker, size/large]
   variables:
@@ -109,8 +133,9 @@ notebooks:
     MKL_NUM_THREADS: "2"
   script:
     - python -m pip install --quiet uv==0.13.8
-    - uv sync --frozen --extra dev --extra notebooks --extra baselines --extra umap
-    - env -u TFM_PRAGMATIQ_ROOT -u TFM_TABFORMER_ROOT -u TFM_V2_CHECKPOINT uv run pytest --nbmake --nbmake-timeout=600 notebooks -x -v
+    - uv sync --frozen --extra dev --extra native --extra notebooks --extra baselines --extra umap --no-install-package diskgraph --no-install-package kumo-pytorch --no-install-package kumo-settings --no-install-package kumo-core --no-install-package kumo-api --no-install-package kumo-pql
+    - uv pip install --no-deps --reinstall native-wheels/*/diskgraph-*.whl native-wheels/*/kumo_pytorch-*.whl native-wheels/*/kumo_settings-*.whl
+    - env -u TFM_PRAGMATIQ_ROOT -u TFM_TABFORMER_ROOT -u TFM_V2_CHECKPOINT uv run --no-sync pytest --nbmake --nbmake-timeout=600 notebooks -x -v
 
 docs:
   stage: test
@@ -118,7 +143,7 @@ docs:
   script:
     - python -m pip install --quiet uv==0.13.8
     - uv sync --frozen --extra docs
-    - uv run mkdocs build --strict
+    - uv run --no-sync mkdocs build --strict
   artifacts:
     paths:
       - site
@@ -132,7 +157,7 @@ pages:
   script:
     - python -m pip install --quiet uv==0.13.8
     - uv sync --frozen --extra docs
-    - uv run mkdocs build --strict --site-dir public
+    - uv run --no-sync mkdocs build --strict --site-dir public
   artifacts:
     paths:
       - public

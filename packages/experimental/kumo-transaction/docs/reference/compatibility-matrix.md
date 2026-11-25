@@ -59,7 +59,8 @@ milestone status is in [roadmap.md](roadmap.md).
 | `GNNEncoder` / `GNNSequence` | `experimental` | contract (cutoffs, repeated roots, alignment, frozen state, checkpoint round trip) | CPU checked | `tfm.experimental`; `kumo` extra; shared same-cutoff training, disjoint validation/prediction; eager only |
 | `FutureSubgraph` | `experimental` | unit, contract (oracle, masks, delay, observed-through coverage, gradients) | CPU checked | Separate future targets; window-end membership; train-only signed-log normalization |
 | Engine/shared/disjoint cost controls | `experimental` | CPU harness test; short L4 check | CPU / CUDA | [Recorded L4 check](../../benchmarks/results/graph_backends_l4_cost.md); historical untrimmed run; no native-loader/full-quality claim |
-| Kumo graph tensor adapter | `experimental` | contract (native-output-shaped fixture) | CPU tensor adapter checked | `from_kumo_graph`; native loader/aggregate parity not validated |
+| Kumo graph tensor adapter | `experimental` | contract (native output and invalid-binding fixtures) | CPU native integration | `from_kumo_graph`; bounded FK schema, whole-second clocks; future aggregates remain Python |
+| Kumo PyTorch recipe loaders | `experimental` | real DiskGraph history/window and graph ownership tests; recipe smokes | CPU | Default for sequences and graph inputs; bounded object import, unchanged tokenizers; [guide](../../examples/kumo-engine/README.md#canonical-recipes) |
 | Mean readout | `experimental` | unit | CPU / CUDA | `composition.readout: mean` |
 
 ## Training

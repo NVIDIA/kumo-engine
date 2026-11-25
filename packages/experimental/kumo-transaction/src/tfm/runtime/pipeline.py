@@ -35,6 +35,7 @@ from tfm.contracts.tokenizers import (
     SequenceTokenizer,
 )
 from tfm.data.collate import collate_batch, minibatches, shuffled_rows
+from tfm.data.native_history import NativeSequenceBatches
 from tfm.data.packing import pack_sequences
 from tfm.data.token_cache.formats import cache_format_of
 from tfm.evaluation.reporting.report import metrics_markdown, model_card_markdown, write_json
@@ -350,6 +351,24 @@ def training_batches(artifacts: RunArtifacts) -> tuple[Sequence[Any], dict[str, 
             **recorded,
         }
     data = artifacts.prepared
+    if config.data.loader == "kumo_pytorch" and not config.training.packing:
+        rows = data.pretrain_sequences or data.train_sequences
+        batches = NativeSequenceBatches(
+            rows,
+            data.tokenizer,
+            batch_size=config.training.batch_size,
+            max_tokens=row_tokens,
+            seed=config.seed if config.training.shuffle else None,
+            amount_key=config.data.amount_field,
+            label_window=None if windows is not None else data.cutoffs.windows["train"],
+        )
+        return batches, {
+            "loader": "kumo_pytorch",
+            "packing": False,
+            "shuffle": config.training.shuffle,
+            "pretrain_windows": len(rows),
+            "pretrain_row_tokens": row_tokens,
+        }
     if not config.training.packing:
         if windows is not None:
             batch = collate_batch(
@@ -410,29 +429,33 @@ def _composition_summary(artifacts: RunArtifacts) -> dict[str, Any]:
 
 def run_train(artifacts: RunArtifacts) -> dict[str, float | str]:
     batches, batch_stats = training_batches(artifacts)
-    if is_primary_process():
-        write_json(artifacts.run_dir / "packing_manifest.json", batch_stats)
-    config = artifacts.config
-    trainer = build_trainer(
-        config.training.backend, checkpoint_dir=artifacts.run_dir / "hf_checkpoint"
-    )
-    progress = TrainingProgress(log_every=config.training.log_every)
-    stage(
-        f"train: {batch_stats.get('pretrain_windows', len(batches)):,} rows, "
-        f"batch {config.training.batch_size} per process, backend {config.training.backend}"
-    )
-    stats = trainer.fit(
-        artifacts.model,
-        batches,
-        max_steps=config.training.max_steps,
-        learning_rate=config.training.learning_rate,
-        seed=config.seed,
-        device=artifacts.device,
-        optimizer=config.training.optimizer,
-        shuffle=config.training.shuffle,
-        precision=config.training.precision,
-        progress=progress,
-    )
+    try:
+        if is_primary_process():
+            write_json(artifacts.run_dir / "packing_manifest.json", batch_stats)
+        config = artifacts.config
+        trainer = build_trainer(
+            config.training.backend, checkpoint_dir=artifacts.run_dir / "hf_checkpoint"
+        )
+        progress = TrainingProgress(log_every=config.training.log_every)
+        stage(
+            f"train: {batch_stats.get('pretrain_windows', len(batches)):,} rows, "
+            f"batch {config.training.batch_size} per process, backend {config.training.backend}"
+        )
+        stats = trainer.fit(
+            artifacts.model,
+            batches,
+            max_steps=config.training.max_steps,
+            learning_rate=config.training.learning_rate,
+            seed=config.seed,
+            device=artifacts.device,
+            optimizer=config.training.optimizer,
+            shuffle=config.training.shuffle,
+            precision=config.training.precision,
+            progress=progress,
+        )
+    finally:
+        if isinstance(batches, NativeSequenceBatches):
+            batches.close()
     if is_primary_process():
         write_json(
             artifacts.run_dir / "train_log.json",
