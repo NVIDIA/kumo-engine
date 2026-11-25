@@ -6,6 +6,7 @@ from ._c import (
     __version__,
     BUILD_COMMIT,
     StringLookup,
+    first_edge_indices,
     pack_token_stream,
     merge_event_streams,
     export_tt_artifacts,
@@ -143,6 +144,7 @@ def __getattr__(name):
 
 __all__ = [
     "StringLookup",
+    "first_edge_indices",
     "pack_token_stream",
     "merge_event_streams",
     "export_tt_artifacts",

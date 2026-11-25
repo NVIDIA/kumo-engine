@@ -1647,15 +1647,12 @@ class DiskGraphSource:
             )
             if deduplicate_edges and len(index) > 1:
                 # Opt-in materialization; the default retains native edge chunks.
-                pairs = _first_occurrences(
-                    np.stack([column.to_numpy() for column in index.columns])
+                index = index.combine_chunks()
+                first = self._diskgraph.first_edge_indices(
+                    *(column.chunk(0).cast(pa.uint64()) for column in index.columns)
                 )
-                index = pa.table(
-                    {
-                        field.name: pa.array(values, type=field.type)
-                        for field, values in zip(index.schema, pairs, strict=True)
-                    }
-                )
+                if first is not None:
+                    index = index.take(first)
             edges[name] = ColumnarEdges(
                 self._relations[name].left_table,
                 self._relations[name].right_table,
@@ -2411,8 +2408,10 @@ class DiskGraphSource:
         feature_fetch_ns = 0
         feature_encode_ns = 0
         for table in sorted(tables):
-            # Native feature lookup still accepts a list of global node IDs.
-            ids = np.concatenate(global_ids[table]).tolist() if global_ids[table] else []
+            parts = global_ids[table]
+            ids = parts[0] if parts else ()
+            if len(parts) > 1:
+                ids = np.concatenate(parts)
             primary_key = self._tables[table].primary_key
             started = time.perf_counter_ns()
             feature_arrays = self._feature_arrays(
@@ -2527,7 +2526,7 @@ class DiskGraphSource:
                     }
         if not names:
             return {}
-        if not node_ids:
+        if len(node_ids) == 0:
             columns = self._tables[table].columns or {}
             return {
                 name: self._pa.nulls(0)
@@ -2537,7 +2536,7 @@ class DiskGraphSource:
             }
         chunks: dict[str, list[Any]] = {name: [] for name in names}
         for event in self._sampler.fetch_features(
-            [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
+            [{"node_type": table, "node_ids": node_ids, "feature_names": list(names)}]
         ):
             if event["type"] == "feature":
                 batch = event["batch"]
@@ -2853,17 +2852,16 @@ def _first_occurrences(pairs: np.ndarray) -> np.ndarray:
     Node indices are disjoint per sample, so this deduplicates per sample.
     """
 
+    import pyarrow as pa
+    from diskgraph import first_edge_indices
+
+    if pairs.ndim != 2 or pairs.shape[0] != 2 or pairs.dtype.kind not in "iu":
+        raise ValueError("edge pairs must be a 2-by-N integer array")
     if pairs.shape[1] < 2:
         return pairs
-    lowest, source_max, width = int(pairs.min()), int(pairs[0].max()), int(pairs[1].max()) + 1
-    if lowest >= 0 and (source_max + 1) * width < 2**63:
-        source, destination = pairs.astype(np.int64, copy=False)
-        _, first = np.unique(source * width + destination, return_index=True)
-    else:
-        _, first = np.unique(pairs, axis=1, return_index=True)
-    if first.size == pairs.shape[1]:
-        return pairs
-    return np.ascontiguousarray(pairs[:, np.sort(first)])
+    endpoints = pairs.astype(np.uint64 if pairs.dtype.kind == "u" else np.int64, copy=False)
+    first = first_edge_indices(pa.array(endpoints[0]), pa.array(endpoints[1]))
+    return pairs if first is None else np.take(pairs, first.to_numpy(), axis=1)
 
 
 register_engine(DiskGraphEngine.name, DiskGraphEngine)

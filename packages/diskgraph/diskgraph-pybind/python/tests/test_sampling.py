@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import pytest
 from diskgraph._c import DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
 
@@ -407,6 +408,13 @@ def test_fetch_features(orders_graph):
     batch = feature_events[0]["batch"]
     assert isinstance(batch, pa.RecordBatch)
     assert batch.num_rows > 0
+
+    for dtype in (np.dtype("uint64"), np.dtype("uint64").newbyteorder("S")):
+        req[0]["node_ids"] = np.array([0, 2, 1], dtype=dtype)[::2]
+        buffered = [e["batch"] for e in dg.fetch_features(req) if e["type"] == "feature"]
+        assert pa.Table.from_batches(buffered).equals(
+            pa.Table.from_batches([e["batch"] for e in feature_events])
+        )
 
     # Check Error Handling (Bad Type)
     bad_req = [{"node_type": "invalid_type", "node_ids": [0], "feature_names": []}]

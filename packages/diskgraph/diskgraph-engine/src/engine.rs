@@ -462,6 +462,8 @@ pub struct DiskGraphEngine {
     /// Uses a per-instance pool (not the global pool) to avoid
     /// deadlocks when PyTorch DataLoader forks worker processes.
     pub thread_pool: rayon::ThreadPool,
+    /// Reusable per-shard raw edge buffers for native runtime batches.
+    runtime_raw_edges: parking_lot::Mutex<Vec<Vec<RawEdge>>>,
     /// Record edges through the global `index_map`; same output.
     pub legacy_recording: bool,
     /// Expand previously discovered destinations again when a later hop reaches them.
@@ -888,6 +890,7 @@ impl DiskGraphEngine {
             local_to_merged_rel,
             random_seed,
             thread_pool,
+            runtime_raw_edges: Default::default(),
             legacy_recording: false,
             revisit_nodes: false,
             parallel_commit_min_edges: 1 << 15,
@@ -1285,7 +1288,6 @@ impl DiskGraphEngine {
         projection: Arc<ResolvedProjection>,
         cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<crate::output::RuntimeBatch> {
-        let mut state = SamplingState::default();
         let mut output = crate::output::RuntimeBatchOutput::new(
             name,
             seed_src_rel_ids,
@@ -1296,8 +1298,7 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
-        self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
-        output.finalize(&state)?;
+        let state = self.sample_runtime_state(request, &mut output, cutoff)?;
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
         // `raw_features` would be empty. Fetch them post-sampling per visited
@@ -2003,7 +2004,7 @@ impl DiskGraphEngine {
         // Already resolved by `sample_runtime_batch`, which is the only caller.
         projection: Arc<ResolvedProjection>,
     ) -> Result<crate::output::RuntimeBatch> {
-        use crate::output::{OutputHandler, RuntimeBatchOutput};
+        use crate::output::RuntimeBatchOutput;
         use std::collections::HashSet;
 
         // The RHS type must be in the merged catalog (sanity — the pybind layer
@@ -2053,7 +2054,6 @@ impl DiskGraphEngine {
         // Sample + collate via the shared path. No seed-src relation ids to
         // drop, and no stage seed namespaces in this NodeRange path — pass an
         // empty seed_type_ids set.
-        let mut state = SamplingState::default();
         let mut output = RuntimeBatchOutput::new(
             "main",
             HashSet::new(),
@@ -2061,8 +2061,7 @@ impl DiskGraphEngine {
             self.id_to_node_type.clone(),
             HashSet::new(),
         );
-        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
-        output.finalize(&state)?;
+        let state = self.sample_runtime_state(&request, &mut output, cutoff.as_ref())?;
 
         // Non-fused path: fetch features post-sampling per visited type (same as
         // the stage-table path) so the dict shape matches.
@@ -2177,6 +2176,28 @@ impl DiskGraphEngine {
         output: &mut impl OutputHandler,
     ) -> Result<()> {
         self.sample_with_cutoff(request, state, output, None)
+    }
+
+    fn sample_runtime_state(
+        &self,
+        request: &BatchSamplingRequest,
+        output: &mut crate::output::RuntimeBatchOutput,
+        cutoff: Option<&NodeCutoff<'_>>,
+    ) -> Result<SamplingState> {
+        let mut state = SamplingState::default();
+        if !request.flags.fused_feature_fetching {
+            if let Some(mut cached) = self.runtime_raw_edges.try_lock() {
+                state.raw_edges = std::mem::take(&mut *cached);
+            }
+        }
+        self.sample_with_cutoff(request, &mut state, output, cutoff)?;
+        if !state.raw_edges.is_empty() {
+            state.clear_raw_edges();
+            if let Some(mut cached) = self.runtime_raw_edges.try_lock() {
+                *cached = std::mem::take(&mut state.raw_edges);
+            }
+        }
+        Ok(state)
     }
 
     fn sample_with_cutoff(
@@ -2308,15 +2329,22 @@ impl DiskGraphEngine {
             let edges_before = state.stats.total_edges;
             let nodes_before = state.stats.total_nodes;
             let layer = &compiled_plan.layers[layer_idx];
-            state.revisits = (self.revisit_nodes
+            if self.revisit_nodes
                 && layer_idx + 1 < num_hops
                 && (layer.default_fanout.is_some()
                     || layer.fanouts.keys().any(|&rel| {
                         state.type_states
                             .get(&self.relation_info[rel])
                             .is_some_and(|ts| !ts.nodes.is_empty())
-                    })))
-                .then(Default::default);
+                    }))
+            {
+                state.revisits.extend((0..num_types).map(|ty| {
+                    let len = state.type_states.get(&ty).map_or(0, |ts| ts.nodes.len());
+                    let mut bits = arrow_array::builder::BooleanBufferBuilder::new(len);
+                    bits.advance(len);
+                    bits
+                }));
+            }
 
             self.process_layer(
                 layer_idx,
@@ -2328,15 +2356,20 @@ impl DiskGraphEngine {
                 cutoff,
             )?;
 
-            if let Some(revisits) = state.revisits.take() {
-                for (ty, id) in revisits {
-                    let ts = state.type_states.get_mut(&ty).expect("recorded destination");
-                    let new_count = state.stats.nodes_per_type[ty][layer_idx + 1] as usize;
-                    if (id as usize) < ts.nodes.len() - new_count {
-                        ts.next_frontier.push(ts.nodes[id as usize]);
-                    }
+            // First discoveries are already contiguous in local-ID order.
+            for (&ty, ts) in &mut state.type_states {
+                if ts.nodes.is_empty() {
+                    continue;
+                }
+                let new_count = state.stats.nodes_per_type[ty][layer_idx + 1] as usize;
+                ts.next_frontier
+                    .extend_from_slice(&ts.nodes[ts.nodes.len() - new_count..]);
+                if let Some(bits) = state.revisits.get_mut(ty) {
+                    ts.next_frontier
+                        .extend(bits.finish().set_indices().map(|id| ts.nodes[id]));
                 }
             }
+            state.revisits.clear();
 
             debug!(
                 hop = layer_idx,
@@ -3320,16 +3353,13 @@ impl DiskGraphEngine {
                     seed_type_id: e.seed_type_id,
                 };
                 ts.nodes.push(node);
-                ts.next_frontier.push(node);
                 state.stats.record_node(layer_idx + 1, e.dst_type_id);
                 cs.res[i].store(id, Relaxed);
                 id
             } else if r & PENDING != 0 {
                 cs.res[(r & !PENDING) as usize].load(Relaxed)
             } else {
-                if let Some(revisits) = &mut state.revisits {
-                    revisits.insert((e.dst_type_id, r));
-                }
+                state.mark_revisit(e.dst_type_id, r);
                 r
             };
             self.emit_edge(
@@ -3437,9 +3467,7 @@ impl DiskGraphEngine {
         };
 
         let dst_local_id = if let Some(&id) = dst_type_state.index_map.get(&key) {
-            if let Some(revisits) = &mut state.revisits {
-                revisits.insert((dst_type_id, id));
-            }
+            state.mark_revisit(dst_type_id, id);
             id
         } else {
             let id = dst_type_state.nodes.len() as u32;
@@ -3453,12 +3481,6 @@ impl DiskGraphEngine {
             });
             state.stats.record_node(layer_idx + 1, dst_type_id);
 
-            dst_type_state.next_frontier.push(NodeRecord {
-                global_id: dst_global_id,
-                seed_index,
-                local_id: id,
-                seed_type_id,
-            });
             id
         };
 
