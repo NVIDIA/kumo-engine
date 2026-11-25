@@ -117,3 +117,8 @@ Inference exports one label position per sample ID. Unknown labels are NaN and
 `<split>_labels_valid` marks which entries are known; unknown never means zero.
 Managed checkpoint and encoder manifests record ordered allowlists explicitly,
 so same-width feature reordering cannot silently reuse incompatible weights.
+
+Relational recipes reject nonempty `objective.auxiliary`: these stages apply
+only their declared primary/binary objectives. Sequence/hybrid decoder widths
+and head counts must be positive and produce an even integral head dimension;
+configuration validation rejects incompatible dimensions before data preparation.

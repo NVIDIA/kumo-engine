@@ -927,6 +927,8 @@ class RecipeConfig(StrictConfig):
 
         if self.data.stratify_by_fraud:
             raise ValueError("Relational anchors must be independent of event fraud labels")
+        if self.objective.auxiliary:
+            raise ValueError("Relational recipes do not apply objective.auxiliary; omit it")
         if self.model.backbone != "eager":
             raise ValueError("Relational reference recipes currently use the eager model backbone")
         if isinstance(build_readout(self.model.composition.readout), UsrTokenPool):
@@ -944,6 +946,15 @@ class RecipeConfig(StrictConfig):
             raise ValueError(
                 "Relational tasks require profile_event_decoder in sequence or gnn_encoder/gnn_sequence in graph"
             )
+        if kind in {"gnn_sequence", "profile_event_decoder"}:
+            decoder = self.model.composition.granularity.decoder
+            if decoder.hidden_size < 1 or decoder.num_heads < 1:
+                raise ValueError("Sequence hidden_size and num_heads must be positive")
+            if (
+                decoder.hidden_size % decoder.num_heads
+                or (decoder.hidden_size // decoder.num_heads) % 2
+            ):
+                raise ValueError("Sequence width needs an even integral attention head dimension")
         if self.data.token_cache is not None or self.data.pretrain_windows is not None:
             raise ValueError(
                 "Relational anchors do not support token caches or tiled pretraining windows"

@@ -803,3 +803,36 @@ def test_native_anchor_file_is_removed_after_setup_failure(failure, monkeypatch,
     with pytest.raises(ValueError, match=f"{failure} failed"):
         snapshot.neighbors(("a", "edge", "b"), ("root",))
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("variant", ["smoke", "graph_smoke", "hybrid_smoke"])
+@pytest.mark.parametrize(
+    "objective", ["past_reconstruction", "token_event_key_mlm", "subsequence_contrastive"]
+)
+def test_relational_recipes_reject_unused_auxiliary_losses(variant, objective):
+    from pathlib import Path
+
+    import yaml
+
+    from tfm.config import RecipeConfig
+
+    raw = yaml.safe_load((Path("recipes/relational_inputs") / f"config.{variant}.yaml").read_text())
+    raw["objective"] = {"auxiliary": [objective]}
+    with pytest.raises(ValueError, match=r"Relational recipes do not apply objective\.auxiliary"):
+        RecipeConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("variant", ["smoke", "hybrid_smoke"])
+@pytest.mark.parametrize("width,heads", [(0, 2), (-8, 2), (8, 0), (8, -2), (10, 3), (6, 2)])
+def test_relational_recipes_reject_invalid_attention_dimensions(variant, width, heads):
+    from pathlib import Path
+
+    import yaml
+
+    from tfm.config import RecipeConfig
+
+    raw = yaml.safe_load((Path("recipes/relational_inputs") / f"config.{variant}.yaml").read_text())
+    raw["model"]["composition"]["granularity"]["decoder"].update(hidden_size=width, num_heads=heads)
+    expected = "must be positive" if min(width, heads) <= 0 else "even integral attention"
+    with pytest.raises(ValueError, match=expected):
+        RecipeConfig.model_validate(raw)
