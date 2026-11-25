@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Prepare a clean product environment before the actual notebook starts."""
+"""Install the candidate into the SageMaker Distribution interpreter."""
 import hashlib
 import importlib.util
 import json
@@ -100,38 +100,26 @@ def prepare(config, session=None):
     budget_spec.loader.exec_module(budget)
     (root / 'execution-deadline.json').write_text(
         json.dumps(work_started + budget.WORK_SECONDS))
-    python = root / 'venv/bin/python'
-    with (evidence / 'venv.log').open('w') as log:
-        subprocess.run(
-            [sys.executable, '-m', 'venv', '--without-pip',
-             str(root / 'venv')], stdout=log, stderr=subprocess.STDOUT,
-            timeout=budget.remaining(root, 120), check=True)
-    for name, requirements in [
-        ('kernel-install',
-         ['--require-hashes', '-r',
-          str(payload / 'kernel-requirements.txt')]),
-        ('product-install',
-         [str(payload / config['candidate']['wheel_file']) + '[sagemaker]']),
-    ]:
-        with (evidence / (name + '.log')).open('w') as log:
-            command = [
-                sys.executable, '-I', '-m', 'pip', '--isolated', '--python',
-                str(python), 'install', '--index-url',
-                'https://pypi.org/simple', *requirements
-            ]
-            if helpers.execute(command, root, log, budget.remaining(root, 1200)):
-                raise RuntimeError(name + ' failed')
+    python = sys.executable
+    with (evidence / 'product-install.log').open('w') as log:
+        command = [
+            python, '-P', '-m', 'pip', 'install', '--index-url',
+            'https://pypi.org/simple',
+            str(payload / config['candidate']['wheel_file']) + '[sagemaker]'
+        ]
+        if helpers.execute(command, root, log, budget.remaining(root, 1200)):
+            raise RuntimeError('Product installation failed')
     with (evidence / 'pip-check.log').open('w') as log:
-        subprocess.run([str(python), '-I', '-m', 'pip', '--isolated', 'check'],
-                       check=True, stdout=log, stderr=subprocess.STDOUT,
+        subprocess.run([python, '-P', '-m', 'pip', 'check'], check=True,
+                       stdout=log, stderr=subprocess.STDOUT,
                        timeout=budget.remaining(root, 120))
     subprocess.run([
-        str(python), '-m', 'ipykernel', 'install', '--user', '--name',
+        python, '-m', 'ipykernel', 'install', '--user', '--name',
         config['kernel'], '--display-name', 'Kumo test candidate'
     ], check=True, timeout=budget.remaining(root, 120))
     (evidence / 'installation.json').write_text(
         json.dumps(
-            dict(pip_check_returncode=0, interpreter=str(python),
+            dict(pip_check_returncode=0, interpreter=python,
                  identity=identity['Arn'],
                  version=config['candidate']['expected_version'],
                  wheel_sha256=config['candidate']['wheel_sha256']), indent=2))

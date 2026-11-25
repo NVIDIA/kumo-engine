@@ -109,23 +109,17 @@ try:
     dependencies = support.unpack(payload, wheelhouse)
     (evidence / 'dependency-manifest.json').write_text(
         json.dumps(dependencies, indent=2))
-    venv = local / 'venv'
-    with (evidence / 'venv.log').open('w') as log:
-        subprocess.run([sys.executable, '-m', 'venv',
-                        str(venv)], stdout=log, stderr=subprocess.STDOUT,
-                       check=True, timeout=60)
-    python = venv / 'bin/python'
     with (evidence / 'install.log').open('w') as log:
         subprocess.run([
-            str(python), '-I', '-m', 'pip', '--isolated', 'install',
+            sys.executable, '-P', '-m', 'pip', '--isolated', 'install',
             '--no-index', '--find-links',
             str(wheelhouse),
             str(wheel) + '[snowflake]'
         ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
     with (evidence / 'pip-check.log').open('w') as log:
         pip_check = subprocess.run(
-            [str(python), '-I', '-m', 'pip', '--isolated', 'check'], stdout=log,
-            stderr=subprocess.STDOUT, check=False, timeout=60)
+            [sys.executable, '-P', '-m', 'pip', '--isolated', 'check'],
+            stdout=log, stderr=subprocess.STDOUT, check=False, timeout=60)
     receipt['pip_check_returncode'] = pip_check.returncode
     child_code = """import json, os
 from pathlib import Path
@@ -138,7 +132,7 @@ try:
 finally: connection.close()
 """
     with (evidence / 'child-auth.stderr.log').open('w') as log:
-        child = subprocess.run([str(python), '-I', '-c', child_code],
+        child = subprocess.run([sys.executable, '-P', '-c', child_code],
                                stdout=subprocess.PIPE, stderr=log, text=True,
                                check=False, timeout=90)
     receipt['child_auth_returncode'] = child.returncode
@@ -166,7 +160,7 @@ finally: connection.close()
                     config['expected_version']) + ", managed=True)))"
             with (evidence / 'candidate-admission.stderr.log').open('w') as log:
                 admission = subprocess.run(
-                    [str(python), '-I', '-c', check_code],
+                    [sys.executable, '-P', '-c', check_code],
                     stdout=subprocess.PIPE, stderr=log, text=True, check=False,
                     timeout=90, env=dict(os.environ, MPLBACKEND='Agg'))
             (evidence / 'candidate-admission.json').write_text(admission.stdout)
@@ -184,8 +178,7 @@ finally: connection.close()
         result = runner.run_notebook(
             config=payload / 'snowflake.json', wheel=wheel,
             expected_version=config['expected_version'],
-            output_dir=evidence / 'lifecycle', python_executable=python,
-            attempt=attempt,
+            output_dir=evidence / 'lifecycle', attempt=attempt,
             phase='negative' if config['mode'] == 'negative' else None)
         receipt['lifecycle'] = result
         receipt['status'] = (result.get('summary')

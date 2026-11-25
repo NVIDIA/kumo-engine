@@ -118,7 +118,7 @@ def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
         assert calls[0][0][-2:] == ['--phase', 'negative']
     command, options = calls[0]
     assert options['timeout'] == (300 if phase else None)
-    assert command[1] == '-I' and '--execute-platform' in command
+    assert command[1] == '-P' and '--execute-platform' in command
     assert json.loads(options['env'][platform.NOTEBOOK_CONTEXT]) == dict(
         session='123', workspace=workspace, notebook_extension=True,
         identity=identity)

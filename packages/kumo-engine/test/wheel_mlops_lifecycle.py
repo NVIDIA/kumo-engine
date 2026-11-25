@@ -161,7 +161,7 @@ def frame_digest(frame):
 
 
 def check_install(wheel, expected_version, *, managed=False):
-    """Bind execution to a non-editable wheel in an isolated environment."""
+    """Bind execution to the exact non-editable candidate wheel."""
     import diskgraph
     import kumo_core
 
@@ -925,17 +925,20 @@ def run(args):
         else:
             report['environment'] = check_install(args.wheel,
                                                   args.expected_version)
+        # Managed notebook workers must retain the notebook's package search path.
+        python_flag = ('-P' if profile is not None
+                       and profile.config['environment'] == 'managed' else '-I')
         with (root / 'pip-check.log').open('w') as log:
-            subprocess.run(
-                [sys.executable, '-I', '-m', 'pip', '--isolated', 'check'],
-                stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
+            subprocess.run([
+                sys.executable, python_flag, '-m', 'pip', '--isolated', 'check'
+            ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
         execution_started = True
         phases = (('negative', 'fit', 'score',
                    'evaluate') if profile is not None else PHASES)
         report['phases'] = {name: report['phases'][name] for name in phases}
         for name in phases:
             command = [
-                sys.executable, '-I',
+                sys.executable, python_flag,
                 str(Path(__file__).resolve()), '--output-dir',
                 str(root), '--wheel',
                 str(args.wheel), '--expected-version', args.expected_version,

@@ -1580,34 +1580,29 @@ def test_studio_input_keeps_original_code_outputs_and_receipt(
             upload.read_bytes()) != modules.evidence.digest(before)
 
 
-def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_path):
+def test_bootstrap_installs_candidate_with_the_distribution_python(tmp_path):
     import ast
     tree = ast.parse((HERE / 'bootstrap.py').read_text())
-    loop = next(node for node in ast.walk(tree)
-                if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple)
-                and [n.id for n in node.target.elts] == ['name', 'requirements'])
+    install = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.With)
+        and "'product-install.log'" in ast.unparse(node.items[0].context_expr))
     captured = []
-    calls = []
-    evidence = tmp_path / 'evidence'
-    evidence.mkdir()
-
-    def remaining(root, cap):
-        calls.append(cap)
-        return min(2000, cap)
-    scope = dict(sys=sys, payload=tmp_path, python=tmp_path / 'venv/bin/python',
-                 root=tmp_path, evidence=evidence,
-                 config={'candidate': {'wheel_file': 'candidate.whl'}},
-                 subprocess=subprocess, budget=SimpleNamespace(remaining=remaining),
-                 helpers=SimpleNamespace(execute=lambda command, cwd, log, timeout:
-                                         captured.append((command, timeout)) or 0))
-    exec(compile(ast.Module(body=[loop], type_ignores=[]), '<bootstrap-install>', 'exec'), scope)
-    assert calls == [1200, 1200]
-    kernel, product = captured
-    assert '--require-hashes' in kernel[0]
-    assert str(tmp_path / 'kernel-requirements.txt') in kernel[0]
-    assert '--require-hashes' not in product[0]
-    assert str(tmp_path / 'candidate.whl') + '[sagemaker]' in product[0]
-    assert product[0][product[0].index('--index-url') + 1] == 'https://pypi.org/simple'
+    (tmp_path / 'evidence').mkdir()
+    scope = dict(
+        payload=tmp_path, python=sys.executable, root=tmp_path,
+        evidence=tmp_path / 'evidence',
+        config={'candidate': {
+            'wheel_file': 'candidate.whl'
+        }}, budget=SimpleNamespace(remaining=lambda root, cap: cap),
+        helpers=SimpleNamespace(execute=lambda command, cwd, log, timeout:
+                                captured.append((command, timeout)) or 0))
+    exec(
+        compile(ast.Module(body=[install], type_ignores=[]),
+                '<bootstrap-install>', 'exec'), scope)
+    [(command, timeout)] = captured
+    assert command[:5] == [sys.executable, '-P', '-m', 'pip', 'install']
+    assert command[-1] == str(tmp_path / 'candidate.whl') + '[sagemaker]'
+    assert timeout == 1200
 
 
 def test_phase_caps_are_retained_within_shared_work_deadline(tmp_path, monkeypatch):

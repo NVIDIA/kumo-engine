@@ -33,8 +33,10 @@ These resource names are deliberate test-only allowlist entries, not production
 resources. Keep the browser bot limited to this role and test resources because
 its credential JSON contains both the password and TOTP enrollment secret.
 
-The lifecycle uses 60 users, 1,500 events and two fits of two epochs each. See
-[local lifecycle testing](mlops-validation.md) for the shared fixture and runner.
+The lifecycle installs the staged wheel and dependencies into the Snowflake
+Container Runtime notebook's Python environment. Fresh worker processes use that
+interpreter and verify the candidate wheel. The lifecycle uses 60 users, 1,500
+events and two fits of two epochs each. See [local lifecycle testing](mlops-validation.md) for the shared fixture and runner.
 The graph UI scenario uses two binary trials and one trial each for multiclass,
 multilabel and regression, with two epochs and train/validation refit. It does not
 repeat the registry lifecycle.

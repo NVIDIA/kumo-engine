@@ -640,8 +640,8 @@ def drift_record(profile, cfg, run, drift):
     return record
 
 
-def run_notebook(*, config, wheel, expected_version, output_dir,
-                 python_executable=None, phase=None, attempt=None):
+def run_notebook(*, config, wheel, expected_version, output_dir, phase=None,
+                 attempt=None):
     """Launch fresh lifecycle processes from a Snowflake Container Runtime notebook."""
     profile = validate(json.loads(Path(config).read_text()))
     if profile['platform'] != 'snowflake':
@@ -677,7 +677,7 @@ def run_notebook(*, config, wheel, expected_version, output_dir,
         environment.pop(NOTEBOOK_ATTEMPT, None)
     helper = Path(__file__).with_name('wheel_mlops_lifecycle.py')
     command = [
-        str(python_executable or sys.executable), '-I',
+        sys.executable, '-P',
         str(helper), '--execute-platform', '--platform-config',
         str(Path(config).resolve()), '--wheel',
         str(Path(wheel).resolve()), '--expected-version', expected_version,

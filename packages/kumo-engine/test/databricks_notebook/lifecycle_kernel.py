@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Run the shared small lifecycle in isolated processes inside a real notebook."""
+"""Run the shared small lifecycle with the Databricks notebook package environment."""
 
 
 def execute(config, dbutils):
@@ -75,40 +75,37 @@ def execute(config, dbutils):
         helpers = importlib.util.module_from_spec(helper_spec)
         helper_spec.loader.exec_module(helpers)
         wheel = payload / config['candidate']['wheel_file']
-        python = root / 'venv/bin/python'
-        with (evidence / 'venv.log').open('w') as log:
-            subprocess.run([
-                sys.executable, '-m', 'venv', '--without-pip',
-                str(root / 'venv')
-            ], check=True, stdout=log, stderr=subprocess.STDOUT, timeout=120)
-        with (evidence / 'install.log').open('w') as log:
-            install = [
-                sys.executable, '-I', '-m', 'pip', '--isolated', '--python',
-                str(python), 'install', '--index-url',
-                'https://pypi.org/simple', 'pip',
-                str(wheel) + '[databricks,mlflow,s3]'
-            ]
-            if helpers.execute(install, root, log, 900):
-                raise RuntimeError(
-                    'Clean environment installation failed; see install.log')
-        with (evidence / 'pip-check.log').open('w') as log:
-            subprocess.run(
-                [str(python), '-I', '-m', 'pip', '--isolated', 'check'],
-                check=True, stdout=log, stderr=subprocess.STDOUT, timeout=120)
-        report['pip_check_returncode'] = 0
+        # Databricks adds notebook-scoped packages to the kernel's sys.path.
+        # Carry its search order into the fresh lifecycle workers.
+        env['PYTHONPATH'] = os.pathsep.join(path for path in sys.path
+                                            if os.path.isabs(path))
+        report['environment'] = helpers.check_install(
+            wheel, config['candidate']['expected_version'], managed=True)
+        import transformers
+
+        import kumo.pytorch
+
+        report['native_imports'] = dict(pytorch=kumo.pytorch.__name__,
+                                        transformers=transformers.__version__)
+        with (evidence / 'native-pip-check.log').open('w') as log:
+            check = subprocess.run([sys.executable, '-P', '-m', 'pip', 'check'],
+                                   env=env, stdout=log,
+                                   stderr=subprocess.STDOUT, timeout=120)
+            report['pip_check_returncode'] = check.returncode
+            check.check_returncode()
         profile = dict(platform='databricks', catalog='kumo_test_catalogue',
                        schema='kumo_test', cluster_id=config['cluster_id'],
                        artifact_root=config['artifact_root'],
                        experiment=config['experiment'],
                        model_prefix='KUMO_TEST_MLOPS', identity='ambient',
                        accelerator='cpu', execution_context='databricks',
-                       environment='venv')
+                       environment='managed')
         if config.get('denied_artifact_root'):
             profile['denied_artifact_root'] = config['denied_artifact_root']
         profile_path = root / 'profile.json'
         profile_path.write_text(json.dumps(profile))
         command = [
-            str(python), '-I',
+            sys.executable, '-P',
             str(payload / 'wheel_mlops_lifecycle.py'), '--execute-platform',
             '--platform-config',
             str(profile_path), '--attempt', config['attempt'], '--wheel',

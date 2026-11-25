@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Regenerate the SageMaker runner and kernel locks, including its license header."""
+"""Regenerate the SageMaker runner lock, including its license header."""
 import argparse
 import shutil
 import subprocess
@@ -18,27 +18,26 @@ HEADER = (
 def compile_lock(uv='uv', upgrades=()):
     source = Path(__file__).resolve().parent
     root = source.parents[3]
-    for stem in ('requirements', 'kernel-requirements'):
-        output = source / (stem + '.txt')
-        with tempfile.TemporaryDirectory(
-                prefix='kumo-sagemaker-lock-') as directory:
-            temporary = Path(directory) / output.name
-            if output.exists():
-                shutil.copyfile(output, temporary)
-            command = [
-                uv, '--no-config', 'pip', 'compile',
-                str((source / (stem + '.in')).relative_to(root)),
-                '--python-version', '3.12', '--python-platform',
-                'x86_64-manylinux_2_34', '--default-index',
-                'https://pypi.org/simple', '--generate-hashes',
-                '--no-emit-index-url', '--no-emit-find-links', '--no-header',
-                '--output-file',
-                str(temporary)
-            ]
-            for name in upgrades:
-                command += ['--upgrade-package', name]
-            subprocess.run(command, cwd=root, check=True)
-            output.write_text(HEADER + temporary.read_text())
+    output = source / 'requirements.txt'
+    with tempfile.TemporaryDirectory(
+            prefix='kumo-sagemaker-lock-') as directory:
+        temporary = Path(directory) / output.name
+        if output.exists():
+            shutil.copyfile(output, temporary)
+        command = [
+            uv, '--no-config', 'pip', 'compile',
+            str((source / 'requirements.in').relative_to(root)),
+            '--python-version', '3.12', '--python-platform',
+            'x86_64-manylinux_2_34', '--default-index',
+            'https://pypi.org/simple', '--generate-hashes',
+            '--no-emit-index-url', '--no-emit-find-links', '--no-header',
+            '--output-file',
+            str(temporary)
+        ]
+        for name in upgrades:
+            command += ['--upgrade-package', name]
+        subprocess.run(command, cwd=root, check=True)
+        output.write_text(HEADER + temporary.read_text())
 
 
 def main():
