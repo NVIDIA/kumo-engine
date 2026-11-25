@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix the Kumo Engine Blueprint example startup with managed DiskGraph indexes. Use `--scratch-dir` to set the storage root and `--index` to reuse a completed build.
+
 ## 2.0.0a4
 
 - Use the reference Muon update on CPU, preserving exact parity across CPU bf16 kernel implementations. CUDA retains grouped updates.

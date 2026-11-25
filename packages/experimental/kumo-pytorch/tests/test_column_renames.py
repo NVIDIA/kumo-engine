@@ -83,8 +83,9 @@ def test_column_bindings(tmp_path, files, renames, expected):
             assert expected in str(error.value)
     else:
         with api.prepare(_binding_contract(), dataset, engine) as plan:
-            with plan.materialize((api.SampleRequest("one", len(files), 0),)) as task:
-                batch = next(task.batches(batch_size=1, output_format="model"))
+            requests = (api.SampleRequest("one", len(files), 0),)
+            with plan.materialize(requests) as task:
+                batch = next(task.request_batches(requests, batch_size=1, output_format="model"))
                 assert batch.inputs["values"]["value"]["values"].tolist() == [expected]
 
 

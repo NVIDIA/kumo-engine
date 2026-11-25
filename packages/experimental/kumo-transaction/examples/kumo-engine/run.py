@@ -12,7 +12,9 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 
+import kumo.settings
 import torch
 from adapter import KumoToKVT
 from kumo.pytorch import api
@@ -76,7 +78,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=ROOT / "outputs/kumo-engine/data")
     parser.add_argument("--anchors", type=Path, help="Override the prepared anchor table")
-    parser.add_argument("--index", type=Path, help="Reuse a compatible DiskGraph index")
+    parser.add_argument("--scratch-dir", type=Path, help="Override Kumo's managed scratch root")
+    parser.add_argument(
+        "--index", type=Path, help="Reuse a completed DiskGraph index under the Kumo scratch root"
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "outputs/kumo-engine/train")
     parser.add_argument("--config", type=Path, default=ROOT / "recipes/blueprint_v2/config.yaml")
     parser.add_argument("--device", default="cuda")
@@ -90,22 +95,25 @@ def main() -> None:
     device = torch.device(args.device)
     torch.set_num_threads(args.threads)
     seed_everything(config.seed)
+    kumo.settings.configure(scratch_dir=args.scratch_dir)
     args.output.mkdir(parents=True, exist_ok=True)
     contract = make_contract(config.data.sequence_length, config.training.batch_size)
-    dataset = make_dataset(args.data.resolve())
     anchors = make_anchors((args.anchors or args.data / "anchors.parquet").resolve())
-    # Precompute column statistics at the train boundary during ingestion.
-    # Fitting still uses the latest selected train anchor as its cutoff.
-    encoder_cutoff = int(parse_timestamp(config.data.temporal_split.train_end).timestamp()) - 1
-    engine = api.DiskGraphEngine(
-        index=args.index or args.output / "index",
-        num_threads=args.threads,
-        num_shards=1,
-        encoder_cutoffs=(encoder_cutoff,),
-    )
+    if args.index is None:
+        dataset = make_dataset(args.data.resolve())
+        # Precompute column statistics at the train boundary during ingestion.
+        # Fitting still uses the latest selected train anchor as its cutoff.
+        encoder_cutoff = int(parse_timestamp(config.data.temporal_split.train_end).timestamp()) - 1
+        engine = api.DiskGraphEngine(num_threads=args.threads, encoder_cutoffs=(encoder_cutoff,))
+    else:
+        dataset = None
+        # The completed index supplies its stored build identity and schema.
+        snapshot = SimpleNamespace(index_path=args.index, id=None)
+        engine = api.DiskGraphEngine.from_snapshot(snapshot, num_threads=args.threads)
     with ExitStack() as stack:
         print("Preparing DiskGraph and fitting input encoders", flush=True)
         plan = stack.enter_context(api.prepare(contract, dataset, engine))
+        print(f"DiskGraph index: {engine.index}", flush=True)
         task = stack.enter_context(plan.materialize(anchors, fit_split="train"))
         adapter = KumoToKVT(task)
         # Close the producer before the task/index, including when training fails.
