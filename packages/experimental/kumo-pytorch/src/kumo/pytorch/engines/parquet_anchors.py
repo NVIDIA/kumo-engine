@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read an anchor table stored as local Parquet, for engines whose data is Parquet.
+"""Read an anchor table stored as Parquet, for engines whose data is Parquet.
 
 Anchor columns are held as Arrow arrays (millions of anchors cost a few hundred
 megabytes) and turned into `SampleRequest` values only when a batch fetches
@@ -25,24 +25,23 @@ from kumo.pytorch.anchors import (
     SplitSelection,
 )
 from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values
-from kumo.pytorch.contract.sample import SampleRequest, TargetValue
+from kumo.pytorch.contract.sample import CandidateRequest, SampleRequest, TargetValue
 from kumo.pytorch.dataset import _can_coerce_to_int64, _MissingParquetColumns
-from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
+from kumo.pytorch.parquet_sources import open_parquet_file, parquet_objects
 from kumo.pytorch.spec import ValidationIssue
 
 __all__ = ["ParquetAnchors", "check_parquet_anchors"]
 
 
-def _files(path: str) -> list[str]:
-    from kumo.pytorch.materialization import _local_parquet_files
-
-    return _local_parquet_files(path)
-
-
-def _physical(table: AnchorTable) -> dict[str, str]:
+def _physical(table: AnchorTable, schemas=None, *, objects=None) -> dict[str, str]:
     """Logical anchor column -> physical Parquet column (honouring `Parquet.columns` renames)."""
 
-    return table.source._bind_columns(tuple(table.columns))
+    if schemas is None and objects is not None:
+        schemas = table.source._schemas(objects)
+    file_columns = (
+        None if schemas is None else {path: schema.names for path, schema in schemas.items()}
+    )
+    return table.source._bind_columns(tuple(table.columns), file_columns=file_columns)
 
 
 def _anchor_key_array(values: Any, dtype: DType) -> Any:
@@ -96,24 +95,16 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
 
     if getattr(table.source, "kind", None) != "parquet":
         return ()  # DiskGraphEngine.check_sources refuses it (DG-SOURCE-KIND)
-    if table.candidates:
-        entry = DISKGRAPH_UNSUPPORTED["DG-CANDIDATE-SETS"]
+    if "://" in table.source.path and not table.source.path.startswith("s3://"):
+        return ()  # DiskGraphEngine.check_sources refuses other URI schemes
+    try:
+        schemas = table.source._schemas()
+    except (OSError, ValueError) as error:
         return (
-            ValidationIssue(
-                "anchors.candidates",
-                "the Parquet anchor reader does not serve candidate sets yet",
-                entry.next_step,
-                entry.code,
-            ),
+            ValidationIssue("anchors.source.path", str(error), "point at readable Parquet files"),
         )
-    if "://" in table.source.path:
-        return ()  # DiskGraphEngine.check_sources refuses it (DG-REMOTE-PARQUET)
     try:
-        _files(table.source.path)
-    except (FileNotFoundError, ValueError) as error:
-        return (ValidationIssue("anchors.source.path", str(error), "point at local Parquet files"),)
-    try:
-        _physical(table)
+        required = _physical(table, schemas)
     except _MissingParquetColumns as error:
         return (
             ValidationIssue(
@@ -130,22 +121,156 @@ def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:
                 "write those columns or rename them through Parquet(columns=...)",
             ),
         )
+    for file, schema in schemas.items():
+        if issue := _schema_issue(table, file, schema, required):
+            return (issue,)
     return ()
 
 
+def _schema_issue(table, file, schema, required=None):
+    import pyarrow as pa
+
+    if required is None:
+        required = _physical(table, {file: schema})
+    for name, binding in table.candidates.items():
+        dtype = schema.field(required[binding.column]).type
+        if not (
+            (
+                pa.types.is_list(dtype)
+                or pa.types.is_large_list(dtype)
+                or pa.types.is_fixed_size_list(dtype)
+            )
+            and pa.types.is_struct(dtype.value_type)
+            and all(field in dtype.value_type.names for field in binding.fields)
+        ):
+            return ValidationIssue(
+                f"anchors.candidates.{name}",
+                f"{binding.column!r} in {file!r} must be a list of structs "
+                f"with fields {binding.fields}, got {dtype}",
+                "supply the candidate ID and bound label fields in each struct",
+            )
+    return None
+
+
+def _read_anchor_batches(table, item, *, columns, batch_size, local_reader=None):
+    if local_reader is not None and not item["path"].startswith("s3://"):
+        yield from local_reader(item["path"], columns=columns, batch_size=batch_size)
+        return
+    with open_parquet_file(item) as reader:
+        if issue := _schema_issue(table, item["path"], reader.schema_arrow):
+            raise ValueError(issue.describe())
+        if item["path"].startswith("s3://"):
+            # Arrow coalesces ranges for a row group. Limit prefetch to one group
+            # so a large remote part is never prefetched as a whole.
+            for group in range(reader.num_row_groups):
+                yield from reader.iter_batches(
+                    row_groups=[group], columns=columns, batch_size=batch_size
+                )
+        else:
+            yield from reader.iter_batches(columns=columns, batch_size=batch_size)
+
+
+def _candidate_row(table, columns, index, position):
+    """Decode nested IDs/labels field by field to preserve nanosecond Arrow scalars."""
+    result = {}
+    for name, binding in table.candidates.items():
+        value = columns[binding.column][index]
+        entries = (
+            (
+                {field: _arrow_scalar_value(entry[field]) for field in binding.fields}
+                if entry.is_valid
+                else None
+                for entry in value.values
+            )
+            if value.is_valid
+            else None
+        )
+        result[name] = binding._requests(entries, position)
+    return result
+
+
+def _candidate_rows(table, columns, positions, graph_only=()):
+    """Decode typed Parquet candidate fields in bulk, retaining offsets and labels."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    requests = [{} for _ in positions] if table.candidates.keys() - set(graph_only) else None
+    graph_ids = {}
+    for name, binding in table.candidates.items():
+        lists = columns[binding.column]
+        if isinstance(lists, pa.ChunkedArray):
+            lists = lists.combine_chunks()
+        entries = lists.flatten()
+        if entries.null_count:
+            # Report malformed structs in the same source row and field order as fetch.
+            return [_candidate_row(table, columns, i, p) for i, p in enumerate(positions)], {}
+        ids = entries.field(binding.entity_id)
+        keys = (
+            ids.to_numpy().tolist()
+            if not ids.null_count and pa.types.is_integer(ids.type)
+            else _arrow_values(ids)
+        )
+        if name in graph_only:
+            if binding.targets and keys:
+                raise ValueError(f"unknown supplied target: {min(binding.targets)!r}")
+            candidates = keys
+        else:
+            labels = [
+                (target, _arrow_values(entries.field(field)))
+                for target, field in sorted(binding.targets.items())
+            ]
+            candidates = (
+                [
+                    CandidateRequest(
+                        key, tuple(TargetValue(target, values[i]) for target, values in labels)
+                    )
+                    for i, key in enumerate(keys)
+                ]
+                if labels
+                else [CandidateRequest(key) for key in keys]
+            )
+        lengths = pc.fill_null(pc.list_value_length(lists), 0).to_numpy()
+        bounds = np.empty(len(lengths) + 1, dtype=np.int64)
+        bounds[0] = 0
+        np.cumsum(lengths, out=bounds[1:])
+        groups = tuple(tuple(candidates[a:b]) for a, b in zip(bounds[:-1], bounds[1:], strict=True))
+        if name in graph_only:
+            graph_ids[name] = groups
+        else:
+            for row, group in zip(requests, groups, strict=True):
+                row[name] = group
+    return requests, graph_ids
+
+
 class ParquetAnchors(PositionalAnchors):
-    """Anchors from local Parquet, in file-then-row order (the canonical order)."""
+    """Anchors from Parquet, in file-then-row order (the canonical order)."""
 
     def __init__(self, table: AnchorTable):
-        issues = check_parquet_anchors(table)
-        if issues:
-            raise ValueError(issues[0].describe())
+        import pyarrow as pa
         import pyarrow.dataset as pads
 
         self._table = table
-        physical = _physical(table)
-        data = pads.dataset(_files(table.source.path), format="parquet").to_table(
-            columns=sorted(set(physical.values()))
+        files = parquet_objects(table.source.path)
+        schemas = table.source._schemas(files)
+        physical = _physical(table, schemas)
+        columns = sorted(set(physical.values()))
+        parts = []
+        remote = table.source.path.startswith("s3://")
+        for item in files:
+            if issue := _schema_issue(table, item["path"], schemas[item["path"]], physical):
+                raise ValueError(issue.describe())
+            if remote:
+                with open_parquet_file(item) as reader:
+                    part = reader.read(columns=columns)
+                    if parts and part.schema != parts[0].schema:
+                        part = part.cast(parts[0].schema)
+                    parts.append(part)
+        data = (
+            pa.concat_tables(parts)
+            if remote
+            else pads.dataset([item["path"] for item in files], format="parquet").to_table(
+                columns=columns
+            )
         )
         self._columns = {
             logical: data.column(column).combine_chunks() for logical, column in physical.items()
@@ -202,10 +327,11 @@ class ParquetAnchors(PositionalAnchors):
         if not selected:
             return []
         indices = pa.array(selected, type=pa.int64())
-        columns = {
-            name: _arrow_values(values.take(indices)) for name, values in self._columns.items()
-        }
+        selected_columns = {name: values.take(indices) for name, values in self._columns.items()}
         table = self._table
+        columns = {
+            name: _arrow_values(selected_columns[name]) for name in set(table._scalar_columns)
+        }
         targets = sorted(table.targets.items())
         return [
             SampleRequest(
@@ -215,6 +341,7 @@ class ParquetAnchors(PositionalAnchors):
                 targets=tuple(
                     TargetValue(name, columns[column][index]) for name, column in targets
                 ),
+                candidates=_candidate_row(table, selected_columns, index, row),
                 split=columns[table.split][index] if table.split else None,
                 metadata={name: columns[name][index] for name in table.metadata},
             )
@@ -251,6 +378,7 @@ class ParquetAnchors(PositionalAnchors):
                 TargetValue(name, self._value(column, row))
                 for name, column in sorted(table.targets.items())
             ),
+            candidates=_candidate_row(table, self._columns, row, row),
             split=self._value(table.split, row) if table.split else None,
             metadata={name: self._value(name, row) for name in table.metadata},
         )

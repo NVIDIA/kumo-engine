@@ -5,7 +5,7 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_core::time::TimeUnit;
-use diskgraph_rowpack::RowPackConfig;
+use diskgraph_rowpack::{RowPackConfig, MAX_ARRAY_LEN};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -289,6 +289,8 @@ pub enum SemanticType {
     /// the universal stats (COUNT, NUM_NA, NA_FRACTION) under the
     /// `kumo.image` stype key so the strict-path cache check passes.
     ImageUrl,
+    /// Fixed-width numeric tensor feature. Ingest rejects malformed non-null rows.
+    Tensor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,15 +753,10 @@ pub(crate) fn parse_cloud_object_authority(path: &str) -> Result<CloudSource> {
     } else {
         1
     };
-    let key = rest
-        .split('/')
-        .nth(index)
-        .unwrap_or("")
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("");
+    let key = rest.split('/').nth(index).unwrap_or("");
     ensure!(
-        !key.is_empty(),
+        !key.is_empty()
+            && (matches!(authority, CloudSource::S3 { .. }) || !key.starts_with(['?', '#'])),
         "object-store manifest path {path} has no object key"
     );
     Ok(authority)
@@ -982,6 +979,23 @@ impl GraphConfig {
                 {
                     errors.push(format!(
                         "table {} column {} fixed_len only valid for string/bytes/numeric arrays",
+                        table.name, col.name
+                    ));
+                }
+                if col.semantic_type == Some(SemanticType::Tensor)
+                    && (!(1..=MAX_ARRAY_LEN).contains(&col.fixed_len.unwrap_or(0))
+                        || !matches!(
+                            col.ingested_dtype,
+                            IngestedType::Float32Array
+                                | IngestedType::Float64Array
+                                | IngestedType::Int8Array
+                                | IngestedType::Int16Array
+                                | IngestedType::Int32Array
+                                | IngestedType::Int64Array
+                        ))
+                {
+                    errors.push(format!(
+                        "table {} column {} tensor requires a numeric array with fixed_len between 1 and {MAX_ARRAY_LEN}",
                         table.name, col.name
                     ));
                 }
@@ -2198,6 +2212,23 @@ mod tests {
         col.semantic_type = Some(SemanticType::Latlong);
         col.fixed_len = fixed_len;
         col
+    }
+
+    #[test]
+    fn tensor_width_must_fit_the_rowpack_reader() {
+        let mut tensor = make_column("embedding", IngestedType::Float32Array);
+        tensor.semantic_type = Some(SemanticType::Tensor);
+        let mut cfg = manifest_config();
+        cfg.tables[0].columns.push(tensor);
+        for (width, valid) in [
+            (0, false),
+            (1, true),
+            (MAX_ARRAY_LEN, true),
+            (MAX_ARRAY_LEN + 1, false),
+        ] {
+            cfg.tables[0].columns.last_mut().unwrap().fixed_len = Some(width);
+            assert_eq!(cfg.validate().is_ok(), valid, "width {width}");
+        }
     }
 
     #[test]

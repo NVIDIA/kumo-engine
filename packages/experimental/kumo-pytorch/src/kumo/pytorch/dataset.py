@@ -57,11 +57,11 @@ class _MissingParquetColumns(ValueError):
 class Parquet:
     """One logical table stored as Parquet.
 
-    ``path`` may name a file, a directory, or a glob. ``columns`` renames
-    physical columns to the logical names the schema uses, for the common case
+    ``path`` may name a local file, directory or glob, or an S3 object or prefix.
+    ``columns`` renames physical columns to the logical names the schema uses, for the common case
     where a warehouse column is not called what the model calls it.
 
-    :param path: a file, a directory, or a glob.
+    :param path: a local file, directory or glob, or an S3 URI.
     :param columns: physical column name to the logical name the schema uses.
     """
 
@@ -77,6 +77,16 @@ class Parquet:
             raise ValueError(f"Parquet column renames collide: {sorted(renames.values())}")
         object.__setattr__(self, "columns", renames)
 
+    def _schemas(self, objects=None):
+        """Read one Parquet footer per resolved part, including pinned S3 objects."""
+        from kumo.pytorch.parquet_sources import open_parquet_file, parquet_objects
+
+        schemas = {}
+        for item in parquet_objects(self.path) if objects is None else objects:
+            with open_parquet_file(item) as reader:
+                schemas[item["path"]] = reader.schema_arrow
+        return schemas
+
     def _bind_columns(
         self,
         selected: Sequence[str] | None = None,
@@ -88,12 +98,11 @@ class Parquet:
         With no selection, discover all logical columns. Renames apply simultaneously;
         ambiguity is refused only for selected columns. Physical field names must be unique.
         """
-        import pyarrow.parquet as pq
-
+        if file_columns is None:
+            file_columns = {path: schema.names for path, schema in self._schemas().items()}
         binding = None
-        for path in _local_parquet_files(self.path) if file_columns is None else file_columns:
+        for path, names in file_columns.items():
             try:
-                names = pq.read_schema(path).names if file_columns is None else file_columns[path]
                 duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
                 if duplicates:
                     raise ValueError(f"duplicate physical column names {duplicates}")
@@ -200,8 +209,6 @@ class Dataset:
 
     def resolve_schema(self, schema: DataSchema) -> DataSchema:
         """Fill omitted types from Parquet metadata, without reading rows."""
-        import pyarrow.parquet as pq
-
         tables = []
         errors = []
         for table in schema.tables:
@@ -217,16 +224,21 @@ class Dataset:
                 tables.append(table)
                 continue
             try:
+                schemas = source._schemas()
                 binding = source._bind_columns(
-                    None if table.columns is None else tuple(table.columns)
+                    None if table.columns is None else tuple(table.columns),
+                    file_columns={path: schema.names for path, schema in schemas.items()},
                 )
                 columns = dict.fromkeys(binding) if table.columns is None else dict(table.columns)
                 declared_columns = table.columns or {}
-                for path in _local_parquet_files(source.path):
+                for path, metadata in schemas.items():
                     try:
-                        metadata = pq.read_schema(path)
                         for name, expected in columns.items():
-                            actual = DType.from_arrow(metadata.field(binding[name]).type)
+                            declared = declared_columns.get(name)
+                            actual = DType.from_arrow(
+                                metadata.field(binding[name]).type,
+                                shape=declared.shape if declared else (),
+                            )
                             if expected is None:
                                 columns[name] = actual
                             elif actual != expected and (
@@ -260,9 +272,13 @@ class Dataset:
 
 def _can_coerce_to_int64(physical: DType, declared: DType) -> bool:
     """DiskGraph widens signed integers and checks scale-zero decimals during ingest."""
-    return declared.name == "int64" and (
-        physical.name in {"int8", "int16", "int32"}
-        or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
+    return (
+        not (physical.shape or declared.shape)
+        and declared.name == "int64"
+        and (
+            physical.name in {"int8", "int16", "int32"}
+            or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
+        )
     )
 
 

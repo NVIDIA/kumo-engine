@@ -350,6 +350,7 @@ fn build_fixture_to(
 
 fn depth2_plan() -> SamplingPlan {
     let layer = || LayerSpec {
+        walks: Vec::new(),
         fanouts: HashMap::new(),
         default_fanout: Some(FanoutSpec {
             fanout: 4,
@@ -657,6 +658,7 @@ fn test_resolution_rhs_not_rooted() {
     // it would appear in node_ids[users]; it must NOT.
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout: 0,

@@ -595,7 +595,7 @@ class TestPaddingIdentity:
                 assert after == replace(
                     before,
                     sample_id=after.sample_id,
-                    metadata={**before.metadata, "_is_padding": True},
+                    metadata={**before.metadata, "_is_padding": before.sample_id},
                 )
             else:
                 assert after is before

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from kumo.pytorch.anchors import AnchorTable
+from kumo.pytorch.contract.sample import WalkSample
 from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.dataset import Dataset, InMemoryRows, TableSource
 from kumo.pytorch.engine import AnchorTask, SampleSource, register_engine
@@ -36,17 +37,59 @@ class InMemoryEngine:
 
     @staticmethod
     def check_contract(contract):
-        """Refuse declared subsecond clocks, which this reference cannot retain."""
-        return tuple(
-            ValidationIssue(
-                f"schema.tables.{table.name}.columns.{name}",
-                "the in-memory reference currently uses whole-second clocks",
-                "use DiskGraphEngine for declared millisecond, microsecond or nanosecond precision",
-            )
-            for table in contract.schema.tables
-            for name, dtype in table.columns.items()
-            if dtype.name == "timestamp" and dtype.unit != "s"
-        )
+        """Check the capabilities of the Python row sampler before opening the dataset."""
+        issues = []
+        for table in contract.schema.tables:
+            for name, dtype in table.columns.items():
+                path = f"schema.tables.{table.name}.columns.{name}"
+                if dtype.shape:
+                    issues.append(
+                        ValidationIssue(path, "array feature columns require DiskGraphEngine")
+                    )
+                elif dtype.name == "timestamp" and dtype.unit != "s":
+                    issues.append(
+                        ValidationIssue(
+                            path,
+                            "the in-memory reference currently uses whole-second clocks",
+                            "use DiskGraphEngine for declared millisecond, microsecond "
+                            "or nanosecond precision",
+                        )
+                    )
+        for name, neighborhood in contract.sample.neighborhoods.items():
+            if neighborhood.node_values:
+                issues.append(
+                    ValidationIssue(
+                        f"sample.neighborhoods.{name}.node_values",
+                        "computed graph node values require DiskGraphEngine",
+                    )
+                )
+            if any(
+                isinstance(hop, WalkSample)
+                for layer in neighborhood.layers
+                for hop in layer.samples
+            ):
+                issues.append(
+                    ValidationIssue(
+                        f"sample.neighborhoods.{name}",
+                        "scored random-walk sampling requires DiskGraphEngine",
+                    )
+                )
+        for name, candidates in contract.sample.candidate_sets.items():
+            if candidates.draw is not None:
+                issues.append(
+                    ValidationIssue(
+                        f"sample.candidate_sets.{name}.draw",
+                        "engine-drawn candidates require DiskGraphEngine",
+                    )
+                )
+            if candidates.neighborhoods:
+                issues.append(
+                    ValidationIssue(
+                        f"sample.candidate_sets.{name}.neighborhoods",
+                        "candidate neighborhoods require DiskGraphEngine",
+                    )
+                )
+        return tuple(issues)
 
     @staticmethod
     def check_sources(sources: Mapping[str, TableSource], path: str) -> tuple[ValidationIssue, ...]:

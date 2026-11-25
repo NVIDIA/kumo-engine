@@ -10,6 +10,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from math import prod
 from pathlib import Path
 
 from kumo.pytorch.contract.dtypes import DType
@@ -38,7 +39,9 @@ def _dtype(column: dict, clock: str, table: str) -> DType:
         if name.startswith("decimal"):
             return DType(name, precision=column["precision"], scale=column["scale"])
         if column.get("semantic_type") == "multicategorical":
-            raise ValueError("multicategorical storage requires list support")
+            raise ValueError("multicategorical storage is unsupported")
+        if name.endswith("_array"):
+            return DType(name.removesuffix("_array"), shape=(column.get("fixed_len"),))
         return DType(name)
     except (KeyError, ValueError) as error:
         raise ValueError(
@@ -189,7 +192,13 @@ def open_index(path: str | Path, *, snapshot_id: str | None = None) -> IndexBind
             for column, dtype in recorded.items():
                 native = columns[column]
                 # The graph clock does not preserve individual timestamp field units.
-                if dtype != native and not (dtype.name == native.name == "timestamp"):
+                # DiskGraph stores one flat array width. Its integer arrays use
+                # signed physical elements, including for unsigned logical columns.
+                if dtype.shape:
+                    stored = DType(dtype.name.removeprefix("u"), shape=(prod(dtype.shape),))
+                else:
+                    stored = dtype
+                if stored != native and not (dtype.name == native.name == "timestamp"):
                     raise ValueError(
                         f"manifest column_types differs from native type for {name}.{column}"
                     )

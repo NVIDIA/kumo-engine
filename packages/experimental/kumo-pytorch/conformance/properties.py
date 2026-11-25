@@ -298,7 +298,7 @@ REFUSAL_CONSTRUCTS: Mapping[str, tuple[str, tuple[str, ...]]] = {
     "dated_values": ("sample", ("dated_entity_values",)),
     "derived": ("sample.entity_values.total_per_row", ("total_per_row",)),
     "non_direct_field": ("sample", ("'owner'",)),
-    "object_store": ("dataset.users.path", ("local parquet",)),
+    "object_store": ("dataset.users.path", ("s3://",)),
     "row_filter": ("sample.entity_values.filtered.source.filters", ("filter",)),
     "timed_intermediate": ("sample.entity_values.count.source.path[0]", ("intermediate",)),
     "window_on_value_column": ("sample.entity_values.broken.source.time.column", ("amount",)),

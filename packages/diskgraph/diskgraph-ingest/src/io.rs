@@ -87,13 +87,15 @@ pub enum Dest {
 }
 
 pub fn parse_s3_url(raw: &str) -> Result<(String, String)> {
-    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid s3 url {raw}: {e}"))?;
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| anyhow!("missing bucket in s3 url"))?
-        .to_string();
-    let key = url.path().trim_start_matches('/').to_string();
-    Ok((bucket, key))
+    let rest = raw.strip_prefix("s3://").context("expected an s3:// URI")?;
+    let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+    ensure!(
+        !bucket.is_empty() && !bucket.contains(['@', ':', '?', '#']),
+        "invalid bucket in s3 URI"
+    );
+    // S3 listings return literal keys. URL parsing would escape spaces and
+    // discard everything after a literal '?' or '#' in a key.
+    Ok((bucket.to_owned(), key.to_owned()))
 }
 
 pub fn parse_gs_url(raw: &str) -> Result<(String, String)> {
@@ -407,7 +409,11 @@ fn build_store_for_cloud_path_with_authority(
 pub fn object_path_from_cloud_url(path: &str) -> Result<ObjectPath> {
     if path.starts_with("s3://") {
         let (_bucket, key) = parse_s3_url(path)?;
-        Ok(ObjectPath::from(key))
+        ensure!(
+            !key.starts_with('/'),
+            "invalid leading slash in S3 object path"
+        );
+        Ok(ObjectPath::parse(key)?)
     } else if path.starts_with("gs://") {
         let (_bucket, key) = parse_gs_url(path)?;
         Ok(ObjectPath::from(key))
@@ -1242,6 +1248,15 @@ fn to_io_err(err: object_store::Error) -> io::Error {
 mod tests {
     use super::*;
     use diskgraph_fs::CloudTransfer;
+
+    #[test]
+    fn s3_source_keys_preserve_literal_characters() {
+        for key in ["day=2026/part.parquet", "#? /é/%23%20.parquet"] {
+            let path = format!("s3://bucket/{key}");
+            crate::graph_config::parse_cloud_object_authority(&path).unwrap();
+            assert_eq!(object_path_from_cloud_url(&path).unwrap().as_ref(), key);
+        }
+    }
 
     #[test]
     fn source_authority_overrides_worker_routing_defaults() {

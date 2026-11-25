@@ -19,6 +19,12 @@ pub struct SamplingStats {
     pub total_nodes: u64,
     /// Total edges sampled.
     pub total_edges: u64,
+    /// Number of forward-push updates across all walk origins.
+    #[serde(default)]
+    pub walk_pushes: u64,
+    /// Physical packed adjacency entries unpacked by walk kernels.
+    #[serde(default)]
+    pub walk_decoded_entries: u64,
 }
 
 impl SamplingStats {
@@ -28,6 +34,8 @@ impl SamplingStats {
             edges_per_type: Vec::new(),
             total_nodes: 0,
             total_edges: 0,
+            walk_pushes: 0,
+            walk_decoded_entries: 0,
         }
     }
 
@@ -40,6 +48,8 @@ impl SamplingStats {
         }
         self.total_nodes = 0;
         self.total_edges = 0;
+        self.walk_pushes = 0;
+        self.walk_decoded_entries = 0;
     }
 
     pub fn resize(&mut self, num_types: usize, num_rels: usize, num_hops: usize) {
@@ -131,6 +141,8 @@ pub struct TypeState {
     pub builder_rows: usize,
     /// Approximate size of accumulated data in bytes.
     pub builder_bytes: usize,
+    /// Prefix of nodes whose fused features were emitted, including revisited frontiers.
+    pub fused_nodes_read: u32,
 }
 
 impl Default for TypeState {
@@ -148,12 +160,14 @@ impl TypeState {
             builders: None,
             builder_rows: 0,
             builder_bytes: 0,
+            fused_nodes_read: 0,
         }
     }
 
     /// Resets the state, releasing memory if capacity exceeds the threshold.
     /// Threshold is number of items.
     pub fn adaptive_reset(&mut self, threshold: usize) {
+        self.fused_nodes_read = 0;
         self.nodes.clear();
         if self.nodes.capacity() > threshold {
             self.nodes.shrink_to(threshold);
@@ -258,6 +272,8 @@ pub struct SamplingState {
     pub seed_maps: Vec<GxHashMap<u64, u32>>,
     pub commit_scratch: CommitScratch,
     pub raw_edges: Vec<Vec<RawEdge>>,
+    /// Inclusive destinations for the next layer of a plan with walk operations.
+    pub walk_frontier: Option<Vec<(usize, u32)>>,
 }
 
 /// A discovered edge before it is formally committed to the SamplingState.
@@ -319,6 +335,7 @@ impl SamplingState {
             seed_maps: Vec::new(),
             commit_scratch: CommitScratch::default(),
             raw_edges: Vec::new(),
+            walk_frontier: None,
         }
     }
 
@@ -331,6 +348,7 @@ impl SamplingState {
         self.key_scratch.clear();
         self.reservoir_scratch.clear();
         self.stats.reset();
+        self.walk_frontier = None;
         self.seed_slot_base.clear();
         self.seed_slots = 0;
         let per_buffer = RESET_THRESHOLD / self.raw_edges.len().max(1);

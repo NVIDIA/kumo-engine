@@ -42,6 +42,7 @@ from kumo.pytorch.contract.sample import (
     SampleRequest,
     SampleSpec,
     TargetValue,
+    WalkSample,
     _central_moment,
     _normalize_supplied_targets,
     _value_evaluation_order,
@@ -248,6 +249,8 @@ class InMemorySampleBuilder:
         for neighborhood in recipe.neighborhoods.values():
             for layer in neighborhood.layers:
                 for sample in layer.samples:
+                    if isinstance(sample, WalkSample):
+                        raise ValueError("scored random-walk sampling requires DiskGraphEngine")
                     if sample.relation not in self._relations:
                         raise ValueError(f"unknown graph relation {sample.relation!r}")
         for target in recipe.targets.values():

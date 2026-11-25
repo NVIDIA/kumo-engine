@@ -133,6 +133,12 @@ class TableSpec:
             for name, dtype in columns.items()
         ):
             raise ValueError(f"table {self.name!r} columns require names and DType declarations")
+        if (
+            self.primary_key is not None
+            and (key_dtype := columns[self.primary_key])
+            and key_dtype.shape
+        ):
+            raise ValueError(f"table {self.name!r} primary key must be a scalar column")
         if isinstance(self.time_column, str) and self.time_column not in columns:
             suggestion = _column_name_suggestion((self.time_column,), columns)
             raise ValueError(
@@ -228,6 +234,14 @@ class DataSchema:
                     errors.append(
                         f"relation {relation.name!r} key {table_name}.{key} is not declared"
                         + (f"; {suggestion}" if suggestion else "")
+                    )
+                elif (
+                    by_name[table_name].columns is not None
+                    and (dtype := by_name[table_name].columns[key]) is not None
+                    and dtype.shape
+                ):
+                    errors.append(
+                        f"relation {relation.name!r} key {table_name}.{key} must be scalar"
                     )
         if errors:
             raise ValueError("\n".join(errors))

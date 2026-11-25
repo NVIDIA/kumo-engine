@@ -52,6 +52,8 @@ class ColumnarEdges:
     Sampled edges also carry the declared logical ``relation`` and traversal
     ``direction``. Those optional fields remain unset for relations output,
     whose logical identity is already the mapping key and orientation is normalized.
+    Named walk edges carry aligned float32 scores and zero-based int64 ranks within
+    each start node and destination table.
     """
 
     source_type: str
@@ -59,6 +61,8 @@ class ColumnarEdges:
     index: pa.Table
     relation: str | None = None
     direction: Literal["forward", "reverse"] | None = None
+    score: pa.Array | None = None
+    rank: pa.Array | None = None
 
 
 @dataclass(frozen=True)
@@ -73,9 +77,12 @@ class ColumnarGraph:
     ``(edge.source_type, key, edge.destination_type)`` without changing arrays.
     Counts use the same string keys as edges and align with
     the native node and edge ordering, not a newly computed shortest-path order.
-    The first ``Batch.batch_size`` rows of ``nodes[root_type]`` are the roots,
-    in batch order, including repeated entities at distinct prediction times.
-    Isolated roots and empty declared node/edge types are retained.
+    The roots appear first in ``nodes[root_type]``, including isolated roots
+    and repeated entities at distinct prediction times. An anchor graph has
+    one root per sample in batch order. A candidate graph has one root per
+    supplied candidate, in order within each sample. Its node owners index
+    candidate occurrences and ``candidate_offsets[i:i+2]`` delimits the
+    candidates of sample i, including empty sets.
 
     Buffers remain valid after advancing or closing the iterator/task. Treat
     them as read-only. Compatible native Arrow buffers are shared; declared
@@ -89,3 +96,4 @@ class ColumnarGraph:
     edges: Mapping[str, ColumnarEdges]
     num_sampled_nodes: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
     num_sampled_edges: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
+    candidate_offsets: pa.Array | None = None

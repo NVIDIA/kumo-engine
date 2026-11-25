@@ -50,6 +50,7 @@ class MaterializedValues:
     dataset: str
     rows: int
     feature_stats: dict = field(default_factory=dict)
+    source_fingerprint: str | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> MaterializedValues:
@@ -81,6 +82,7 @@ class MaterializedValues:
             payload["dataset"],
             sum(file.metadata.num_rows for file in files),
             feature_stats,
+            payload.get("source_fingerprint"),
         )
 
     def column_statistics(self, feature: str) -> dict:
@@ -190,12 +192,21 @@ def materialize_values(
     if reserved.intersection(anchors.metadata):
         raise ValueError("anchor metadata uses a materialization-reserved column")
 
+    objects = None
     if isinstance(anchors.source, Parquet):
-        from kumo.pytorch.dataset import _local_parquet_files
         from kumo.pytorch.engines.parquet_anchors import _entity_id_type
+        from kumo.pytorch.parquet_sources import open_parquet_file, parquet_objects
 
-        original = pq.read_schema(_local_parquet_files(anchors.source.path)[0])
-        binding = anchors.source._bind_columns(tuple(anchors.columns))
+        objects = parquet_objects(anchors.source.path)
+        schemas = {}
+        for item in objects:
+            with open_parquet_file(item) as reader:
+                schemas[item["path"]] = reader.schema_arrow
+        binding = anchors.source._bind_columns(
+            tuple(anchors.columns),
+            file_columns={path: schema.names for path, schema in schemas.items()},
+        )
+        original = schemas[objects[0]["path"]]
         types = {name: original.field(physical).type for name, physical in binding.items()}
         # Use the type the anchor readers give the ids, not just the first file's type.
         entity = next(t for t in plan.contract.schema.tables if t.name == sample.entity.table)
@@ -241,6 +252,8 @@ def materialize_values(
         contract=plan.contract.fingerprint,
         dataset=plan._dataset_fingerprint,
     )
+    if objects and anchors.source.path.startswith("s3://"):
+        payload["source_fingerprint"] = _fingerprint(objects)
     selection = split_selection(stats_split)
     stats_specs, stats_kinds = [], []
     if selection is not None:
@@ -324,7 +337,7 @@ def materialize_values(
 
                 offset = 0
                 for columns, computed_features, computed_targets, cutoffs in native_batches(
-                    scalar, anchors, batch_size
+                    scalar, anchors, batch_size, objects=objects
                 ):
                     n = len(cutoffs)
                     values = {
@@ -459,10 +472,11 @@ def _anchor_chunks(plan, anchors, batch_size):
     import numpy as np
     import pyarrow.dataset as pads
 
-    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, _files, _physical
+    from kumo.pytorch.dataset import _local_parquet_files
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, _physical
 
     physical = _physical(anchors)
-    scanner = pads.dataset(_files(anchors.source.path), format="parquet").scanner(
+    scanner = pads.dataset(_local_parquet_files(anchors.source.path), format="parquet").scanner(
         columns=sorted(set(physical.values())),
         batch_size=batch_size,
         batch_readahead=0,

@@ -2,14 +2,15 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Serializable scalar types and checked values."""
+"""Serializable scalar and fixed-shape numeric types."""
 
 from __future__ import annotations
 
 import datetime as dt
 import struct
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, localcontext
+from math import prod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -73,15 +74,18 @@ def _strip_utc_timezone(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class DType:
-    """The stored scalar type, independent of its eventual model encoding.
+    """The stored type, independent of its eventual model encoding.
 
     Supported names: ``bool``; ``int8``, ``int16``, ``int32``, ``int64``;
     ``uint8``, ``uint16``, ``uint32``, ``uint64``; ``float32``, ``float64``;
     ``string``, ``bytes``; ``date32``; ``timestamp`` (``unit="s"|"ms"|"us"|"ns"``,
     ``timezone="UTC"``); ``decimal128`` (precision up to 38) and ``decimal256``
-    (precision up to 76), which require ``precision`` and ``scale``. No
-    parameters are accepted for other families. Arrays, lists and structs are
-    not scalar column types. NULL is allowed for every type; it is not a dtype.
+    (precision up to 76), which require ``precision`` and ``scale``.
+
+    :param shape: Positive dimensions of an integer or floating-point array.
+        The default empty tuple describes a scalar. Each non-null array is a
+        flat row-major list of exactly the product of the dimensions, with
+        a value at every position. A null row represents a missing array.
 
     The type describes stored values, not an encoding: values are validated,
     never converted. Numeric strings are not parsed, numbers are not
@@ -111,10 +115,23 @@ class DType:
     timezone: str | None = None
     precision: int | None = None
     scale: int | None = None
+    shape: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.name not in _SCALARS:
             raise ValueError(f"unsupported scalar dtype {self.name!r}")
+        if not isinstance(self.shape, (list, tuple)) or any(
+            type(dim) is not int or dim <= 0 for dim in self.shape
+        ):
+            raise ValueError("array shape must contain positive integer dimensions")
+        if (
+            self.shape
+            and self.name not in _INTEGER_WIDTHS
+            and self.name not in {"float32", "float64"}
+        ):
+            raise ValueError("array elements must have an integer or floating-point dtype")
+        if isinstance(self.shape, list):
+            object.__setattr__(self, "shape", tuple(self.shape))
         if self.name == "timestamp":
             if self.unit not in {"s", "ms", "us", "ns"} or self.timezone != "UTC":
                 raise ValueError("timestamp dtype requires unit in s/ms/us/ns and timezone='UTC'")
@@ -137,26 +154,51 @@ class DType:
     @property
     def integer(self) -> bool:
         """Whether this is a signed or unsigned integer type."""
-        return self.name in _INTEGER_WIDTHS
+        return not self.shape and self.name in _INTEGER_WIDTHS
 
     @property
     def numeric(self) -> bool:
         """Whether ``ZScore`` and ``Buckets`` accept it: integers, floats and decimals."""
-        return self.integer or self.name in {"float32", "float64", "decimal128", "decimal256"}
+        return not self.shape and (
+            self.integer or self.name in {"float32", "float64", "decimal128", "decimal256"}
+        )
 
     @property
     def temporal(self) -> bool:
         """Whether it can be compared with an anchor time: ``timestamp`` or ``date32``."""
         return self.name in {"timestamp", "date32"}
 
+    @property
+    def element_dtype(self) -> DType:
+        """The scalar type of one array element."""
+        return replace(self, shape=()) if self.shape else self
+
+    def to_dict(self) -> dict[str, Any]:
+        """Storage metadata for this dtype, preserving existing scalar declarations."""
+        values = asdict(self)
+        if self.shape:
+            values["shape"] = list(self.shape)
+        else:
+            del values["shape"]
+        return values
+
     def _invalid_value(self, value: Any, path: str) -> ValueError:
         return ValueError(f"{path}: {value!r} is not a valid {self} value")
 
     def normalize(self, value: Any, *, path: str = "value") -> Any:
-        """Validate a scalar; only the declared storage normalization is applied."""
+        """Validate one nullable stored value and apply its storage normalization."""
 
         if value is None:
             return None
+        if self.shape:
+            if not isinstance(value, (tuple, list)) or len(value) != prod(self.shape):
+                raise ValueError(
+                    f"{path}: expected {prod(self.shape)} elements for array shape {self.shape}"
+                )
+            if any(item is None for item in value):
+                raise ValueError(f"{path}: array elements cannot be null")
+            element = self.element_dtype
+            return tuple(element.normalize(item, path=path) for item in value)
         if self.integer:
             width, signed = _INTEGER_WIDTHS[self.name]
             minimum = -(1 << (width - 1)) if signed else 0
@@ -249,6 +291,8 @@ class DType:
 
         import pyarrow as pa
 
+        if self.shape:
+            return pa.list_(self.element_dtype.to_arrow(), prod(self.shape))
         if self.name == "timestamp":
             return pa.timestamp(self.unit, tz=self.timezone)
         if self.name.startswith("decimal"):
@@ -258,11 +302,31 @@ class DType:
         )()
 
     @classmethod
-    def from_arrow(cls, value: Any) -> DType:
-        """Resolve supported physical scalar metadata to its stored type."""
+    def from_arrow(cls, value: Any, *, shape: tuple[int, ...] = ()) -> DType:
+        """Resolve Arrow metadata, using an explicit shape for variable-size lists."""
 
         import pyarrow as pa
 
+        if (
+            pa.types.is_list(value)
+            or pa.types.is_large_list(value)
+            or pa.types.is_fixed_size_list(value)
+        ):
+            if not (
+                pa.types.is_integer(value.value_type) or pa.types.is_floating(value.value_type)
+            ):
+                raise ValueError(f"unsupported array element type {value.value_type}")
+            if pa.types.is_fixed_size_list(value):
+                if shape and prod(shape) != value.list_size:
+                    raise ValueError(
+                        f"array shape {shape} does not match physical list width {value.list_size}"
+                    )
+                shape = shape or (value.list_size,)
+            elif not shape:
+                raise ValueError(f"variable-size {value} requires an explicit array shape")
+            return replace(cls.from_arrow(value.value_type), shape=shape)
+        if shape:
+            raise ValueError(f"array shape {shape} requires a physical numeric list, got {value}")
         if pa.types.is_timestamp(value):
             return cls("timestamp", unit="s", timezone="UTC")
         if pa.types.is_decimal(value):
@@ -283,6 +347,28 @@ class DType:
         if pa.types.is_float64(value):
             return cls("float64")
         raise ValueError(f"unsupported physical scalar dtype {value}")
+
+    def validate_array(self, values: pa.Array | pa.ChunkedArray, *, path: str = "value") -> None:
+        """Check the storage type, row widths and child validity of a numeric array column."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        physical = self.from_arrow(values.type, shape=self.shape)
+        if not self.shape or physical != self:
+            raise ValueError(f"{path}: declared {self}, physical array type {values.type}")
+        chunks = values.chunks if isinstance(values, pa.ChunkedArray) else (values,)
+        width = prod(self.shape)
+        for chunk in chunks:
+            if not pa.types.is_fixed_size_list(chunk.type):
+                matches = pc.equal(pc.list_value_length(chunk), width)
+                if pc.all(matches).as_py() is False:
+                    raise ValueError(
+                        f"{path}: expected {width} elements per row for array shape {self.shape}"
+                    )
+            # A sliced list can reference a larger child array. Flattening
+            # restricts validation to the visible elements in non-null rows.
+            if chunk.values.null_count and pc.list_flatten(chunk).null_count:
+                raise ValueError(f"{path}: array elements cannot be null")
 
 
 def arrow_float64(values: pa.Array | pa.ChunkedArray) -> pa.Array | pa.ChunkedArray:

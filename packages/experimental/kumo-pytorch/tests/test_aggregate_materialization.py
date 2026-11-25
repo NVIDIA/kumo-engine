@@ -24,6 +24,33 @@ from tests.test_anchor_tables import ANCHORS, DATASET, _contract, _table
 from tests.test_column_renames import _parquet
 
 
+def test_in_memory_refuses_s3_dataset_and_anchors_before_remote_io(monkeypatch):
+    from kumo.pytorch import api, parquet_sources
+
+    monkeypatch.setattr(parquet_sources, "_client", lambda: pytest.fail("unexpected S3 read"))
+    engine = InMemoryEngine()
+    contract = _contract()
+    inferred = replace(
+        contract,
+        schema=replace(
+            contract.schema,
+            tables=tuple(replace(table, columns=None) for table in contract.schema.tables),
+        ),
+    )
+    dataset = api.Dataset({**DATASET.tables, "users": Parquet("s3://graph-fixture/users/")})
+    issues = api.check(inferred, dataset, engine)
+    assert any(issue.path == "dataset" and "in_memory" in issue.message for issue in issues)
+    with pytest.raises(api.ValidationError, match="engine 'in_memory' does not read"):
+        api.prepare(inferred, dataset, engine)
+
+    anchors = replace(_table(), source=Parquet("s3://anchor-fixture/anchors.parquet"))
+    issues = api.check(contract, DATASET, engine, anchors=anchors)
+    assert any(issue.path == "anchors.source" and "in_memory" in issue.message for issue in issues)
+    with api.prepare(contract, DATASET, engine) as plan:
+        with pytest.raises(api.ValidationError, match="engine 'in_memory' does not read"):
+            plan.materialize(anchors, fit_split="train")
+
+
 def test_materializes_in_chunks_and_reuses_values_without_reading_rows(tmp_path, monkeypatch):
     with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
         source = plan._require_open()

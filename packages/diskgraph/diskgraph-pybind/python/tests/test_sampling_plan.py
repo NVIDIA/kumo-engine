@@ -25,6 +25,7 @@ from diskgraph.sampling_plan import (
     LinearDecay,
     SamplingMode,
     SamplingPlan,
+    WalkSpec,
     WeightedSampling,
     Weighting,
 )
@@ -179,6 +180,8 @@ def test_native_plans_copy_inputs_and_expose_immutable_values() -> None:
         WeightedSampling(CustomExpression("score")),
         FanoutSpec(4, "uniform", "reject_plan"),
         LayerSpec(),
+        WalkSpec("walk", [["relation"]], {"User": 4}, 0.25, 100, {"User": "created"}),
+        SamplingPlan([LayerSpec(walks=[WalkSpec("walk", [["relation"]], {"User": 1}, 0.5, 40, {})])]),
         SamplingPlan(),
         _plan("uniform"),
         _plan(WeightedSampling(ExponentialDecay(0.125), temporal=True)),

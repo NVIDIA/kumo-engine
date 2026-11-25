@@ -18,6 +18,7 @@ fn request(seed_type: &str, seeds: &[u64], anchors: &[i64], hops: usize) -> Batc
     let layers = PLAN6[..hops]
         .iter()
         .map(|&fanout| LayerSpec {
+            walks: Vec::new(),
             fanouts: HashMap::new(),
             default_fanout: Some(FanoutSpec {
                 fanout,

@@ -180,7 +180,7 @@ pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
 use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags};
 use diskgraph_engine::engine::DiskGraphEngine;
-use diskgraph_engine::output::OutputHandler;
+use diskgraph_engine::output::{OutputHandler, WalkEdgeSets};
 use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
@@ -191,6 +191,7 @@ mod cutoff_col_stats;
 mod custom_tt_contract;
 mod custom_tt_entry;
 mod exact_quantiles;
+mod feature_rows;
 mod index_metadata;
 mod runtime_batch_iterator;
 mod sampling_plan;
@@ -271,6 +272,7 @@ impl From<PyTimeUnit> for diskgraph_core::time::TimeUnit {
 /// Events yielded by the sampling iterator.
 #[derive(Debug)]
 enum SampleEvent {
+    WalkEdges { walk: String, source: String, destination: String, batch: RecordBatch },
     EdgeBatch { rel_id: usize, batch: RecordBatch,
     },
     NodeBatch { type_id: usize, batch: RecordBatch,
@@ -286,6 +288,7 @@ enum SampleEvent {
 /// Bridge between Rust Engine and Python Iterator.
 struct PyOutputHandler {
     sender: Sender<SampleEvent>,
+    walk_edges: WalkEdgeSets,
     edge_builders: HashMap<u16, (UInt64Builder, UInt64Builder)>,
     chunk_size: usize,
     relation_src_type: Vec<usize>,
@@ -305,6 +308,7 @@ impl PyOutputHandler {
             .unwrap_or(64 * 1024);
         Self {
             sender,
+            walk_edges: WalkEdgeSets::default(),
             edge_builders: HashMap::new(),
             chunk_size,
             relation_src_type,
@@ -386,6 +390,22 @@ impl OutputHandler for PyOutputHandler {
         Ok(())
     }
 
+    fn handle_walk_edge(
+        &mut self,
+        walk: &str,
+        source_type: &str,
+        destination_type: &str,
+        src_local_id: u32,
+        dst_local_id: u32,
+        score: f32,
+        rank: u32,
+    ) -> diskgraph_engine::errors::Result<()> {
+        self.walk_edges
+            .group(walk, source_type, destination_type)
+            .push(src_local_id, dst_local_id, score, rank);
+        Ok(())
+    }
+
     fn handle_schema(
         &mut self,
         _schema: arrow_schema::SchemaRef,
@@ -449,6 +469,14 @@ impl OutputHandler for PyOutputHandler {
             }
         }
 
+        for ((walk, source, destination), edges) in std::mem::take(&mut self.walk_edges.0) {
+            let _ = self.sender.send(SampleEvent::WalkEdges {
+                walk,
+                source,
+                destination,
+                batch: edges.into_record_batch()?,
+            });
+        }
         let rel_ids: Vec<u16> = self.edge_builders.keys().cloned().collect();
         for rel_id in rel_ids {
             self.flush_edge_builder(rel_id)?;
@@ -1168,6 +1196,29 @@ impl SamplerEngine {
         Ok(PySampleIterator { receiver: rx })
     }
 
+    /// Read one table's projected batches inline when the caller consumes them all.
+    fn _read_feature_batches<'py>(
+        &self,
+        py: Python<'py>,
+        node_type: &str,
+        node_ids: Vec<u64>,
+        feature_names: Vec<String>,
+    ) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let type_id = *self.engine.node_type_to_id.get(node_type).ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!("Unknown node type: {node_type}"))
+        })?;
+        let batches = py
+            .detach(|| {
+                let mut output = diskgraph_engine::output::InMemoryOutput::new();
+                self.engine.fetch_features_for_type(
+                    type_id, &node_ids, &feature_names, &mut output,
+                )?;
+                Ok::<_, diskgraph_engine::errors::EngineError>(output.feature_batches)
+            })
+            .map_err(map_engine_err)?;
+        batches.iter().map(|batch| batch.to_pyarrow(py)).collect()
+    }
+
     #[tracing::instrument(level = "debug", skip(self, py, batch))]
     pub fn fetch_features(
         &self,
@@ -1285,6 +1336,20 @@ impl PySampleIterator {
         let event = py.detach(|| self.receiver.recv());
 
         match event {
+            Ok(SampleEvent::WalkEdges {
+                walk,
+                source,
+                destination,
+                batch,
+            }) => {
+                let dict = PyDict::new(py);
+                dict.set_item("type", "walk_edges")?;
+                dict.set_item("walk", walk)?;
+                dict.set_item("source_type", source)?;
+                dict.set_item("destination_type", destination)?;
+                dict.set_item("batch", batch.to_pyarrow(py)?)?;
+                Ok(Some(dict.into()))
+            }
             Ok(SampleEvent::EdgeBatch { rel_id, batch }) => {
                 let dict = PyDict::new(py);
                 dict.set_item("type", "edge")?;
@@ -1992,6 +2057,7 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<string_lookup::StringLookup>()?;
+    m.add_function(wrap_pyfunction!(feature_rows::_gather_byte_rows, m)?)?;
     let _ = pyo3_log::try_init();
     let _ = tracing_log::LogTracer::init();
     // Cap otherwise-global rayon users (col stats, TT-gen, pass-B) to

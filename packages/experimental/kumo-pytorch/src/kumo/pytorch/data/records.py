@@ -14,19 +14,20 @@ from typing import Any, TypeAlias
 from kumo.pytorch.contract.dtypes import DType, _cutoff_seconds, _timestamp_seconds
 
 Scalar: TypeAlias = str | int | float | bool | bytes | Decimal | dt.date | dt.datetime
+StoredValue: TypeAlias = Scalar | list[int | float] | tuple[int | float, ...] | None
 
 
 @dataclass(frozen=True)
 class FieldValue:
     key: str
-    value: Scalar | None
+    value: StoredValue
     dtype: DType
 
 
 @dataclass(frozen=True)
 class DatedValue:
     key: str
-    value: Scalar | None
+    value: StoredValue
     dtype: DType
     timestamp: int
     fields: tuple[FieldValue, ...] = ()
@@ -62,7 +63,10 @@ class EntityHistory:
     entity_type: str = "user"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # DType.shape was absent from scalar history payloads before arrays.
+        return asdict(
+            self, dict_factory=lambda items: {k: v for k, v in items if k != "shape" or v}
+        )
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> EntityHistory:

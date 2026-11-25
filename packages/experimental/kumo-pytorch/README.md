@@ -269,3 +269,62 @@ python -m pytest -q
 ```
 
 Tests that need DiskGraph skip if it can't be imported, and tests that need a GPU skip without one. Pass `--require-imports` to make a skip caused by a missing dependency fail instead. `python -m conformance --engine all` checks the [behavior guarantees](conformance/README.md) on both engines, `python -m pytest -m notebook` runs the example notebooks, and [e2e/README.md](e2e/README.md) explains the opt-in end-to-end runs.
+
+The S3 integration tests start a loopback S3-compatible endpoint. Install
+`moto[server]` in the test environment and run `python -m pytest -q -k s3`
+from this package directory. The tests use fixture credentials and a temporary
+bucket. Run `python -m tests.e2e.s3_parquet_throughput` for paired local and
+S3 timings covering index construction, reuse, anchor staging and batch iteration.
+
+Run `python -m pytest -q tests/test_omnisage_end_to_end.py` for the combined
+DiskGraph workload. Set `OMNISAGE_MODEL_FILE` to a local Pinterest
+`atg-research/omnisage/model.py` to include an optimizer step for both loaders.
+
+To compare the public loader with the specialized native DiskGraph loader, run
+`python -m tests.e2e.omnisage_throughput --model-file /path/to/omnisage/model.py`.
+Both consume the same index and projected feature columns. The custom loader caches
+the static vectors and anchor columns in RAM and recomputes temporal samples per
+batch. The command reports setup, loader-only and training timings, cache size
+and per-process peak memory. Use `--storage local` for local Parquet.
+
+For the OmniSage joint training benchmark, run
+`python -m tests.e2e.omnisage_paper_throughput --storage s3 --output paper.json`.
+Every optimizer update includes entity–entity, entity–feature and user–Pin losses.
+The fixture supplies synthetic 1,024-dimensional visual and 128-dimensional text
+vectors and keeps node degrees below the pruning threshold of 10. Both providers
+receive the same sampled labels and fetch their own graphs at the same cutoffs.
+A Pin appearing in both walk neighborhoods contributes once per root, with its
+highest observed score. Each provider starts with identical model parameters and
+independent optimizer and frequency-sketch state.
+
+The JSON records graph gathering, forward, backward and AdamW times, individual
+losses and update counts. Cold epoch time includes index construction, candidate
+selection, loader staging, model initialization and warmup. Trials alternate
+provider order. Defaults use the published transformer and feature-head widths,
+CPU FP16 autocast and one thread. This single-device fixture uses four uniform
+negatives per type, equal family weights, logit scale 10 and output width 256.
+Use `--profile small --precision fp32` for a quick check or `--storage local` for
+local Parquet. The training objectives and production setting are described in
+[the OmniSage paper](https://arxiv.org/html/2504.17811v3).
+
+For a real interaction log, supply an NPZ with aligned integer arrays named
+`actor`, `item` and `time` (Unix seconds). From this package directory run
+
+```bash
+python -m tests.e2e.omnisage_paper_throughput --events movielens.npz \
+    --dataset-id movielens --loader-only --max-events 100000 --batch-size 4 \
+    --history-length 4 --random-negatives 8 --warmup-steps 2 --steps 8 \
+    --repeats 4 --threads 1 --output movielens-loaders.json
+```
+
+Both loaders hydrate the same root IDs at the same times on each pass. The JSON
+records per-batch counts and timings, pooled latency percentiles, graph tensor
+digests for the first paired pass and median throughput across passes. The event
+fixture freezes the graph before all requested history and label times, then
+applies the paper's degree pruning with exponent 0.86 and degree bounds 10 and
+10,000. The item visual and text vectors are synthetic. Warm gather time
+measures the call that returns a fully hydrated batch. Work counts and tensor
+digests are computed after that timer stops. Cold full-pass time includes
+building the shared index, selecting candidates, opening the provider and
+fetching warmup and measured batches. Fixture conversion has its own timer.
+Omit `--loader-only` to run the joint objectives on the event-derived graph.

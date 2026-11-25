@@ -11,11 +11,9 @@ validation and a backfill while the contract does not, so binding anchors into
 `DataLoaderSpec` would change the fingerprint of runs whose data semantics are
 identical.
 
-kumo-pytorch does not enumerate anchors. Which entity is predicted at which time, how
-train/validation/test are split, and which candidates are scored are decisions
-with business meaning that belong upstream — the same reasoning that keeps
-candidate *generation* out. What kumo-pytorch does is read that set without routing a
-billion rows through Python objects, and decide the order it is consumed in.
+kumo-pytorch reads an upstream set of entities, prediction times and splits
+without routing a billion rows through Python objects. Each candidate set can
+be supplied alongside those anchors or drawn by DiskGraph.
 
 An engine may choose the order, subject to these guarantees. Every epoch visits
 each anchor exactly once, ranks are disjoint and cover the split, every rank
@@ -35,7 +33,12 @@ from dataclasses import field as dataclass_field
 from itertools import chain
 from typing import Any, TypeAlias
 
-from kumo.pytorch.contract.sample import ExternalTarget, SampleRequest
+from kumo.pytorch.contract.sample import (
+    CandidateRequest,
+    ExternalTarget,
+    SampleRequest,
+    TargetValue,
+)
 from kumo.pytorch.dataset import InMemoryRows, Parquet, TableSource
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
 
@@ -55,7 +58,7 @@ __all__ = [
 ]
 
 PADDING_KEY = "_is_padding"
-"""Reserved request-metadata key marking a padding anchor.
+"""Reserved request-metadata key carrying the original sample ID of a padding anchor.
 
 Surfaced to callers as ``Batch.metadata["is_padding"]`` and removed from
 ``request_metadata``, so it never collides with a user's own metadata.
@@ -148,6 +151,30 @@ class CandidateColumn:
 
         return (self.entity_id, *sorted(self.targets.values()))
 
+    def _requests(self, entries: Any, position: int) -> tuple[CandidateRequest, ...]:
+        """Preserve the caller's candidate order and its positional labels."""
+        if entries is None:
+            return ()
+        requests = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                raise ValueError(f"candidate {index} of anchor row {position} must be a struct")
+            missing = [field for field in self.fields if field not in entry]
+            if missing:
+                raise ValueError(
+                    f"candidate {index} of anchor row {position} is missing {sorted(missing)}"
+                )
+            requests.append(
+                CandidateRequest(
+                    entity_id=entry[self.entity_id],
+                    targets=tuple(
+                        TargetValue(name, entry[field])
+                        for name, field in sorted(self.targets.items())
+                    ),
+                )
+            )
+        return tuple(requests)
+
 
 @dataclass(frozen=True)
 class AnchorTable:
@@ -222,16 +249,19 @@ class AnchorTable:
         object.__setattr__(self, "candidates", candidates)
 
     @property
-    def columns(self) -> tuple[str, ...]:
-        """Every column this binding reads, in a stable order."""
-
+    def _scalar_columns(self) -> tuple[str, ...]:
         declared = (self.entity_id, self.as_of_time, self.sample_id, self.split)
         return (
             *(name for name in declared if name),
             *sorted(self.targets.values()),
             *self.metadata,
-            *sorted(value.column for value in self.candidates.values()),
         )
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """Every column this binding reads, in a stable order."""
+
+        return (*self._scalar_columns, *sorted(value.column for value in self.candidates.values()))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-compatible form; refused for in-memory rows, which are not a storage reference."""
@@ -312,6 +342,15 @@ def anchor_issues(
             )
         )
     for name in sorted(set(table.candidates) & set(declared_sets)):
+        if declared_sets[name].draw is not None:
+            issues.append(
+                ValidationIssue(
+                    f"anchors.candidates.{name}",
+                    f"candidate set {name!r} is drawn by the engine",
+                    "remove its CandidateColumn from the anchor table",
+                )
+            )
+            continue
         overlap = sorted(
             key
             for key in table.candidates[name].targets

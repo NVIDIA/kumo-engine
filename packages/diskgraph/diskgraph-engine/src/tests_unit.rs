@@ -271,6 +271,7 @@ fn make_sampling_request_with_mode(
     let layers: Vec<LayerSpec> = fanouts
         .into_iter()
         .map(|fanout| LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 "Connects".to_string(),
                 FanoutSpec {
@@ -349,6 +350,7 @@ fn test_basic_sampling() {
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 "Connects".to_string(),
                 FanoutSpec {
@@ -399,6 +401,7 @@ fn test_fused_sampling() {
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 "Connects".to_string(),
                 FanoutSpec {
@@ -484,6 +487,7 @@ fn test_sampling_empty_seeds() {
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 "Connects".to_string(),
                 FanoutSpec {
@@ -527,6 +531,7 @@ fn test_sampling_determinism() {
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 "Connects".to_string(),
                 FanoutSpec {
@@ -1555,6 +1560,7 @@ fn run_two_type_temporal(lhs_anchor: i64, rhs_anchor: i64, fused: bool) -> usize
 
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: [(
                 "Connects".to_string(),
                 FanoutSpec {
@@ -1684,6 +1690,7 @@ fn most_recent_neighbors(
         seed_timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
         plan: SamplingPlan {
             layers: vec![LayerSpec {
+                walks: Vec::new(),
                 fanouts: [(
                     "E".to_string(),
                     FanoutSpec {
@@ -1883,6 +1890,7 @@ fn run_disjoint_dedup_check(fused: bool) {
     // single edge from each seed is always kept).
     let plan = SamplingPlan {
         layers: vec![LayerSpec {
+            walks: Vec::new(),
             fanouts: [
                 (
                     "LhsToRhs".to_string(),
@@ -2866,6 +2874,7 @@ fn test_fetch_features_empty_node_data_is_null() {
     let sampler = empty_node_data_graph(dir.path());
     for (ids, expected) in [
         (vec![1], vec![None]),
+        (vec![0, 1, 2], vec![Some(7), None, Some(7)]),
         (vec![0, 1, 2, 1], vec![Some(7), None, Some(7), None]),
     ] {
         let mut output = InMemoryOutput::new();
@@ -2894,4 +2903,132 @@ fn test_fused_sampling_empty_node_data_is_null() {
     let values: Vec<Option<i64>> = ids.iter().map(|&id| (id != 1).then_some(7)).collect();
     assert_eq!(ids.len(), 3);
     assert_eq!(feat_0_values(&output.fused_batches[0].1), values);
+}
+
+#[test]
+fn walk_refines_partial_clock_buckets_and_revisits_a_previous_frontier() {
+    use diskgraph_core::time::TimeUnit::Nanoseconds;
+
+    let dir = TempDir::new().unwrap();
+    let mut key_meta = temporal_sortkey_meta();
+    let ts = key_meta.timestamp.as_mut().unwrap();
+    ts.table = "User".into();
+    ts.encoding.step = 10;
+    let sort_keys = SortKeyEncoder::new(&key_meta);
+    let ticks = [9, 11, 12];
+    let cols = vec![RowPackColumn {
+        name: "ts".into(),
+        logical_type: IngestedType::Timestamp,
+        fixed_len: None,
+        precision: None,
+        scale: None,
+    }];
+    let mut builder = RowPackContextBuilder::new(cols, RowPackConfig::default());
+    for &at in &ticks {
+        builder.observe_row(&[ValueRef::Timestamp(at)]).unwrap();
+    }
+    let ctx = builder.finish().unwrap();
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let mut scratch = RowPackScratch::new(&ctx);
+    let rows = ticks.map(|time| {
+        let mut row = Vec::new();
+        encoder
+            .encode_row_into(&[ValueRef::Timestamp(time)], &mut row, &mut scratch)
+            .unwrap();
+        row
+    });
+    let edges = |dest: usize| (dest as u8, sort_keys.encode_upper(ticks[dest]));
+    let adjacency = [vec![edges(2), edges(1)], vec![edges(0)], vec![edges(0)]];
+    let (reader, _) = write_adjacency_shard(
+        dir.path(),
+        &adjacency,
+        16,
+        &rows.each_ref().map(Vec::as_slice),
+    );
+    let mut engine = DiskGraphEngine::new(
+        [(
+            "User".into(),
+            vec![ShardHandle {
+                reader: Arc::new(reader),
+                min_id: 0,
+                max_id: 2,
+            }],
+        )]
+        .into(),
+        [(0, ("Connects".into(), "User".into(), "User".into()))].into(),
+        [(0, SortKeyDecoder::new(&key_meta))].into(),
+        [(
+            "User".into(),
+            RowPackDecoder::new(ctx).unwrap().with_clock(Nanoseconds),
+        )]
+        .into(),
+        None,
+        Nanoseconds,
+        Some(11),
+        Some(2),
+    );
+    engine.walk_sort_keys = vec![Some(key_meta)];
+    let walk = LayerSpec {
+        walks: vec![WalkSpec {
+            name: "close".into(),
+            paths: vec![vec!["Connects".into()]],
+            keep: [("User".into(), 2)].into(),
+            restart: 0.5,
+            budget: 200,
+            clocks: [("User".into(), "ts".into())].into(),
+        }],
+        default_fanout: None,
+        fanouts: HashMap::new(),
+    };
+    for fused in [false, true] {
+        let mut req = make_sampling_request(vec![0, 0], vec![]);
+        req.flags.fused_feature_fetching = fused;
+        req.seed_timestamps = Some([("User".into(), vec![11, 12])].into());
+        req.plan.layers = vec![walk.clone()];
+        let sample = |req: &BatchSamplingRequest| {
+            let mut state = SamplingState::new();
+            let mut output = InMemoryOutput::new();
+            engine.sample(req, &mut state, &mut output).unwrap();
+            (state, output)
+        };
+        let (state, output) = sample(&req);
+        let nodes = &state.type_states[&0].nodes;
+        let mut hits: Vec<_> = output.walk_edges.0[0]
+            .1
+            .destination
+            .iter()
+            .map(|&dst| {
+                let row = nodes[dst as usize];
+                (row.seed_index, row.global_id)
+            })
+            .collect();
+        hits.sort();
+        assert_eq!(hits, [(0, 1), (1, 1), (1, 2)]);
+
+        // Both roots are revisited by a walk from their first-hop neighbors.
+        // The last hop must expand each root once and reuse its batch-local ID.
+        let hop = make_sampling_request(vec![], vec![3]).plan.layers.remove(0);
+        req.plan.layers = vec![hop.clone(), walk.clone(), hop];
+        let (state, output) = sample(&req);
+        for root in [0, 1] {
+            assert_eq!(
+                output
+                    .edges
+                    .iter()
+                    .filter(|(layer, _, src, _)| *layer == 2 && *src == root)
+                    .count(),
+                2
+            );
+        }
+        if fused {
+            let rows: usize = output.fused_batches.iter().map(|(_, b)| b.num_rows()).sum();
+            assert_eq!(rows, state.type_states[&0].nodes.len());
+        }
+    }
+    let mut req = make_sampling_request(vec![0], vec![]);
+    req.plan.layers = vec![walk];
+    req.plan.layers[0].walks[0].restart = 1e-30;
+    assert!(engine
+        .sample(&req, &mut SamplingState::new(), &mut InMemoryOutput::new())
+        .is_err());
 }

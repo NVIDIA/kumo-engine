@@ -40,7 +40,7 @@ see `DataLoaderSpec.requires_anchor_time`.
 - `current_events`: events kept apart from `events` so an objective can distinguish the event being predicted from its history. Each requires `TimeWindow(column=..., start=-1, stop=0)` and `limit=1`, selecting the event at the anchor's stored second; a historical window ending at zero still includes that event too.
 - `neighborhoods`: named graph neighborhoods around the entity.
 - `targets`: labels computed from future rows. Labels already known to the caller arrive on the request instead and are declared here with `ExternalTarget`. A computed target needs an explicit future window whose lower bound is at or after zero; that bound is excluded, so a target never reads an event at the anchor itself. Declaring a target never inserts it into an input.
-- `candidate_sets`: how to build the candidates a request supplies.
+- `candidate_sets`: how to select and build candidates for a request.
 
 ### `EntitySpec`
 
@@ -270,7 +270,7 @@ than selecting a group or the fallback.
 class EventTimeDelta(
     unit: Literal['seconds', 'minutes', 'hours', 'days'] = 'seconds',
     *,
-    dtype: DType = DType(name='float64', unit=None, timezone=None, precision=None, scale=None),
+    dtype: DType = DType(name='float64', unit=None, timezone=None, precision=None, scale=None, shape=()),
 )
 ```
 
@@ -390,7 +390,7 @@ class Compare(
     operation: ComparisonOperation,
     right: Scalar,
     *,
-    dtype: DType = DType(name='bool', unit=None, timezone=None, precision=None, scale=None),
+    dtype: DType = DType(name='bool', unit=None, timezone=None, precision=None, scale=None, shape=()),
 )
 ```
 
@@ -457,19 +457,23 @@ class CandidateSetSpec(
     entity: EntitySpec,
     values: Mapping[str, EntityValue] = {},
     targets: Mapping[str, Aggregate | Compare | RowTarget | ExternalTarget] = {},
+    neighborhoods: Mapping[str, NeighborhoodSpec] = {},
+    draw: DrawRows | DrawNeighbors | None = None,
 )
 ```
 
 Point-in-time values and optional generated targets for named candidates.
 
 Each candidate uses the primary request's time, and its values and targets
-follow the same typed sampling rules as the entity's. Candidate generation
-is the caller's. The DiskGraph engine doesn't support candidate sets yet;
-see the limitations page.
+follow the same typed sampling rules as the entity's. A candidate
+neighborhood is rooted at that candidate and sampled at the parent
+request's cutoff, including when a future action selects its ID.
 
 **Parameters**
 
-- `entity`: what a candidate *is*; candidates are supplied per request, not selected here.
+- `neighborhoods`: graphs sampled for each candidate. Ordinary hops to a timed table must use the default or explicit recent strategy.
+- `entity`: the entity table of the candidates.
+- `draw`: how DiskGraph selects the candidates. Omit for candidates supplied on a request or anchor table.
 
 #### `CandidateSetSpec.sample_spec`
 
@@ -477,14 +481,64 @@ see the limitations page.
 CandidateSetSpec.sample_spec() -> SampleSpec
 ```
 
-Use normal sample construction for each caller-supplied candidate.
+Use normal sample construction for each candidate at the anchor.
+
+### `DrawRows`
+
+*class* · `kumo.pytorch.DrawRows`
+
+```python
+class DrawRows(rows: Rows, column: str, count: int = 1, weight: str | None = None)
+```
+
+Draw distinct candidate IDs from rows reached from the request entity.
+
+**Parameters**
+
+- `rows`: historical rows or future action rows. A future window starts at or after the anchor and excludes its lower bound.
+- `column`: column containing primary keys of the candidate entity table.
+- `count`: maximum number of distinct candidates to select.
+- `weight`: optional numeric column whose weights are summed per entity. Without a weight, each distinct entity is equally likely.
+
+#### `DrawRows.future`
+
+*property*
+
+Whether candidate selection reads beyond the request's anchor.
+
+### `DrawNeighbors`
+
+*class* · `kumo.pytorch.DrawNeighbors`
+
+```python
+class DrawNeighbors(
+    neighborhood: str,
+    edges: tuple[str, ...],
+    count: int = 1,
+    weight: str | None = None,
+    ranks: tuple[int, int] | None = None,
+)
+```
+
+Draw distinct destinations from an already sampled query neighborhood.
+
+**Parameters**
+
+- `neighborhood`: name in the request entity's neighborhoods.
+- `edges`: hop relation names or scored walk outputs (`name.table`).
+- `count`: maximum number of distinct destinations to select.
+- `weight`: optional numeric edge attribute, summed per destination. Without a weight, each distinct destination is equally likely.
+- `ranks`: optional zero-based half-open interval for ranked walk edges.
 
 ### `NeighborhoodSpec`
 
 *class* · `kumo.pytorch.NeighborhoodSpec`
 
 ```python
-class NeighborhoodSpec(layers: tuple[GraphLayer, ...])
+class NeighborhoodSpec(
+    layers: tuple[GraphLayer, ...],
+    node_values: Mapping[str, Mapping[str, EntityValue]] = {},
+)
 ```
 
 Rows belonging to one sampled neighborhood around the entity.
@@ -494,15 +548,17 @@ per sample/row and deduplicates edge pairs in model and inspectable output.
 Columnar relations output can retain repeated pairs unless
 `deduplicate_edges=True`. `Graph(topology="sampled")` retains native
 directed edge occurrences, discovery order and hop counts.
-Node attributes are chosen in `BatchSpec` through
-a `Graph` representation, not here.
+
+**Parameters**
+
+- `node_values`: DiskGraph values by node table and value name. Each declaration starts at the node and uses its owning anchor's prediction time. Select stored columns and computed values through `Graph.node_fields`.
 
 ### `GraphLayer`
 
 *class* · `kumo.pytorch.GraphLayer`
 
 ```python
-class GraphLayer(samples: tuple[GraphSample, ...])
+class GraphLayer(samples: tuple[GraphSample | WalkSample, ...])
 ```
 
 Relationship traversals performed from one neighborhood frontier.
@@ -534,6 +590,36 @@ the native traversal direction instead.
 - `relation`: the declared relation followed.
 - `strategy`: `None` selects `"recent"` when the destination table declares a clock, otherwise `"uniform"`. Recent keeps the newest rows at or before the anchor and requires a declared clock. Uniform samples without replacement, ignoring the real-time anchor even on timed tables. Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 - `time_column`: overrides the destination table's declared clock.
+
+### `WalkSample`
+
+*class* · `kumo.pytorch.WalkSample`
+
+```python
+class WalkSample(
+    name: str,
+    edges: tuple[str | tuple[str, str], ...],
+    keep: Mapping[str, int],
+    restart: float,
+    budget: int,
+)
+```
+
+Score an undirected neighborhood by personalized random walk with restart.
+
+Each frontier node is an independent start. A relation names a direct edge.
+A link table (or a pair of its FK relations) supplies one logical edge per
+complete link row. Only edges visible at the sample cutoff contribute to
+the walk or its degrees. Each `name.table` output holds up to the declared
+quota of destinations, excluding the start, with a float32 score and a
+zero-based int64 rank. Equally scored destinations may tie at the cutoff.
+A walk edge set has a single source table, so exactly one table of the
+entering frontier must participate in the walk's edges.
+
+**Parameters**
+
+- `restart`: restart probability, strictly between zero and one.
+- `budget`: inverse residual threshold. Push when residual mass is at least the visible degree divided by this positive 32-bit budget.
 
 ### `ExternalTarget`
 

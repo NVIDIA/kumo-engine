@@ -128,10 +128,9 @@ parquet = kp.Dataset(
 request = kp.SampleRequest(sample_id="user-1-jan-10", entity_id=1, as_of_time=datetime(2024, 1, 10))
 ```
 
-Each table in the schema is bound to one Parquet source, which can be a single
-file, a directory or a glob. A dataset binds exactly the contract's tables, and
-it doesn't name an engine. The DiskGraph engine reads `Parquet` sources, and the
-in-memory engine reads `InMemoryRows`, which we'll come to below.
+A dataset binds each table in the schema to one source. DiskGraph accepts local
+Parquet files, directories and globs, as well as S3 Parquet objects and prefixes.
+The in-memory engine reads `InMemoryRows`, which we'll come to below.
 
 When the stored column names differ from the contract's, such as the upper-case names of a Snowflake export, `columns` maps them: `kp.Parquet(path=..., columns={"USER_ID": "user_id"})` reads `USER_ID` as `user_id`. Everything after that, including the DiskGraph index, uses the contract's names.
 
@@ -152,6 +151,41 @@ The entity ID column of a Parquet `AnchorTable` accepts the same types when the 
 A declared integer column never accepts a float column, because `float64` represents integers exactly only up to 2^53. pandas stores an integer column that contains NULLs as `float64`, so an integer column read through pandas, for example with Snowpark's `DataFrame.to_pandas()`, arrives as floats. Read it through Arrow instead: Snowpark's `DataFrame.to_arrow()` keeps a nullable integer column as integers.
 
 Column names are case-sensitive; when column names or types are omitted, resolution reports every table whose stored columns do not match, with close-match suggestions. Fully declared tables are checked when DiskGraph prepares the data.
+
+### Reading Parquet from S3
+
+Pass an `s3://bucket/key` URI to `Parquet` for a single object. Use a trailing
+slash for a prefix containing several parts. DiskGraph recursively discovers
+objects ending in `.parquet` under that prefix. For anchors, key order followed
+by row order within each part defines the input order.
+
+```python
+remote_dataset = kp.Dataset({
+    "users": kp.Parquet("s3://warehouse/graph/users.parquet"),
+    "orders": kp.Parquet("s3://warehouse/graph/orders/"),
+})
+remote_anchors = kp.AnchorTable(
+    kp.Parquet("s3://warehouse/tasks/anchors/", columns={"prediction_time": "as_of"}),
+    entity_id="user_id",
+    as_of_time="as_of",
+    split="split",
+)
+```
+
+Pass the dataset to `prepare` and the anchors to `plan.materialize` as with
+local files. Dataset and anchor bindings both accept physical-to-logical column
+renames. Local and S3 sources can be mixed in the same task. DiskGraph's
+object-store reader ingests the dataset directly into the local index. The task
+streams projected anchor columns into its native seed index.
+
+The readers use ambient AWS credentials, including role credentials,
+`AWS_PROFILE`, or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` with
+`AWS_SESSION_TOKEN` for temporary credentials. Set `S3_REGION` to select a
+region explicitly. For an S3-compatible endpoint set `S3_ENDPOINT` to its URL,
+`S3_VIRTUAL_HOSTED=false` for path-style addressing, and `S3_ALLOW_HTTP=true`
+if the endpoint uses HTTP. With `S3_VIRTUAL_HOSTED=true`, supply the complete
+bucket endpoint, for example `https://my-bucket.s3.example.net`. Reading a
+prefix requires permission to list its objects as well as read them.
 
 ## The DiskGraph engine
 
@@ -208,6 +242,14 @@ graph or data version, so each adds ingestion time and disk usage. Reuse a core
 the producer's base across engines or processes. Kumo allocates IDs and chooses
 index, task and cache paths internally; callers configure only the process-wide
 scratch root.
+
+For an S3 dataset, a repeated `prepare` on the same engine checks the ordered
+object keys, sizes and ETags (and version IDs when available) against the base
+index manifest. Matching inputs reuse the local index. If an object is
+added, removed or replaced, preparing against that base reports a different
+dataset. Create a fresh `DiskGraphEngine` to build the changed dataset.
+Anchor objects are tracked per task. Replacing them changes the task identity
+and leaves the base reusable.
 
 Before native task ingest and runtime handoff, Kumo validates the task manifest
 against the engine's captured root: the graph path must match its bound base,

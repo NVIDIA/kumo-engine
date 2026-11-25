@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._c import (
+    _gather_byte_rows as _gather_byte_rows,
     __version__,
     BUILD_COMMIT,
     StringLookup,
@@ -71,6 +72,7 @@ from .sampling_plan import (
     ExponentialDecay,
     FanoutSpec,
     LayerSpec,
+    WalkSpec,
     LinearDecay,
     SamplingPlan,
     WeightedSampling,
@@ -220,6 +222,7 @@ __all__ = [
     "InheritEngineSeed",
     "SamplingPlan",
     "LayerSpec",
+    "WalkSpec",
     "FanoutSpec",
     "WeightedSampling",
     "ExponentialDecay",

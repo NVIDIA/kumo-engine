@@ -145,7 +145,7 @@ def test_decimal_transport_rejects_invalid_or_lossy_values(text):
         )
     }
     with pytest.raises(pa.ArrowInvalid):
-        source._decode_decimal_array("events", "amount", pa.array([text]))
+        source._restore_feature_array("events", "amount", pa.array([text]))
 
 
 @pytest.mark.parametrize(
@@ -163,4 +163,4 @@ def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
     source = object.__new__(DiskGraphSource)
     source._pa, source._pc = pa, pc
     source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
-    assert source._decode_decimal_array("events", "amount", values) is values
+    assert source._restore_feature_array("events", "amount", values) is values

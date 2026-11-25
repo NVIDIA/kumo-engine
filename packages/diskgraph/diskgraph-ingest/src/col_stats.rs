@@ -753,6 +753,7 @@ impl StatSet {
             Text,
             Timestamp,
             Sequence,
+            Tensor,
             Latlong,
             ImageUrl,
             Numerical,
@@ -1401,7 +1402,7 @@ impl ColumnStatsCollector {
                 max: i64::MIN,
                 hll: HyperLogLog::new(),
             },
-            Some(SemanticType::Sequence) => ColumnStatsCollector::Sequence {
+            Some(SemanticType::Sequence | SemanticType::Tensor) => ColumnStatsCollector::Sequence {
                 count: 0,
                 null_count: 0,
                 parse_fail_count: 0,

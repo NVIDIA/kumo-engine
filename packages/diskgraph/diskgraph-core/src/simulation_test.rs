@@ -132,6 +132,7 @@ mod tests {
             seed_timestamp_unit: crate::time::TimeUnit::Seconds,
             plan: SamplingPlan {
                 layers: vec![LayerSpec {
+                    walks: Vec::new(),
                     fanouts: [(
                         "User__Click__Item".to_string(),
                         FanoutSpec {

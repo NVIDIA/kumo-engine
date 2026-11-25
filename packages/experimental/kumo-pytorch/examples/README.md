@@ -7,8 +7,7 @@ CPU.
 
 - [hm-recommendation](hm-recommendation/) ranks the products a retail customer
   is likely to buy next week, using a graph neural network over their recent
-  purchases. It runs on the in-memory engine for now, because the
-  DiskGraph engine doesn't support candidate lists yet.
+  purchases. It runs on the in-memory engine.
 - [pragma-fraud](pragma-fraud/) pre-trains a transaction model on banking data,
   then fine-tunes it to flag users who are about to see fraud. It runs on
   the DiskGraph engine.

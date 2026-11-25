@@ -44,6 +44,8 @@ __all__ = [
     "DatedEntityValue",
     "Derived",
     "DerivedOperation",
+    "DrawNeighbors",
+    "DrawRows",
     "EntitySpec",
     "EntityValue",
     "EventSpec",
@@ -53,6 +55,7 @@ __all__ = [
     "FilterOperation",
     "GraphLayer",
     "GraphSample",
+    "WalkSample",
     "GroupBy",
     "MapValues",
     "NeighborhoodSpec",
@@ -78,6 +81,8 @@ def _mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
 def _result_dtype(value: DType | None) -> None:
     if value is not None and not isinstance(value, DType):
         raise TypeError("calculation dtype must be a DType declaration")
+    if value is not None and value.shape:
+        raise ValueError("this result requires a scalar dtype; arrays are stored feature columns")
 
 
 Selection = Literal["one", "all", "latest"]
@@ -723,10 +728,122 @@ class GraphSample:
 
 
 @dataclass(frozen=True)
+class WalkSample:
+    """Score an undirected neighborhood by personalized random walk with restart.
+
+    Each frontier node is an independent start. A relation names a direct edge.
+    A link table (or a pair of its FK relations) supplies one logical edge per
+    complete link row. Only edges visible at the sample cutoff contribute to
+    the walk or its degrees. Each ``name.table`` output holds up to the declared
+    quota of destinations, excluding the start, with a float32 score and a
+    zero-based int64 rank. Equally scored destinations may tie at the cutoff.
+    A walk edge set has a single source table, so exactly one table of the
+    entering frontier must participate in the walk's edges.
+
+    :param restart: restart probability, strictly between zero and one.
+    :param budget: inverse residual threshold. Push when residual mass is at
+        least the visible degree divided by this positive 32-bit budget.
+    """
+
+    name: str
+    edges: tuple[str | tuple[str, str], ...]
+    keep: Mapping[str, int]
+    restart: float
+    budget: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("walk name must be nonempty")
+        if isinstance(self.edges, str) or not self.edges:
+            raise ValueError("walk edges must be a nonempty sequence")
+        edges = tuple(self.edges)
+        for edge in edges:
+            if isinstance(edge, str) and edge:
+                continue
+            if not (
+                isinstance(edge, tuple)
+                and len(edge) == 2
+                and all(isinstance(name, str) and name for name in edge)
+                and edge[0] != edge[1]
+            ):
+                raise ValueError("walk edge must name a relation, link table or two FK relations")
+        if not self.keep or any(
+            not isinstance(table, str) or not table or type(k) is not int or k <= 0
+            for table, k in self.keep.items()
+        ):
+            raise ValueError("walk keep must map table names to positive integer quotas")
+        if not 0 < self.restart < 1 or 1.0 - self.restart == 1.0:
+            raise ValueError("walk restart must be strictly between zero and one")
+        if type(self.budget) is not int or not 0 < self.budget <= 2**32 - 1:
+            raise ValueError("walk budget must be a positive uint32 integer")
+        object.__setattr__(self, "edges", edges)
+        object.__setattr__(self, "keep", _mapping(self.keep))
+
+
+_WalkPath = tuple[str, tuple[tuple[str, str], ...], str]
+
+
+def walk_paths(walk: WalkSample, schema: DataSchema) -> tuple[_WalkPath, ...]:
+    """Resolve logical edges to oriented relation paths once, outside the push loop."""
+    tables = {table.name: table for table in schema.tables}
+    relations = {relation.name: relation for relation in schema.relations}
+    # Record each FK leg in the direction from endpoint to link row.
+    legs: dict[str, dict[str, tuple[str, str]]] = {}
+    for rel in schema.relations:
+        left_pk = rel.left_key == tables[rel.left_table].primary_key
+        right_pk = rel.right_key == tables[rel.right_table].primary_key
+        if left_pk != right_pk:
+            link, endpoint, direction = (
+                (rel.right_table, rel.left_table, "forward")
+                if left_pk
+                else (rel.left_table, rel.right_table, "reverse")
+            )
+            legs.setdefault(link, {})[rel.name] = endpoint, direction
+
+    paths: list[_WalkPath] = []
+    reverse = {"forward": "reverse", "reverse": "forward"}
+    for edge in walk.edges:
+        if isinstance(edge, str) and edge in relations:
+            if edge in tables:
+                raise ValueError(f"ambiguous walk edge {edge!r} names both a table and relation")
+            rel = relations[edge]
+            start, end = rel.left_table, rel.right_table
+            path = ((edge, "forward"),)
+        else:
+            if isinstance(edge, str):
+                pair = tuple(legs.get(edge, {}))
+                if len(pair) != 2:
+                    raise ValueError(f"walk link table {edge!r} requires exactly two FK relations")
+                link = edge
+            else:
+                pair = edge
+                matches = [table for table, fk in legs.items() if all(r in fk for r in pair)]
+                if len(matches) != 1:
+                    raise ValueError(f"walk FK relations {pair!r} must share a link table")
+                link = matches[0]
+            a, b = pair
+            start, into_link = legs[link][a]
+            end, from_end = legs[link][b]
+            path = ((a, into_link), (b, reverse[from_end]))
+        backwards = tuple((name, reverse[direction]) for name, direction in reversed(path))
+        if (start, path, end) in paths:
+            raise ValueError(f"duplicate walk edge {edge!r}")
+        paths.extend(((start, path, end), (end, backwards, start)))
+    return tuple(paths)
+
+
+def walk_start(paths: tuple[_WalkPath, ...], frontier: set[str]) -> str:
+    starts = frontier.intersection(start for start, _, _ in paths)
+    if len(starts) != 1:
+        raise ValueError(f"walk requires one eligible start table in frontier {sorted(frontier)}")
+    return next(iter(starts))
+
+
+@dataclass(frozen=True)
 class GraphLayer:
     """Relationship traversals performed from one neighborhood frontier."""
 
-    samples: tuple[GraphSample, ...]
+    samples: tuple[GraphSample | WalkSample, ...]
 
     def __post_init__(self) -> None:
         if not self.samples:
@@ -742,15 +859,27 @@ class NeighborhoodSpec:
     Columnar relations output can retain repeated pairs unless
     ``deduplicate_edges=True``. ``Graph(topology="sampled")`` retains native
     directed edge occurrences, discovery order and hop counts.
-    Node attributes are chosen in ``BatchSpec`` through
-    a ``Graph`` representation, not here.
+    :param node_values: DiskGraph values by node table and value name. Each
+        declaration starts at the node and uses its owning anchor's prediction
+        time. Select stored columns and computed values through ``Graph.node_fields``.
     """
 
     layers: tuple[GraphLayer, ...]
+    node_values: Mapping[str, Mapping[str, EntityValue]] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.layers:
             raise ValueError("neighborhood requires at least one layer")
+        for table, values in self.node_values.items():
+            if not isinstance(table, str) or not table:
+                raise ValueError("node value tables must have nonempty names")
+            if any(not isinstance(name, str) or not name for name in values):
+                raise ValueError("node values must have nonempty names")
+        object.__setattr__(
+            self,
+            "node_values",
+            _mapping({table: _mapping(v) for table, v in self.node_values.items()}),
+        )
 
 
 @dataclass(frozen=True)
@@ -796,16 +925,98 @@ class ExternalTarget:
 
 
 @dataclass(frozen=True)
+class DrawRows:
+    """Draw distinct candidate IDs from rows reached from the request entity.
+
+    :param rows: historical rows or future action rows. A future window starts
+        at or after the anchor and excludes its lower bound.
+    :param column: column containing primary keys of the candidate entity table.
+    :param count: maximum number of distinct candidates to select.
+    :param weight: optional numeric column whose weights are summed per entity.
+        Without a weight, each distinct entity is equally likely.
+    """
+
+    rows: Rows
+    column: str
+    count: int = 1
+    weight: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rows, Rows):
+            raise TypeError("DrawRows requires a Rows declaration")
+        if not isinstance(self.column, str) or not self.column:
+            raise ValueError("draw column must be a nonempty name")
+        _check_draw(self.count, self.weight)
+
+    @property
+    def future(self) -> bool:
+        """Whether candidate selection reads beyond the request's anchor."""
+        window = self.rows.time
+        return window is not None and (window.stop is None or window.stop > 0)
+
+
+@dataclass(frozen=True)
+class DrawNeighbors:
+    """Draw distinct destinations from an already sampled query neighborhood.
+
+    :param neighborhood: name in the request entity's neighborhoods.
+    :param edges: hop relation names or scored walk outputs (``name.table``).
+    :param count: maximum number of distinct destinations to select.
+    :param weight: optional numeric edge attribute, summed per destination.
+        Without a weight, each distinct destination is equally likely.
+    :param ranks: optional zero-based half-open interval for ranked walk edges.
+    """
+
+    neighborhood: str
+    edges: tuple[str, ...]
+    count: int = 1
+    weight: str | None = None
+    ranks: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.neighborhood, str) or not self.neighborhood:
+            raise ValueError("draw neighborhood must be a nonempty name")
+        if isinstance(self.edges, str) or not self.edges:
+            raise ValueError("draw edges must be a nonempty sequence of edge names")
+        edges = tuple(self.edges)
+        if any(not isinstance(name, str) or not name for name in edges) or len(edges) != len(
+            set(edges)
+        ):
+            raise ValueError("draw edges must contain distinct nonempty names")
+        object.__setattr__(self, "edges", edges)
+        if self.ranks is not None:
+            ranks = tuple(self.ranks)
+            if (
+                len(ranks) != 2
+                or any(type(value) is not int for value in ranks)
+                or not 0 <= ranks[0] < ranks[1]
+            ):
+                raise ValueError("draw ranks must be an interval with 0 <= lo < hi")
+            object.__setattr__(self, "ranks", ranks)
+        _check_draw(self.count, self.weight)
+
+
+def _check_draw(count: int, weight: str | None) -> None:
+    if type(count) is not int or count <= 0:
+        raise ValueError("draw count must be a positive integer")
+    if weight is not None and (not isinstance(weight, str) or not weight):
+        raise ValueError("draw weight must be a nonempty name")
+
+
+@dataclass(frozen=True)
 class CandidateSetSpec:
     """Point-in-time values and optional generated targets for named candidates.
 
     Each candidate uses the primary request's time, and its values and targets
-    follow the same typed sampling rules as the entity's. Candidate generation
-    is the caller's. The DiskGraph engine doesn't support candidate sets yet;
-    see the limitations page.
+    follow the same typed sampling rules as the entity's. A candidate
+    neighborhood is rooted at that candidate and sampled at the parent
+    request's cutoff, including when a future action selects its ID.
 
-    :param entity: what a candidate *is*; candidates are supplied per request,
-        not selected here.
+    :param neighborhoods: graphs sampled for each candidate. Ordinary
+        hops to a timed table must use the default or explicit recent strategy.
+    :param entity: the entity table of the candidates.
+    :param draw: how DiskGraph selects the candidates. Omit for candidates
+        supplied on a request or anchor table.
     """
 
     entity: EntitySpec
@@ -814,21 +1025,30 @@ class CandidateSetSpec:
         default_factory=dict
     )
 
+    neighborhoods: Mapping[str, NeighborhoodSpec] = dataclass_field(default_factory=dict)
+    draw: DrawRows | DrawNeighbors | None = None
+
     def __post_init__(self) -> None:
+        if self.draw is not None and not isinstance(self.draw, (DrawRows, DrawNeighbors)):
+            raise TypeError("candidate draw must be a DrawRows or DrawNeighbors declaration")
         if any(not str(name) for name in self.values):
             raise ValueError("candidate value names must be non-empty")
         if any(not str(name) for name in self.targets):
             raise ValueError("candidate target names must be non-empty")
+        if any(not name for name in self.neighborhoods):
+            raise ValueError("candidate neighborhood names must be non-empty")
+        object.__setattr__(self, "neighborhoods", _mapping(self.neighborhoods))
         object.__setattr__(self, "values", _mapping(self.values))
         object.__setattr__(self, "targets", _mapping(self.targets))
 
     def sample_spec(self) -> SampleSpec:
-        """Use normal sample construction for each caller-supplied candidate."""
+        """Use normal sample construction for each candidate at the anchor."""
 
         return SampleSpec(
             entity=self.entity,
             entity_values=self.values,
             targets=self.targets,
+            neighborhoods=self.neighborhoods,
         )
 
 
@@ -862,7 +1082,7 @@ class SampleSpec:
         whose lower bound is at or after zero; that bound is excluded, so a
         target never reads an event at the anchor itself. Declaring a target
         never inserts it into an input.
-    :param candidate_sets: how to build the candidates a request supplies.
+    :param candidate_sets: how to select and build candidates for a request.
     """
 
     entity: EntitySpec
@@ -1045,6 +1265,8 @@ def source_column_types(schema: DataSchema, start: str, source: RowSource) -> Ma
         return next(item.columns for item in schema.tables if item.name == table)
     columns = source_column_types(schema, start, source.source)
     result = {name: columns[name] for name in source.keys}
+    if any(dtype.shape for dtype in result.values()):
+        raise ValueError("grouping requires scalar key columns")
     for name, reduction in source.values.items():
         result[name] = reduction_dtype(reduction, columns)
     return result
@@ -1071,6 +1293,8 @@ def reduction_dtype(spec: Reduce | Aggregate, columns: Mapping[str, DType]) -> D
     """The native scalar reduction result, checked against an optional declaration."""
     operation = spec.operation
     source = None if spec.column is None else columns[spec.column]
+    if source is not None and source.shape:
+        raise ValueError(f"{operation} requires scalar column and result types")
     if operation in {"count", "count_distinct"}:
         inferred = DType("int64")
     elif operation == "sum":
@@ -1155,6 +1379,8 @@ def value_dtype(
                     "derived calculations require scalar operands, not selection='all'"
                 )
             operands.append(value_dtype(schema, root_table, source, values))
+        if any(item.shape for item in operands):
+            raise ValueError("derived calculations require scalar operands and results")
         operation = declaration.operation
         if isinstance(operation, MapValues):
             inferred = declaration.dtype
@@ -1213,7 +1439,9 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
     tables = {table.name: table for table in schema.tables}
     relations = {relation.name: relation for relation in schema.relations}
 
-    def traversal(item: GraphSample) -> GraphSample:
+    def traversal(item: GraphSample | WalkSample) -> GraphSample | WalkSample:
+        if isinstance(item, WalkSample):
+            return item
         relation = relations.get(item.relation)
         if item.strategy is not None or relation is None:
             return item
@@ -1283,6 +1511,22 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
             for name, item in values.items()
         }
 
+    def neighborhoods(declarations: Mapping[str, NeighborhoodSpec]) -> dict[str, NeighborhoodSpec]:
+        return {
+            name: replace(
+                neighborhood,
+                layers=tuple(
+                    replace(layer, samples=tuple(traversal(item) for item in layer.samples))
+                    for layer in neighborhood.layers
+                ),
+                node_values={
+                    table: scope(values, table)
+                    for table, values in neighborhood.node_values.items()
+                },
+            )
+            for name, neighborhood in declarations.items()
+        }
+
     root = sample.entity.table
     dated = {}
     for name, item in sample.dated_entity_values.items():
@@ -1294,16 +1538,7 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
         dated[name] = replace(item, field=values.pop(name), fields=values)
     return replace(
         sample,
-        neighborhoods={
-            name: replace(
-                neighborhood,
-                layers=tuple(
-                    replace(layer, samples=tuple(traversal(item) for item in layer.samples))
-                    for layer in neighborhood.layers
-                ),
-            )
-            for name, neighborhood in sample.neighborhoods.items()
-        },
+        neighborhoods=neighborhoods(sample.neighborhoods),
         entity_values=scope(sample.entity_values, root),
         dated_entity_values=dated,
         events=events(sample.events),
@@ -1314,6 +1549,7 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
                 item,
                 values=scope(item.values, item.entity.table),
                 targets=scope(item.targets, item.entity.table),
+                neighborhoods=neighborhoods(item.neighborhoods),
             )
             for name, item in sample.candidate_sets.items()
         },
@@ -1323,6 +1559,16 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
 def _scope_types(schema: DataSchema, table: str, values: Mapping[str, Any]) -> dict[str, DType]:
     order = _value_evaluation_order(values)
     return {name: value_dtype(schema, table, values[name], values) for name in order}
+
+
+def graph_node_dtype(
+    schema: DataSchema, neighborhood: NeighborhoodSpec, table: str, field: str
+) -> DType:
+    """Resolve a graph input field within its own neighborhood and node table."""
+    values = neighborhood.node_values.get(table, {})
+    if field in values:
+        return value_dtype(schema, table, values[field], values)
+    return next(t for t in schema.tables if t.name == table).columns[field]
 
 
 def sample_value_types(schema: DataSchema, sample: SampleSpec) -> dict[str, DType]:
