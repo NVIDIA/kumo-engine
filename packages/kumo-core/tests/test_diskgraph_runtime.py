@@ -18,7 +18,7 @@ import kumo_core.diskgraph.runner as diskgraph_runner
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from diskgraph import DiskgraphCorruptionError
+from diskgraph import DiskgraphCorruptionError, DiskgraphSystemError
 from kumo_core.diskgraph.ingest import (
     DiskgraphIngestSpec,
     execute_diskgraph_ingest,
@@ -713,6 +713,7 @@ def test_checkpoint_stages_then_atomically_publishes(
         "diskgraph",
         SimpleNamespace(
             DiskgraphCorruptionError=DiskgraphCorruptionError,
+            DiskgraphSystemError=DiskgraphSystemError,
             verify_snapshot_integrity=lambda path: None,
             read_success_marker=lambda path: markers.get(path),
         ),
@@ -745,6 +746,7 @@ def test_verify_rejects_missing_success_after_integrity_pass(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_diskgraph = SimpleNamespace(
         DiskgraphCorruptionError=DiskgraphCorruptionError,
+        DiskgraphSystemError=DiskgraphSystemError,
         verify_snapshot_integrity=lambda path: None,
         read_success_marker=lambda path: None,
     )
@@ -827,6 +829,7 @@ def test_snapshot_store_rejects_empty_required_time_table(
     }))
     monkeypatch.setitem(sys.modules, "diskgraph", SimpleNamespace(
         DiskgraphCorruptionError=DiskgraphCorruptionError,
+        DiskgraphSystemError=DiskgraphSystemError,
         verify_snapshot_integrity=lambda path: None,
         read_success_marker=lambda path: (Path(path) / "_SUCCESS").read_text(),
         has_resumable_ingest=lambda path: False,
@@ -865,6 +868,7 @@ def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
     touched = []
     monkeypatch.setitem(sys.modules, "diskgraph", SimpleNamespace(
         DiskgraphCorruptionError=DiskgraphCorruptionError,
+        DiskgraphSystemError=DiskgraphSystemError,
         read_success_marker=lambda path: markers.get(path),
         touch_success_marker=touched.append,
         verify_snapshot_integrity=lambda path: None,
