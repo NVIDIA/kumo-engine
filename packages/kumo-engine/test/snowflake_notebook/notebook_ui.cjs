@@ -45,7 +45,7 @@ async function workspace(page, event) {
   await page.addLocatorHandler(
     frame
       .getByRole("region", {
-        name: /^(Welcome to Workspaces|Connect to get started!|Turn off the clutter with focus mode|Introducing Python files|Semantic view is available in workspace)$/,
+        name: /^(Welcome to Workspaces|Connect to get started!|Turn off the clutter with focus mode|Introducing Python files|Semantic view is available in workspace|Try the all-new Dashboards)$/,
       })
       .first(),
     async (overlay) => {
