@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Blueprint v2: profile and event encoders feeding a causal history decoder (ADR 0012)."""
+"""Blueprint v2: profile and event encoders feeding a causal history decoder (Blueprint v2 guide)."""
 
 from __future__ import annotations
 
@@ -249,7 +249,7 @@ class ProfileEventDecoderModel(nn.Module):
 
         The next-event head is trained on slot `j`. A model that can see its
         target would do better from slot `j+1`, which holds event `j` itself;
-        `learned_to_copy` flags that (ADR 0010, 0011).
+        `learned_to_copy` flags that (Blueprint v1 objectives, 0011).
         """
         with torch.no_grad():
             states, _mask, _tokens = self.encode(batch)

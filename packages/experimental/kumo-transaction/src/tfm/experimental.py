@@ -4,7 +4,7 @@
 """Experimental composition API for the hierarchical stacks and new building blocks.
 
 These names are **not** part of the core `tfm.__all__` surface. Import from
-`tfm.experimental` (or the underlying modules). See ADRs 0007, 0012, and 0014.
+`tfm.experimental` (or the underlying modules). See experimental composition guide, Blueprint v2 guide, building-block contracts.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def compose_flat_encoder(
     objective: MaskedFields | None = None,
     readout: FlatEncoderReadout | None = None,
 ) -> FlatEncoderModel:
-    """Validate and build the experimental flat BERT-style encoder (ADR 0019).
+    """Validate and build the experimental flat BERT-style encoder (flat-encoder guide).
 
     `granularity` has no default: it carries the tokenizer's `FieldVocabulary`.
     `readout` defaults to `LastEventMeanPool()`, the scored transaction's tokens.

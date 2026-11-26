@@ -1,13 +1,14 @@
 # Source synchronization
 
 This directory imports the tracked source tree identified in [UPSTREAM.json](UPSTREAM.json).
-The branch name `transaction_foundation_2_2` identifies this sync; the imported
-Python distribution's version is `2.0.0a4`.
+The snapshot is based on `6331312c3e85d6ce1fc868c99b1ffffc03bc50c5`,
+with the native-loader delta through `c0205d98dec9d6fd918afc575dcf7a88af87e4f9`.
+The imported distribution remains `2.0.0a4`; the loader changes are unreleased.
+The source revision and hashes are recorded in `UPSTREAM.json`.
 
-PR #507 consolidates the initial import and the later sync previously proposed
-in #508. It advances from `8a67f98d5a7cfb4c1feeee06c0ce6383f5520671` to
-`6331312c3e85d6ce1fc868c99b1ffffc03bc50c5` while retaining the experimental
-location and Engine integration checks. There is no separate prerequisite PR.
+This sync ports native sequence loading and graph/hybrid recipes into
+Engine. It preserves the standalone package's pinned Kumo PyTorch dependency
+revision rather than changing the experimental runtime during migration.
 
 ## Local adaptations
 
@@ -21,15 +22,16 @@ location and Engine integration checks. There is no separate prerequisite PR.
 - `docs/_site/api/*.md`: use relative links that resolve within this source
   snapshot. The documentation generator adapts them in its virtual API-page
   copies to preserve links on the rendered site.
-- `examples/kumo-engine/` uses Engine's managed DiskGraph build and snapshot
-  APIs and installs the matching settings package from Engine source.
-- `CHANGELOG.md`: record the managed DiskGraph example migration.
 - `benchmarks/results/README.md`: repair the migration link and explain that
   upstream raw graph artifacts are not available from this public snapshot.
 - `benchmarks/results/graph_*.json`: replace private artifact URLs with JSON
   `null` while preserving source revisions, hashes, sizes and measurements.
   This import-time transformation is applied to the pinned upstream manifests;
   reapply it if those manifests are regenerated upstream.
+- `Makefile` and `scripts/run_checks.sh`: select the package-owned Pyright
+  configuration explicitly rather than inheriting Engine-wide diagnostics.
+- `scripts/setup_dev_env.sh` and `scripts/run_checks.sh`: install the native
+  loader extra used by the optional integration checks.
 - `scripts/gen_doc_pages.py`: include sync/provenance files in the site and
   adapt source-relative API links for its rendered layout.
 
@@ -48,10 +50,16 @@ changes before running frozen CPU checks and wheel-license verification. Root
 Flake8/isort defer to the package's Ruff policy. Making this status required
 needs repository branch-protection configuration after the workflow is available.
 
+Engine-owned shared relational declarations/loaders, the `relational_inputs`
+recipe, contract documentation and regressions are listed under
+`engine_added_files` in `UPSTREAM.json`. Preserve them and their documented
+contract extensions during later source syncs. Changed imported files are
+listed under `adapted_files`. The nested GitLab CI file retains the host base
+version as non-authoritative source context; the GitHub workflow owns Engine CI.
+
 All other imported files match the pinned source byte for byte. The source
-hash inventory covers every imported file, including adapted files before
-adaptation. `UPSTREAM.json`, this guide and the managed DiskGraph example smoke
-test are local additions.
+hash inventory covers the source snapshot, including adapted files before
+adaptation and explicitly excluded paths. `UPSTREAM.json` and this guide are local additions.
 Nested GitLab CI, ownership, and governance files are source context only;
 they do not configure Kumo Engine CI, ownership, releases, or contributions.
 
@@ -62,7 +70,8 @@ they do not configure Kumo Engine CI, ownership, releases, or contributions.
 2. Compare that source tree with the previous `source_commit`, then apply the
    upstream delta here. Preserve Engine changes, review deletions, and reapply
    the documented local adaptations. Do not replace this directory blindly.
-3. Review imported data, notebooks, URLs, and artifacts for public suitability.
+3. Apply the exclusions in UPSTREAM.json first. Review remaining imported data,
+   notebooks, URLs, and artifacts for public suitability.
    Preserve licenses and attribution. Update `UPSTREAM.json` with the new
    revision, source version, adapted-file list, and SHA-256 of every tracked
    upstream file before adaptations. Document any exclusions explicitly.
@@ -74,3 +83,75 @@ they do not configure Kumo Engine CI, ownership, releases, or contributions.
 
 A source sync does not publish a release or change upstream support tiers.
 The a4 graph recipes use the optional Kumo Engine backend described upstream.
+
+## Native loader integration
+
+The authoritative GitHub `transaction-blueprint` job now builds or verifies the
+six matching native dependency wheels, installs them with the package's locked
+CPU test environment, and exercises the real Engine graph models. Its cache
+validates source/build identity and wheel hashes. A cold native build needs a
+longer job budget; cache hits avoid rebuilding Rust. The nested GitLab workflow
+is retained only as imported source context.
+
+The package lockfile remains independent of the Engine workspace. Use the
+package-local setup commands and `native` / `kumo` extras. The model, cutoff,
+label and target contracts are unchanged; native inputs remain experimental,
+and FutureSubgraph targets retain their separate Python reference pass.
+
+The advanced example retains the startup and reuse work merged in #524.
+This broader sync also updates canonical sequence and graph/hybrid
+runners. It also carries forward #524's completed-index reuse interface and
+its offline-source regression smoke, while retaining this package's dependency pin.
+
+Engine review follow-up adapts `native_graph.py` to cache edge clocks and compare
+UTC instants, `graph_recipe.py` to close failed preparations, and
+`native_history.py` to retain missing-owner errors, atomic single-use binding,
+repeated event IDs and bounded indexed-window retrieval with a single anchor
+stage. The native contract tests cover these changes. Setup/readme corrections
+name the independent package directory and native build prerequisites. The
+additional `tests/recipe_smoke/test_kumo_engine_example.py` comes from #524
+(commit `dff4ff4dbcabe123e98652065e134f277b43812b`), outside the pinned source
+inventory; it verifies a fresh build and index reuse with source tables offline.
+
+Blueprint GitHub CI installs the `baselines` extra alongside `kumo`; Optuna can
+be present through Engine without XGBoost. The three tuned tabular-baseline
+contracts require both dependencies and skip cleanly when either is absent.
+
+Canonical sequence, graph and hybrid recipes default to Kumo Engine retrieval.
+Python remains explicitly selectable; direct library helpers retain their Python
+defaults. This integration choice makes no universal performance, memory or
+out-of-core claim. The public migration guide describes preparation and
+materialization tradeoffs and the remaining anchor, index, target and evaluation
+state. Canonical no-cache runners consume source-table native tensor streams
+with one owned CPU lookahead; they do not retain Python histories or graph
+batch lists. Native encoders, source/anchor hashes and ordered declarations
+bind the new managed checkpoint namespace. Explicit token caches retain their
+existing prepared workflow. Unsupported native clock, ownership, tie and
+distributed rules fail before training. All ADRs imported from the
+standalone Transaction repository are excluded from the public package. A
+structural close capability handles resource-backed batches, graph cleanup is registered where
+the native loader is created, and each graph loader provides provenance and
+tie policy directly. NativeGraphSampler's traversal inheritance is unchanged.
+
+## Excluded source paths
+
+Do not import or publish any standalone Transaction architecture decision
+records: `docs/architecture/**` is excluded from every future sync. This is a
+source-sync policy, not a per-document classification decision. The public
+package uses concept, contract, compatibility and migration guides instead;
+loader selection and workload comparison guidance live in
+[the public migration guide](docs/migration/native-loader-default.md).
+
+`UPSTREAM.json` records this directory rule and the 18 excluded source files.
+The source hash inventory retains their original hashes for audit, but those
+paths are neither imported nor published. Exclusions take precedence over the
+file inventory during future syncs; do not restore excluded files blindly.
+
+These files existed in earlier public Engine commits. Removing the current
+paths and site navigation does not remove that Git history. Repository owners
+must assess any historical exposure separately; this PR does not rewrite it.
+
+Local additions `src/tfm/contracts/resources.py` and
+`tests/contract/test_loader_resources.py` define and verify structural cleanup
+without requiring the optional native runtime. Canonical recipe tests exercise the native default; explicit Python and direct
+helper tests verify operation without native imports.

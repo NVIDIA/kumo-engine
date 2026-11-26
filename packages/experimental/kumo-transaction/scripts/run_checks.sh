@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
-uv sync --extra dev
+uv sync --extra dev --extra native
 uv run ruff check src tests recipes
 uv run ruff format --check src tests recipes
-uv run pyright src/tfm
+uv run pyright --project pyproject.toml src/tfm
 uv run pytest tests/unit tests/contract tests/recipe_smoke -q

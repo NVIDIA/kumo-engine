@@ -13,7 +13,7 @@ This is not a quality, fraud, or production claim.
 | candidates | **A** no overrides. **B** `training.max_steps=3000`, `training.optimizer.warmup_steps=150`. **C** A's checkpoints re-evaluated with `fraud_task.finetune.rank=16`, `fraud_task.finetune.alpha=16.0`. **D** B's checkpoints re-evaluated with the same LoRA overrides |
 | code | commit `124ab93`, run from a detached worktree with a clean tree; C and D used `benchmarks/seed_range.py --reuse-checkpoint` on copies of A's and B's run directories |
 | data | `synth_100k_gen2_m31_seed0`; pretraining on every 128-event train-side window of all 100,000 users (token cache); probes on 10,000 users, most recent 128 events each; train cutoff 2024-06-01, validation cutoff 2024-09-01 |
-| fraud task | spliced identity theft, 20% victims, matched donors ([ADR 0015](../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md)) |
+| fraud task | spliced identity theft, 20% victims, matched donors ([dataset strategy](../../docs/reference/datasets.md)) |
 | model | profile / event / decoder depths 2 / 4 / 4, hidden 256, 8 heads, TimeRoPE, SDPA, varlen; next-event fields plus token/event/key MLM; last-token readout; 11,513,856 parameters |
 | training | eager, bf16, batch 128, Muon (LR 0.01) and AdamW (LR 1e-3), cosine schedule, 5% warmup; no non-finite steps. Loss at the last step: A 3.76–3.90, B 3.53–3.76 |
 | probes | every XGBoost arm uses the config's fixed setting; LoRA on qkv, out, and the feed-forward layers with a linear head, early-stopped on 20% of the training entities |

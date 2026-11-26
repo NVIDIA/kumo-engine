@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Blueprint v2 configs build the model ADR 0012 describes."""
+"""The Blueprint v2 configs build the model Blueprint v2 guide describes."""
 
 from __future__ import annotations
 

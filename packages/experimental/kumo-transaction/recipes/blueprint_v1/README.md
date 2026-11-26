@@ -12,7 +12,7 @@ recent history, and test whether those embeddings improve an XGBoost fraud
 classifier.
 
 It follows v1's flow, field tokenization, and model, and fixes v1's defects
-([ADR 0017](../../docs/architecture/0017-v1-blueprint-on-the-sdk.md)). The two
+(Blueprint v1 guide). The two
 that matter most:
 
 - **v1 trained without shifting its labels.** Its data module set
@@ -126,13 +126,13 @@ reaches 80% and 90%. Do **not** commit the data or a symlink to it. You can
 set `data.path` in the config instead of the environment variable.
 
 Sequence cutoffs are the last event time in each partition, not the YAML
-`train_end`, because the split is by row count (ADR 0004). A user's history can
+`train_end`, because the split is by row count (temporal split rules). A user's history can
 span all three partitions. When `max_entities` is below the number of users,
 the adapter prefers users with fraud so the small configs have positives.
 
 ## Commands
 
-CPU-safe smoke (synthetic, eager decoder, no extras):
+CPU-safe smoke (synthetic, eager decoder, default Kumo Engine loader):
 
 ```bash
 uv run tfm smoke --recipe blueprint_v1
@@ -141,7 +141,7 @@ uv run tfm smoke --recipe blueprint_v1
 24 TabFormer users (`config.small.yaml`):
 
 ```bash
-uv sync --extra huggingface --extra baselines
+uv sync --extra native --extra huggingface --extra baselines
 export TFM_TABFORMER_ROOT=~/data/TabFormer
 uv run tfm train    --recipe blueprint_v1 --config small
 uv run tfm infer    --recipe blueprint_v1 --config small
@@ -208,6 +208,10 @@ files, `label_delay`, and the tokenizer's fields; a run refuses a cache built
 for anything else. `tfm report` without `--reuse-checkpoint` also works on N
 GPUs, but then every rank loads events first.
 
+The source-native, no-cache CLI currently supports one process. For distributed
+training, use a compatible prepared cache or explicitly select `data.loader: python`
+in a local configuration.
+
 `config.multi_gpu.yaml` shards parameters across GPUs with `fsdp2` instead. It
 requires CUDA, `model.backbone: huggingface`, and `training.precision: bf16`,
 and raises rather than training eager. Each rank prepares data independently,
@@ -224,7 +228,7 @@ uv run torchrun --nproc-per-node 8 -m tfm.cli.main report \
 
 The `huggingface`, `baselines`, and `umap` extras are locked in `uv.lock`.
 `uv sync` removes every extra you don't list, so name them all in one command
-(`uv sync --extra huggingface --extra baselines --extra umap`). RAPIDS is
+(`uv sync --extra native --extra huggingface --extra baselines --extra umap`). RAPIDS is
 installed with `uv pip install` and is not in `uv.lock`, so a plain `uv run`
 re-syncs the environment and removes it; use `uv run --no-sync` once it is
 installed. cuDF is CUDA-version specific and needs `numpy<2.5`; on CUDA 13:
@@ -261,3 +265,18 @@ Written under the run directory (or the smoke temp dir):
   not combined with results on any other dataset
   ([datasets](../../docs/reference/datasets.md)).
 - CPU merchant hashing is not bit-identical to RAPIDS `hash_values`.
+
+## Loader selection
+
+Kumo Engine's experimental PyTorch/DiskGraph loader is the default
+(`data.loader: kumo_pytorch`). Install `--extra native` for sequences and
+`--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+provides setup, commands and temporal/schema limits. Set `data.loader: python`
+in a copied configuration to use the reference loader. Both retain preparation
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native CLI streams source-table feature tensors and retains active/prefetched
+model batches. Source validation, index preparation, targets and evaluation arrays
+still have costs; see the guide's explicit capability and checkpoint limits.
+
+`config.multi_gpu.yaml` explicitly selects `data.loader: python` for its distributed
+training settings. The native source loader currently supports one process.

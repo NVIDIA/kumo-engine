@@ -31,7 +31,7 @@ fails before anything trains.
 ## Task
 
 Self-supervised pretraining per variant, then the fraud probe of
-[ADR 0013](../../../docs/architecture/0013-fraud-probe-split-integrity.md) with
+[probe split rules](../../../docs/concepts/evaluation-protocol.md) with
 its `raw`, `embedding`, and `combined` arms.
 
 ## Data assumptions

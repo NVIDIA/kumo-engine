@@ -19,7 +19,7 @@ seed: 42
 # the model instead, see config.multi_gpu.yaml. config.cached.yaml is this run
 # with its pretraining windows read from a token cache.
 #
-#   uv sync --extra huggingface --extra baselines
+#   uv sync --extra native --extra huggingface --extra baselines
 #   uv run tfm prepare-tabformer --root ~/data/TabFormer
 #   export TFM_TABFORMER_ROOT=~/data/TabFormer
 #   uv run tfm report --recipe blueprint_v1 --device cuda \
@@ -31,6 +31,7 @@ seed: 42
 #     --recipe blueprint_v1 --device cuda --run-dir outputs/blueprint_v1/gb10_2gpu
 
 data:
+  loader: kumo_pytorch
   adapter: tabformer
   path: null
   split_protocol: precomputed

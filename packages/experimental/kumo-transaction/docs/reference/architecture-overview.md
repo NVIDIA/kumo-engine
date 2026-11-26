@@ -85,8 +85,8 @@ probes, fine-tuning, and minibatching stay stack-agnostic.
 | Keys apply to the chosen granularity | `GranularityConfig`, `RecipeConfig._cross_section_rules` | Load |
 | Slot pairings (rules 1–3 of [building blocks](../concepts/building-blocks.md)) | `tfm.api.validation.validate_composition` | Model build |
 | Layout carries the needed event boundary (rule 4) | `validate_tokenizer_layout` | `setup_run` |
-| Backend can run this model, layout, device, and precision | `check_backend_for_run` (backend capabilities, ADR 0011) | Before and after data preparation |
-| No future events, per-side labels, entity-disjoint probes | `tfm.data`, `tfm.runtime.evaluate` (ADR 0013) | Data and evaluation |
+| Backend can run this model, layout, device, and precision | `check_backend_for_run` (backend capabilities, backend contracts) | Before and after data preparation |
+| No future events, per-side labels, entity-disjoint probes | `tfm.data`, `tfm.runtime.evaluate` (probe split rules) | Data and evaluation |
 
 ## Testing layers
 

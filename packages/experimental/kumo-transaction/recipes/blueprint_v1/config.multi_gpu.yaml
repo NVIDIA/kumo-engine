@@ -13,13 +13,15 @@ seed: 42
 # each optimizer step sees `batch_size x world size` windows. Rank 0 alone
 # embeds, evaluates, and reports.
 #
-#   uv sync --extra huggingface --extra baselines
+#   uv sync --extra native --extra huggingface --extra baselines
 #   export TFM_TABFORMER_ROOT=~/data/TabFormer
 #   uv run torchrun --nproc-per-node 8 -m tfm.cli.main report \
 #     --recipe blueprint_v1 --config multi_gpu --device cuda \
 #     --run-dir outputs/blueprint_v1/multi_gpu
 
 data:
+  # Distributed training and fine-tuning use the Python reference path.
+  loader: python
   adapter: tabformer
   path: null
   split_protocol: precomputed

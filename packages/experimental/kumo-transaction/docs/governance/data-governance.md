@@ -22,7 +22,7 @@
 
 Each dataset's role, source, licence, split, and tasks are in
 [datasets](../reference/datasets.md). Results from different datasets are
-never combined (ADR 0015).
+never combined (dataset strategy).
 
 Do not commit symlinks such as `data/TabFormer -> ../payment-foundation-model/...`.
 A gitignored local link is an optional convenience.

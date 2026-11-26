@@ -6,7 +6,7 @@ seeds 42, 43, and 44, with two protocol changes: every test-period
 transaction of the evaluation users is scored, not a 100,000-row sample, and
 every XGBoost arm uses one fixed setting. The headline is
 `history_window_xgboost_raw_embedding` over `history_window_xgboost_raw`
-([ADR 0018](../../docs/architecture/0018-one-headline-comparison.md)). It is
+([evaluation protocol](../../docs/concepts/evaluation-protocol.md)). It is
 not a quality or fraud claim.
 
 | field | value |

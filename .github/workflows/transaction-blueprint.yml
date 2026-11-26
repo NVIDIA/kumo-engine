@@ -21,7 +21,7 @@ jobs:
   blueprint:
     name: transaction-blueprint
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CUDA_VISIBLE_DEVICES: ""
       OMP_NUM_THREADS: "1"
@@ -36,35 +36,79 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
-        run: python3 scripts/transaction_ci_paths.py --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+        run: |
+          python3 scripts/transaction_ci_paths.py --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          # Packaging changes must prove a fresh build, without wheel or Cargo restores.
+          if git diff --quiet "$BASE_SHA...$HEAD_SHA" -- \
+            packages/diskgraph/pyproject.toml \
+            packages/diskgraph/diskgraph-pybind/diskgraph_build_backend.py \
+            packages/experimental/kumo-transaction/scripts/build_kumo_loader_wheels.py \
+            packages/experimental/kumo-transaction/scripts/native-build-constraints.txt; then
+            echo "cold_native_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cold_native_build=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Set up Python and uv
         if: steps.paths.outputs.changed == 'true'
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: '3.12'
           version: '0.13.8'
+      - name: Restore verified native wheels
+        if: steps.paths.outputs.changed == 'true' && steps.paths.outputs.cold_native_build != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: packages/experimental/kumo-transaction/.cache/kumo-native-wheels
+          key: transaction-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/experimental/kumo-transaction/pyproject.toml', 'packages/experimental/kumo-transaction/scripts/build_kumo_loader_wheels.py', 'packages/experimental/kumo-transaction/scripts/native-build-constraints.txt') }}
+      - name: Restore Cargo registry and immutable native targets
+        if: steps.paths.outputs.changed == 'true' && steps.paths.outputs.cold_native_build != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/experimental/kumo-transaction/.cache/kumo-native-cargo
+          key: transaction-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/experimental/kumo-transaction/pyproject.toml', 'packages/experimental/kumo-transaction/scripts/native-build-constraints.txt') }}
+          restore-keys: |
+            transaction-cargo-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build or verify matching native wheels
+        if: steps.paths.outputs.changed == 'true'
+        working-directory: packages/experimental/kumo-transaction
+        env:
+          # Keep peak compile memory appropriate for the hosted CPU runner.
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          cat > "$RUNNER_TEMP/transaction-upstream-uv" <<'SH'
+          #!/bin/sh
+          exec uvx --from uv==0.13.7 uv "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/transaction-upstream-uv"
+          python scripts/build_kumo_loader_wheels.py --uv "$RUNNER_TEMP/transaction-upstream-uv"
       - name: Install locked package dependencies
         if: steps.paths.outputs.changed == 'true'
         working-directory: packages/experimental/kumo-transaction
-        run: uv sync --frozen --extra dev
-      - name: Check package style
+        run: |
+          uv sync --frozen --extra dev --extra native --extra kumo --extra baselines --no-install-package diskgraph --no-install-package kumo-pytorch --no-install-package kumo-settings --no-install-package kumo-core --no-install-package kumo-api --no-install-package kumo-pql
+          uv pip install --no-deps --reinstall native-wheels/*/*.whl
+      - name: Check package style and types
         if: steps.paths.outputs.changed == 'true'
         working-directory: packages/experimental/kumo-transaction
         run: |
-          uv run --frozen --extra dev ruff check src tests recipes benchmarks scripts
-          uv run --frozen --extra dev ruff format --check src tests recipes benchmarks scripts
+          uv run --no-sync ruff check src tests recipes benchmarks scripts
+          uv run --no-sync ruff format --check src tests recipes benchmarks scripts
+          uv run --no-sync pyright --project pyproject.toml src/tfm
       - name: Run CPU unit, contract and recipe-smoke tests
         if: steps.paths.outputs.changed == 'true'
         working-directory: packages/experimental/kumo-transaction
         env:
           PYTHONPATH: src
-        run: uv run --frozen --extra dev pytest tests/unit tests/contract tests/recipe_smoke -q
+        run: uv run --no-sync pytest tests/unit tests/contract tests/recipe_smoke -q
       - name: Build and verify wheel legal metadata
         if: steps.paths.outputs.changed == 'true'
         working-directory: packages/experimental/kumo-transaction
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/transaction-wheel" .
-          uv run --frozen --extra dev python ../../../scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/transaction-wheel"
+          uv run --no-sync python ../../../scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/transaction-wheel"
       - name: Unrelated change
         if: steps.paths.outputs.changed == 'false'
         run: echo "No Transaction Blueprint or integration-policy changes."

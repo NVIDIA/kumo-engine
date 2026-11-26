@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A pragmatiq book tokenized once, on disk, for runs too large to hold as objects (ADR 0016)."""
+"""A pragmatiq book tokenized once, on disk, for runs too large to hold as objects (token-cache guide)."""
 
 from tfm.data.token_cache.build import (
     FORMAT_VERSION,

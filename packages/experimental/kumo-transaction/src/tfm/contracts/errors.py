@@ -28,7 +28,7 @@ class InsufficientLabelSupportError(MissingLabelError):
     """Too few labeled entities to split a probe without reusing one.
 
     Raised instead of overlapping the train and evaluation sides, which would
-    score a probe on rows it was fit on (ADR 0008).
+    score a probe on rows it was fit on (evaluation protocol).
     """
 
 

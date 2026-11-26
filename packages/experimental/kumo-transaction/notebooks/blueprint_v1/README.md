@@ -1,5 +1,8 @@
 # NVIDIA TFM Blueprint v1, step by step
 
+For optional native loading, install Python 3.12, rustup, a C/C++ compiler and
+Linux build tools before syncing the `native` extra. See the [installation guide](../../examples/kumo-engine/README.md#canonical-recipes).
+
 Start here if you are new to transaction foundation models. These five
 notebooks follow the public
 [NVIDIA TFM Blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model)
@@ -17,7 +20,7 @@ explain it and call the same `src/tfm` code.
 From the repository root:
 
 ```bash
-uv sync --extra dev --extra notebooks
+uv sync --extra native --extra dev --extra notebooks
 uv run jupyter notebook notebooks/blueprint_v1/
 ```
 

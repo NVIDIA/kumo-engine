@@ -34,7 +34,7 @@ TabFormer users when `TFM_TABFORMER_ROOT` is set.
 ### Behavioral differences
 
 - v1 trained without shifting its labels; v2's `NextEvent` predicts the next
-  token (ADR 0017).
+  token (Blueprint v1 guide).
 - v1 embedded each transaction on its own. v2 embeds it with the customer's
   recent history and keeps the single-transaction embedding as a control.
 - CI uses synthetic data only; TabFormer is not downloaded.

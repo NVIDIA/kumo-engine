@@ -4,7 +4,7 @@
 """Recipe runtime: orchestration that wires data, model, training, and reports.
 
 This is recipe glue, not library architecture. One lifecycle serves every
-stack; the config's building-block slots decide what is built (ADR 0014).
+stack; the config's building-block slots decide what is built (building-block contracts).
 
 - `tfm.runtime.data`: load, split, tokenize, and collate (slots 0 and 1).
 - `tfm.runtime.pipeline`: setup, train, infer, evaluate, report, smoke.

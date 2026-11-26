@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The contract every training backend must pass (ADR 0011).
+"""The contract every training backend must pass (backend contracts).
 
 A backend executes the model's semantics; it does not define them. So each
 registered backend is held to eager training on the same tiny model and batch:

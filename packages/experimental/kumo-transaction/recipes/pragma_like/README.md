@@ -51,7 +51,7 @@ encoder). Milestone status: [the roadmap](../../docs/reference/roadmap.md).
 - Readout: the history encoder's `[USR]` slot (`usr_token`).
 
 Composed through [`tfm.experimental`](../../src/tfm/experimental.py)
-(ADR 0007), not the core `TrxFM` surface.
+(experimental composition guide), not the core `TrxFM` surface.
 
 ## Data
 
@@ -65,11 +65,11 @@ export TFM_PRAGMATIQ_ROOT=~/data/pragmatiq/data/synth_100k_gen2_m31_seed0
 ```
 
 `max_entities` samples users, so the full book is never loaded. `config.yaml`
-replaces the book's own fraud labels with spliced identity theft (ADR 0015)
-and reads pretraining windows from a token cache (ADR 0016) shared with
+replaces the book's own fraud labels with spliced identity theft (dataset strategy)
+and reads pretraining windows from a token cache (token-cache guide) shared with
 `blueprint_v2`. `default_12m` histories are rebuilt at each row's `eval_ts`,
 so events after it are excluded. Probe train and evaluation users are disjoint
-(ADR 0013).
+(probe split rules).
 
 ## Commands
 
@@ -116,3 +116,15 @@ are synthetic, so no production, fraud, credit, or paper-fidelity claims.
 same rows, is recorded in
 [`blueprint_v2_seeds.md`](../../benchmarks/results/blueprint_v2_seeds.md).
 The S/M/L ladder has no recorded run.
+
+## Loader selection
+
+Kumo Engine's experimental PyTorch/DiskGraph loader is the default
+(`data.loader: kumo_pytorch`). Install `--extra native` for sequences and
+`--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+provides setup, commands and temporal/schema limits. Set `data.loader: python`
+in a copied configuration to use the reference loader. Both retain preparation
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native CLI streams source-table feature tensors and retains active/prefetched
+model batches. Source validation, index preparation, targets and evaluation arrays
+still have costs; see the guide's explicit capability and checkpoint limits.

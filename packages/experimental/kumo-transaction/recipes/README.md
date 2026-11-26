@@ -1,6 +1,11 @@
 # Recipes
 
 A recipe is one reference architecture: a directory of configs and a README.
+Sequence, graph and hybrid recipes default to Kumo Engine retrieval. Install the
+`native` extra (`kumo` for graph models); select `data.loader: python` explicitly
+for reference retrieval. See the [loader guide](../docs/migration/native-loader-default.md)
+for setup, preparation costs, materialization tradeoffs and current memory limits.
+
 Every stage runs through the CLI, resolved from [`catalog.yaml`](catalog.yaml):
 
 ```bash
@@ -23,6 +28,7 @@ re-evaluate a trained run.
 
 | [`gnn_encoder`](gnn_encoder) | Heterogeneous GNN, binary supervision or future-subgraph pretraining | generated relational fixture; optional local pragmatiq | — |
 | [`gnn_sequence`](gnn_sequence) | Frozen GNN conditions Blueprint v2 through its profile encoder | generated relational fixture; optional local pragmatiq | — |
+| [`relational_inputs`](relational_inputs) | Sequence, Engine GNN and hybrid from one keyed-table declaration and anchor stream | generic synthetic tables | — |
 
 Start with **blueprint_v1** for the end-to-end flow on public data. Use
 **pragma_like** for a PRAGMA-style encoder, and **blueprint_v2** for the

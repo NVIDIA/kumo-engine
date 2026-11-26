@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The flat BERT-style encoder (ADR 0019) through v1's pipeline on a generated book."""
+"""The flat BERT-style encoder (flat-encoder guide) through v1's pipeline on a generated book."""
 
 import json
 from pathlib import Path

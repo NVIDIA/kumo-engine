@@ -19,7 +19,7 @@ class Capabilities:
 
 @dataclass(frozen=True)
 class BackendCapabilities:
-    """What a training backend can execute (ADR 0011).
+    """What a training backend can execute (backend contracts).
 
     A backend executes the model's semantics; it does not define them. The
     objective, label alignment, masks, and batch contract belong to the model,

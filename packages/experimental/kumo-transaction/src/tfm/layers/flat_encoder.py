@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental flat BERT-style encoder model (ADR 0019)."""
+"""Experimental flat BERT-style encoder model (flat-encoder guide)."""
 
 from __future__ import annotations
 

@@ -23,6 +23,7 @@ seed: 42
 #     --run-dir outputs/pragma_like/lab
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   path: null
   observation_window: 730d

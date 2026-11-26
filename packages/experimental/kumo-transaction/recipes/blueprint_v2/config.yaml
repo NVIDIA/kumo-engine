@@ -42,6 +42,7 @@ seed: 42
 # three-split ranges come from benchmarks/final_eval.py.
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   path: null
   observation_window: 730d

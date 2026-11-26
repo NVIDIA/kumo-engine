@@ -15,7 +15,7 @@ Smoke runs never count.
 Both milestones share one headline: on PR-AUC, XGBoost on raw features plus
 the TFM embedding (`xgboost_raw_embedding`) against XGBoost on the raw
 features alone (`xgboost_raw`), with the same fixed setting for both
-([ADR 0018](../architecture/0018-one-headline-comparison.md)).
+([evaluation protocol](../concepts/evaluation-protocol.md)).
 
 | Milestone | Recipe | Status |
 |---|---|---|
@@ -27,7 +27,7 @@ features alone (`xgboost_raw`), with the same fixed setting for both
 The target is v1's design on the [NVIDIA TFM Blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model),
 not its bytes or published numbers. v1's checkpoint was trained with unshifted
 labels and learned to copy its input, and its probe embedded each transaction
-without history ([ADR 0017](../architecture/0017-v1-blueprint-on-the-sdk.md)).
+without history ([Blueprint v1 guide](../../recipes/blueprint_v1/README.md)).
 The exact replay and its errata are on branch `archive/v1-replay`; v1's
 artifacts are frozen at tag `v1.0.0`.
 
@@ -58,7 +58,7 @@ PRAGMA's profile and event encoders feed v1's causal history decoder. v1 is
 the baseline; PRAGMA is a comparison target (`pragma_like`, at matched size on
 the same rows), not something to reproduce bit for bit.
 
-- [x] **Composition ADR.** [ADR 0012](../architecture/0012-blueprint-v2-composition.md):
+- [x] **Composition contract.** [Blueprint v2 guide](../../recipes/blueprint_v2/README.md):
   every objective declares its label horizon, cutoff semantics, outputs,
   gradient behavior, and leakage checks.
 - [x] **Tokenization.** Key-value-time tokens with the `8·ln(1+Δt/8)` time
@@ -70,14 +70,14 @@ the same rows), not something to reproduce bit for bit.
 - [x] **Recipe.** `blueprint_v2` with a CPU smoke config and a pragmatiq
   config, in the catalog and matrix.
 - [x] **Backends.** Eager, and `ddp` passing the
-  [ADR 0011](../architecture/0011-training-backend-contract.md) suite (Gloo on
+  [backend contracts](hardware-and-runtimes.md) suite (Gloo on
   CPU; 2 and 4 NCCL ranks). No multi-GPU result is recorded.
 - [x] **Downstream.** A history-window probe with histories rebuilt at each
   row's cutoff, the single-event control, and the spliced identity-theft fraud
-  task ([ADR 0015](../architecture/0015-dataset-strategy-and-spliced-fraud.md))
+  task ([dataset strategy](datasets.md))
   beside churn, default, LTV, and AML on the same users.
 - [x] **Leakage.** Entity-disjoint fraud probe with per-side label windows
-  ([ADR 0013](../architecture/0013-fraud-probe-split-integrity.md)).
+  ([probe split rules](../concepts/evaluation-protocol.md)).
 - [x] **Evidence.** `recipes/blueprint_v2/config.yaml` and
   `recipes/pragma_like/config.yaml` at three seeds, with the headline lift on
   every task: [`blueprint_v2_seeds`](../../benchmarks/results/blueprint_v2_seeds.md).

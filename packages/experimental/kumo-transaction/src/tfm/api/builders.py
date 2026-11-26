@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build models from a recipe config, one building-block slot per key (ADR 0014).
+"""Build models from a recipe config, one building-block slot per key (building-block contracts).
 
 Each `model.composition` key selects a component; nothing is hard-coded per
 stack. `tfm.api.validation` then decides whether the combination is valid, so
@@ -176,7 +176,7 @@ def profile_history_from_config(config: RecipeConfig, *, vocab_size: int) -> Pro
 def flat_encoder_from_config(
     config: RecipeConfig, *, vocab_size: int, vocabulary: FieldVocabulary | None
 ) -> FlatEncoderModel:
-    """The experimental flat BERT-style encoder (ADR 0019)."""
+    """The experimental flat BERT-style encoder (flat-encoder guide)."""
     if vocabulary is None:
         raise IncompatibleCompositionError(
             "granularity.type flat_encoder needs the tokenizer's FieldVocabulary to mask "

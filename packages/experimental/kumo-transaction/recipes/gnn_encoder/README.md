@@ -14,15 +14,11 @@ It returns one root embedding per anchor and does not instantiate a sequence
 model. The [data contract](../../docs/concepts/data-contract.md) defines graph clocks and sample alignment. The
 [graph-plus-sequence recipe](../gnn_sequence/README.md) reuses this exact encoder.
 
-The existing optional `kumo` extra supplies the actual Engine implementation;
-there is no local substitute when it is missing. The in-memory sampler is the
-CPU correctness baseline for graph construction. An adapter accepts
-[Kumo Engine](https://github.com/NVIDIA/kumo-engine) PyTorch graph outputs through
-`tfm.data.adapters.kumo_graph.from_kumo_graph`; it requires explicit sample/root
-bindings, pre-encoded numeric fields, and aligned availability clocks. The
-adapter validates native graph tensors; this recipe uses the in-memory sampler.
-Native DiskGraph sampling/aggregate parity has not been validated. CUDA model
-execution has a short L4 smoke/cost check, not a full training result.
+The optional `kumo` extra supplies the actual Engine implementation. The default
+input sampler uses DiskGraph through `from_kumo_graph`; the Python sampler
+remains an explicit correctness control. Future targets use a separate Python
+reference pass. See the [native guide](../../examples/kumo-engine/README.md#source-native-sequence-graph-and-hybrid-inputs)
+for the supported schema, clock limits and tie policy.
 
 ## Task and data assumptions
 
@@ -158,7 +154,7 @@ are configurable through `depth` and `target_depth` but are not a quality or
 memory guarantee. The reference path materializes sampled graphs and targets
 in memory, and uncapped terminal reductions can be costly. No private data,
 pretrained weights, production readiness, paper fidelity, or performance claim
-is supplied. Full-book and native-loader validation remain future work; a short CUDA smoke
+is supplied. Full-book quality and native aggregate parity remain future work; a short CUDA smoke
 and cost check does not validate a full training campaign.
 
 
@@ -280,3 +276,15 @@ pretraining still derives labels from cutoff-truncated histories using the
 shared sequence-label rule. Full and downstream runs fit or restore a tokenizer
 for their sequence arms. Graph recipes reject `data.token_cache`; they currently
 load adapter events in memory.
+
+## Loader selection
+
+Kumo Engine's experimental PyTorch/DiskGraph loader is the default
+(`data.loader: kumo_pytorch`). Install `--extra native` for sequences and
+`--extra kumo` for graph models. The [worked loader guide](../../examples/kumo-engine/README.md#canonical-recipes)
+provides setup, commands and temporal/schema limits. Set `data.loader: python`
+in a copied configuration to use the reference loader. Both retain preparation
+costs; see [memory and materialization tradeoffs](../../docs/migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+The native CLI streams source-table feature tensors and retains active/prefetched
+model batches. Source validation, index preparation, targets and evaluation arrays
+still have costs; see the guide's explicit capability and checkpoint limits.

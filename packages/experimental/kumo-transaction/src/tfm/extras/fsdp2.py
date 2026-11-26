@@ -12,7 +12,7 @@ The loop, the loss, the schedule, and the sharding are all this SDK's. The loss
 in particular is the composed model's own objective (`NextEvent`), so label
 alignment is never delegated to the backend. That is the lesson of the
 Blueprint's v1 checkpoint, whose dataset and loss each assumed the other would
-shift the labels (ADR 0010).
+shift the labels (Blueprint v1 objectives).
 
 This backend never falls back to the eager loop. If CUDA or a compatible
 backbone is missing it raises. Use `training.backend: eager` for the
@@ -53,7 +53,7 @@ from tfm.training.distributed import (
 from tfm.training.distributed import mean_across_ranks as _mean_across_ranks
 from tfm.training.progress import TrainingProgress
 from tfm.training.reproducibility import seed_everything
-from tfm.training.trainer import TrainableBatch, epoch_order, lr_at_step, real_tokens
+from tfm.training.trainer import BatchSource, TrainableBatch, epoch_order, lr_at_step, real_tokens
 
 __all__ = [
     "Fsdp2NextEventTrainer",
@@ -204,7 +204,7 @@ class Fsdp2NextEventTrainer:
     def fit(
         self,
         model: nn.Module,
-        batches: Sequence[TrainableBatch],
+        batches: BatchSource[TrainableBatch],
         *,
         max_steps: int,
         learning_rate: float,
@@ -215,6 +215,10 @@ class Fsdp2NextEventTrainer:
         precision: str = "bf16",
         progress: TrainingProgress | None = None,
     ) -> dict[str, float | str]:
+        if not isinstance(batches, Sequence):
+            raise UnsupportedCombinationError(
+                "FSDP2 currently requires indexed batches; choose eager for a native stream"
+            )
         settings = optimizer if optimizer is not None else OptimizerConfig()
         name = self.capabilities.name
         if settings.name != "adamw" or settings.max_grad_norm is not None:

@@ -3,7 +3,7 @@
 Milestone 1, criterion 6, at **one seed**. The criterion asks for three seeds;
 this record does not meet it on its own. It is the first run of
 `tabformer_hf_decoder/config.gb10.yaml`
-([ADR 0017](../../../docs/architecture/0017-v1-blueprint-on-the-sdk.md)): v1's
+([Blueprint v1 guide](../../../recipes/blueprint_v1/README.md)): v1's
 Llama decoder pretrained by next-event prediction on every TabFormer user,
 then probed per transaction, with each scored transaction embedded either with
 the customer's last 128 transactions or on its own. It is not a quality claim.

@@ -260,7 +260,10 @@ def test_embeddings_must_come_for_both_sides_one_row_each() -> None:
         )
 
 
-@pytest.mark.skipif(not extra_available("optuna"), reason="needs the baselines extra")
+@pytest.mark.skipif(
+    not (extra_available("optuna") and extra_available("xgboost")),
+    reason="needs Optuna and XGBoost from the baselines extra",
+)
 def test_the_embedding_arm_uses_signal_only_the_embedding_carries() -> None:
     # Labels independent of the sequences; one embedding column encodes them.
     rng = np.random.default_rng(0)
@@ -292,7 +295,10 @@ def test_the_embedding_arm_uses_signal_only_the_embedding_carries() -> None:
     assert manifest["n_raw_features"] < manifest["n_features"]
 
 
-@pytest.mark.skipif(not extra_available("optuna"), reason="needs the baselines extra")
+@pytest.mark.skipif(
+    not (extra_available("optuna") and extra_available("xgboost")),
+    reason="needs Optuna and XGBoost from the baselines extra",
+)
 def test_each_named_view_gets_its_own_raw_embedding_arm() -> None:
     rng = np.random.default_rng(0)
     train, _ = _task(120, 0)
@@ -331,7 +337,10 @@ def test_each_named_view_gets_its_own_raw_embedding_arm() -> None:
         )
 
 
-@pytest.mark.skipif(not extra_available("optuna"), reason="needs the baselines extra")
+@pytest.mark.skipif(
+    not (extra_available("optuna") and extra_available("xgboost")),
+    reason="needs Optuna and XGBoost from the baselines extra",
+)
 def test_the_tuned_xgboost_arm_is_deterministic() -> None:
     train, y_train = _task(120, 0)
     evaluation, y_eval = _task(40, 1)

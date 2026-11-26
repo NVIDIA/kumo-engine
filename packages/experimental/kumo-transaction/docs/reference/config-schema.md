@@ -30,7 +30,7 @@ value under another granularity.
 ## Composition: one choice per slot
 
 `model.composition` holds one choice per building-block slot (see
-[ADR 0014](../architecture/0014-building-block-taxonomy.md)). The runtime
+[building-block contracts](../concepts/building-blocks.md)). The runtime
 builds exactly that composition and runs `validate_composition` before
 training, so an invalid pairing fails with the rule it breaks.
 
@@ -303,3 +303,33 @@ The event schema is validated before graph feature/target construction in every
 stage. The configured amount field must have at least one finite value in
 training-owner history by a graph-training cutoff; held-out owners or future target values do not establish
 that presence. Missing amounts on individual events remain supported.
+
+## Recipe loader selection
+
+`data.loader` defaults to `kumo_pytorch` for sequence, graph and hybrid recipes.
+Set `python` explicitly for reference retrieval. A registered `SourceLoader` name
+or `package.module:provider` selects a compatible source engine through the same
+pipeline; see [provider contracts and examples](extending.md#source-loader-providers).
+Unknown names and invalid imported providers fail during configuration. Native dependencies are required
+unless a configured cache bypasses history retrieval; there is no automatic fallback. A configured
+token cache retains its existing prepared-batch workflow. Without a cache, native
+recipes stream source-table tensors and use fitted native encoders; native packing
+is currently unsupported and raises before training. See the [migration guide](../migration/native-loader-default.md) for
+source build requirements and graph schema/clock limitations.
+
+## Shared relational tasks
+
+`data.relational` selects the adapter's declaration: a file-backed `TableSource`
+from `table_source` for native loading, or a bounded `RelationalDataset` for the
+explicit Python reference path.
+It declares `root`, named `history_paths`, cutoff- or label-generated anchors,
+and optional replay `anchors`. `labels` declares the separate entity-level binary
+source, horizon, delay and split fitting cutoffs. Labels-role tables never become
+inputs. Pretrain-only FutureSubgraph uses cutoff/replay anchors with
+`data.load_labels: false` and no `data.relational.labels`.
+
+See the [contract](../contracts/relational-inputs.md) and
+[worked configurations](../../recipes/relational_inputs/README.md). Kumo Engine is
+the default; Python remains an explicit reference option. Numeric fixed-FK graph projection and point-in-time sequence
+ownership have explicit capability checks; unsupported graph feature kinds or
+versioned topology fail before fitting or training.

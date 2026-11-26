@@ -5,6 +5,7 @@
 recipe_family: graph
 seed: 42
 data:
+  loader: kumo_pytorch
   adapter: synthetic
   training_graphs: shared
   n_entities: 64

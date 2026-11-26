@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The spliced identity-theft task keeps ADR 0015's labels and leakage rules."""
+"""The spliced identity-theft task keeps dataset strategy's labels and leakage rules."""
 
 from __future__ import annotations
 

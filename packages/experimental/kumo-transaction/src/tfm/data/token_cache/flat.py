@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A TabFormer train split tokenized once with a flat field tokenizer (ADR 0016).
+"""A TabFormer train split tokenized once with a flat field tokenizer (token-cache guide).
 
 The field tokenizer's vocabulary is fixed, so an event's tokens depend only on
 its own row: the builder reads the train rows of the sampled users, maps each

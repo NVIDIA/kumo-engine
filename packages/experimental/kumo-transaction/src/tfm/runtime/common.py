@@ -145,7 +145,7 @@ def write_embeddings_manifest(
 def check_backend_for_run(
     config: RecipeConfig, device: torch.device, *, layout: str | None = None
 ) -> None:
-    """Refuse a configuration the selected backend cannot execute (ADR 0011)."""
+    """Refuse a configuration the selected backend cannot execute (backend contracts)."""
     check_backend_supports(
         backend_capabilities(config.training.backend),
         backbone=config.model.backbone.strip().lower(),

@@ -1,11 +1,14 @@
 # Notebooks
 
+For optional native loading, install Python 3.12, rustup, a C/C++ compiler and
+Linux build tools before syncing the `native` extra. See the [installation guide](../examples/kumo-engine/README.md#canonical-recipes).
+
 One explanatory series per dataset. The recipes under
 [`recipes/`](../recipes/README.md) are the canonical workflows; notebooks call
 the same `src/tfm` code and hold no logic of their own.
 
 ```bash
-uv sync --extra dev --extra notebooks
+uv sync --extra native --extra dev --extra notebooks
 uv run jupyter notebook notebooks/
 ```
 

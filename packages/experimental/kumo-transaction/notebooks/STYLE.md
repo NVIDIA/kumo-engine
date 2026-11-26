@@ -39,7 +39,7 @@ use it.
   fixture's numbers do not show.
 - When a series retells a published notebook, such as v1's, add a
   "What changed from v1" quote block to each notebook. List each change with
-  its reason and a link to the ADR or errata entry.
+  its reason and a link to the public contract or errata entry.
 
 ## Code
 

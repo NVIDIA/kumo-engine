@@ -253,3 +253,40 @@ Raw probe amount aggregates treat an omitted or non-finite event amount as zero.
 The mean still divides by the number of events, and the event count and final
 calendar features are unchanged. Object and cached aggregation use this same
 convention without changing stored amounts or graph missing-value masks.
+
+## Native recipe loading
+
+The default `data.loader: kumo_pytorch` uses source-table native recipe streams
+with the pinned Kumo API. Select `data.loader: python` for the object-based
+reference path. Both retain preparation costs; see the
+[loader tradeoffs](../migration/native-loader-default.md#preparation-and-memory-tradeoffs).
+Native encoders fit selected training anchors and deliver tensors without
+Python event reconstruction or tokenization during model batching. Continuous
+seed/epoch iterators retain active/prefetched inputs, not whole-split model
+batches. Optional hand-engineered reference baselines read one history at a time
+after native model inference.
+
+Source-native clocks must be whole-second UTC timestamps. Unsupported ownership,
+independent history availability, canonical capped ties and per-hop lookbacks
+are rejected before training. Historical inputs, labels and future target
+vectors remain separate. Old object-based native helpers remain available to
+library callers but are not the source-native recipe pipeline. See the
+[worked guide](../../examples/kumo-engine/README.md#canonical-recipes) and
+[migration notes](../migration/native-loader-default.md).
+
+Resource-backed custom training inputs can implement
+`tfm.contracts.resources.Closable.close()` without inheriting a loader class.
+The recipe runner closes that resource after fitting or setup failure. Graph
+loaders provide `loader_manifest` and `tie_policy` metadata directly; native
+resource cleanup is registered when the loader is created.
+
+
+The opt-in shared relational declaration has a separate
+[contract and worked recipe](../contracts/relational-inputs.md). It preserves
+row/link observation clocks through timed intermediate tables, generates or
+replays complete prediction anchors and identifies entity labels explicitly.
+Its native source-table path checks backend capabilities before feature fitting
+or training, and streams neighborhoods and encoded histories at the same
+anchors. The Python implementation retains the broader point-in-time traversal
+contract. Unsupported native projections identify their path and rule; native
+selection alone makes no performance claim.

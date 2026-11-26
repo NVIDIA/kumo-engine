@@ -82,3 +82,36 @@ def test_kumo_engine_example_builds_and_reuses_index(tmp_path: Path) -> None:
     assert f"DiskGraph index: {index}" in output
     assert (reused / "model.pt").is_file()
     assert list((scratch / "indexes").iterdir()) == [index]
+
+
+def test_kumo_engine_example_rejects_cross_root_index_before_preparation(tmp_path: Path) -> None:
+    pytest.importorskip("diskgraph")
+    pytest.importorskip("kumo.pytorch.api")
+    outside = tmp_path / "outside" / "index"
+    outside.mkdir(parents=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EXAMPLE / "run.py"),
+            "--config",
+            str(CONFIG),
+            "--threads",
+            "1",
+            "--scratch-dir",
+            str(tmp_path / "managed"),
+            "--index",
+            str(outside),
+            "--output",
+            str(tmp_path / "output"),
+            "--device",
+            "cpu",
+            "--steps",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "cross-root import is unsupported" in result.stderr
+    assert "Preparing DiskGraph" not in result.stdout

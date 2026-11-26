@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Label windows: which events' labels a sequence-level label may count (ADR 0013).
+"""Label windows: which events' labels a sequence-level label may count (probe split rules).
 
 A sequence's history can reach far back past the period it is scored on. If
 its label counted every labelled event in the history, the same fraud event

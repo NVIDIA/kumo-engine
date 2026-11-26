@@ -10,11 +10,12 @@ milestone status is in [roadmap.md](roadmap.md).
 
 | Recipe | Tier | Tests | Runtime | Notes |
 |---|---|---|---|---|
-| `blueprint_v1` (+ `notebooks/blueprint_v1`) | `experimental` | recipe smoke, notebooks under nbmake | CPU / CUDA | v1's flow on the SDK (ADR 0017): 11-field tokens, Llama decoder, per-transaction fraud with history |
-| `pragma_like` | `experimental` | unit, recipe smoke | CPU / CUDA | PRAGMA encoder (ADR 0007); `config.yaml` matched to `blueprint_v2`'s, unit-tested |
-| `blueprint_v2` (+ `notebooks/pragmatiq`) | `experimental` | unit, contract, recipe smoke, notebooks in smoke mode | CPU / CUDA | PRAGMA encoders under a causal decoder (ADR 0012); `eager` or `ddp` |
+| `blueprint_v1` (+ `notebooks/blueprint_v1`) | `experimental` | recipe smoke, notebooks under nbmake | CPU / CUDA | v1's flow on the SDK (Blueprint v1 guide): 11-field tokens, Llama decoder, per-transaction fraud with history |
+| `pragma_like` | `experimental` | unit, recipe smoke | CPU / CUDA | PRAGMA encoder (experimental composition guide); `config.yaml` matched to `blueprint_v2`'s, unit-tested |
+| `blueprint_v2` (+ `notebooks/pragmatiq`) | `experimental` | unit, contract, recipe smoke, notebooks in smoke mode | CPU / CUDA | PRAGMA encoders under a causal decoder (Blueprint v2 guide); `eager` or `ddp` |
 | `gnn_encoder` | `experimental` | unit, contract, recipe smoke | CPU checked; CUDA short check | Direct Engine GNN; binary supervision or future-subgraph pretraining; generated data; logistic probes |
 | `gnn_sequence` | `experimental` | unit, contract, recipe smoke | CPU and CUDA smoke | Selected frozen Engine GNN conditions Blueprint v2 through profile tokens; cutoff-level binary supervision |
+| `relational_inputs` | `experimental` | contract, CPU recipe smoke | CPU | One bounded fixed-FK declaration for profile/event sequence, GNN and hybrid; explicit entity labels; native candidate retrieval by default; see [limits](../../recipes/relational_inputs/README.md#limitations) |
 | Slot ablations (`benchmarks/ablations`) | `experimental` | recipe smoke (shared probe split asserted) | CPU | One slot swapped per variant, median [min, max] over `--seeds` |
 | 2.0.0a1 config migration (`tfm migrate-config`) | `reference` | unit (every moved key, every refusal, the lab's checkpoint config) | CPU | Rewrites 2.0.0a1 keys; refuses settings 2.0.0a2 cannot run; comments are not kept |
 
@@ -25,7 +26,7 @@ milestone status is in [roadmap.md](roadmap.md).
 | Synthetic data adapter | `reference` | unit, contract, smoke | CPU | Default CI path |
 | TabFormer adapter + `tfm prepare-tabformer` | `experimental` | unit, recipe smoke | CPU | Splits matched v1's `temporal_split/` row for row (2026-09-26); not fetched by CI |
 | pragmatiq parquet adapter | `reference` | unit | CPU | Four-file contract; the 12-field path drops non-transaction sources |
-| Spliced identity-theft fraud | `experimental` | contract | CPU | `data.fraud_labels: spliced_identity_theft` (ADR 0015) |
+| Spliced identity-theft fraud | `experimental` | contract | CPU | `data.fraud_labels: spliced_identity_theft` (dataset strategy) |
 | Profile milestones as of cutoff | `reference` | contract | CPU | Milestones after the cutoff are dropped; the rest are timed from the cutoff |
 | SequenceTokenizer protocol + registry | `reference` | unit, contract | CPU | Layouts are checked against the granularity |
 | `transaction_field_tokenizer` (`flat_fields`) | `reference` | unit, contract | CPU | v1's field layout; `features.fields` selects a subset in order |
@@ -48,8 +49,8 @@ milestone status is in [roadmap.md](roadmap.md).
 | GRU backbone | `experimental` | unit | CPU / CUDA | `model.backbone: gru` on `flat`; not packable |
 | Backbone registry (`tfm.api.register_backbone`) | `experimental` | contract | CPU / CUDA | Adds a `model.backbone` name for `flat`; unknown names are refused with the registered list |
 | Flat bidirectional encoder + masked fields + last-event readout (`flat_encoder`) | `experimental` | contract (bidirectional, padding, masking, refusals), recipe smoke | CPU / CUDA | `tfm.experimental`; a tokenizer implementing `FieldVocabularyTokenizer` and `position: rope` only; no surprise arm |
-| Profile + event + history encoders (`profile_history`) | `experimental` | unit, recipe smoke | CPU / CUDA | `tfm.experimental` (ADR 0007); event and profile encoders shared with `profile_event_decoder`; pre-sharing checkpoints still load |
-| Profile + event encoders + causal decoder (`profile_event_decoder`) | `experimental` | unit, contract (causal invariance, anti-copy, padding) | CPU / CUDA | `tfm.experimental` (ADR 0012) |
+| Profile + event + history encoders (`profile_history`) | `experimental` | unit, recipe smoke | CPU / CUDA | `tfm.experimental` (experimental composition guide); event and profile encoders shared with `profile_event_decoder`; pre-sharing checkpoints still load |
+| Profile + event encoders + causal decoder (`profile_event_decoder`) | `experimental` | unit, contract (causal invariance, anti-copy, padding) | CPU / CUDA | `tfm.experimental` (Blueprint v2 guide) |
 | `NoPE` on `profile_event_decoder` | `experimental` | contract | CPU / CUDA | The profile encoder keeps TimeRoPE |
 | Varlen event encoding | `experimental` | unit | CPU / CUDA | `granularity.varlen`; skips all-padding event rows, equals the padded path |
 | Sequence packing | `experimental` | unit | CPU / CUDA | `training.packing`; eager backbone only |
@@ -59,14 +60,16 @@ milestone status is in [roadmap.md](roadmap.md).
 | `GNNEncoder` / `GNNSequence` | `experimental` | contract (cutoffs, repeated roots, alignment, frozen state, checkpoint round trip) | CPU checked | `tfm.experimental`; `kumo` extra; shared same-cutoff training, disjoint validation/prediction; eager only |
 | `FutureSubgraph` | `experimental` | unit, contract (oracle, masks, delay, observed-through coverage, gradients) | CPU checked | Separate future targets; window-end membership; train-only signed-log normalization |
 | Engine/shared/disjoint cost controls | `experimental` | CPU harness test; short L4 check | CPU / CUDA | [Recorded L4 check](../../benchmarks/results/graph_backends_l4_cost.md); historical untrimmed run; no native-loader/full-quality claim |
-| Kumo graph tensor adapter | `experimental` | contract (native-output-shaped fixture) | CPU tensor adapter checked | `from_kumo_graph`; native loader/aggregate parity not validated |
+| Kumo graph tensor adapter | `experimental` | contract (native output and invalid-binding fixtures) | CPU native integration | `from_kumo_graph`; bounded FK schema, whole-second clocks; future aggregates remain Python |
+| Source-loader providers | `experimental` | registry/import-path validation, native two-thread engine and four CLI smokes | CPU | Engine/AnchorTable/model-tensor capability required; provider identity and cleanup checked; [extension guide](extending.md#source-loader-providers) |
+| Kumo PyTorch recipe loaders | `experimental` | real source-table/native-tensor contracts; continuous iterator and recipe smokes | CPU | Default CLI source-native sequence, graph and hybrid streams; native canonical recent ties, fixed-path history unions, train-fitted encoders and explicit Python reference option; [guide](../../examples/kumo-engine/README.md#canonical-recipes) |
 | Mean readout | `experimental` | unit | CPU / CUDA | `composition.readout: mean` |
 
 ## Training
 
 | Capability | Tier | Tests | Runtime | Notes |
 |---|---|---|---|---|
-| Backend registry + capability checks | `reference` | unit, contract | CPU | Unsupported combinations are refused before data preparation (ADR 0011) |
+| Backend registry + capability checks | `reference` | unit, contract | CPU | Unsupported combinations are refused before data preparation (backend contracts) |
 | Backend contract suite | `reference` | contract | CPU; GPU backends on a GPU host | Eager parity, anti-copy, masking, HF round trip, determinism |
 | `ddp` | `experimental` | contract (2 Gloo ranks; 2 and 4 NCCL ranks) | CPU / CUDA, `torchrun` | `batch_size` per rank; no recorded multi-GPU training result |
 | `fsdp2` | `experimental` extra | unit, contract on GPU, 2- and 8-GPU runs | CUDA, `torchrun` | HuggingFace backbone and bf16 only; writes a consolidated HF checkpoint |

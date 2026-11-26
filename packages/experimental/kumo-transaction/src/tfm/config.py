@@ -3,7 +3,7 @@
 
 """Pydantic configuration for recipes (serialization of the composition API).
 
-Every key changes behavior or is rejected (ADR 0014). Unknown keys are errors,
+Every key changes behavior or is rejected (building-block contracts). Unknown keys are errors,
 and keys that were removed raise a message naming their replacement, so a
 config can never look like it chose something the runtime ignores.
 """
@@ -42,7 +42,7 @@ class TemporalSplitConfig(StrictConfig):
 
 
 class IdentityTheftConfig(StrictConfig):
-    """The spliced identity-theft task on a pragmatiq book (ADR 0015)."""
+    """The spliced identity-theft task on a pragmatiq book (dataset strategy)."""
 
     victim_fraction: float = 0.2
     """Share of each probe side's eligible users who become victims."""
@@ -81,6 +81,47 @@ class PretrainWindowsConfig(StrictConfig):
 _PRETRAIN_WINDOWS = "Use data.pretrain_windows: {events, max_tokens}."
 
 
+class RelationalLabelConfig(StrictConfig):
+    """Anchor-level binary labels, kept separate from observed feature tables."""
+
+    table: str
+    root_columns: tuple[str, ...]
+    timestamp: str
+    target: str
+    available_at: str
+    split: str = "split"
+    horizon_days: int = Field(ge=0)
+    label_delay_days: int = Field(default=0, ge=0)
+
+
+class RelationalTaskConfig(StrictConfig):
+    """One root/path/anchor task shared by sequence, graph and hybrid modes."""
+
+    root: str
+    history_paths: dict[str, tuple[str, ...]]
+    cutoffs: dict[str, str] = Field(default_factory=dict)
+    label_cutoffs: dict[str, str] = Field(default_factory=dict)
+    labels: RelationalLabelConfig | None = None
+    anchors: str | None = None
+    """Optional replay/prediction Parquet table: sample_id, root key columns, cutoff, split."""
+    ownership: Literal["event_time", "prediction_time"] = "event_time"
+    tie_policy: Literal["canonical_key_asc"] = "canonical_key_asc"
+
+    @model_validator(mode="after")
+    def _paths_and_anchors(self) -> RelationalTaskConfig:
+        if (
+            not self.root
+            or not self.history_paths
+            or any(not path for path in self.history_paths.values())
+        ):
+            raise ValueError("Relational task needs a root and nonempty named history paths")
+        if self.labels is None and not self.cutoffs and self.anchors is None:
+            raise ValueError(
+                "Relational task needs configured cutoffs, label timestamps or replay anchors"
+            )
+        return self
+
+
 class DataConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "pretrain_window_events": _PRETRAIN_WINDOWS,
@@ -91,10 +132,10 @@ class DataConfig(StrictConfig):
         "event_order_key": "Adapters map their own columns onto TransactionEvent; delete the key.",
         "pretrain_window_split_by": (
             "Pretraining windows tile each entity's whole history, as its probe histories "
-            "do (ADR 0017); delete the key."
+            "do (Blueprint v1 guide); delete the key."
         ),
         "pretrain_observation_window": (
-            "Pretraining windows use data.observation_window; widen it instead (ADR 0017)."
+            "Pretraining windows use data.observation_window; widen it instead (Blueprint v1 guide)."
         ),
     }
 
@@ -110,6 +151,23 @@ class DataConfig(StrictConfig):
     adapter: str = "synthetic"
     """A registered adapter (`synthetic`, `tabformer`, `pragmatiq`), or an
     `Adapter`'s import path, `"package.module:attribute"`."""
+    loader: str = "kumo_pytorch"
+    """Recipe history/graph retrieval backend. Kumo PyTorch/DiskGraph is the default;
+    `python` explicitly selects the in-process reference loader. Registered source
+    loaders or `package.module:provider` import paths use the shared source pipeline. An explicit
+    token cache continues to select its declared cache batch builder."""
+
+    @field_validator("loader")
+    @classmethod
+    def _loader_provider(cls, value: str) -> str:
+        from tfm.data.loaders import resolve_loader
+
+        name = value.strip() if ":" in value else value.strip().lower()
+        resolve_loader(name)
+        return name
+
+    relational: RelationalTaskConfig | None = None
+    """Shared relational task; the adapter supplies its dataset declaration."""
     path: str | None = None
     """Local book root. `pragmatiq` with no path and no `TFM_PRAGMATIQ_ROOT`
     generates a small synthetic fixture in the run directory."""
@@ -137,7 +195,7 @@ class DataConfig(StrictConfig):
     """Where the fraud probe's labels come from.
 
     `native` reads the book's own event labels. `spliced_identity_theft`
-    (pragmatiq only) builds the ADR 0015 task from the unmodified book and
+    (pragmatiq only) builds the dataset strategy task from the unmodified book and
     ignores the book's fraud labels; its sample is drawn uniformly rather than
     stratified by them.
     """
@@ -163,6 +221,8 @@ class DataConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _splice_needs_pragmatiq(self) -> DataConfig:
+        if self.relational is not None and "stratify_by_fraud" not in self.model_fields_set:
+            self.stratify_by_fraud = False
         if self.fraud_labels == "spliced_identity_theft" and self.adapter != "pragmatiq":
             raise ValueError(
                 "data.fraud_labels `spliced_identity_theft` is built from a pragmatiq book; "
@@ -248,7 +308,7 @@ class GranularityConfig(StrictConfig):
     """Registered/importable context-aware history factory; None uses the shared stack."""
     task_head: str | None = None
     """Registered/importable binary head factory; None uses a linear logit."""
-    """`flat_encoder` is the experimental bidirectional encoder on flat rows (ADR 0019)."""
+    """`flat_encoder` is the experimental bidirectional encoder on flat rows (flat-encoder guide)."""
     decoder: DecoderConfig = Field(default_factory=DecoderConfig)
     """Width and heads for every stack; `depth` is the flat decoder's, the flat
     encoder's, or the v2 history decoder's. `mask` does not apply to `flat_encoder`."""
@@ -311,7 +371,7 @@ class GranularityConfig(StrictConfig):
 
 
 class CompositionConfig(StrictConfig):
-    """One choice per building-block slot (ADR 0014). The runtime builds exactly this."""
+    """One choice per building-block slot (building-block contracts). The runtime builds exactly this."""
 
     granularity: GranularityConfig = Field(default_factory=GranularityConfig)
     position: Literal["nope", "rope", "time_rope"] = "nope"
@@ -379,7 +439,7 @@ class MlmConfig(StrictConfig):
 
 
 class MaskedFieldsConfig(StrictConfig):
-    """Masking rates for `masked_fields` (ADR 0019): BERT's 15% per token, plus
+    """Masking rates for `masked_fields` (flat-encoder guide): BERT's 15% per token, plus
     10% whole events. Chosen tokens become `<mask>`, a random same-field value,
     or stay, in BERT's 80 / 10 / 10 split."""
 
@@ -807,6 +867,8 @@ class RecipeConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _cross_section_rules(self) -> RecipeConfig:
+        if self.data.relational is not None:
+            return self._relational_rules()
         if self.recipe_family == "graph":
             return self._graph_rules()
         kind = self.model.composition.granularity.type
@@ -840,7 +902,7 @@ class RecipeConfig(StrictConfig):
         if supervised and self.data.fraud_labels == "spliced_identity_theft":
             problems.append(
                 "fraud_task.supervised_head trains on the pretraining corpus, which carries no "
-                "spliced labels (ADR 0015)"
+                "spliced labels (dataset strategy)"
             )
         if kind != "flat" and self.training.packing:
             problems.append("training.packing packs flat token streams only")
@@ -868,6 +930,98 @@ class RecipeConfig(StrictConfig):
             problems.extend(_flat_pretrain_row_problems(self))
         if problems:
             raise ValueError("; ".join(problems) + ".")
+        return self
+
+    def _relational_rules(self) -> RecipeConfig:
+        from tfm.pooling.registry import build_readout
+        from tfm.pooling.usr_token import UsrTokenPool
+
+        if self.data.stratify_by_fraud:
+            raise ValueError("Relational anchors must be independent of event fraud labels")
+        if self.objective.auxiliary:
+            raise ValueError("Relational recipes do not apply objective.auxiliary; omit it")
+        if self.model.backbone != "eager":
+            raise ValueError("Relational reference recipes currently use the eager model backbone")
+        if isinstance(build_readout(self.model.composition.readout), UsrTokenPool):
+            raise ValueError("Relational causal histories require a history-visible readout")
+        if self.model.composition.granularity.decoder.ffn_size is not None:
+            raise ValueError(
+                "Relational history blocks currently use fixed 4*hidden feed-forward width"
+            )
+        kind = self.model.composition.granularity.type
+        if (self.recipe_family, kind) not in {
+            ("sequence", "profile_event_decoder"),
+            ("graph", "gnn_encoder"),
+            ("graph", "gnn_sequence"),
+        }:
+            raise ValueError(
+                "Relational tasks require profile_event_decoder in sequence or gnn_encoder/gnn_sequence in graph"
+            )
+        if kind in {"gnn_sequence", "profile_event_decoder"}:
+            decoder = self.model.composition.granularity.decoder
+            if decoder.hidden_size < 1 or decoder.num_heads < 1:
+                raise ValueError("Sequence hidden_size and num_heads must be positive")
+            if (
+                decoder.hidden_size % decoder.num_heads
+                or (decoder.hidden_size // decoder.num_heads) % 2
+            ):
+                raise ValueError("Sequence width needs an even integral attention head dimension")
+        if self.data.token_cache is not None or self.data.pretrain_windows is not None:
+            raise ValueError(
+                "Relational anchors do not support token caches or tiled pretraining windows"
+            )
+        if self.model.composition.position not in {"nope", "time_rope"}:
+            raise ValueError("Relational histories support nope or time_rope")
+        if kind == "gnn_encoder" and self.model.composition.objective != self.training.objective:
+            raise ValueError("Relational graph-only model and training objectives must agree")
+        if self.model.composition.objective != "binary" and not (
+            kind == "gnn_encoder" and self.training.objective == "future_subgraph"
+        ):
+            raise ValueError("Relational downstream tasks require explicit binary supervision")
+        if kind == "profile_event_decoder" and (
+            self.runtime.stage != "full" or self.training.objective != "binary"
+        ):
+            raise ValueError(
+                "Relational sequence models support direct binary training in the full stage"
+            )
+        if self.runtime.stage == "downstream" and not self.runtime.encoder_checkpoint:
+            raise ValueError("downstream stage requires runtime.encoder_checkpoint")
+        requires_labels = self.runtime.stage != "pretrain" or self.training.objective == "binary"
+        if self.data.load_labels != requires_labels:
+            raise ValueError("data.load_labels must match the relational stage's task supervision")
+        if (
+            not requires_labels
+            and self.data.relational is not None
+            and self.data.relational.labels is not None
+        ):
+            raise ValueError(
+                "Label-free relational pretraining uses cutoff/replay anchors; omit data.relational.labels"
+            )
+        if requires_labels:
+            assert self.data.relational is not None
+            if self.data.relational.labels is None:
+                raise ValueError("Supervised relational recipes require an entity label table")
+        for settings in (self.training, self.sequence_training):
+            if (
+                settings.backend != "eager"
+                or settings.packing
+                or settings.max_steps < 1
+                or settings.batch_size < 1
+            ):
+                raise ValueError(
+                    "Relational stages require eager unpacked training, positive steps and batch sizes"
+                )
+        if self.evaluation.surprise or self.fraud_task.supervised_head.enabled:
+            raise ValueError(
+                "Relational entity tasks do not support fraud heads or next-event surprise"
+            )
+        if (
+            self.model.composition.granularity.history_model is not None
+            or self.model.composition.granularity.task_head is not None
+        ):
+            raise ValueError(
+                "Relational reference recipes currently use the standard history stack and binary head"
+            )
         return self
 
     def _graph_rules(self) -> RecipeConfig:

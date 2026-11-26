@@ -1,13 +1,10 @@
 # Building blocks
 
-This page is the map of the kit. Every component belongs to one of five
-slots, and a model is one choice per slot. The decision, and the reasons it
-refines the three-block storyline, are in
-[ADR 0014](../architecture/0014-building-block-taxonomy.md). For how
-published systems fill the same slots, see the
+This page maps the kit's five component slots. A model selects one choice per
+slot. For how published systems fill the same slots, see the
 [industry landscape](industry-landscape.md). For support tiers, see the
-[compatibility matrix](../reference/compatibility-matrix.md); this page lists
-what exists, not how well it is supported.
+[compatibility matrix](../reference/compatibility-matrix.md); this page describes
+the components and their contracts.
 
 ```mermaid
 flowchart LR
@@ -38,7 +35,7 @@ which cutoff, and with which label.
 | `build_entity_sequences`, `build_entity_windows` | `tfm.data.sequence_builders` | One history per entity at a cutoff, or tiled windows for pretraining |
 | `build_sequences_at_label_cutoffs` | `tfm.data.sequence_builders` | One history per labelled row, cut at that row's timestamp |
 | `assign_temporal_split`, `split_entities` | `tfm.data.splits` | Time cutoffs for pretraining, and entity-disjoint probe folds |
-| `LabelWindow` | `tfm.data.labels` | The `(start, end]` period whose labels one side of a probe may read ([ADR 0013](../architecture/0013-fraud-probe-split-integrity.md)) |
+| `LabelWindow` | `tfm.data.labels` | The `(start, end]` period whose labels one side of a probe may read ([probe-side label windows](../contracts/task-label-contracts.md#probe-side-label-windows)) |
 
 ### 1. Event representation
 
@@ -95,7 +92,7 @@ a task.
 | `UsrTokenPool` | `tfm.pooling.usr_token` | PRAGMA's `[USR]` history slot; valid only under a bidirectional history model |
 | `MeanPool` | `tfm.pooling.mean` | Mean over valid positions |
 | `Binary` | `tfm.heads.binary` | Linear task head on the embedding |
-| Frozen probe arms | `tfm.runtime.evaluate`, `tfm.evaluation` | XGBoost on the raw row with and without the frozen embedding (the headline, [ADR 0018](../architecture/0018-one-headline-comparison.md)); without the XGBoost extra, a logistic `raw` / `embedding` / `combined` stack |
+| Frozen probe arms | `tfm.runtime.evaluate`, `tfm.evaluation` | XGBoost on the raw row with and without the frozen embedding (the headline, [evaluation protocol](evaluation-protocol.md)); without the XGBoost extra, a logistic `raw` / `embedding` / `combined` stack |
 | Fine-tuning, `method: lora` or `full` | `tfm.adaptation.finetune` | Trains a head with the backbone adapted by LoRA or fully unfrozen |
 | Fine-tuning, `head: joint_fusion` | `tfm.adaptation.fusion` | nuFormer-style DCNv2 over PLR-embedded raw features plus the embedding, trained end to end |
 
@@ -109,7 +106,7 @@ including the history-window probe.
 ### Cross-cutting: systems
 
 Training backends (`eager`, `ddp`, `fsdp2`), precision, and sequence packing
-change how a model trains, not what it computes (ADR 0011). Code is in
+change how a model trains, not what it computes (backend contracts). Code is in
 `tfm.training`.
 
 ## Reference architectures

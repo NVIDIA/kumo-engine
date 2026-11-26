@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Token scheme and sequence structure are independent slots (ADR 0014).
+"""Token scheme and sequence structure are independent slots (building-block contracts).
 
 Key-value tokens can feed the flat decoder (`flat_key_value`), and the 12 flat
 field tokens can feed the hierarchical encoders (`event_fields`). Rule 4 still

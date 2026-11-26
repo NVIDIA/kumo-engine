@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Name registry for training backends (ADR 0011).
+"""Name registry for training backends (backend contracts).
 
 A backend is a class with a `capabilities: BackendCapabilities` attribute, a
 constructor taking `checkpoint_dir`, and the `Trainer.fit` method. Register one

@@ -16,6 +16,7 @@ from tfm.training.checkpointing import load_encoder_state
 def config_for(book):
     raw = yaml.safe_load(Path("recipes/gnn_sequence/config.pretrain_smoke.yaml").read_text())
     raw["data"].update(
+        loader="python",
         adapter="pragmatiq",
         path=str(book),
         n_entities=12,
@@ -116,6 +117,7 @@ def test_graph_yaml_extensions_train_and_reuse(tmp_path, objective, selection):
 
     fixture = "tests.fixtures.graph_components"
     raw = yaml.safe_load(Path("recipes/gnn_sequence/config.smoke.yaml").read_text())
+    raw["data"]["loader"] = "python"
     raw["features"] = {"tokenizer": f"{fixture}:UserTokenizer"}
     raw["training"].update(objective=objective, max_steps=1)
     raw["sequence_training"]["max_steps"] = 1

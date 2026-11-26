@@ -4,4 +4,4 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
-uv sync --extra dev
+uv sync --extra dev --extra native

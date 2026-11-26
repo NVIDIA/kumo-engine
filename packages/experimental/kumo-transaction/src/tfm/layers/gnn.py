@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import torch
 import torch.nn.functional as F
@@ -20,6 +20,7 @@ from tfm.contracts.graph import (
     GraphHistoryBatch,
     GraphSupervisedBatch,
     GraphTrainingBatch,
+    SequencePredictionBatch,
     SequenceSupervisedBatch,
 )
 from tfm.contracts.kvt import KeyValueTimeBatch
@@ -147,10 +148,10 @@ class GNNEncoderModel(nn.Module):
         ):
             raise ValueError("GNN pretraining needs unique target columns")
         if isinstance(self.objective, Binary) and (
-            target_columns or self.objective.target_level != "sequence"
+            target_columns or self.objective.target_level not in {"sequence", "entity"}
         ):
             raise ValueError(
-                "Binary GNN training uses sequence-level labels, not future target columns"
+                "Binary GNN training needs explicit sequence/entity labels and no future target columns"
             )
         self.encoder = GraphEncoder(spec)
         self.target_columns = target_columns
@@ -168,6 +169,12 @@ class GNNEncoderModel(nn.Module):
         compute_loss: bool = True,
     ) -> ModelOutput:
         batch.assert_validated()
+        if (
+            isinstance(batch, GraphSupervisedBatch)
+            and isinstance(self.objective, Binary)
+            and batch.target_level != self.objective.target_level
+        ):
+            raise ValueError("Graph binary label level differs from the model objective")
         graph = (
             batch.graph if isinstance(batch, (GraphTrainingBatch, GraphSupervisedBatch)) else batch
         )
@@ -222,9 +229,13 @@ class _SequenceReadout(nn.Module):
         head: nn.Module | None = None,
         history_model: nn.Module | None = None,
         position: NoPE | TimeRoPE | None = None,
+        target_level: Literal["sequence", "entity"] = "sequence",
     ) -> None:
         super().__init__()
         self.sequence_spec = sequence
+        if target_level not in {"sequence", "entity"}:
+            raise ValueError("Binary history target_level must name sequence or entity")
+        self.target_level = target_level
         self.position_spec = TimeRoPE() if position is None else position
         attention = SdpaAttention() if attention is None else attention
         self.attention_spec = attention
@@ -306,6 +317,7 @@ class GNNSequenceModel(_SequenceReadout):
         head: nn.Module | None = None,
         history_model: nn.Module | None = None,
         position: NoPE | TimeRoPE | None = None,
+        target_level: Literal["sequence", "entity"] = "sequence",
     ) -> None:
         if objective != "binary":
             raise ValueError(
@@ -320,6 +332,7 @@ class GNNSequenceModel(_SequenceReadout):
             head=head,
             history_model=history_model,
             position=position,
+            target_level=target_level,
         )
         self.spec = spec
         self.graph_encoder = encoder
@@ -337,6 +350,8 @@ class GNNSequenceModel(_SequenceReadout):
 
     def forward(self, batch: GraphHistoryBatch, *, compute_loss: bool = True) -> ModelOutput:
         batch.assert_validated()
+        if batch.target_level != self.target_level:
+            raise ValueError("History binary label level differs from the model objective")
         history = batch.history
         if history.elapsed_log is None:
             raise ValueError("GNNSequence needs past-only elapsed history times")
@@ -356,7 +371,7 @@ class GNNSequenceModel(_SequenceReadout):
         )
         if compute_loss:
             if batch.labels is None:
-                raise ValueError("GNNSequence training requires available sequence-level labels")
+                raise ValueError("GNNSequence training requires available cutoff-level task labels")
             out.loss = F.binary_cross_entropy_with_logits(logits, batch.labels.float())
             out.losses = {"binary": out.loss}
         return out
@@ -365,8 +380,12 @@ class GNNSequenceModel(_SequenceReadout):
 class SequenceBinaryModel(_SequenceReadout):
     """Supervised sequence-only control with the same labels and no GNN modules."""
 
-    def forward(self, batch: SequenceSupervisedBatch, *, compute_loss: bool = True) -> ModelOutput:
+    def forward(
+        self, batch: SequenceSupervisedBatch | SequencePredictionBatch, *, compute_loss: bool = True
+    ) -> ModelOutput:
         batch.assert_validated()
+        if batch.target_level != self.target_level:
+            raise ValueError("History binary label level differs from the model objective")
         hidden, embedding = self.encode_history(batch.history)
         logits = self._binary_logits(embedding)
         out = ModelOutput(
@@ -376,7 +395,7 @@ class SequenceBinaryModel(_SequenceReadout):
             predictions={"binary": logits.sigmoid()},
         )
         if compute_loss:
-            if batch.labels is None:
+            if not isinstance(batch, SequenceSupervisedBatch):
                 raise ValueError("Supervised sequence training requires available task labels")
             out.loss = F.binary_cross_entropy_with_logits(logits, batch.labels.float())
             out.losses = {"binary": out.loss}

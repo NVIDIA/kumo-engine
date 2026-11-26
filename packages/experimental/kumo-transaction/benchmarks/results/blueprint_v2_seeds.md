@@ -1,7 +1,7 @@
 # Blueprint v2 and PRAGMA-like against raw-feature XGBoost, pragmatiq (one GPU, three seeds)
 
 Milestone 2's headline comparison
-([ADR 0018](../../docs/architecture/0018-one-headline-comparison.md)), scored by
+([evaluation protocol](../../docs/concepts/evaluation-protocol.md)), scored by
 the recipe's own evaluation rather than benchmark scripts: does XGBoost on raw
 features plus the frozen embedding (`xgboost_raw_embedding`) beat XGBoost on
 raw features alone (`xgboost_raw`)? Hand-built history aggregates
@@ -20,7 +20,7 @@ This is not a quality, fraud, or production claim.
 | configs | `recipes/blueprint_v2/config.yaml` and `recipes/pragma_like/config.yaml`, no overrides; seeds 42, 43, 44 |
 | code | a snapshot of the working tree on top of commit `e871249`, taken before the config keys moved into sub-sections; the snapshot's configs differ from the committed ones only in those key names (`pretrain_window_events`, `muon_learning_rate`, `history_window_probe`, `history_window_max_rows`). The snapshot also still wrote the logistic-regression arms (`raw`, `embedding`, `combined`, `tabular_logistic`), which the current evaluation drops when XGBoost arms are on; they are in the JSON but not used here |
 | data | `synth_100k_gen2_m31_seed0`, 10,000 users, most recent 128 events each, through the token cache; train cutoff 2024-06-01, validation cutoff 2024-09-01, test window to 2025-07-31 |
-| fraud task | spliced identity theft, 20% victims, matched donors ([ADR 0015](../../docs/architecture/0015-dataset-strategy-and-spliced-fraud.md)) |
+| fraud task | spliced identity theft, 20% victims, matched donors ([dataset strategy](../../docs/reference/datasets.md)) |
 | tokens | key-value-time, 40 tokens per event, `categorical_keys: [mcc, app_version]`, three hashed keys at 4,096 buckets |
 | `blueprint_v2` | profile / event / decoder depths 2 / 4 / 4, hidden 256, 8 heads, TimeRoPE, SDPA, varlen; next-event fields plus token/event/key MLM; last-token readout; 11,513,856 parameters |
 | `pragma_like` | profile / event / history depths 2 / 4 / 4, same widths; token/event/key MLM only; `USR`-token readout; 11,447,808 parameters |

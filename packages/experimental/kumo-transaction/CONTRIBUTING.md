@@ -6,8 +6,11 @@ tracked in [docs/reference/roadmap.md](docs/reference/roadmap.md).
 
 ## Setup
 
+Default recipes require the native source integration. Install rustup and
+C/C++ build tools first; see the [loader installation guide](docs/migration/native-loader-default.md#install-and-run).
+
 ```bash
-uv sync --extra dev
+uv sync --extra native --extra dev
 make check
 ```
 
@@ -70,7 +73,7 @@ the commands and results in the merge request. State any skipped validation and
 why, especially for optional GPU or external-backend paths.
 
 When you change a notebook, or code a notebook calls, also run
-`make test-notebooks` (needs `uv sync --extra dev --extra notebooks`). CI runs
+`make test-notebooks` (needs `uv sync --extra native --extra dev --extra notebooks`). CI runs
 it as the `notebooks` job. Notebook conventions are in
 [notebooks/STYLE.md](notebooks/STYLE.md).
 

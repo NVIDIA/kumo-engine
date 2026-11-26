@@ -9,6 +9,7 @@ seed: 42
 # per user in the evaluation label window, so the fraud probe has both classes.
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   observation_window: 90d
   sequence_length: 8

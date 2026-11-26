@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 
@@ -15,7 +16,7 @@ import numpy as np
 import torch
 
 from tfm.config import RecipeConfig
-from tfm.contracts.errors import SchemaError
+from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.graph import (
     FutureSubgraphTargets,
     GraphAnchor,
@@ -34,7 +35,8 @@ from tfm.data.collate import collate_batch, sequence_label
 from tfm.data.graph import FutureTargetTransform, GraphSampler, future_subgraph_targets
 from tfm.data.graph_transactions import transaction_graph
 from tfm.data.labels.horizon import available_label_value
-from tfm.data.sequence_builders import build_entity_sequences
+from tfm.data.native_graph import NativeGraphSampler
+from tfm.data.native_history import build_entity_sequences
 from tfm.data.validation.schema import validate_events
 from tfm.features.tokenizers.registry import tokenizer_for
 
@@ -110,6 +112,25 @@ def prepare_graph_data(
     That mode never constructs future labels or requires historical SSL windows.
     FutureSubgraph fits targets/codecs only on the historical training corpus.
     """
+    with ExitStack() as resources:
+        result = _prepare_graph_data(
+            config, tokenizer=tokenizer, transform=transform, resources=resources
+        )
+        resources.pop_all()  # PreparedGraphData owns the sampler on success.
+        return result
+
+
+def _prepare_graph_data(
+    config: RecipeConfig,
+    *,
+    tokenizer: StatefulSequenceTokenizer | None,
+    transform: FutureTargetTransform | None,
+    resources: ExitStack,
+) -> PreparedGraphData:
+    if config.data.loader not in {"python", "kumo_pytorch"}:
+        raise UnsupportedCombinationError(
+            "Custom source loaders require canonical recipe dispatch; direct graph preparation supports only built-ins"
+        )
     events, transfers = _events(config)
     data, g = config.data, config.model.composition.granularity
     objective = config.training.objective if config.runtime.stage != "downstream" else "binary"
@@ -118,13 +139,16 @@ def prepare_graph_data(
     probe_cutoff, coverage = _timestamp(data.probe_cutoff), _timestamp(data.observed_through)
     if not events or (needs_supervision and probe_cutoff > coverage):
         raise ValueError("Probe cutoff/source coverage is outside the supplied observations")
-    sampler = GraphSampler(
-        transaction_graph(
-            events, transfers, observed_through=coverage, amount_field=data.amount_field
-        ),
-        depth=g.depth,
-        fanout=g.fanout,
+    graph = transaction_graph(
+        events, transfers, observed_through=coverage, amount_field=data.amount_field
     )
+    sampler: GraphSampler
+    if data.loader == "kumo_pytorch":
+        native_sampler = NativeGraphSampler(graph, depth=g.depth, fanout=g.fanout)
+        resources.callback(native_sampler.close)
+        sampler = native_sampler
+    else:
+        sampler = GraphSampler(graph, depth=g.depth, fanout=g.fanout)
     owners = sorted({e.entity_id for e in events})
     if len(owners) < 12:
         raise ValueError("Graph recipe needs at least 12 observed owners from the selected source")
@@ -209,7 +233,9 @@ def prepare_graph_data(
         codec_owner_set = set(codec_owners)
         fit_sequences = [
             s
-            for s in build_entity_sequences(events, codec_cutoff, max_events=data.sequence_length)
+            for s in build_entity_sequences(
+                events, codec_cutoff, max_events=data.sequence_length, loader=data.loader
+            )
             if s.entity_id in codec_owner_set
         ]
         if len(fit_sequences) != len(codec_owners):
@@ -227,7 +253,9 @@ def prepare_graph_data(
         if not needs_supervision
         else {
             s.entity_id: s
-            for s in build_entity_sequences(events, probe_cutoff, max_events=data.sequence_length)
+            for s in build_entity_sequences(
+                events, probe_cutoff, max_events=data.sequence_length, loader=data.loader
+            )
         }
     )
     # Certify a label source for each observed owner, independently of history
@@ -324,7 +352,10 @@ def prepare_graph_data(
             histories = {
                 s.entity_id: s
                 for s in build_entity_sequences(
-                    events, target.anchors[0].cutoff, max_events=data.sequence_length
+                    events,
+                    target.anchors[0].cutoff,
+                    max_events=data.sequence_length,
+                    loader=data.loader,
                 )
             }
             for start in range(0, len(target.anchors), config.sequence_training.batch_size):
@@ -369,6 +400,7 @@ def prepare_graph_data(
     ).hexdigest()
     manifest: dict[str, object] = {
         "dataset": data.adapter,
+        "input_loader": sampler.loader_manifest,
         "data_sha256": fingerprint,
         "probe_owners": split,
         "graph_objective": objective,
@@ -396,7 +428,7 @@ def prepare_graph_data(
             "fanout": g.fanout,
             "target_depth": g.target_depth if objective == "future_subgraph" else None,
             "hop_trimming": g.trim,
-            "ties": "canonical PK ascending",
+            "ties": sampler.tie_policy,
             "event_key_encoding": "json-array-v1",
         },
     }

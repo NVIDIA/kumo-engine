@@ -1,4 +1,4 @@
-# Install the Python API, its settings package and native runtime from Kumo's main branch.
-diskgraph @ git+https://github.com/NVIDIA/kumo-engine.git@main#subdirectory=packages/diskgraph
-kumo-settings @ git+https://github.com/NVIDIA/kumo-engine.git@main#subdirectory=packages/kumo-settings
-kumo-pytorch @ git+https://github.com/NVIDIA/kumo-engine.git@main#subdirectory=packages/experimental/kumo-pytorch
+# Dependencies are pinned by the Transaction project pyproject.toml and uv.lock.
+# From the repository root: cd packages/experimental/kumo-transaction
+# Then: uv sync --frozen --extra dev --extra native --extra pragmatiq
+# run.py --index reuses a completed managed index; it does not require source tables.

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The `ddp` backend across real processes (ADR 0011).
+"""The `ddp` backend across real processes (backend contracts).
 
 The shared backend suite runs `ddp` single-process, where it is the eager loop.
 These tests launch two Gloo ranks on CPU so gradient averaging actually runs,
@@ -344,11 +344,57 @@ class _Stream:
         return iter([])
 
 
-def test_ddp_refuses_a_loader_it_cannot_index() -> None:
+def test_ddp_refuses_a_distributed_loader_it_cannot_index(monkeypatch) -> None:
+    monkeypatch.setattr("tfm.training.ddp.launcher_topology", lambda: (2, 0))
     with pytest.raises(UnsupportedCombinationError, match="_Stream, which can only be iterated"):
         DdpTrainer().fit(
             nn.Linear(1, 1),
             _Stream(),  # type: ignore[arg-type]
+            max_steps=1,
+            learning_rate=1e-3,
+            seed=0,
+            device=torch.device("cpu"),
+        )
+
+
+def test_single_process_ddp_stream_matches_eager_exactly(monkeypatch):
+    monkeypatch.setattr("tfm.training.ddp.launcher_topology", lambda: (1, 0))
+
+    class Rows:
+        def __len__(self):
+            return 2
+
+        def __iter__(self):
+            return iter((_flat_batch(0), _flat_batch(1)))
+
+    eager, streamed = _model("flat"), _model("flat")
+    kwargs = dict(
+        max_steps=3, learning_rate=1e-3, seed=2, device=torch.device("cpu"), shuffle=False
+    )
+    expected = build_trainer("eager").fit(eager, Rows(), **kwargs)
+    actual = DdpTrainer().fit(streamed, Rows(), **kwargs)
+    assert actual["world_size"] == 1
+    assert actual["first_loss"] == expected["first_loss"]
+    assert actual["final_loss"] == expected["final_loss"]
+    for key, value in eager.state_dict().items():
+        torch.testing.assert_close(streamed.state_dict()[key], value, rtol=0, atol=0)
+
+
+def test_stream_rejects_initialized_multi_rank_group_without_launcher_variables(monkeypatch):
+    monkeypatch.setattr("tfm.training.ddp.launcher_topology", lambda: (1, 0))
+    monkeypatch.setattr("tfm.training.ddp.distributed_info", lambda: (2, 0))
+
+    class Rows:
+        def __len__(self):
+            return 1
+
+        def __iter__(self):
+            raise AssertionError("An unsharded stream must not be consumed")
+
+    with pytest.raises(UnsupportedCombinationError, match="by index"):
+        DdpTrainer().fit(
+            nn.Linear(1, 1),
+            Rows(),
             max_steps=1,
             learning_rate=1e-3,
             seed=0,

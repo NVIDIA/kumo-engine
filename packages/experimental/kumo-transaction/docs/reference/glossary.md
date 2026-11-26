@@ -14,7 +14,7 @@
 - **Observation window** — how far back from the cutoff a sequence reaches.
 - **Label delay** — duration after an event before its label may be used.
 - **Label window** — the `(start, end]` period whose labels one side of a
-  probe may count (ADR 0013).
+  probe may count (probe split rules).
 - **Prediction horizon** — how far after the cutoff a forecast label looks
   (for example 12 months for `default_12m`).
 - **Event-level / entity-level / sequence-level label** — a label on one
@@ -27,7 +27,7 @@
 
 - **Slot** — one of the five building-block choices: data, event
   representation, sequence architecture, objective, readout and adaptation
-  (ADR 0014).
+  (building-block contracts).
 - **Tokenizer** — turns events into token ids. **Layout** — the batch shape a
   tokenizer produces: `flat_fields`, `flat_key_value`, or `key_value_time`.
 - **Key-value tokens** — each field becomes a `(key, value)` pair, so events
@@ -58,7 +58,7 @@
 - **Raw row** — the last event's own fields plus the profile, with nothing
   from earlier events: what `xgboost_raw` reads.
 - **Headline** — per task, the lift of `xgboost_raw_embedding` over
-  `xgboost_raw` on PR-AUC (ADR 0018).
+  `xgboost_raw` on PR-AUC (evaluation protocol).
 - **Lift** — `x / x_ref - 1` for a metric over a stated reference arm.
 - **Gain recovered** — `(raw+emb - raw) / (tabular - raw)` on PR-AUC: the
   share of the hand-built history features' gain an embedding recovers.
@@ -67,7 +67,7 @@
   for a production model.
 - **Spliced identity theft** — the pragmatiq fraud task: a donor's
   transactions copied into a victim's history on a theft day, so the label
-  depends on the history and not on one event (ADR 0015).
+  depends on the history and not on one event (dataset strategy).
 - **Surprise** — the model's next-event cross-entropy on a row's latest
   events, each scored from its prefix; an extra readout, not an objective.
 - **Entity-disjoint** — no entity appears on both the fit and the score side.
@@ -91,8 +91,8 @@
 - **Ablation** — a benchmark config that changes one slot of a recipe, under
   `benchmarks/ablations/`.
 - **Token cache** — key-value-time tokens of a whole book written to disk once
-  and reused by every run on it (ADR 0016).
-- **Backend** — the training loop: `eager`, `ddp`, or `fsdp2` (ADR 0011).
+  and reused by every run on it (token-cache guide).
+- **Backend** — the training loop: `eager`, `ddp`, or `fsdp2` (backend contracts).
 
 ## Support
 

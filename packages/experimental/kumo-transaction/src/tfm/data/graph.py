@@ -44,6 +44,7 @@ class GraphTable:
     features: tuple[str, ...]
     targets: tuple[str, ...] = ()
     immutable: bool = False
+    windowed: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -174,6 +175,16 @@ class GraphSampler:
                 ((t, f"rev_{role}", s), (s, link.source_id), time)
             )
 
+    @property
+    def loader_manifest(self) -> dict[str, str]:
+        """Identify this loader independently of its callers."""
+        return {"name": "python"}
+
+    @property
+    def tie_policy(self) -> str:
+        """Describe equal-time neighbor ordering for run provenance."""
+        return "canonical PK ascending"
+
     def row_time(self, key: NodeKey) -> int:
         at = self.rows[key].available_at
         return STATIC_TIME if at is None else utc_us(at)
@@ -197,7 +208,11 @@ class GraphSampler:
             if role == relation
             and time <= cutoff
             and self.row_time(other) <= cutoff
-            and (self.event_time_us(other) == STATIC_TIME or self.event_time_us(other) >= start)
+            and (
+                not self.tables[other[0]].windowed
+                or self.event_time_us(other) == STATIC_TIME
+                or self.event_time_us(other) >= start
+            )
         ]
         found.sort(key=lambda item: (-self.event_time_us(item[0]), item[0][1]))
         return found[: self.fanout] if capped else found
@@ -207,7 +222,11 @@ class GraphSampler:
     ) -> tuple[dict[NodeKey, int], dict[tuple[EdgeType, NodeKey, NodeKey], int]]:
         if root not in self.rows or self.row_time(root) > cutoff:
             raise ValueError("Root is missing or not available at anchor cutoff")
-        if self.event_time_us(root) != STATIC_TIME and self.event_time_us(root) < start:
+        if (
+            self.tables[root[0]].windowed
+            and self.event_time_us(root) != STATIC_TIME
+            and self.event_time_us(root) < start
+        ):
             raise ValueError("Root predates observation window; declare immutable identity roots")
         distances = {root: 0}
         edges: dict[tuple[EdgeType, NodeKey, NodeKey], int] = {}
@@ -331,6 +350,9 @@ class GraphSampler:
             {r: torch.tensor(x, dtype=torch.long) for r, x in edge_times.items()},
             torch.tensor(roots, dtype=torch.long),
             sharing=sharing,
+            window_exempt_types=frozenset(
+                name for name, table in self.tables.items() if not table.windowed
+            ),
         )
         return order_graph_by_hop(batch, self.depth) if hop_trim else batch
 

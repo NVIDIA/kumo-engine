@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -265,6 +265,50 @@ def _amount_bin(amount: float) -> int:
     return rank
 
 
+def financial_event_values(
+    timestamp: datetime,
+    numeric: Mapping[str, float],
+    categorical: Mapping[str, str],
+    *,
+    fields: Sequence[str],
+    merchant_bucket: Callable[[str], int],
+    max_cust: int = 2999,
+    merchant_key: str | None = None,
+) -> list[str]:
+    """Data-independent scalar feature projection, shared by file and object inputs."""
+    ts = ensure_utc(timestamp)
+    amount = float(numeric.get("amount", 0.0))
+    merchant = (
+        str(categorical.get("merchant_name", "UNK")).upper()
+        if merchant_key is None
+        else merchant_key
+    )
+    mcc = int(float(categorical.get("mcc", numeric.get("mcc", -1))))
+    card = int(numeric.get("card", 0))
+    user = int(numeric.get("user", 0))
+    zip_raw = str(int(numeric.get("zip", 0))).zfill(5)
+    state = str(categorical.get("merchant_state", "XX")).upper().strip() or "XX"
+    if state not in ALL_STATES:
+        state = "XX"
+    chip_raw = str(categorical.get("use_chip", "")).upper()
+    chip = CHIP_MAPPING.get(chip_raw, "UNK")
+    tokens = {
+        "AMT": f"AMT_{_amount_bin(amount)}",
+        "MERCH": f"MERCH_{merchant_bucket(merchant)}",
+        "CAT": f"CAT_{_industry(mcc)}",
+        "MCC": f"MCC_{mcc if mcc in KNOWN_MCCS else -1}",
+        "HOUR": f"HOUR_{ts.hour:02d}",
+        "DOW": f"DOW_{ts.weekday()}",
+        "MONTH": f"MONTH_{ts.month:02d}",
+        "CARD": f"CARD_{max(0, min(card, 9))}",
+        "CHIP": f"CHIP_{chip}",
+        "ZIP3": f"ZIP3_{int(zip_raw[:3]):03d}",
+        "STATE": f"STATE_{state}",
+        "CUST": f"CUST_{max(0, min(user, max_cust))}",
+    }
+    return [tokens[name] for name in fields]
+
+
 @register_tokenizer("transaction_field_tokenizer")
 @dataclass
 class TransactionFieldTokenizer:
@@ -450,33 +494,15 @@ class TransactionFieldTokenizer:
         return str(event.categorical.get("merchant_name", "UNK")).upper()
 
     def event_tokens(self, event: TransactionEvent) -> list[str]:
-        ts = ensure_utc(event.event_timestamp)
-        amount = float(event.numeric.get("amount", 0.0))
-        merchant = self.merchant_key(event)
-        mcc = int(float(event.categorical.get("mcc", event.numeric.get("mcc", -1))))
-        card = int(event.numeric.get("card", 0))
-        user = int(event.numeric.get("user", 0))
-        zip_raw = str(int(event.numeric.get("zip", 0))).zfill(5)
-        state = str(event.categorical.get("merchant_state", "XX")).upper().strip() or "XX"
-        if state not in ALL_STATES:
-            state = "XX"
-        chip_raw = str(event.categorical.get("use_chip", "")).upper()
-        chip = CHIP_MAPPING.get(chip_raw, "UNK")
-        tokens = {
-            "AMT": f"AMT_{_amount_bin(amount)}",
-            "MERCH": f"MERCH_{self._merchant_bucket(merchant)}",
-            "CAT": f"CAT_{_industry(mcc)}",
-            "MCC": f"MCC_{mcc if mcc in KNOWN_MCCS else -1}",
-            "HOUR": f"HOUR_{ts.hour:02d}",
-            "DOW": f"DOW_{ts.weekday()}",
-            "MONTH": f"MONTH_{ts.month:02d}",
-            "CARD": f"CARD_{max(0, min(card, 9))}",
-            "CHIP": f"CHIP_{chip}",
-            "ZIP3": f"ZIP3_{int(zip_raw[:3]):03d}",
-            "STATE": f"STATE_{state}",
-            "CUST": f"CUST_{max(0, min(user, self.max_cust))}",
-        }
-        return [tokens[name] for name in self.fields]
+        return financial_event_values(
+            event.event_timestamp,
+            event.numeric,
+            event.categorical,
+            fields=self.fields,
+            merchant_bucket=self._merchant_bucket,
+            max_cust=self.max_cust,
+            merchant_key=self.merchant_key(event),
+        )
 
     def encode_sequence(
         self,

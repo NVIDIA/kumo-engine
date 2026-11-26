@@ -55,7 +55,7 @@ MIN_TRUSTWORTHY_POSITIVES = 5
 
 A probe evaluated on one positive row can only score 0.0 or 1.0 on PR-AUC, so
 reporting the number without its support invites reading noise as a result
-(ADR 0008). This threshold gates presentation, never computation.
+(evaluation protocol). This threshold gates presentation, never computation.
 """
 
 

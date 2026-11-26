@@ -4,7 +4,7 @@
 """Evaluation stage shared by every stack (slot 4: readout and adaptation).
 
 Every probe here is entity-disjoint, and every label comes from its own side's
-period (ADRs 0008 and 0013):
+period (evaluation protocol, probe split rules):
 
 - **fraud**: entity-level. Train rows are sequences at the train cutoff with
   labels from the train window; evaluation rows are sequences at the test
@@ -49,7 +49,7 @@ from tfm.contracts.errors import InsufficientLabelSupportError
 from tfm.contracts.schema import TransactionSequence, ensure_utc
 from tfm.data.collate import collate_batch, raw_feature_vector
 from tfm.data.labels.horizon import available_label_value
-from tfm.data.sequence_builders.entity_sequences import build_sequences_at_label_cutoffs
+from tfm.data.native_history import build_sequences_at_label_cutoffs
 from tfm.data.sequence_builders.event_rows import build_event_history_rows
 from tfm.data.splits.entity import EntitySplit, split_entities
 from tfm.evaluation.fraud.baselines import evaluate_binary_probes
@@ -95,9 +95,9 @@ def _labels(batch: Any) -> np.ndarray:
 
 
 def fraud_entity_split(data: PreparedData, seed: int) -> EntitySplit:
-    """Split test-side entities by their evaluation-window label (ADR 0013).
+    """Split test-side entities by their evaluation-window label (probe split rules).
 
-    A spliced task fixed its split before any label existed (ADR 0015); that
+    A spliced task fixed its split before any label existed (dataset strategy); that
     split is returned as is.
     """
     if data.fraud is not None:
@@ -111,7 +111,7 @@ def fraud_entity_split(data: PreparedData, seed: int) -> EntitySplit:
 
 
 def event_entity_split(data: PreparedData, seed: int) -> EntitySplit:
-    """Split entities by whether any evaluation-window event is labelled fraud (ADR 0013).
+    """Split entities by whether any evaluation-window event is labelled fraud (probe split rules).
 
     The event-level counterpart of `fraud_entity_split`: its rows come from the
     whole window, so an entity whose fraud falls before the last
@@ -174,7 +174,7 @@ def forecast_task(
             f"Skipping the {task!r} probe: {len(early)} of {len(rows)} rows are dated "
             f"before the pretraining cutoff {data.cutoffs.train.isoformat()} (earliest "
             f"{min(r.timestamp for r in early).isoformat()}), so the encoder saw events "
-            "inside their label horizon (ADR 0013).",
+            "inside their label horizon (probe split rules).",
             stacklevel=2,
         )
         return None
@@ -183,6 +183,7 @@ def forecast_task(
         rows,
         max_events=config.data.sequence_length,
         observation_window=parse_duration(config.data.observation_window),
+        loader=config.data.loader,
     )
     try:
         train_pairs, eval_pairs = split_label_pairs(pairs, seed=seed)
@@ -218,7 +219,7 @@ def split_label_pairs(
 
     Raises `InsufficientLabelSupportError` when a class is too small to split.
     An entity never lands on both sides: that would score the probe on its own
-    training rows (ADR 0008).
+    training rows (evaluation protocol).
     """
     by_entity: dict[str, list[tuple[Any, Any]]] = {}
     for pair in pairs:

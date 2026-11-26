@@ -41,7 +41,8 @@ python-source = "diskgraph-pybind/python"
 # it here keeps the wheel tag driven by the build config (not just a
 # transitive crate feature) regardless of which interpreter CI links.
 features = ["extension-module", "pyo3/abi3-py311"]
+# Wheel includes resolve relative to python-source, not this manifest.
 include = [
-    { path = "diskgraph-pybind/python/diskgraph/bin/ingest", format = "wheel" },
-    { path = "diskgraph-pybind/python/diskgraph/bin/ingest.exe", format = "wheel" },
+    { path = "diskgraph/bin/ingest", format = "wheel" },
+    { path = "diskgraph/bin/ingest.exe", format = "wheel" },
 ]

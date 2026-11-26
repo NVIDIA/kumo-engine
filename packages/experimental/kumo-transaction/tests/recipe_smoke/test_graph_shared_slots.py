@@ -27,6 +27,9 @@ FIXTURE = "tests.fixtures.graph_components"
 
 def raw_config():
     raw = yaml.safe_load(Path("recipes/gnn_sequence/config.pretrain_smoke.yaml").read_text())
+    # This fixture deliberately exercises object-adapter/tokenizer extension
+    # hooks. File-backed native integration has separate source-native tests.
+    raw["data"]["loader"] = "python"
     raw["training"]["max_steps"] = 1
     raw["sequence_training"]["max_steps"] = 1
     return raw

@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+data:
+  adapter: tfm.data.adapters.synthetic_relational:adapter
+  horizon_days: 2
+  loader: kumo_pytorch
+  max_tokens: 16
+  n_entities: 8
+  pretrain_end: '2024-01-21'
+  relational:
+    history_paths:
+      activity:
+        - owns
+        - activity
+    label_cutoffs:
+      test: '2024-01-18'
+      train: '2024-01-16'
+      validation: '2024-01-17'
+    labels:
+      available_at: available
+      horizon_days: 2
+      label_delay_days: 1
+      root_columns:
+        - owner
+      table: outcomes
+      target: outcome
+      timestamp: cutoff
+    root: entities
+  sequence_length: 8
+  temporal_split:
+    train_end: '2024-01-16'
+    validation_end: '2024-01-17'
+features:
+  tokenizer: key_value_time
+model:
+  composition:
+    attention: sdpa
+    granularity:
+      decoder:
+        depth: 1
+        dropout: 0.0
+        hidden_size: 8
+        max_seq_len: 32
+        num_heads: 2
+      type: gnn_sequence
+      depth: 6
+      fanout: 10
+      target_depth: 2
+      hidden_size: 8
+    objective: binary
+    position: time_rope
+recipe_family: graph
+runtime:
+  device: cpu
+seed: 42
+sequence_training:
+  backend: eager
+  batch_size: 4
+  learning_rate: 0.001
+  max_steps: 1
+training:
+  backend: eager
+  batch_size: 4
+  learning_rate: 0.001
+  max_steps: 1
+  objective: future_subgraph

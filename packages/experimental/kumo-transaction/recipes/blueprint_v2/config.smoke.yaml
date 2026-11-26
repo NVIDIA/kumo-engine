@@ -4,7 +4,7 @@
 
 seed: 42
 
-# CPU-safe synthetic smoke for the Blueprint v2 hybrid (ADR 0012). With no
+# CPU-safe synthetic smoke for the Blueprint v2 hybrid (Blueprint v2 guide). With no
 # TFM_PRAGMATIQ_ROOT set, a tiny pragmatiq-shaped fixture is generated in the
 # run directory. Tiny sizes: this checks wiring, not quality.
 #
@@ -13,6 +13,7 @@ seed: 42
 # window, (validation_end, test_cutoff], so the fraud probe has both classes.
 
 data:
+  loader: kumo_pytorch
   adapter: pragmatiq
   observation_window: 90d
   sequence_length: 8

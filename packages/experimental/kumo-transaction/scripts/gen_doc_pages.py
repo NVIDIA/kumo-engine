@@ -20,7 +20,7 @@ from pathlib import Path
 import mkdocs_gen_files
 
 ROOT = Path(__file__).resolve().parents[1]
-TREES = ("docs", "recipes", "notebooks", "benchmarks", "configs", "scripts", "src")
+TREES = ("docs", "recipes", "notebooks", "benchmarks", "configs", "scripts", "src", "examples")
 ROOT_PAGES = (
     "README.md",
     "CHANGELOG.md",
@@ -30,7 +30,19 @@ ROOT_PAGES = (
     "SYNC.md",
     "UPSTREAM.json",
 )
-SUFFIXES = {".md", ".ipynb", ".yaml", ".yml", ".py", ".json", ".toml", ".sh", ".png", ".svg"}
+SUFFIXES = {
+    ".md",
+    ".ipynb",
+    ".yaml",
+    ".yml",
+    ".py",
+    ".json",
+    ".toml",
+    ".sh",
+    ".png",
+    ".svg",
+    ".txt",
+}
 
 
 def _repository_files() -> list[str]:
@@ -45,6 +57,8 @@ def _repository_files() -> list[str]:
 
 
 def _published(path: str) -> bool:
+    if path.startswith("docs/architecture/"):
+        return False
     if path in ROOT_PAGES:
         return True
     parts = Path(path).parts

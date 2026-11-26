@@ -6,7 +6,7 @@
 The generated fixture (`generate_pragmatiq_fixture`) is a few rows per user,
 enough to check wiring. The lab notebooks' smoke mode needs more: users with
 habits, several channels, home countries to match donors on, a history long
-enough for the spliced identity-theft task (ADR 0015), and forecast labels
+enough for the spliced identity-theft task (dataset strategy), and forecast labels
 issued after the lab config's cutoffs. This book has those, at a size that
 prepares on a CPU in seconds. It is synthetic throughout; no value describes
 a real person, card, or merchant.

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental Blueprint v2 granularity: profile + event encoders, causal decoder (ADR 0012)."""
+"""Experimental Blueprint v2 granularity: profile + event encoders, causal decoder (Blueprint v2 guide)."""
 
 from __future__ import annotations
 

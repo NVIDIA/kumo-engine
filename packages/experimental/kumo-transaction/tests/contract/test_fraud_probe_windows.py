@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The fraud probe is entity-disjoint and labels come from each side's period (ADR 0013)."""
+"""The fraud probe is entity-disjoint and labels come from each side's period (probe split rules)."""
 
 from __future__ import annotations
 

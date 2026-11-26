@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Next-event field prediction over key-value-time batches (ADR 0012)."""
+"""Next-event field prediction over key-value-time batches (Blueprint v2 guide)."""
 
 from __future__ import annotations
 
