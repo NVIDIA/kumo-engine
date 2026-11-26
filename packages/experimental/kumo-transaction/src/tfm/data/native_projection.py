@@ -118,6 +118,12 @@ def history_projection(
         for row in normalized.connection.execute("SELECT DISTINCT table_name FROM history_ranks")
     }
     for index, ((purpose, current), entries) in enumerate(groups.items()):
+        if normalized.counts[current] == 0:
+            # Retain declared optional empty streams; there are no identities
+            # to reorder or associations to deduplicate.
+            for name, path, _destinations in entries:
+                output_paths[name] = path
+            continue
         if (
             purpose != "history"
             and len(entries) == 1
@@ -162,6 +168,12 @@ def history_projection(
         query = f"SELECT p.child,p.owner,MIN(p.known),k.rank FROM ({' UNION ALL '.join(queries)}) p JOIN identities n ON n.table_name=? AND n.code=p.child JOIN history_ranks k ON k.table_name=n.table_name AND k.code=n.code GROUP BY p.child,p.owner ORDER BY p.child,p.owner"
         cursor = normalized.connection.execute(query, (*parameters, current))
         found = next(cursor, None)
+        if found is None:
+            # All aliases have an empty reachable history. One original path
+            # retains that empty stream without introducing projected rows.
+            for name, _path, _destinations in entries:
+                output_paths[name] = entries[0][1]
+            continue
         table_name, role_name = f"__tfm_history_{index}", f"__tfm_history_role_{index}"
         output = directory / f"history-{index}.parquet"
         writer, count = None, 0

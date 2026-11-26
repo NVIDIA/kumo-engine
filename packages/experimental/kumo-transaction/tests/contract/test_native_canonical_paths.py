@@ -381,12 +381,33 @@ def test_native_history_truncation_matches_nested_identity_and_not_declaration_o
             role = f"{name}_{column}"
             roles.append(RelationalForeignKey(role, "owners", name, (column,)))
             paths[role] = (role,)
+    rows["optional"] = []
+    tables.append(
+        RelationalTable(
+            "optional", ("id",), numeric={"amount": "amount"}, event_time="at", available_at="at"
+        )
+    )
+    roles.append(RelationalForeignKey("optional", "owners", "optional", ("owner",)))
+    paths["optional"] = ("optional",)
+    rows["unowned"] = [{"id": "orphan", "owner": None, "other": None, "at": START, "amount": 99.0}]
+    tables.append(
+        RelationalTable(
+            "unowned", ("id",), numeric={"amount": "amount"}, event_time="at", available_at="at"
+        )
+    )
+    roles.append(RelationalForeignKey("unowned", "owners", "unowned", ("owner",)))
+    paths["unowned"] = ("unowned",)
     if reverse:
         paths = dict(reversed(tuple(paths.items())))
     files = {}
     for name, values in rows.items():
         files[name] = tmp_path / f"{name}.parquet"
-        pq.write_table(pa.Table.from_pylist(values), files[name])
+        table = (
+            pa.Table.from_pylist(values)
+            if values
+            else pa.Table.from_pylist(rows["stream"]).slice(0, 0)
+        )
+        pq.write_table(table, files[name])
     task = RelationalTaskConfig(root="owners", history_paths=paths, cutoffs={"train": "2024-01-02"})
     reference = RelationalSource(
         RelationalDataset(tuple(tables), tuple(roles), {n: tuple(v) for n, v in rows.items()}), task
