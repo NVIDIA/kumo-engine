@@ -10,7 +10,7 @@ inputs:
     description: 'Pydantic version specifier (e.g., "pydantic<2" or "pydantic>=2.7")'
     required: true
   install-extras:
-    description: 'Package extras to install (e.g., "test" or "release-check")'
+    description: 'Package extras to install (e.g., "test")'
     required: false
     default: ''
   skip-install:

@@ -53,14 +53,9 @@ test=[
     "tabulate",
     "cryptography",
 ]
-release-check=[
-    "boto3",
-    "botocore>=1.34,<2",
-]
 
 [tool.setuptools.packages.find]
 include = ["kumoapi*"]
-exclude = ["tools*"]
 
 [tool.poetry]
 name = "kumo-api"
