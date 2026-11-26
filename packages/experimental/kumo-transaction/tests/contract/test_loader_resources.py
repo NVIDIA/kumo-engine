@@ -153,11 +153,16 @@ def test_graph_loader_supplies_provenance_and_owns_cleanup(failure, monkeypatch)
         assert created[0].closed == 1
 
 
-def test_every_canonical_recipe_selects_native():
+def test_canonical_recipe_loader_selection_respects_native_capabilities():
     from pathlib import Path
 
+    python_presets = {
+        Path("recipes/blueprint_v1/config.multi_gpu.yaml"),
+        Path("recipes/blueprint_v2/config.scale.yaml"),
+    }
     for path in Path("recipes").glob("*/config*.yaml"):
-        assert load_recipe_config(path).data.loader == "kumo_pytorch", str(path)
+        expected = "python" if path in python_presets else "kumo_pytorch"
+        assert load_recipe_config(path).data.loader == expected, str(path)
 
 
 def test_omitted_loader_uses_native_in_typed_and_yaml_configs():
