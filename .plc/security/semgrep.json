@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "check_id": "tmp.plc-security-artifacts.esqx5lah.offline-rules.semgrep-rules.ai.ai-best-practices.hooks-path-traversal.hooks-path-traversal-python",
+      "end_line": 433,
+      "path": ".plc/tools/notebook-source/local_kumo_engine_synthetic_money_muling_detection.py",
+      "severity": "ERROR",
+      "start_line": 433
+    }
+  ],
+  "version": "1.157.0"
+}
