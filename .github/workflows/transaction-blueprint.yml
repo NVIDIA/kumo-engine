@@ -58,6 +58,8 @@ jobs:
             ~/.cargo/git
             packages/experimental/kumo-transaction/.cache/kumo-native-cargo
           key: transaction-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/experimental/kumo-transaction/pyproject.toml', 'packages/experimental/kumo-transaction/scripts/native-build-constraints.txt') }}
+          restore-keys: |
+            transaction-cargo-${{ runner.os }}-${{ runner.arch }}-
       - name: Build or verify matching native wheels
         if: steps.paths.outputs.changed == 'true'
         working-directory: packages/experimental/kumo-transaction

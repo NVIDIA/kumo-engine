@@ -211,7 +211,8 @@ parallelism is separate: `scripts/build_kumo_loader_wheels.py` now honors
 two build jobs for its memory budget. Isolated build tools are pinned in
 `scripts/native-build-constraints.txt`; the six source/runtime pins are unchanged.
 The verified wheel cache includes the build-tool constraints. CI also caches
-Cargo's registry/git downloads and native targets; target directories are keyed
+Cargo's registry/git downloads and native targets, restoring the platform cache
+across unrelated package edits. Target directories remain independently keyed
 by source revision, Cargo.lock, toolchain, platform, Rust flags and constraints.
 Fresh source checkout paths/mtimes prevent stale project artifacts from being
 accepted after restoring different source bytes. These changes do not establish
