@@ -830,6 +830,8 @@
     "tests/recipe_smoke/test_relational_recipes.py": "Shared bounded relational declarations, aligned loaders, recipe integration and regression coverage implemented in Engine.",
     "tests/recipe_smoke/test_source_native_recipes.py": "Source-table native recipe streaming, fitted tensor adaptation and regression coverage implemented in Engine.",
     "src/tfm/data/loaders.py": "Engine-owned source-loader registry and import-path providers using the pinned PyTorch Engine contract; preserve shared recipe orchestration and provider provenance.",
-    "scripts/native-build-constraints.txt": "Pin isolated wheel-build tools; source/runtime dependency pins remain unchanged."
+    "scripts/native-build-constraints.txt": "Pin isolated wheel-build tools; source/runtime dependency pins remain unchanged.",
+    "src/tfm/data/native_index.py": "Build canonical recent ordering with existing native integer secondary sort keys; preserve typed index bindings, clocks and owned lifecycle.",
+    "tests/contract/test_native_canonical_paths.py": "Synthetic native/reference coverage for canonical boundary ties, composite keys, fixed incoming/outgoing path unions, self-links, cutoffs and exact clock bounds."
   }
 }

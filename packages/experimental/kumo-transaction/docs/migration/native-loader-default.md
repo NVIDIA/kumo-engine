@@ -163,20 +163,43 @@ run directory and regenerate the fitted state and saved anchors.
 Direct batch callers declare split/view mappings before iteration. Declared Arrow date clocks
 mean midnight UTC and are stored as explicit UTC timestamps for the index.
 The pinned native runtime requires whole-second UTC event and cutoff clocks.
-A sequence path needs equivalent event and availability clocks. A fixed forward
-projection through timed intermediates is supported only when every row and
-link along the ownership path was observable by the terminal event time.
-Versioned ownership, late-known projections and unsupported reverse/fan-in
-intermediate paths fail before training with the affected rule.
+A sequence path needs equivalent event and availability clocks. Fixed-FK
+projections may traverse either direction through timed intermediates when every
+row and link was observable by the terminal event time. Several named history
+paths to one physical terminal table are combined before truncation: each
+(root, terminal primary key) association appears once. This keeps both roles of
+a bidirectional activity relationship, deduplicates a self-link for one root,
+and retains an event for each distinct associated root. Projection size follows
+root/event associations, rather than prediction anchors; many-to-many ownership
+can still increase its size. Separate dated profile facts retain their meanings.
+Versioned ownership and late-known projections still fail with the affected path.
 
 Graph hops follow the types reached by the preceding hop, in either FK
-direction. Unsupported independent availability/ranking clocks are rejected
-when fanout could truncate eligible candidates. Native recent ties follow
-index order. A task requiring canonical primary-key ties is refused when that
-order cannot be guaranteed at a capped boundary. Explicit graph lookbacks are
+direction. The built-in native provider sorts timed edges by timestamp descending
+and canonical primary-key identity ascending **before** applying fanout. A
+source-only uint32 inverse key rank supplies DiskGraph's secondary integer sort
+key; it is never a model feature. Source row order, equal daily timestamps and
+loader thread count do not choose which boundary ties survive. Original event
+and observation times are preserved. Whole-second timestamps are declared in
+seconds after exact validation; no rank is added to a timestamp. The native sort
+key uses a checked one-second origin so values do not wrap across epoch/signed
+integer boundaries. This encoding supports at most `2**32` rows per input table
+and a clock span of at most `2**32 - 1` seconds per timed destination. Larger
+ranges fail explicitly before ingestion, rather than losing precision.
+
+Unsupported independent availability/ranking clocks are rejected when fanout
+could truncate eligible candidates. Capped uniform selection of immutable
+neighbors still cannot promise canonical keys. Explicit graph lookbacks are
 accepted only when source coverage proves the lower bound immaterial; otherwise
-select the Python reference path. These checks prevent silently changing
-ownership, availability or fanout semantics.
+select the Python reference path. A custom provider must implement and declare
+its ordering capability; unspecified index order is still refused for a capped
+canonical tie.
+
+Canonical key metadata and union history components change native input-contract
+fingerprints. Start a new managed run and regenerate native fitted artifacts
+when upgrading from the earlier index-order/single-path implementation. Existing
+checkpoint identity checks reject incompatible artifacts before installing model
+weights. No source-specific mapping or model architecture change is required.
 
 The source-native CLI currently supports single-process training. DDP's
 single-process eager behavior accepts a native stream; distributed native

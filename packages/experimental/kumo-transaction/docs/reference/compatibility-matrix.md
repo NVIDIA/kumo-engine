@@ -62,7 +62,7 @@ milestone status is in [roadmap.md](roadmap.md).
 | Engine/shared/disjoint cost controls | `experimental` | CPU harness test; short L4 check | CPU / CUDA | [Recorded L4 check](../../benchmarks/results/graph_backends_l4_cost.md); historical untrimmed run; no native-loader/full-quality claim |
 | Kumo graph tensor adapter | `experimental` | contract (native output and invalid-binding fixtures) | CPU native integration | `from_kumo_graph`; bounded FK schema, whole-second clocks; future aggregates remain Python |
 | Source-loader providers | `experimental` | registry/import-path validation, native two-thread engine and four CLI smokes | CPU | Engine/AnchorTable/model-tensor capability required; provider identity and cleanup checked; [extension guide](extending.md#source-loader-providers) |
-| Kumo PyTorch recipe loaders | `experimental` | real source-table/native-tensor contracts; continuous iterator and recipe smokes | CPU | Default CLI source-native sequence, graph and hybrid streams; train-fitted native encoders, bounded input retention and explicit Python reference option; [guide](../../examples/kumo-engine/README.md#canonical-recipes) |
+| Kumo PyTorch recipe loaders | `experimental` | real source-table/native-tensor contracts; continuous iterator and recipe smokes | CPU | Default CLI source-native sequence, graph and hybrid streams; native canonical recent ties, fixed-path history unions, train-fitted encoders and explicit Python reference option; [guide](../../examples/kumo-engine/README.md#canonical-recipes) |
 | Mean readout | `experimental` | unit | CPU / CUDA | `composition.readout: mean` |
 
 ## Training

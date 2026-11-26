@@ -58,7 +58,8 @@ def event_grid(history: Mapping[str, Any]) -> tuple[Tensor, Tensor, Tensor, Tens
 
 
 def _bindings(metadata: Mapping[str, Any]) -> tuple[tuple[GraphAnchor, ...], tuple[int, ...]]:
-    unit = metadata["timestamp_unit"]
+    # The pinned API omits its documented default seconds unit.
+    unit = metadata.get("timestamp_unit", "seconds")
     factors = {"seconds": 1_000_000, "milliseconds": 1000, "microseconds": 1}
     if unit not in factors:
         raise SchemaError(f"Unsupported native anchor timestamp unit: {unit}")

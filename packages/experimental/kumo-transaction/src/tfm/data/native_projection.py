@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,34 @@ from tfm.contracts.table_source import TableSource
 from tfm.data.native_source import EVENT_US, ROW_ID, NativeSourceFiles
 
 
+def _write_associations(
+    block: pa.RecordBatch,
+    selected: list[int],
+    owners: list[int],
+    identities: list[str],
+    output: Path,
+    writer: pq.ParquetWriter | None,
+) -> tuple[pq.ParquetWriter | None, int]:
+    if not selected:
+        return writer, 0
+    projected = pa.Table.from_batches([block]).take(pa.array(selected, type=pa.int64()))
+    projected = projected.set_column(
+        projected.schema.get_field_index(ROW_ID),
+        ROW_ID,
+        pa.array(identities, type=pa.string()),
+    )
+    projected = projected.append_column("__tfm_history_root", pa.array(owners, type=pa.int64()))
+    if writer is None:
+        writer = pq.ParquetWriter(output, projected.schema)
+    writer.write_table(projected)
+    count = projected.num_rows
+    selected.clear()
+    owners.clear()
+    identities.clear()
+
+    return writer, count
+
+
 def history_projection(
     normalized: NativeSourceFiles,
     *,
@@ -27,13 +56,13 @@ def history_projection(
     directory: Path,
     exclusive_terminal_paths: bool = False,
 ) -> tuple[TableSource, dict[str, tuple[str, ...]]]:
-    """Carry row/link observability through fixed ownership, without window copies.
+    """Union fixed paths by root/physical event before native history truncation.
 
-    Each projected terminal row keeps its original event time and can be used
-    at any prediction cutoff. Its entire path must have been observable by that
-    event time. The pinned native API cannot apply two independent history
-    clocks; late-known paths fail explicitly before native fitting. Timed
-    intermediate paths with fan-in need a different native traversal contract.
+    One projected source row represents one distinct root/event association,
+    regardless of the number of paths or prediction anchors. A self-link is
+    counted once; an event associated with two roots remains visible to both.
+    Row/link knowledge must already hold at event time because the pinned
+    history backend cannot filter independent availability and event clocks.
     """
     source = normalized.source
     tables = {table.name: table for table in source.tables}
@@ -43,10 +72,13 @@ def history_projection(
         list(source.relationships),
         dict(source.files),
     )
-    output_paths, labels, terminals = {}, dict(source.event_labels), set()
+    output_paths, labels = {}, dict(source.event_labels)
+    groups: dict[tuple[str, str], list[tuple[str, tuple[str, ...], tuple[str, ...]]]] = defaultdict(
+        list
+    )
     directory.mkdir(parents=True, exist_ok=True)
-    for index, (name, path) in enumerate(paths.items()):
-        current, destinations, forward = root, [], True
+    for name, path in paths.items():
+        current, destinations = root, []
         for role_name in path:
             role = roles.get(role_name)
             if (
@@ -57,53 +89,60 @@ def history_projection(
                 raise SchemaError(
                     f"history_paths.{name}.{role_name}: disconnected or ambiguous relationship"
                 )
-            if current != role.parent:
-                forward = False
             current = role.child if current == role.parent else role.parent
             if tables[current].role != "input":
                 raise SchemaError(f"history_paths.{name}: label tables cannot supply inputs")
             destinations.append(current)
         if not path or tables[current].event_time is None:
             raise SchemaError(f"history_paths.{name}: terminal event clock is required")
-        if current in terminals and not exclusive_terminal_paths:
-            raise UnsupportedCombinationError(
-                f"history_paths.{name}: native history cannot deduplicate multiple paths to {current}"
-            )
-        terminals.add(current)
         if not normalized.same_clocks[current]:
             raise UnsupportedCombinationError(
                 f"history_paths.{name}: native histories cannot preserve independent event/availability clocks on {current}; select data.loader: python"
             )
-        terminal = tables[current]
-        if not any(not tables[table].immutable for table in destinations[:-1]):
-            # Native traversal is already valid, and can follow either FK
-            # direction through immutable intermediates. Equal clock values may
-            # have different physical column names; ingestion proved equality.
-            output_paths[name] = path
+        # Dated profile facts have their own declared meanings. Ordinary
+        # history aliases reaching the same physical table share one union.
+        purpose = name if name.startswith("__profile_") or exclusive_terminal_paths else "history"
+        groups[purpose, current].append((name, path, tuple(destinations)))
+    for index, ((_purpose, current), entries) in enumerate(groups.items()):
+        if len(entries) == 1 and not any(not tables[t].immutable for t in entries[0][2][:-1]):
+            output_paths[entries[0][0]] = entries[0][1]
             continue
-        if not forward:
-            raise UnsupportedCombinationError(
-                f"history_paths.{name}: timed intermediate projection requires a fixed forward FK ownership path"
+        queries, parameters = [], []
+        for _name, path, destinations in entries:
+            joins, available = [], [f"COALESCE(r.available_us,{STATIC_TIME})"]
+            previous, table = "r.code", root
+            for hop, (role_name, destination) in enumerate(zip(path, destinations, strict=True)):
+                role = roles[role_name]
+                start, end = ("parent", "child") if table == role.parent else ("child", "parent")
+                link, node = f"l{hop}", f"n{hop}"
+                joins.extend(
+                    (
+                        f"JOIN links {link} ON {link}.{start}={previous} AND {link}.role=?",
+                        f"JOIN identities {node} ON {node}.table_name=? AND {node}.code={link}.{end}",
+                    )
+                )
+                parameters.extend((role_name, destination))
+                available.extend(
+                    (
+                        f"COALESCE({link}.available_us,{STATIC_TIME})",
+                        f"COALESCE({node}.available_us,{STATIC_TIME})",
+                    )
+                )
+                previous, table = f"{node}.code", destination
+            queries.append(
+                f"SELECT {previous} AS child,r.code AS owner,MAX({','.join(available)}) AS known FROM identities r {' '.join(joins)} WHERE r.table_name=?"
             )
-        aliases = [f"l{i}" for i in range(len(path))]
-        joins = " ".join(
-            f"JOIN links {aliases[i]} ON {aliases[i]}.parent={aliases[i - 1]}.child"
-            for i in range(1, len(path))
-        )
-        availability = ",".join(
-            f"COALESCE({alias}.available_us,{STATIC_TIME})" for alias in ["r", *aliases]
-        )
-        conditions = " AND ".join(f"{alias}.role=?" for alias in aliases)
-        query = f"SELECT {aliases[-1]}.child,l0.parent,MAX({availability}) FROM links l0 {joins} JOIN identities r ON r.table_name=? AND r.code=l0.parent WHERE {conditions} ORDER BY {aliases[-1]}.child"
-        cursor = normalized.connection.execute(query, (root, *path))
+            parameters.append(root)
+        query = f"SELECT p.child,p.owner,MIN(p.known),k.rank FROM ({' UNION ALL '.join(queries)}) p JOIN identities n ON n.table_name=? AND n.code=p.child JOIN canonical_ranks k ON k.table_name=n.table_name AND k.code=n.code GROUP BY p.child,p.owner ORDER BY p.child,p.owner"
+        cursor = normalized.connection.execute(query, (*parameters, current))
         found = next(cursor, None)
-        table_name = f"__tfm_history_{index}"
-        role_name = f"__tfm_history_role_{index}"
+        table_name, role_name = f"__tfm_history_{index}", f"__tfm_history_role_{index}"
         output = directory / f"history-{index}.parquet"
         writer, count = None, 0
         try:
             for block in pq.ParquetFile(source.files[current]).iter_batches(batch_size=4096):
-                owners, selected = [], []
+                selected, owners, identities = [], [], []
+
                 for position, (code, event) in enumerate(
                     zip(
                         block.column(ROW_ID).to_pylist(),
@@ -111,41 +150,46 @@ def history_projection(
                         strict=True,
                     )
                 ):
-                    if found is None or found[0] != code:
-                        continue
-                    if found[2] > event:
-                        raise UnsupportedCombinationError(
-                            f"history_paths.{name}: row/link ownership was learned after the terminal event; native history cannot preserve both clocks"
-                        )
-                    selected.append(position)
-                    owners.append(found[1])
-                    found = next(cursor, None)
-                projected = (
-                    pa.Table.from_batches([block])
-                    .take(pa.array(selected, type=pa.int64()))
-                    .append_column("__tfm_history_root", pa.array(owners, type=pa.int64()))
+                    while found is not None and found[0] == code:
+                        if found[2] > event:
+                            names = ",".join(item[0] for item in entries)
+                            raise UnsupportedCombinationError(
+                                f"history_paths.{names}: row/link ownership was learned after the terminal event; native history cannot preserve both clocks"
+                            )
+                        selected.append(position)
+                        owners.append(found[1])
+                        # Within one owner's stream this prefix is constant;
+                        # the suffix preserves the reference physical event ID.
+                        identities.append(f"{found[1]}:{found[3]:010d}")
+                        found = next(cursor, None)
+                        if len(selected) == 4096:
+                            writer, added = _write_associations(
+                                block, selected, owners, identities, output, writer
+                            )
+                            count += added
+                writer, added = _write_associations(
+                    block, selected, owners, identities, output, writer
                 )
-                if writer is None:
-                    writer = pq.ParquetWriter(output, projected.schema)
-                writer.write_table(projected)
-                count += projected.num_rows
+                count += added
         finally:
             if writer is not None:
                 writer.close()
         if not count:
             raise UnsupportedCombinationError(
-                f"history_paths.{name}: native projection contains no reachable source rows"
+                f"history_paths.{entries[0][0]}: native projection contains no reachable source rows"
             )
         if found is not None:
             raise SchemaError(
-                f"history_paths.{name}: ownership projection is not one row per terminal"
+                f"history_paths.{entries[0][0]}: native projection lost a source identity"
             )
+        terminal = tables[current]
         output_tables.append(replace(terminal, name=table_name, available_at=terminal.event_time))
         output_roles.append(
             RelationalForeignKey(role_name, root, table_name, ("__tfm_history_root",))
         )
         files[table_name] = output
-        output_paths[name] = (role_name,)
+        for name, _path, _destinations in entries:
+            output_paths[name] = (role_name,)
         if current in labels:
             labels[table_name] = labels[current]
     return replace(

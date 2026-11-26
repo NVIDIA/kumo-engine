@@ -76,12 +76,21 @@ def resolve_loader(name: str) -> SourceLoader:
 
 def _diskgraph(resources: ExitStack, *, work_dir: Path, num_threads: int) -> Any:
     del work_dir
+    from tfm.data.native_index import CanonicalDiskGraphEngine
     from tfm.extras.kumo_pytorch import temporary_engine
 
-    return temporary_engine(resources, num_threads=num_threads)
+    return CanonicalDiskGraphEngine(temporary_engine(resources, num_threads=num_threads))
 
 
 _LOADERS.register("python", SourceLoader(None, {"name": "python"}))
 _LOADERS.register(
-    "kumo_pytorch", SourceLoader(_diskgraph, {"name": "kumo_pytorch", "engine": "diskgraph"})
+    "kumo_pytorch",
+    SourceLoader(
+        _diskgraph,
+        {
+            "name": "kumo_pytorch",
+            "engine": "diskgraph",
+            "graph_order": "canonical_key_asc_uint32_v1",
+        },
+    ),
 )

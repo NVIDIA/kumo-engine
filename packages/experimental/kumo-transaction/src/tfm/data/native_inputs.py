@@ -139,6 +139,9 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             self.normalized = self.resources.enter_context(
                 NativeSourceFiles(source, self.directory / "tables")
             )
+            self.normalized.canonical_graph_order = (
+                self.loader.provenance.get("graph_order") == "canonical_key_asc_uint32_v1"
+            )
             self.source = self.normalized.source
             if exclusive_terminal_paths:
                 if set(history_paths.values()) != {("events",), ("window_events",)}:
@@ -398,7 +401,25 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                     directory=self.directory / "projections",
                     exclusive_terminal_paths=self.exclusive_terminal_paths,
                 )
-                self._history_options["paths"] = {key: paths[key] for key in self.paths}
+                # Aliases to the same physical terminal now resolve through
+                # one union projection. Both paths contribute associations,
+                # but each root/event enters the encoded stream only once.
+                compiled_paths, seen_paths = {}, set()
+                for key in self.paths:
+                    if paths[key] not in seen_paths:
+                        compiled_paths[key] = paths[key]
+                        seen_paths.add(paths[key])
+                self._history_options["paths"] = compiled_paths
+                if not self.exclusive_terminal_paths:
+                    relations = {role.name: role for role in self.source.relationships}
+                    event_names = {}
+                    for key in compiled_paths:
+                        terminal = self.root
+                        for role_name in self.paths[key]:
+                            role = relations[role_name]
+                            terminal = role.child if terminal == role.parent else role.parent
+                        event_names[key] = terminal
+                    self._history_options["event_names"] = event_names
                 self._history_source = replace(
                     self._history_source,
                     profile_paths={

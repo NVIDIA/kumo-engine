@@ -30,11 +30,14 @@ import pyarrow.parquet as pq
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.schema import ensure_utc
 from tfm.contracts.table_source import TableSource
+from tfm.data.relational import key_token
 from tfm.data.validation.schema import PROHIBITED_INPUT_KEYS
 
 ROW_ID = "__tfm_row_id"
 AVAILABLE_US = "__tfm_available_us"
 EVENT_US = "__tfm_event_us"
+KEY_ORDER = "__tfm_key_order"
+MAX_KEY_ORDER = 2**32 - 1
 
 # Arrow populates compute functions dynamically.
 pc: Any = arrow_compute
@@ -160,7 +163,7 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
         self.connection = sqlite3.connect(database)
         self.connection.execute(
             "CREATE TABLE identities (table_name TEXT, source_key TEXT, code INTEGER, "
-            "available_us INTEGER, event_us INTEGER, PRIMARY KEY(table_name,source_key), UNIQUE(table_name,code))"
+            "available_us INTEGER, event_us INTEGER, canonical_key TEXT, PRIMARY KEY(table_name,source_key), UNIQUE(table_name,code))"
         )
         self.connection.execute(
             "CREATE TABLE fanouts (role TEXT, parent INTEGER, degree INTEGER, PRIMARY KEY(role,parent))"
@@ -174,6 +177,7 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
         self.connection.execute(
             "CREATE TABLE event_labels(table_name TEXT,code INTEGER,value REAL,available_us INTEGER,PRIMARY KEY(table_name,code))"
         )
+        self.canonical_graph_order = False
         self.same_clocks: dict[str, bool] = {}
         self.counts: dict[str, int] = {}
         self.source_identity: dict[str, str] = {}
@@ -227,17 +231,33 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
             for block in self._blocks(table.name, list(table.key)):
                 values = zip(*(block.column(c).to_pylist() for c in table.key), strict=True)
                 rows = (
-                    (table.name, _key(tuple(value), f"{table.name}.key"), count + i)
+                    (
+                        table.name,
+                        _key(tuple(value), f"{table.name}.key"),
+                        count + i,
+                        key_token(value),
+                    )
                     for i, value in enumerate(values)
                 )
                 try:
                     self.connection.executemany(
-                        "INSERT INTO identities(table_name,source_key,code) VALUES (?,?,?)", rows
+                        "INSERT INTO identities(table_name,source_key,code,canonical_key) VALUES (?,?,?,?)",
+                        rows,
                     )
                 except sqlite3.IntegrityError as error:
                     raise SchemaError(f"{table.name}.key: duplicate source primary key") from error
                 count += block.num_rows
+            if count > MAX_KEY_ORDER + 1:
+                raise UnsupportedCombinationError(
+                    f"{table.name}.key: native canonical order requires at most 2**32 source rows"
+                )
             self.counts[table.name] = count
+        self.connection.execute(
+            "CREATE TABLE canonical_ranks (table_name TEXT,code INTEGER,rank INTEGER,PRIMARY KEY(table_name,code))"
+        )
+        self.connection.execute(
+            "INSERT INTO canonical_ranks SELECT table_name,code,ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY canonical_key)-1 FROM identities"
+        )
         self.connection.commit()
 
     def code(self, table: str, key: tuple[Any, ...]) -> int:
@@ -275,6 +295,14 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
                         )
                     projected = pa.Table.from_batches([block]).append_column(
                         ROW_ID, pa.array(range(count, count + block.num_rows), type=pa.int64())
+                    )
+                    ranks = self.connection.execute(
+                        "SELECT rank FROM canonical_ranks WHERE table_name=? AND code>=? AND code<? ORDER BY code",
+                        (table.name, count, count + block.num_rows),
+                    )
+                    projected = projected.append_column(
+                        KEY_ORDER,
+                        pa.array((MAX_KEY_ORDER - row[0] for row in ranks), type=pa.uint32()),
                     )
                     # Native numeric encoders distinguish NULL (missing) from
                     # non-finite observations. Normalize only declared numeric
@@ -415,6 +443,7 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
                     [], schema=pq.read_schema(self.original.files[table.name])
                 )
                 empty = empty.append_column(ROW_ID, pa.array([], type=pa.int64()))
+                empty = empty.append_column(KEY_ORDER, pa.array([], type=pa.uint32()))
                 if not table.immutable:
                     empty = empty.append_column(
                         AVAILABLE_US, pa.array([], type=pa.int64())

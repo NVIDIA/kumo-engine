@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Select native recent neighbors by exact canonical-key secondary order before
+  fanout; preserve timestamps and reject unrepresentable key/clock ranges.
+- Union fixed history paths by root/physical event before history truncation,
+  retaining both directions and deduplicating self-links. Native contract
+  fingerprints change; use a new managed run and fitted artifacts.
+
 - Correct DiskGraph wheel binary includes in fresh pinned-source builds.
 - Keep distributed Blueprint v1/v2 presets on the Python loader, including the
   v2 scale fine-tuning stage.

@@ -83,9 +83,11 @@ encoding explicitly; point-in-time history traversal supports versioned ownershi
 The canonical native runner indexes validated source tables and streams encoded
 tensors from native tasks. It does not implement the whole reference contract.
 Whole-second clocks, fixed ownership and backend-expressible observation rules
-are required. A capped canonical tie, independent history availability clock,
-unsupported timed projection, versioned ownership rule or meaningful per-hop
-lookback fails before training rather than changing the contract. See the
+are required. The built-in provider uses native timestamp/key ordering for capped ties and
+unions fixed history paths by root/physical event before truncation. Independent
+history availability clocks, late-known projections, versioned ownership,
+unrepresentable key/clock ranges and meaningful per-hop lookbacks still fail
+before training rather than changing the contract. See the
 [native capability and migration guide](../migration/native-loader-default.md#supported-boundaries).
 Legacy object-based candidate adapters remain available to direct callers;
 they are not the source-native recipe implementation.

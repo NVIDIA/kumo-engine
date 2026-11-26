@@ -104,8 +104,9 @@ def validate_graph_policy(
 
     A whole-source bound can prove a lookback immaterial. Otherwise native
     graph lookbacks need eligibility filtering during every hop, not trimming
-    a completed graph. Canonical ties are safe when retrieval is uncapped or
-    every candidate clock is unique within its physical FK neighborhood.
+    a completed graph. Canonical ties require a provider that sorts the
+    declared key before fanout, uncapped retrieval, or unique candidate clocks
+    within each physical FK neighborhood.
     """
     tables = {
         table.name: table
@@ -150,6 +151,8 @@ def validate_graph_policy(
                 raise UnsupportedCombinationError(
                     f"graph.path.{role.name}: native uniform selection cannot preserve canonical-key fanout on an immutable destination"
                 )
+            if source.canonical_graph_order:
+                continue
             tied = source.connection.execute(
                 "SELECT 1 FROM links l JOIN fanouts f ON f.role=l.role AND f.parent=l.parent JOIN identities n ON n.table_name=? AND n.code=l.child WHERE l.role=? AND f.degree>? GROUP BY l.parent,n.event_us HAVING COUNT(*)>1 LIMIT 1",
                 (role.child, role.name, fanout),

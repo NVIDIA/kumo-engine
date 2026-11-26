@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.table_source import TableSource
-from tfm.data.native_source import AVAILABLE_US, EVENT_US, validate_feature_bindings
+from tfm.data.native_source import AVAILABLE_US, EVENT_US, KEY_ORDER, validate_feature_bindings
 from tfm.data.validation.schema import PROHIBITED_INPUT_KEYS
 from tfm.extras.kumo_pytorch import native_api
 
@@ -141,7 +141,7 @@ def native_schema(source: TableSource) -> Any:
             if relation.child == table.name:
                 required.update(relation.columns)
         required.update(c for c in (table.available_at, table.event_time) if c)
-        required.update(c for c in (AVAILABLE_US, EVENT_US) if c in schema.names)
+        required.update(c for c in (AVAILABLE_US, EVENT_US, KEY_ORDER) if c in schema.names)
         missing = required - set(schema.names)
         if missing:
             raise SchemaError(f"{table.name}: missing declared source columns {sorted(missing)}")
@@ -169,7 +169,16 @@ def native_schema(source: TableSource) -> Any:
                 table.name,
                 table.key[0],
                 {
-                    name: _dtype(schema.field(name).type, f"{table.name}.{name}", api)
+                    # Normalization proved exact whole seconds. Retain UTC
+                    # source values; declare second units for native sort keys.
+                    name: _dtype(
+                        pa.timestamp("s", tz="UTC")
+                        if KEY_ORDER in schema.names
+                        and name in {table.event_time, table.available_at}
+                        else schema.field(name).type,
+                        f"{table.name}.{name}",
+                        api,
+                    )
                     for name in required
                 },
                 time_column=api.NON_TEMPORAL if table.immutable else table.available_at,
@@ -206,6 +215,7 @@ def history_contract(
     excluded_keys: frozenset[str] = frozenset(),
     fixed_vocabularies: Mapping[str, tuple[str, ...]] | None = None,
     exclusive_terminal_paths: bool = False,
+    event_names: Mapping[str, str] | None = None,
 ) -> Any:
     """Encode selected historical fields natively; expose no identifier features.
 
@@ -250,6 +260,7 @@ def history_contract(
             raise UnsupportedCombinationError(
                 f"history_paths.{name}: native history selection cannot apply independent event and availability clocks; supply a validated fixed-ownership projection or select data.loader: python"
             )
+        component = name if event_names is None else event_names.get(name, name)
         fields = {}
         for kind, mapping in (
             ("numeric", table.numeric),
@@ -275,7 +286,7 @@ def history_contract(
                             (value, i + 2) for i, value in enumerate(fixed_vocabularies[alias])
                         )
                     )
-                field = alias if fixed_vocabularies is not None else f"events/{name}/{alias}"
+                field = alias if fixed_vocabularies is not None else f"events/{component}/{alias}"
                 if not any(item.field == field for item in encoded):
                     encoded.append(api.Encode(field, encoding, id_space="model"))
         fields.update(
@@ -294,7 +305,10 @@ def history_contract(
                 "__amount": api.Derived("add", ("__amount_raw", "__amount_zero")),
             }
         )
-        events[name] = api.EventSpec(
+        component = name if event_names is None else event_names.get(name, name)
+        if component in events:
+            raise SchemaError(f"history_paths.{name}: duplicate physical history component")
+        events[component] = api.EventSpec(
             api.Rows(
                 path,
                 api.TimeWindow(
