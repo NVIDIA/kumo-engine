@@ -17,7 +17,6 @@ from kumo_core.embedding_models import (
 )
 from kumo_core.encoders.fused.text import FusedTextEncoder
 from kumo_core.encoders.tensor_mapper import TextTensorMapper
-from kumo_core.encoders.text import normalize_text
 from kumo_core.glove import TokenEmbeddingTable
 from kumoapi.encoder import TextEmbedding
 from torch_geometric.testing import onlyCUDA
@@ -40,17 +39,9 @@ def glove_with_null_words(tmp_path) -> Iterator[tuple[GloVeVectors, np.ndarray]]
     embedding_models.set_default_store(previous)
 
 
-def test_normalize_text() -> None:
-    values = pd.Series(["Hello,  WORLD!", "get<br/>old", None])
-
-    normalized = normalize_text(values)
-
-    assert normalized.tolist() == [["hello", "world"], ["get", "old"], []]
-
-
-def test_glove_tokenizer_preserves_non_range_rows() -> None:
+def test_glove_tokenizer_preserves_sliced_rows() -> None:
     rowptr, tokens = resolve_encoder(TextEmbedding("glove.test-10d")).tokenize(
-        pd.Series(["The invalid", "of, to"], index=[10, 20])
+        pa.array(["unused", "The invalid", "of, to"]).slice(1)
     )
 
     assert rowptr.tolist() == [0, 1, 3]
@@ -61,7 +52,7 @@ def test_glove_lookup_skips_null_and_repeated_words(glove_with_null_words) -> No
     model, embedding = glove_with_null_words
     table = TokenEmbeddingTable(model).initialize()
 
-    rowptr, tokens = model.tokenize(pd.Series(["The OF to", "null nan", None, "a"]))
+    rowptr, tokens = model.tokenize(pa.array(["The OF to", "null nan", None, "a"]))
     assert rowptr.tolist() == [0, 3, 3, 3, 4]
     assert tokens.tolist() == [0, 5, 4, 6]  # A repeated word maps to its last row.
     assert model.vocabulary()[tokens.numpy()].tolist() == ["the", "of", "to", "a"]
@@ -145,7 +136,7 @@ class _NumpyModel:
     def vectors(self) -> np.ndarray:
         return np.ones((self.rows, self.dim))  # float64
 
-    def tokenize(self, texts: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize(self, texts: pa.Array) -> tuple[np.ndarray, np.ndarray]:
         rowptr = [0, 2] + [2] * (len(texts) - 1 + self.extra_pointer)
         return np.array(rowptr), np.array([0, 1])
 

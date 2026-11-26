@@ -34,6 +34,7 @@ from typing import (
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from filelock import FileLock
 
 if TYPE_CHECKING:
@@ -94,9 +95,9 @@ class TokenEmbeddingModel(EmbeddingModel, Protocol):
 
     ``vocabulary()`` is a ``pd.Index`` of words; ``vectors()`` is a float32
     array of shape ``[len(vocabulary()), dim]``, row ``r`` being the vector
-    of ``vocabulary()[r]``. ``tokenize(texts)`` takes a ``pd.Series`` of raw
+    of ``vocabulary()[r]``. ``tokenize(texts)`` takes a ``pa.Array`` of raw
     column values (strings, or null) and returns ``(rowptr, rows)``, two
-    integer tensors (or arrays): the words of ``texts.iloc[i]`` are the
+    integer tensors (or arrays): the words of ``texts[i]`` are the
     vocabulary rows ``rows[rowptr[i]:rowptr[i + 1]]``, so ``rowptr`` has
     ``len(texts) + 1`` entries starting at 0; unknown words are dropped.
     With vocabulary ``["red", "shoe"]``, ``["Red shoe", None, "sock"]``
@@ -106,7 +107,7 @@ class TokenEmbeddingModel(EmbeddingModel, Protocol):
     module (not a notebook), and load large data lazily instead of
     pickling it.
     """
-    def tokenize(self, texts: pd.Series) -> tuple[Tensor, Tensor]:
+    def tokenize(self, texts: pa.Array) -> tuple[Tensor, Tensor]:
         ...
 
     def vectors(self) -> np.ndarray:
@@ -181,7 +182,18 @@ class _VocabularyModel:
             self._index = VocabularyIndex(self.vocabulary())
         return self._index
 
-    def tokenize(self, texts: pd.Series) -> tuple[Tensor, Tensor]:
+    def tokenize(self, texts: pa.Array) -> tuple[Tensor, Tensor]:
+        """Tokenize Arrow text without constructing a pandas Series.
+
+        Args:
+            texts: Raw text column, with nulls treated as empty strings.
+
+        Returns:
+            CSR row offsets and vocabulary row indices, dropping unknown words.
+
+        Raises:
+            pa.ArrowNotImplementedError: If text values cannot be cast to strings.
+        """
         return self._vocabulary_index().tokenize(texts)
 
     def lookup(self, words: Any) -> tuple[Tensor, Tensor]:
@@ -239,10 +251,11 @@ class GloVeVectors(_VocabularyModel):
                                 or not isinstance(dim, int)):
             raise TypeError(f"dim must be an int, e.g. dim=50 (got {dim!r}).")
         if self.path.is_file() and zipfile.is_zipfile(self.path):
-            if self._cache() is None:
+            cache = self._cache()
+            if cache is None:
                 raise ValueError(f"There is no home directory to convert "
                                  f"{given} into; pass cache_dir=.")
-            self._digest = _archive_digest(self.path, self._cache())
+            self._digest = _archive_digest(self.path, cache)
             if self._digest not in RELEASES:
                 known = ", ".join(
                     dict.fromkeys(r.archive for r in RELEASES.values()))
