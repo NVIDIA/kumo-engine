@@ -289,7 +289,8 @@ Assigning time columns:
   must be among the table's `columns`, and it is left out of the model's feature columns
   (`kumo_core.encoder_selection.feature_column_names`), so it does not leak. Sampling is
   end-date-aware only on the entity table (after `FOR EACH`) and on the right-hand table of a link
-  prediction (`troubleshooting_signals.md`); say nothing more about its filtering.
+  prediction (`troubleshooting_signals.md`); say nothing more about its filtering. It needs no
+  primary key: a keyless event table keeps `primary_key=None` with an end time column set.
 
 Temporal splits: for a temporal predictive query, Kumo splits train/validation/holdout by the
 time column of the target table, and at prediction time accesses only data with timestamps at

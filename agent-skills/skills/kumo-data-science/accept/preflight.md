@@ -171,7 +171,9 @@ still records the period. Say so on the table's time-column line (`time column S
 column END_DATE [inferred]`), and let the notebook set it (`end_time_column=`,
 `kumoai-reference/references/graph_construction.md`). A column that is the table's only
 timestamp, or that marks an event rather than the end of a validity period, is not an end time
-column. An end time column is not listed under `Excluded columns`.
+column. An end time column is not listed under `Excluded columns`, and it does not change the
+table's primary key: a keyless table with an end time column stays keyless unless the confirmed
+graph names a key, and the notebook sets `primary_key=` only to the confirmed key.
 
 For every time-ranged target aggregation, the table it references must have a usable
 `time_column`. If it does not, say so in the proposal and say what would make the task
