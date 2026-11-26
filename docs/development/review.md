@@ -2,7 +2,8 @@
 
 Read [CODEOWNERS](../../CODEOWNERS) for component ownership. Review a change
 against actual consumers, preserved behavior, and appropriate validation.
-Keep unrelated improvements separate.
+Keep unrelated improvements separate. Use the [code-review guide](code-review.md)
+to assess necessity, system design, correctness, performance and usability.
 
 ## PR change map
 
