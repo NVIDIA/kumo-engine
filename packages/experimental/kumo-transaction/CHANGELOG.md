@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retain combined supervised/historical sequence-control probes in native graph
+  evaluation. Reuse Python relational downstream bundles without reopening the
+  upstream encoder export, while validating its saved schema/provenance.
+
 - Respect Cargo build-job overrides, cap automatic parallelism, pin isolated
   native build tools and reuse Cargo registry/immutable target caches in CI.
 - Allow registered or import-path source-loader providers through the shared

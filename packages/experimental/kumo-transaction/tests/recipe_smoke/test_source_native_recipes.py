@@ -273,15 +273,23 @@ def test_source_native_same_width_feature_reorder_rejected_before_weights(tmp_pa
         run_command("infer", config_path=config, run_dir=out, device="cpu", reuse_checkpoint=True)
 
 
-def test_native_downstream_reuse_needs_only_its_bundled_encoder_weights(tmp_path):
-    pytest.importorskip("kumo.pytorch.api")
-    pytest.importorskip("diskgraph")
+@pytest.mark.parametrize("loader", ["python", "kumo_pytorch"])
+def test_downstream_reuse_needs_only_its_bundled_encoder_weights(loader, tmp_path, monkeypatch):
+    if loader == "kumo_pytorch":
+        pytest.importorskip("kumo.pytorch.api")
+        pytest.importorskip("diskgraph")
     pytest.importorskip("kumo_core.modeling.gnn.hetero")
-    pretrain_path = Path("recipes/relational_inputs/config.encoder_pretrain_smoke.yaml")
+    config = yaml.safe_load(
+        Path("recipes/relational_inputs/config.encoder_pretrain_smoke.yaml").read_text()
+    )
+    config["data"]["loader"] = loader
+    pretrain_path = tmp_path / "pretrain.yaml"
+    pretrain_path.write_text(yaml.safe_dump(config))
     pretrain = run_command(
         "train", config_path=pretrain_path, run_dir=tmp_path / "pretrain", device="cpu"
     )
     config = yaml.safe_load(Path("recipes/relational_inputs/config.graph_smoke.yaml").read_text())
+    config["data"]["loader"] = loader
     config["runtime"].update(stage="downstream", encoder_checkpoint=str(pretrain / "encoder.pt"))
     path = tmp_path / "downstream.yaml"
     path.write_text(yaml.safe_dump(config))
@@ -292,6 +300,23 @@ def test_native_downstream_reuse_needs_only_its_bundled_encoder_weights(tmp_path
     after = dict(np.load(out / "embeddings.npz"))
     for name, values in before.items():
         np.testing.assert_array_equal(values, after[name])
+    if loader == "python":
+        import torch
+
+        from tfm.training.checkpointing import read_checkpoint
+
+        payload = read_checkpoint(out / "model.pt")
+        payload["metadata"]["encoder_source"]["schema"]["root"] = "wrong-root"
+        torch.save(payload, out / "model.pt")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("State installed before checking the saved encoder schema")
+
+        monkeypatch.setattr(torch.nn.Module, "load_state_dict", forbidden)
+        with pytest.raises(ValueError, match="encoder schema"):
+            run_command(
+                "evaluate", config_path=path, run_dir=out, device="cpu", reuse_checkpoint=True
+            )
 
 
 def test_native_sequence_raw_features_use_the_selected_amount_alias(tmp_path, monkeypatch):
@@ -462,3 +487,78 @@ def test_source_loader_rejects_missing_anchor_capability_before_training(monkeyp
         run_command("train", config_path=path, run_dir=tmp_path / "run", device="cpu")
     assert closed == [True]
     assert not (tmp_path / "run/model.pt").exists()
+
+
+@pytest.mark.parametrize("objective", ["binary", "future_subgraph"])
+def test_legacy_native_sequence_controls_keep_aligned_combined_probes(
+    objective, monkeypatch, tmp_path
+):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
+    pytest.importorskip("kumo_core.modeling.gnn.hetero")
+    from tfm.layers.gnn import SequenceBinaryModel
+    from tfm.runtime import native, native_sequence
+
+    controls, historical, probes = [], [], []
+    predict, history_predict, probe = (
+        native._recorded_predictions,
+        native_sequence.predictions,
+        native.fit_predict_probe,
+    )
+
+    def capture(model, *args, **kwargs):
+        result = predict(model, *args, **kwargs)
+        if isinstance(model, SequenceBinaryModel):
+            controls.append(result[0])
+        return result
+
+    def capture_history(*args, **kwargs):
+        result = history_predict(*args, **kwargs)
+        historical.append(result)
+        return result
+
+    def capture_probe(train_x, train_y, test_x, *, seed):
+        probes.append((train_x.copy(), train_y.copy(), test_x.copy(), seed))
+        return probe(train_x, train_y, test_x, seed=seed)
+
+    monkeypatch.setattr(native, "_recorded_predictions", capture)
+    monkeypatch.setattr(native_sequence, "predictions", capture_history)
+    monkeypatch.setattr(native, "fit_predict_probe", capture_probe)
+    config = yaml.safe_load(Path("recipes/gnn_sequence/config.pretrain_smoke.yaml").read_text())
+    config["training"].update(objective=objective, max_steps=1)
+    config["sequence_training"]["max_steps"] = 1
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = run_command("smoke", config_path=path, run_dir=tmp_path / "run", device="cpu")
+    metrics = json.loads((out / "metrics.json").read_text())
+    assert {
+        "sequence_supervised_embedding",
+        "sequence_supervised_combined",
+        "sequence_only_embedding",
+        "sequence_only_combined",
+    } <= metrics.keys()
+
+    def checked(train_raw, train_vectors, labels, test_raw, test_vectors):
+        expected_train = np.concatenate((train_raw, train_vectors), 1)
+        expected_test = np.concatenate((test_raw, test_vectors), 1)
+        assert any(
+            np.array_equal(x, expected_train)
+            and np.array_equal(y, labels)
+            and np.array_equal(z, expected_test)
+            and seed == config["seed"]
+            for x, y, z, seed in probes
+        )
+
+    assert len(controls) == 3
+    checked(controls[0][3], controls[0][0], controls[0][2], controls[-1][3], controls[-1][0])
+    if objective == "future_subgraph":
+        assert len(historical) == 3
+        checked(
+            historical[0]["raw"],
+            historical[0]["vectors"],
+            historical[0]["labels"],
+            historical[-1]["raw"],
+            historical[-1]["vectors"],
+        )
+    else:
+        assert metrics["sequence_only_combined"] == metrics["sequence_supervised_combined"]

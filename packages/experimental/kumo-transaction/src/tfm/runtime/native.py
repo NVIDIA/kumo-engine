@@ -768,7 +768,7 @@ def run_command(
                 frozen_graph[split] = frozen_values
                 arrays[f"{split}_graph"] = frozen_values[0]
             if sequence_control is not None and command != "infer":
-                controls[split] = _predictions(
+                control_values, control_entities, control_samples, _ = _recorded_predictions(
                     sequence_control,
                     inputs.batches(
                         split,
@@ -779,6 +779,13 @@ def run_command(
                     ),
                     resolved_device,
                 )
+                if (
+                    control_entities != entity_ids
+                    or control_samples != sample_ids
+                    or not np.array_equal(control_values[2], values[2])
+                ):
+                    raise SchemaError("Sequence control is not aligned with model predictions")
+                controls[split] = control_values
             if historical_control is not None and command != "infer":
                 from tfm.runtime.native_sequence import predictions
 
@@ -793,6 +800,14 @@ def run_command(
                     ),
                     resolved_device,
                 )
+                if (
+                    tuple(historical[split]["entities"]) != entity_ids
+                    or tuple(historical[split]["samples"]) != sample_ids
+                    or not np.array_equal(historical[split]["labels"], values[2])
+                ):
+                    raise SchemaError(
+                        "Historical sequence control is not aligned with model predictions"
+                    )
         np.savez(out / "embeddings.npz", **arrays)
         write_json(
             out / "embeddings_manifest.json",
@@ -866,10 +881,20 @@ def run_command(
                     "sequence_control_embedding_logistic"
                 ]
                 metrics["sequence_supervised_task_head"] = metrics["sequence_control_task_head"]
+                metrics["sequence_supervised_combined"] = classification_metrics(
+                    controls["test"][2],
+                    fit_predict_probe(
+                        np.concatenate((controls["train"][3], controls["train"][0]), 1),
+                        controls["train"][2],
+                        np.concatenate((controls["test"][3], controls["test"][0]), 1),
+                        seed=config.seed,
+                    ),
+                )
                 if not historical:
                     metrics["sequence_only_embedding"] = metrics[
                         "sequence_control_embedding_logistic"
                     ]
+                    metrics["sequence_only_combined"] = metrics["sequence_supervised_combined"]
         if historical:
             metrics["historical_sequence_embedding_logistic"] = classification_metrics(
                 historical["test"]["labels"],
@@ -882,6 +907,15 @@ def run_command(
             )
         if legacy and historical:
             metrics["sequence_only_embedding"] = metrics["historical_sequence_embedding_logistic"]
+            metrics["sequence_only_combined"] = classification_metrics(
+                historical["test"]["labels"],
+                fit_predict_probe(
+                    np.concatenate((historical["train"]["raw"], historical["train"]["vectors"]), 1),
+                    historical["train"]["labels"],
+                    np.concatenate((historical["test"]["raw"], historical["test"]["vectors"]), 1),
+                    seed=config.seed,
+                ),
+            )
         write_json(out / "metrics.json", metrics)
         (out / "metrics.md").write_text(metrics_markdown(metrics))
         (out / "model_card.md").write_text(

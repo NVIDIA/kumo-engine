@@ -403,11 +403,20 @@ def run_command(
                 ).to(resolved_device)
                 if config.runtime.stage == "downstream":
                     assert config.runtime.encoder_checkpoint is not None
-                    encoder_source = load_encoder_state(
-                        stage_graph.encoder,
-                        config.runtime.encoder_checkpoint,
-                        expected={"schema": schema},
-                    )
+                    if payload is None:
+                        encoder_source = load_encoder_state(
+                            stage_graph.encoder,
+                            config.runtime.encoder_checkpoint,
+                            expected={"schema": schema},
+                        )
+                    else:
+                        encoder_source = payload["metadata"].get("encoder_source")
+                        if not isinstance(encoder_source, dict) or _digest(
+                            encoder_source.get("schema")
+                        ) != _digest(schema):
+                            raise ValueError(
+                                "Relational checkpoint encoder schema differs from requested inputs"
+                            )
                 if payload is None and (config.runtime.stage != "downstream" or mode == "graph"):
                     graph_train = inputs.batches(
                         "train",

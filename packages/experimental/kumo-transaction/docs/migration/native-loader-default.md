@@ -222,3 +222,9 @@ Compatibility `NativeGraphSampler` calls now gather precomputed node/edge clocks
 and use stable tensor unions. They retain invalid-edge, duplicate, temporal and
 mutation checks. Canonical recipe execution already uses the source-tensor
 pipeline and does not call this legacy sampler.
+
+Legacy graph evaluations retain embedding-only and combined raw-plus-embedding
+probes for both supervised and historical sequence controls, with sample/label
+alignment checked before scoring. Python relational downstream checkpoint reuse
+uses the bundled encoder weights and validated saved provenance; the original
+encoder export is needed for fresh downstream training, not subsequent reuse.

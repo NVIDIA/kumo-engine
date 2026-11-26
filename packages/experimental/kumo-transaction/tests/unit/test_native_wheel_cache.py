@@ -50,6 +50,8 @@ def test_build_jobs_respect_override_and_cap_only_the_default(monkeypatch):
 def test_cargo_target_identity_tracks_source_lock_toolchain_and_flags(tmp_path, monkeypatch):
     from scripts import build_kumo_loader_wheels as builder
 
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
     package = tmp_path / "packages/diskgraph"
     package.mkdir(parents=True)
     (package / "Cargo.lock").write_text("first lock")
