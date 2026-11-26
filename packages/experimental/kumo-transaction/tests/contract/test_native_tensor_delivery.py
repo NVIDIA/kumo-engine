@@ -773,7 +773,10 @@ def test_equal_cutoff_requests_retain_their_partition_view_and_stored_identity(t
 
 
 @pytest.mark.parametrize("alias", [False, True])
-def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(tmp_path, alias):
+@pytest.mark.parametrize("selector", ["prefix", "reordered", "duplicates"])
+def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(
+    tmp_path, alias, selector
+):
     from tfm.data.native_inputs import NativeInputs
     from tfm.data.native_views import SourceRows
 
@@ -791,6 +794,19 @@ def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(tmp_p
         requested,
     )
     rule = {"events": SourceRows(before_us=1704067201000000)}
+    alias_rule = rule
+    if selector != "prefix":
+        events = pq.read_table(source.files["events"]).append_column(
+            "partition", pa.array(["train", "validation", "validation", "train"])
+        )
+        pq.write_table(events, source.files["events"])
+        rule = {
+            "events": SourceRows(partition_column="partition", partitions=("train", "validation"))
+        }
+        partitions = (
+            ("validation", "train") if selector == "reordered" else ("train", "validation", "train")
+        )
+        alias_rule = {"events": SourceRows(partition_column="partition", partitions=partitions)}
     with pytest.raises(SchemaError, match="multiple splits within one view"):
         NativeInputs(
             source,
@@ -800,7 +816,7 @@ def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(tmp_p
             work_dir=tmp_path / "work",
             max_events=8,
             batch_size=1,
-            views={"first": rule, "alias": rule},
+            views={"first": rule, "alias": alias_rule},
             fit_view="first",
             split_views={"train": "first", "validation": "alias" if alias else "first"},
         )

@@ -110,7 +110,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             name: hashlib.sha256(
                 json.dumps(
                     {
-                        table: asdict(rule)
+                        table: {**asdict(rule), "partitions": sorted(set(rule.partitions))}
                         for table, rule in rules.items()
                         if rule.before_us is not None or rule.partition_column is not None
                     },

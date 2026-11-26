@@ -331,6 +331,8 @@ def test_native_sequence_raw_features_use_the_selected_amount_alias(tmp_path, mo
 def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(
     tmp_path, monkeypatch, finite_training_amount
 ):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.data.adapters.native_transactions import _ScalarBook
     from tfm.runtime import native_sequence
 

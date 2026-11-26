@@ -152,7 +152,12 @@ the source observation watermark. Replay files cannot replace the validated task
 label join; without a declared task label table, replay label fields are ignored.
 Native sequence partitions retain their view in anchor identity, allowing equal
 cutoffs across distinct precomputed views while rejecting conflicts within the
-same view. Direct batch callers declare split/view mappings before iteration. Declared Arrow date clocks
+same view. Partition selectors use set membership: reordering or repeating allowed
+values does not create a distinct view for overlap validation. View identities
+now canonicalize those selectors. Existing runs or saved anchors with unsorted
+or duplicated partition selectors have a different identity; use a new managed
+run directory and regenerate the fitted state and saved anchors.
+Direct batch callers declare split/view mappings before iteration. Declared Arrow date clocks
 mean midnight UTC and are stored as explicit UTC timestamps for the index.
 The pinned native runtime requires whole-second UTC event and cutoff clocks.
 A sequence path needs equivalent event and availability clocks. A fixed forward

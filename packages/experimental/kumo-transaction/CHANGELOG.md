@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Canonicalize partition selectors for native view identity so reordered or
+  duplicated allowed values cannot bypass split-overlap validation. See the
+  native-loader migration guide before reusing existing partitioned runs.
+
 - Preserve replay source-view metadata through task anchor generation and reject
   changed views while retaining legacy replay compatibility. Restrict precomputed
   sequence amount coverage checks to eligible training-partition events.
