@@ -449,7 +449,7 @@ jobs:
                   raise FileNotFoundError(f'Stable-ABI Python DLL missing: {dll}')
               print(f'Stable-ABI Python DLL directory: {dll.parent}')
           PY
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266
         with:
           workspaces: packages/diskgraph -> target
           key: rust-tests-py${{ steps.python.outputs.version }}
@@ -484,7 +484,7 @@ jobs:
           enable-cache: false
       - id: python
         run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266
         with:
           workspaces: packages/diskgraph -> target
           key: clippy-py${{ steps.python.outputs.version }}
