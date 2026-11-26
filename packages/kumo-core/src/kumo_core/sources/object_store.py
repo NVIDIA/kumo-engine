@@ -102,8 +102,9 @@ def _source_version(path: str, entries: Sequence[Any],
                     identity: ObjectIdentity | None = None) -> str:
     if len(entries) == 1 and entries[0].path.rstrip("/") == path.rstrip("/"):
         if identity is not None:
-            token, version, *_ = (*identity(entries[0].path), "")
-            return SourceVersion(version or token.strip('"'), "exact")
+            # Which identity field changes on a rewrite depends on the store.
+            whole = json.dumps(identity(entries[0].path)).encode()
+            return SourceVersion(hashlib.sha256(whole).hexdigest(), "exact")
         latest = entries[0].mtime
         return (SourceVersion(epoch_second(latest), "timestamp")
                 if latest is not None else SourceVersion("-1"))

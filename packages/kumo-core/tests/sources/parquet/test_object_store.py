@@ -12,8 +12,10 @@ runs here.
 from __future__ import annotations
 
 import os
+import re
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import numpy as np
@@ -31,6 +33,7 @@ from kumo_core.sources.errors import (
 )
 from kumo_core.sources.object_store import (
     ObjectStoreSourceReader,
+    _source_version,
     column_dtypes,
 )
 from kumo_core.sources.prepare import read_table
@@ -149,14 +152,30 @@ def test_version_uses_only_metadata_for_recursive_sources(root, table):
         assert int(version) > 0 and version.kind == "timestamp"
 
 
-def test_a_single_object_is_versioned_by_its_provider_identity(root):
+@pytest.mark.parametrize("before,after,changed", [
+    (("1", "100"), ("2", "100"), True),
+    (('"etag-1"', "null", "10"), ('"etag-2"', "null", "10"), True),
+    (('"etag-1"', "v1", "10"), ('"etag-1"', "v2", "10"), True),
+    (('"etag-1"', "v1", "10"), ('"etag-1"', "v1", "10"), False),
+])
+def test_a_single_object_is_versioned_by_its_provider_identity(
+        root, before, after, changed):
     reader = ObjectStoreSourceReader(LocalFileSystem(), root=str(root))
-    reader.object_identity = lambda path: ('"etag-1"', '', '10')
-    version = reader.data_version("single")
-    assert (version, version.kind) == ("etag-1", "exact")
-    reader.object_identity = lambda path: ('"etag-1"', 'v2', '10')
-    assert reader.data_version("single") == "v2"
+    reader.object_identity = lambda path: before
+    first = reader.data_version("single")
+    reader.object_identity = lambda path: after
+    second = reader.data_version("single")
+    for version in (first, second):
+        assert version.kind == "exact"
+        assert re.fullmatch(r"[0-9a-f]{64}", version)
+    assert (first != second) == changed
     assert reader.data_version("events").kind == "listing"
+
+
+def test_single_object_without_identity_or_mtime_has_unknown_version():
+    entry = SimpleNamespace(path="single", mtime=None)
+    version = _source_version("single", [entry])
+    assert (version, version.kind) == ("-1", "unknown")
 
 
 def test_version_of_exact_root_does_not_probe_other_suffixes(root):
