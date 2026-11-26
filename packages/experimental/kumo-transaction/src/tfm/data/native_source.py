@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from collections import Counter
 from collections.abc import Iterator
@@ -258,7 +259,9 @@ class NativeSourceFiles(AbstractContextManager["NativeSourceFiles"]):
         for table in self.original.tables:
             if table.role == "labels":
                 tables.append(table)
-                files[table.name] = self.original.files[table.name]
+                path = self.directory / f"labels-{len(tables)}.parquet"
+                shutil.copyfile(self.original.files[table.name], path)
+                files[table.name] = path
                 continue
             path = self.directory / f"table-{len(tables)}.parquet"
             writer = None

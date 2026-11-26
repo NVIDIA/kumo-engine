@@ -35,7 +35,10 @@ Unsupported projection rules fail with the affected path before training.
 Anchors bind sample ID, root key and input cutoff. Recipes may generate one per
 visible root and configured cutoff, generate them from a label table's prediction
 timestamps, or replay an explicit anchor table. Repeated roots are independent
-samples. An unavailable root is an error for explicit anchors.
+samples. An unavailable root is an error for explicit anchors. Task replay files
+supply requests, not trusted labels: targets and availability come from the
+declared label table. With no label table, replay-supplied label fields are
+ignored. Direct pre-labeled `NativeInputs` anchors are a separate low-level contract.
 
 The relational recipe runner binds checkpoint identity to the complete ordered
 anchor table, including prediction rows. Checkpoint reuse requires that same
@@ -107,9 +110,18 @@ Declared FK columns must exist on every child row. An explicit `None` denotes
 an optional link; omitting the column is a schema error. A version log replaces
 the whole role and must cover every child with a non-null fixed binding.
 
-A root/cutoff pair cannot belong to different splits, whether anchors come from
-labels, configured cutoffs or replay. Repeated prediction instances within one
-split and the same root at different cutoffs remain supported.
+A root/cutoff pair cannot belong to conflicting split families within one source
+view, whether requests come from labels, configured cutoffs or replay. Native
+precomputed partitions may share a cutoff when their declared views differ.
+View identity is bound to the filtering rules; aliases of the same rules do not
+bypass overlap checks. Repeated instances within one family and roots at different
+cutoffs remain supported.
+
+Native inputs bind each split's view before execution. `split_views` selects
+explicit mappings; otherwise a matching view name is used, then the fit view
+for fitting splits, or the full source. Batch execution must match the stored
+assignment. Exported replay anchors record the view and its identity from an
+owned snapshot, and checkpoints bind the mapping and rules.
 
 Graph window exemptions apply to the root identity and strict intermediate
 tables reached by history paths. A history terminal remains windowed even if

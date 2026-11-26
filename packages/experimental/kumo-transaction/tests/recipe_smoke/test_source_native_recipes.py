@@ -325,3 +325,42 @@ def test_native_sequence_raw_features_use_the_selected_amount_alias(tmp_path, mo
     values = np.load(out / "embeddings.npz")
     assert np.isfinite(values["train_raw"]).all()
     assert (values["train_raw"][:, :2] > 0).all()
+
+
+def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(tmp_path, monkeypatch):
+    from tfm.data.adapters.native_transactions import _ScalarBook
+    from tfm.runtime import native_sequence
+
+    def source_factory(data, *, seed, fixture_dir):
+        instant = 1704067200000000
+        with _ScalarBook(fixture_dir, data.amount_field) as book:
+            for partition in ("train", "validation", "test"):
+                for index in range(3):
+                    book.event(
+                        "one",
+                        f"{partition}-{index}",
+                        instant + (index - 2) * 1_000_000,
+                        "transaction",
+                        {"amount": index + 1},
+                        {},
+                        {},
+                        None,
+                        None,
+                        partition=partition,
+                    )
+            return book.tables(data)
+
+    monkeypatch.setattr(native_sequence, "table_source", source_factory)
+    config = yaml.safe_load(Path("recipes/blueprint_v2/config.smoke.yaml").read_text())
+    config["data"].update(
+        loader="kumo_pytorch", load_labels=False, split_protocol="precomputed", sequence_length=16
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = run_command("train", config_path=path, run_dir=tmp_path / "run", device="cpu")
+    import pyarrow.parquet as pq
+
+    anchors = pq.read_table(out / "anchors.parquet").to_pylist()
+    assert {row["view"] for row in anchors} == {"train", "validation", "full"}
+    assert len({row["cutoff"] for row in anchors}) == 1
+    assert (out / "model.pt").is_file()

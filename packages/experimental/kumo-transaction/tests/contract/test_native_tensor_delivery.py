@@ -711,3 +711,96 @@ def test_integer_amounts_mix_with_histories_without_an_amount_field(tmp_path):
         assert batch.event_mask.sum() == 6
         assert batch.numeric_features is not None
         torch.testing.assert_close(batch.numeric_features[0, :3], torch.tensor([4 / 6, 3, 6]))
+
+
+def test_equal_cutoff_requests_retain_their_partition_view_and_stored_identity(tmp_path):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    source = source_files(tmp_path)
+    events = pq.read_table(source.files["events"]).append_column(
+        "partition", pa.array(["train", "validation", "validation", "train"])
+    )
+    pq.write_table(events, source.files["events"])
+    requested = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train", "train"],
+                "sample_id": ["one", "two"],
+                "split": ["train", "validation"],
+                "cutoff": [START + timedelta(seconds=2)] * 2,
+            }
+        ),
+        requested,
+    )
+    views = {
+        "train": {"events": SourceRows(partition_column="partition", partitions=("train",))},
+        "validation": {
+            "events": SourceRows(partition_column="partition", partitions=("train", "validation"))
+        },
+    }
+    kwargs = dict(
+        root="users",
+        history_paths={"events": ("activity",)},
+        max_events=8,
+        batch_size=1,
+        fit_view="train",
+        views=views,
+        split_views={"train": "train", "validation": "validation"},
+    )
+    saved = tmp_path / "saved.parquet"
+    with NativeInputs(source, anchors=requested, work_dir=tmp_path / "work", **kwargs) as inputs:
+        with pytest.raises(SchemaError, match="stored split view"):
+            inputs.batches("train", mode="history", view="full")
+        with inputs.batches("train", mode="history") as batches:
+            first = next(iter(batches))
+        with inputs.batches("validation", mode="history") as batches:
+            second = next(iter(batches))
+        assert first.event_mask.sum() == 1
+        assert second.event_mask.sum() == 3
+        assert inputs.normalized.connection.execute(
+            "SELECT split,view FROM anchors ORDER BY rowid"
+        ).fetchall() == [("train", "train"), ("validation", "validation")]
+        changed = pq.read_table(requested).set_column(0, "id", pa.array(["heldout", "heldout"]))
+        pq.write_table(changed, requested)
+        inputs.save_anchors(saved)
+        assert pq.read_table(saved)["id"].to_pylist() == ["train", "train"]
+        assert pq.read_table(saved)["view"].to_pylist() == ["train", "validation"]
+        expected = inputs.anchors_sha256
+    with NativeInputs(source, anchors=saved, work_dir=tmp_path / "replay", **kwargs) as replay:
+        assert replay.anchors_sha256 == expected
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(tmp_path, alias):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    source = source_files(tmp_path)
+    requested = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train", "train"],
+                "sample_id": ["one", "two"],
+                "split": ["train", "validation"],
+                "cutoff": [START + timedelta(seconds=2)] * 2,
+            }
+        ),
+        requested,
+    )
+    rule = {"events": SourceRows(before_us=1704067201000000)}
+    with pytest.raises(SchemaError, match="multiple splits within one view"):
+        NativeInputs(
+            source,
+            root="users",
+            history_paths={"events": ("activity",)},
+            anchors=requested,
+            work_dir=tmp_path / "work",
+            max_events=8,
+            batch_size=1,
+            views={"first": rule, "alias": rule},
+            fit_view="first",
+            split_views={"train": "first", "validation": "alias" if alias else "first"},
+        )

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import sqlite3
@@ -67,6 +69,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         fixed_vocabularies: Mapping[str, tuple[str, ...]] | None = None,
         split_families: Mapping[str, str] | None = None,
         split_namespaces: Mapping[str, str] | None = None,
+        split_views: Mapping[str, str] | None = None,
         exclusive_terminal_paths: bool = False,
         work_dir: Path,
         max_events: int,
@@ -100,6 +103,22 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         self.fit_view = fit_view
         if fit_view != "full" and fit_view not in self.views:
             raise ValueError("Native fit view must be a declared source view")
+        self.split_views = dict(split_views or {})
+        if set(self.split_views.values()) - {"full", *self.views}:
+            raise ValueError("Native split views must name declared source views")
+        self._view_keys = {
+            name: hashlib.sha256(
+                json.dumps(
+                    {
+                        table: asdict(rule)
+                        for table, rule in rules.items()
+                        if rule.before_us is not None or rule.partition_column is not None
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            for name, rules in {"full": {}, **self.views}.items()
+        }
         self._view_sources: dict[str, TableSource] = {}
         self.target_level: Literal["entity", "sequence"] = target_level
         self.original, self.paths = source, dict(history_paths)
@@ -168,15 +187,26 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             self.resources.close()
             raise
 
+    def _view_for_split(self, split: str) -> str:
+        selected = (self.fit_split,) if isinstance(self.fit_split, str) else self.fit_split
+        default = split if split in self.views else self.fit_view if split in selected else "full"
+        return self.split_views.get(split, default)
+
     def _anchors(self, path: Path) -> Any:
         table = next((t for t in self.original.tables if t.name == self.root), None)
         if table is None:
             raise SchemaError(f"Native root {self.root!r} is undeclared")
         output = self.directory / "anchors.parquet"
-        writer = None
+        raw_output = self.directory / "replay-anchors.parquet"
+        raw_schema = pq.read_schema(path)
+        for name in ("view", "view_identity"):
+            index = raw_schema.get_field_index(name)
+            field = pa.field(name, pa.string())
+            raw_schema = raw_schema.append(field) if index == -1 else raw_schema.set(index, field)
+        writer = raw_writer = None
         connection = self.normalized.connection
         connection.execute(
-            "CREATE TABLE anchors (sample_id TEXT PRIMARY KEY, root INTEGER, cutoff INTEGER, split TEXT)"
+            "CREATE TABLE anchors (sample_id TEXT PRIMARY KEY, root INTEGER, cutoff INTEGER, split TEXT, view TEXT, view_identity TEXT)"
         )
         connection.execute("CREATE TABLE anchor_labels(sample_id TEXT PRIMARY KEY,target REAL)")
         schema = pa.schema(
@@ -186,6 +216,8 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                 ("cutoff", pa.timestamp("s", tz="UTC")),
                 ("split", pa.string()),
                 ("entity_id", pa.string()),
+                ("view", pa.string()),
+                ("view_identity", pa.string()),
                 ("target", pa.float32()),
                 ("label_available_us", pa.int64()),
                 ("label_cutoff_us", pa.int64()),
@@ -193,8 +225,9 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         )
         try:
             writer = pq.ParquetWriter(output, schema)
+            raw_writer = pq.ParquetWriter(raw_output, raw_schema)
             for batch in pq.ParquetFile(path).iter_batches(batch_size=4096):
-                rows = []
+                rows, raw_rows = [], []
                 for row in batch.to_pylist():
                     key = tuple(row[c] for c in table.key)
                     root = self.normalized.code(self.root, key)
@@ -227,6 +260,15 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                         or not split.strip()
                     ):
                         raise SchemaError("Native anchors require nonempty sample_id and split")
+                    view = self._view_for_split(split)
+                    view_identity = self._view_keys[view]
+                    if (
+                        row.get("view", view) != view
+                        or row.get("view_identity", view_identity) != view_identity
+                    ):
+                        raise SchemaError(
+                            "Replay anchor view differs from the configured split view"
+                        )
                     seconds = int((cutoff - datetime(1970, 1, 1, tzinfo=UTC)).total_seconds())
                     known_at = connection.execute(
                         "SELECT available_us FROM identities WHERE table_name=? AND code=?",
@@ -239,7 +281,8 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
 
                     try:
                         connection.execute(
-                            "INSERT INTO anchors VALUES (?,?,?,?)", (sid, root, seconds, split)
+                            "INSERT INTO anchors VALUES (?,?,?,?,?,?)",
+                            (sid, root, seconds, split, view, view_identity),
                         )
                     except sqlite3.IntegrityError as error:
                         raise SchemaError(
@@ -261,6 +304,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                         raise SchemaError(
                             f"Native anchor {sid}: label availability without a target"
                         )
+                    raw_rows.append({**row, "view": view, "view_identity": view_identity})
                     connection.execute("INSERT INTO anchor_labels VALUES (?,?)", (sid, target))
                     rows.append(
                         {
@@ -269,16 +313,21 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                             "cutoff": cutoff,
                             "split": split,
                             "entity_id": source_entity_id(key),
+                            "view": view,
+                            "view_identity": view_identity,
                             "target": target,
                             "label_available_us": known,
                             "label_cutoff_us": label_cutoff,
                         }
                     )
                 writer.write_table(pa.Table.from_pylist(rows, schema=schema))
+                raw_writer.write_table(pa.Table.from_pylist(raw_rows, schema=raw_schema))
             connection.commit()
         finally:
             if writer is not None:
                 writer.close()
+            if raw_writer is not None:
+                raw_writer.close()
         if not connection.execute("SELECT COUNT(*) FROM anchors").fetchone()[0]:
             raise SchemaError("Native anchors cannot be empty")
         connection.execute("CREATE TABLE split_families(name TEXT PRIMARY KEY,family TEXT)")
@@ -292,18 +341,26 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         connection.commit()
         if (
             connection.execute(
-                "SELECT root,cutoff FROM anchors a LEFT JOIN split_families f ON f.name=a.split LEFT JOIN split_namespaces n ON n.name=a.split GROUP BY root,cutoff,COALESCE(n.namespace,'default') HAVING COUNT(DISTINCT COALESCE(f.family,a.split))>1 LIMIT 1"
+                "SELECT root,cutoff FROM anchors a LEFT JOIN split_families f ON f.name=a.split LEFT JOIN split_namespaces n ON n.name=a.split GROUP BY root,cutoff,COALESCE(n.namespace,'default'),a.view_identity HAVING COUNT(DISTINCT COALESCE(f.family,a.split))>1 LIMIT 1"
             ).fetchone()
             is not None
         ):
-            raise SchemaError("Native root/cutoff cannot occur in multiple splits")
+            raise SchemaError("Native root/cutoff cannot occur in multiple splits within one view")
+        self.original_anchors = raw_output
         return self.api.AnchorTable(
             self.api.Parquet(str(output)),
             entity_id="root",
             as_of_time="cutoff",
             sample_id="sample_id",
             split="split",
-            metadata=("entity_id", "target", "label_available_us", "label_cutoff_us"),
+            metadata=(
+                "entity_id",
+                "target",
+                "label_available_us",
+                "label_cutoff_us",
+                "view",
+                "view_identity",
+            ),
         )
 
     def task(self, mode: Mode, *, view: str | None = None) -> Any:
@@ -399,8 +456,6 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                 fitted = artifact.fitted_state
         if expected is not None and contract.fingerprint != expected["contract"]:
             raise ValueError("Native input contract differs from checkpoint identity")
-        import json
-
         schema_key = json.dumps([view, contract.to_dict()["schema"]], sort_keys=True)
         snapshot = self._indexes.get(schema_key)
         if snapshot is None:
@@ -472,8 +527,11 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                 raise UnsupportedCombinationError(
                     "Shared native graph stages require one cutoff per split"
                 )
-        if view is None:
-            view = self.fit_view if split == self.fit_split else "full"
+        selected = (split,) if isinstance(split, str) else split
+        assigned = {self._view_for_split(side) for side in selected}
+        if len(assigned) != 1 or (view is not None and view not in assigned):
+            raise SchemaError("Native execution view differs from the stored split view")
+        view = next(iter(assigned))
         task = self.task(mode, view=view)
         adapter = NativeTensorAdapter(
             self.source,
@@ -511,6 +569,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             "fit_view": self.fit_view,
             "split_families": self.split_families,
             "split_namespaces": self.split_namespaces,
+            "split_views": self.split_views,
             "exclusive_terminal_paths": self.exclusive_terminal_paths,
             "views": {
                 name: {table: asdict(rule) for table, rule in rules.items()}
@@ -539,8 +598,11 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         """Persist raw-key replay anchors, independently of temporary native codes."""
         if self._closed:
             raise ValueError("Native inputs are closed")
-        if self.original_anchors.resolve() != path.resolve():
-            shutil.copyfile(self.original_anchors, path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".anchors-", dir=path.parent) as folder:
+            staged = Path(folder) / "anchors.parquet"
+            shutil.copyfile(self.original_anchors, staged)
+            staged.replace(path)
 
     def save_fitted(self, directory: Path) -> None:
         """Persist each mode's native contract/encoders and verified identity."""

@@ -475,9 +475,7 @@ def _forecast_anchors(
         task = table.name.removeprefix("labels_")
         db.execute("DELETE FROM forecast_candidates")
         ordinal = 0
-        for block in pq.ParquetFile(source.original.files[table.name]).iter_batches(
-            batch_size=4096
-        ):
+        for block in pq.ParquetFile(source.source.files[table.name]).iter_batches(batch_size=4096):
             records = []
             for row in block.to_pylist():
                 owner = str(row["user_id"])

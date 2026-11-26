@@ -57,7 +57,7 @@ def task_anchors(source: NativeSourceFiles, task: RelationalTaskConfig, output: 
             raise SchemaError(f"Label path {labels.table}: declare a labels-role table")
         if len(labels.root_columns) != len(root.key):
             raise SchemaError(f"Label path {labels.table}: root key arity differs")
-        for row in _source_rows(source.original, labels.table):
+        for row in _source_rows(source.source, labels.table):
             key = tuple(row[c] for c in labels.root_columns)
             code = source.code(task.root, key)
             cutoff = _time(row[labels.timestamp], f"{labels.table}.{labels.timestamp}")
@@ -151,6 +151,7 @@ def task_anchors(source: NativeSourceFiles, task: RelationalTaskConfig, output: 
         for row in candidates():
             cutoff = _time(row["cutoff"], "anchors.cutoff")
             split = str(row["split"])
+            row = {**row, "target": None, "label_available_us": None, "label_cutoff_us": None}
             if labels is not None:
                 code = source.code(task.root, tuple(row[c] for c in root.key))
                 label = db.execute(

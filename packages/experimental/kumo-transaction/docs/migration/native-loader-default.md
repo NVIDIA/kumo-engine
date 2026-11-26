@@ -149,7 +149,10 @@ availability clock is invented for a legacy outcome row.
 Date-valued and timestamp-valued composite keys retain their scalar types,
 including when anchors are generated or replayed. Prediction cutoffs cannot exceed
 the source observation watermark. Replay files cannot replace the validated task
-label join. Declared Arrow date clocks
+label join; without a declared task label table, replay label fields are ignored.
+Native sequence partitions retain their view in anchor identity, allowing equal
+cutoffs across distinct precomputed views while rejecting conflicts within the
+same view. Direct batch callers declare split/view mappings before iteration. Declared Arrow date clocks
 mean midnight UTC and are stored as explicit UTC timestamps for the index.
 The pinned native runtime requires whole-second UTC event and cutoff clocks.
 A sequence path needs equivalent event and availability clocks. A fixed forward

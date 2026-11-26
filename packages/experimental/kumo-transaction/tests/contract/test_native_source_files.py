@@ -193,7 +193,10 @@ def test_normalization_rejects_payload_replacement_between_key_and_feature_passe
         NativeSourceFiles(source, tmp_path / "normalized")
 
 
-def test_task_replay_cannot_inject_labels_without_a_validated_source_match(tmp_path):
+@pytest.mark.parametrize("has_label_source", [False, True])
+def test_task_replay_cannot_inject_labels_without_a_validated_source_match(
+    tmp_path, has_label_source
+):
     from tfm.config import load_recipe_config
     from tfm.data.adapters.synthetic_relational import source_files
     from tfm.data.native_anchors import task_anchors
@@ -217,8 +220,34 @@ def test_task_replay_cannot_inject_labels_without_a_validated_source_match(tmp_p
         ),
         requested,
     )
-    task = task.model_copy(update={"anchors": str(requested)})
+    task = task.model_copy(
+        update={"anchors": str(requested), "labels": task.labels if has_label_source else None}
+    )
     with NativeSourceFiles(source, tmp_path / "normalized") as normalized:
         output = task_anchors(normalized, task, tmp_path / "anchors.parquet")
         row = pq.read_table(output).to_pylist()[0]
         assert row["target"] is row["label_available_us"] is row["label_cutoff_us"] is None
+
+
+def test_task_labels_use_the_same_owned_source_snapshot_as_features(tmp_path):
+    from tfm.config import load_recipe_config
+    from tfm.data.adapters.synthetic_relational import source_files
+    from tfm.data.native_anchors import task_anchors
+
+    config = load_recipe_config("recipes/relational_inputs/config.yaml")
+    task = config.data.relational
+    assert task is not None and task.labels is not None
+    source = source_files(config.data, seed=config.seed, fixture_dir=tmp_path / "source")
+    with NativeSourceFiles(source, tmp_path / "normalized") as normalized:
+        labels = pq.read_table(source.files[task.labels.table])
+        # The source snapshot is already bound; changes to the caller's file
+        # must not change targets or the data identity of this preparation.
+        target = labels[task.labels.target].to_pylist()
+        changed = labels.set_column(
+            labels.schema.get_field_index(task.labels.target),
+            task.labels.target,
+            pa.array([1 - value for value in target]),
+        )
+        pq.write_table(changed, source.files[task.labels.table])
+        output = task_anchors(normalized, task, tmp_path / "anchors.parquet")
+        assert pq.read_table(output)["target"].to_pylist() == target

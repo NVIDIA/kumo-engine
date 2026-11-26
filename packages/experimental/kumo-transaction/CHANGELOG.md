@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bind native replay requests to owned snapshots and declared split views.
+  Keep label-free replay unlabeled and validate overlap within each view,
+  including precomputed partitions with equal cutoffs.
+
 - Validate native replay labels and source watermarks, reject source replacement
   during normalization, preserve late-observed future terminals and empty fit
   views, and retain frozen-GNN probes and standalone downstream checkpoint reuse.
