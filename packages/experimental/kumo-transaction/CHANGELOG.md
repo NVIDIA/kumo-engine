@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Correct DiskGraph wheel binary includes in fresh pinned-source builds.
+- Keep distributed Blueprint v1/v2 presets on the Python loader, including the
+  v2 scale fine-tuning stage.
+- Project native graph features only for table types reachable within sampling
+  depth; retain empty entries for other declared model types.
+
 - Retain combined supervised/historical sequence-control probes in native graph
   evaluation. Reuse Python relational downstream bundles without reopening the
   upstream encoder export, while validating its saved schema/provenance.

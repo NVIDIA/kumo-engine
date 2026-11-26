@@ -1,7 +1,10 @@
 # Source-table native recipe loading
 
 Sequence, graph and hybrid recipes default to Kumo Engine's experimental
-PyTorch/DiskGraph loader, `data.loader: kumo_pytorch`. The native recipe path is:
+PyTorch/DiskGraph loader, `data.loader: kumo_pytorch`. The distributed
+Blueprint v1 `multi_gpu` and Blueprint v2 `scale` presets explicitly select
+`data.loader: python`; native source loading does not yet support their
+distributed execution or the scale preset's fine-tuning stage. The native recipe path is:
 
 ```text
 source tables and explicit schema

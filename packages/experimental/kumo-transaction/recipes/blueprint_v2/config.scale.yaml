@@ -33,7 +33,8 @@ seed: 42
 # Not used by CI, and no result is recorded for it yet.
 
 data:
-  loader: kumo_pytorch
+  # Distributed training and fine-tuning use the Python reference path.
+  loader: python
   adapter: pragmatiq
   path: null
   observation_window: 730d

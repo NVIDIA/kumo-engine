@@ -36,7 +36,18 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
-        run: python3 scripts/transaction_ci_paths.py --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+        run: |
+          python3 scripts/transaction_ci_paths.py --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          # Packaging changes must prove a fresh build, without wheel or Cargo restores.
+          if git diff --quiet "$BASE_SHA...$HEAD_SHA" -- \
+            packages/diskgraph/pyproject.toml \
+            packages/diskgraph/diskgraph-pybind/diskgraph_build_backend.py \
+            packages/experimental/kumo-transaction/scripts/build_kumo_loader_wheels.py \
+            packages/experimental/kumo-transaction/scripts/native-build-constraints.txt; then
+            echo "cold_native_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cold_native_build=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Set up Python and uv
         if: steps.paths.outputs.changed == 'true'
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
@@ -44,13 +55,13 @@ jobs:
           python-version: '3.12'
           version: '0.13.8'
       - name: Restore verified native wheels
-        if: steps.paths.outputs.changed == 'true'
+        if: steps.paths.outputs.changed == 'true' && steps.paths.outputs.cold_native_build != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: packages/experimental/kumo-transaction/.cache/kumo-native-wheels
           key: transaction-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/experimental/kumo-transaction/pyproject.toml', 'packages/experimental/kumo-transaction/scripts/build_kumo_loader_wheels.py', 'packages/experimental/kumo-transaction/scripts/native-build-constraints.txt') }}
       - name: Restore Cargo registry and immutable native targets
-        if: steps.paths.outputs.changed == 'true'
+        if: steps.paths.outputs.changed == 'true' && steps.paths.outputs.cold_native_build != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |

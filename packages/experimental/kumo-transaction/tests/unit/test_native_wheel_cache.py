@@ -4,11 +4,21 @@
 """CI must never reuse a mixed-source or corrupted native wheel set."""
 
 import json
+import zipfile
 from pathlib import Path
 
+import pytest
 from scripts.build_kumo_loader_wheels import PACKAGES, digest, source_identity, valid_cache
 
 from tfm.extras.kumo_pytorch import SOURCE_REVISION
+
+
+def write_wheel(path: Path, package: str, *, mode: int = 0o755) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        name = "diskgraph/bin/ingest" if package == "diskgraph" else package + "/__init__.py"
+        info = zipfile.ZipInfo(name)
+        info.external_attr = (0o100000 | mode) << 16
+        archive.writestr(info, package.encode())
 
 
 def test_dependency_pins_agree():
@@ -22,7 +32,7 @@ def test_cache_rejects_modified_bytes_or_revision(tmp_path: Path):
     wheels = {}
     for package in PACKAGES:
         path = tmp_path / f"{package}-1.0-py3-none-any.whl"
-        path.write_bytes(package.encode())
+        write_wheel(path, package)
         wheels[path.name] = digest(path)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"identity": identity, "wheels": wheels}))
@@ -84,6 +94,11 @@ def test_cold_build_uses_constraints_parallelism_and_reuses_verified_wheels(tmp_
             package = source / "packages/diskgraph"
             package.mkdir(parents=True)
             (package / "Cargo.lock").write_text("fixed lock")
+            (package / "pyproject.toml").write_text(
+                '[tool.maturin]\npython-source="diskgraph-pybind/python"\n'
+                'include=[{path="diskgraph/bin/ingest",format="wheel"},'
+                '{path="diskgraph/bin/ingest.exe",format="wheel"}]\n'
+            )
             (package / "rust-toolchain.toml").write_text('[toolchain]\nchannel="nightly-fixed"\n')
         if command[0] == "test-uv":
             assert command[command.index("--build-constraint") + 1] == str(
@@ -92,7 +107,7 @@ def test_cold_build_uses_constraints_parallelism_and_reuses_verified_wheels(tmp_
             stage = Path(command[command.index("--out-dir") + 1])
             stage.mkdir(exist_ok=True)
             name = next(name for name, path in builder.PACKAGES.items() if path == command[-1])
-            (stage / f"{name}-1.0-py3-none-any.whl").write_bytes(name.encode())
+            write_wheel(stage / f"{name}-1.0-py3-none-any.whl", name)
             assert env["CARGO_BUILD_JOBS"] == "3"
             assert Path(env["CARGO_TARGET_DIR"]).is_relative_to(tmp_path / "cargo")
 
@@ -117,3 +132,55 @@ def test_cold_build_uses_constraints_parallelism_and_reuses_verified_wheels(tmp_
     calls.clear()
     builder.main()
     assert not calls
+
+
+@pytest.mark.parametrize("already_fixed", [False, True])
+def test_pinned_diskgraph_includes_resolve_from_python_source(tmp_path, already_fixed):
+    import tomllib
+
+    from scripts import build_kumo_loader_wheels as builder
+
+    package = tmp_path / builder.PACKAGES["diskgraph"]
+    package.mkdir(parents=True)
+    prefix = "" if already_fixed else "diskgraph-pybind/python/"
+    manifest = package / "pyproject.toml"
+    manifest.write_text(
+        '[tool.maturin]\npython-source="diskgraph-pybind/python"\ninclude=['
+        + ",".join(
+            f'{{path = "{prefix}diskgraph/bin/{binary}", format = "wheel"}}'
+            for binary in ("ingest", "ingest.exe")
+        )
+        + "]\n"
+    )
+    staged = package / "diskgraph-pybind/python/diskgraph/bin"
+    staged.mkdir(parents=True)
+    for binary in ("ingest", "ingest.exe"):
+        (staged / binary).write_bytes(b"executable")
+    builder.prepare_diskgraph_packaging(tmp_path)
+    config = tomllib.loads(manifest.read_text())["tool"]["maturin"]
+    assert all(
+        (package / config["python-source"] / item["path"]).is_file() for item in config["include"]
+    )
+    corrected = manifest.read_text()
+    builder.prepare_diskgraph_packaging(tmp_path)
+    assert manifest.read_text() == corrected
+
+
+def test_cache_rejects_hashed_but_nonexecutable_or_misplaced_ingest(tmp_path):
+    identity = {"revision": SOURCE_REVISION}
+    wheels = {}
+    for package in PACKAGES:
+        wheel = tmp_path / f"{package}-1.0-py3-none-any.whl"
+        write_wheel(wheel, package)
+        wheels[wheel.name] = digest(wheel)
+    diskgraph = tmp_path / next(name for name in wheels if name.startswith("diskgraph-"))
+    for content, mode in [("diskgraph/bin/ingest", 0o644), ("wrong/ingest", 0o755)]:
+        with zipfile.ZipFile(diskgraph, "w") as archive:
+            info = zipfile.ZipInfo(content)
+            info.external_attr = (0o100000 | mode) << 16
+            archive.writestr(info, b"executable")
+        wheels[diskgraph.name] = digest(diskgraph)
+        (tmp_path / "manifest.json").write_text(
+            json.dumps({"identity": identity, "wheels": wheels})
+        )
+        assert valid_cache(tmp_path, identity) is None

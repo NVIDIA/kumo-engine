@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,17 @@ def source_identity() -> tuple[str, str]:
     return identities.pop()
 
 
+def verify_diskgraph_wheel(wheel: Path) -> None:
+    """Require an installed-path, nonempty executable, including on cache hits."""
+    binary = "ingest.exe" if sys.platform == "win32" else "ingest"
+    with zipfile.ZipFile(wheel) as archive:
+        info = archive.getinfo(f"diskgraph/bin/{binary}")
+        if info.file_size == 0 or (
+            sys.platform != "win32" and not ((info.external_attr >> 16) & 0o111)
+        ):
+            raise ValueError("DiskGraph wheel ingest must be nonempty and executable")
+
+
 def valid_cache(path: Path, identity: dict[str, str]) -> dict[str, str] | None:
     """Reject stale source/build settings, missing wheels, and altered bytes."""
     manifest = path / "manifest.json"
@@ -76,9 +88,34 @@ def valid_cache(path: Path, identity: dict[str, str]) -> dict[str, str] | None:
                 or digest(path / name) != checksum
             ):
                 return None
+        verify_diskgraph_wheel(
+            path / next(name for name in wheels if name.startswith("diskgraph-"))
+        )
         return wheels
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, zipfile.BadZipFile):
         return None
+
+
+def prepare_diskgraph_packaging(source: Path) -> None:
+    """Correct the pinned manifest's wheel paths relative to python-source.
+
+    Maturin 1.10 resolves wheel includes against python-source, unlike sdist
+    includes. Keep all six source pins matched and apply only this packaging
+    correction to the temporary checkout; Rust and Python runtime code stay pinned.
+    """
+    manifest = source / PACKAGES["diskgraph"] / "pyproject.toml"
+    text = manifest.read_text()
+    config = tomllib.loads(text)["tool"]["maturin"]
+    prefix = config["python-source"].rstrip("/") + "/"
+    for binary in ("ingest", "ingest.exe"):
+        old = prefix + "diskgraph/bin/" + binary
+        new = "diskgraph/bin/" + binary
+        includes = config["include"]
+        if {"path": old, "format": "wheel"} in includes:
+            text = text.replace(f'path = "{old}"', f'path = "{new}"')
+        elif {"path": new, "format": "wheel"} not in includes:
+            raise ValueError(f"Unrecognized DiskGraph wheel include for {binary}")
+    manifest.write_text(text)
 
 
 def cargo_jobs() -> str:
@@ -144,6 +181,7 @@ def main() -> None:
             ).strip()
             if actual != revision:
                 raise ValueError("Fetched native source does not match the pinned revision")
+            prepare_diskgraph_packaging(source)
             channel = tomllib.loads(
                 (source / "packages/diskgraph/rust-toolchain.toml").read_text()
             )["toolchain"]["channel"]
@@ -173,6 +211,9 @@ def main() -> None:
             wheels = {p.name: digest(p) for p in stage.glob("*.whl")}
             if len(wheels) != len(PACKAGES):
                 raise ValueError("Native build did not produce exactly the requested wheel set")
+            verify_diskgraph_wheel(
+                stage / next(name for name in wheels if name.startswith("diskgraph-"))
+            )
             for name in wheels:
                 shutil.copy2(stage / name, cache / name)
             (cache / "manifest.json").write_text(

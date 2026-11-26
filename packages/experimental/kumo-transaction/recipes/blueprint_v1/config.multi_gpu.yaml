@@ -20,7 +20,8 @@ seed: 42
 #     --run-dir outputs/blueprint_v1/multi_gpu
 
 data:
-  loader: kumo_pytorch
+  # Distributed training and fine-tuning use the Python reference path.
+  loader: python
   adapter: tabformer
   path: null
   split_protocol: precomputed

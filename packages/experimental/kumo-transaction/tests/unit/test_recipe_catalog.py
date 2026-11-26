@@ -3,6 +3,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tfm.contracts.errors import SchemaError
@@ -65,3 +66,14 @@ def test_stratified_sample_rejects_nonpositive_cap() -> None:
     except SchemaError:
         return
     raise AssertionError("expected SchemaError")
+
+
+@pytest.mark.parametrize(
+    ("recipe", "variant"), [("blueprint_v1", "multi_gpu"), ("blueprint_v2", "scale")]
+)
+def test_distributed_blueprint_presets_select_python(recipe: str, variant: str) -> None:
+    from tfm.cli.recipe import resolve_config
+    from tfm.config import load_recipe_config
+
+    config = load_recipe_config(resolve_config(recipe, variant, command="train"))
+    assert config.data.loader == "python"

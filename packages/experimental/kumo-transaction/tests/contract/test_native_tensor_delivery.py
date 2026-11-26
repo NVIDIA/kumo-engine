@@ -916,3 +916,86 @@ def test_anchor_fit_wrapper_preserves_only_supported_index_capabilities():
     assert isinstance(wrapped, ExistingIndexEngine)
     assert wrapped._check_binding(None, None) == ()
     assert wrapped._resolve_index_schema("schema") == "schema"
+
+
+@pytest.mark.parametrize("mode", ["graph", "hybrid"])
+@pytest.mark.parametrize("depth", [5, 6])
+@pytest.mark.parametrize("sharing", ["shared", "disjoint"])
+def test_native_graph_projection_excludes_unreachable_types(tmp_path, mode, depth, sharing):
+    """A seventh type at hop six and a disconnected table retain schema empties."""
+    from tfm.data.native_inputs import NativeInputs
+
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
+    names = tuple(f"level{i}" for i in range(7)) + ("disconnected",)
+    tables, roles, files = [], [], {}
+    for i, name in enumerate(names):
+        columns = {"id": [0], "value": [float(i + 1)]}
+        if 0 < i < 7:
+            columns["parent"] = [0]
+            roles.append(RelationalForeignKey(f"step{i}", names[i - 1], name, ("parent",)))
+        timed = i == 1
+        if timed:
+            columns["at"] = [START]
+        files[name] = tmp_path / f"{name}.parquet"
+        pq.write_table(pa.table(columns), files[name])
+        tables.append(
+            RelationalTable(
+                name,
+                ("id",),
+                numeric={"amount": "value"},
+                immutable=not timed,
+                event_time="at" if timed else None,
+                available_at="at" if timed else None,
+            )
+        )
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "sample_id": ["first", "repeat"],
+                "id": [0, 0],
+                "cutoff": [START + timedelta(seconds=2)] * 2,
+                "split": ["train", "train"],
+            }
+        ),
+        anchors,
+    )
+    with NativeInputs(
+        TableSource(tuple(tables), tuple(roles), files),
+        root="level0",
+        history_paths={"activity": ("step1",)},
+        anchors=anchors,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=2,
+        depth=depth,
+        fanout=10,
+    ) as inputs:
+        with inputs.batches("train", mode=mode, sharing=sharing, shuffle=False) as batches:
+            (batch,) = list(batches)
+        batch.assert_validated()
+        graph = batch if mode == "graph" else batch.graph
+        assert set(graph.node_features) == set(names)
+        count = 1 if sharing == "shared" else 2
+        for i, name in enumerate(names):
+            expected = count if i <= depth else 0
+            assert graph.node_features[name].shape == (expected, 2)
+            assert graph.node_available_us[name].shape == (expected,)
+        for i, role in enumerate(roles, 1):
+            expected = count if i <= depth else 0
+            forward = (role.parent, role.name, role.child)
+            reverse = (role.child, f"rev_{role.name}", role.parent)
+            # Trimming keeps edges into receiver shells 0..depth-1. The
+            # boundary node sends inward but is not itself a receiver.
+            assert graph.edge_index[forward].shape == (2, count if i < depth else 0)
+            assert graph.edge_index[reverse].shape == (2, expected)
+            if i < depth:
+                assert torch.equal(graph.edge_index[reverse], graph.edge_index[forward].flip(0))
+        assert [a.sample_id for a in graph.anchors] == ["first", "repeat"]
+        if mode == "hybrid":
+            assert batch.history.sequence_ids == ("first", "repeat")
+            assert batch.history.event_mask.sum(dim=1).tolist() == [1, 1]
+        graph.node_features["disconnected"].resize_(1, 2)
+        with pytest.raises(ValueError, match="mutat|changed"):
+            batch.assert_validated()

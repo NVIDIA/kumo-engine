@@ -185,3 +185,6 @@ costs; see [memory and materialization tradeoffs](../../docs/migration/native-lo
 The native CLI streams source-table feature tensors and retains active/prefetched
 model batches. Source validation, index preparation, targets and evaluation arrays
 still have costs; see the guide's explicit capability and checkpoint limits.
+
+`config.scale.yaml` explicitly selects `data.loader: python` for its distributed
+training settings and fine-tuning stage. The native source loader currently supports one process.

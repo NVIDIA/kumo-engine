@@ -523,6 +523,7 @@ def with_graph(
     if depth < 1 or fanout < 1 or root not in tables:
         raise SchemaError("Native graph inputs require a declared root and positive depth/fanout")
     frontier, layers = {root}, []
+    projected = {root}
     for hop in range(depth):
         samples, reached = [], set()
         for role in source.relationships:
@@ -557,10 +558,13 @@ def with_graph(
             break
         layers.append(api.GraphLayer(tuple(samples)))
         frontier = reached
+        projected.update(reached)
     if not layers:
         raise UnsupportedCombinationError(f"graph.root.{root}: no traversable input relationships")
     graph_fields = {}
     for name, table in tables.items():
+        if name not in projected:
+            continue
         schema = pq.read_schema(source.files[name])
         numeric = table.numeric if source.graph_numeric is None else source.graph_numeric[name]
         fields = [*table.key, *numeric.values()]
