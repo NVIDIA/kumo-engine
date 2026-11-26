@@ -282,10 +282,14 @@ Assigning time columns:
 - Do **not** designate an administrative last-modified timestamp unless it represents when
   the row became valid for modeling.
 - Tables without a meaningful timeline can legitimately have no time column.
-- `end_time_column` exists as a `Table`/`from_source_table` parameter for rows with a validity
-  interval.
-  > Not verified: its exact semantics under this SDK. Do not describe or rely on its
-  > filtering behavior.
+- Rows with a validity interval (the time column is the start, another column the end) declare
+  the end column with `end_time_column` on `Table.from_source_table(...)`, next to `time_column`:
+  `from_source_table(connector['T'], [...], primary_key='K', time_column='START_DATE',
+  end_time_column='END_DATE')`. Verified in the SDK source: the column is typed as a timestamp, it
+  must be among the table's `columns`, and it is left out of the model's feature columns
+  (`kumo_core.encoder_selection.feature_column_names`), so it does not leak. Sampling is
+  end-date-aware only on the entity table (after `FOR EACH`) and on the right-hand table of a link
+  prediction (`troubleshooting_signals.md`); say nothing more about its filtering.
 
 Temporal splits: for a temporal predictive query, Kumo splits train/validation/holdout by the
 time column of the target table, and at prediction time accesses only data with timestamps at
@@ -297,10 +301,10 @@ every selected feature in that row. If it marks the start of an interval, a fiel
 determined when that interval later changes or ends — its endpoint, its realized duration, or a
 summary of the completed interval — is future information and must not be used as a feature.
 
-If such an interval endpoint is an ordinary candidate feature, omit it from the positional column
-list. If it is configured as `end_time_column`, keep it selected as structural metadata and do not
-present it as a feature; do not rely on its interval-filtering behaviour unless that behaviour has
-been verified for the deployed bundle.
+The interval's endpoint is configured as `end_time_column`: keep it selected as structural
+metadata, never drop it and never present it as a feature. Its realized duration, or a summary of
+the completed interval, is omitted from the positional column list. Do not rely on the endpoint's
+interval-filtering behaviour beyond what is stated above.
 
 The same applies to the prediction target: keep the target column selected so the query and table
 metadata can reference it, and exclude only the companion columns derived from it.
@@ -437,8 +441,9 @@ Source: shipped package (`kumo.engine.table`, `kumo.engine.graph`, `kumoapi.grap
 
 Do not fill these from memory. If the task requires them, say so.
 
-- `end_time_column` semantics under the Kumo Predict SDK (parameter exists; behavior only
-  documented for the separate KumoRFM product line, which is out of scope here).
+- How `end_time_column` filters rows beyond the entity table and a link-prediction right-hand
+  table: declaring it is verified (it is a structural column, not a feature); any further
+  sampling behaviour is not.
 - Whether self-referencing edges (self-loops) are permitted.
 - Excluding the target label column from features at table-definition time: there is no known
   `features=` argument on `Table`. Control feature inclusion via `column_names` / `columns`.

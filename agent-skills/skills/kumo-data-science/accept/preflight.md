@@ -162,6 +162,17 @@ more than one, ask in the proposal which one marks when the row's fact happened 
 and say how to change it: name the column, and the notebook sets it as `time_column`. Names and
 values cannot settle this; the user does. A column not chosen is still placed in time by §5.
 
+**An interval table declares its end column.** When a table's rows are valid over a period — its
+time column is the start (`START_DATE`, `EFFECTIVE_START_TS`) and another date or timestamp column
+marks when the row stops being valid (`END_DATE`, `EFFECTIVE_END_TS`) — name that column as the
+table's **end time column**; do not drop it and do not leave it as an ordinary feature. Kumo keeps
+an end time column out of the model's features, so it carries no future information, and the table
+still records the period. Say so on the table's time-column line (`time column START_DATE, end
+column END_DATE [inferred]`), and let the notebook set it (`end_time_column=`,
+`kumoai-reference/references/graph_construction.md`). A column that is the table's only
+timestamp, or that marks an event rather than the end of a validity period, is not an end time
+column. An end time column is not listed under `Excluded columns`.
+
 For every time-ranged target aggregation, the table it references must have a usable
 `time_column`. If it does not, say so in the proposal and say what would make the task
 expressible: a timestamp on some other table does not repair the target.
@@ -177,9 +188,10 @@ timestamps and must not be treated as one.
 For each table, place every candidate feature in time relative to that table's proposed
 `time_column`, then exclude the ones that are not yet knowable at it.
 
-- When the time column marks the beginning of a validity period or interval, exclude a feature
-  whose value is only determined once that interval later changes or ends: its eventual endpoint,
-  its realized duration, or any summary of the completed interval.
+- When the time column marks the beginning of a validity period or interval, the interval's end
+  column is declared as the end time column (§4), not excluded. Exclude a feature whose value is
+  only determined once that interval later changes or ends: its realized duration, or any summary
+  of the completed interval.
 - Exclude a feature computed from, or containing, the confirmed prediction target.
 - Apply the active host adapter's runtime column constraints.
 
@@ -262,6 +274,8 @@ Metadata
 - fraud_events: primary key EVENT_ID [inferred]
 - fraud_events: time column EVENT_AT [inferred] — named as the event time; other timestamp
   columns: RESOLVED_AT. Which one marks when the event happened? Name another to use it instead
+- customer_plans: time column VALID_FROM [inferred], end column VALID_TO [inferred] — a validity
+  period; VALID_TO is set as the end time column, not a feature
 - ...
 
 Links

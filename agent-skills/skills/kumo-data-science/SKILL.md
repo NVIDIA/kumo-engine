@@ -186,10 +186,12 @@ User-supplied values take precedence over inferred ones.
 **Mandatory column-availability pass.** Before presenting the graph, decide the selected columns
 for every included table and add an `Excluded columns` section to the proposal.
 
-- When a table's `time_column` marks the beginning of a row's validity or an interval, exclude any
-  candidate feature whose value is determined only after that time: the interval's eventual
-  endpoint, its realized duration, or a summary of the completed interval. At the row timestamp
-  those values are future information. Decide by semantic role, never by matching column names.
+- When a table's `time_column` marks the beginning of a row's validity or an interval, the column
+  that marks when the row stops being valid is the table's **end time column**: declare it with
+  `end_time_column=`, never as a feature and never dropped (`accept/preflight.md` §4). Exclude any
+  other candidate feature whose value is determined only after that time: the interval's realized
+  duration, or a summary of the completed interval. At the row timestamp those values are future
+  information. Decide by semantic role, never by matching column names.
 - For a query with a time window, flag every **current-state attribute**: a column on a
   one-row-per-entity table that describes a state the entity can move in and out of (status,
   plan, tier, stage, active or closed flag, current balance), when the table has no time column

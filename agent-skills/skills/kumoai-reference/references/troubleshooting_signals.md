@@ -313,7 +313,7 @@ print(training_table.data_df().head())
 
 ### Symptom: an `END_DATE` column is set on a non-entity table and appears to be ignored
 **Cause:** End-date-aware sampling is currently supported **only** on the entity table (after `FOR EACH`) and on the RHS table in link prediction (after `LIST_DISTINCT`).
-**Fix:** Do not rely on end dates elsewhere.
+**Fix:** Do not rely on end dates elsewhere to filter rows. Declare the end column as `end_time_column` anyway (`graph_construction.md`): it stays out of the features, which is what keeps it from leaking; it does not change sampling on other tables.
 
 ### Symptom: date-only boundary includes one day too few / too many
 **Cause:** A date such as `2025-10-01` is interpreted at the **start** of that day. The target window is left-open, right-closed.

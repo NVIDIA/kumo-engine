@@ -342,6 +342,9 @@ Table.infer_metadata()
   only values. Correct every FK with `.with_column(col, stype=Stype.ID)`.
 - **A TEXT time column needs `dtype=Dtype.date`** declared, or staging will not cast it.
 - `infer_metadata()` takes no arguments.
+- **An interval table sets `end_time_column`** to the column that marks when the row stops being
+  valid, keeps it in `column_names`, and never drops it
+  (`kumo-data-science/accept/preflight.md` §4, `graph_construction.md`).
 - Read-back attributes live under `.definition`: `.definition.pkey`, `.definition.time_col`,
   `.definition.end_time_col`. `.table_name` is on the table itself.
 
