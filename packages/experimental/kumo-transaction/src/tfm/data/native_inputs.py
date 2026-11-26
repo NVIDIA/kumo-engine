@@ -191,7 +191,8 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             self._expected_tasks: dict[str, dict[str, str]] = {}
             self._num_threads = num_threads
             self._history_state: dict[str, Any] | None = None
-            self._history_source: TableSource | None = None
+            self._history_sources: dict[str, TableSource] = {}
+            self._history_view_options: dict[str, dict[str, Any]] = {}
         except BaseException:
             self.resources.close()
             raise
@@ -384,11 +385,12 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         if name in self._tasks:
             return self._tasks[name]
         source, contract = self.source, None
+        rules = {} if view == "full" else dict(self.views[view])
         if base_name != "graph":
-            if self._history_source is None:
+            if view not in self._history_sources:
                 from tfm.data.native_projection import history_projection
 
-                self._history_source, paths = history_projection(
+                history_source, paths = history_projection(
                     self.normalized,
                     root=self.root,
                     paths={
@@ -398,7 +400,8 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                             for key, value in self.source.profile_paths.items()
                         },
                     },
-                    directory=self.directory / "projections",
+                    directory=self.directory / f"projections-{view}",
+                    rules=rules,
                     exclusive_terminal_paths=self.exclusive_terminal_paths,
                 )
                 # Aliases to the same physical terminal now resolve through
@@ -409,7 +412,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                     if paths[key] not in seen_paths:
                         compiled_paths[key] = paths[key]
                         seen_paths.add(paths[key])
-                self._history_options["paths"] = compiled_paths
+                options = {**self._history_options, "paths": compiled_paths}
                 if not self.exclusive_terminal_paths:
                     relations = {role.name: role for role in self.source.relationships}
                     event_names = {}
@@ -419,17 +422,18 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                             role = relations[role_name]
                             terminal = role.child if terminal == role.parent else role.parent
                         event_names[key] = terminal
-                    self._history_options["event_names"] = event_names
-                self._history_source = replace(
-                    self._history_source,
+                    options["event_names"] = event_names
+                self._history_view_options[view] = options
+                self._history_sources[view] = replace(
+                    history_source,
                     profile_paths={
                         key: paths[f"__profile_{key}"] for key in self.source.profile_paths
                     },
                 )
-            source = self._history_source
+            source = self._history_sources[view]
             contract = history_contract(
                 source,
-                **self._history_options,
+                **self._history_view_options[view],
                 equivalent_clocks=frozenset(
                     name for name, same in self.normalized.same_clocks.items() if same
                 ),
@@ -446,34 +450,6 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         assert contract is not None
         if view != "full":
             rules = dict(self.views[view])
-            if base_name != "graph" and self._history_source is not None:
-                relations = {role.name: role for role in source.relationships}
-                original_roles = {role.name: role for role in self.source.relationships}
-                projected = {
-                    table.name for table in source.tables if table.name.startswith("__tfm_history_")
-                }
-                handled = set()
-                for name, path in self._history_options["paths"].items():
-                    terminal = self.root
-                    for role_name in path:
-                        role = relations[role_name]
-                        terminal = role.child if terminal == role.parent else role.parent
-                    if not terminal.startswith("__tfm_history_"):
-                        continue
-                    handled.add(terminal)
-                    original_path = self.paths[name]
-                    if len(original_path) != 1:
-                        raise UnsupportedCombinationError(
-                            "Physical source prefixes with projected multi-hop histories need an explicit projected prefix"
-                        )
-                    role = original_roles[original_path[0]]
-                    original = role.child if role.parent == self.root else role.parent
-                    if original in rules:
-                        rules[terminal] = rules[original]
-                if projected - handled:
-                    raise UnsupportedCombinationError(
-                        "Physical source prefixes with projected profile facts need an explicit projected prefix"
-                    )
             layout = "source" if base_name == "graph" else "history"
             key = (view, layout)
             if key not in self._view_sources:

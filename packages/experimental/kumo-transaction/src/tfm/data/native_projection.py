@@ -17,7 +17,8 @@ from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.graph import STATIC_TIME
 from tfm.contracts.relational import RelationalForeignKey
 from tfm.contracts.table_source import TableSource
-from tfm.data.native_source import EVENT_US, ROW_ID, NativeSourceFiles
+from tfm.data.native_source import EVENT_US, KEY_ORDER, ROW_ID, NativeSourceFiles
+from tfm.data.native_views import SourceRows, select_source_rows
 from tfm.data.relational import key_token
 
 
@@ -56,6 +57,7 @@ def history_projection(
     paths: Mapping[str, tuple[str, ...]],
     directory: Path,
     exclusive_terminal_paths: bool = False,
+    rules: Mapping[str, SourceRows] | None = None,
 ) -> tuple[TableSource, dict[str, tuple[str, ...]]]:
     """Union fixed paths by root/physical event before native history truncation.
 
@@ -66,6 +68,7 @@ def history_projection(
     history backend cannot filter independent availability and event clocks.
     """
     source = normalized.source
+    rules = rules or {}
     tables = {table.name: table for table in source.tables}
     roles = {role.name: role for role in source.relationships}
     output_tables, output_roles, files = (
@@ -80,7 +83,7 @@ def history_projection(
     directory.mkdir(parents=True, exist_ok=True)
     for name, path in paths.items():
         current, destinations = root, []
-        for role_name in path:
+        for hop, role_name in enumerate(path):
             role = roles.get(role_name)
             if (
                 role is None
@@ -94,6 +97,27 @@ def history_projection(
             if tables[current].role != "input":
                 raise SchemaError(f"history_paths.{name}: label tables cannot supply inputs")
             destinations.append(current)
+            rule = rules.get(current)
+            if (
+                rule is not None
+                and (rule.before_us is not None or rule.partition_column is not None)
+                and hop < len(path) - 1
+            ):
+                raise UnsupportedCombinationError(
+                    f"history_paths.{name}.{role_name}: source view filter on {current} "
+                    "needs an explicit projected prefix for intermediate/profile rows"
+                )
+        terminal_rule = rules.get(current)
+        if (
+            name.startswith("__profile_")
+            and any(not tables[t].immutable for t in destinations[:-1])
+            and terminal_rule is not None
+            and (terminal_rule.before_us is not None or terminal_rule.partition_column is not None)
+        ):
+            raise UnsupportedCombinationError(
+                f"history_paths.{name}: source view filter on {current} "
+                "needs an explicit projected prefix for profile rows"
+            )
         if not path or tables[current].event_time is None:
             raise SchemaError(f"history_paths.{name}: terminal event clock is required")
         if not normalized.same_clocks[current]:
@@ -168,17 +192,21 @@ def history_projection(
         query = f"SELECT p.child,p.owner,MIN(p.known),k.rank FROM ({' UNION ALL '.join(queries)}) p JOIN identities n ON n.table_name=? AND n.code=p.child JOIN history_ranks k ON k.table_name=n.table_name AND k.code=n.code GROUP BY p.child,p.owner ORDER BY p.child,p.owner"
         cursor = normalized.connection.execute(query, (*parameters, current))
         found = next(cursor, None)
-        if found is None:
-            # All aliases have an empty reachable history. One original path
-            # retains that empty stream without introducing projected rows.
-            for name, _path, _destinations in entries:
-                output_paths[name] = entries[0][1]
-            continue
         table_name, role_name = f"__tfm_history_{index}", f"__tfm_history_role_{index}"
         output = directory / f"history-{index}.parquet"
         writer, count = None, 0
         try:
-            for block in pq.ParquetFile(source.files[current]).iter_batches(batch_size=4096):
+            blocks = (
+                pq.ParquetFile(source.files[current]).iter_batches(batch_size=4096)
+                if found is not None
+                else ()
+            )
+            for block in blocks:
+                eligible = (
+                    set(select_source_rows(block, rules[current]).column(ROW_ID).to_pylist())
+                    if current in rules
+                    else None
+                )
                 selected, owners, identities = [], [], []
 
                 for position, (code, event) in enumerate(
@@ -189,6 +217,9 @@ def history_projection(
                     )
                 ):
                     while found is not None and found[0] == code:
+                        if eligible is not None and code not in eligible:
+                            found = next(cursor, None)
+                            continue
                         if found[2] > event:
                             names = ",".join(item[0] for item in entries)
                             raise UnsupportedCombinationError(
@@ -213,9 +244,26 @@ def history_projection(
             if writer is not None:
                 writer.close()
         if not count:
-            raise UnsupportedCombinationError(
-                f"history_paths.{entries[0][0]}: native projection contains no reachable source rows"
-            )
+            # DiskGraph needs a physical row to retain an optional stream's
+            # namespace. NULL ownership makes this one-hop sentinel unreachable
+            # from every real root, including when the terminal table is nonempty.
+            first = next(pq.ParquetFile(source.files[current]).iter_batches(batch_size=1))
+            terminal = tables[current]
+            clocks = {terminal.event_time, terminal.available_at}
+            sentinel = pa.Table.from_arrays(
+                [
+                    pa.array(["__tfm_unreachable"], type=pa.string())
+                    if field.name == ROW_ID
+                    else pa.array([0], type=field.type)
+                    if field.name == KEY_ORDER
+                    else first.column(field.name)
+                    if field.name in clocks
+                    else pa.nulls(1, type=field.type)
+                    for field in first.schema
+                ],
+                names=first.schema.names,
+            ).append_column("__tfm_history_root", pa.nulls(1, type=pa.int64()))
+            pq.write_table(sentinel, output)
         if found is not None:
             raise SchemaError(
                 f"history_paths.{entries[0][0]}: native projection lost a source identity"

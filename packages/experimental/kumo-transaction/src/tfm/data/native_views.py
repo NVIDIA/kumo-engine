@@ -47,17 +47,7 @@ def source_view(
         path = directory / f"table-{ordinal}.parquet"
         with pq.ParquetWriter(path, original.schema_arrow) as writer:
             for block in original.iter_batches(batch_size=4096):
-                selected = pa.array([True] * block.num_rows)
-                if rule.before_us is not None:
-                    selected = pc.and_(selected, pc.less(block.column(EVENT_US), rule.before_us))
-                if rule.partition_column is not None:
-                    selected = pc.and_(
-                        selected,
-                        pc.is_in(
-                            block.column(rule.partition_column), value_set=pa.array(rule.partitions)
-                        ),
-                    )
-                writer.write_table(pa.Table.from_batches([block]).filter(selected))
+                writer.write_table(pa.Table.from_batches([select_source_rows(block, rule)]))
         if pq.ParquetFile(path).metadata.num_rows == 0 and original.metadata.num_rows:
             # DiskGraph cannot index zero rows. Keep one unreachable physical
             # sentinel: its ID is outside the original registry and every
@@ -89,3 +79,16 @@ def source_view(
             pq.write_table(sentinel, path)
         files[name] = path
     return replace(source, files=files)
+
+
+def select_source_rows(block: pa.RecordBatch, rule: SourceRows) -> pa.RecordBatch:
+    """Apply a physical row selector before constructing history associations."""
+    selected = pa.array([True] * block.num_rows)
+    if rule.before_us is not None:
+        selected = pc.and_(selected, pc.less(block.column(EVENT_US), rule.before_us))
+    if rule.partition_column is not None:
+        selected = pc.and_(
+            selected,
+            pc.is_in(block.column(rule.partition_column), value_set=pa.array(rule.partitions)),
+        )
+    return block.filter(selected)

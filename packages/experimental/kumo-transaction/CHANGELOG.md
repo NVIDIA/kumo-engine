@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Validate every original native history path before unioning aliases; apply
+  supported terminal source filters before projection and reject unsupported
+  intermediate filters independently of declaration order. Retain populated
+  optional streams with no reachable associations without restoring unsupported
+  multi-hop paths.
+
 - Keep filtered graph and history source views independent of task preparation
   order, including optional empty or unowned history streams.
 

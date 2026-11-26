@@ -1048,3 +1048,234 @@ def test_native_filtered_graph_and_history_views_are_independent_of_preparation_
         with inputs.batches("train", mode="history", shuffle=False) as batches:
             (history,) = list(batches)
         assert history.event_mask.sum().item() == 1
+
+
+def multi_path_source(tmp_path):
+    source = source_files(tmp_path)
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["a", "b"],
+                "owner": ["train", "heldout"],
+                "partition": ["train", "heldout"],
+                "at": [START, START],
+            }
+        ),
+        tmp_path / "accounts.parquet",
+    )
+    events = pq.read_table(source.files["events"]).append_column(
+        "account", pa.array(["a", "b", "a", "b"])
+    )
+    pq.write_table(events, source.files["events"])
+    return replace(
+        source,
+        tables=(
+            *source.tables,
+            RelationalTable("accounts", ("id",), event_time="at", available_at="at"),
+        ),
+        relationships=(
+            *source.relationships,
+            RelationalForeignKey("accounts", "users", "accounts", ("owner",)),
+            RelationalForeignKey("account_events", "accounts", "events", ("account",)),
+        ),
+        files={**source.files, "accounts": tmp_path / "accounts.parquet"},
+    )
+
+
+def history_request(tmp_path):
+    path = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train"],
+                "sample_id": ["train"],
+                "split": ["train"],
+                "cutoff": [START + timedelta(seconds=2)],
+            }
+        ),
+        path,
+    )
+    return path
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("mode", ["history", "hybrid"])
+@pytest.mark.parametrize("prepare_full", [False, True])
+def test_union_validates_intermediate_filters_on_every_original_path(
+    tmp_path, reverse, mode, prepare_full
+):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    pytest.importorskip("kumo.pytorch.api")
+    source = multi_path_source(tmp_path)
+    paths = [("direct", ("activity",)), ("through_accounts", ("accounts", "account_events"))]
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths=dict(reversed(paths) if reverse else paths),
+        anchors=history_request(tmp_path),
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        depth=2,
+        views={
+            "restricted": {
+                "accounts": SourceRows(partition_column="partition", partitions=("train",))
+            }
+        },
+    ) as inputs:
+        if prepare_full:
+            inputs.task(mode)
+        with pytest.raises(
+            UnsupportedCombinationError,
+            match=r"history_paths.through_accounts.accounts:.*accounts.*intermediate",
+        ):
+            inputs.task(mode, view="restricted")
+        assert not any(key.endswith("@restricted") for key in inputs._tasks)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("mode", ["history", "hybrid"])
+def test_union_filters_terminal_rows_before_projection_and_fitting(tmp_path, reverse, mode):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    pytest.importorskip("kumo.pytorch.api")
+    source = multi_path_source(tmp_path)
+    # This association is learned after the terminal event. The row is
+    # excluded by the supported terminal view, so it must not reach projection.
+    accounts = pq.read_table(source.files["accounts"])
+    accounts = accounts.set_column(
+        accounts.schema.get_field_index("at"), "at", pa.array([START, START + timedelta(seconds=2)])
+    )
+    pq.write_table(accounts, source.files["accounts"])
+    # Event "second" has a direct early association; event "test" is reached
+    # only via the late account. Exclude both with a partition/time selector.
+    paths = [("direct", ("activity",)), ("through_accounts", ("accounts", "account_events"))]
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths=dict(reversed(paths) if reverse else paths),
+        anchors=history_request(tmp_path),
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        depth=2,
+        fit_view="train",
+        views={
+            "train": {
+                "events": SourceRows(
+                    before_us=1704067201000000, partition_column="kind", partitions=("fit",)
+                )
+            }
+        },
+    ) as inputs:
+        with inputs.batches("train", mode=mode, shuffle=False) as batches:
+            (batch,) = list(batches)
+        history = batch if mode == "history" else batch.history
+        assert history.event_mask.sum().item() == 1
+        source = inputs._history_sources["train"]
+        projected = next(
+            table for table in source.tables if table.name.startswith("__tfm_history_")
+        )
+        rows = pq.read_table(source.files[projected.name])
+        assert rows.num_rows == 1
+        assert rows["kind"].to_pylist() == ["fit"]
+        assert rows["at"].to_pylist() == [START]
+
+
+@pytest.mark.parametrize("mode", ["history", "hybrid"])
+def test_populated_optional_terminal_without_associations_keeps_other_streams(tmp_path, mode):
+    from tfm.data.native_inputs import NativeInputs
+
+    pytest.importorskip("kumo.pytorch.api")
+    source = multi_path_source(tmp_path)
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["unowned"],
+                "account": pa.array([None], type=pa.string()),
+                "at": [START],
+                "value": [99.0],
+            }
+        ),
+        tmp_path / "messages.parquet",
+    )
+    source = replace(
+        source,
+        tables=(
+            *source.tables,
+            RelationalTable(
+                "messages",
+                ("id",),
+                numeric={"message_value": "value"},
+                event_time="at",
+                available_at="at",
+            ),
+        ),
+        relationships=(
+            *source.relationships,
+            RelationalForeignKey("account_messages", "accounts", "messages", ("account",)),
+        ),
+        files={**source.files, "messages": tmp_path / "messages.parquet"},
+    )
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths={"activity": ("activity",), "optional": ("accounts", "account_messages")},
+        anchors=history_request(tmp_path),
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        depth=2,
+    ) as inputs:
+        with inputs.batches("train", mode=mode, shuffle=False) as batches:
+            (batch,) = list(batches)
+        history = batch if mode == "history" else batch.history
+        assert history.event_mask.sum().item() == 3
+        if mode == "hybrid":
+            batch.assert_validated()
+        # No unreachable message may enter delivered histories or fitted values.
+        fitted = inputs.task(mode).fitted_state.to_dict()
+        assert "99.0" not in str(fitted)
+
+
+@pytest.mark.parametrize("mode", ["history", "hybrid"])
+@pytest.mark.parametrize("first_view", ["full", "train"])
+def test_union_projection_cache_keeps_full_and_filtered_rows_separate(tmp_path, mode, first_view):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    pytest.importorskip("kumo.pytorch.api")
+    source = multi_path_source(tmp_path)
+    request = history_request(tmp_path)
+    original = pq.read_table(request).to_pylist()[0]
+    pq.write_table(
+        pa.Table.from_pylist([original, {**original, "sample_id": "test", "split": "test"}]),
+        request,
+    )
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths={"direct": ("activity",), "through_accounts": ("accounts", "account_events")},
+        anchors=request,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        depth=2,
+        fit_view="train",
+        split_views={"test": "full"},
+        views={"train": {"events": SourceRows(before_us=1704067201000000)}},
+    ) as inputs:
+        order = (first_view, "train" if first_view == "full" else "full")
+        for view in (*order, *order):
+            split = "test" if view == "full" else "train"
+            with inputs.batches(split, mode=mode, shuffle=False) as batches:
+                (batch,) = list(batches)
+            history = batch if mode == "history" else batch.history
+            assert history.event_mask.sum().item() == (3 if view == "full" else 1)
+        assert (
+            inputs.task(mode).fitted_state.fingerprint
+            == inputs.task(mode, view="full").fitted_state.fingerprint
+        )

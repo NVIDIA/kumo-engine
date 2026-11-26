@@ -219,6 +219,15 @@ combinations are rejected. A configured token cache keeps its existing cache
 builder and fitted tokenizer; it is a separate prepared-input workflow, not
 source-native encoding.
 
+Filtered native histories validate every original path before merging aliases.
+An intermediate/profile filter that cannot be represented is rejected with its
+path and table, regardless of alias declaration order or which task was opened
+first. Supported terminal time/partition selectors apply before association
+projection and encoder fitting. Each view owns its history projection; full
+and filtered views cannot reuse each other's projected rows. A populated but
+unreachable optional stream uses an unreachable one-hop placeholder, retaining
+its feature namespace without adding events to any root's history.
+
 ## Compare loaders for your workload
 
 Match inputs/anchors, clock and tie rules, model, optimizer, seed, precision,
