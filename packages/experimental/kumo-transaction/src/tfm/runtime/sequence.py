@@ -31,7 +31,7 @@ def run_command(
             device=device,
             reuse_checkpoint=reuse_checkpoint,
         )
-    if config.data.loader == "kumo_pytorch" and config.data.token_cache is None:
+    if config.data.loader != "python" and config.data.token_cache is None:
         from tfm.runtime.native_sequence import run_command as run_native
 
         return run_native(

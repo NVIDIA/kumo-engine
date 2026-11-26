@@ -23,6 +23,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+BUILD_CONSTRAINTS = Path(__file__).with_name("native-build-constraints.txt")
 PACKAGES = {
     "diskgraph": "packages/diskgraph",
     "kumo_settings": "packages/kumo-settings",
@@ -80,17 +81,40 @@ def valid_cache(path: Path, identity: dict[str, str]) -> dict[str, str] | None:
         return None
 
 
+def cargo_jobs() -> str:
+    """Honor Cargo's caller override; cap only our automatic default."""
+    return os.environ.get("CARGO_BUILD_JOBS", str(min(os.cpu_count() or 1, 8)))
+
+
+def cargo_cache_key(source: Path, revision: str, channel: str) -> str:
+    """Separate native targets by immutable source, lockfile, toolchain and flags."""
+    inputs = {
+        "revision": revision,
+        "toolchain": channel,
+        "lock": digest(source / "packages/diskgraph/Cargo.lock"),
+        "platform": f"{sys.platform}-{platform.machine()}",
+        "rustflags": os.environ.get("RUSTFLAGS", ""),
+        "encoded_rustflags": os.environ.get("CARGO_ENCODED_RUSTFLAGS", ""),
+        "constraints": digest(BUILD_CONSTRAINTS),
+    }
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("native-wheels"))
     parser.add_argument("--cache", type=Path, default=Path(".cache/kumo-native-wheels"))
     parser.add_argument("--uv", default="uv")
+    parser.add_argument("--cargo-cache", type=Path, default=Path(".cache/kumo-native-cargo"))
     args = parser.parse_args()
     url, revision = source_identity()
     identity = {
         "git": url,
         "revision": revision,
         "builder": digest(Path(__file__)),
+        "build_constraints": digest(BUILD_CONSTRAINTS),
+        "rustflags": os.environ.get("RUSTFLAGS", ""),
+        "encoded_rustflags": os.environ.get("CARGO_ENCODED_RUSTFLAGS", ""),
         "platform": f"{sys.platform}-{platform.machine()}-py{sys.version_info.major}.{sys.version_info.minor}",
     }
     cache = args.cache.resolve() / revision
@@ -102,11 +126,10 @@ def main() -> None:
             env = {
                 **os.environ,
                 "GIT_LFS_SKIP_SMUDGE": "1",
-                "CARGO_BUILD_JOBS": "1",
+                "CARGO_BUILD_JOBS": cargo_jobs(),
                 "CARGO_INCREMENTAL": "0",
                 "CARGO_PROFILE_RELEASE_DEBUG": "0",
                 "CARGO_PROFILE_RELEASE_STRIP": "debuginfo",
-                "CARGO_TARGET_DIR": str(Path(tmp) / "target"),
             }
 
             def run(*cmd: str, cwd: Path | None = None) -> None:
@@ -126,12 +149,20 @@ def main() -> None:
             )["toolchain"]["channel"]
             run("rustup", "toolchain", "install", channel, "--profile", "minimal")
             env["RUSTUP_TOOLCHAIN"] = channel
+            # A fresh checkout keeps its source mtimes newer than cached project
+            # outputs. Cargo may reuse unchanged registry dependencies, but a
+            # different source revision/toolchain/lock/flag set gets its own target.
+            target = args.cargo_cache.resolve() / cargo_cache_key(source, revision, channel)
+            target.mkdir(parents=True, exist_ok=True)
+            env["CARGO_TARGET_DIR"] = str(target)
             stage = Path(tmp) / "wheels"
             for package in PACKAGES.values():
                 run(
                     args.uv,
                     "build",
                     "--wheel",
+                    "--build-constraint",
+                    str(BUILD_CONSTRAINTS),
                     "--python",
                     sys.executable,
                     "--out-dir",

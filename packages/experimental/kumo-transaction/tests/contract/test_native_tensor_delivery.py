@@ -893,3 +893,26 @@ def test_task_replay_preserves_and_checks_saved_source_view(tmp_path, saved_meta
             replayed = pq.read_table(replay.original_anchors).to_pylist()[0]
             assert "view" in replayed and "view_identity" in replayed
             assert replayed["view"] == "restricted"
+
+
+def test_anchor_fit_wrapper_preserves_only_supported_index_capabilities():
+    pytest.importorskip("kumo.pytorch.api")
+    from types import SimpleNamespace
+
+    from kumo.pytorch.engine import ExistingIndexEngine
+
+    from tfm.data.native_spec import anchor_fitted_engine
+
+    fresh = SimpleNamespace(name="fresh", open=lambda *args: None)
+    wrapped = anchor_fitted_engine(fresh)
+    assert not isinstance(wrapped, ExistingIndexEngine)
+    bound = SimpleNamespace(
+        name="indexed",
+        open=lambda *args: None,
+        _check_binding=lambda *args: (),
+        _resolve_index_schema=lambda schema: schema,
+    )
+    wrapped = anchor_fitted_engine(bound)
+    assert isinstance(wrapped, ExistingIndexEngine)
+    assert wrapped._check_binding(None, None) == ()
+    assert wrapped._resolve_index_schema("schema") == "schema"

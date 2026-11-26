@@ -385,3 +385,80 @@ def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(
     assert {row["view"] for row in anchors} == {"train", "validation", "full"}
     assert len({row["cutoff"] for row in anchors}) == 1
     assert (out / "model.pt").is_file()
+
+
+@pytest.mark.parametrize("variant", ["smoke", "graph_smoke", "hybrid_smoke", "stock_sequence"])
+def test_source_loader_import_provider_runs_shared_recipe_pipeline(variant, monkeypatch, tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
+    if variant in {"graph_smoke", "hybrid_smoke"}:
+        pytest.importorskip("kumo_core.modeling.gnn.hetero")
+    import sys
+    from types import ModuleType
+
+    from tfm.data.loaders import SourceLoader
+    from tfm.extras.kumo_pytorch import temporary_engine
+
+    created, closed = [], []
+
+    def engine(resources, *, work_dir, num_threads):
+        assert work_dir.is_dir() and num_threads > 0
+        created.append(work_dir)
+        resources.callback(lambda: closed.append(work_dir))
+        return temporary_engine(resources, num_threads=2)
+
+    module = ModuleType("contract_recipe_engine")
+    module.provider = SourceLoader(engine, {"implementation": "contract-engine", "revision": "v1"})
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    config = yaml.safe_load(
+        Path(
+            "recipes/blueprint_v2/config.smoke.yaml"
+            if variant == "stock_sequence"
+            else f"recipes/relational_inputs/config.{variant}.yaml"
+        ).read_text()
+    )
+    config["data"]["loader"] = "contract_recipe_engine:provider"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = run_command("smoke", config_path=path, run_dir=tmp_path / "run", device="cpu")
+    assert created and len(closed) == len(created)
+    manifest = json.loads((out / "model.manifest.json").read_text())
+    assert manifest["input_loader"]["name"] == "contract_recipe_engine:provider"
+    assert manifest["input_loader"]["engine_provider"]["revision"] == "v1"
+    if variant == "smoke":
+        module.provider = SourceLoader(
+            engine, {"implementation": "contract-engine", "revision": "v2"}
+        )
+        with pytest.raises(ValueError, match="source/anchor identity"):
+            run_command(
+                "evaluate", config_path=path, run_dir=out, device="cpu", reuse_checkpoint=True
+            )
+        assert len(closed) == len(created)
+
+
+def test_source_loader_rejects_missing_anchor_capability_before_training(monkeypatch, tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from tfm.contracts.errors import UnsupportedCombinationError
+    from tfm.data.loaders import SourceLoader
+
+    closed = []
+
+    def engine(resources, *, work_dir, num_threads):
+        resources.callback(lambda: closed.append(True))
+        return SimpleNamespace(open=lambda *args: None)
+
+    module = ModuleType("contract_unsupported_engine")
+    module.provider = SourceLoader(engine, {"implementation": "missing-anchors", "revision": "v1"})
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    config = yaml.safe_load(Path("recipes/relational_inputs/config.smoke.yaml").read_text())
+    config["data"]["loader"] = "contract_unsupported_engine:provider"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(UnsupportedCombinationError, match="AnchorTable"):
+        run_command("train", config_path=path, run_dir=tmp_path / "run", device="cpu")
+    assert closed == [True]
+    assert not (tmp_path / "run/model.pt").exists()

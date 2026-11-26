@@ -194,3 +194,30 @@ construction, evaluation and artifact writes consistently. Separate fresh-index
 construction from index reuse, synchronize device work at timing boundaries,
 and repeat runs. Different early-stopping epoch counts are different amounts of
 work.
+
+## Provider and build follow-up
+
+Loader configuration also accepts registered or import-path `SourceLoader`
+providers. They supply a compatible Kumo PyTorch engine to the shared source
+pipeline; provider provenance is bound to checkpoints. Built-in names and the
+default are unchanged. See [source-loader providers](../reference/extending.md#source-loader-providers)
+for an executable two-thread factory, resource ownership and capability limits.
+Object-based compatibility helpers and comparison/ablation runs retain only the
+two built-ins; custom source providers require canonical recipe dispatch.
+
+The pinned DiskGraph exposes `num_threads` for native sampling. Cargo compilation
+parallelism is separate: `scripts/build_kumo_loader_wheels.py` now honors
+`CARGO_BUILD_JOBS`, defaulting to at most eight jobs. CPU CI explicitly requests
+two build jobs for its memory budget. Isolated build tools are pinned in
+`scripts/native-build-constraints.txt`; the six source/runtime pins are unchanged.
+The verified wheel cache includes the build-tool constraints. CI also caches
+Cargo's registry/git downloads and native targets; target directories are keyed
+by source revision, Cargo.lock, toolchain, platform, Rust flags and constraints.
+Fresh source checkout paths/mtimes prevent stale project artifacts from being
+accepted after restoring different source bytes. These changes do not establish
+a build-time speedup without a completed cold/warm CI measurement.
+
+Compatibility `NativeGraphSampler` calls now gather precomputed node/edge clocks
+and use stable tensor unions. They retain invalid-edge, duplicate, temporal and
+mutation checks. Canonical recipe execution already uses the source-tensor
+pipeline and does not call this legacy sampler.

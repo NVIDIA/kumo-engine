@@ -557,3 +557,41 @@ def test_graph_recipe_records_selected_loader_contract(loader):
     finally:
         if isinstance(data.sampler, Closable):
             data.sampler.close()
+
+
+@pytest.mark.parametrize(
+    "values,first,inverse",
+    [
+        ([8, 2, 8, 7, 2], [0, 1, 3], [0, 1, 0, 2, 1]),
+        ([], [], []),
+        ([4, 4], [0], [0, 0]),
+        ([[2**62, 1], [1, 2**62], [2**62, 1]], [0, 1], [0, 1, 0]),
+    ],
+)
+def test_native_union_preserves_first_occurrence_order(values, first, inverse):
+    from tfm.data.native_graph import _first_occurrences
+
+    selected, remap = _first_occurrences(torch.tensor(values, dtype=torch.long))
+    assert selected.tolist() == first
+    assert remap.tolist() == inverse
+
+
+def test_native_graph_gathers_precomputed_clocks_and_rejects_unbound_edges(monkeypatch):
+    sampler = NativeGraphSampler(graph_fixture(), depth=2, fanout=20)
+    try:
+
+        def forbidden(*args):
+            raise AssertionError("Per-node clock lookup must happen only during initialization")
+
+        monkeypatch.setattr(sampler, "row_time", forbidden)
+        anchors = (GraphAnchor("one", "a", NOW), GraphAnchor("two", "a", NOW))
+        batch = sampler.sample(anchors, "users", sharing="shared")
+        batch.assert_validated()
+        for role, parents in sampler.edge_parents.items():
+            assert isinstance(parents, torch.Tensor)
+            assert isinstance(sampler.edge_clocks[role], torch.Tensor)
+            parents.fill_(-1)
+        with pytest.raises(ValueError, match="unbound edge"):
+            sampler.sample(anchors, "users")
+    finally:
+        sampler.close()

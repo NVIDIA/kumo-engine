@@ -19,7 +19,13 @@ import pyarrow.parquet as pq
 import torch
 
 from tfm.contracts.errors import UnsupportedCombinationError
-from tfm.contracts.graph import STATIC_TIME, GraphAnchor, GraphBatch, utc_us
+from tfm.contracts.graph import (
+    STATIC_TIME,
+    GraphAnchor,
+    GraphBatch,
+    _has_duplicate_edges,
+    utc_us,
+)
 from tfm.data.adapters.kumo_graph import from_kumo_graph
 from tfm.data.graph import GraphSampler, RelationalGraph, order_graph_by_hop
 from tfm.extras.kumo_pytorch import SOURCE_REVISION, native_api, temporary_engine
@@ -27,6 +33,21 @@ from tfm.extras.kumo_pytorch import SOURCE_REVISION, native_api, temporary_engin
 
 def _clock(value: datetime | None) -> int:
     return STATIC_TIME if value is None else utc_us(value)
+
+
+def _first_occurrences(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stable first-row selection and inverse, with an integer-pair overflow fallback."""
+    _unique, inverse = (
+        torch.unique(values, return_inverse=True)
+        if values.ndim == 1
+        else torch.unique(values, dim=0, return_inverse=True)
+    )
+    first = torch.full((len(_unique),), len(values), dtype=torch.long)
+    first.scatter_reduce_(0, inverse, torch.arange(len(values)), reduce="amin")
+    order = first.argsort()
+    remap = torch.empty_like(order)
+    remap[order] = torch.arange(len(order))
+    return first[order], remap[inverse]
 
 
 @dataclass
@@ -69,6 +90,10 @@ class NativeGraphSampler(GraphSampler):
         self.codes = {
             name: {key: i for i, key in enumerate(keys)} for name, keys in self.keys.items()
         }
+        self.node_clocks = {
+            name: torch.tensor([self.row_time((name, key)) for key in keys], dtype=torch.long)
+            for name, keys in self.keys.items()
+        }
         # DiskGraph rejects physically empty tables during ingest. Omit them
         # from its schema, then restore their declared empty tensors at adaptation.
         active = {name for name, keys in self.keys.items() if keys}
@@ -86,6 +111,7 @@ class NativeGraphSampler(GraphSampler):
             schema_tables, schema_relations = [], []
             parents: dict[str, dict[int, int]] = {}
             self.edge_clocks = {}
+            self.edge_parents = {}
             for no, relation in enumerate(graph.relations):
                 source, role, target = relation
                 if relation not in active_relations:
@@ -109,7 +135,21 @@ class NativeGraphSampler(GraphSampler):
                     mapping[dest] = self.codes[source][link.source_id]
                     clocks[mapping[dest], dest] = _clock(link.available_at)
                 parents[role] = mapping
-                self.edge_clocks[relation] = clocks
+                self.edge_parents[relation] = torch.full(
+                    (len(self.keys[target]),), -1, dtype=torch.long
+                )
+                self.edge_clocks[relation] = torch.full(
+                    (len(self.keys[target]),), STATIC_TIME, dtype=torch.long
+                )
+                if mapping:
+                    destinations = torch.tensor(list(mapping), dtype=torch.long)
+                    self.edge_parents[relation][destinations] = torch.tensor(
+                        list(mapping.values()), dtype=torch.long
+                    )
+                    self.edge_clocks[relation][destinations] = torch.tensor(
+                        [clocks[parent, child] for child, parent in mapping.items()],
+                        dtype=torch.long,
+                    )
                 schema_relations.append(api.RelationSpec(role, source, "id", target, f"fk_{no}"))
             for name, table in self.tables.items():
                 if name not in active:
@@ -261,29 +301,28 @@ class NativeGraphSampler(GraphSampler):
                 if next(batches, None) is not None:
                     raise ValueError("Native graph split produced unexpected extra batches")
                 self._assert_bindings(native, anchors, ids)
-                payload = self._owned_graph(native.inputs["graph"])
+                payload = self._owned_graph(native.inputs["graph"], len(anchors))
                 view = _BoundGraph({"graph": payload}, native.metadata)
                 node_clocks = {
-                    name: torch.tensor(
-                        [self.row_time((name, self.keys[name][i])) for i in node["ids"].tolist()],
-                        dtype=torch.long,
-                    )
+                    name: self.node_clocks[name][node["ids"]]
                     for name, node in payload["nodes"].items()
                 }
                 edge_clocks = {}
                 for source, role, target in self.graph.relations:
                     edge = payload["edges"][role]["index"]
-                    known = self.edge_clocks.get((source, role, target), {})
-                    edge_clocks[source, role, target] = torch.tensor(
-                        [
-                            known[
-                                int(payload["nodes"][source]["ids"][a]),
-                                int(payload["nodes"][target]["ids"][b]),
-                            ]
-                            for a, b in edge.T.tolist()
-                        ],
-                        dtype=torch.long,
-                    )
+                    source_ids = payload["nodes"][source]["ids"][edge[0]]
+                    target_ids = payload["nodes"][target]["ids"][edge[1]]
+                    parents = self.edge_parents.get((source, role, target))
+                    if parents is None:
+                        if edge.shape[1]:
+                            raise ValueError("Native graph returned an unbound edge")
+                        edge_clocks[source, role, target] = torch.empty(0, dtype=torch.long)
+                    else:
+                        if not torch.equal(parents[target_ids], source_ids):
+                            raise ValueError("Native graph returned an unbound edge")
+                        edge_clocks[source, role, target] = self.edge_clocks[source, role, target][
+                            target_ids
+                        ]
                 result = from_kumo_graph(
                     view,
                     anchors=anchors,
@@ -325,7 +364,7 @@ class NativeGraphSampler(GraphSampler):
         ):
             raise ValueError("Native graph sampling clock differs from its bound anchor")
 
-    def _owned_graph(self, graph: Mapping[str, Any]) -> dict[str, Any]:
+    def _owned_graph(self, graph: Mapping[str, Any], sample_count: int) -> dict[str, Any]:
         if set(graph["nodes"]) - set(self.tables) or set(graph["edges"]) - {
             r for _, r, _ in self.graph.relations
         }:
@@ -354,10 +393,12 @@ class NativeGraphSampler(GraphSampler):
             ids, owners = nodes[name]["ids"], nodes[name]["batch"]
             if ids.dtype != torch.long or ids.ndim != 1 or ids.shape != owners.shape:
                 raise ValueError("Invalid native canonical row IDs")
-            if len(set(zip(owners.tolist(), ids.tolist(), strict=True))) != len(ids):
-                raise ValueError("Duplicate native node identity within one sample")
-            if any(not 0 <= i < len(self.keys[name]) for i in nodes[name]["ids"].tolist()):
+            if owners.dtype != torch.long or bool(((owners < 0) | (owners >= sample_count)).any()):
+                raise ValueError("Invalid native node sample IDs")
+            if bool(((ids < 0) | (ids >= len(self.keys[name]))).any()):
                 raise ValueError("Native graph returned an unbound canonical row ID")
+            if _has_duplicate_edges(torch.stack((owners, ids)), sample_count, len(self.keys[name])):
+                raise ValueError("Duplicate native node identity within one sample")
         edges = {}
         for source, role, target in self.graph.relations:
             edge = graph["edges"].get(role)
@@ -370,30 +411,35 @@ class NativeGraphSampler(GraphSampler):
                 if edge is None
                 else {**edge, "index": edge["index"].clone()}
             )
+            index = edges[role]["index"]
+            if index.dtype != torch.long or index.ndim != 2 or index.shape[0] != 2:
+                raise ValueError("Invalid native edge indices")
+            if bool((index < 0).any()) or (
+                index.shape[1]
+                and (
+                    int(index[0].max()) >= len(nodes[source]["ids"])
+                    or int(index[1].max()) >= len(nodes[target]["ids"])
+                )
+            ):
+                raise ValueError("Native edge index is outside its bound nodes")
         return {"nodes": nodes, "edges": edges}
 
     def _union(self, batch: GraphBatch, nodes: dict[str, Any]) -> GraphBatch:
         batch.assert_validated()
         first, inverse = {}, {}
         for name, node in nodes.items():
-            unique: dict[int, int] = {}
-            positions = []
-            remap = []
-            for i, key in enumerate(node["ids"].tolist()):
-                if key not in unique:
-                    unique[key] = len(positions)
-                    positions.append(i)
-                remap.append(unique[key])
-            first[name] = torch.tensor(positions, dtype=torch.long)
-            inverse[name] = torch.tensor(remap, dtype=torch.long)
+            first[name], inverse[name] = _first_occurrences(node["ids"])
         edges, clocks = {}, {}
         for role, index in batch.edge_index.items():
             source, _, target = role
             remapped = torch.stack((inverse[source][index[0]], inverse[target][index[1]]))
-            pairs: dict[tuple[int, int], int] = {}
-            for i, pair in enumerate(remapped.T.tolist()):
-                pairs.setdefault((pair[0], pair[1]), i)
-            chosen = torch.tensor(list(pairs.values()), dtype=torch.long)
+            source_size, target_size = len(first[source]), len(first[target])
+            keys = (
+                remapped[0] * target_size + remapped[1]
+                if source_size * target_size <= torch.iinfo(torch.int64).max
+                else remapped.T
+            )
+            chosen, _inverse = _first_occurrences(keys)
             edges[role], clocks[role] = remapped[:, chosen], batch.edge_available_us[role][chosen]
         return GraphBatch(
             batch.anchors,

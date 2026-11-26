@@ -274,3 +274,56 @@ A recipe with different orchestration can register a `RecipeRunner` through
 `tfm.runtime.registry.register_recipe_runner` or select one directly with
 `recipe_family: my_package.lifecycle:run_command`. It receives the already
 parsed shared config; it should not read YAML a second time.
+
+## Source-loader providers
+
+`data.loader` accepts `python`, `kumo_pytorch`, a registered source-loader name,
+or an import path such as `my_package.loaders:provider`. A source provider plugs
+an engine into the existing source-table, encoding, batching and recipe stages;
+it does not replace the recipe runner. The experimental interface lives in
+`tfm.data.loaders` and does not change the core `tfm` exports.
+
+For example, put this in an importable module to configure a two-thread native
+engine without changing the model or training stages:
+
+```python
+from tfm.data.loaders import SourceLoader, register_loader
+from tfm.extras.kumo_pytorch import SOURCE_REVISION, temporary_engine
+
+
+def open_engine(resources, *, work_dir, num_threads):
+    # Extra provider resources can register cleanup on resources. Plan owns
+    # engine-source lifetime; all producers close before provider cleanup.
+    return temporary_engine(resources, num_threads=2)
+
+
+provider = SourceLoader(
+    open_engine,
+    {"implementation": "diskgraph", "revision": SOURCE_REVISION, "num_threads": "2"},
+)
+# Optional when selecting by short name in the same application:
+register_loader("two_thread_engine", provider)
+```
+
+Use `data.loader: my_package.loaders:provider`, or import that module before
+parsing a config with `data.loader: two_thread_engine`. Configuration checks the
+provider without opening its engine. The factory receives an `ExitStack`, a
+node-local `work_dir` and `num_threads`; it returns an implementation of the
+pinned `kumo.pytorch.api.Engine` interface, including source AnchorTable
+materialization and the model-tensor delivery capabilities used by the recipe.
+A different backend must implement those capabilities and preserve the declared
+clocks, ordering and feature contract. Merely accepting a loader name does not
+establish backend compatibility; unsupported capabilities fail before training.
+
+Provider provenance is an immutable string mapping recorded in checkpoint
+identity. Include the implementation version and settings affecting tensors;
+change them when that behavior changes. Reuse rejects changed provenance.
+Providers own any additional resources through the supplied stack. Custom
+providers build independent plans; the built-in DiskGraph snapshot shortcut is
+not assumed for another engine. The pinned native extra remains required by the
+shared source/encoding integration.
+
+The canonical sequence, graph and hybrid CLI dispatch supports these providers.
+Direct object-history/graph compatibility helpers and the comparison/ablation
+runner retain the two built-in loaders and reject custom source providers.
+Prepared token caches retain their separate, explicit batch-building workflow.

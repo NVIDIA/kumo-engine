@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Respect Cargo build-job overrides, cap automatic parallelism, pin isolated
+  native build tools and reuse Cargo registry/immutable target caches in CI.
+- Allow registered or import-path source-loader providers through the shared
+  sequence/graph/hybrid pipeline, binding provider provenance to checkpoints.
+- Vectorize compatibility graph clocks and stable shared-node/edge unions;
+  retain bounds, native-edge, duplicate, temporal and mutation checks.
+
 - Canonicalize partition selectors for native view identity so reordered or
   duplicated allowed values cannot bypass split-overlap validation. See the
   native-loader migration guide before reusing existing partitioned runs.

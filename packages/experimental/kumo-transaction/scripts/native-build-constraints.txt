@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Isolated build tools for the six matching Engine source packages (not runtime pins).
+maturin==1.10.2
+setuptools==84.0.0
+setuptools-scm==9.2.2
+toml==0.10.2
+wheel==0.45.1
+packaging==26.3

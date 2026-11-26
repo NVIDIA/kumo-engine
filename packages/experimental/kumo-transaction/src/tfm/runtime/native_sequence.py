@@ -215,6 +215,7 @@ def run_command(
     }
     with NativeInputs(
         source,
+        loader=config.data.loader,
         root="users",
         history_paths={
             "events": ("events",),

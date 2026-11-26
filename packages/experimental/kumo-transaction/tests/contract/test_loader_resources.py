@@ -187,3 +187,39 @@ def test_default_loader_missing_extra_raises_without_python_fallback(monkeypatch
     with pytest.raises(ExtraUnavailableError, match="Native integration is unavailable"):
         native.build_entity_sequences(events(), NOW, max_events=2, loader=config.data.loader)
     assert calls == [True]
+
+
+def test_loader_registry_and_import_paths_validate_without_loading_native(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    from tfm.config import DataConfig
+    from tfm.contracts.errors import UnsupportedCombinationError
+    from tfm.data.loaders import SourceLoader, register_loader, resolve_loader
+
+    def factory(resources, *, work_dir, num_threads):
+        raise AssertionError("Configuration must not open an engine")
+
+    raw = load_recipe_config("recipes/blueprint_v1/config.smoke.yaml").data.model_dump()
+
+    def parse(name):
+        return DataConfig.model_validate({**raw, "loader": name})
+
+    identity = {"implementation": "custom", "revision": "v1"}
+    provider = SourceLoader(factory, identity)
+    identity["revision"] = "changed"
+    assert provider.provenance["revision"] == "v1"
+    register_loader("contract_custom_source", provider)
+    assert parse("contract_custom_source").loader == "contract_custom_source"
+    module = ModuleType("contract_loader_extension")
+    module.provider = provider
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    assert resolve_loader("contract_loader_extension:provider") is provider
+    assert parse("contract_loader_extension:provider").loader.endswith(":provider")
+    module.invalid = object()
+    with pytest.raises(UnsupportedCombinationError, match="SourceLoader"):
+        parse("contract_loader_extension:invalid")
+    with pytest.raises(UnsupportedCombinationError, match="Unknown loader"):
+        parse("unregistered_loader")
+    with pytest.raises(TypeError):
+        provider.provenance["revision"] = "mutated"

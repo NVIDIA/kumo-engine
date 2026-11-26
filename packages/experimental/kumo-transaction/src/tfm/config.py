@@ -151,10 +151,21 @@ class DataConfig(StrictConfig):
     adapter: str = "synthetic"
     """A registered adapter (`synthetic`, `tabformer`, `pragmatiq`), or an
     `Adapter`'s import path, `"package.module:attribute"`."""
-    loader: Literal["kumo_pytorch", "python"] = "kumo_pytorch"
+    loader: str = "kumo_pytorch"
     """Recipe history/graph retrieval backend. Kumo PyTorch/DiskGraph is the default;
-    `python` explicitly selects the in-process reference loader. An explicit
+    `python` explicitly selects the in-process reference loader. Registered source
+    loaders or `package.module:provider` import paths use the shared source pipeline. An explicit
     token cache continues to select its declared cache batch builder."""
+
+    @field_validator("loader")
+    @classmethod
+    def _loader_provider(cls, value: str) -> str:
+        from tfm.data.loaders import resolve_loader
+
+        name = value.strip() if ":" in value else value.strip().lower()
+        resolve_loader(name)
+        return name
+
     relational: RelationalTaskConfig | None = None
     """Shared relational task; the adapter supplies its dataset declaration."""
     path: str | None = None

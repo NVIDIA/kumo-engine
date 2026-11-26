@@ -31,16 +31,16 @@ def test_explicit_python_sequence_recipe_without_native(monkeypatch, tmp_path):
 @pytest.mark.parametrize("name", ["blueprint_v1", "blueprint_v2", "pragma_like"])
 def test_sequence_recipe_uses_native_by_default(name, monkeypatch, tmp_path):
     pytest.importorskip("kumo.pytorch.api", reason="requires the native extra")
-    from tfm.data import native_inputs
+    from tfm.extras import kumo_pytorch
 
-    actual = native_inputs.temporary_engine
+    actual = kumo_pytorch.temporary_engine
     calls = []
 
     def observed(*args, **kwargs):
         calls.append(True)
         return actual(*args, **kwargs)
 
-    monkeypatch.setattr(native_inputs, "temporary_engine", observed)
+    monkeypatch.setattr(kumo_pytorch, "temporary_engine", observed)
     out = run_command(
         "smoke",
         config_path=Path("recipes") / name / "config.smoke.yaml",

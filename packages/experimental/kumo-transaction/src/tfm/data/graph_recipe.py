@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from tfm.config import RecipeConfig
-from tfm.contracts.errors import SchemaError
+from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.graph import (
     FutureSubgraphTargets,
     GraphAnchor,
@@ -127,6 +127,10 @@ def _prepare_graph_data(
     transform: FutureTargetTransform | None,
     resources: ExitStack,
 ) -> PreparedGraphData:
+    if config.data.loader not in {"python", "kumo_pytorch"}:
+        raise UnsupportedCombinationError(
+            "Custom source loaders require canonical recipe dispatch; direct graph preparation supports only built-ins"
+        )
     events, transfers = _events(config)
     data, g = config.data, config.model.composition.granularity
     objective = config.training.objective if config.runtime.stage != "downstream" else "binary"

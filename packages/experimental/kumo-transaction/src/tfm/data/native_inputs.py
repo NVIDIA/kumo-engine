@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 from tfm.config import FeaturesConfig, RelationalTaskConfig
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.table_source import TableSource
+from tfm.data.loaders import resolve_loader
 from tfm.data.native_batches import NativeBatches
 from tfm.data.native_source import (
     NativeSourceFiles,
@@ -32,10 +33,10 @@ from tfm.data.native_source import (
     source_entity_id,
     validate_feature_bindings,
 )
-from tfm.data.native_spec import AnchorFittedEngine, history_contract, with_graph
+from tfm.data.native_spec import anchor_fitted_engine, history_contract, with_graph
 from tfm.data.native_tensors import NativeTensorAdapter
 from tfm.data.native_views import SourceRows, source_view
-from tfm.extras.kumo_pytorch import SOURCE_REVISION, native_api, temporary_engine
+from tfm.extras.kumo_pytorch import SOURCE_REVISION, native_api
 
 Mode = Literal["history", "sequence", "graph", "hybrid", "flat"]
 
@@ -58,6 +59,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         source: TableSource,
         *,
         root: str,
+        loader: str = "kumo_pytorch",
         history_paths: Mapping[str, tuple[str, ...]],
         anchors: Path | None = None,
         task: RelationalTaskConfig | None = None,
@@ -88,6 +90,10 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             if label_table is None or label_table.role != "labels":
                 raise SchemaError(f"Label path {task.labels.table}: declare a labels-role table")
             validate_feature_bindings(source, extra_forbidden=frozenset({task.labels.target}))
+        self.loader_name = loader
+        self.loader = resolve_loader(loader)
+        if self.loader.engine_factory is None:
+            raise ValueError("Source-table NativeInputs requires an engine-backed loader")
         self.resources = ExitStack()
         self._closed = False
         self.root, self.depth, self.fanout = root, depth, fanout
@@ -459,14 +465,23 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         schema_key = json.dumps([view, contract.to_dict()["schema"]], sort_keys=True)
         snapshot = self._indexes.get(schema_key)
         if snapshot is None:
-            engine = temporary_engine(self.resources, num_threads=self._num_threads)
+            factory = self.loader.engine_factory
+            assert factory is not None
+            engine = factory(self.resources, work_dir=self.directory, num_threads=self._num_threads)
         else:
             engine = self.api.DiskGraphEngine.from_snapshot(snapshot, num_threads=self._num_threads)
             dataset = None
+        if any(
+            not callable(getattr(engine, method, None))
+            for method in ("open", "materialize_anchors")
+        ):
+            raise UnsupportedCombinationError(
+                f"data.loader {self.loader_name!r}: engine requires open() and source AnchorTable materialize_anchors()"
+            )
         plan = self.resources.enter_context(
-            self.api.prepare(contract, dataset, AnchorFittedEngine(engine))
+            self.api.prepare(contract, dataset, anchor_fitted_engine(engine))
         )
-        if snapshot is None:
+        if snapshot is None and self.loader_name == "kumo_pytorch":
             self._indexes[schema_key] = SimpleNamespace(index_path=engine.index, id=None)
         task = self.resources.enter_context(
             plan.materialize(
@@ -559,7 +574,12 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
     def manifest(self) -> dict[str, Any]:
         """Content and fitted-encoding identity, independent of temporary file paths."""
         return {
-            "name": "kumo_pytorch",
+            "name": self.loader_name,
+            **(
+                {"engine_provider": dict(self.loader.provenance)}
+                if self.loader_name != "kumo_pytorch"
+                else {}
+            ),
             "target_builder": "python_reference",
             "revision": SOURCE_REVISION,
             "pipeline": "source_tables_native_tensors_v1",

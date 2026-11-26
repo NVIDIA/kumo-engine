@@ -18,12 +18,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal, overload
+from typing import Any, overload
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
+from tfm.contracts.errors import UnsupportedCombinationError
 from tfm.contracts.graph import utc_us
 from tfm.contracts.schema import TransactionEvent, TransactionSequence, ensure_utc
 from tfm.data.collate import collate_batch
@@ -31,7 +32,7 @@ from tfm.data.sequence_builders import entity_sequences as reference
 from tfm.data.validation.schema import validate_events
 from tfm.extras.kumo_pytorch import native_api, temporary_engine
 
-Loader = Literal["kumo_pytorch", "python"]
+Loader = str
 
 
 class NativeHistories:
@@ -275,7 +276,9 @@ def build_entity_sequences(
 ) -> list[TransactionSequence]:
     """Select native retrieval explicitly; preserve the reference selection contract."""
     if loader not in {"python", "kumo_pytorch"}:
-        raise ValueError(f"Unknown history loader {loader!r}")
+        raise UnsupportedCombinationError(
+            f"History helper does not support {loader!r}; custom source loaders require canonical recipe dispatch"
+        )
     if loader == "python":
         return reference.build_entity_sequences(
             events,
@@ -309,7 +312,9 @@ def build_entity_windows(
 ) -> list[TransactionSequence]:
     """Tile the same native histories using the existing pretraining-window policy."""
     if loader not in {"python", "kumo_pytorch"}:
-        raise ValueError(f"Unknown history loader {loader!r}")
+        raise UnsupportedCombinationError(
+            f"History helper does not support {loader!r}; custom source loaders require canonical recipe dispatch"
+        )
     if loader == "python":
         return reference.build_entity_windows(
             events,
@@ -345,7 +350,9 @@ def build_sequences_at_label_cutoffs(
 ) -> list[tuple[TransactionSequence, Any]]:
     """Retain label-row order while retrieving each history at its own prediction time."""
     if loader not in {"python", "kumo_pytorch"}:
-        raise ValueError(f"Unknown history loader {loader!r}")
+        raise UnsupportedCombinationError(
+            f"History helper does not support {loader!r}; custom source loaders require canonical recipe dispatch"
+        )
     if loader == "python":
         return reference.build_sequences_at_label_cutoffs(
             events,

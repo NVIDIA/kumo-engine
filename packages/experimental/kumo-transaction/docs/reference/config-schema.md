@@ -307,7 +307,10 @@ that presence. Missing amounts on individual events remain supported.
 ## Recipe loader selection
 
 `data.loader` defaults to `kumo_pytorch` for sequence, graph and hybrid recipes.
-Set `python` explicitly for reference retrieval. Native dependencies are required
+Set `python` explicitly for reference retrieval. A registered `SourceLoader` name
+or `package.module:provider` selects a compatible source engine through the same
+pipeline; see [provider contracts and examples](extending.md#source-loader-providers).
+Unknown names and invalid imported providers fail during configuration. Native dependencies are required
 unless a configured cache bypasses history retrieval; there is no automatic fallback. A configured
 token cache retains its existing prepared-batch workflow. Without a cache, native
 recipes stream source-table tensors and use fitted native encoders; native packing

@@ -216,7 +216,7 @@ def run_command(
             device=device,
             reuse_checkpoint=reuse_checkpoint,
         )
-    if config.data.loader == "kumo_pytorch":
+    if config.data.loader != "python":
         from tfm.runtime.native import run_command as run_native
 
         return run_native(

@@ -219,6 +219,7 @@ def run_command(
     gran = config.model.composition.granularity
     with NativeInputs(
         source,
+        loader=config.data.loader,
         root=task.root,
         history_paths=task.history_paths,
         task=task,

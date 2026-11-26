@@ -58,7 +58,7 @@ class _AnchorFitSource:
         self.source.close()
 
 
-class AnchorFittedEngine:
+class _AnchorFittedEngineBase:
     """Delegate native execution while fitting only from selected train anchors."""
 
     def __init__(self, engine: Any) -> None:
@@ -77,11 +77,25 @@ class AnchorFittedEngine:
     def materialize_anchors(self, *args: Any, **kwargs: Any) -> Any:
         return self.engine.materialize_anchors(*args, **kwargs)
 
+
+class AnchorFittedEngine(_AnchorFittedEngineBase):
+    """Keep explicit snapshot-binding hooks visible to runtime protocol checks."""
+
     def _check_binding(self, *args: Any, **kwargs: Any) -> Any:
         return self.engine._check_binding(*args, **kwargs)
 
     def _resolve_index_schema(self, *args: Any, **kwargs: Any) -> Any:
         return self.engine._resolve_index_schema(*args, **kwargs)
+
+
+def anchor_fitted_engine(engine: Any) -> _AnchorFittedEngineBase:
+    """Expose optional index reuse only when the selected backend supplies it."""
+    if all(
+        callable(getattr(engine, method, None))
+        for method in ("_check_binding", "_resolve_index_schema")
+    ):
+        return AnchorFittedEngine(engine)
+    return _AnchorFittedEngineBase(engine)
 
 
 def _dtype(dtype: pa.DataType, path: str, api: Any) -> Any:

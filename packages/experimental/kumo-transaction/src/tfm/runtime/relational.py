@@ -182,7 +182,7 @@ def run_command(
     reuse_checkpoint: bool = False,
 ) -> Path:
     """Train, evaluate or infer with generated/replayed aligned relational anchors."""
-    if config.data.loader == "kumo_pytorch":
+    if config.data.loader != "python":
         from tfm.runtime.native import run_command as run_native
 
         return run_native(
