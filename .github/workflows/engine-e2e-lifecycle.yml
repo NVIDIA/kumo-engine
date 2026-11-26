@@ -112,7 +112,7 @@ jobs:
           aws-region: us-west-2
       - name: Save the failed result
         run: aws s3 cp "$RUNNER_TEMP/result.json" "${RESULTS_S3%/}/$SOURCE_RUN/$SOURCE_ATTEMPT/$SCALE/$CASE.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         if: always()
         with:
           name: engine-e2e-capacity-${{ env.SOURCE_RUN }}-${{ env.SOURCE_ATTEMPT }}-${{ matrix.case }}-${{ matrix.scale }}

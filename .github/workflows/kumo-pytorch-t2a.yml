@@ -75,7 +75,7 @@ jobs:
           FLOW: ${{ matrix.flow }}
           SEED: ${{ matrix.seed }}
         run: python -m tests.e2e.runs t2a "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-pytorch-t2a-${{ matrix.flow }}-seed${{ matrix.seed }}
           path: |
@@ -122,7 +122,7 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: ${{ failure() }}
         with:
           name: kumo-pytorch-t2a-predictions-and-metrics
