@@ -169,7 +169,14 @@ row and link was observable by the terminal event time. Several named history
 paths to one physical terminal table are combined before truncation: each
 (root, terminal primary key) association appears once. This keeps both roles of
 a bidirectional activity relationship, deduplicates a self-link for one root,
-and retains an event for each distinct associated root. Projection size follows
+and retains an event for each distinct associated root. Before truncation, native
+histories use the reference ordering: event time ascending, then the complete
+typed event identity ascending. This includes its terminal-table identity and
+nested primary-key token; punctuation and path declaration order cannot change
+the retained event. Single-path histories use the same identity projection.
+Terminal-only source-view filters apply to those projections; projected
+intermediate/profile filters still require an explicit projected view.
+Projection size follows
 root/event associations, rather than prediction anchors; many-to-many ownership
 can still increase its size. Separate dated profile facts retain their meanings.
 Versioned ownership and late-known projections still fail with the affected path.
@@ -197,7 +204,9 @@ canonical tie.
 
 Canonical key metadata and union history components change native input-contract
 fingerprints. Start a new managed run and regenerate native fitted artifacts
-when upgrading from the earlier index-order/single-path implementation. Existing
+when upgrading from the earlier index-order/single-path implementation or its
+inner-key history ordering. Saved manifests record the history tie policy, so
+checkpoint reuse rejects states without the current ordering identity. Existing
 checkpoint identity checks reject incompatible artifacts before installing model
 weights. No source-specific mapping or model architecture change is required.
 

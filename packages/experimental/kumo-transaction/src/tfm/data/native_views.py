@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 
 from tfm.contracts.errors import SchemaError
 from tfm.contracts.table_source import TableSource
-from tfm.data.native_source import EVENT_US, ROW_ID
+from tfm.data.native_source import EVENT_US, KEY_ORDER, ROW_ID
 
 pc: Any = arrow_compute
 
@@ -68,8 +68,17 @@ def source_view(
             first = next(original.iter_batches(batch_size=1))
             sentinel = pa.Table.from_arrays(
                 [
-                    pa.array([original.metadata.num_rows], type=pa.int64())
+                    pa.array(
+                        [
+                            "__tfm_unreachable"
+                            if pa.types.is_string(field.type)
+                            else original.metadata.num_rows
+                        ],
+                        type=field.type,
+                    )
                     if field.name == ROW_ID
+                    else pa.array([0], type=field.type)
+                    if field.name == KEY_ORDER
                     else first.column(field.name)
                     if field.name in clocks
                     else pa.nulls(1, type=field.type)

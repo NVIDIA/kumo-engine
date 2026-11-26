@@ -60,6 +60,23 @@ def test_source_native_cli_bypasses_object_histories_and_python_tokenizers(
     for key in before:
         np.testing.assert_array_equal(before[key], after[key])
     assert not list((out / "native-work").iterdir())
+    assert (
+        metadata["input_loader"]["history_tie_policy"] == "event_time_then_typed_event_identity_v1"
+    )
+    assert metadata["input_loader"]["graph_tie_policy"] == "canonical_key_asc"
+    if variant == "smoke":
+        import torch
+
+        from tfm.training.checkpointing import read_checkpoint
+
+        payload = read_checkpoint(out / "model.pt")
+        payload["metadata"]["input_loader"].pop("history_tie_policy")
+        torch.save(payload, out / "model.pt")
+        monkeypatch.setattr(torch.nn.Module, "load_state_dict", forbidden)
+        with pytest.raises(ValueError, match="source/anchor identity"):
+            run_command(
+                "evaluate", config_path=config, run_dir=out, device="cpu", reuse_checkpoint=True
+            )
 
 
 @pytest.mark.parametrize("variant", ["graph_smoke", "hybrid_smoke"])

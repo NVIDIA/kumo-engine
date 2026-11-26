@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Match native history truncation to complete typed event identities, including
+  punctuation and cross-table ties; bind the ordering policy to checkpoints.
+- Support PyArrow's public streaming CSV reader across dynamic-export stubs.
+
 - Select native recent neighbors by exact canonical-key secondary order before
   fanout; preserve timestamps and reject unrepresentable key/clock ranges.
 - Union fixed history paths by root/physical event before history truncation,

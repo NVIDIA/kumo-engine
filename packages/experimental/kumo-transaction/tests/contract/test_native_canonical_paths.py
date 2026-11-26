@@ -348,3 +348,72 @@ def test_native_canonical_clock_encoding_rejects_overflow_before_ingest(tmp_path
     )
     with pytest.raises(UnsupportedCombinationError, match="events.at.*clock span"):
         _clock_anchor({"name": "events", "source": {"paths": [str(path)]}}, "at")
+
+
+@pytest.mark.parametrize("union", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("cross_table", [False, True])
+@pytest.mark.parametrize("max_events", [1, 8])
+def test_native_history_truncation_matches_nested_identity_and_not_declaration_order(
+    tmp_path, union, reverse, cross_table, max_events
+):
+    pytest.importorskip("kumo.pytorch.api")
+    rows = {"owners": [{"id": "root"}]}
+    tables = [RelationalTable("owners", ("id",), immutable=True)]
+    roles, paths = [], {}
+    for i, name in enumerate(("stream", "stream-1") if cross_table else ("stream",)):
+        rows[name] = [
+            {
+                "id": value,
+                "owner": "root",
+                "other": "root",
+                "at": START,
+                "amount": float(10 * i + j),
+            }
+            for j, value in enumerate(("a", "a-1"))
+        ]
+        tables.append(
+            RelationalTable(
+                name, ("id",), numeric={"amount": "amount"}, event_time="at", available_at="at"
+            )
+        )
+        for column in ("owner", "other") if union else ("owner",):
+            role = f"{name}_{column}"
+            roles.append(RelationalForeignKey(role, "owners", name, (column,)))
+            paths[role] = (role,)
+    if reverse:
+        paths = dict(reversed(tuple(paths.items())))
+    files = {}
+    for name, values in rows.items():
+        files[name] = tmp_path / f"{name}.parquet"
+        pq.write_table(pa.Table.from_pylist(values), files[name])
+    task = RelationalTaskConfig(root="owners", history_paths=paths, cutoffs={"train": "2024-01-02"})
+    reference = RelationalSource(
+        RelationalDataset(tuple(tables), tuple(roles), {n: tuple(v) for n, v in rows.items()}), task
+    )
+    anchor = GraphAnchor("sample", key_token(("root",)), START + timedelta(days=1))
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(dict(sample_id=["sample"], id=["root"], cutoff=[anchor.cutoff], split=["train"])),
+        anchors,
+    )
+    with NativeInputs(
+        TableSource(tuple(tables), tuple(roles), files),
+        root="owners",
+        history_paths=paths,
+        anchors=anchors,
+        work_dir=tmp_path / "work",
+        max_events=max_events,
+        batch_size=1,
+    ) as inputs:
+        (batch,) = list(
+            inputs.task("sequence").batches(
+                split="train", batch_size=1, shuffle=False, output_format="model"
+            )
+        )
+        mask = batch.inputs["history"]["sequence"]["valid"].bool()
+        actual = batch.inputs["history_aux"]["__amount"]["values"][mask].tolist()
+        assert actual == [
+            event.numeric["amount"]
+            for event in reference.history(anchor, max_events=max_events).events
+        ]

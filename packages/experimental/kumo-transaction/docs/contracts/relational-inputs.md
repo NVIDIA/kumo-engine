@@ -107,6 +107,10 @@ only. Non-finite numeric profile values are missing; root keys/clocks never
 become attributes. Intermediate context attributes remain graph features.
 Canonical identity ordering is lexicographic on the typed JSON encoding,
 including composite keys; it is not numeric sorting of raw integer keys.
+History selection orders by event time and the complete typed event ID
+(table identity plus the nested primary-key token), then keeps the final
+`max_events` entries. Native source projections preserve that ordering within
+and across terminal streams, independently of path declaration order.
 
 Declared FK columns must exist on every child row. An explicit `None` denotes
 an optional link; omitting the column is a schema error. A version log replaces

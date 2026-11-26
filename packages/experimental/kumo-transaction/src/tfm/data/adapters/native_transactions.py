@@ -584,7 +584,11 @@ def tabformer_tables(config: DataConfig, *, seed: int, fixture_dir: Path) -> Tab
     """
     from hashlib import sha256
 
-    import pyarrow.csv as csv
+    from pyarrow import csv as arrow_csv
+
+    # PyArrow exposes its public CSV factory dynamically; some stub releases
+    # omit the re-export and otherwise report a private import.
+    csv: Any = arrow_csv
 
     from tfm.data.adapters.tabformer import (
         _as_datetime,

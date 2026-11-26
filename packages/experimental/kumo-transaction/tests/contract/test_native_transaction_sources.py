@@ -408,3 +408,34 @@ def test_lazy_reference_ties_use_original_event_id_before_history_limit(tmp_path
         assert [e.event_id for e in references.sequence("one").events] == ["a", "z"]
         inputs.max_events = 1
         assert [e.event_id for e in references.sequence("one").events] == ["z"]
+
+
+def test_tabformer_csv_source_streams_public_csv_reader(tmp_path):
+    import csv
+
+    from tfm.data.adapters import tabformer
+
+    root = tabformer.write_tabformer_fixture(tmp_path / "book", n_users=4, events_per_user=2)
+    rows = []
+    for name in ("train", "val", "test"):
+        path = root / "temporal_split" / f"{name}.parquet"
+        rows.extend(pq.read_table(path).to_pylist())
+        path.unlink()
+    with (root / "raw/card_transaction.v1.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    config = load_recipe_config("recipes/blueprint_v1/config.smoke.yaml")
+    data = config.data.model_copy(
+        update={
+            "adapter": "tabformer",
+            "path": str(root),
+            "split_protocol": "temporal",
+            "load_labels": False,
+            "n_entities": 4,
+        }
+    )
+    source = table_source(data, seed=42, fixture_dir=tmp_path / "projected")
+    actual = pq.read_table(source.files["events"])
+    assert actual.num_rows == len(rows)
+    assert actual["fraud_value"].null_count == len(rows)

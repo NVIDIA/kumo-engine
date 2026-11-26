@@ -445,15 +445,38 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             )
         assert contract is not None
         if view != "full":
-            if self._history_source is not None and any(
-                table.name.startswith("__tfm_history_") for table in self._history_source.tables
-            ):
-                raise UnsupportedCombinationError(
-                    "Physical source prefixes with projected multi-hop histories need an explicit projected prefix"
-                )
+            rules = dict(self.views[view])
+            if self._history_source is not None:
+                relations = {role.name: role for role in source.relationships}
+                original_roles = {role.name: role for role in self.source.relationships}
+                projected = {
+                    table.name for table in source.tables if table.name.startswith("__tfm_history_")
+                }
+                handled = set()
+                for name, path in self._history_options["paths"].items():
+                    terminal = self.root
+                    for role_name in path:
+                        role = relations[role_name]
+                        terminal = role.child if terminal == role.parent else role.parent
+                    if not terminal.startswith("__tfm_history_"):
+                        continue
+                    handled.add(terminal)
+                    original_path = self.paths[name]
+                    if len(original_path) != 1:
+                        raise UnsupportedCombinationError(
+                            "Physical source prefixes with projected multi-hop histories need an explicit projected prefix"
+                        )
+                    role = original_roles[original_path[0]]
+                    original = role.child if role.parent == self.root else role.parent
+                    if original in rules:
+                        rules[terminal] = rules[original]
+                if projected - handled:
+                    raise UnsupportedCombinationError(
+                        "Physical source prefixes with projected profile facts need an explicit projected prefix"
+                    )
             if view not in self._view_sources:
                 self._view_sources[view] = source_view(
-                    source, self.views[view], self.directory / f"view-{view}"
+                    source, rules, self.directory / f"view-{view}"
                 )
             source = self._view_sources[view]
         dataset = self.api.Dataset(
@@ -612,6 +635,11 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             "split_namespaces": self.split_namespaces,
             "split_views": self.split_views,
             "exclusive_terminal_paths": self.exclusive_terminal_paths,
+            "history_tie_policy": (
+                "prepared_window_order_v1"
+                if self.exclusive_terminal_paths
+                else "event_time_then_typed_event_identity_v1"
+            ),
             "views": {
                 name: {table: asdict(rule) for table, rule in rules.items()}
                 for name, rules in self.views.items()
@@ -625,7 +653,11 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                 }
                 for mode, task in self._tasks.items()
             },
-            "graph_tie_policy": "native index-local recent ties",
+            "graph_tie_policy": (
+                "canonical_key_asc"
+                if self.normalized.canonical_graph_order
+                else "native index-local recent ties"
+            ),
         }
 
     def restore_fitted(self, directory: Path, expected: Mapping[str, Mapping[str, str]]) -> None:

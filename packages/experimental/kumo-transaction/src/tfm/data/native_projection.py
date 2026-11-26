@@ -18,6 +18,7 @@ from tfm.contracts.graph import STATIC_TIME
 from tfm.contracts.relational import RelationalForeignKey
 from tfm.contracts.table_source import TableSource
 from tfm.data.native_source import EVENT_US, ROW_ID, NativeSourceFiles
+from tfm.data.relational import key_token
 
 
 def _write_associations(
@@ -103,10 +104,35 @@ def history_projection(
         # history aliases reaching the same physical table share one union.
         purpose = name if name.startswith("__profile_") or exclusive_terminal_paths else "history"
         groups[purpose, current].append((name, path, tuple(destinations)))
-    for index, ((_purpose, current), entries) in enumerate(groups.items()):
-        if len(entries) == 1 and not any(not tables[t].immutable for t in entries[0][2][:-1]):
+    normalized.connection.create_function(
+        "tfm_history_identity",
+        2,
+        lambda table, token: key_token((table, token)),
+        deterministic=True,
+    )
+    normalized.connection.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS history_ranks(table_name TEXT,code INTEGER,rank INTEGER,PRIMARY KEY(table_name,code))"
+    )
+    ranked = {
+        row[0]
+        for row in normalized.connection.execute("SELECT DISTINCT table_name FROM history_ranks")
+    }
+    for index, ((purpose, current), entries) in enumerate(groups.items()):
+        if (
+            purpose != "history"
+            and len(entries) == 1
+            and not any(not tables[t].immutable for t in entries[0][2][:-1])
+        ):
             output_paths[entries[0][0]] = entries[0][1]
             continue
+        if current not in ranked:
+            # Reference IDs nest the typed primary-key token inside another
+            # typed identity. Escaping changes lexical order (e.g. a/a-1).
+            normalized.connection.execute(
+                "INSERT INTO history_ranks SELECT table_name,code,ROW_NUMBER() OVER (ORDER BY tfm_history_identity(table_name,canonical_key))-1 FROM identities WHERE table_name=?",
+                (current,),
+            )
+            ranked.add(current)
         queries, parameters = [], []
         for _name, path, destinations in entries:
             joins, available = [], [f"COALESCE(r.available_us,{STATIC_TIME})"]
@@ -133,7 +159,7 @@ def history_projection(
                 f"SELECT {previous} AS child,r.code AS owner,MAX({','.join(available)}) AS known FROM identities r {' '.join(joins)} WHERE r.table_name=?"
             )
             parameters.append(root)
-        query = f"SELECT p.child,p.owner,MIN(p.known),k.rank FROM ({' UNION ALL '.join(queries)}) p JOIN identities n ON n.table_name=? AND n.code=p.child JOIN canonical_ranks k ON k.table_name=n.table_name AND k.code=n.code GROUP BY p.child,p.owner ORDER BY p.child,p.owner"
+        query = f"SELECT p.child,p.owner,MIN(p.known),k.rank FROM ({' UNION ALL '.join(queries)}) p JOIN identities n ON n.table_name=? AND n.code=p.child JOIN history_ranks k ON k.table_name=n.table_name AND k.code=n.code GROUP BY p.child,p.owner ORDER BY p.child,p.owner"
         cursor = normalized.connection.execute(query, (*parameters, current))
         found = next(cursor, None)
         table_name, role_name = f"__tfm_history_{index}", f"__tfm_history_role_{index}"
@@ -159,7 +185,7 @@ def history_projection(
                         selected.append(position)
                         owners.append(found[1])
                         # Within one owner's stream this prefix is constant;
-                        # the suffix preserves the reference physical event ID.
+                        # the suffix orders the complete reference event identity.
                         identities.append(f"{found[1]}:{found[3]:010d}")
                         found = next(cursor, None)
                         if len(selected) == 4096:

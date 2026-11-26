@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.contracts.table_source import TableSource
 from tfm.data.native_source import AVAILABLE_US, EVENT_US, KEY_ORDER, validate_feature_bindings
+from tfm.data.relational import key_token
 from tfm.data.validation.schema import PROHIBITED_INPUT_KEYS
 from tfm.extras.kumo_pytorch import native_api
 
@@ -231,7 +232,12 @@ def history_contract(
         raise SchemaError(f"{root}: native root must be a declared input table")
     events, encoded = {}, []
     terminals = set()
-    for name, path in paths.items():
+    ordered_paths = list(paths.items())
+    if event_names is not None:
+        ordered_paths = sorted(
+            paths.items(), key=lambda item: key_token((event_names.get(item[0], item[0]), ""))
+        )
+    for name, path in ordered_paths:
         current = root
         empty = False
         for role in path:
